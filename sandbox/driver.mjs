@@ -10,7 +10,7 @@ if (!prompt) {
 }
 
 try {
-  for await (const event of query({ prompt, options: { sessionId, includePartialMessages: true } })) {
+  for await (const event of query({ prompt, options: { includePartialMessages: true } })) {
     console.log(JSON.stringify(event));
   }
 } catch (e) {

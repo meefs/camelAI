@@ -113,21 +113,14 @@ export default function Chat({ threadId }: ChatProps) {
     intentionalClose.current = false;
 
     // WebSocket is handled by custom worker at /ws/{threadId}
-    const overrideOrigin = process.env.NEXT_PUBLIC_WS_ORIGIN;
-    if (overrideOrigin) {
-      const originWithScheme = overrideOrigin.includes('://')
-        ? overrideOrigin
-        : `${window.location.protocol}//${overrideOrigin}`;
-      const parsed = new URL(originWithScheme);
-      const protocol = (parsed.protocol === 'https:' || parsed.protocol === 'wss:') ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${parsed.host}/ws/${id}`);
-      wsRef.current = ws;
-    } else {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}/ws/${id}`);
-      wsRef.current = ws;
-    }
-    const ws = wsRef.current!;
+    // In development, connect directly to wrangler dev server (port 8788)
+    // In production, use the same host as the page
+    const isDev = process.env.NODE_ENV === 'development';
+    const wsHost = isDev ? 'localhost:8788' : window.location.host;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${wsHost}/ws/${id}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
 
     ws.onopen = () => {
       setConnected(true);
@@ -238,8 +231,12 @@ export default function Chat({ threadId }: ChatProps) {
       }
     };
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+    ws.onerror = () => {
+      // Suppress errors from stale WebSocket instances (e.g., after switching chats)
+      if (wsRef.current !== ws) return;
+      const state = ws.readyState;
+      const stateNames = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
+      console.error(`WebSocket error: Connection to ${ws.url} failed (state: ${stateNames[state] || state}). Check that the server is running.`);
     };
 
   }, []);
