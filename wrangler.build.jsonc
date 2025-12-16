@@ -1,0 +1,17 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "chiridion-app",
+	"main": "worker/index.ts",
+	"compatibility_date": "2025-12-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".open-next/assets"
+	},
+	"durable_objects": {
+		"bindings": [
+			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
+			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" }
+		]
+	}
+}

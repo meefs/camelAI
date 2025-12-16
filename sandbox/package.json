@@ -1,0 +1,7 @@
+{
+  "name": "claude-driver",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^1.0.0"
+  }
+}

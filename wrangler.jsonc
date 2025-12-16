@@ -1,0 +1,56 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "chiridion-app",
+	"main": "worker/index.ts",
+	"compatibility_date": "2025-12-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".open-next/assets"
+	},
+	"images": {
+		"binding": "IMAGES"
+	},
+	"services": [
+		{
+			"binding": "WORKER_SELF_REFERENCE",
+			"service": "chiridion-app"
+		}
+	],
+	"containers": [
+		{
+			"class_name": "ThreadSandbox",
+			"image": "./Dockerfile",
+			"instance_type": "standard-1",
+			"max_instances": 90
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
+			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
+			{ "name": "SANDBOX", "class_name": "ThreadSandbox" }
+		]
+	},
+	"observability": {
+		"enabled": true
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["ChatDurableObject"]
+		},
+		{
+			"tag": "v2",
+			"deleted_classes": ["ChatDurableObject"]
+		},
+		{
+			"tag": "v3",
+			"new_sqlite_classes": ["ChatThreadDO", "ChatIndexDO"]
+		},
+		{
+			"tag": "v4",
+			"new_sqlite_classes": ["ThreadSandbox"]
+		}
+	]
+}
