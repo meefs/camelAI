@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { getSandbox, parseSSEStream, type Sandbox, type ExecEvent } from '@cloudflare/sandbox';
+import { getSandbox, parseSSEStream, type Sandbox, type LogEvent } from '@cloudflare/sandbox';
 
 export interface Thread {
   id: string;
@@ -78,6 +78,8 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private sql: SqlStorage;
   private sessionId: string;
+  private currentProcessId: string | null = null;
+  private sandbox: ReturnType<typeof getSandbox> | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -150,6 +152,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     try {
       const data = JSON.parse(message as string);
 
+      if (data.type === 'stop') {
+        // Stop the current running process
+        await this.stopCurrentProcess();
+        this.broadcast({ type: 'stopped' });
+        return;
+      }
+
       if (data.type === 'message') {
         // Save user message
         const userMsg = this.addMessage('user', data.content);
@@ -157,11 +166,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
         // Get sandbox for this thread
         const sandboxId = this.ctx.id.toString().slice(0, 63);
-        const sandbox = getSandbox(this.env.SANDBOX, sandboxId);
+        this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
 
-        // Stream Claude SDK driver output using execStream
+        // Start Claude SDK driver as a background process
         console.log('[DO] API key present:', !!this.env.ANTHROPIC_API_KEY, 'length:', this.env.ANTHROPIC_API_KEY?.length);
-        const stream = await sandbox.execStream('node /app/driver.mjs', {
+        const process = await this.sandbox.startProcess('node /app/driver.mjs', {
           env: {
             ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
             CLAUDE_PROMPT: data.content,
@@ -169,14 +178,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           }
         });
 
+        this.currentProcessId = process.id;
+        console.log('[DO] Started process:', process.id, 'PID:', process.pid);
+
         let finalContent = '';
         let outputBuffer = '';
 
-        // Process streaming events
-        for await (const execEvent of parseSSEStream<ExecEvent>(stream)) {
-          console.log('[DO] execEvent:', execEvent.type, execEvent.data?.substring(0, 100));
-          if (execEvent.type === 'stdout' && execEvent.data) {
-            outputBuffer += execEvent.data;
+        // Stream logs from the process
+        const logStream = await this.sandbox.streamProcessLogs(process.id);
+
+        // Process streaming log events
+        for await (const logEvent of parseSSEStream<LogEvent>(logStream)) {
+          console.log('[DO] logEvent:', logEvent.type, logEvent.data?.substring(0, 100));
+
+          if (logEvent.type === 'stdout' && logEvent.data) {
+            outputBuffer += logEvent.data;
             // Process complete NDJSON lines
             const lines = outputBuffer.split('\n');
             outputBuffer = lines.pop() || '';
@@ -202,10 +218,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 // Skip malformed lines
               }
             }
-          } else if (execEvent.type === 'stderr' && execEvent.data) {
-            console.log('Driver stderr:', execEvent.data);
-          } else if (execEvent.type === 'complete') {
-            // Process any remaining buffer
+          } else if (logEvent.type === 'stderr' && logEvent.data) {
+            console.log('Driver stderr:', logEvent.data);
+          } else if (logEvent.type === 'exit') {
+            // Process exited - process any remaining buffer
+            console.log('[DO] Process exited');
             if (outputBuffer.trim()) {
               try {
                 const event = JSON.parse(outputBuffer);
@@ -219,6 +236,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             }
           }
         }
+
+        // Clear current process
+        this.currentProcessId = null;
 
         // Save final message and notify completion
         const responseContent = finalContent || '(no response)';
@@ -235,7 +255,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
     } catch (e) {
       console.error('WebSocket message error:', e);
+      this.currentProcessId = null;
       ws.send(JSON.stringify({ type: 'error', error: String(e) }));
+    }
+  }
+
+  // Stop the currently running process
+  private async stopCurrentProcess() {
+    if (this.currentProcessId && this.sandbox) {
+      try {
+        console.log('[DO] Killing process:', this.currentProcessId);
+        await this.sandbox.killProcess(this.currentProcessId);
+        this.currentProcessId = null;
+      } catch (e) {
+        console.error('[DO] Failed to kill process:', e);
+      }
     }
   }
 
