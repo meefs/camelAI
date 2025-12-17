@@ -3,7 +3,7 @@
  *
  * Run with: npm run test:e2e -- e2e/auth.spec.ts
  *
- * Note: These tests require a running server (npm run dev:cf)
+ * Note: These tests require a running server (npm run dev)
  */
 
 import { test, expect, Page } from '@playwright/test';

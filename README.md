@@ -8,14 +8,14 @@ Read the documentation at https://opennext.js.org/cloudflare.
 
 ## Develop
 
-Run the Next.js development server:
+Run the local Cloudflare Workers dev server (full Durable Objects support):
 
 ```bash
 npm run dev
 # or similar package manager command
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:8787](http://localhost:8787) with your browser to see the result.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

@@ -59,8 +59,6 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 |------|---------|
 | `wrangler.jsonc` | Main production/deployment config |
 | `wrangler.build.jsonc` | OpenNext build config |
-| `wrangler.dev.jsonc` | Dev config for `initOpenNextCloudflareForDev()` |
-| `wrangler.do.jsonc` | External DO worker for dev (optional) |
 
 ## Data Flow
 
@@ -128,21 +126,11 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 
 ### Local Development
 
-**Option 1: Full Cloudflare dev (recommended for testing)**
+**Full Cloudflare dev (recommended)**
 ```bash
-npm run dev:cf
-```
-Builds OpenNext then runs wrangler. Full functionality, no HMR.
-
-**Option 2: Turbopack with bindings (experimental)**
-```bash
-# Terminal 1: External DO worker
-npm run dev:do
-
-# Terminal 2: Next.js with Turbopack
 npm run dev
 ```
-Uses `initOpenNextCloudflareForDev()` with `script_name` to connect to external DO worker. HMR works but DO RPC may have limitations.
+Builds OpenNext then runs wrangler. Full functionality, no HMR.
 
 ### Environment Variables
 
@@ -204,7 +192,6 @@ chiridion-app/
 │   └── types.ts             # TypeScript types
 ├── worker/
 │   ├── index.ts             # Worker entry (production)
-│   ├── index-do.ts          # DO worker entry (dev)
 │   ├── durable-objects.ts   # Chat DOs
 │   ├── auth.ts              # Auth DOs
 │   └── password.ts          # Password hashing
@@ -212,8 +199,6 @@ chiridion-app/
 ├── e2e/                     # Playwright E2E tests
 ├── tests/                   # Vitest unit tests
 ├── wrangler.jsonc           # Production config
-├── wrangler.dev.jsonc       # Dev config for Next.js
-├── wrangler.do.jsonc        # Dev config for DO worker
 └── package.json
 ```
 
@@ -223,7 +208,7 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 
 ### Common Issues
 
-1. **DO RPC not supported between dev sessions**: Use `script_name` in wrangler.dev.jsonc pointing to external DO worker, or use `npm run dev:cf`
+1. **Durable Objects not working locally**: Use `npm run dev` (wrangler-based dev) rather than `next dev`
 2. **Streaming not working**: Ensure `includePartialMessages: true` is set in driver.mjs
 3. **API key not found**: Check `.dev.vars` has `ANTHROPIC_API_KEY` set
 4. **Docker cache stale**: Add version comment to `driver.mjs` to invalidate cache

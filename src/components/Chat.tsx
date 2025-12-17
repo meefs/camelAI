@@ -124,11 +124,8 @@ export default function Chat({ threadId }: ChatProps) {
     }
     intentionalClose.current = false;
 
-    // WebSocket is handled by custom worker at /ws/{threadId}
-    // In development, connect directly to wrangler dev server (port 8788)
-    // In production, use the same host as the page
-    const isDev = process.env.NODE_ENV === 'development';
-    const wsHost = isDev ? 'localhost:8788' : window.location.host;
+    // WebSocket is handled by the worker at /ws/{threadId} on the same origin as the page.
+    const wsHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const org = currentOrg?.id || 'default';
     const wsUrl = `${protocol}//${wsHost}/ws/${id}?org=${org}`;
