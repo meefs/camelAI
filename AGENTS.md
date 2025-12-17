@@ -2,7 +2,7 @@
 
 ## Overview
 
-Chiridion is an AI chat application built on Cloudflare's edge infrastructure. It uses the Claude SDK running inside Cloudflare Containers to provide streaming AI responses through WebSockets.
+Chiridion is an AI chat application built on Cloudflare's edge infrastructure. It uses the Claude SDK running inside Cloudflare Containers to provide streaming AI responses through WebSockets. The app includes multi-tenant authentication with users and organizations.
 
 ## Architecture
 
@@ -19,11 +19,17 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
    - Next.js 15 with React 19
    - WebSocket client for real-time streaming
    - Tailwind CSS for styling
+   - AuthContext for session/org state management
 
 2. **Worker** (`worker/`)
    - Cloudflare Workers with Durable Objects
-   - `ChatThreadDO` - Manages individual chat sessions
-   - `ChatIndexDO` - Indexes all chat threads
+   - **Chat DOs:**
+     - `ChatThreadDO` - Manages individual chat sessions
+     - `ChatIndexDO` - Indexes all chat threads per org
+   - **Auth DOs:**
+     - `SessionDO` - Session state with 30-day expiry
+     - `UserDO` - User profiles and password hashes
+     - `OrgDO` - Organizations, members, and invitations
    - `ThreadSandbox` - Executes Claude SDK in containers
 
 3. **Sandbox** (`sandbox/`)
@@ -36,13 +42,34 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | File | Purpose |
 |------|---------|
 | `src/components/Chat.tsx` | Main chat UI with streaming state management |
-| `src/app/chat/[id]/page.tsx` | Chat page route |
+| `src/contexts/AuthContext.tsx` | React context for auth state |
+| `src/app/login/page.tsx` | Login page |
+| `src/app/signup/page.tsx` | Signup page |
+| `src/lib/auth.ts` | Cookie handling, validation helpers |
+| `src/lib/auth-do.ts` | Functions to interact with auth DOs |
 | `worker/durable-objects.ts` | WebSocket handler, container orchestration |
+| `worker/auth.ts` | SessionDO, UserDO, OrgDO implementations |
+| `worker/password.ts` | PBKDF2 password hashing |
 | `worker/index.ts` | Worker entry point |
 | `sandbox/driver.mjs` | Claude SDK runner inside container |
-| `wrangler.jsonc` | Cloudflare Worker configuration |
+
+## Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `wrangler.jsonc` | Main production/deployment config |
+| `wrangler.build.jsonc` | OpenNext build config |
+| `wrangler.dev.jsonc` | Dev config for `initOpenNextCloudflareForDev()` |
+| `wrangler.do.jsonc` | External DO worker for dev (optional) |
 
 ## Data Flow
+
+### Authentication
+1. User signs up/logs in via `/api/auth/signup` or `/api/auth/login`
+2. Password verified with PBKDF2 (100k iterations, SHA-256)
+3. Session created in `SessionDO`, cookie set with `httpOnly`, `sameSite: lax`
+4. Email → userId mapping stored in KV (`EMAIL_TO_USER`)
+5. `AuthContext` fetches session state from `/api/auth/me`
 
 ### Message Sending
 1. User types message in `Chat.tsx`
@@ -63,6 +90,35 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 - `user` - Tool results
 - `result` - Query complete
 
+## API Routes
+
+### Auth
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/auth/signup` | POST | Create account |
+| `/api/auth/login` | POST | Login |
+| `/api/auth/logout` | POST | Logout |
+| `/api/auth/me` | GET | Get current session |
+| `/api/auth/switch-org` | POST | Switch active org |
+
+### Organizations
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/orgs` | GET, POST | List/create orgs |
+| `/api/orgs/[id]` | GET, PATCH, DELETE | Get/update/delete org |
+| `/api/orgs/[id]/members` | GET, PATCH, DELETE | Manage members |
+| `/api/orgs/[id]/invite` | GET, POST, DELETE | Manage invitations |
+| `/api/invitations/[orgId]/[id]` | GET, POST | View/accept invitation |
+
+### Chat (auth required)
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/threads` | GET, POST | List/create threads |
+| `/api/threads/[id]` | GET, DELETE | Get/delete thread |
+| `/api/threads/[id]/messages` | GET | Get thread messages |
+| `/api/chat` | POST | Send message (REST fallback) |
+| `/ws/[threadId]` | WebSocket | Real-time chat |
+
 ## Development
 
 ### Prerequisites
@@ -71,17 +127,40 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 - Cloudflare account (for deployment)
 
 ### Local Development
+
+**Option 1: Full Cloudflare dev (recommended for testing)**
 ```bash
-# Install dependencies
-npm install
-
-# Set up environment variables
-cp .dev.vars.example .dev.vars
-# Add ANTHROPIC_API_KEY to .dev.vars
-
-# Start the development server
 npm run dev:cf
 ```
+Builds OpenNext then runs wrangler. Full functionality, no HMR.
+
+**Option 2: Turbopack with bindings (experimental)**
+```bash
+# Terminal 1: External DO worker
+npm run dev:do
+
+# Terminal 2: Next.js with Turbopack
+npm run dev
+```
+Uses `initOpenNextCloudflareForDev()` with `script_name` to connect to external DO worker. HMR works but DO RPC may have limitations.
+
+### Environment Variables
+
+Create `.dev.vars`:
+```
+ANTHROPIC_API_KEY=your_key_here
+```
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Claude API key for SDK |
+| `NEXTJS_ENV` | Environment (development/production) |
+
+### KV Namespaces
+
+| Binding | Purpose |
+|---------|---------|
+| `EMAIL_TO_USER` | Maps email addresses to user IDs |
 
 ### Testing
 ```bash
@@ -89,7 +168,7 @@ npm run dev:cf
 npm run test
 
 # Run E2E tests (requires server running)
-BASE_URL=http://localhost:8787 npx playwright test
+npm run test:e2e
 ```
 
 ### Build & Deploy
@@ -97,53 +176,68 @@ BASE_URL=http://localhost:8787 npx playwright test
 # Build for Cloudflare
 npm run build:cf
 
-# Deploy to Cloudflare
+# Deploy to production
 npm run deploy
+
+# Deploy to staging
+npm run deploy:staging
 ```
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `ANTHROPIC_API_KEY` | Claude API key for SDK |
-| `NEXTJS_ENV` | Environment (development/production) |
-
-## Known Issues & Solutions
-
-See `STREAMING_BUG_SUMMARY.md` for detailed documentation of streaming-related bugs and fixes.
-
-### Common Issues
-
-1. **Streaming not working**: Ensure `includePartialMessages: true` is set in driver.mjs
-2. **API key not found**: Check `.dev.vars` has `ANTHROPIC_API_KEY` set
-3. **Docker cache stale**: Add version comment to `driver.mjs` to invalidate cache
-4. **Flash bug**: Don't clear streaming content on `result` event
-
-## Testing Strategy
-
-### Unit Tests (`tests/`)
-- React component tests with Vitest + Testing Library
-- Test streaming state management logic
-
-### E2E Tests (`e2e/`)
-- Playwright tests against running server
-- `chat.spec.ts` - Basic chat flow, streaming verification
-- `streaming.spec.ts` - Detailed streaming behavior
-- `debug-deltas.spec.ts` - Event timeline debugging
 
 ## Project Structure
 
 ```
 chiridion-app/
 ├── src/
-│   ├── app/           # Next.js app router pages
-│   ├── components/    # React components
-│   └── lib/           # Utilities
-├── worker/            # Cloudflare Worker code
-├── sandbox/           # Container driver code
-├── e2e/               # Playwright E2E tests
-├── tests/             # Vitest unit tests
-├── public/            # Static assets
-├── wrangler.jsonc     # Worker config
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── auth/        # Auth endpoints
+│   │   │   ├── chat/        # Chat endpoint
+│   │   │   ├── invitations/ # Invitation acceptance
+│   │   │   ├── orgs/        # Org management
+│   │   │   └── threads/     # Thread CRUD
+│   │   ├── chat/[id]/       # Chat page
+│   │   ├── login/           # Login page
+│   │   └── signup/          # Signup page
+│   ├── components/          # React components
+│   ├── contexts/            # React contexts (AuthContext)
+│   ├── lib/                 # Utilities (auth, auth-do)
+│   └── types.ts             # TypeScript types
+├── worker/
+│   ├── index.ts             # Worker entry (production)
+│   ├── index-do.ts          # DO worker entry (dev)
+│   ├── durable-objects.ts   # Chat DOs
+│   ├── auth.ts              # Auth DOs
+│   └── password.ts          # Password hashing
+├── sandbox/                 # Container driver code
+├── e2e/                     # Playwright E2E tests
+├── tests/                   # Vitest unit tests
+├── wrangler.jsonc           # Production config
+├── wrangler.dev.jsonc       # Dev config for Next.js
+├── wrangler.do.jsonc        # Dev config for DO worker
 └── package.json
 ```
+
+## Known Issues & Solutions
+
+See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
+
+### Common Issues
+
+1. **DO RPC not supported between dev sessions**: Use `script_name` in wrangler.dev.jsonc pointing to external DO worker, or use `npm run dev:cf`
+2. **Streaming not working**: Ensure `includePartialMessages: true` is set in driver.mjs
+3. **API key not found**: Check `.dev.vars` has `ANTHROPIC_API_KEY` set
+4. **Docker cache stale**: Add version comment to `driver.mjs` to invalidate cache
+5. **Session not persisting**: Ensure cookies are set with correct domain and the DO worker is running
+
+## Testing Strategy
+
+### Unit Tests (`tests/`)
+- `auth-validation.test.ts` - Email/password validation
+- `password.test.ts` - Password hashing/verification
+- `AuthContext.test.tsx` - Auth state management
+- React component tests with Vitest + Testing Library
+
+### E2E Tests (`e2e/`)
+- `auth.spec.ts` - Login/signup flows
+- `chat.spec.ts` - Basic chat flow, streaming verification
+- `streaming.spec.ts` - Detailed streaming behavior
