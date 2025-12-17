@@ -51,6 +51,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `worker/auth.ts` | SessionDO, UserDO, OrgDO implementations |
 | `worker/password.ts` | PBKDF2 password hashing |
 | `worker/index.ts` | Worker entry point |
+| `scripts/dev.mjs` | Dev runner (watch + rebuild + wrangler) |
 | `sandbox/driver.mjs` | Claude SDK runner inside container |
 
 ## Configuration Files
@@ -103,17 +104,17 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | Route | Method | Purpose |
 |-------|--------|---------|
 | `/api/orgs` | GET, POST | List/create orgs |
-| `/api/orgs/[id]` | GET, PATCH, DELETE | Get/update/delete org |
-| `/api/orgs/[id]/members` | GET, PATCH, DELETE | Manage members |
+| `/api/orgs/[id]` | GET, PUT, DELETE | Get/update/delete org |
+| `/api/orgs/[id]/members` | GET, PUT, DELETE | Manage members |
 | `/api/orgs/[id]/invite` | GET, POST, DELETE | Manage invitations |
-| `/api/invitations/[orgId]/[id]` | GET, POST | View/accept invitation |
+| `/api/invitations/[orgId]/[invitationId]` | GET, POST | View/accept invitation |
 
 ### Chat (auth required)
 | Route | Method | Purpose |
 |-------|--------|---------|
 | `/api/threads` | GET, POST | List/create threads |
 | `/api/threads/[id]` | GET, DELETE | Get/delete thread |
-| `/api/threads/[id]/messages` | GET | Get thread messages |
+| `/api/threads/[id]/messages` | GET, POST | Get/add thread messages |
 | `/api/chat` | POST | Send message (REST fallback) |
 | `/ws/[threadId]` | WebSocket | Real-time chat |
 
@@ -130,7 +131,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 ```bash
 npm run dev
 ```
-Builds OpenNext then runs wrangler. Full functionality, no HMR.
+Watches files, rebuilds the OpenNext bundle, and restarts the local worker as needed (reload-style, not HMR).
 
 ### Environment Variables
 
@@ -196,9 +197,12 @@ chiridion-app/
 │   ├── auth.ts              # Auth DOs
 │   └── password.ts          # Password hashing
 ├── sandbox/                 # Container driver code
+├── scripts/                 # Dev scripts
+│   └── dev.mjs              # Watch + rebuild + wrangler
 ├── e2e/                     # Playwright E2E tests
 ├── tests/                   # Vitest unit tests
 ├── wrangler.jsonc           # Production config
+├── wrangler.build.jsonc     # OpenNext build config
 └── package.json
 ```
 
