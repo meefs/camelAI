@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, parseSSEStream, type Sandbox, type LogEvent } from '@cloudflare/sandbox';
+import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
 
 export interface Thread {
   id: string;
@@ -20,7 +21,14 @@ export interface ChatEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   CHAT_INDEX: DurableObjectNamespace<ChatIndexDO>;
   SANDBOX: DurableObjectNamespace<Sandbox>;
+  R2_BUCKET: R2Bucket;
   ANTHROPIC_API_KEY: string;
+  R2_BUCKET_NAME?: string;
+  R2_ACCOUNT_ID?: string;
+  R2_MOUNT_DIR?: string;
+  R2_MOUNT_READONLY?: string;
+  R2_API_TOKEN?: string;
+  R2_PARENT_ACCESS_KEY_ID?: string;
 }
 
 // One DO per org - stores thread list only
@@ -77,7 +85,7 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
 // One DO per thread - handles WebSocket + messages
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private sql: SqlStorage;
-  private sessionId: string;
+  private claudeSessionId: string | null = null;
   private currentProcessId: string | null = null;
   private sandbox: ReturnType<typeof getSandbox> | null = null;
 
@@ -98,13 +106,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         value TEXT NOT NULL
       )
     `);
-    // Load or create session ID for this thread
-    const rows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'session_id').toArray();
+    // Load Claude's session ID if we have one from a previous conversation
+    const rows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'claude_session_id').toArray();
     if (rows.length > 0) {
-      this.sessionId = (rows[0] as { value: string }).value;
-    } else {
-      this.sessionId = crypto.randomUUID();
-      this.sql.exec('INSERT INTO metadata (key, value) VALUES (?, ?)', 'session_id', this.sessionId);
+      this.claudeSessionId = (rows[0] as { value: string }).value;
     }
   }
 
@@ -127,7 +132,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       server.send(JSON.stringify({ type: 'history', messages }));
 
       // Start warming up the sandbox in the background (don't await)
-      this.warmSandbox();
+      const org = url.searchParams.get('org') || 'default';
+      this.warmSandbox(org);
 
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -135,13 +141,49 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return new Response('Not found', { status: 404 });
   }
 
-  // Warm up the sandbox container so it's ready for commands
-  private async warmSandbox() {
+  // Warm up the sandbox container and sync from R2
+  private async warmSandbox(org: string) {
     try {
       const sandboxId = this.ctx.id.toString().slice(0, 63);
       const sandbox = getSandbox(this.env.SANDBOX, sandboxId);
-      // Execute a simple command to boot the container
-      await sandbox.exec('true');
+      this.sandbox = sandbox;
+
+      // Build env for sync
+      const processEnv: Record<string, string> = { SYNC_ONLY: '1' };
+
+      if (this.env.R2_BUCKET_NAME) processEnv.R2_BUCKET_NAME = this.env.R2_BUCKET_NAME;
+      if (this.env.R2_ACCOUNT_ID) processEnv.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
+      if (this.env.R2_MOUNT_DIR) processEnv.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
+
+      const prefix = `${org}/`;
+      processEnv.R2_PREFIX = prefix;
+
+      // Generate temp credentials if configured
+      if (this.env.R2_API_TOKEN && this.env.R2_PARENT_ACCESS_KEY_ID && this.env.R2_ACCOUNT_ID && this.env.R2_BUCKET_NAME) {
+        const tempCreds = await getTempR2Credentials(
+          this.env.R2_ACCOUNT_ID,
+          this.env.R2_BUCKET_NAME,
+          this.env.R2_PARENT_ACCESS_KEY_ID,
+          this.env.R2_API_TOKEN,
+          prefix,
+          86400 // 24 hours
+        );
+        processEnv.AWS_ACCESS_KEY_ID = tempCreds.accessKeyId;
+        processEnv.AWS_SECRET_ACCESS_KEY = tempCreds.secretAccessKey;
+        processEnv.AWS_SESSION_TOKEN = tempCreds.sessionToken;
+
+        // Ensure prefix exists
+        const placeholderKey = `${prefix}.keep`;
+        const existing = await this.env.R2_BUCKET.head(placeholderKey);
+        if (!existing) {
+          await this.env.R2_BUCKET.put(placeholderKey, '');
+        }
+      }
+
+      // Run sync-only to download files from R2
+      console.log('[DO] Warming sandbox with R2 sync for prefix:', prefix);
+      await sandbox.exec('sh /app/run-driver.sh', { env: processEnv });
+      console.log('[DO] Sandbox warm complete');
     } catch (e) {
       console.error('Failed to warm sandbox:', e);
     }
@@ -170,13 +212,51 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
         // Start Claude SDK driver as a background process
         console.log('[DO] API key present:', !!this.env.ANTHROPIC_API_KEY, 'length:', this.env.ANTHROPIC_API_KEY?.length);
-        const process = await this.sandbox.startProcess('node /app/driver.mjs', {
-          env: {
-            ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
-            CLAUDE_PROMPT: data.content,
-            SESSION_ID: this.sessionId
+        const processEnv: Record<string, string> = {
+          ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
+          CLAUDE_PROMPT: data.content,
+        };
+
+        // Resume existing Claude session if we have one
+        if (this.claudeSessionId) {
+          processEnv.RESUME_SESSION_ID = this.claudeSessionId;
+          console.log('[DO] Resuming Claude session:', this.claudeSessionId);
+        }
+
+        if (this.env.R2_BUCKET_NAME) processEnv.R2_BUCKET_NAME = this.env.R2_BUCKET_NAME;
+        if (this.env.R2_ACCOUNT_ID) processEnv.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
+        if (this.env.R2_MOUNT_DIR) processEnv.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
+        if (this.env.R2_MOUNT_READONLY) processEnv.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
+
+        // Generate prefix-scoped temp credentials (required for R2 access)
+        const org = data.org || 'default';
+        const prefix = `${org}/`;
+        processEnv.R2_PREFIX = prefix;
+
+        if (this.env.R2_API_TOKEN && this.env.R2_PARENT_ACCESS_KEY_ID && this.env.R2_ACCOUNT_ID && this.env.R2_BUCKET_NAME) {
+          const tempCreds = await getTempR2Credentials(
+            this.env.R2_ACCOUNT_ID,
+            this.env.R2_BUCKET_NAME,
+            this.env.R2_PARENT_ACCESS_KEY_ID,
+            this.env.R2_API_TOKEN,
+            prefix,
+            86400 // 24 hours
+          );
+          console.log('[DO] Generated temp R2 credentials for prefix:', prefix);
+          processEnv.AWS_ACCESS_KEY_ID = tempCreds.accessKeyId;
+          processEnv.AWS_SECRET_ACCESS_KEY = tempCreds.secretAccessKey;
+          processEnv.AWS_SESSION_TOKEN = tempCreds.sessionToken;
+
+          // Ensure prefix exists in R2 by creating a placeholder object
+          const placeholderKey = `${prefix}.keep`;
+          const existing = await this.env.R2_BUCKET.head(placeholderKey);
+          if (!existing) {
+            await this.env.R2_BUCKET.put(placeholderKey, '');
+            console.log('[DO] Created prefix placeholder:', placeholderKey);
           }
-        });
+        }
+
+        const process = await this.sandbox.startProcess('sh /app/run-driver.sh', { env: processEnv });
 
         this.currentProcessId = process.id;
         console.log('[DO] Started process:', process.id, 'PID:', process.pid);
@@ -205,6 +285,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 // Forward event to client for rendering
                 this.broadcast({ type: 'sdk_event', event });
 
+                // Capture Claude's session ID from init event
+                if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
+                  if (!this.claudeSessionId) {
+                    this.claudeSessionId = event.session_id;
+                    this.sql.exec(
+                      'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+                      'claude_session_id',
+                      event.session_id
+                    );
+                    console.log('[DO] Captured Claude session ID:', event.session_id);
+                  }
+                }
+
                 // Track final content for saving
                 if (event.type === 'assistant' && event.message?.content) {
                   const textBlock = event.message.content.find((b: { type: string }) => b.type === 'text');
@@ -213,6 +306,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                   }
                 } else if (event.type === 'result') {
                   finalContent = event.result || finalContent;
+                  // Save message and notify completion immediately on result
+                  const responseContent = finalContent || '(no response)';
+                  const assistantMsg = this.addMessage('assistant', responseContent);
+                  this.broadcast({ type: 'message', message: assistantMsg });
+                  this.currentProcessId = null;
+
+                  // Auto-title on first message
+                  if (data.autoTitle && data.threadId && data.org) {
+                    const title = data.content.slice(0, 30) + (data.content.length > 30 ? '...' : '');
+                    const indexId = this.env.CHAT_INDEX.idFromName(data.org);
+                    const indexStub = this.env.CHAT_INDEX.get(indexId);
+                    indexStub.updateThread(data.threadId, title);
+                  }
+                  return; // Exit early, don't wait for stream to close
                 }
               } catch {
                 // Skip malformed lines
@@ -229,6 +336,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                 this.broadcast({ type: 'sdk_event', event });
                 if (event.type === 'result') {
                   finalContent = event.result || finalContent;
+                  // Handle result in buffer same as above
+                  const responseContent = finalContent || '(no response)';
+                  const assistantMsg = this.addMessage('assistant', responseContent);
+                  this.broadcast({ type: 'message', message: assistantMsg });
+                  this.currentProcessId = null;
+                  return;
                 }
               } catch {
                 // Skip malformed data
@@ -237,21 +350,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           }
         }
 
-        // Clear current process
+        // Fallback: if we get here without a result event, still complete
         this.currentProcessId = null;
-
-        // Save final message and notify completion
         const responseContent = finalContent || '(no response)';
         const assistantMsg = this.addMessage('assistant', responseContent);
         this.broadcast({ type: 'message', message: assistantMsg });
-
-        // Auto-title on first message
-        if (data.autoTitle && data.threadId && data.org) {
-          const title = data.content.slice(0, 30) + (data.content.length > 30 ? '...' : '');
-          const indexId = this.env.CHAT_INDEX.idFromName(data.org);
-          const indexStub = this.env.CHAT_INDEX.get(indexId);
-          await indexStub.updateThread(data.threadId, title);
-        }
       }
     } catch (e) {
       console.error('WebSocket message error:', e);

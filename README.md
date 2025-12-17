@@ -37,6 +37,22 @@ npm run deploy
 # or similar package manager command
 ```
 
+## R2 Mount (Sandbox Home Dir)
+
+The sandbox container mounts an R2 bucket via FUSE at `$HOME/r2` (defaults to `/root/r2`) before running `sandbox/driver.mjs`.
+
+- Bucket: `chiridion-sandbox` (created via `wrangler r2 bucket create chiridion-sandbox`)
+- Required secrets (R2 S3 API keys): `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+- Required vars: `R2_ACCOUNT_ID`, `R2_BUCKET_NAME` (set in `wrangler.jsonc`)
+- Optional: `R2_MOUNT_DIR`, `R2_MOUNT_READONLY=1`
+
+Set secrets:
+
+```bash
+npx wrangler secret put AWS_ACCESS_KEY_ID
+npx wrangler secret put AWS_SECRET_ACCESS_KEY
+```
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

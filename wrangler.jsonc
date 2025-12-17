@@ -1,9 +1,16 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
+  "preview_urls": true,
 	"name": "chiridion-app",
 	"main": "worker/index.ts",
 	"compatibility_date": "2025-12-01",
 	"compatibility_flags": ["nodejs_compat"],
+	"vars": {
+		"R2_BUCKET_NAME": "chiridion-sandbox",
+		"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+		"R2_MOUNT_DIR": "/home/claude",
+		"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95"
+	},
 	"assets": {
 		"binding": "ASSETS",
 		"directory": ".open-next/assets"
@@ -11,6 +18,12 @@
 	"images": {
 		"binding": "IMAGES"
 	},
+	"r2_buckets": [
+		{
+			"binding": "R2_BUCKET",
+			"bucket_name": "chiridion-sandbox"
+		}
+	],
 	"services": [
 		{
 			"binding": "WORKER_SELF_REFERENCE",
@@ -52,5 +65,50 @@
 			"tag": "v4",
 			"new_sqlite_classes": ["ThreadSandbox"]
 		}
-	]
+	],
+	"env": {
+		"staging": {
+			"name": "chiridion-app-staging",
+			"vars": {
+				"R2_BUCKET_NAME": "chiridion-sandbox",
+				"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+				"R2_MOUNT_DIR": "/home/claude",
+				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95"
+			},
+			"assets": {
+				"binding": "ASSETS",
+				"directory": ".open-next/assets"
+			},
+			"images": {
+				"binding": "IMAGES"
+			},
+			"r2_buckets": [
+				{
+					"binding": "R2_BUCKET",
+					"bucket_name": "chiridion-sandbox"
+				}
+			],
+			"services": [
+				{
+					"binding": "WORKER_SELF_REFERENCE",
+					"service": "chiridion-app-staging"
+				}
+			],
+			"containers": [
+				{
+					"class_name": "ThreadSandbox",
+					"image": "./Dockerfile",
+					"instance_type": "basic",
+					"max_instances": 10
+				}
+			],
+			"durable_objects": {
+				"bindings": [
+					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
+					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
+					{ "name": "SANDBOX", "class_name": "ThreadSandbox" }
+				]
+			}
+		}
+	}
 }

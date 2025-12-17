@@ -45,8 +45,10 @@ export default {
     if (wsMatch && request.headers.get('Upgrade') === 'websocket') {
       const threadId = wsMatch[1];
       const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-      // Forward to the thread DO's WebSocket handler
-      return threadStub.fetch(new Request(new URL('/websocket', url.origin), request));
+      // Forward to the thread DO's WebSocket handler, preserving query params
+      const wsUrl = new URL('/websocket', url.origin);
+      wsUrl.search = url.search;
+      return threadStub.fetch(new Request(wsUrl, request));
     }
 
     // Pass all other requests to OpenNext/Next.js

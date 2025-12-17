@@ -118,16 +118,22 @@ export default function Chat({ threadId }: ChatProps) {
     const isDev = process.env.NODE_ENV === 'development';
     const wsHost = isDev ? 'localhost:8788' : window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${wsHost}/ws/${id}`;
+    const org = 'default'; // TODO: make dynamic per user/tenant
+    const wsUrl = `${protocol}//${wsHost}/ws/${id}?org=${org}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
+      // Ignore if this WebSocket was replaced
+      if (wsRef.current !== ws) return;
       setConnected(true);
       reconnectAttempts.current = 0;
     };
 
     ws.onmessage = (event) => {
+      // Ignore messages from stale WebSocket instances (e.g., from StrictMode double-mount)
+      if (wsRef.current !== ws) return;
+
       const data = JSON.parse(event.data);
 
       if (data.type === 'history') {
@@ -152,25 +158,23 @@ export default function Chat({ threadId }: ChatProps) {
         } else if (sdkEvent.type === 'stream_event') {
           // Handle streaming deltas
           const evt = sdkEvent.event;
-          if (evt?.type === 'content_block_start' && evt.content_block?.type === 'text') {
-            // New text block starting
-            setStreaming(prev => ({
-              ...prev,
-              content: [...prev.content, { type: 'text', text: evt.content_block?.text || '' }],
-              isStreaming: true,
-            }));
-          } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-            // Append text delta to last text block
+          if (evt?.type === 'content_block_start') {
+            // Just mark as streaming, don't add block yet - let delta handle it
+            setStreaming(prev => ({ ...prev, isStreaming: true }));
+          } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
+            // Append or create text block
             setStreaming(prev => {
               const newContent = [...prev.content];
               const lastBlock = newContent[newContent.length - 1];
               if (lastBlock?.type === 'text') {
+                // Append to existing text block
                 newContent[newContent.length - 1] = {
                   ...lastBlock,
-                  text: (lastBlock.text || '') + (evt.delta?.text || ''),
+                  text: lastBlock.text + evt.delta!.text,
                 };
-              } else if (evt.delta?.text) {
-                newContent.push({ type: 'text', text: evt.delta.text });
+              } else {
+                // Create new text block
+                newContent.push({ type: 'text', text: evt.delta!.text! });
               }
               return { ...prev, content: newContent };
             });
@@ -179,12 +183,15 @@ export default function Chat({ threadId }: ChatProps) {
             setStreaming(prev => ({ ...prev, isStreaming: false }));
           }
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
-          // Full message (non-streaming or final) - replace content
-          setStreaming(prev => ({
-            ...prev,
-            content: sdkEvent.message!.content,
-            isStreaming: !sdkEvent.message!.stop_reason,
-          }));
+          // Only use assistant events when streaming is done (has stop_reason)
+          // During streaming, we use deltas for smoother updates
+          if (sdkEvent.message!.stop_reason) {
+            setStreaming(prev => ({
+              ...prev,
+              content: sdkEvent.message!.content,
+              isStreaming: false,
+            }));
+          }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
           // Append user content blocks (tool_result) to current assistant content
           setStreaming(prev => ({
