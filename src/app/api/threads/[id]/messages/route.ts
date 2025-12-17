@@ -3,8 +3,6 @@ import * as chatDO from '@/lib/chat-do';
 import * as authDO from '@/lib/auth-do';
 import { getSessionId, unauthorizedResponse } from '@/lib/auth';
 
-export const dynamic = 'force-dynamic';
-
 interface RouteContext {
   params: Promise<{ id: string }>;
 }

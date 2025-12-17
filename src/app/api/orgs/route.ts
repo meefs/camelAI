@@ -7,8 +7,6 @@ import {
   unauthorizedResponse,
 } from '@/lib/auth';
 
-export const dynamic = 'force-dynamic';
-
 // GET /api/orgs - List user's organizations
 export async function GET() {
   try {

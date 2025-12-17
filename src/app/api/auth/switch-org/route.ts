@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as authDO from '@/lib/auth-do';
 import { getSessionId, unauthorizedResponse, errorResponse, forbiddenResponse } from '@/lib/auth';
 
-export const dynamic = 'force-dynamic';
-
 interface SwitchOrgBody {
   orgId: string;
 }

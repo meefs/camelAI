@@ -1,7 +1,5 @@
 import Chat from '@/components/Chat';
 
-export const dynamic = 'force-dynamic';
-
 interface PageProps {
   params: Promise<{ id: string }>;
 }

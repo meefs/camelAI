@@ -6,8 +6,6 @@ import {
   errorResponse,
 } from '@/lib/auth';
 
-export const dynamic = 'force-dynamic';
-
 interface LoginBody {
   email: string;
   password: string;

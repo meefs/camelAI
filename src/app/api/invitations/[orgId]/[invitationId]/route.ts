@@ -7,8 +7,6 @@ import {
   unauthorizedResponse,
 } from '@/lib/auth';
 
-export const dynamic = 'force-dynamic';
-
 interface RouteParams {
   params: Promise<{ orgId: string; invitationId: string }>;
 }

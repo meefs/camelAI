@@ -7,8 +7,6 @@ import {
   errorResponse,
 } from '@/lib/auth';
 
-export const dynamic = 'force-dynamic';
-
 interface SignupBody {
   email: string;
   password: string;

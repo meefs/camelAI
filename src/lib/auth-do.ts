@@ -10,7 +10,7 @@ interface AuthEnv {
 }
 
 async function getEnv(): Promise<AuthEnv> {
-  const { env } = await getCloudflareContext() as unknown as { env: AuthEnv };
+  const { env } = getCloudflareContext() as unknown as { env: AuthEnv };
   return env;
 }
 

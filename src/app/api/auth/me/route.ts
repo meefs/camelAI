@@ -2,8 +2,6 @@ import { NextResponse } from 'next/server';
 import * as authDO from '@/lib/auth-do';
 import { getSessionId, unauthorizedResponse } from '@/lib/auth';
 
-export const dynamic = 'force-dynamic';
-
 export async function GET() {
   try {
     const sessionId = await getSessionId();

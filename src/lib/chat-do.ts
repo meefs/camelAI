@@ -8,7 +8,7 @@ interface Env {
 }
 
 async function getEnv(): Promise<Env> {
-  const { env } = await getCloudflareContext() as unknown as { env: Env };
+  const { env } = getCloudflareContext() as unknown as { env: Env };
   return env;
 }
 
