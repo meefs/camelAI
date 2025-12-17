@@ -3,7 +3,7 @@
 	"version": "0.1.0",
 	"private": true,
 	"scripts": {
-		"dev": "npm run build:cf && wrangler dev -c wrangler.jsonc --local",
+		"dev": "node scripts/dev.mjs",
 		"build": "next build",
 		"build:cf": "opennextjs-cloudflare build -c wrangler.build.jsonc",
 		"start": "next start",

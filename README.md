@@ -8,7 +8,7 @@ Read the documentation at https://opennext.js.org/cloudflare.
 
 ## Develop
 
-Run the local Cloudflare Workers dev server (full Durable Objects support):
+Run the local Cloudflare Workers dev server (full Durable Objects support). This watches files and rebuilds the OpenNext bundle on changes:
 
 ```bash
 npm run dev
