@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { Thread, Message } from '@/types';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface ChatProps {
   threadId?: string;
@@ -71,6 +72,7 @@ interface StreamingState {
 
 export default function Chat({ threadId }: ChatProps) {
   const router = useRouter();
+  const { user, currentOrg, orgs, loading: authLoading, logout, switchOrg } = useAuth();
   const backendProxyPrefix = process.env.NODE_ENV === 'development' ? '/__backend' : '';
   const [threads, setThreads] = useState<Thread[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -78,6 +80,7 @@ export default function Chat({ threadId }: ChatProps) {
   const [loading, setLoading] = useState(false);
   const [connected, setConnected] = useState(false);
   const [streaming, setStreaming] = useState<StreamingState>({ content: [], isStreaming: false });
+  const [showOrgSwitcher, setShowOrgSwitcher] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const isFirstMessage = useRef(true);
@@ -85,9 +88,18 @@ export default function Chat({ threadId }: ChatProps) {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const intentionalClose = useRef(false);
 
+  // Redirect to login if not authenticated
   useEffect(() => {
-    fetchThreads();
-  }, []);
+    if (!authLoading && !user) {
+      router.push('/login');
+    }
+  }, [authLoading, user, router]);
+
+  useEffect(() => {
+    if (user && currentOrg) {
+      fetchThreads();
+    }
+  }, [user, currentOrg]);
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
@@ -118,7 +130,7 @@ export default function Chat({ threadId }: ChatProps) {
     const isDev = process.env.NODE_ENV === 'development';
     const wsHost = isDev ? 'localhost:8788' : window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const org = 'default'; // TODO: make dynamic per user/tenant
+    const org = currentOrg?.id || 'default';
     const wsUrl = `${protocol}//${wsHost}/ws/${id}?org=${org}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -246,7 +258,7 @@ export default function Chat({ threadId }: ChatProps) {
       console.error(`WebSocket error: Connection to ${ws.url} failed (state: ${stateNames[state] || state}). Check that the server is running.`);
     };
 
-  }, []);
+  }, [currentOrg]);
 
   // Connect when threadId changes
   useEffect(() => {
@@ -335,7 +347,7 @@ export default function Chat({ threadId }: ChatProps) {
       type: 'message',
       content: userMessage,
       threadId: threadId,
-      org: 'default',
+      org: currentOrg?.id || 'default',
       autoTitle: isFirstMessage.current,
     }));
 
@@ -373,6 +385,59 @@ export default function Chat({ threadId }: ChatProps) {
               </button>
             </Link>
           ))}
+        </div>
+
+        {/* User section */}
+        <div className="border-t border-zinc-800 p-4 space-y-3">
+          {/* Org switcher */}
+          {orgs.length > 1 && (
+            <div className="relative">
+              <button
+                onClick={() => setShowOrgSwitcher(!showOrgSwitcher)}
+                className="w-full flex items-center justify-between px-3 py-2 text-sm bg-zinc-800 hover:bg-zinc-700 rounded-lg transition"
+              >
+                <span className="truncate">{currentOrg?.name}</span>
+                <svg className="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showOrgSwitcher && (
+                <div className="absolute bottom-full left-0 right-0 mb-1 bg-zinc-800 border border-zinc-700 rounded-lg shadow-lg overflow-hidden">
+                  {orgs.map(org => (
+                    <button
+                      key={org.org_id}
+                      onClick={() => {
+                        switchOrg(org.org_id);
+                        setShowOrgSwitcher(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-zinc-700 transition ${
+                        org.org_id === currentOrg?.id ? 'bg-zinc-700' : ''
+                      }`}
+                    >
+                      {org.org_name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* User info and logout */}
+          <div className="flex items-center justify-between">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{user?.name || user?.email}</p>
+              {user?.name && <p className="text-xs text-zinc-400 truncate">{user?.email}</p>}
+            </div>
+            <button
+              onClick={() => logout()}
+              className="ml-2 p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg transition"
+              title="Sign out"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
 

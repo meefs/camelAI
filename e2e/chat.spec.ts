@@ -1,7 +1,24 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
+
+// Helper to create account and login
+async function loginWithNewAccount(page: Page): Promise<string> {
+  const email = `test-${Date.now()}-${Math.random().toString(36).substring(7)}@example.com`;
+
+  await page.goto('/signup');
+  await page.fill('input#email', email);
+  await page.fill('input#password', 'password123');
+  await page.fill('input#confirmPassword', 'password123');
+  await page.click('button[type="submit"]');
+  await expect(page).toHaveURL('/', { timeout: 10000 });
+
+  return email;
+}
 
 test.describe('Chat E2E', () => {
   test('basic chat flow', async ({ page }) => {
+    // Login first
+    await loginWithNewAccount(page);
+
     await page.goto('/');
     await page.click('button:has-text("New Chat")');
     await page.waitForURL(/\/chat\/.+/);
@@ -20,6 +37,9 @@ test.describe('Chat E2E', () => {
   });
 
   test('streaming text shows incremental updates', async ({ page }) => {
+    // Login first
+    await loginWithNewAccount(page);
+
     const streamDeltas: { text: string; timestamp: number }[] = [];
 
     // Set up listener BEFORE any navigation
@@ -70,6 +90,9 @@ test.describe('Chat E2E', () => {
   });
 
   test('tool use - describe the computer', async ({ page }) => {
+    // Login first
+    await loginWithNewAccount(page);
+
     const allEvents: any[] = [];
 
     // Set up listener BEFORE any navigation

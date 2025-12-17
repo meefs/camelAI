@@ -1,7 +1,24 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
+
+// Helper to create account and login
+async function loginWithNewAccount(page: Page): Promise<string> {
+  const email = `test-${Date.now()}-${Math.random().toString(36).substring(7)}@example.com`;
+
+  await page.goto('/signup');
+  await page.fill('input#email', email);
+  await page.fill('input#password', 'password123');
+  await page.fill('input#confirmPassword', 'password123');
+  await page.click('button[type="submit"]');
+  await expect(page).toHaveURL('/', { timeout: 10000 });
+
+  return email;
+}
 
 test.describe('Chat Streaming', () => {
   test('should create a new chat and receive streaming response', async ({ page }) => {
+    // Login first
+    await loginWithNewAccount(page);
+
     // Go to homepage
     await page.goto('/');
 
@@ -26,6 +43,9 @@ test.describe('Chat Streaming', () => {
   });
 
   test('should show streaming text updates incrementally', async ({ page }) => {
+    // Login first
+    await loginWithNewAccount(page);
+
     // Track stream_event deltas from WebSocket
     const streamDeltas: string[] = [];
     const allEvents: any[] = [];
@@ -77,6 +97,9 @@ test.describe('Chat Streaming', () => {
   });
 
   test('should show tool use and tool result blocks', async ({ page }) => {
+    // Login first
+    await loginWithNewAccount(page);
+
     await page.goto('/');
     await page.click('button:has-text("New Chat")');
     await page.waitForURL(/\/chat\/.+/);
@@ -106,6 +129,9 @@ test.describe('Chat Streaming', () => {
   });
 
   test('should maintain WebSocket connection during streaming', async ({ page }) => {
+    // Login first
+    await loginWithNewAccount(page);
+
     await page.goto('/');
     await page.click('button:has-text("New Chat")');
     await page.waitForURL(/\/chat\/.+/);
@@ -127,6 +153,9 @@ test.describe('Chat Streaming', () => {
   });
 
   test('should clear streaming state after completion', async ({ page }) => {
+    // Login first
+    await loginWithNewAccount(page);
+
     await page.goto('/');
     await page.click('button:has-text("New Chat")');
     await page.waitForURL(/\/chat\/.+/);
@@ -152,6 +181,9 @@ test.describe('Chat Streaming', () => {
 
 test.describe('WebSocket Events', () => {
   test('should receive sdk_event messages via WebSocket', async ({ page }) => {
+    // Login first
+    await loginWithNewAccount(page);
+
     // Capture WebSocket messages
     const wsMessages: any[] = [];
 
@@ -197,6 +229,9 @@ test.describe('WebSocket Events', () => {
   });
 
   test('should receive multiple assistant events with partial content', async ({ page }) => {
+    // Login first
+    await loginWithNewAccount(page);
+
     const sdkEvents: any[] = [];
 
     page.on('websocket', ws => {

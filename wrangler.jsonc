@@ -1,6 +1,5 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-  "preview_urls": true,
 	"name": "chiridion-app",
 	"main": "worker/index.ts",
 	"compatibility_date": "2025-12-01",
@@ -24,6 +23,12 @@
 			"bucket_name": "chiridion-sandbox"
 		}
 	],
+	"kv_namespaces": [
+		{
+			"binding": "EMAIL_TO_USER",
+			"id": "45b452b3b19c42f6991408c140149a70"
+		}
+	],
 	"services": [
 		{
 			"binding": "WORKER_SELF_REFERENCE",
@@ -42,7 +47,10 @@
 		"bindings": [
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
-			{ "name": "SANDBOX", "class_name": "ThreadSandbox" }
+			{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
+			{ "name": "SESSION", "class_name": "SessionDO" },
+			{ "name": "USER", "class_name": "UserDO" },
+			{ "name": "ORG", "class_name": "OrgDO" }
 		]
 	},
 	"observability": {
@@ -64,6 +72,10 @@
 		{
 			"tag": "v4",
 			"new_sqlite_classes": ["ThreadSandbox"]
+		},
+		{
+			"tag": "v5",
+			"new_sqlite_classes": ["SessionDO", "UserDO", "OrgDO"]
 		}
 	],
 	"env": {
@@ -88,6 +100,12 @@
 					"bucket_name": "chiridion-sandbox"
 				}
 			],
+			"kv_namespaces": [
+				{
+					"binding": "EMAIL_TO_USER",
+					"id": "ab267c4f44b847dda8bdca400a4e1884"
+				}
+			],
 			"services": [
 				{
 					"binding": "WORKER_SELF_REFERENCE",
@@ -106,7 +124,10 @@
 				"bindings": [
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
-					{ "name": "SANDBOX", "class_name": "ThreadSandbox" }
+					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
+					{ "name": "SESSION", "class_name": "SessionDO" },
+					{ "name": "USER", "class_name": "UserDO" },
+					{ "name": "ORG", "class_name": "OrgDO" }
 				]
 			}
 		}

@@ -4,7 +4,7 @@
 	"private": true,
 	"scripts": {
 		"dev": "next dev --turbopack",
-		"dev:backend": "wrangler dev -c wrangler.jsonc --local --port 8788",
+		"dev:do": "wrangler dev -c wrangler.do.jsonc --local --port 8787",
 		"build": "next build",
 		"build:cf": "opennextjs-cloudflare build -c wrangler.build.jsonc",
 		"start": "next start",
@@ -14,10 +14,13 @@
 		"deploy:staging": "npm run build:cf && OPEN_NEXT_DEPLOY=true wrangler deploy -c wrangler.jsonc --env staging",
 		"upload": "npm run build:cf && opennextjs-cloudflare upload",
 		"preview": "npm run build:cf && opennextjs-cloudflare preview",
-		"cf-typegen": "wrangler types --env-interface CloudflareEnv ./cloudflare-env.d.ts"
+		"cf-typegen": "wrangler types --env-interface CloudflareEnv ./cloudflare-env.d.ts",
+		"test": "vitest",
+		"test:run": "vitest run",
+		"test:e2e": "playwright test",
+		"test:e2e:ui": "playwright test --ui"
 	},
 	"dependencies": {
-		"@anthropic-ai/claude-code": "^2.0.70",
 		"@opennextjs/cloudflare": "^1.14.4",
 		"next": "15.5.9",
 		"react": "19.1.4",
@@ -30,6 +33,7 @@
 		"@tailwindcss/postcss": "^4",
 		"@testing-library/jest-dom": "^6.9.1",
 		"@testing-library/react": "^16.3.1",
+		"@testing-library/user-event": "^14.6.1",
 		"@types/node": "^20.19.27",
 		"@types/react": "^19",
 		"@types/react-dom": "^19",
@@ -40,6 +44,6 @@
 		"tailwindcss": "^4",
 		"typescript": "^5",
 		"vitest": "^4.0.15",
-		"wrangler": "^4.54.0"
+		"wrangler": "^4.55.0"
 	}
 }
