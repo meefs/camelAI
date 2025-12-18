@@ -3,7 +3,7 @@
 import openNextHandler from "../.open-next/worker.js";
 import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
-import { Sandbox } from '@cloudflare/sandbox';
+import { Sandbox, getSandbox } from '@cloudflare/sandbox';
 
 // Export Sandbox as ThreadSandbox to match wrangler.jsonc class_name
 export { Sandbox as ThreadSandbox };
@@ -21,6 +21,11 @@ const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
 const CHIRIDION_BASE_URL_HEADER = 'X-Chiridion-Base-Url';
 const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
+
+function isDevEnv(env: Env): boolean {
+  const v = (env.NEXTJS_ENV ?? '').toLowerCase();
+  return v === 'development' || v === 'dev' || v === 'local';
+}
 
 function json(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data), {
@@ -221,6 +226,63 @@ export default {
       };
       console.log('[debug/headers]', result);
       return json(result);
+    }
+
+    // Dev-only: run outbound requests from inside a sandbox container to see what headers survive.
+    // POST /debug/sandbox-egress
+    if (url.pathname === '/debug/sandbox-egress' && request.method === 'POST') {
+      if (!isDevEnv(env)) return new Response('Not found', { status: 404 });
+
+      const body = (await request.json().catch(() => ({}))) as {
+        baseUrl?: unknown;
+        token?: unknown;
+      };
+      const baseUrl = typeof body.baseUrl === 'string' && body.baseUrl.trim()
+        ? body.baseUrl.trim().replace(/\/+$/, '')
+        : url.origin;
+      const token = typeof body.token === 'string' && body.token.trim() ? body.token.trim() : 'test123';
+
+      const sandbox = getSandbox(env.SANDBOX, 'egress-debug');
+      const target = `${baseUrl}/debug/headers`;
+
+      const curlCmd = [
+        'bash',
+        '-lc',
+        [
+          'set -euo pipefail',
+          'echo "--- curl: Authorization ---"',
+          `curl -sS ${JSON.stringify(target)} -H ${JSON.stringify(`Authorization: Bearer ${token}`)}`,
+          'echo',
+          'echo "--- curl: X-Chiridion-Deploy-Token ---"',
+          `curl -sS ${JSON.stringify(target)} -H ${JSON.stringify(`X-Chiridion-Deploy-Token: ${token}`)}`,
+          'echo',
+          'echo "--- curl: Cookie ---"',
+          `curl -sS ${JSON.stringify(target)} -H ${JSON.stringify(`Cookie: foo=${token}`)}`,
+          'echo',
+        ].join('\n'),
+      ].join(' ');
+
+      const nodeCmd = [
+        'bash',
+        '-lc',
+        [
+          'set -euo pipefail',
+          'echo "--- node fetch: Authorization ---"',
+          `node -e ${JSON.stringify(`fetch(${JSON.stringify(target)},{headers:{Authorization:${JSON.stringify(`Bearer ${token}`)}}}).then(r=>r.text()).then(t=>console.log(t)).catch(e=>{console.error(String(e));process.exit(1);});`)}`,
+          'echo "--- node fetch: X-Chiridion-Deploy-Token ---"',
+          `node -e ${JSON.stringify(`fetch(${JSON.stringify(target)},{headers:{'X-Chiridion-Deploy-Token':${JSON.stringify(token)}}}).then(r=>r.text()).then(t=>console.log(t)).catch(e=>{console.error(String(e));process.exit(1);});`)}`,
+        ].join('\n'),
+      ].join(' ');
+
+      const curlResult = await sandbox.exec(curlCmd);
+      const nodeResult = await sandbox.exec(nodeCmd);
+
+      return json({
+        baseUrl,
+        target,
+        curl: curlResult,
+        node: nodeResult,
+      });
     }
 
     // Cloudflare API proxy for Wrangler: set `CLOUDFLARE_API_BASE_URL` to `${origin}/client/v4`.
