@@ -10,8 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     -o Dpkg::Options::="--force-confnew" \
     ca-certificates \
     curl \
+    nodejs \
+    npm \
     unzip \
   && rm -rf /var/lib/apt/lists/* \
+  && npm install -g wrangler@4.55.0 \
   && curl -L -o /tmp/rclone.zip https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-linux-amd64.zip \
   && unzip /tmp/rclone.zip -d /tmp \
   && mv /tmp/rclone-v1.68.2-linux-amd64/rclone /usr/local/bin/ \
@@ -20,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy and install Claude SDK driver
 COPY sandbox/package.json sandbox/driver.mjs sandbox/run-driver.sh sandbox/entrypoint.sh /app/
+COPY sandbox/starter-worker /app/starter-worker
 WORKDIR /app
 RUN bun install
 RUN chmod +x /app/run-driver.sh /app/entrypoint.sh && chmod -R a+rX /app

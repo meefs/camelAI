@@ -2,6 +2,19 @@ import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, parseSSEStream, type Sandbox, type LogEvent } from '@cloudflare/sandbox';
 import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
 
+const SESSION_COOKIE_NAME = 'chiridion_session';
+const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
+const CHIRIDION_BASE_URL_HEADER = 'X-Chiridion-Base-Url';
+
+function getCookieValue(cookieHeader: string | null, name: string): string | null {
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const [k, ...rest] = part.trim().split('=');
+    if (k === name) return rest.join('=') || '';
+  }
+  return null;
+}
+
 export interface Thread {
   id: string;
   title: string;
@@ -23,12 +36,16 @@ export interface ChatEnv {
   SANDBOX: DurableObjectNamespace<Sandbox>;
   R2_BUCKET: R2Bucket;
   ANTHROPIC_API_KEY: string;
+  CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
+  EMAIL_TO_USER: KVNamespace;
   R2_BUCKET_NAME?: string;
   R2_ACCOUNT_ID?: string;
   R2_MOUNT_DIR?: string;
   R2_MOUNT_READONLY?: string;
   R2_API_TOKEN?: string;
   R2_PARENT_ACCESS_KEY_ID?: string;
+  PLATFORM_SCRIPT_TOKENS?: KVNamespace;
 }
 
 // One DO per org - stores thread list only
@@ -88,6 +105,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private claudeSessionId: string | null = null;
   private currentProcessId: string | null = null;
   private sandbox: ReturnType<typeof getSandbox> | null = null;
+  private chiridionBaseUrl: string | null = null;
+  private chiridionSessionId: string | null = null;
+  private deployToken: string | null = null;
+  private deployScriptName: string | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -111,6 +132,38 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (rows.length > 0) {
       this.claudeSessionId = (rows[0] as { value: string }).value;
     }
+
+    const tokenRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'deploy_token').toArray();
+    if (tokenRows.length > 0) {
+      this.deployToken = (tokenRows[0] as { value: string }).value;
+    }
+    const scriptRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'deploy_script_name').toArray();
+    if (scriptRows.length > 0) {
+      this.deployScriptName = (scriptRows[0] as { value: string }).value;
+    }
+  }
+
+  private async ensureDeployToken(): Promise<void> {
+    if (!this.deployToken) {
+      this.deployToken = crypto.randomUUID();
+      this.sql.exec(
+        'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+        'deploy_token',
+        this.deployToken
+      );
+    }
+    if (!this.deployScriptName) {
+      this.deployScriptName = `wfp-${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+      this.sql.exec(
+        'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+        'deploy_script_name',
+        this.deployScriptName
+      );
+    }
+
+    // Persist mapping in KV so the API proxy can override script_name for this token.
+    const tokenKv = this.env.PLATFORM_SCRIPT_TOKENS ?? this.env.EMAIL_TO_USER;
+    await tokenKv.put(`platform_script_token:${this.deployToken}`, this.deployScriptName);
   }
 
   // WebSocket handling
@@ -121,6 +174,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (request.headers.get('Upgrade') !== 'websocket') {
         return new Response('Expected WebSocket', { status: 426 });
       }
+
+      this.chiridionBaseUrl =
+        request.headers.get(CHIRIDION_BASE_URL_HEADER) ??
+        url.origin;
+
+      this.chiridionSessionId =
+        request.headers.get(CHIRIDION_SESSION_HEADER) ??
+        getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
+
+      await this.ensureDeployToken();
 
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
@@ -227,6 +290,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         if (this.env.R2_ACCOUNT_ID) processEnv.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
         if (this.env.R2_MOUNT_DIR) processEnv.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
         if (this.env.R2_MOUNT_READONLY) processEnv.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
+
+        if (this.chiridionBaseUrl) processEnv.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
+        if (this.chiridionSessionId) processEnv.CHIRIDION_SESSION_ID = this.chiridionSessionId;
+
+        // Configure Wrangler to use our local Cloudflare API proxy and a per-sandbox deploy token.
+        if (this.chiridionBaseUrl) processEnv.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl}/client/v4`;
+        if (this.deployToken) processEnv.CLOUDFLARE_API_TOKEN = this.deployToken;
+        if (this.env.CF_ACCOUNT_ID) processEnv.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
+        processEnv.WRANGLER_SEND_METRICS = 'false';
+        processEnv.CI = '1';
 
         // Generate prefix-scoped temp credentials (required for R2 access)
         const org = data.org || 'default';

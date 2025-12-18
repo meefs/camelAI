@@ -55,6 +55,13 @@ fi
 
 # Create project dir and cd into it
 mkdir -p "$TARGET_DIR/project"
+
+# Seed a starter Workers-for-Platforms project on first run (when the directory is empty).
+if [ ! -f "$TARGET_DIR/project/package.json" ] && [ -z "$(ls -A "$TARGET_DIR/project" 2>/dev/null || true)" ]; then
+  echo "[sandbox] Seeding starter worker project into ${TARGET_DIR}/project..." >&2
+  cp -a /app/starter-worker/. "$TARGET_DIR/project/"
+fi
+
 cd "$TARGET_DIR/project"
 
 exec bun /app/driver.mjs

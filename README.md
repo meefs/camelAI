@@ -53,6 +53,22 @@ npx wrangler secret put AWS_ACCESS_KEY_ID
 npx wrangler secret put AWS_SECRET_ACCESS_KEY
 ```
 
+## Sandbox Starter Worker (WFP)
+
+On first run, the sandbox seeds a starter Workers for Platforms project into `$HOME/project` from `sandbox/starter-worker`.
+
+Inside the sandbox, you can deploy it via the app’s proxy endpoint:
+
+```bash
+cd "$HOME/project"
+npm run deploy
+```
+
+This runs `wrangler deploy` inside the sandbox. The app injects:
+
+- `CLOUDFLARE_API_BASE_URL` pointing at the app’s `/client/v4` proxy
+- `CLOUDFLARE_API_TOKEN` as a per-sandbox deploy token that maps to a fixed `script_name` in KV (the proxy overrides the script name)
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
