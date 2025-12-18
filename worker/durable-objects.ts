@@ -35,7 +35,6 @@ export interface ChatEnv {
   SANDBOX: DurableObjectNamespace<Sandbox>;
   R2_BUCKET: R2Bucket;
   ANTHROPIC_API_KEY: string;
-  CHIRIDION_PUBLIC_ORIGIN?: string;
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
   EMAIL_TO_USER: KVNamespace;
@@ -176,7 +175,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       this.chiridionBaseUrl =
-        this.env.CHIRIDION_PUBLIC_ORIGIN?.trim() ||
         url.origin;
 
       this.chiridionSessionId =

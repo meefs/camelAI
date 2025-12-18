@@ -68,7 +68,7 @@ This runs `wrangler deploy` inside the sandbox. The app injects:
 
 - `CLOUDFLARE_API_TOKEN` as a per-sandbox deploy token that maps to a fixed `script_name` in KV (the proxy overrides the script name)
 
-The sandbox runs Wrangler directly against the app’s Cloudflare API proxy by setting `CLOUDFLARE_API_BASE_URL` to `${CHIRIDION_PUBLIC_ORIGIN}/client/v4`. The app proxy requires a deploy token (currently provided via Wrangler’s `Authorization: Bearer ...` header).
+The sandbox runs Wrangler directly against the app’s Cloudflare API proxy by setting `CLOUDFLARE_API_BASE_URL` to `${CHIRIDION_BASE_URL}/client/v4`. The app proxy requires a deploy token (currently provided via Wrangler’s `Authorization: Bearer ...` header).
 
 ## Learn More
 
