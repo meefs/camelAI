@@ -4,7 +4,6 @@ import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
-const CHIRIDION_BASE_URL_HEADER = 'X-Chiridion-Base-Url';
 
 function getCookieValue(cookieHeader: string | null, name: string): string | null {
   if (!cookieHeader) return null;
@@ -36,6 +35,7 @@ export interface ChatEnv {
   SANDBOX: DurableObjectNamespace<Sandbox>;
   R2_BUCKET: R2Bucket;
   ANTHROPIC_API_KEY: string;
+  CHIRIDION_PUBLIC_ORIGIN?: string;
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
   EMAIL_TO_USER: KVNamespace;
@@ -176,7 +176,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       this.chiridionBaseUrl =
-        request.headers.get(CHIRIDION_BASE_URL_HEADER) ??
+        this.env.CHIRIDION_PUBLIC_ORIGIN?.trim() ||
         url.origin;
 
       this.chiridionSessionId =
