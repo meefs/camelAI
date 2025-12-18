@@ -34,10 +34,10 @@ export async function POST(request: NextRequest) {
       return unauthorizedResponse();
     }
 
-    const body = await request.json() as { title?: string; projectId?: string };
+    const body = await request.json() as { title?: string; projectId?: string; projectName?: string };
     let projectId = body.projectId?.trim();
     if (!projectId) {
-      const projectName = body.title?.trim() ? `${body.title.trim()} Project` : 'New Project';
+      const projectName = body.projectName?.trim() || body.title?.trim() || 'New Project';
       const project = await chatDO.createProject(session.org_id, projectName, session.user_id);
       await authDO.addUserProject(session.user_id, session.org_id, project.id);
       projectId = project.id;

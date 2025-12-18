@@ -96,15 +96,20 @@ if [ -n "$SYNC_ONLY" ]; then
 fi
 
 # Create project dir and cd into it
-mkdir -p "$TARGET_DIR/project"
+if [ -z "${PROJECT_ID:-}" ]; then
+  echo "[sandbox] PROJECT_ID is required but missing." >&2
+  exit 1
+fi
+PROJECT_DIR="$PROJECT_ID"
+mkdir -p "$TARGET_DIR/$PROJECT_DIR"
 
 # Seed a starter Workers-for-Platforms project on first run (when the directory is empty).
-if [ ! -f "$TARGET_DIR/project/package.json" ] && [ -z "$(ls -A "$TARGET_DIR/project" 2>/dev/null || true)" ]; then
-  echo "[sandbox] Seeding starter worker project into ${TARGET_DIR}/project..." >&2
-  cp -a /app/starter-worker/. "$TARGET_DIR/project/"
+if [ ! -f "$TARGET_DIR/$PROJECT_DIR/package.json" ] && [ -z "$(ls -A "$TARGET_DIR/$PROJECT_DIR" 2>/dev/null || true)" ]; then
+  echo "[sandbox] Seeding starter worker project into ${TARGET_DIR}/${PROJECT_DIR}..." >&2
+  cp -a /app/starter-worker/. "$TARGET_DIR/$PROJECT_DIR/"
 fi
 
-cd "$TARGET_DIR/project"
+cd "$TARGET_DIR/$PROJECT_DIR"
 
 exit_code=0
 bun /app/driver.mjs || exit_code=$?

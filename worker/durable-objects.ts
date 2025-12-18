@@ -186,7 +186,7 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
 
   getProject(id: string): Project | null {
     const rows = this.sql.exec('SELECT * FROM projects WHERE id = ?', id).toArray() as unknown as Project[];
-    return rows[0] ? this.toProject(rows[0]) : null;
+    return rows[0] || null;
   }
 
   updateProject(id: string, name: string): Project | null {
@@ -213,7 +213,8 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
 
   createThread(title: string | undefined, projectId: string): Thread {
     const resolvedProjectId = projectId.trim();
-    if (!resolvedProjectId || !this.getProject(resolvedProjectId)) {
+    const project = resolvedProjectId ? this.getProject(resolvedProjectId) : null;
+    if (!project) {
       throw new Error('Project not found');
     }
     const id = crypto.randomUUID();
@@ -262,6 +263,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private chiridionSessionId: string | null = null;
   private deployToken: string | null = null;
   private deployScriptName: string | null = null;
+  private projectId: string | null = null;
+  private threadId: string | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -294,6 +297,30 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (scriptRows.length > 0) {
       this.deployScriptName = (scriptRows[0] as { value: string }).value;
     }
+
+    const projectRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'project_id').toArray();
+    if (projectRows.length > 0) {
+      this.projectId = (projectRows[0] as { value: string }).value;
+    }
+    const threadRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'thread_id').toArray();
+    if (threadRows.length > 0) {
+      this.threadId = (threadRows[0] as { value: string }).value;
+    }
+  }
+
+  private async ensureProjectId(org: string): Promise<string | null> {
+    if (this.projectId) return this.projectId;
+    if (!this.threadId) return null;
+    const indexStub = this.env.CHAT_INDEX.get(this.env.CHAT_INDEX.idFromName(org));
+    const thread = await indexStub.getThread(this.threadId);
+    if (!thread?.project_id) return null;
+    this.projectId = thread.project_id;
+    this.sql.exec(
+      'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+      'project_id',
+      this.projectId
+    );
+    return this.projectId;
   }
 
   private async ensureDeployToken(): Promise<void> {
@@ -322,6 +349,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // WebSocket handling
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    const org = url.searchParams.get('org') || 'default';
+    const pathParts = url.pathname.split('/').filter(Boolean);
+    const threadId = pathParts[pathParts.length - 1] || null;
+    if (threadId && !this.threadId) {
+      this.threadId = threadId;
+      this.sql.exec(
+        'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+        'thread_id',
+        threadId
+      );
+    }
 
     // Accept WebSocket upgrades regardless of the path (the Worker selects the DO instance).
     if (request.headers.get('Upgrade') === 'websocket') {
@@ -344,6 +382,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           WRANGLER_SEND_METRICS: 'false',
           CI: '1',
         };
+        const projectId = await this.ensureProjectId(org);
+        if (projectId) envVars.PROJECT_ID = projectId;
         if (this.chiridionBaseUrl) envVars.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
         if (this.chiridionBaseUrl) envVars.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl.replace(/\/+$/, '')}/client/v4`;
         if (this.deployToken) envVars.CLOUDFLARE_API_TOKEN = this.deployToken;
@@ -363,7 +403,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       server.send(JSON.stringify({ type: 'history', messages }));
 
       // Start warming up the sandbox in the background (don't await)
-      const org = url.searchParams.get('org') || 'default';
       this.warmSandbox(org);
 
       return new Response(null, { status: 101, webSocket: client });
@@ -386,6 +425,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (this.env.R2_ACCOUNT_ID) processEnv.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
       if (this.env.R2_MOUNT_DIR) processEnv.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
 
+      const projectId = await this.ensureProjectId(org);
+      if (projectId) processEnv.PROJECT_ID = projectId;
       const prefix = `${org}/`;
       processEnv.R2_PREFIX = prefix;
 
@@ -433,6 +474,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       if (data.type === 'message') {
+        if (data.threadId && !this.threadId) {
+          this.threadId = data.threadId;
+          this.sql.exec(
+            'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+            'thread_id',
+            this.threadId
+          );
+        }
         // Save user message
         const userMsg = this.addMessage('user', data.content);
         this.broadcast({ type: 'message', message: userMsg });
@@ -468,10 +517,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         processEnv.WRANGLER_SEND_METRICS = 'false';
         processEnv.CI = '1';
 
-        // Generate prefix-scoped temp credentials (required for R2 access)
-        const org = data.org || 'default';
-        const prefix = `${org}/`;
-        processEnv.R2_PREFIX = prefix;
+      // Generate prefix-scoped temp credentials (required for R2 access)
+      const org = data.org || 'default';
+      const projectId = await this.ensureProjectId(org);
+      if (projectId) processEnv.PROJECT_ID = projectId;
+      const prefix = `${org}/`;
+      processEnv.R2_PREFIX = prefix;
 
         if (this.env.R2_API_TOKEN && this.env.R2_PARENT_ACCESS_KEY_ID && this.env.R2_ACCOUNT_ID && this.env.R2_BUCKET_NAME) {
           const tempCreds = await getTempR2Credentials(

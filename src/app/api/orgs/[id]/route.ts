@@ -13,8 +13,9 @@ interface RouteParams {
 }
 
 // GET /api/orgs/[id] - Get organization details
-export async function GET(request: NextRequest, { params }: RouteParams) {
+export async function GET(_request: NextRequest, { params }: RouteParams) {
   try {
+    void _request;
     const { id: orgId } = await params;
     const sessionId = await getSessionId();
     if (!sessionId) {
@@ -86,7 +87,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 }
 
 // DELETE /api/orgs/[id] - Delete organization (not implemented - too dangerous)
-export async function DELETE(request: NextRequest, { params }: RouteParams) {
+export async function DELETE() {
   // For safety, we don't allow deleting organizations through the API
   // This would need to be done through a more careful admin process
   return errorResponse('Organization deletion is not supported', 405);

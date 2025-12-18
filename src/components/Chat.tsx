@@ -95,11 +95,17 @@ export default function Chat({ threadId }: ChatProps) {
     }
   }, [authLoading, user, router]);
 
+  const fetchThreads = useCallback(async () => {
+    const res = await fetch(`${backendProxyPrefix}/api/threads`);
+    const data = await res.json() as unknown;
+    setThreads(Array.isArray(data) ? (data as Thread[]) : []);
+  }, [backendProxyPrefix]);
+
   useEffect(() => {
     if (user && currentOrg) {
       fetchThreads();
     }
-  }, [user, currentOrg]);
+  }, [user, currentOrg, fetchThreads]);
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
@@ -306,12 +312,6 @@ export default function Chat({ threadId }: ChatProps) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
-
-  async function fetchThreads() {
-    const res = await fetch(`${backendProxyPrefix}/api/threads`);
-    const data = await res.json() as unknown;
-    setThreads(Array.isArray(data) ? (data as Thread[]) : []);
-  }
 
   async function createThread() {
     const res = await fetch(`${backendProxyPrefix}/api/threads`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });

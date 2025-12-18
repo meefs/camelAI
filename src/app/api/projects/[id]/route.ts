@@ -3,13 +3,11 @@ import * as chatDO from '@/lib/chat-do';
 import * as authDO from '@/lib/auth-do';
 import { getSessionId, unauthorizedResponse } from '@/lib/auth';
 
-interface Params {
-  params: {
-    id: string;
-  };
+interface RouteContext {
+  params: Promise<{ id: string }>;
 }
 
-export async function GET(_request: NextRequest, { params }: Params) {
+export async function GET(_request: NextRequest, { params }: RouteContext) {
   try {
     const sessionId = await getSessionId();
     if (!sessionId) {
@@ -21,7 +19,8 @@ export async function GET(_request: NextRequest, { params }: Params) {
       return unauthorizedResponse();
     }
 
-    const project = await chatDO.getProject(params.id, session.org_id);
+    const { id } = await params;
+    const project = await chatDO.getProject(id, session.org_id);
     if (!project) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
@@ -36,8 +35,9 @@ export async function GET(_request: NextRequest, { params }: Params) {
   }
 }
 
-export async function PUT(request: NextRequest, { params }: Params) {
+export async function PUT(request: NextRequest, { params }: RouteContext) {
   try {
+    const { id } = await params;
     const sessionId = await getSessionId();
     if (!sessionId) {
       return unauthorizedResponse();
@@ -53,7 +53,7 @@ export async function PUT(request: NextRequest, { params }: Params) {
       return NextResponse.json({ error: 'Missing name' }, { status: 400 });
     }
 
-    const project = await chatDO.updateProject(params.id, body.name, session.org_id);
+    const project = await chatDO.updateProject(id, body.name, session.org_id);
     if (!project) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
@@ -64,8 +64,9 @@ export async function PUT(request: NextRequest, { params }: Params) {
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: Params) {
+export async function DELETE(_request: NextRequest, { params }: RouteContext) {
   try {
+    const { id } = await params;
     const sessionId = await getSessionId();
     if (!sessionId) {
       return unauthorizedResponse();
@@ -76,14 +77,14 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
       return unauthorizedResponse();
     }
 
-    const project = await chatDO.getProject(params.id, session.org_id);
+    const project = await chatDO.getProject(id, session.org_id);
     if (!project) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    await chatDO.deleteProject(params.id, session.org_id);
+    await chatDO.deleteProject(id, session.org_id);
     if (project.created_by && project.created_by !== 'system') {
-      await authDO.removeUserProject(project.created_by, session.org_id, project.id);
+      await authDO.removeUserProject(project.created_by, session.org_id, id);
     }
     return NextResponse.json({ ok: true });
   } catch (e) {
