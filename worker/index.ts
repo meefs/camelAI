@@ -17,34 +17,7 @@ interface Env extends ChatEnv, AuthEnv {
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
 }
 
-const SESSION_COOKIE_NAME = 'chiridion_session';
-const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
 const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
-
-function getExternalOrigin(request: Request, fallbackUrl: URL): string {
-  const forwardedProtoRaw = request.headers.get('x-forwarded-proto');
-  const forwardedProto = forwardedProtoRaw ? forwardedProtoRaw.split(',')[0]?.trim() : null;
-  const forwardedHostRaw = request.headers.get('x-forwarded-host');
-  const forwardedHost = forwardedHostRaw ? forwardedHostRaw.split(',')[0]?.trim() : null;
-
-  let proto = forwardedProto;
-  if (!proto) {
-    const cfVisitor = request.headers.get('cf-visitor');
-    if (cfVisitor) {
-      try {
-        const parsed = JSON.parse(cfVisitor) as { scheme?: unknown };
-        if (typeof parsed.scheme === 'string' && parsed.scheme) proto = parsed.scheme;
-      } catch {
-        // ignore
-      }
-    }
-  }
-  if (!proto) proto = fallbackUrl.protocol.replace(/:$/, '');
-  if (!proto) proto = 'https';
-
-  const host = forwardedHost || request.headers.get('host') || fallbackUrl.host;
-  return `${proto}://${host}`;
-}
 
 function json(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data), {
@@ -54,15 +27,6 @@ function json(data: unknown, init?: ResponseInit): Response {
       ...(init?.headers ?? {}),
     },
   });
-}
-
-function getCookieValue(cookieHeader: string | null, name: string): string | null {
-  if (!cookieHeader) return null;
-  for (const part of cookieHeader.split(';')) {
-    const [k, ...rest] = part.trim().split('=');
-    if (k === name) return rest.join('=') || '';
-  }
-  return null;
 }
 
 function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
@@ -242,14 +206,8 @@ export default {
     if (wsMatch && request.headers.get('Upgrade') === 'websocket') {
       const threadId = wsMatch[1];
       const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-      // Forward to the thread DO's WebSocket handler, preserving query params
-      const externalOrigin = getExternalOrigin(request, url);
-      const wsUrl = new URL('/websocket', externalOrigin);
-      wsUrl.search = url.search;
-      const headers = new Headers(request.headers);
-      const sessionId = getCookieValue(headers.get('Cookie'), SESSION_COOKIE_NAME);
-      if (sessionId) headers.set(CHIRIDION_SESSION_HEADER, sessionId);
-      return threadStub.fetch(new Request(wsUrl, { method: request.method, headers }));
+      // Forward the upgrade request directly. The DO reads the external origin from forwarded headers.
+      return threadStub.fetch(request);
     }
 
     // Pass all other requests to OpenNext/Next.js

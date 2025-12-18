@@ -5,6 +5,31 @@ import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
 
+function getExternalOriginFromHeaders(request: Request, fallbackUrl: URL): string {
+  const forwardedProtoRaw = request.headers.get('x-forwarded-proto');
+  const forwardedProto = forwardedProtoRaw ? forwardedProtoRaw.split(',')[0]?.trim() : null;
+  const forwardedHostRaw = request.headers.get('x-forwarded-host');
+  const forwardedHost = forwardedHostRaw ? forwardedHostRaw.split(',')[0]?.trim() : null;
+
+  let proto = forwardedProto;
+  if (!proto) {
+    const cfVisitor = request.headers.get('cf-visitor');
+    if (cfVisitor) {
+      try {
+        const parsed = JSON.parse(cfVisitor) as { scheme?: unknown };
+        if (typeof parsed.scheme === 'string' && parsed.scheme) proto = parsed.scheme;
+      } catch {
+        // ignore
+      }
+    }
+  }
+  if (!proto) proto = fallbackUrl.protocol.replace(/:$/, '');
+  if (!proto) proto = 'https';
+
+  const host = forwardedHost || request.headers.get('host') || fallbackUrl.host;
+  return `${proto}://${host}`;
+}
+
 function getCookieValue(cookieHeader: string | null, name: string): string | null {
   if (!cookieHeader) return null;
   for (const part of cookieHeader.split(';')) {
@@ -169,13 +194,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === '/websocket') {
-      if (request.headers.get('Upgrade') !== 'websocket') {
-        return new Response('Expected WebSocket', { status: 426 });
-      }
+    // Accept WebSocket upgrades regardless of the path (the Worker selects the DO instance).
+    if (request.headers.get('Upgrade') === 'websocket') {
 
       this.chiridionBaseUrl =
-        url.origin;
+        getExternalOriginFromHeaders(request, url);
 
       this.chiridionSessionId =
         request.headers.get(CHIRIDION_SESSION_HEADER) ??
