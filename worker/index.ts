@@ -43,28 +43,23 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
 
 function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
   const m = method.toUpperCase();
-  if (m === 'GET' || m === 'PUT') {
-    return /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/.test(pathname);
-  }
-  if (m === 'POST') {
-    return (
-      /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/.test(pathname) ||
-      /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/.test(pathname)
-    );
-  }
-  return false;
-}
+  const dispatchScript = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
+  const scriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/scripts\/[^/]+\/settings$/;
+  const assetsUploadSession = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
+  const assetsUpload = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
 
-function maybeHandleLocally(pathname: string, method: string): Response | null {
-  // Wrangler may call this endpoint as part of deployment/provisioning flows.
-  // We do not proxy it to Cloudflare (not on allowlist); instead return a minimal success payload.
-  if (method.toUpperCase() === 'GET') {
-    const m = pathname.match(/^\/client\/v4\/accounts\/[^/]+\/workers\/scripts\/[^/]+\/settings$/);
-    if (m) {
-      return json({ success: true, errors: [], messages: [], result: { bindings: [] } });
-    }
+  switch (m) {
+    case 'GET':
+      return dispatchScript.test(pathname) || scriptSettings.test(pathname);
+    case 'PUT':
+      return dispatchScript.test(pathname);
+    case 'PATCH':
+      return scriptSettings.test(pathname);
+    case 'POST':
+      return assetsUploadSession.test(pathname) || assetsUpload.test(pathname);
+    default:
+      return false;
   }
-  return null;
 }
 
 async function proxyCloudflareApi(request: Request, env: Env): Promise<Response> {
@@ -135,8 +130,19 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
         pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
       }
     }
-  } else if (accountId) {
-    // Opportunistically rewrite account id for any /accounts/:id/... calls.
+  }
+  // Also override the script name for the "workers/scripts/:scriptName/*" API family.
+  if (!dispatchMatch && scriptNameForToken) {
+    const scriptsMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/scripts\/([^\/]+)(\/.*)?$/);
+    if (scriptsMatch) {
+      const rewrittenAccount = accountId ?? scriptsMatch[1]!;
+      const tail = scriptsMatch[3] ?? '';
+      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
+    }
+  }
+
+  // Opportunistically rewrite account id for any /accounts/:id/... calls.
+  if (accountId) {
     const accountMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/(.*)$/);
     if (accountMatch) {
       pathname = `/client/v4/accounts/${encodeURIComponent(accountId)}/${accountMatch[2] ?? ''}`;
@@ -144,9 +150,6 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
   }
 
   if (!isAllowedCloudflareApiProxyRequest(pathname, request.method)) {
-    const local = maybeHandleLocally(pathname, request.method);
-    if (local) return local;
-
     console.warn('[cf-api-proxy] blocked', {
       method: request.method,
       originalPath: url.pathname,
