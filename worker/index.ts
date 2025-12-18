@@ -204,6 +204,25 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    // Debug endpoint to help diagnose header stripping through tunnels/proxies (e.g. ngrok).
+    // GET /debug/headers
+    if (url.pathname === '/debug/headers' && request.method === 'GET') {
+      const auth = request.headers.get('Authorization');
+      const deploy = request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER);
+      const result = {
+        url: url.toString(),
+        method: request.method,
+        hasAuthorization: !!auth,
+        authorizationScheme: auth?.split(' ', 1)[0] ?? null,
+        authorizationPrefix: auth ? auth.replace(/^(\S+\s+)(.{0,12}).*$/, '$1$2…') : null,
+        hasDeployTokenHeader: !!deploy,
+        deployTokenPrefix: deploy ? `${deploy.slice(0, 12)}…` : null,
+        headerKeys: Array.from(request.headers.keys()).sort(),
+      };
+      console.log('[debug/headers]', result);
+      return json(result);
+    }
+
     // Cloudflare API proxy for Wrangler: set `CLOUDFLARE_API_BASE_URL` to `${origin}/client/v4`.
     if (url.pathname.startsWith('/client/v4/')) {
       try {
