@@ -1,5 +1,5 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare';
-import type { User, Organization, OrgMembership } from '@/types';
+import type { User, Organization, OrgMembership, UserProject } from '@/types';
 import type { SessionDO, UserDO, OrgDO, SessionData, UserProfile } from '../../worker/auth';
 
 interface AuthEnv {
@@ -132,6 +132,24 @@ export async function removeUserFromOrg(userId: string, orgId: string): Promise<
   const env = await getEnv();
   const userStub = env.USER.get(env.USER.idFromName(userId));
   await userStub.removeOrg(orgId);
+}
+
+export async function getUserProjects(userId: string): Promise<UserProject[]> {
+  const env = await getEnv();
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  return userStub.getProjects();
+}
+
+export async function addUserProject(userId: string, orgId: string, projectId: string): Promise<void> {
+  const env = await getEnv();
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  await userStub.addProject(orgId, projectId);
+}
+
+export async function removeUserProject(userId: string, orgId: string, projectId: string): Promise<void> {
+  const env = await getEnv();
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  await userStub.removeProject(orgId, projectId);
 }
 
 // Organization functions

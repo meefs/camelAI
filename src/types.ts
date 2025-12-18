@@ -1,6 +1,15 @@
 export interface Thread {
   id: string;
   title: string;
+  project_id: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  created_by: string;
   created_at: number;
   updated_at: number;
 }
@@ -41,6 +50,12 @@ export interface OrgMembership {
   org_name: string;
   role: 'admin' | 'member';
   joined_at: number;
+}
+
+export interface UserProject {
+  org_id: string;
+  project_id: string;
+  created_at: number;
 }
 
 export interface Invitation {

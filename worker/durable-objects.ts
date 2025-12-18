@@ -42,6 +42,15 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
 export interface Thread {
   id: string;
   title: string;
+  project_id: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  created_by: string;
   created_at: number;
   updated_at: number;
 }
@@ -80,25 +89,145 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS threads (
+      CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_by TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
     `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS threads (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+    try {
+      this.sql.exec('ALTER TABLE threads ADD COLUMN project_id TEXT');
+    } catch {
+      // Column already exists.
+    }
+    try {
+      this.sql.exec('ALTER TABLE projects ADD COLUMN created_by TEXT');
+    } catch {
+      // Column already exists.
+    }
+    this.sql.exec('CREATE INDEX IF NOT EXISTS projects_created_by ON projects(created_by)');
+    try {
+      const missing = this.sql.exec(
+        'SELECT id FROM threads WHERE project_id IS NULL OR project_id = ? LIMIT 1',
+        ''
+      ).toArray() as { id: string }[];
+      if (missing.length > 0) {
+        const migratedProjectId = this.ensureMigrationProject();
+        this.sql.exec(
+          'UPDATE threads SET project_id = ? WHERE project_id IS NULL OR project_id = ?',
+          migratedProjectId,
+          ''
+        );
+      }
+    } catch {
+      // Ignore if the column is not available yet.
+    }
+    try {
+      this.sql.exec('UPDATE projects SET created_by = ? WHERE created_by IS NULL OR created_by = ?', 'system', '');
+    } catch {
+      // Ignore if the column is not available yet.
+    }
+  }
+
+  private ensureMigrationProject(): string {
+    const rows = this.sql.exec(
+      'SELECT id FROM projects WHERE name = ? AND created_by = ? LIMIT 1',
+      'Migrated Threads',
+      'system'
+    ).toArray() as { id: string }[];
+    if (rows.length > 0) return rows[0].id;
+    return this.createProject('Migrated Threads', 'system').id;
+  }
+
+  getProjects(): Project[] {
+    return this.sql.exec('SELECT * FROM projects ORDER BY updated_at DESC').toArray() as unknown as Project[];
+  }
+
+  getProjectsByUser(userId: string): Project[] {
+    const rows = this.sql.exec(
+      'SELECT * FROM projects WHERE created_by = ? ORDER BY updated_at DESC',
+      userId
+    ).toArray() as unknown as Project[];
+    return rows;
+  }
+
+  createProject(name?: string, createdBy?: string): Project {
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const projectName = name?.trim() || 'New Project';
+    const creator = createdBy?.trim() || 'system';
+    this.sql.exec(
+      'INSERT INTO projects (id, name, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      id,
+      projectName,
+      creator,
+      now,
+      now
+    );
+    return {
+      id,
+      name: projectName,
+      created_by: creator,
+      created_at: now,
+      updated_at: now,
+    };
+  }
+
+  getProject(id: string): Project | null {
+    const rows = this.sql.exec('SELECT * FROM projects WHERE id = ?', id).toArray() as unknown as Project[];
+    return rows[0] ? this.toProject(rows[0]) : null;
+  }
+
+  updateProject(id: string, name: string): Project | null {
+    const now = Date.now();
+    this.sql.exec('UPDATE projects SET name = ?, updated_at = ? WHERE id = ?', name, now, id);
+    return this.getProject(id);
+  }
+
+  deleteProject(id: string): boolean {
+    const rows = this.sql.exec(
+      'SELECT COUNT(*) as count FROM threads WHERE project_id = ?',
+      id
+    ).toArray() as Array<{ count: number }>;
+    if ((rows[0]?.count ?? 0) > 0) {
+      throw new Error('Project has threads');
+    }
+    this.sql.exec('DELETE FROM projects WHERE id = ?', id);
+    return true;
   }
 
   getThreads(): Thread[] {
     return this.sql.exec('SELECT * FROM threads ORDER BY updated_at DESC').toArray() as unknown as Thread[];
   }
 
-  createThread(title?: string): Thread {
+  createThread(title: string | undefined, projectId: string): Thread {
+    const resolvedProjectId = projectId.trim();
+    if (!resolvedProjectId || !this.getProject(resolvedProjectId)) {
+      throw new Error('Project not found');
+    }
     const id = crypto.randomUUID();
     const now = Date.now();
     const t = title || 'New Chat';
-    this.sql.exec('INSERT INTO threads (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)', id, t, now, now);
-    return { id, title: t, created_at: now, updated_at: now };
+    this.sql.exec(
+      'INSERT INTO threads (id, title, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      id,
+      t,
+      resolvedProjectId,
+      now,
+      now
+    );
+    return { id, title: t, project_id: resolvedProjectId, created_at: now, updated_at: now };
   }
 
   getThread(id: string): Thread | null {

@@ -1,5 +1,5 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare';
-import type { Thread, Message } from '@/types';
+import type { Thread, Message, Project } from '@/types';
 import type { ChatIndexDO, ChatThreadDO } from '../../worker/durable-objects';
 
 interface Env {
@@ -25,9 +25,9 @@ export async function getThreads(org = 'default'): Promise<Thread[]> {
   return getIndexStub(env, org).getThreads();
 }
 
-export async function createThread(org = 'default', title?: string): Promise<Thread> {
+export async function createThread(org = 'default', title: string | undefined, projectId: string): Promise<Thread> {
   const env = await getEnv();
-  return getIndexStub(env, org).createThread(title);
+  return getIndexStub(env, org).createThread(title, projectId);
 }
 
 export async function getThread(id: string, org = 'default'): Promise<Thread | null> {
@@ -59,4 +59,34 @@ export async function addMessage(threadId: string, role: string, content: string
   // Update thread timestamp in index
   await getIndexStub(env, org).touchThread(threadId);
   return msg;
+}
+
+export async function getProjects(org = 'default'): Promise<Project[]> {
+  const env = await getEnv();
+  return getIndexStub(env, org).getProjects();
+}
+
+export async function getProjectsByUser(org = 'default', userId: string): Promise<Project[]> {
+  const env = await getEnv();
+  return getIndexStub(env, org).getProjectsByUser(userId);
+}
+
+export async function createProject(org = 'default', name?: string, createdBy?: string): Promise<Project> {
+  const env = await getEnv();
+  return getIndexStub(env, org).createProject(name, createdBy);
+}
+
+export async function getProject(id: string, org = 'default'): Promise<Project | null> {
+  const env = await getEnv();
+  return getIndexStub(env, org).getProject(id);
+}
+
+export async function updateProject(id: string, name: string, org = 'default'): Promise<Project | null> {
+  const env = await getEnv();
+  return getIndexStub(env, org).updateProject(id, name);
+}
+
+export async function deleteProject(id: string, org = 'default'): Promise<void> {
+  const env = await getEnv();
+  await getIndexStub(env, org).deleteProject(id);
 }

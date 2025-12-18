@@ -23,9 +23,9 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 
 2. **Worker** (`worker/`)
    - Cloudflare Workers with Durable Objects
-   - **Chat DOs:**
-     - `ChatThreadDO` - Manages individual chat sessions
-     - `ChatIndexDO` - Indexes all chat threads per org
+  - **Chat DOs:**
+    - `ChatThreadDO` - Manages individual chat sessions
+    - `ChatIndexDO` - Indexes all chat threads and projects per org
    - **Auth DOs:**
      - `SessionDO` - Session state with 30-day expiry
      - `UserDO` - User profiles and password hashes
@@ -79,6 +79,11 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 6. Container output parsed by DO and forwarded via WebSocket
 7. Frontend updates React state with streaming content
 
+### Projects
+1. Each thread belongs to a project (`project_id` on threads)
+2. `ChatIndexDO` stores projects and threads per org
+3. A default project is created per org and assigned to existing/new threads when none is specified
+
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization
 - `stream_event` - Real-time streaming:
@@ -115,6 +120,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `/api/threads` | GET, POST | List/create threads |
 | `/api/threads/[id]` | GET, DELETE | Get/delete thread |
 | `/api/threads/[id]/messages` | GET, POST | Get/add thread messages |
+| `/api/projects` | GET, POST | List/create projects |
+| `/api/projects/[id]` | GET, PUT, DELETE | Get/update/delete project |
 | `/api/chat` | POST | Send message (REST fallback) |
 | `/ws/[threadId]` | WebSocket | Real-time chat |
 
@@ -183,6 +190,7 @@ chiridion-app/
 │   │   │   ├── chat/        # Chat endpoint
 │   │   │   ├── invitations/ # Invitation acceptance
 │   │   │   ├── orgs/        # Org management
+│   │   │   ├── projects/    # Project CRUD
 │   │   │   └── threads/     # Thread CRUD
 │   │   ├── chat/[id]/       # Chat page
 │   │   ├── login/           # Login page

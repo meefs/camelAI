@@ -31,6 +31,12 @@ export interface UserOrg {
   joined_at: number;
 }
 
+export interface UserProject {
+  org_id: string;
+  project_id: string;
+  created_at: number;
+}
+
 export interface OrgInfo {
   id: string;
   name: string;
@@ -132,6 +138,14 @@ export class UserDO extends DurableObject<AuthEnv> {
         joined_at INTEGER NOT NULL
       )
     `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS projects (
+        org_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (org_id, project_id)
+      )
+    `);
   }
 
   // Profile methods
@@ -218,6 +232,27 @@ export class UserDO extends DurableObject<AuthEnv> {
     const rows = this.sql.exec('SELECT role FROM orgs WHERE org_id = ?', orgId).toArray();
     if (rows.length === 0) return null;
     return (rows[0] as { role: string }).role as 'admin' | 'member';
+  }
+
+  // Project index methods
+  async getProjects(): Promise<UserProject[]> {
+    return this.sql.exec(
+      'SELECT org_id, project_id, created_at FROM projects ORDER BY created_at DESC'
+    ).toArray() as unknown as UserProject[];
+  }
+
+  async addProject(orgId: string, projectId: string): Promise<void> {
+    const now = Date.now();
+    this.sql.exec(
+      'INSERT OR REPLACE INTO projects (org_id, project_id, created_at) VALUES (?, ?, ?)',
+      orgId,
+      projectId,
+      now
+    );
+  }
+
+  async removeProject(orgId: string, projectId: string): Promise<void> {
+    this.sql.exec('DELETE FROM projects WHERE org_id = ? AND project_id = ?', orgId, projectId);
   }
 }
 
