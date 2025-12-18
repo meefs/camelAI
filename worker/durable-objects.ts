@@ -195,6 +195,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           CI: '1',
         };
         if (this.chiridionBaseUrl) envVars.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
+        if (this.chiridionBaseUrl) envVars.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl.replace(/\/+$/, '')}/client/v4`;
         if (this.deployToken) envVars.CLOUDFLARE_API_TOKEN = this.deployToken;
         if (this.env.CF_ACCOUNT_ID) envVars.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
         await this.sandbox.setEnvVars(envVars);

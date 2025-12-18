@@ -23,7 +23,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy and install Claude SDK driver
 COPY sandbox/package.json sandbox/driver.mjs sandbox/run-driver.sh sandbox/entrypoint.sh /app/
-COPY sandbox/wrangler-proxy.mjs /app/wrangler-proxy.mjs
 COPY sandbox/starter-worker /app/starter-worker
 WORKDIR /app
 RUN bun install
