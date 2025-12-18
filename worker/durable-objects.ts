@@ -185,6 +185,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       await this.ensureDeployToken();
 
+      // Persist env vars at the sandbox/container level so any subsequent processes (not just the
+      // Claude driver) inherit the Wrangler proxy configuration.
+      try {
+        const sandboxId = this.ctx.id.toString().slice(0, 63);
+        this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
+        const envVars: Record<string, string> = {
+          WRANGLER_SEND_METRICS: 'false',
+          CI: '1',
+        };
+        if (this.chiridionBaseUrl) envVars.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
+        if (this.deployToken) envVars.CLOUDFLARE_API_TOKEN = this.deployToken;
+        if (this.env.CF_ACCOUNT_ID) envVars.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
+        await this.sandbox.setEnvVars(envVars);
+      } catch (e) {
+        console.warn('[DO] Failed to persist sandbox env vars:', e);
+      }
+
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
 
@@ -295,7 +312,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         if (this.chiridionSessionId) processEnv.CHIRIDION_SESSION_ID = this.chiridionSessionId;
 
         // Configure Wrangler to use our local Cloudflare API proxy and a per-sandbox deploy token.
-        if (this.chiridionBaseUrl) processEnv.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl}/client/v4`;
         if (this.deployToken) processEnv.CLOUDFLARE_API_TOKEN = this.deployToken;
         if (this.env.CF_ACCOUNT_ID) processEnv.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
         processEnv.WRANGLER_SEND_METRICS = 'false';

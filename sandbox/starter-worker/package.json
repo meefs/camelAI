@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "deploy": "wrangler deploy --dispatch-namespace ignored --name ignored"
+    "deploy": "sh -lc 'node /app/wrangler-proxy.mjs & p=$!; trap \"kill $p\" EXIT; CLOUDFLARE_API_BASE_URL=\"http://127.0.0.1:${WRANGLER_PROXY_PORT:-8788}/client/v4\" wrangler deploy --dispatch-namespace ignored --name ignored'"
   }
 }

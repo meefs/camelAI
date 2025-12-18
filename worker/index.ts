@@ -20,6 +20,7 @@ interface Env extends ChatEnv, AuthEnv {
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
 const CHIRIDION_BASE_URL_HEADER = 'X-Chiridion-Base-Url';
+const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
 
 function json(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data), {
@@ -54,6 +55,18 @@ function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): b
   return false;
 }
 
+function maybeHandleLocally(pathname: string, method: string): Response | null {
+  // Wrangler may call this endpoint as part of deployment/provisioning flows.
+  // We do not proxy it to Cloudflare (not on allowlist); instead return a minimal success payload.
+  if (method.toUpperCase() === 'GET') {
+    const m = pathname.match(/^\/client\/v4\/accounts\/[^/]+\/workers\/scripts\/[^/]+\/settings$/);
+    if (m) {
+      return json({ success: true, errors: [], messages: [], result: { bindings: [] } });
+    }
+  }
+  return null;
+}
+
 async function proxyCloudflareApi(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
 
@@ -62,11 +75,27 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     return json({ error: 'Missing CF_API_TOKEN for Cloudflare API proxy' }, { status: 500 });
   }
 
-  const authHeader = request.headers.get('Authorization') ?? '';
-  const bearerMatch = authHeader.match(/^Bearer\s+(.+)\s*$/i);
-  const proxyToken = bearerMatch?.[1]?.trim() || null;
+  console.log('[cf-api-proxy] request', {
+    method: request.method,
+    path: url.pathname,
+    search: url.search,
+  });
+
+  const proxyToken =
+    request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER)?.trim() ||
+    (() => {
+      const authHeader = request.headers.get('Authorization') ?? '';
+      const bearerMatch = authHeader.match(/^Bearer\s+(.+)\s*$/i);
+      return bearerMatch?.[1]?.trim() || null;
+    })();
 
   if (!proxyToken) {
+    console.warn('[cf-api-proxy] missing deploy token', {
+      method: request.method,
+      path: url.pathname,
+      hasAuthorizationHeader: !!request.headers.get('Authorization'),
+      hasDeployTokenHeader: !!request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER),
+    });
     return json({ error: 'Missing deploy token' }, { status: 401 });
   }
 
@@ -75,6 +104,11 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
   const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
   const scriptNameForToken = await tokenKv.get(`platform_script_token:${proxyToken}`);
   if (!scriptNameForToken) {
+    console.warn('[cf-api-proxy] invalid deploy token', {
+      method: request.method,
+      path: url.pathname,
+      tokenPrefix: proxyToken.slice(0, 8),
+    });
     return json({ error: 'Invalid deploy token' }, { status: 401 });
   }
 
@@ -110,6 +144,9 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
   }
 
   if (!isAllowedCloudflareApiProxyRequest(pathname, request.method)) {
+    const local = maybeHandleLocally(pathname, request.method);
+    if (local) return local;
+
     console.warn('[cf-api-proxy] blocked', {
       method: request.method,
       originalPath: url.pathname,
@@ -135,10 +172,29 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       : await request.arrayBuffer();
 
   const resp = await fetch(upstreamUrl, { method, headers, body });
-  return new Response(await resp.arrayBuffer(), {
-    status: resp.status,
-    headers: resp.headers,
-  });
+  const respBody = await resp.arrayBuffer();
+
+  if (!resp.ok) {
+    const ct = resp.headers.get('Content-Type') ?? '';
+    let preview = '';
+    if (ct.includes('application/json') || ct.startsWith('text/')) {
+      try {
+        preview = new TextDecoder().decode(respBody.slice(0, 1024));
+      } catch {
+        preview = '';
+      }
+    }
+    console.warn('[cf-api-proxy] upstream error', {
+      status: resp.status,
+      method,
+      upstreamPath: upstreamUrl.pathname,
+      search: upstreamUrl.search,
+      contentType: ct,
+      bodyPreview: preview,
+    });
+  }
+
+  return new Response(respBody, { status: resp.status, headers: resp.headers });
 }
 
 export default {
