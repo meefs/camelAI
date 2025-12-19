@@ -242,6 +242,11 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
     return this.getThread(id);
   }
 
+  setThreadProject(id: string, projectId: string): Thread | null {
+    this.sql.exec('UPDATE threads SET project_id = ? WHERE id = ?', projectId, id);
+    return this.getThread(id);
+  }
+
   deleteThread(id: string): boolean {
     this.sql.exec('DELETE FROM threads WHERE id = ?', id);
     return true;
@@ -310,10 +315,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private async ensureProjectId(org: string): Promise<string | null> {
     if (this.projectId) return this.projectId;
-    if (!this.threadId) return null;
+    if (!this.threadId) {
+      console.error('[DO] Missing thread_id; cannot resolve project');
+      return null;
+    }
     const indexStub = this.env.CHAT_INDEX.get(this.env.CHAT_INDEX.idFromName(org));
     const thread = await indexStub.getThread(this.threadId);
-    if (!thread?.project_id) return null;
+    if (!thread) {
+      console.error('[DO] Missing thread in index; cannot resolve project', this.threadId);
+      return null;
+    }
+    if (!thread.project_id) {
+      console.error('[DO] Thread missing project_id; refusing to start', this.threadId);
+      return null;
+    }
     this.projectId = thread.project_id;
     this.sql.exec(
       'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
@@ -426,7 +441,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (this.env.R2_MOUNT_DIR) processEnv.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
 
       const projectId = await this.ensureProjectId(org);
-      if (projectId) processEnv.PROJECT_ID = projectId;
+      if (!projectId) {
+        console.error('[DO] Missing project_id for thread; refusing to warm sandbox');
+        return;
+      }
+      processEnv.PROJECT_ID = projectId;
       const prefix = `${org}/`;
       processEnv.R2_PREFIX = prefix;
 
@@ -517,12 +536,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         processEnv.WRANGLER_SEND_METRICS = 'false';
         processEnv.CI = '1';
 
-      // Generate prefix-scoped temp credentials (required for R2 access)
-      const org = data.org || 'default';
-      const projectId = await this.ensureProjectId(org);
-      if (projectId) processEnv.PROJECT_ID = projectId;
-      const prefix = `${org}/`;
-      processEnv.R2_PREFIX = prefix;
+        // Generate prefix-scoped temp credentials (required for R2 access)
+        const org = data.org || 'default';
+        const projectId = await this.ensureProjectId(org);
+        if (!projectId) {
+          throw new Error('Missing project_id for thread');
+        }
+        processEnv.PROJECT_ID = projectId;
+        const prefix = `${org}/`;
+        processEnv.R2_PREFIX = prefix;
 
         if (this.env.R2_API_TOKEN && this.env.R2_PARENT_ACCESS_KEY_ID && this.env.R2_ACCOUNT_ID && this.env.R2_BUCKET_NAME) {
           const tempCreds = await getTempR2Credentials(
