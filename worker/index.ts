@@ -4,6 +4,7 @@ import openNextHandler from "../.open-next/worker.js";
 import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
 import { Sandbox } from '@cloudflare/sandbox';
+export { DoRpcService } from './rpc-service.js';
 
 // Export Sandbox as ThreadSandbox to match wrangler.jsonc class_name
 export { Sandbox as ThreadSandbox };

@@ -73,7 +73,7 @@ interface StreamingState {
 export default function Chat({ threadId }: ChatProps) {
   const router = useRouter();
   const { user, currentOrg, orgs, loading: authLoading, logout, switchOrg } = useAuth();
-  const backendProxyPrefix = process.env.NODE_ENV === 'development' ? '/__backend' : '';
+  const backendProxyPrefix = '';
   const [threads, setThreads] = useState<Thread[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');

@@ -35,6 +35,11 @@
 		{
 			"binding": "WORKER_SELF_REFERENCE",
 			"service": "chiridion-app"
+		},
+		{
+			"binding": "DO_RPC",
+			"service": "chiridion-app",
+			"entrypoint": "DoRpcService"
 		}
 	],
 	"containers": [
@@ -112,6 +117,11 @@
 				{
 					"binding": "WORKER_SELF_REFERENCE",
 					"service": "chiridion-app-staging"
+				},
+				{
+					"binding": "DO_RPC",
+					"service": "chiridion-app-staging",
+					"entrypoint": "DoRpcService"
 				}
 			],
 			"containers": [

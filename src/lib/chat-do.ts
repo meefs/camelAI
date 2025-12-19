@@ -1,92 +1,77 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare';
 import type { Thread, Message, Project } from '@/types';
-import type { ChatIndexDO, ChatThreadDO } from '../../worker/durable-objects';
+import type { DoRpcService } from '../../worker/rpc-service';
 
 interface Env {
-  CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
-  CHAT_INDEX: DurableObjectNamespace<ChatIndexDO>;
+  DO_RPC: DoRpcService;
 }
 
-async function getEnv(): Promise<Env> {
+async function getRpc(): Promise<DoRpcService> {
   const { env } = getCloudflareContext() as unknown as { env: Env };
-  return env;
-}
-
-function getIndexStub(env: Env, org: string) {
-  return env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(org));
-}
-
-function getThreadStub(env: Env, threadId: string) {
-  return env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  return env.DO_RPC;
 }
 
 export async function getThreads(org = 'default'): Promise<Thread[]> {
-  const env = await getEnv();
-  return getIndexStub(env, org).getThreads();
+  const rpc = await getRpc();
+  return rpc.getThreads(org);
 }
 
 export async function createThread(org = 'default', title: string | undefined, projectId: string): Promise<Thread> {
-  const env = await getEnv();
-  return getIndexStub(env, org).createThread(title, projectId);
+  const rpc = await getRpc();
+  return rpc.createThread(org, title, projectId);
 }
 
 export async function getThread(id: string, org = 'default'): Promise<Thread | null> {
-  const env = await getEnv();
-  return getIndexStub(env, org).getThread(id);
+  const rpc = await getRpc();
+  return rpc.getThread(id, org);
 }
 
 export async function updateThread(id: string, title: string, org = 'default'): Promise<Thread | null> {
-  const env = await getEnv();
-  return getIndexStub(env, org).updateThread(id, title);
+  const rpc = await getRpc();
+  return rpc.updateThread(id, title, org);
 }
 
 export async function deleteThread(id: string, org = 'default'): Promise<void> {
-  const env = await getEnv();
-  // Delete messages from thread DO
-  await getThreadStub(env, id).deleteAllMessages();
-  // Delete from index
-  await getIndexStub(env, org).deleteThread(id);
+  const rpc = await getRpc();
+  await rpc.deleteThread(id, org);
 }
 
 export async function getMessages(threadId: string): Promise<Message[]> {
-  const env = await getEnv();
-  return getThreadStub(env, threadId).getMessages();
+  const rpc = await getRpc();
+  return rpc.getMessages(threadId);
 }
 
 export async function addMessage(threadId: string, role: string, content: string, org = 'default'): Promise<Message> {
-  const env = await getEnv();
-  const msg = await getThreadStub(env, threadId).addMessage(role, content);
-  // Update thread timestamp in index
-  await getIndexStub(env, org).touchThread(threadId);
-  return msg;
+  const rpc = await getRpc();
+  return rpc.addMessage(threadId, role, content, org);
 }
 
 export async function getProjects(org = 'default'): Promise<Project[]> {
-  const env = await getEnv();
-  return getIndexStub(env, org).getProjects();
+  const rpc = await getRpc();
+  return rpc.getProjects(org);
 }
 
 export async function getProjectsByUser(org = 'default', userId: string): Promise<Project[]> {
-  const env = await getEnv();
-  return getIndexStub(env, org).getProjectsByUser(userId);
+  const rpc = await getRpc();
+  return rpc.getProjectsByUser(org, userId);
 }
 
 export async function createProject(org = 'default', name?: string, createdBy?: string): Promise<Project> {
-  const env = await getEnv();
-  return getIndexStub(env, org).createProject(name, createdBy);
+  const rpc = await getRpc();
+  return rpc.createProject(org, name, createdBy);
 }
 
 export async function getProject(id: string, org = 'default'): Promise<Project | null> {
-  const env = await getEnv();
-  return getIndexStub(env, org).getProject(id);
+  const rpc = await getRpc();
+  return rpc.getProject(id, org);
 }
 
 export async function updateProject(id: string, name: string, org = 'default'): Promise<Project | null> {
-  const env = await getEnv();
-  return getIndexStub(env, org).updateProject(id, name);
+  const rpc = await getRpc();
+  return rpc.updateProject(id, name, org);
 }
 
 export async function deleteProject(id: string, org = 'default'): Promise<void> {
-  const env = await getEnv();
-  await getIndexStub(env, org).deleteProject(id);
+  const rpc = await getRpc();
+  await rpc.deleteProject(id, org);
 }

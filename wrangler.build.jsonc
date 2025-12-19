@@ -8,6 +8,13 @@
 		"binding": "ASSETS",
 		"directory": ".open-next/assets"
 	},
+	"services": [
+		{
+			"binding": "DO_RPC",
+			"service": "chiridion-app",
+			"entrypoint": "DoRpcService"
+		}
+	],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },

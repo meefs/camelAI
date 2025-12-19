@@ -1,0 +1,34 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "chiridion-app-dev",
+	"compatibility_date": "2025-12-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"vars": {
+		"R2_BUCKET_NAME": "chiridion-sandbox",
+		"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+		"R2_MOUNT_DIR": "/home/claude",
+		"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
+		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+		"CF_DISPATCH_NAMESPACE": "chiridion-platform"
+	},
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".open-next/assets"
+	},
+	"services": [
+		{
+			"binding": "DO_RPC",
+			"service": "chiridion-app",
+			"entrypoint": "DoRpcService"
+		}
+	],
+	"kv_namespaces": [
+		{
+			"binding": "EMAIL_TO_USER",
+			"id": "45b452b3b19c42f6991408c140149a70"
+		}
+	],
+	"observability": {
+		"enabled": true
+	}
+}
