@@ -4,8 +4,6 @@ import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
-const SANDBOX_TUNNEL_PORT = 8787;
-const SANDBOX_TUNNEL_COMMAND = 'bun /app/tunnel-server.mjs';
 
 function getExternalOriginFromHeaders(request: Request, fallbackUrl: URL): string {
   const forwardedProtoRaw = request.headers.get('x-forwarded-proto');
@@ -272,8 +270,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private deployScriptName: string | null = null;
   private projectId: string | null = null;
   private threadId: string | null = null;
-  private sandboxTunnelSocket: WebSocket | null = null;
-  private sandboxTunnelPromise: Promise<WebSocket | null> | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -365,109 +361,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     await tokenKv.put(`platform_script_token:${this.deployToken}`, this.deployScriptName);
   }
 
-  private async ensureSandboxTunnel(org: string): Promise<void> {
-    if (this.sandboxTunnelPromise) {
-      await this.sandboxTunnelPromise;
-      return;
-    }
-    if (this.sandboxTunnelSocket && this.sandboxTunnelSocket.readyState === WebSocket.OPEN) {
-      return;
-    }
-
-    this.sandboxTunnelPromise = (async () => {
-      const sandboxId = this.ctx.id.toString().slice(0, 63);
-      this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
-      await this.ensureSandboxTunnelServer();
-
-      const request = new Request('http://sandbox-tunnel', {
-        headers: {
-          Upgrade: 'websocket',
-          Connection: 'Upgrade',
-        },
-      });
-
-      const response = await this.sandbox.wsConnect(request, SANDBOX_TUNNEL_PORT);
-      const ws = response.webSocket;
-      if (!ws) {
-        throw new Error('Sandbox tunnel wsConnect failed: missing WebSocket');
-      }
-
-      ws.accept();
-      ws.addEventListener('message', (event) => {
-        this.handleSandboxTunnelMessage(event.data);
-      });
-      ws.addEventListener('close', () => {
-        if (this.sandboxTunnelSocket === ws) this.sandboxTunnelSocket = null;
-      });
-      ws.addEventListener('error', () => {
-        if (this.sandboxTunnelSocket === ws) this.sandboxTunnelSocket = null;
-      });
-
-      this.sandboxTunnelSocket = ws;
-      const projectId = await this.ensureProjectId(org);
-      ws.send(
-        JSON.stringify({
-          type: 'tunnel_init',
-          threadId: this.threadId,
-          projectId,
-          org,
-        })
-      );
-      return ws;
-    })();
-
-    try {
-      await this.sandboxTunnelPromise;
-    } finally {
-      this.sandboxTunnelPromise = null;
-    }
-  }
-
-  private async ensureSandboxTunnelServer(): Promise<void> {
-    if (!this.sandbox) return;
-    try {
-      const processes = await this.sandbox.listProcesses();
-      const existing = processes.find((proc) => {
-        return (
-          proc.command.includes('/app/tunnel-server.mjs') &&
-          (proc.status === 'starting' || proc.status === 'running')
-        );
-      });
-
-      if (existing) {
-        if (existing.status === 'starting') {
-          await existing.waitForPort(SANDBOX_TUNNEL_PORT, { mode: 'tcp', timeout: 60_000 });
-        }
-        return;
-      }
-
-      const process = await this.sandbox.startProcess(SANDBOX_TUNNEL_COMMAND, {
-        env: { SANDBOX_TUNNEL_PORT: String(SANDBOX_TUNNEL_PORT) },
-      });
-      await process.waitForPort(SANDBOX_TUNNEL_PORT, { mode: 'tcp', timeout: 60_000 });
-    } catch (e) {
-      console.warn('[DO] Failed to start sandbox tunnel server:', e);
-    }
-  }
-
-  private handleSandboxTunnelMessage(message: string | ArrayBuffer) {
-    const text = typeof message === 'string' ? message : new TextDecoder().decode(message);
-    try {
-      const data = JSON.parse(text);
-      if (data?.type === 'emit' && data.event) {
-        this.broadcast({ type: 'sandbox_emit', event: data.event });
-        return;
-      }
-      if (data?.type === 'tunnel_ready') {
-        console.log('[DO] Sandbox tunnel ready');
-      } else if (data?.type === 'tunnel_ack') {
-        console.log('[DO] Sandbox tunnel acknowledged');
-      }
-    } catch {
-      // Ignore malformed messages.
-    }
-  }
-
   // WebSocket handling
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -503,7 +396,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         const envVars: Record<string, string> = {
           WRANGLER_SEND_METRICS: 'false',
           CI: '1',
-          SANDBOX_TUNNEL_PORT: String(SANDBOX_TUNNEL_PORT),
         };
         const projectId = await this.ensureProjectId(org);
         if (projectId) envVars.PROJECT_ID = projectId;
@@ -600,7 +492,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return;
       }
 
-    if (data.type === 'message') {
+      if (data.type === 'message') {
         if (data.threadId && !this.threadId) {
           this.threadId = data.threadId;
           this.sql.exec(
@@ -616,18 +508,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         // Get sandbox for this thread
         const sandboxId = this.ctx.id.toString().slice(0, 63);
         this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
-        try {
-          await this.ensureSandboxTunnel(data.org || 'default');
-        } catch (e) {
-          console.warn('[DO] Sandbox tunnel unavailable:', e);
-        }
 
         // Start Claude SDK driver as a background process
         console.log('[DO] API key present:', !!this.env.ANTHROPIC_API_KEY, 'length:', this.env.ANTHROPIC_API_KEY?.length);
         const processEnv: Record<string, string> = {
           ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
           CLAUDE_PROMPT: data.content,
-          SANDBOX_TUNNEL_PORT: String(SANDBOX_TUNNEL_PORT),
         };
 
         // Resume existing Claude session if we have one
