@@ -89,13 +89,19 @@ proxy.on('error', (err, _req, resOrSocket) => {
 const server = http.createServer((req, res) => {
   req.on('error', () => {});
   res.on('error', () => {});
-  const target = req.url && req.url.startsWith('/ws/') ? wranglerTarget : nextTarget;
+  const target =
+    req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'))
+      ? wranglerTarget
+      : nextTarget;
   proxy.web(req, res, { target });
 });
 
 server.on('upgrade', (req, socket, head) => {
   socket.on('error', () => {});
-  const target = req.url && req.url.startsWith('/ws/') ? wranglerTarget : nextTarget;
+  const target =
+    req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'))
+      ? wranglerTarget
+      : nextTarget;
   proxy.ws(req, socket, head, { target });
 });
 
