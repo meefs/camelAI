@@ -3,7 +3,7 @@ FROM docker.io/cloudflare/sandbox:0.6.6
 # Must match the @cloudflare/sandbox npm package version.
 
 # Optional: app ports you plan to expose via the Sandbox API (control plane uses 3000)
-EXPOSE 8080
+EXPOSE 8080 8787
 
 # R2 sync support (rclone for downloading/uploading on init/shutdown)
 ENV DEBIAN_FRONTEND=noninteractive
@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /tmp/rclone*
 
 # Copy and install Claude SDK driver
-COPY sandbox/package.json sandbox/driver.mjs sandbox/run-driver.sh /app/
+COPY sandbox/package.json sandbox/driver.mjs sandbox/run-driver.sh sandbox/tunnel-server.mjs /app/
 COPY sandbox/starter-worker /app/starter-worker
 WORKDIR /app
 RUN bun install
