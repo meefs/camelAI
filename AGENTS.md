@@ -18,7 +18,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 1. **Frontend** (`src/`)
    - Next.js 15 with React 19
    - WebSocket client for real-time streaming
-   - Tailwind CSS for styling
+   - Tailwind CSS v4 + shadcn/ui components
    - AuthContext for session/org state management
 
 2. **Worker** (`worker/`)
@@ -60,6 +60,45 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 |------|---------|
 | `wrangler.jsonc` | Main production/deployment config |
 | `wrangler.build.jsonc` | OpenNext build config |
+| `components.json` | shadcn/ui configuration |
+| `.mcp.json` | MCP server config (shadcn registry access) |
+
+## UI Components (shadcn/ui)
+
+This project uses [shadcn/ui](https://ui.shadcn.com) for UI components built on Radix UI primitives.
+
+### Configuration
+- **Style:** mira
+- **Base color:** zinc
+- **Font:** Inter
+- **Radius:** 0.5rem (medium)
+- **Icons:** Lucide
+
+### Key Files
+| File | Purpose |
+|------|---------|
+| `components.json` | shadcn configuration and registry settings |
+| `src/lib/utils.ts` | `cn()` helper for merging Tailwind classes |
+| `src/components/ui/` | Installed shadcn components |
+| `src/app/globals.css` | Theme CSS variables (light/dark) |
+
+### Adding Components
+
+Use the shadcn MCP server tools to browse and install components:
+- `shadcn_list_items` - List available components
+- `shadcn_get_item` - Get component details
+- `shadcn_add_item` - Install a component
+
+Or via CLI:
+```bash
+npx shadcn@latest add <component>
+```
+
+### Styling Guidelines
+- Use the `cn()` utility from `@/lib/utils` for conditional classes
+- Theme colors use CSS variables defined in `globals.css`
+- Components support light/dark mode via `.dark` class on root
+- Prefer shadcn components over custom implementations when available
 
 ## Data Flow
 
@@ -194,10 +233,13 @@ chiridion-app/
 │   │   │   └── threads/     # Thread CRUD
 │   │   ├── chat/[id]/       # Chat page
 │   │   ├── login/           # Login page
-│   │   └── signup/          # Signup page
-│   ├── components/          # React components
+│   │   ├── signup/          # Signup page
+│   │   └── globals.css      # Tailwind + shadcn theme variables
+│   ├── components/
+│   │   └── ui/              # shadcn/ui components
 │   ├── contexts/            # React contexts (AuthContext)
-│   ├── lib/                 # Utilities (auth, auth-do)
+│   ├── lib/
+│   │   └── utils.ts         # cn() helper for Tailwind classes
 │   └── types.ts             # TypeScript types
 ├── worker/
 │   ├── index.ts             # Worker entry (production)
@@ -211,6 +253,8 @@ chiridion-app/
 ├── tests/                   # Vitest unit tests
 ├── wrangler.jsonc           # Production config
 ├── wrangler.build.jsonc     # OpenNext build config
+├── components.json          # shadcn/ui config
+├── .mcp.json                # MCP server config
 └── package.json
 ```
 
