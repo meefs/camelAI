@@ -29,25 +29,107 @@ function json(data: unknown, init?: ResponseInit): Response {
   });
 }
 
+const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
+const ASSETS_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
+
 function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
   const m = method.toUpperCase();
-  const dispatchScript = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
   const scriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/scripts\/[^/]+\/settings$/;
   const assetsUploadSession = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
-  const assetsUpload = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
 
   switch (m) {
     case 'GET':
-      return dispatchScript.test(pathname) || scriptSettings.test(pathname);
+      return DISPATCH_SCRIPT_UPLOAD.test(pathname) || scriptSettings.test(pathname);
     case 'PUT':
-      return dispatchScript.test(pathname);
+      return DISPATCH_SCRIPT_UPLOAD.test(pathname);
     case 'PATCH':
       return scriptSettings.test(pathname);
     case 'POST':
-      return assetsUploadSession.test(pathname) || assetsUpload.test(pathname);
+      return assetsUploadSession.test(pathname) || ASSETS_UPLOAD.test(pathname);
     default:
       return false;
   }
+}
+
+function isUploadRequest(pathname: string, method: string): boolean {
+  const m = method.toUpperCase();
+  return (m === 'PUT' && DISPATCH_SCRIPT_UPLOAD.test(pathname)) || (m === 'POST' && ASSETS_UPLOAD.test(pathname));
+}
+
+function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
+  const boundaryMatch = contentType.match(/boundary=([^;]+)/i);
+  const boundary = boundaryMatch?.[1]?.trim().replace(/^"|"$/g, '');
+  if (!boundary) {
+    return null;
+  }
+
+  const decoder = new TextDecoder('utf-8');
+  const text = decoder.decode(body);
+  const delimiter = `--${boundary}`;
+  const parts = text.split(delimiter);
+  const files: string[] = [];
+  const wranglerConfigs: Array<{ filename: string; content: string; size: number; truncated: boolean }> = [];
+  const formParts: Array<{
+    name: string | null;
+    filename: string | null;
+    contentType: string | null;
+    size: number;
+    preview: string;
+    truncated: boolean;
+  }> = [];
+  const maxConfigLogChars = 20000;
+  const maxPartLogChars = 2000;
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed || trimmed === '--') continue;
+
+    const headerEnd = part.indexOf('\r\n\r\n');
+    if (headerEnd === -1) continue;
+    const headerText = part.slice(0, headerEnd);
+    const bodyText = part.slice(headerEnd + 4).replace(/\r\n$/, '');
+
+    const dispositionMatch = headerText.match(/Content-Disposition:[^\n]*\n?/i);
+    if (!dispositionMatch) continue;
+
+    const nameMatch = headerText.match(/name="([^"]+)"/i);
+    const filenameMatch = headerText.match(/filename="([^"]+)"/i);
+    const contentTypeMatch = headerText.match(/Content-Type:\s*([^\r\n]+)/i);
+
+    const name = nameMatch?.[1]?.trim() ?? null;
+    const filename = filenameMatch?.[1]?.trim() ?? null;
+    const partContentType = contentTypeMatch?.[1]?.trim() ?? null;
+    const size = bodyText.length;
+
+    if (filename) {
+      files.push(filename);
+    }
+
+    const previewTruncated = bodyText.length > maxPartLogChars;
+    const preview = previewTruncated ? `${bodyText.slice(0, maxPartLogChars)}\n...[truncated]` : bodyText;
+    formParts.push({
+      name,
+      filename,
+      contentType: partContentType,
+      size,
+      preview,
+      truncated: previewTruncated,
+    });
+
+    const wranglerKey = filename ?? name;
+    if (wranglerKey === 'wrangler.toml' || wranglerKey === 'wrangler.jsonc') {
+      const truncated = bodyText.length > maxConfigLogChars;
+      const content = truncated ? `${bodyText.slice(0, maxConfigLogChars)}\n...[truncated]` : bodyText;
+      wranglerConfigs.push({
+        filename: wranglerKey,
+        content,
+        size,
+        truncated,
+      });
+    }
+  }
+
+  return { files, wranglerConfigs, formParts };
 }
 
 async function proxyCloudflareApi(request: Request, env: Env): Promise<Response> {
@@ -161,6 +243,40 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     method === 'GET' || method === 'HEAD'
       ? undefined
       : await request.arrayBuffer();
+
+  if (body && isUploadRequest(pathname, method)) {
+    const contentType = request.headers.get('Content-Type') ?? '';
+    if (contentType.toLowerCase().includes('multipart/form-data')) {
+      const uploadInfo = parseMultipartUploads(body, contentType);
+      if (uploadInfo?.files.length) {
+        console.log('[cf-api-proxy] upload files', {
+          method,
+          path: pathname,
+          files: uploadInfo.files,
+        });
+      }
+      if (uploadInfo?.formParts.length) {
+        console.log('[cf-api-proxy] upload form parts', {
+          method,
+          path: pathname,
+          partCount: uploadInfo.formParts.length,
+          parts: uploadInfo.formParts,
+        });
+      }
+      if (uploadInfo?.wranglerConfigs.length) {
+        for (const config of uploadInfo.wranglerConfigs) {
+          console.log('[cf-api-proxy] wrangler config upload', {
+            method,
+            path: pathname,
+            filename: config.filename,
+            size: config.size,
+            truncated: config.truncated,
+            content: config.content,
+          });
+        }
+      }
+    }
+  }
 
   const resp = await fetch(upstreamUrl, { method, headers, body });
   const respBody = await resp.arrayBuffer();
