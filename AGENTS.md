@@ -68,7 +68,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 This project uses [shadcn/ui](https://ui.shadcn.com) for UI components built on Radix UI primitives.
 
 ### Configuration
-- **Style:** mira
+- **Style:** radix-mira (compact/dense interface)
 - **Base color:** zinc
 - **Font:** Inter
 - **Radius:** 0.5rem (medium)
