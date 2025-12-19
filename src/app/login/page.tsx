@@ -8,7 +8,18 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { RadialGridBackground } from '@/components/ui/radial-grid-background';
+import { SlotMachinePrompt } from '@/components/ui/slot-machine-prompt';
 import { AlertCircle, MessageSquare } from 'lucide-react';
+
+const inspirationalPrompts = [
+  "Alert me in Slack whenever someone signs up with a .edu email address",
+  "Build a feedback form that saves responses and emails me a daily summary",
+  "Send my team a weekly metrics email with Stripe revenue every Monday",
+  "Make a simple CRM for tracking investor conversations and follow-ups",
+  "Create a client portal where they upload files and I get notified in Slack",
+  "Build an internal calculator for sales reps to quote custom pricing",
+];
 
 export default function LoginPage() {
   const router = useRouter();
@@ -118,14 +129,15 @@ export default function LoginPage() {
         </div>
       </div>
       <div className="bg-muted relative hidden lg:block">
-        <div className="absolute inset-0 bg-gradient-to-br from-primary/20 via-primary/5 to-transparent" />
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="text-center p-8">
-            <MessageSquare className="size-16 text-primary/40 mx-auto mb-4" />
-            <p className="text-muted-foreground/60 text-lg font-medium">
+        <RadialGridBackground />
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 p-8">
+          <div className="text-center">
+            <MessageSquare className="size-12 text-primary/40 mx-auto mb-3" />
+            <p className="text-muted-foreground/60 text-sm font-medium">
               AI-powered conversations
             </p>
           </div>
+          <SlotMachinePrompt prompts={inspirationalPrompts} />
         </div>
       </div>
     </div>
