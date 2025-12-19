@@ -1,45 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, parseSSEStream, type Sandbox, type LogEvent } from '@cloudflare/sandbox';
+import { proxyCloudflareApiInternal } from './cf-api-proxy.js';
 import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
 
-const SESSION_COOKIE_NAME = 'chiridion_session';
-const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
 const SANDBOX_TUNNEL_PORT = 8787;
 const SANDBOX_TUNNEL_COMMAND = 'bun /app/tunnel-server.mjs';
-
-function getExternalOriginFromHeaders(request: Request, fallbackUrl: URL): string {
-  const forwardedProtoRaw = request.headers.get('x-forwarded-proto');
-  const forwardedProto = forwardedProtoRaw ? forwardedProtoRaw.split(',')[0]?.trim() : null;
-  const forwardedHostRaw = request.headers.get('x-forwarded-host');
-  const forwardedHost = forwardedHostRaw ? forwardedHostRaw.split(',')[0]?.trim() : null;
-
-  let proto = forwardedProto;
-  if (!proto) {
-    const cfVisitor = request.headers.get('cf-visitor');
-    if (cfVisitor) {
-      try {
-        const parsed = JSON.parse(cfVisitor) as { scheme?: unknown };
-        if (typeof parsed.scheme === 'string' && parsed.scheme) proto = parsed.scheme;
-      } catch {
-        // ignore
-      }
-    }
-  }
-  if (!proto) proto = fallbackUrl.protocol.replace(/:$/, '');
-  if (!proto) proto = 'https';
-
-  const host = forwardedHost || request.headers.get('host') || fallbackUrl.host;
-  return `${proto}://${host}`;
-}
-
-function getCookieValue(cookieHeader: string | null, name: string): string | null {
-  if (!cookieHeader) return null;
-  for (const part of cookieHeader.split(';')) {
-    const [k, ...rest] = part.trim().split('=');
-    if (k === name) return rest.join('=') || '';
-  }
-  return null;
-}
+const SANDBOX_API_FAKE_TOKEN = 'sandbox-tunnel';
 
 export interface Thread {
   id: string;
@@ -80,7 +46,6 @@ export interface ChatEnv {
   R2_MOUNT_READONLY?: string;
   R2_API_TOKEN?: string;
   R2_PARENT_ACCESS_KEY_ID?: string;
-  PLATFORM_SCRIPT_TOKENS?: KVNamespace;
 }
 
 // One DO per org - stores thread list only
@@ -266,9 +231,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private claudeSessionId: string | null = null;
   private currentProcessId: string | null = null;
   private sandbox: ReturnType<typeof getSandbox> | null = null;
-  private chiridionBaseUrl: string | null = null;
-  private chiridionSessionId: string | null = null;
-  private deployToken: string | null = null;
   private deployScriptName: string | null = null;
   private projectId: string | null = null;
   private threadId: string | null = null;
@@ -298,10 +260,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.claudeSessionId = (rows[0] as { value: string }).value;
     }
 
-    const tokenRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'deploy_token').toArray();
-    if (tokenRows.length > 0) {
-      this.deployToken = (tokenRows[0] as { value: string }).value;
-    }
     const scriptRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'deploy_script_name').toArray();
     if (scriptRows.length > 0) {
       this.deployScriptName = (scriptRows[0] as { value: string }).value;
@@ -342,15 +300,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return this.projectId;
   }
 
-  private async ensureDeployToken(): Promise<void> {
-    if (!this.deployToken) {
-      this.deployToken = crypto.randomUUID();
-      this.sql.exec(
-        'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
-        'deploy_token',
-        this.deployToken
-      );
-    }
+  private async ensureDeployScriptName(): Promise<void> {
     if (!this.deployScriptName) {
       this.deployScriptName = `wfp-${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
       this.sql.exec(
@@ -359,10 +309,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.deployScriptName
       );
     }
-
-    // Persist mapping in KV so the API proxy can override script_name for this token.
-    const tokenKv = this.env.PLATFORM_SCRIPT_TOKENS ?? this.env.EMAIL_TO_USER;
-    await tokenKv.put(`platform_script_token:${this.deployToken}`, this.deployScriptName);
   }
 
   private async ensureSandboxTunnel(org: string): Promise<void> {
@@ -394,7 +340,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       ws.accept();
       ws.addEventListener('message', (event) => {
-        this.handleSandboxTunnelMessage(event.data);
+        void this.handleSandboxTunnelMessage(ws, event.data);
       });
       ws.addEventListener('close', () => {
         if (this.sandboxTunnelSocket === ws) this.sandboxTunnelSocket = null;
@@ -450,12 +396,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private handleSandboxTunnelMessage(message: string | ArrayBuffer) {
+  private async handleSandboxTunnelMessage(ws: WebSocket, message: string | ArrayBuffer) {
     const text = typeof message === 'string' ? message : new TextDecoder().decode(message);
     try {
       const data = JSON.parse(text);
       if (data?.type === 'emit' && data.event) {
         this.broadcast({ type: 'sandbox_emit', event: data.event });
+        return;
+      }
+      if (data?.type === 'cf_api_request' && data.id) {
+        await this.handleCfApiProxyRequest(ws, data);
         return;
       }
       if (data?.type === 'tunnel_ready') {
@@ -465,6 +415,68 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
     } catch {
       // Ignore malformed messages.
+    }
+  }
+
+  private async handleCfApiProxyRequest(ws: WebSocket, data: Record<string, unknown>) {
+    try {
+      await this.ensureDeployScriptName();
+      const method = typeof data.method === 'string' ? data.method : 'GET';
+      const path = typeof data.path === 'string' ? data.path : '/';
+      const search = typeof data.search === 'string' ? data.search : '';
+      const headersInput = typeof data.headers === 'object' && data.headers ? data.headers : {};
+      const headers = new Headers(headersInput as Record<string, string>);
+
+      let body: ArrayBuffer | undefined;
+      if (typeof data.body === 'string' && data.body.length > 0) {
+        const binary = atob(data.body);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        body = bytes.buffer;
+      }
+
+      const url = new URL(path + search, 'http://sandbox-tunnel');
+      const proxyRequest = new Request(url.toString(), {
+        method,
+        headers,
+        body: method === 'GET' || method === 'HEAD' ? undefined : body,
+      });
+      const response = await proxyCloudflareApiInternal(proxyRequest, this.env, this.deployScriptName);
+      const responseBody = await response.arrayBuffer();
+      const responseHeaders: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        responseHeaders[key] = value;
+      });
+
+      const bytes = new Uint8Array(responseBody);
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+      }
+      const bodyBase64 = binary ? btoa(binary) : '';
+
+      ws.send(
+        JSON.stringify({
+          type: 'cf_api_response',
+          id: data.id,
+          status: response.status,
+          headers: responseHeaders,
+          body: bodyBase64,
+        })
+      );
+    } catch (e) {
+      ws.send(
+        JSON.stringify({
+          type: 'cf_api_response',
+          id: data.id,
+          status: 502,
+          headers: { 'content-type': 'text/plain' },
+          body: btoa(`proxy error: ${String(e)}`),
+        })
+      );
     }
   }
 
@@ -486,14 +498,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     // Accept WebSocket upgrades regardless of the path (the Worker selects the DO instance).
     if (request.headers.get('Upgrade') === 'websocket') {
 
-      this.chiridionBaseUrl =
-        getExternalOriginFromHeaders(request, url);
-
-      this.chiridionSessionId =
-        request.headers.get(CHIRIDION_SESSION_HEADER) ??
-        getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
-
-      await this.ensureDeployToken();
+      await this.ensureDeployScriptName();
 
       // Persist env vars at the sandbox/container level so any subsequent processes (not just the
       // Claude driver) inherit the Wrangler proxy configuration.
@@ -507,9 +512,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         };
         const projectId = await this.ensureProjectId(org);
         if (projectId) envVars.PROJECT_ID = projectId;
-        if (this.chiridionBaseUrl) envVars.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
-        if (this.chiridionBaseUrl) envVars.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl.replace(/\/+$/, '')}/client/v4`;
-        if (this.deployToken) envVars.CLOUDFLARE_API_TOKEN = this.deployToken;
+        envVars.CLOUDFLARE_API_BASE_URL = `http://127.0.0.1:${SANDBOX_TUNNEL_PORT}/client/v4`;
+        envVars.CLOUDFLARE_API_TOKEN = SANDBOX_API_FAKE_TOKEN;
         if (this.env.CF_ACCOUNT_ID) envVars.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
         await this.sandbox.setEnvVars(envVars);
       } catch (e) {
@@ -641,11 +645,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         if (this.env.R2_MOUNT_DIR) processEnv.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
         if (this.env.R2_MOUNT_READONLY) processEnv.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
 
-        if (this.chiridionBaseUrl) processEnv.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
-        if (this.chiridionSessionId) processEnv.CHIRIDION_SESSION_ID = this.chiridionSessionId;
-
-        // Configure Wrangler to use our local Cloudflare API proxy and a per-sandbox deploy token.
-        if (this.deployToken) processEnv.CLOUDFLARE_API_TOKEN = this.deployToken;
+        // Configure Wrangler to use the sandbox tunnel for Cloudflare API calls.
+        processEnv.CLOUDFLARE_API_BASE_URL = `http://127.0.0.1:${SANDBOX_TUNNEL_PORT}/client/v4`;
+        processEnv.CLOUDFLARE_API_TOKEN = SANDBOX_API_FAKE_TOKEN;
         if (this.env.CF_ACCOUNT_ID) processEnv.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
         processEnv.WRANGLER_SEND_METRICS = 'false';
         processEnv.CI = '1';

@@ -5,6 +5,7 @@ TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
 FIRST_RUN_MARKER="/tmp/.r2-synced"
 SYNC_ONLY="${SYNC_ONLY:-}"
 R2_MOUNT_READONLY="${R2_MOUNT_READONLY:-}"
+SANDBOX_TUNNEL_PORT="${SANDBOX_TUNNEL_PORT:-8787}"
 
 is_truthy() {
   case "${1:-}" in
@@ -50,6 +51,12 @@ if [ -z "${R2_BUCKET_NAME:-}" ] || [ -z "${R2_ACCOUNT_ID:-}" ] || [ -z "${AWS_AC
   if [ -n "$SYNC_ONLY" ]; then
     exit 0
   fi
+  if [ -z "${CLOUDFLARE_API_BASE_URL:-}" ]; then
+    export CLOUDFLARE_API_BASE_URL="http://127.0.0.1:${SANDBOX_TUNNEL_PORT}/client/v4"
+  fi
+  if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    export CLOUDFLARE_API_TOKEN="sandbox-tunnel"
+  fi
   exit_code=0
   bun /app/driver.mjs || exit_code=$?
   exit "$exit_code"
@@ -93,6 +100,14 @@ fi
 # If sync-only mode, exit now
 if [ -n "$SYNC_ONLY" ]; then
   exit 0
+fi
+
+# Ensure proxy vars exist for wrangler commands inside the container.
+if [ -z "${CLOUDFLARE_API_BASE_URL:-}" ]; then
+  export CLOUDFLARE_API_BASE_URL="http://127.0.0.1:${SANDBOX_TUNNEL_PORT}/client/v4"
+fi
+if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+  export CLOUDFLARE_API_TOKEN="sandbox-tunnel"
 fi
 
 # Create project dir and cd into it

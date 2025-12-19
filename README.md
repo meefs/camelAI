@@ -66,9 +66,9 @@ npm run deploy
 
 This runs `wrangler deploy` inside the sandbox. The app injects:
 
-- `CLOUDFLARE_API_TOKEN` as a per-sandbox deploy token that maps to a fixed `script_name` in KV (the proxy overrides the script name)
+- `CLOUDFLARE_API_TOKEN` as a placeholder token for the private tunnel proxy (the proxy injects the upstream token)
 
-The sandbox runs Wrangler directly against the app’s Cloudflare API proxy by setting `CLOUDFLARE_API_BASE_URL` to `${CHIRIDION_BASE_URL}/client/v4`. The app proxy requires a deploy token (currently provided via Wrangler’s `Authorization: Bearer ...` header).
+The sandbox runs Wrangler through a private reverse-tunnel proxy by setting `CLOUDFLARE_API_BASE_URL` to `http://127.0.0.1:8787/client/v4`. The tunnel is initiated by the Durable Object, so the sandbox only needs a placeholder `CLOUDFLARE_API_TOKEN`.
 
 ## Learn More
 

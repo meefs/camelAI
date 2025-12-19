@@ -7,6 +7,20 @@ if (!Number.isFinite(port)) {
 
 const clients = new Set();
 const decoder = new TextDecoder();
+const pending = new Map();
+
+function getProxySocket() {
+  for (const ws of clients) return ws;
+  return null;
+}
+
+function withTimeout(promise, timeoutMs, onTimeout) {
+  let timeoutId;
+  const timeoutPromise = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve(onTimeout()), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
+}
 
 function broadcast(message) {
   const payload = JSON.stringify(message);
@@ -41,6 +55,54 @@ const server = Bun.serve({
         });
     }
 
+    if (url.pathname.startsWith('/client/v4')) {
+      const ws = getProxySocket();
+      if (!ws) {
+        return new Response('tunnel not connected', { status: 503 });
+      }
+
+      const requestId = crypto.randomUUID();
+      const method = req.method.toUpperCase();
+      const headers = {};
+      for (const [key, value] of req.headers.entries()) {
+        headers[key] = value;
+      }
+      const body =
+        method === 'GET' || method === 'HEAD'
+          ? null
+          : Buffer.from(await req.arrayBuffer()).toString('base64');
+
+      const responsePromise = new Promise((resolve) => {
+        pending.set(requestId, resolve);
+      });
+
+      ws.send(
+        JSON.stringify({
+          type: 'cf_api_request',
+          id: requestId,
+          method,
+          path: url.pathname,
+          search: url.search,
+          headers,
+          body,
+        })
+      );
+
+      const response = await withTimeout(responsePromise, 120000, () => ({
+        type: 'cf_api_response',
+        id: requestId,
+        status: 504,
+        headers: { 'content-type': 'text/plain' },
+        body: Buffer.from('tunnel timeout').toString('base64'),
+      }));
+
+      pending.delete(requestId);
+      const status = response.status ?? 502;
+      const responseHeaders = new Headers(response.headers ?? {});
+      const responseBody = response.body ? Buffer.from(response.body, 'base64') : null;
+      return new Response(responseBody, { status, headers: responseHeaders });
+    }
+
     return new Response('Sandbox tunnel');
   },
   websocket: {
@@ -48,14 +110,19 @@ const server = Bun.serve({
       clients.add(ws);
       ws.send(JSON.stringify({ type: 'tunnel_ready', pid: process.pid }));
     },
-    message(ws, message) {
+    message(_ws, message) {
       const text = typeof message === 'string' ? message : decoder.decode(message);
       try {
         const data = JSON.parse(text);
         if (data?.type === 'ping') {
-          ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+          _ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
         } else if (data?.type === 'tunnel_init') {
-          ws.send(JSON.stringify({ type: 'tunnel_ack', ts: Date.now() }));
+          _ws.send(JSON.stringify({ type: 'tunnel_ack', ts: Date.now() }));
+        } else if (data?.type === 'cf_api_response' && data.id) {
+          const resolver = pending.get(data.id);
+          if (resolver) {
+            resolver(data);
+          }
         }
       } catch {
         // Ignore malformed messages.
