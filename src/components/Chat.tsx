@@ -6,8 +6,13 @@ import type { Thread, Message } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { AppSidebar } from '@/components/sidebar/app-sidebar';
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar';
-import { Separator } from '@/components/ui/separator';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+} from '@/components/ui/breadcrumb';
 
 interface ChatProps {
   threadId?: string;
@@ -363,12 +368,22 @@ export default function Chat({ threadId }: ChatProps) {
         <AppSidebar threadId={threadId} />
         <SidebarInset>
           {/* Header with sidebar trigger */}
-          <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
-            <SidebarTrigger className="-ml-1" />
-            <Separator orientation="vertical" className="mr-2 h-4" />
-            <span className="text-sm font-medium">
-              {threadId ? 'Chat' : 'New Chat'}
-            </span>
+          <header className="flex h-16 shrink-0 items-center gap-2 border-b border-border">
+            <div className="flex items-center gap-2 px-4">
+              <SidebarTrigger className="-ml-1" />
+              <div
+                data-orientation="vertical"
+                role="none"
+                className="bg-border shrink-0 w-px h-4 mr-2"
+              />
+              <Breadcrumb>
+                <BreadcrumbList>
+                  <BreadcrumbItem>
+                    <BreadcrumbPage>{threadId ? 'Chat' : 'New Chat'}</BreadcrumbPage>
+                  </BreadcrumbItem>
+                </BreadcrumbList>
+              </Breadcrumb>
+            </div>
           </header>
 
           {/* Main Chat Area */}
