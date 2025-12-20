@@ -65,40 +65,20 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 
 ## UI Components (shadcn/ui)
 
-This project uses [shadcn/ui](https://ui.shadcn.com) for UI components built on Radix UI primitives.
+This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When doing ANY UI work, the `shadcn-components` skill will auto-activate** with detailed workflow instructions.
 
-### Configuration
-- **Style:** radix-mira (compact/dense interface)
-- **Base color:** zinc
-- **Font:** Inter
-- **Radius:** 0.5rem (medium)
-- **Icons:** Lucide
+### Key Resources
+| Resource | Purpose |
+|----------|---------|
+| `.claude/skills/shadcn-components/` | Skill with required workflow and composition patterns |
+| `docs/shadcn-components.md` | Full component catalog organized by category |
+| `components.json` | shadcn configuration |
+| `src/components/ui/` | Installed components |
 
-### Key Files
-| File | Purpose |
-|------|---------|
-| `components.json` | shadcn configuration and registry settings |
-| `src/lib/utils.ts` | `cn()` helper for merging Tailwind classes |
-| `src/components/ui/` | Installed shadcn components |
-| `src/app/globals.css` | Theme CSS variables (light/dark) |
-
-### Adding Components
-
-Use the shadcn MCP server tools to browse and install components:
-- `shadcn_list_items` - List available components
-- `shadcn_get_item` - Get component details
-- `shadcn_add_item` - Install a component
-
-Or via CLI:
-```bash
-npx shadcn@latest add <component>
-```
-
-### Styling Guidelines
-- Use the `cn()` utility from `@/lib/utils` for conditional classes
-- Theme colors use CSS variables defined in `globals.css`
-- Components support light/dark mode via `.dark` class on root
-- Prefer shadcn components over custom implementations when available
+### Quick Reference
+- **Style:** radix-mira, zinc, Inter font, 0.5rem radius, Lucide icons
+- **Install:** `npx shadcn@latest add <component>`
+- **Styling:** Use `cn()` from `@/lib/utils`, theme vars in `globals.css`
 
 ## Data Flow
 
