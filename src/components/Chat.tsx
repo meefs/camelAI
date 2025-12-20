@@ -13,6 +13,7 @@ import {
   BreadcrumbList,
   BreadcrumbPage,
 } from '@/components/ui/breadcrumb';
+import { PromptInput } from '@/components/prompt-input';
 
 interface ChatProps {
   threadId?: string;
@@ -88,12 +89,15 @@ export default function Chat({ threadId }: ChatProps) {
   const [loading, setLoading] = useState(false);
   const [connected, setConnected] = useState(false);
   const [streaming, setStreaming] = useState<StreamingState>({ content: [], isStreaming: false });
+  const [welcomeInput, setWelcomeInput] = useState('');
+  const [isCreatingThread, setIsCreatingThread] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const isFirstMessage = useRef(true);
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const intentionalClose = useRef(false);
+  const pendingMessage = useRef<string | null>(null);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -150,6 +154,23 @@ export default function Chat({ threadId }: ChatProps) {
       if (wsRef.current !== ws) return;
       setConnected(true);
       reconnectAttempts.current = 0;
+
+      // Send pending message if exists (from welcome screen)
+      if (pendingMessage.current) {
+        const msg = pendingMessage.current;
+        pendingMessage.current = null;
+        setLoading(true);
+        setStreaming({ content: [], isStreaming: false });
+        ws.send(JSON.stringify({
+          type: 'message',
+          content: msg,
+          threadId: id,
+          org: currentOrg?.id || 'default',
+          autoTitle: true,
+        }));
+        isFirstMessage.current = false;
+        setTimeout(fetchThreads, 500);
+      }
     };
 
     ws.onmessage = (event) => {
@@ -327,6 +348,29 @@ export default function Chat({ threadId }: ChatProps) {
     router.push(`/chat/${thread.id}`);
   }
 
+  async function startNewChat() {
+    if (!welcomeInput.trim() || isCreatingThread) return;
+
+    setIsCreatingThread(true);
+    pendingMessage.current = welcomeInput.trim();
+    setWelcomeInput('');
+
+    try {
+      const res = await fetch(`${backendProxyPrefix}/api/threads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const thread = await res.json() as Thread;
+      setThreads([thread, ...threads]);
+      router.push(`/chat/${thread.id}`);
+    } catch (error) {
+      console.error('Failed to create thread:', error);
+      pendingMessage.current = null;
+      setIsCreatingThread(false);
+    }
+  }
+
   async function deleteThread(id: string, e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -337,8 +381,7 @@ export default function Chat({ threadId }: ChatProps) {
     }
   }
 
-  function sendMessage(e: React.FormEvent) {
-    e.preventDefault();
+  function sendMessage() {
     if (!input.trim() || !threadId || loading || !wsRef.current || !connected) return;
 
     const userMessage = input.trim();
@@ -474,32 +517,33 @@ export default function Chat({ threadId }: ChatProps) {
                 </div>
 
                 {/* Input */}
-                <form onSubmit={sendMessage} className="p-4 border-t border-border">
-                  <div className="flex gap-3 items-center">
-                    <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-muted-foreground animate-pulse'}`} title={connected ? 'Connected' : 'Connecting...'} />
-                    <input
-                      type="text"
-                      value={input}
-                      onChange={e => setInput(e.target.value)}
-                      placeholder={connected ? 'Type a message...' : 'Connecting...'}
-                      className="flex-1 bg-muted border border-input rounded-xl px-4 py-3 outline-none focus:border-ring transition"
-                      disabled={loading || !connected}
-                    />
-                    <button
-                      type="submit"
-                      disabled={loading || !input.trim() || !connected}
-                      className="px-6 py-3 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl font-medium transition"
-                    >
-                      Send
-                    </button>
-                  </div>
-                </form>
+                <div className="p-4 border-t border-border">
+                  <PromptInput
+                    value={input}
+                    onChange={setInput}
+                    onSubmit={sendMessage}
+                    placeholder="Type a message..."
+                    isLoading={loading}
+                    disabled={!connected}
+                  />
+                </div>
               </>
             ) : (
-              <div className="flex-1 flex items-center justify-center text-muted-foreground">
-                <div className="text-center">
-                  <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
-                  <p>Select a conversation or start a new chat</p>
+              <div className="flex-1 flex flex-col items-center justify-center p-4">
+                <div className="w-full max-w-2xl space-y-8">
+                  <div className="text-center">
+                    <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
+                    <p className="text-muted-foreground">What would you like to explore today?</p>
+                  </div>
+
+                  <PromptInput
+                    value={welcomeInput}
+                    onChange={setWelcomeInput}
+                    onSubmit={startNewChat}
+                    placeholder="Ask anything..."
+                    isLoading={isCreatingThread}
+                    minHeight="80px"
+                  />
                 </div>
               </div>
             )}
