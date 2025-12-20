@@ -10,7 +10,8 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { RadialGridBackground } from '@/components/ui/radial-grid-background';
 import { SlotMachinePrompt } from '@/components/ui/slot-machine-prompt';
-import { AlertCircle, MessageSquare } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
+import { LogoIcon } from '@/components/ui/logo';
 
 const inspirationalPrompts = [
   "Alert me in Slack whenever someone signs up with a .edu email address",
@@ -65,12 +66,10 @@ export default function LoginPage() {
   return (
     <div className="grid min-h-svh lg:grid-cols-2">
       <div className="flex flex-col gap-4 p-6 md:p-10">
-        <div className="flex justify-center gap-2 md:justify-start">
-          <Link href="/" className="flex items-center gap-2 font-medium">
-            <div className="bg-primary text-primary-foreground flex size-6 items-center justify-center rounded-md">
-              <MessageSquare className="size-4" />
-            </div>
-            Chiridion
+        <div className="flex justify-center md:justify-start">
+          <Link href="/" className="flex items-center gap-2">
+            <LogoIcon />
+            <span className="text-lg font-semibold tracking-tight">Chiridion</span>
           </Link>
         </div>
         <div className="flex flex-1 items-center justify-center">
@@ -131,12 +130,9 @@ export default function LoginPage() {
       <div className="bg-muted relative hidden lg:block">
         <RadialGridBackground />
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 p-8">
-          <div className="text-center">
-            <MessageSquare className="size-12 text-primary/40 mx-auto mb-3" />
-            <p className="text-muted-foreground/60 text-sm font-medium">
-              AI-powered conversations
-            </p>
-          </div>
+          <h2 className="text-3xl font-semibold tracking-tight text-foreground">
+            Software on demand.
+          </h2>
           <SlotMachinePrompt prompts={inspirationalPrompts} />
         </div>
       </div>
