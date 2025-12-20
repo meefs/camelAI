@@ -2,9 +2,12 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import type { Thread, Message } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
+import { AppSidebar } from '@/components/sidebar/app-sidebar';
+import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar';
+import { Separator } from '@/components/ui/separator';
+import { TooltipProvider } from '@/components/ui/tooltip';
 
 interface ChatProps {
   threadId?: string;
@@ -72,7 +75,7 @@ interface StreamingState {
 
 export default function Chat({ threadId }: ChatProps) {
   const router = useRouter();
-  const { user, currentOrg, orgs, loading: authLoading, logout, switchOrg } = useAuth();
+  const { user, currentOrg, loading: authLoading } = useAuth();
   const backendProxyPrefix = '';
   const [threads, setThreads] = useState<Thread[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -80,7 +83,6 @@ export default function Chat({ threadId }: ChatProps) {
   const [loading, setLoading] = useState(false);
   const [connected, setConnected] = useState(false);
   const [streaming, setStreaming] = useState<StreamingState>({ content: [], isStreaming: false });
-  const [showOrgSwitcher, setShowOrgSwitcher] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const isFirstMessage = useRef(true);
@@ -356,206 +358,139 @@ export default function Chat({ threadId }: ChatProps) {
   }
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
-      {/* Sidebar */}
-      <div className="w-64 bg-sidebar border-r border-sidebar-border flex flex-col">
-        <div className="p-4 border-b border-sidebar-border">
-          <button onClick={createThread} className="w-full py-2 px-4 bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg font-medium transition">
-            New Chat
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto">
-          {threads.map(thread => (
-            <Link
-              key={thread.id}
-              href={`/chat/${thread.id}`}
-              className={`group flex items-center gap-2 p-3 cursor-pointer hover:bg-sidebar-accent ${threadId === thread.id ? 'bg-sidebar-accent' : ''}`}
-            >
-              <span className="flex-1 truncate text-sm">{thread.title}</span>
-              <button
-                onClick={(e) => deleteThread(thread.id, e)}
-                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
-            </Link>
-          ))}
-        </div>
+    <TooltipProvider>
+      <SidebarProvider>
+        <AppSidebar threadId={threadId} />
+        <SidebarInset>
+          {/* Header with sidebar trigger */}
+          <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
+            <SidebarTrigger className="-ml-1" />
+            <Separator orientation="vertical" className="mr-2 h-4" />
+            <span className="text-sm font-medium">
+              {threadId ? 'Chat' : 'New Chat'}
+            </span>
+          </header>
 
-        {/* User section */}
-        <div className="border-t border-sidebar-border p-4 space-y-3">
-          {/* Org switcher */}
-          {orgs.length > 1 && (
-            <div className="relative">
-              <button
-                onClick={() => setShowOrgSwitcher(!showOrgSwitcher)}
-                className="w-full flex items-center justify-between px-3 py-2 text-sm bg-sidebar-accent hover:bg-accent rounded-lg transition"
-              >
-                <span className="truncate">{currentOrg?.name}</span>
-                <svg className="w-4 h-4 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-              {showOrgSwitcher && (
-                <div className="absolute bottom-full left-0 right-0 mb-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden">
-                  {orgs.map(org => (
-                    <button
-                      key={org.org_id}
-                      onClick={() => {
-                        switchOrg(org.org_id);
-                        setShowOrgSwitcher(false);
-                      }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-accent transition ${
-                        org.org_id === currentOrg?.id ? 'bg-accent' : ''
-                      }`}
-                    >
-                      {org.org_name}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* User info and logout */}
-          <div className="flex items-center justify-between">
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{user?.name || user?.email}</p>
-              {user?.name && <p className="text-xs text-muted-foreground truncate">{user?.email}</p>}
-            </div>
-            <button
-              onClick={() => logout()}
-              className="ml-2 p-2 text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition"
-              title="Sign out"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col">
-        {threadId ? (
-          <>
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {messages.map(msg => (
-                <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-2xl px-4 py-3 rounded-2xl ${msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
-                    <p className="whitespace-pre-wrap">{msg.content}</p>
-                  </div>
-                </div>
-              ))}
-
-              {/* Streaming content */}
-              {streaming.content.length > 0 && (
-                <div className="flex justify-start">
-                  <div className="max-w-2xl space-y-2">
-                    {streaming.content.map((block, i) => (
-                      <div key={i}>
-                        {block.type === 'text' && (
-                          <div className="bg-muted px-4 py-3 rounded-2xl">
-                            <p className="whitespace-pre-wrap">{block.text}</p>
-                          </div>
-                        )}
-                        {block.type === 'thinking' && (
-                          <div className="bg-card border border-border px-4 py-3 rounded-2xl">
-                            <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
-                              <svg className="w-4 h-4 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                              </svg>
-                              <span>Thinking...</span>
-                            </div>
-                            <p className="whitespace-pre-wrap text-muted-foreground text-sm">{block.thinking}</p>
-                          </div>
-                        )}
-                        {block.type === 'tool_use' && (
-                          <div className="bg-amber-950/50 border border-amber-800/50 px-4 py-3 rounded-2xl dark:bg-amber-950/50 dark:border-amber-800/50">
-                            <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm mb-1">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                              </svg>
-                              <span className="font-mono">{block.name}</span>
-                            </div>
-                            <pre className="text-xs text-muted-foreground overflow-x-auto">{JSON.stringify(block.input, null, 2)}</pre>
-                          </div>
-                        )}
-                        {block.type === 'tool_result' && (
-                          <div className="bg-green-950/50 border border-green-800/50 px-4 py-3 rounded-2xl dark:bg-green-950/50 dark:border-green-800/50">
-                            <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm mb-1">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                              <span>Result</span>
-                            </div>
-                            <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">{block.content}</pre>
-                          </div>
-                        )}
+          {/* Main Chat Area */}
+          <div className="flex-1 flex flex-col">
+            {threadId ? (
+              <>
+                {/* Messages */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  {messages.map(msg => (
+                    <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-2xl px-4 py-3 rounded-2xl ${msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
+                        <p className="whitespace-pre-wrap">{msg.content}</p>
                       </div>
-                    ))}
-                    {streaming.isStreaming && (
-                      <div className="flex gap-1 px-4 py-2">
-                        <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                        <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                        <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Loading indicator (when no streaming content yet) */}
-              {loading && streaming.content.length === 0 && (
-                <div className="flex justify-start">
-                  <div className="bg-muted px-4 py-3 rounded-2xl">
-                    <div className="flex gap-1">
-                      <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                     </div>
-                  </div>
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
+                  ))}
 
-            {/* Input */}
-            <form onSubmit={sendMessage} className="p-4 border-t border-border">
-              <div className="flex gap-3 items-center">
-                <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-muted-foreground animate-pulse'}`} title={connected ? 'Connected' : 'Connecting...'} />
-                <input
-                  type="text"
-                  value={input}
-                  onChange={e => setInput(e.target.value)}
-                  placeholder={connected ? 'Type a message...' : 'Connecting...'}
-                  className="flex-1 bg-muted border border-input rounded-xl px-4 py-3 outline-none focus:border-ring transition"
-                  disabled={loading || !connected}
-                />
-                <button
-                  type="submit"
-                  disabled={loading || !input.trim() || !connected}
-                  className="px-6 py-3 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl font-medium transition"
-                >
-                  Send
-                </button>
+                  {/* Streaming content */}
+                  {streaming.content.length > 0 && (
+                    <div className="flex justify-start">
+                      <div className="max-w-2xl space-y-2">
+                        {streaming.content.map((block, i) => (
+                          <div key={i}>
+                            {block.type === 'text' && (
+                              <div className="bg-muted px-4 py-3 rounded-2xl">
+                                <p className="whitespace-pre-wrap">{block.text}</p>
+                              </div>
+                            )}
+                            {block.type === 'thinking' && (
+                              <div className="bg-card border border-border px-4 py-3 rounded-2xl">
+                                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
+                                  <svg className="w-4 h-4 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                                  </svg>
+                                  <span>Thinking...</span>
+                                </div>
+                                <p className="whitespace-pre-wrap text-muted-foreground text-sm">{block.thinking}</p>
+                              </div>
+                            )}
+                            {block.type === 'tool_use' && (
+                              <div className="bg-amber-950/50 border border-amber-800/50 px-4 py-3 rounded-2xl dark:bg-amber-950/50 dark:border-amber-800/50">
+                                <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm mb-1">
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  </svg>
+                                  <span className="font-mono">{block.name}</span>
+                                </div>
+                                <pre className="text-xs text-muted-foreground overflow-x-auto">{JSON.stringify(block.input, null, 2)}</pre>
+                              </div>
+                            )}
+                            {block.type === 'tool_result' && (
+                              <div className="bg-green-950/50 border border-green-800/50 px-4 py-3 rounded-2xl dark:bg-green-950/50 dark:border-green-800/50">
+                                <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm mb-1">
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                  <span>Result</span>
+                                </div>
+                                <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">{block.content}</pre>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        {streaming.isStreaming && (
+                          <div className="flex gap-1 px-4 py-2">
+                            <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                            <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Loading indicator (when no streaming content yet) */}
+                  {loading && streaming.content.length === 0 && (
+                    <div className="flex justify-start">
+                      <div className="bg-muted px-4 py-3 rounded-2xl">
+                        <div className="flex gap-1">
+                          <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                          <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+
+                {/* Input */}
+                <form onSubmit={sendMessage} className="p-4 border-t border-border">
+                  <div className="flex gap-3 items-center">
+                    <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-muted-foreground animate-pulse'}`} title={connected ? 'Connected' : 'Connecting...'} />
+                    <input
+                      type="text"
+                      value={input}
+                      onChange={e => setInput(e.target.value)}
+                      placeholder={connected ? 'Type a message...' : 'Connecting...'}
+                      className="flex-1 bg-muted border border-input rounded-xl px-4 py-3 outline-none focus:border-ring transition"
+                      disabled={loading || !connected}
+                    />
+                    <button
+                      type="submit"
+                      disabled={loading || !input.trim() || !connected}
+                      className="px-6 py-3 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl font-medium transition"
+                    >
+                      Send
+                    </button>
+                  </div>
+                </form>
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                <div className="text-center">
+                  <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
+                  <p>Select a conversation or start a new chat</p>
+                </div>
               </div>
-            </form>
-          </>
-        ) : (
-          <div className="flex-1 flex items-center justify-center text-muted-foreground">
-            <div className="text-center">
-              <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
-              <p>Select a conversation or start a new chat</p>
-            </div>
+            )}
           </div>
-        )}
-      </div>
-    </div>
+        </SidebarInset>
+      </SidebarProvider>
+    </TooltipProvider>
   );
 }
