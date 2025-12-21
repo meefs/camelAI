@@ -134,6 +134,13 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
       this.sql.exec('CREATE INDEX projects_created_by ON projects(created_by)');
       this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
     }
+
+    if (version < 2) {
+      // V2: Add created_by column to threads
+      this.sql.exec('ALTER TABLE threads ADD COLUMN created_by TEXT NOT NULL DEFAULT "system"');
+      this.sql.exec('CREATE INDEX threads_created_by ON threads(created_by)');
+      this.sql.exec('UPDATE _schema_version SET version = 2');
+    }
   }
 
   getProjects(): Project[] {
