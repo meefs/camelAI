@@ -115,8 +115,9 @@ export default function Chat({ threadId }: ChatProps) {
   const isFirstMessage = useRef(true);
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const intentionalClose = useRef(false);
   const pendingMessage = useRef<string | null>(null);
+  // Track connection ID to ignore events from stale WebSocket instances
+  const connectionIdRef = useRef(0);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -145,9 +146,11 @@ export default function Chat({ threadId }: ChatProps) {
       reconnectTimeoutRef.current = null;
     }
 
+    // Increment connection ID to invalidate any pending callbacks from old connections
+    const thisConnectionId = ++connectionIdRef.current;
+
     // Close existing connection
     if (wsRef.current) {
-      intentionalClose.current = true;
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -158,7 +161,6 @@ export default function Chat({ threadId }: ChatProps) {
       isFirstMessage.current = true;
       reconnectAttempts.current = 0;
     }
-    intentionalClose.current = false;
 
     // WebSocket is handled by the worker at /ws/{threadId} on the same origin as the page.
     const wsHost = window.location.host;
@@ -169,8 +171,8 @@ export default function Chat({ threadId }: ChatProps) {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      // Ignore if this WebSocket was replaced
-      if (wsRef.current !== ws) return;
+      // Ignore if this connection was superseded
+      if (connectionIdRef.current !== thisConnectionId) return;
       setConnected(true);
       reconnectAttempts.current = 0;
 
@@ -283,26 +285,32 @@ export default function Chat({ threadId }: ChatProps) {
     };
 
     ws.onclose = () => {
+      // Ignore if this connection was superseded by a new one
+      if (connectionIdRef.current !== thisConnectionId) return;
+
       setConnected(false);
       wsRef.current = null;
 
-      // Auto-reconnect if not intentional close
-      if (!intentionalClose.current && id) {
-        const maxAttempts = 5;
-        if (reconnectAttempts.current < maxAttempts) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
-          reconnectAttempts.current++;
-          console.log(`WebSocket closed, reconnecting in ${delay}ms (attempt ${reconnectAttempts.current})`);
-          reconnectTimeoutRef.current = setTimeout(() => {
+      // Auto-reconnect
+      const maxAttempts = 5;
+      if (reconnectAttempts.current < maxAttempts) {
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
+        reconnectAttempts.current++;
+        console.log(`WebSocket closed, reconnecting in ${delay}ms (attempt ${reconnectAttempts.current}/${maxAttempts})`);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          // Check again that we haven't been superseded
+          if (connectionIdRef.current === thisConnectionId) {
             connectWebSocket(id, true);
-          }, delay);
-        }
+          }
+        }, delay);
+      } else {
+        console.log('WebSocket reconnection failed after max attempts');
       }
     };
 
     ws.onerror = () => {
-      // Suppress errors from stale WebSocket instances (e.g., after switching chats)
-      if (wsRef.current !== ws) return;
+      // Ignore errors from superseded connections
+      if (connectionIdRef.current !== thisConnectionId) return;
       const state = ws.readyState;
       const stateNames = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
       console.error(`WebSocket error: Connection to ${ws.url} failed (state: ${stateNames[state] || state}). Check that the server is running.`);
@@ -315,7 +323,8 @@ export default function Chat({ threadId }: ChatProps) {
     if (threadId) {
       connectWebSocket(threadId);
     } else {
-      intentionalClose.current = true;
+      // Increment connection ID to stop any pending reconnects
+      connectionIdRef.current++;
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -329,7 +338,8 @@ export default function Chat({ threadId }: ChatProps) {
     }
 
     return () => {
-      intentionalClose.current = true;
+      // Increment connection ID to stop any pending reconnects from this effect
+      connectionIdRef.current++;
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -343,10 +353,15 @@ export default function Chat({ threadId }: ChatProps) {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && threadId) {
-        // Check if WebSocket is closed or closing
-        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED || wsRef.current.readyState === WebSocket.CLOSING) {
+        // Check if WebSocket is closed or closing and no reconnect is pending
+        const needsReconnect = !wsRef.current ||
+          wsRef.current.readyState === WebSocket.CLOSED ||
+          wsRef.current.readyState === WebSocket.CLOSING;
+        const hasReconnectPending = reconnectTimeoutRef.current !== null;
+
+        if (needsReconnect && !hasReconnectPending) {
           console.log('Tab visible, reconnecting WebSocket...');
-          reconnectAttempts.current = 0;
+          reconnectAttempts.current = 0; // Fresh start when user returns to tab
           connectWebSocket(threadId, true);
         }
       }
