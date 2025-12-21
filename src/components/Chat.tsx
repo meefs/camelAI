@@ -2,11 +2,17 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { ArrowDown, Copy, Check } from 'lucide-react';
 import type { Thread, Message } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { AppSidebar } from '@/components/sidebar/app-sidebar';
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar';
-import { TooltipProvider } from '@/components/ui/tooltip';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -14,9 +20,20 @@ import {
   BreadcrumbPage,
 } from '@/components/ui/breadcrumb';
 import { PromptInput } from '@/components/prompt-input';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 
 interface ChatProps {
   threadId?: string;
+}
+
+// Format timestamp to readable time (e.g., "12:25 PM")
+function formatMessageTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
 }
 
 // SDK event content block types
@@ -91,7 +108,10 @@ export default function Chat({ threadId }: ChatProps) {
   const [streaming, setStreaming] = useState<StreamingState>({ content: [], isStreaming: false });
   const [welcomeInput, setWelcomeInput] = useState('');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const isFirstMessage = useRef(true);
   const reconnectAttempts = useRef(0);
@@ -337,9 +357,46 @@ export default function Chat({ threadId }: ChatProps) {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [threadId, connectWebSocket]);
 
+  // Handle scroll position tracking
+  const handleScroll = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    setShowScrollButton(distanceFromBottom > 100);
+  }, []);
+
+  // Auto-scroll on new messages (only if near bottom)
   useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+
+    // Only auto-scroll if user is near bottom (within 150px)
+    if (distanceFromBottom < 150) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, streaming.content]);
+
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, []);
+
+  const copyMessage = useCallback(async (messageId: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessageId(messageId);
+      setTimeout(() => setCopiedMessageId(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy message:', err);
+    }
+  }, []);
 
   async function createThread() {
     const res = await fetch(`${backendProxyPrefix}/api/threads`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
@@ -409,10 +466,11 @@ export default function Chat({ threadId }: ChatProps) {
     <TooltipProvider>
       <SidebarProvider>
         <AppSidebar threadId={threadId} />
-        <SidebarInset>
-          {/* Header with sidebar trigger */}
-          <header className="flex h-16 shrink-0 items-center gap-2 border-b border-border">
-            <div className="flex items-center gap-2 px-4">
+        <SidebarInset className="h-svh overflow-hidden flex flex-col">
+          {/* Sticky Header */}
+          <header className="sticky top-0 z-30 shrink-0">
+            {/* Header content */}
+            <div className="flex h-12 items-center gap-2 px-4">
               <SidebarTrigger className="-ml-1" />
               <div
                 data-orientation="vertical"
@@ -427,127 +485,218 @@ export default function Chat({ threadId }: ChatProps) {
                 </BreadcrumbList>
               </Breadcrumb>
             </div>
+            {/* Gradient overlay that fades into content */}
+            <div
+              className="absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent pointer-events-none"
+              aria-hidden="true"
+            />
           </header>
 
-          {/* Main Chat Area */}
-          <div className="flex-1 flex flex-col">
-            {threadId ? (
-              <>
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {threadId ? (
+            <>
+              {/* Chat Body - Single Scroll Container */}
+              <div
+                ref={scrollContainerRef}
+                onScroll={handleScroll}
+                className="flex-1 overflow-y-auto overflow-x-hidden"
+              >
+                {/* Centered message column */}
+                <div className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 space-y-6">
                   {messages.map(msg => (
-                    <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-2xl px-4 py-3 rounded-2xl ${msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
-                        <p className="whitespace-pre-wrap">{msg.content}</p>
-                      </div>
+                    <div key={msg.id} className={cn("group", msg.role === 'user' ? "mt-6 mb-1" : "")}>
+                      {msg.role === 'user' ? (
+                        /* User message - right aligned with bubble and hover actions */
+                        <div className="flex flex-col items-end gap-1">
+                          <div className="max-w-[85%] px-4 py-3 rounded-3xl bg-primary text-primary-foreground">
+                            <p className="whitespace-pre-wrap">{msg.content}</p>
+                          </div>
+                          {/* Hover action row */}
+                          <div
+                            className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+                            role="group"
+                            aria-label="Message actions"
+                          >
+                            <span className="text-muted-foreground text-xs mr-1">
+                              {formatMessageTime(msg.created_at)}
+                            </span>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  className="text-muted-foreground"
+                                  onClick={() => copyMessage(msg.id, msg.content)}
+                                >
+                                  {copiedMessageId === msg.id ? <Check /> : <Copy />}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent side="bottom">
+                                {copiedMessageId === msg.id ? 'Copied!' : 'Copy message'}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                        </div>
+                      ) : (
+                        /* Assistant message - full width, no bubble, with hover actions */
+                        <div className="flex flex-col gap-1">
+                          <div className="prose prose-neutral dark:prose-invert max-w-none">
+                            <p className="whitespace-pre-wrap text-foreground leading-relaxed">{msg.content}</p>
+                          </div>
+                          {/* Hover action row */}
+                          <div
+                            className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+                            role="group"
+                            aria-label="Message actions"
+                          >
+                            <span className="text-muted-foreground text-xs mr-1">
+                              {formatMessageTime(msg.created_at)}
+                            </span>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  className="text-muted-foreground"
+                                  onClick={() => copyMessage(msg.id, msg.content)}
+                                >
+                                  {copiedMessageId === msg.id ? <Check /> : <Copy />}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent side="bottom">
+                                {copiedMessageId === msg.id ? 'Copied!' : 'Copy message'}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
 
                   {/* Streaming content */}
                   {streaming.content.length > 0 && (
-                    <div className="flex justify-start">
-                      <div className="max-w-2xl space-y-2">
-                        {streaming.content.map((block, i) => (
-                          <div key={i}>
-                            {block.type === 'text' && (
-                              <div className="bg-muted px-4 py-3 rounded-2xl">
-                                <p className="whitespace-pre-wrap">{block.text}</p>
+                    <div className="space-y-4">
+                      {streaming.content.map((block, i) => (
+                        <div key={i}>
+                          {block.type === 'text' && (
+                            <div className="prose prose-neutral dark:prose-invert max-w-none">
+                              <p className="whitespace-pre-wrap text-foreground leading-relaxed">{block.text}</p>
+                            </div>
+                          )}
+                          {block.type === 'thinking' && (
+                            <div className="bg-muted/50 border border-border px-4 py-3 rounded-xl">
+                              <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2">
+                                <svg className="w-4 h-4 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                                </svg>
+                                <span className="font-medium">Thinking...</span>
                               </div>
-                            )}
-                            {block.type === 'thinking' && (
-                              <div className="bg-card border border-border px-4 py-3 rounded-2xl">
-                                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
-                                  <svg className="w-4 h-4 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                                  </svg>
-                                  <span>Thinking...</span>
-                                </div>
-                                <p className="whitespace-pre-wrap text-muted-foreground text-sm">{block.thinking}</p>
+                              <p className="whitespace-pre-wrap text-muted-foreground text-sm">{block.thinking}</p>
+                            </div>
+                          )}
+                          {block.type === 'tool_use' && (
+                            <div className="bg-amber-500/10 border border-amber-500/20 px-4 py-3 rounded-xl">
+                              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm mb-2">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                                <span className="font-mono font-medium">{block.name}</span>
                               </div>
-                            )}
-                            {block.type === 'tool_use' && (
-                              <div className="bg-amber-950/50 border border-amber-800/50 px-4 py-3 rounded-2xl dark:bg-amber-950/50 dark:border-amber-800/50">
-                                <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm mb-1">
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                  </svg>
-                                  <span className="font-mono">{block.name}</span>
-                                </div>
-                                <pre className="text-xs text-muted-foreground overflow-x-auto">{JSON.stringify(block.input, null, 2)}</pre>
+                              <pre className="text-xs text-muted-foreground overflow-x-auto">{JSON.stringify(block.input, null, 2)}</pre>
+                            </div>
+                          )}
+                          {block.type === 'tool_result' && (
+                            <div className="bg-green-500/10 border border-green-500/20 px-4 py-3 rounded-xl">
+                              <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm mb-2">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                                <span className="font-medium">Result</span>
                               </div>
-                            )}
-                            {block.type === 'tool_result' && (
-                              <div className="bg-green-950/50 border border-green-800/50 px-4 py-3 rounded-2xl dark:bg-green-950/50 dark:border-green-800/50">
-                                <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm mb-1">
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                  </svg>
-                                  <span>Result</span>
-                                </div>
-                                <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">{block.content}</pre>
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                        {streaming.isStreaming && (
-                          <div className="flex gap-1 px-4 py-2">
-                            <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                            <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                            <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                          </div>
-                        )}
-                      </div>
+                              <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">{block.content}</pre>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                      {streaming.isStreaming && (
+                        <div className="flex gap-1 py-2">
+                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </div>
+                      )}
                     </div>
                   )}
 
                   {/* Loading indicator (when no streaming content yet) */}
                   {loading && streaming.content.length === 0 && (
-                    <div className="flex justify-start">
-                      <div className="bg-muted px-4 py-3 rounded-2xl">
-                        <div className="flex gap-1">
-                          <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                          <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                          <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                        </div>
-                      </div>
+                    <div className="flex gap-1 py-2">
+                      <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                     </div>
                   )}
                   <div ref={messagesEndRef} />
                 </div>
+              </div>
 
-                {/* Input */}
-                <div className="p-4 border-t border-border">
-                  <PromptInput
-                    value={input}
-                    onChange={setInput}
-                    onSubmit={sendMessage}
-                    placeholder="Type a message..."
-                    isLoading={loading}
-                    disabled={!connected}
-                  />
+              {/* Sticky Composer */}
+              <div className="sticky bottom-0 z-20 shrink-0">
+                {/* Scroll to bottom button */}
+                <div className="relative">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className={cn(
+                      "absolute -top-12 left-1/2 -translate-x-1/2 rounded-full shadow-md transition-all duration-200",
+                      "bg-background/80 backdrop-blur-sm border-border/50",
+                      showScrollButton ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
+                    )}
+                    onClick={scrollToBottom}
+                  >
+                    <ArrowDown className="h-4 w-4" />
+                  </Button>
                 </div>
-              </>
-            ) : (
-              <div className="flex-1 flex flex-col items-center justify-center p-4">
-                <div className="w-full max-w-2xl space-y-8">
-                  <div className="text-center">
-                    <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
-                    <p className="text-muted-foreground">What would you like to explore today?</p>
+                {/* Gradient fade above composer */}
+                <div
+                  className="absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent pointer-events-none"
+                  aria-hidden="true"
+                />
+                {/* Composer container */}
+                <div className="bg-background pt-2 pb-4 px-4">
+                  <div className="max-w-3xl mx-auto w-full">
+                    <PromptInput
+                      value={input}
+                      onChange={setInput}
+                      onSubmit={sendMessage}
+                      placeholder="Type a message..."
+                      isLoading={loading}
+                      disabled={!connected}
+                    />
                   </div>
-
-                  <PromptInput
-                    value={welcomeInput}
-                    onChange={setWelcomeInput}
-                    onSubmit={startNewChat}
-                    placeholder="Ask anything..."
-                    isLoading={isCreatingThread}
-                    minHeight="80px"
-                  />
                 </div>
               </div>
-            )}
-          </div>
+            </>
+          ) : (
+            /* Welcome Screen */
+            <div className="flex-1 flex flex-col items-center justify-center px-4">
+              <div className="w-full max-w-3xl space-y-8">
+                <div className="text-center">
+                  <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
+                  <p className="text-muted-foreground">What would you like to explore today?</p>
+                </div>
+
+                <PromptInput
+                  value={welcomeInput}
+                  onChange={setWelcomeInput}
+                  onSubmit={startNewChat}
+                  placeholder="Ask anything..."
+                  isLoading={isCreatingThread}
+                  minHeight="80px"
+                />
+              </div>
+            </div>
+          )}
         </SidebarInset>
       </SidebarProvider>
     </TooltipProvider>
