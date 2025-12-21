@@ -301,8 +301,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return getIndexStub(this.env, org).getThreads();
   }
 
-  async createThread(org = 'default', title: string | undefined, projectId: string): Promise<Thread> {
-    return getIndexStub(this.env, org).createThread(title, projectId);
+  async createThread(
+    org = 'default',
+    title: string | undefined,
+    projectId: string,
+    createdBy?: string
+  ): Promise<Thread> {
+    return getIndexStub(this.env, org).createThread(title, projectId, createdBy);
   }
 
   async getThread(id: string, org = 'default'): Promise<Thread | null> {

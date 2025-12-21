@@ -6,6 +6,8 @@ import type { Thread } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,6 +49,26 @@ function formatRelativeTime(timestamp: number): string {
   return 'Just now';
 }
 
+function getCreatorLabel(name?: string | null, email?: string | null): string | null {
+  const trimmedName = name?.trim();
+  if (trimmedName) return trimmedName;
+  const trimmedEmail = email?.trim();
+  return trimmedEmail || null;
+}
+
+function getInitials(label: string): string {
+  const parts = label.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0]?.slice(0, 2).toUpperCase() ?? '?';
+  const first = parts[0]?.[0] ?? '';
+  const last = parts[parts.length - 1]?.[0] ?? '';
+  return `${first}${last}`.toUpperCase() || '?';
+}
+
+function normalizeTitleInput(value: string): string {
+  return value.replace(/\s+/g, ' ').replace(/^\s+/, '');
+}
+
 export function ChatRow({
   thread,
   isSelecting,
@@ -62,13 +84,21 @@ export function ChatRow({
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (isEditing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
+    if (!isEditing) return;
+    const timeout = window.setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+        inputRef.current.select();
+      }
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [isEditing]);
 
   const handleRowClick = (e: React.MouseEvent) => {
+    if (isEditing) {
+      return;
+    }
+
     // Don't navigate if clicking on interactive elements
     if ((e.target as HTMLElement).closest('button, input, [role="menuitem"]')) {
       return;
@@ -96,9 +126,16 @@ export function ChatRow({
   };
 
   const handleSaveRename = () => {
-    if (editValue.trim() && editValue !== thread.title) {
-      onRename(thread.id, editValue.trim());
+    const normalizedTitle = normalizeTitleInput(editValue).trim();
+    if (!normalizedTitle) {
+      handleCancelRename();
+      return;
     }
+    if (normalizedTitle === thread.title) {
+      setIsEditing(false);
+      return;
+    }
+    onRename(thread.id, normalizedTitle);
     setIsEditing(false);
   };
 
@@ -109,17 +146,27 @@ export function ChatRow({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
+      e.preventDefault();
       handleSaveRename();
     } else if (e.key === 'Escape') {
+      e.preventDefault();
       handleCancelRename();
     }
+    e.stopPropagation();
   };
+
+  const creatorLabel = getCreatorLabel(thread.creator?.name, thread.creator?.email);
+  const creatorInitials = creatorLabel ? getInitials(creatorLabel) : '?';
+  const normalizedEditValue = normalizeTitleInput(editValue);
+  const isSaveDisabled =
+    normalizedEditValue.trim().length === 0 || normalizedEditValue.trim() === thread.title;
 
   return (
     <div
       className={cn(
-        "group relative flex items-center gap-3 px-3 py-3 rounded-lg cursor-pointer transition-colors",
-        "hover:bg-muted/50",
+        "group/row relative flex items-center gap-3 rounded-lg cursor-pointer transition-colors",
+        "pl-12 pr-3 py-3 sm:pl-3",
+        "hover:bg-muted/50 group-has-[[data-state=open]]/row:bg-muted/50",
         isSelected && "bg-muted/70"
       )}
       onClick={handleRowClick}
@@ -132,13 +179,14 @@ export function ChatRow({
         }
       }}
     >
-      {/* Checkbox - visible when selecting or on hover */}
+      {/* Checkbox - lives in a left gutter, no layout shift */}
       <div
         className={cn(
-          "shrink-0 transition-all duration-150",
+          "absolute left-4 sm:left-[-1rem] top-1/2 -translate-x-1/2 -translate-y-1/2",
+          "z-10 transition-all duration-150",
           isSelecting
-            ? "opacity-100 w-5"
-            : "opacity-0 w-0 group-hover:opacity-100 group-hover:w-5 group-focus-within:opacity-100 group-focus-within:w-5"
+            ? "opacity-100 scale-100 pointer-events-auto"
+            : "opacity-100 scale-100 pointer-events-auto sm:opacity-0 sm:scale-75 sm:pointer-events-none sm:group-hover/row:opacity-100 sm:group-hover/row:scale-100 sm:group-hover/row:pointer-events-auto sm:group-has-[:focus-visible]/row:opacity-100 sm:group-has-[:focus-visible]/row:scale-100 sm:group-has-[:focus-visible]/row:pointer-events-auto sm:group-active/row:opacity-100 sm:group-active/row:scale-100 sm:group-active/row:pointer-events-auto"
         )}
       >
         <Checkbox
@@ -149,26 +197,103 @@ export function ChatRow({
         />
       </div>
 
-      {/* Content */}
+      {/* Content - padding never changes */}
       <div className="flex-1 min-w-0">
         {isEditing ? (
-          <Input
-            ref={inputRef}
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onBlur={handleSaveRename}
-            onKeyDown={handleKeyDown}
-            onClick={(e) => e.stopPropagation()}
-            className="h-7 text-sm"
-          />
+          <>
+            <div className="flex items-center gap-2">
+              <Input
+                ref={inputRef}
+                autoFocus
+                value={editValue}
+                onChange={(e) => setEditValue(normalizeTitleInput(e.target.value))}
+                onBlur={handleCancelRename}
+                onKeyDown={handleKeyDown}
+                onClick={(e) => e.stopPropagation()}
+                className="h-7 text-sm flex-1"
+              />
+              <Button
+                variant="secondary"
+                size="xs"
+                disabled={isSaveDisabled}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleSaveRename();
+                }}
+              >
+                Save
+              </Button>
+              <Button
+                variant="ghost"
+                size="xs"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCancelRename();
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+              {creatorLabel ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Avatar size="xs">
+                      <AvatarFallback>
+                        {creatorInitials}
+                      </AvatarFallback>
+                    </Avatar>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    {creatorLabel}
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                <Avatar size="xs">
+                  <AvatarFallback>
+                    {creatorInitials}
+                  </AvatarFallback>
+                </Avatar>
+              )}
+              <span>{formatRelativeTime(thread.updated_at)}</span>
+            </div>
+          </>
         ) : (
           <>
             <p className="text-sm font-medium truncate text-foreground">
               {thread.title || 'Untitled Chat'}
             </p>
-            <p className="text-xs text-muted-foreground truncate">
-              {formatRelativeTime(thread.updated_at)}
-            </p>
+            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+              {creatorLabel ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Avatar size="xs">
+                      <AvatarFallback>
+                        {creatorInitials}
+                      </AvatarFallback>
+                    </Avatar>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    {creatorLabel}
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                <Avatar size="xs">
+                  <AvatarFallback>
+                    {creatorInitials}
+                  </AvatarFallback>
+                </Avatar>
+              )}
+              <span>{formatRelativeTime(thread.updated_at)}</span>
+            </div>
           </>
         )}
       </div>
@@ -177,7 +302,7 @@ export function ChatRow({
       <div
         className={cn(
           "shrink-0 transition-opacity duration-150",
-          "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+          "opacity-0 group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100 group-has-[[data-state=open]]/row:opacity-100",
           isEditing && "hidden"
         )}
       >
@@ -186,7 +311,7 @@ export function ChatRow({
             <Button
               variant="ghost"
               size="icon-sm"
-              className="h-7 w-7"
+              className="h-7 w-7 data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
               onClick={(e) => e.stopPropagation()}
             >
               <MoreVertical className="h-4 w-4" />

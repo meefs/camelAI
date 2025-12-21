@@ -43,6 +43,7 @@ export interface Thread {
   id: string;
   title: string;
   project_id: string;
+  created_by: string;
   created_at: number;
   updated_at: number;
 }
@@ -102,6 +103,7 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         project_id TEXT NOT NULL,
+        created_by TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
@@ -112,11 +114,17 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
       // Column already exists.
     }
     try {
+      this.sql.exec('ALTER TABLE threads ADD COLUMN created_by TEXT');
+    } catch {
+      // Column already exists.
+    }
+    try {
       this.sql.exec('ALTER TABLE projects ADD COLUMN created_by TEXT');
     } catch {
       // Column already exists.
     }
     this.sql.exec('CREATE INDEX IF NOT EXISTS projects_created_by ON projects(created_by)');
+    this.sql.exec('CREATE INDEX IF NOT EXISTS threads_created_by ON threads(created_by)');
     try {
       const missing = this.sql.exec(
         'SELECT id FROM threads WHERE project_id IS NULL OR project_id = ? LIMIT 1',
@@ -130,6 +138,19 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
           ''
         );
       }
+    } catch {
+      // Ignore if the column is not available yet.
+    }
+    try {
+      this.sql.exec(
+        `UPDATE threads
+         SET created_by = (
+           SELECT created_by FROM projects WHERE projects.id = threads.project_id
+         )
+         WHERE created_by IS NULL OR created_by = ?`,
+        ''
+      );
+      this.sql.exec('UPDATE threads SET created_by = ? WHERE created_by IS NULL OR created_by = ?', 'system', '');
     } catch {
       // Ignore if the column is not available yet.
     }
@@ -211,7 +232,7 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
     return this.sql.exec('SELECT * FROM threads ORDER BY updated_at DESC').toArray() as unknown as Thread[];
   }
 
-  createThread(title: string | undefined, projectId: string): Thread {
+  createThread(title: string | undefined, projectId: string, createdBy?: string): Thread {
     const resolvedProjectId = projectId.trim();
     const project = resolvedProjectId ? this.getProject(resolvedProjectId) : null;
     if (!project) {
@@ -220,15 +241,24 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
     const id = crypto.randomUUID();
     const now = Date.now();
     const t = title || 'New Chat';
+    const creator = createdBy?.trim() || project.created_by || 'system';
     this.sql.exec(
-      'INSERT INTO threads (id, title, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO threads (id, title, project_id, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
       id,
       t,
       resolvedProjectId,
+      creator,
       now,
       now
     );
-    return { id, title: t, project_id: resolvedProjectId, created_at: now, updated_at: now };
+    return {
+      id,
+      title: t,
+      project_id: resolvedProjectId,
+      created_by: creator,
+      created_at: now,
+      updated_at: now,
+    };
   }
 
   getThread(id: string): Thread | null {
