@@ -1,0 +1,13 @@
+name = "chiridion-outbound"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+CHIRIDION_APP_URL = "https://chiridion.ai"
+
+[env.staging]
+name = "chiridion-outbound-staging"
+
+[env.staging.vars]
+CHIRIDION_APP_URL = "https://staging.chiridion.ai"

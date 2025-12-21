@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, parseSSEStream, type Sandbox, type LogEvent } from '@cloudflare/sandbox';
 import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
+import type { OrgDO } from './auth';
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
@@ -68,6 +69,8 @@ export interface ChatEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   CHAT_INDEX: DurableObjectNamespace<ChatIndexDO>;
   SANDBOX: DurableObjectNamespace<Sandbox>;
+  ORG: DurableObjectNamespace<OrgDO>;
+  API_TOKENS: KVNamespace;
   R2_BUCKET: R2Bucket;
   ANTHROPIC_API_KEY: string;
   CF_ACCOUNT_ID?: string;
@@ -293,6 +296,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private sql: SqlStorage;
   private claudeSessionId: string | null = null;
   private currentProcessId: string | null = null;
+  private currentProxyToken: string | null = null;
+  private currentOrg: string | null = null;
   private sandbox: ReturnType<typeof getSandbox> | null = null;
   private chiridionBaseUrl: string | null = null;
   private chiridionSessionId: string | null = null;
@@ -386,9 +391,59 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
     }
 
-    // Persist mapping in KV so the API proxy can override script_name for this token.
+    // Persist mappings in KV:
+    // 1. token -> script_name (for CF API proxy to override script name)
+    // 2. script_name -> org (for outbound worker to route integration requests)
     const tokenKv = this.env.PLATFORM_SCRIPT_TOKENS ?? this.env.EMAIL_TO_USER;
     await tokenKv.put(`platform_script_token:${this.deployToken}`, this.deployScriptName);
+
+    if (this.currentOrg) {
+      await tokenKv.put(`script_to_org:${this.deployScriptName}`, this.currentOrg);
+      console.log('[DO] Stored script->org mapping:', this.deployScriptName, '->', this.currentOrg);
+    }
+  }
+
+  /**
+   * Mint a short-lived API token for integration proxy access.
+   * This token is passed to the container so it can make authenticated
+   * requests to external APIs via our proxy.
+   */
+  private async mintIntegrationProxyToken(
+    orgId: string,
+    integrationId: string | null
+  ): Promise<string | null> {
+    try {
+      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+      const expiresAt = Date.now() + 60 * 60 * 1000; // 1 hour TTL (fallback)
+      const result = await orgStub.createApiToken(
+        orgId,
+        'sandbox', // userId - use 'sandbox' as the system user
+        'sandbox-proxy-token',
+        ['proxy'],
+        integrationId,
+        expiresAt
+      );
+      return result.tokenId;
+    } catch (e) {
+      console.error('[DO] Failed to mint integration proxy token:', e);
+      return null;
+    }
+  }
+
+  /**
+   * Expire the current proxy token immediately.
+   * Called when the sandbox process exits.
+   */
+  private async expireProxyToken(orgId: string): Promise<void> {
+    if (!this.currentProxyToken) return;
+    try {
+      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+      await orgStub.deleteApiToken(this.currentProxyToken);
+      console.log('[DO] Expired proxy token:', this.currentProxyToken.slice(0, 12) + '...');
+      this.currentProxyToken = null;
+    } catch (e) {
+      console.error('[DO] Failed to expire proxy token:', e);
+    }
   }
 
   // WebSocket handling
@@ -408,6 +463,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // Accept WebSocket upgrades regardless of the path (the Worker selects the DO instance).
     if (request.headers.get('Upgrade') === 'websocket') {
+      this.currentOrg = org;
 
       this.chiridionBaseUrl =
         getExternalOriginFromHeaders(request, url);
@@ -599,6 +655,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           }
         }
 
+        // Mint a short-lived integration proxy token for the sandbox
+        // This allows the agent to make authenticated requests to external APIs
+        const proxyToken = await this.mintIntegrationProxyToken(org, null);
+        if (proxyToken && this.chiridionBaseUrl) {
+          this.currentProxyToken = proxyToken;
+          processEnv.CHIRIDION_PROXY_TOKEN = proxyToken;
+          processEnv.CHIRIDION_PROXY_BASE_URL = this.chiridionBaseUrl;
+          processEnv.CHIRIDION_ORG_ID = org;
+          console.log('[DO] Minted integration proxy token for org:', org, 'baseUrl:', this.chiridionBaseUrl);
+        } else if (!this.chiridionBaseUrl) {
+          console.log('[DO] Skipping proxy token - no chiridionBaseUrl');
+        } else {
+          console.log('[DO] Failed to mint proxy token');
+        }
+
         const process = await this.sandbox.startProcess('sh /app/run-driver.sh', { env: processEnv });
 
         this.currentProcessId = process.id;
@@ -662,6 +733,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                     const indexStub = this.env.CHAT_INDEX.get(indexId);
                     indexStub.updateThread(data.threadId, title);
                   }
+                  // Expire proxy token now that process is done
+                  await this.expireProxyToken(org);
                   return; // Exit early, don't wait for stream to close
                 }
               } catch {
@@ -684,6 +757,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                   const assistantMsg = this.addMessage('assistant', responseContent);
                   this.broadcast({ type: 'message', message: assistantMsg });
                   this.currentProcessId = null;
+                  // Expire proxy token now that process is done
+                  await this.expireProxyToken(org);
                   return;
                 }
               } catch {
@@ -698,10 +773,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         const responseContent = finalContent || '(no response)';
         const assistantMsg = this.addMessage('assistant', responseContent);
         this.broadcast({ type: 'message', message: assistantMsg });
+        // Expire proxy token now that process is done
+        await this.expireProxyToken(org);
       }
     } catch (e) {
       console.error('WebSocket message error:', e);
       this.currentProcessId = null;
+      // Expire proxy token on error
+      await this.expireProxyToken(this.currentOrg || 'default');
       ws.send(JSON.stringify({ type: 'error', error: String(e) }));
     }
   }
@@ -713,6 +792,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         console.log('[DO] Killing process:', this.currentProcessId);
         await this.sandbox.killProcess(this.currentProcessId);
         this.currentProcessId = null;
+        // Expire proxy token when process is stopped
+        await this.expireProxyToken(this.currentOrg || 'default');
       } catch (e) {
         console.error('[DO] Failed to kill process:', e);
       }

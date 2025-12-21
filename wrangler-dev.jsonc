@@ -26,6 +26,10 @@
 		{
 			"binding": "EMAIL_TO_USER",
 			"id": "45b452b3b19c42f6991408c140149a70"
+		},
+		{
+			"binding": "API_TOKENS",
+			"id": "0ee80299e67c4c7fa0c1ad618b7e7a9c"
 		}
 	],
 	"observability": {

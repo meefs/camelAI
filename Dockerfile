@@ -27,8 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && chmod +x /usr/local/bin/rclone \
   && rm -rf /tmp/rclone*
 
-# Copy and install Claude SDK driver
-COPY sandbox/package.json sandbox/driver.mjs sandbox/run-driver.sh /app/
+# Copy and install Claude SDK driver + integration proxy
+COPY sandbox/package.json sandbox/driver.mjs sandbox/proxy.mjs sandbox/run-driver.sh /app/
 COPY sandbox/starter-worker /app/starter-worker
 WORKDIR /app
 RUN bun install

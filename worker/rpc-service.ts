@@ -1,9 +1,25 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { AuthEnv, SessionData, UserProfile } from './auth';
+import type { AuthEnv, SessionData, UserProfile, OrgIntegrationRecord, ApiTokenData } from './auth';
 import type { ChatEnv } from './durable-objects';
-import type { Message, Organization, OrgMembership, Project, Thread, User, UserProject } from '../src/types';
+import type {
+  Message,
+  Organization,
+  OrgMembership,
+  Project,
+  Thread,
+  User,
+  UserProject,
+  Integration,
+  CreateIntegrationInput,
+  UpdateIntegrationInput,
+  CreateApiTokenInput,
+} from '../src/types';
+import { getIntegrationDefinition } from '../src/lib/integration-registry';
+import { encryptCredentials, decryptCredentials } from '../src/lib/integration-crypto';
 
-interface DoRpcEnv extends AuthEnv, ChatEnv {}
+interface DoRpcEnv extends AuthEnv, ChatEnv {
+  INTEGRATION_SECRET_KEY: string;
+}
 
 function getIndexStub(env: DoRpcEnv, org: string) {
   return env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(org));
@@ -355,5 +371,147 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   async deleteProject(id: string, org = 'default'): Promise<void> {
     await getIndexStub(this.env, org).deleteProject(id);
+  }
+
+  // Integration functions
+  private recordToIntegration(record: OrgIntegrationRecord): Integration {
+    return {
+      id: record.id,
+      integration_type: record.integration_type,
+      name: record.name,
+      category: record.category as Integration['category'],
+      auth_method: record.auth_method as Integration['auth_method'],
+      config: JSON.parse(record.config),
+      enabled: record.enabled === 1,
+      created_by: record.created_by,
+      created_at: record.created_at,
+      updated_at: record.updated_at,
+      has_credentials: record.credentials_encrypted.length > 0,
+    };
+  }
+
+  async getOrgIntegrations(orgId: string): Promise<Integration[]> {
+    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    const records = await stub.getIntegrations();
+    return records.map((r) => this.recordToIntegration(r));
+  }
+
+  async getOrgIntegration(orgId: string, integrationId: string): Promise<Integration | null> {
+    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    const record = await stub.getIntegration(integrationId);
+    if (!record) return null;
+    return this.recordToIntegration(record);
+  }
+
+  async createOrgIntegration(
+    orgId: string,
+    userId: string,
+    input: CreateIntegrationInput
+  ): Promise<Integration> {
+    const definition = getIntegrationDefinition(input.integration_type);
+    if (!definition) {
+      throw new Error(`Unknown integration type: ${input.integration_type}`);
+    }
+
+    const id = crypto.randomUUID();
+    const encryptedCreds = await encryptCredentials(input.credentials, this.env.INTEGRATION_SECRET_KEY);
+
+    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    await stub.createIntegration(
+      id,
+      input.integration_type,
+      input.name,
+      definition.category,
+      definition.authMethod,
+      JSON.stringify(input.config),
+      encryptedCreds,
+      userId
+    );
+
+    const record = await stub.getIntegration(id);
+    if (!record) {
+      throw new Error('Failed to create integration');
+    }
+    return this.recordToIntegration(record);
+  }
+
+  async updateOrgIntegration(
+    orgId: string,
+    integrationId: string,
+    input: UpdateIntegrationInput
+  ): Promise<Integration | null> {
+    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    const existing = await stub.getIntegration(integrationId);
+    if (!existing) return null;
+
+    const updates: {
+      name?: string;
+      config?: string;
+      credentialsEncrypted?: string;
+      enabled?: boolean;
+    } = {};
+
+    if (input.name !== undefined) {
+      updates.name = input.name;
+    }
+    if (input.config !== undefined) {
+      updates.config = JSON.stringify(input.config);
+    }
+    if (input.credentials !== undefined) {
+      updates.credentialsEncrypted = await encryptCredentials(
+        input.credentials,
+        this.env.INTEGRATION_SECRET_KEY
+      );
+    }
+    if (input.enabled !== undefined) {
+      updates.enabled = input.enabled;
+    }
+
+    await stub.updateIntegration(integrationId, updates);
+
+    const record = await stub.getIntegration(integrationId);
+    if (!record) return null;
+    return this.recordToIntegration(record);
+  }
+
+  async deleteOrgIntegration(orgId: string, integrationId: string): Promise<void> {
+    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    await stub.deleteIntegration(integrationId);
+  }
+
+  async getOrgIntegrationCredentials(
+    orgId: string,
+    integrationId: string
+  ): Promise<Record<string, unknown> | null> {
+    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    const record = await stub.getIntegration(integrationId);
+    if (!record || !record.credentials_encrypted) return null;
+
+    return decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
+  }
+
+  // API Token functions (all operations go through OrgDO for consistency)
+  async createOrgApiToken(
+    orgId: string,
+    userId: string,
+    input: CreateApiTokenInput
+  ): Promise<{ tokenId: string; tokenData: ApiTokenData }> {
+    const scopes = input.scopes || ['proxy'];
+    const expiresAt = input.expires_in_days
+      ? Date.now() + input.expires_in_days * 24 * 60 * 60 * 1000
+      : null;
+
+    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    return stub.createApiToken(orgId, userId, input.name, scopes, input.integration_id || null, expiresAt);
+  }
+
+  async validateApiToken(tokenId: string, orgId: string): Promise<ApiTokenData | null> {
+    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    return stub.validateApiToken(tokenId);
+  }
+
+  async deleteOrgApiToken(orgId: string, tokenId: string): Promise<void> {
+    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    await stub.deleteApiToken(tokenId);
   }
 }

@@ -98,8 +98,7 @@ interface StreamingState {
 
 export default function Chat({ threadId }: ChatProps) {
   const router = useRouter();
-  const { user, currentOrg, loading: authLoading } = useAuth();
-  const backendProxyPrefix = '';
+  const { user, currentOrg, orgs, loading: authLoading, logout, switchOrg } = useAuth();
   const [threads, setThreads] = useState<Thread[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -127,10 +126,10 @@ export default function Chat({ threadId }: ChatProps) {
   }, [authLoading, user, router]);
 
   const fetchThreads = useCallback(async () => {
-    const res = await fetch(`${backendProxyPrefix}/api/threads`);
+    const res = await fetch('/api/threads');
     const data = await res.json() as unknown;
     setThreads(Array.isArray(data) ? (data as Thread[]) : []);
-  }, [backendProxyPrefix]);
+  }, []);
 
   useEffect(() => {
     if (user && currentOrg) {
@@ -399,7 +398,7 @@ export default function Chat({ threadId }: ChatProps) {
   }, []);
 
   async function createThread() {
-    const res = await fetch(`${backendProxyPrefix}/api/threads`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    const res = await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
     const thread = await res.json() as Thread;
     setThreads([thread, ...threads]);
     router.push(`/chat/${thread.id}`);
@@ -431,7 +430,7 @@ export default function Chat({ threadId }: ChatProps) {
   async function deleteThread(id: string, e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    await fetch(`${backendProxyPrefix}/api/threads/${id}`, { method: 'DELETE' });
+    await fetch(`/api/threads/${id}`, { method: 'DELETE' });
     setThreads(threads.filter(t => t.id !== id));
     if (threadId === id) {
       router.push('/');

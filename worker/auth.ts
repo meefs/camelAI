@@ -7,6 +7,7 @@ export interface AuthEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   EMAIL_TO_USER: KVNamespace;
+  API_TOKENS: KVNamespace;
 }
 
 // Types
@@ -57,6 +58,30 @@ export interface OrgInvitation {
   invited_by: string;
   created_at: number;
   expires_at: number;
+}
+
+export interface OrgIntegrationRecord {
+  id: string;
+  integration_type: string;
+  name: string;
+  category: string;
+  auth_method: string;
+  config: string;
+  credentials_encrypted: string;
+  enabled: number;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ApiTokenData {
+  org_id: string;
+  user_id: string;
+  integration_id: string | null;
+  name: string;
+  scopes: string[];
+  created_at: number;
+  expires_at: number | null;
 }
 
 // Session Durable Object - one per session
@@ -286,6 +311,21 @@ export class OrgDO extends DurableObject<AuthEnv> {
         expires_at INTEGER NOT NULL
       )
     `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS integrations (
+        id TEXT PRIMARY KEY,
+        integration_type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        auth_method TEXT NOT NULL,
+        config TEXT NOT NULL,
+        credentials_encrypted TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
   }
 
   // Org info methods
@@ -450,5 +490,154 @@ export class OrgDO extends DurableObject<AuthEnv> {
     await this.deleteInvitation(invitationId);
 
     return true;
+  }
+
+  // Integration methods
+  async getIntegrations(): Promise<OrgIntegrationRecord[]> {
+    return this.sql
+      .exec(
+        `SELECT id, integration_type, name, category, auth_method, config,
+                credentials_encrypted, enabled, created_by, created_at, updated_at
+         FROM integrations
+         ORDER BY created_at DESC`
+      )
+      .toArray() as unknown as OrgIntegrationRecord[];
+  }
+
+  async getIntegration(id: string): Promise<OrgIntegrationRecord | null> {
+    const rows = this.sql
+      .exec(
+        `SELECT id, integration_type, name, category, auth_method, config,
+                credentials_encrypted, enabled, created_by, created_at, updated_at
+         FROM integrations WHERE id = ?`,
+        id
+      )
+      .toArray() as unknown as OrgIntegrationRecord[];
+    return rows[0] || null;
+  }
+
+  async createIntegration(
+    id: string,
+    integrationType: string,
+    name: string,
+    category: string,
+    authMethod: string,
+    config: string,
+    credentialsEncrypted: string,
+    createdBy: string
+  ): Promise<void> {
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT INTO integrations
+       (id, integration_type, name, category, auth_method, config, credentials_encrypted, enabled, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+      id,
+      integrationType,
+      name,
+      category,
+      authMethod,
+      config,
+      credentialsEncrypted,
+      createdBy,
+      now,
+      now
+    );
+  }
+
+  async updateIntegration(
+    id: string,
+    updates: {
+      name?: string;
+      config?: string;
+      credentialsEncrypted?: string;
+      enabled?: boolean;
+    }
+  ): Promise<void> {
+    const now = Date.now();
+    const setClauses: string[] = ['updated_at = ?'];
+    const params: (string | number)[] = [now];
+
+    if (updates.name !== undefined) {
+      setClauses.push('name = ?');
+      params.push(updates.name);
+    }
+    if (updates.config !== undefined) {
+      setClauses.push('config = ?');
+      params.push(updates.config);
+    }
+    if (updates.credentialsEncrypted !== undefined) {
+      setClauses.push('credentials_encrypted = ?');
+      params.push(updates.credentialsEncrypted);
+    }
+    if (updates.enabled !== undefined) {
+      setClauses.push('enabled = ?');
+      params.push(updates.enabled ? 1 : 0);
+    }
+
+    params.push(id);
+    this.sql.exec(`UPDATE integrations SET ${setClauses.join(', ')} WHERE id = ?`, ...params);
+  }
+
+  async deleteIntegration(id: string): Promise<void> {
+    this.sql.exec('DELETE FROM integrations WHERE id = ?', id);
+  }
+
+  // API Token methods (using KV through DO for consistency)
+  private generateTokenId(): string {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const base64 = btoa(String.fromCharCode(...bytes))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+    return `tok_${base64}`;
+  }
+
+  async createApiToken(
+    orgId: string,
+    userId: string,
+    name: string,
+    scopes: string[],
+    integrationId: string | null,
+    expiresAt: number | null
+  ): Promise<{ tokenId: string; tokenData: ApiTokenData }> {
+    const tokenId = this.generateTokenId();
+    const tokenData: ApiTokenData = {
+      org_id: orgId,
+      user_id: userId,
+      integration_id: integrationId,
+      name,
+      scopes,
+      created_at: Date.now(),
+      expires_at: expiresAt,
+    };
+
+    const kvOptions: KVNamespacePutOptions = {};
+    if (expiresAt) {
+      kvOptions.expirationTtl = Math.floor((expiresAt - Date.now()) / 1000);
+    }
+
+    await this.env.API_TOKENS.put(tokenId, JSON.stringify(tokenData), kvOptions);
+
+    return { tokenId, tokenData };
+  }
+
+  async validateApiToken(tokenId: string): Promise<ApiTokenData | null> {
+    const data = await this.env.API_TOKENS.get(tokenId);
+    if (!data) return null;
+
+    const tokenData = JSON.parse(data) as ApiTokenData;
+
+    // Double-check expiration (KV TTL should handle this)
+    if (tokenData.expires_at && tokenData.expires_at < Date.now()) {
+      await this.env.API_TOKENS.delete(tokenId);
+      return null;
+    }
+
+    return tokenData;
+  }
+
+  async deleteApiToken(tokenId: string): Promise<void> {
+    await this.env.API_TOKENS.delete(tokenId);
   }
 }

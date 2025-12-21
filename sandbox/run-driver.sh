@@ -13,6 +13,19 @@ is_truthy() {
   esac
 }
 
+# Write proxy credentials to file (read by proxy on each request)
+write_proxy_creds() {
+  if [ -n "${CHIRIDION_PROXY_TOKEN:-}" ] && [ -n "${CHIRIDION_PROXY_BASE_URL:-}" ] && \
+     [ -n "${CHIRIDION_ORG_ID:-}" ]; then
+    cat > /tmp/proxy-creds << EOF
+CHIRIDION_PROXY_TOKEN=${CHIRIDION_PROXY_TOKEN}
+CHIRIDION_PROXY_BASE_URL=${CHIRIDION_PROXY_BASE_URL}
+CHIRIDION_ORG_ID=${CHIRIDION_ORG_ID}
+EOF
+    echo "[sandbox] Updated proxy credentials file" >&2
+  fi
+}
+
 sync_to_r2() {
   if [ -f /tmp/r2-creds ]; then
     . /tmp/r2-creds
@@ -49,6 +62,19 @@ sync_to_r2() {
 if [ -z "${R2_BUCKET_NAME:-}" ] || [ -z "${R2_ACCOUNT_ID:-}" ] || [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
   if [ -n "$SYNC_ONLY" ]; then
     exit 0
+  fi
+  # Write proxy credentials and start proxy if configured
+  write_proxy_creds
+  echo "[sandbox] Checking proxy env vars..." >&2
+  echo "[sandbox]   CHIRIDION_PROXY_TOKEN: ${CHIRIDION_PROXY_TOKEN:+set (${#CHIRIDION_PROXY_TOKEN} chars)}${CHIRIDION_PROXY_TOKEN:-not set}" >&2
+  echo "[sandbox]   CHIRIDION_PROXY_BASE_URL: ${CHIRIDION_PROXY_BASE_URL:-not set}" >&2
+  echo "[sandbox]   CHIRIDION_ORG_ID: ${CHIRIDION_ORG_ID:-not set}" >&2
+  if [ -n "${CHIRIDION_PROXY_TOKEN:-}" ] && [ -n "${CHIRIDION_PROXY_BASE_URL:-}" ] && \
+     [ -n "${CHIRIDION_ORG_ID:-}" ]; then
+    echo "[sandbox] Starting integration proxy on port 8080..." >&2
+    node /app/proxy.mjs &
+  else
+    echo "[sandbox] Proxy env vars missing, skipping proxy startup" >&2
   fi
   exit_code=0
   bun /app/driver.mjs || exit_code=$?
@@ -110,6 +136,22 @@ if [ ! -f "$TARGET_DIR/$PROJECT_DIR/package.json" ] && [ -z "$(ls -A "$TARGET_DI
 fi
 
 cd "$TARGET_DIR/$PROJECT_DIR"
+
+# Write proxy credentials (always, so running proxy picks up new tokens)
+write_proxy_creds
+
+# Start integration proxy if configured (will exit cleanly if already running)
+echo "[sandbox] Checking proxy env vars..." >&2
+echo "[sandbox]   CHIRIDION_PROXY_TOKEN: ${CHIRIDION_PROXY_TOKEN:+set (${#CHIRIDION_PROXY_TOKEN} chars)}${CHIRIDION_PROXY_TOKEN:-not set}" >&2
+echo "[sandbox]   CHIRIDION_PROXY_BASE_URL: ${CHIRIDION_PROXY_BASE_URL:-not set}" >&2
+echo "[sandbox]   CHIRIDION_ORG_ID: ${CHIRIDION_ORG_ID:-not set}" >&2
+if [ -n "${CHIRIDION_PROXY_TOKEN:-}" ] && [ -n "${CHIRIDION_PROXY_BASE_URL:-}" ] && \
+   [ -n "${CHIRIDION_ORG_ID:-}" ]; then
+  echo "[sandbox] Starting integration proxy on port 8080..." >&2
+  node /app/proxy.mjs &
+else
+  echo "[sandbox] Proxy env vars missing, skipping proxy startup" >&2
+fi
 
 exit_code=0
 bun /app/driver.mjs || exit_code=$?

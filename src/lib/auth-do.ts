@@ -1,5 +1,15 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare';
-import type { User, Organization, OrgMembership, UserProject } from '@/types';
+import type {
+  User,
+  Organization,
+  OrgMembership,
+  UserProject,
+  Integration,
+  CreateIntegrationInput,
+  UpdateIntegrationInput,
+  CreateApiTokenInput,
+} from '@/types';
+import type { ApiTokenData } from '../../worker/auth';
 import type { SessionData, UserProfile } from '../../worker/auth';
 import type { DoRpcService } from '../../worker/rpc-service';
 
@@ -172,4 +182,58 @@ export async function getOrgInvitations(orgId: string): Promise<Array<{
 export async function deleteInvitation(orgId: string, invitationId: string): Promise<void> {
   const rpc = await getRpc();
   await rpc.deleteInvitation(orgId, invitationId);
+}
+
+// Integration functions
+export async function getOrgIntegrations(orgId: string): Promise<Integration[]> {
+  const rpc = await getRpc();
+  return rpc.getOrgIntegrations(orgId);
+}
+
+export async function getOrgIntegration(orgId: string, integrationId: string): Promise<Integration | null> {
+  const rpc = await getRpc();
+  return rpc.getOrgIntegration(orgId, integrationId);
+}
+
+export async function createOrgIntegration(
+  orgId: string,
+  userId: string,
+  input: CreateIntegrationInput
+): Promise<Integration> {
+  const rpc = await getRpc();
+  return rpc.createOrgIntegration(orgId, userId, input);
+}
+
+export async function updateOrgIntegration(
+  orgId: string,
+  integrationId: string,
+  input: UpdateIntegrationInput
+): Promise<Integration | null> {
+  const rpc = await getRpc();
+  return rpc.updateOrgIntegration(orgId, integrationId, input);
+}
+
+export async function deleteOrgIntegration(orgId: string, integrationId: string): Promise<void> {
+  const rpc = await getRpc();
+  await rpc.deleteOrgIntegration(orgId, integrationId);
+}
+
+// API Token functions
+export async function createOrgApiToken(
+  orgId: string,
+  userId: string,
+  input: CreateApiTokenInput
+): Promise<{ tokenId: string; tokenData: ApiTokenData }> {
+  const rpc = await getRpc();
+  return rpc.createOrgApiToken(orgId, userId, input);
+}
+
+export async function validateApiToken(tokenId: string, orgId: string): Promise<ApiTokenData | null> {
+  const rpc = await getRpc();
+  return rpc.validateApiToken(tokenId, orgId);
+}
+
+export async function deleteOrgApiToken(orgId: string, tokenId: string): Promise<void> {
+  const rpc = await getRpc();
+  await rpc.deleteOrgApiToken(orgId, tokenId);
 }

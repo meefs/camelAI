@@ -79,3 +79,49 @@ export interface AuthState {
   loading: boolean;
   error: string | null;
 }
+
+// Integration types
+export type IntegrationCategory =
+  | 'databases'
+  | 'saas'
+  | 'ai_services'
+  | 'cloud_providers'
+  | 'communication';
+
+export type IntegrationAuthMethod = 'oauth2' | 'api_key';
+
+export interface Integration {
+  id: string;
+  integration_type: string;
+  name: string;
+  category: IntegrationCategory;
+  auth_method: IntegrationAuthMethod;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  has_credentials: boolean;
+}
+
+export interface CreateIntegrationInput {
+  integration_type: string;
+  name: string;
+  config: Record<string, unknown>;
+  credentials: Record<string, unknown>;
+}
+
+export interface UpdateIntegrationInput {
+  name?: string;
+  config?: Record<string, unknown>;
+  credentials?: Record<string, unknown>;
+  enabled?: boolean;
+}
+
+// API Token types
+export interface CreateApiTokenInput {
+  name: string;
+  integration_id?: string; // scope to specific integration
+  scopes?: string[]; // defaults to ['proxy']
+  expires_in_days?: number; // null = never expires
+}

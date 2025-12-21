@@ -53,6 +53,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `worker/index.ts` | Worker entry point |
 | `scripts/dev.mjs` | Dev runner (watch + rebuild + wrangler) |
 | `sandbox/driver.mjs` | Claude SDK runner inside container |
+| `src/lib/integration-registry.ts` | Integration type definitions and schemas |
+| `src/lib/integration-crypto.ts` | Credential encryption utilities |
 
 ## Configuration Files
 
@@ -131,7 +133,14 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 | `/api/orgs/[id]` | GET, PUT, DELETE | Get/update/delete org |
 | `/api/orgs/[id]/members` | GET, PUT, DELETE | Manage members |
 | `/api/orgs/[id]/invite` | GET, POST, DELETE | Manage invitations |
+| `/api/orgs/[id]/integrations` | GET, POST | List/create integrations |
+| `/api/orgs/[id]/integrations/[integrationId]` | GET, PUT, DELETE | Get/update/delete integration |
 | `/api/invitations/[orgId]/[invitationId]` | GET, POST | View/accept invitation |
+
+### Integrations (public)
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/integrations/types` | GET | List available integration types |
 
 ### Chat (auth required)
 | Route | Method | Purpose |
@@ -170,6 +179,7 @@ ANTHROPIC_API_KEY=your_key_here
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Claude API key for SDK |
 | `NEXTJS_ENV` | Environment (development/production) |
+| `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
 
 ### KV Namespaces
 
@@ -207,8 +217,9 @@ chiridion-app/
 │   │   ├── api/
 │   │   │   ├── auth/        # Auth endpoints
 │   │   │   ├── chat/        # Chat endpoint
+│   │   │   ├── integrations/# Integration type registry
 │   │   │   ├── invitations/ # Invitation acceptance
-│   │   │   ├── orgs/        # Org management
+│   │   │   ├── orgs/        # Org management + integrations
 │   │   │   ├── projects/    # Project CRUD
 │   │   │   └── threads/     # Thread CRUD
 │   │   ├── chat/[id]/       # Chat page
