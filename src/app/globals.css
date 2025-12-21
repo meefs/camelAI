@@ -129,3 +129,37 @@
   background: transparent;
 }
 
+/* Markdown content styles */
+.markdown-content {
+  @apply text-foreground;
+
+  /* Ensure proper word wrapping */
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* User message variant - inverted colors for readability in bubbles */
+.markdown-content-user {
+  /* Inline code in user messages */
+  & code:not(pre code) {
+    @apply bg-primary-foreground/20 text-primary-foreground;
+  }
+
+  /* Code blocks in user messages - use standard styling */
+  & .shiki-wrapper,
+  & pre {
+    @apply bg-background/10;
+  }
+}
+
+/* Shiki dual theme support */
+.shiki,
+.shiki span {
+  color: var(--shiki-light) !important;
+}
+
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark) !important;
+}
+

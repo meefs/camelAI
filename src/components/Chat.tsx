@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/breadcrumb';
 import { PromptInput } from '@/components/prompt-input';
 import { Button } from '@/components/ui/button';
+import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { cn } from '@/lib/utils';
 
 interface ChatProps {
@@ -507,8 +508,8 @@ export default function Chat({ threadId }: ChatProps) {
                       {msg.role === 'user' ? (
                         /* User message - right aligned with bubble and hover actions */
                         <div className="flex flex-col items-end gap-1">
-                          <div className="max-w-[85%] px-4 py-3 rounded-3xl bg-primary text-primary-foreground">
-                            <p className="whitespace-pre-wrap">{msg.content}</p>
+                          <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
+                            <MarkdownRenderer content={msg.content} />
                           </div>
                           {/* Hover action row */}
                           <div
@@ -539,8 +540,8 @@ export default function Chat({ threadId }: ChatProps) {
                       ) : (
                         /* Assistant message - full width, no bubble, with hover actions */
                         <div className="flex flex-col gap-1">
-                          <div className="prose prose-neutral dark:prose-invert max-w-none">
-                            <p className="whitespace-pre-wrap text-foreground leading-relaxed">{msg.content}</p>
+                          <div className="max-w-none">
+                            <MarkdownRenderer content={msg.content} />
                           </div>
                           {/* Hover action row */}
                           <div
@@ -578,8 +579,8 @@ export default function Chat({ threadId }: ChatProps) {
                       {streaming.content.map((block, i) => (
                         <div key={i}>
                           {block.type === 'text' && (
-                            <div className="prose prose-neutral dark:prose-invert max-w-none">
-                              <p className="whitespace-pre-wrap text-foreground leading-relaxed">{block.text}</p>
+                            <div className="max-w-none">
+                              <MarkdownRenderer content={block.text} isStreaming={streaming.isStreaming} />
                             </div>
                           )}
                           {block.type === 'thinking' && (
