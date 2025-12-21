@@ -353,13 +353,18 @@ export default function Chat({ threadId }: ChatProps) {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && threadId) {
-        // Check if WebSocket is closed or closing and no reconnect is pending
+        // Check if WebSocket is dead
         const needsReconnect = !wsRef.current ||
           wsRef.current.readyState === WebSocket.CLOSED ||
           wsRef.current.readyState === WebSocket.CLOSING;
-        const hasReconnectPending = reconnectTimeoutRef.current !== null;
 
-        if (needsReconnect && !hasReconnectPending) {
+        if (needsReconnect) {
+          // Clear any stale reconnect timeout from before tab suspension
+          // (Safari suspends JS in background tabs, so pending timeouts are stale)
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+            reconnectTimeoutRef.current = null;
+          }
           console.log('Tab visible, reconnecting WebSocket...');
           reconnectAttempts.current = 0; // Fresh start when user returns to tab
           connectWebSocket(threadId, true);
