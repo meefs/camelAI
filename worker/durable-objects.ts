@@ -306,6 +306,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private deployScriptName: string | null = null;
   private projectId: string | null = null;
   private threadId: string | null = null;
+  // Track sandbox warming to prevent duplicate warm-ups from React StrictMode double-mount
+  private warmingPromise: Promise<void> | null = null;
+  private warmedForOrg: string | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -495,6 +498,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
 
+      // Log connection count to help debug React StrictMode double-mount
+      const existingConnections = this.ctx.getWebSockets().length;
+      if (existingConnections > 0) {
+        console.log(`[DO] New WebSocket connection (${existingConnections} existing) - likely React StrictMode double-mount`);
+      }
+
       this.ctx.acceptWebSocket(server);
 
       // Send existing messages on connect
@@ -502,6 +511,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       server.send(JSON.stringify({ type: 'history', messages }));
 
       // Start warming up the sandbox in the background (don't await)
+      // Deduplicates automatically if called multiple times
       this.warmSandbox(org);
 
       return new Response(null, { status: 101, webSocket: client });
@@ -511,7 +521,32 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   // Warm up the sandbox container and sync from R2
+  // Deduplicates calls from React StrictMode double-mount
   private async warmSandbox(org: string) {
+    // Already warmed for this org - skip
+    if (this.warmedForOrg === org) {
+      console.log('[DO] Sandbox already warmed for org:', org);
+      return;
+    }
+
+    // Warming in progress - wait for it
+    if (this.warmingPromise) {
+      console.log('[DO] Sandbox warming already in progress, waiting...');
+      await this.warmingPromise;
+      return;
+    }
+
+    // Start warming
+    this.warmingPromise = this.doWarmSandbox(org);
+    try {
+      await this.warmingPromise;
+      this.warmedForOrg = org;
+    } finally {
+      this.warmingPromise = null;
+    }
+  }
+
+  private async doWarmSandbox(org: string) {
     try {
       const sandboxId = this.ctx.id.toString().slice(0, 63);
       const sandbox = getSandbox(this.env.SANDBOX, sandboxId);
