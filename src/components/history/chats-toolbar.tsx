@@ -13,7 +13,7 @@ interface ChatsToolbarProps {
   isSelecting: boolean;
   selectedCount: number;
   allSelected: boolean;
-  onToggleSelectMode: () => void;
+  onEnterSelectMode: () => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
   onDeleteSelected: () => void;
@@ -26,13 +26,13 @@ export function ChatsToolbar({
   isSelecting,
   selectedCount,
   allSelected,
-  onToggleSelectMode,
+  onEnterSelectMode,
   onSelectAll,
   onClearSelection,
   onDeleteSelected,
 }: ChatsToolbarProps) {
   return (
-    <div className="sticky top-12 z-20 bg-background py-4 space-y-3">
+    <div className="sticky top-12 z-20 bg-background py-4 space-y-3 sm:-ml-6 sm:w-[calc(100%+1.5rem)] sm:pl-6">
       {/* Search Input */}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -46,31 +46,8 @@ export function ChatsToolbar({
       </div>
 
       {/* Controls Row */}
-      <div className="flex items-center justify-between h-8">
+      <div className="group/header relative flex items-center justify-between h-8 pl-12 pr-3 sm:pl-3 sm:pr-3">
         <div className="flex items-center gap-3">
-          {/* Select All Checkbox - visible when selecting or on hover */}
-          <div
-            className={cn(
-              "flex items-center gap-2 transition-opacity",
-              isSelecting ? "opacity-100" : "opacity-0 hover:opacity-100"
-            )}
-          >
-            <Checkbox
-              id="select-all"
-              checked={allSelected}
-              onCheckedChange={onSelectAll}
-              aria-label="Select all chats"
-            />
-            {isSelecting && (
-              <label
-                htmlFor="select-all"
-                className="text-sm text-muted-foreground cursor-pointer select-none"
-              >
-                Select all
-              </label>
-            )}
-          </div>
-
           {/* Count label */}
           <span className="text-sm text-muted-foreground">
             {isSelecting && selectedCount > 0
@@ -106,10 +83,36 @@ export function ChatsToolbar({
             <Button
               variant="ghost"
               size="sm"
-              onClick={onToggleSelectMode}
+              onClick={onEnterSelectMode}
             >
               Select
             </Button>
+          )}
+        </div>
+
+        {/* Select All Checkbox - lives in a left gutter, no layout shift */}
+        <div
+          className={cn(
+            "absolute left-4 sm:left-[-1rem] top-1/2 -translate-x-1/2 -translate-y-1/2",
+            "z-10 flex items-center gap-2 transition-all duration-150",
+            isSelecting
+              ? "opacity-100 scale-100 pointer-events-auto"
+              : "opacity-100 scale-100 pointer-events-auto sm:opacity-0 sm:scale-75 sm:pointer-events-none sm:group-hover/header:opacity-100 sm:group-hover/header:scale-100 sm:group-hover/header:pointer-events-auto sm:focus-within:opacity-100 sm:focus-within:scale-100 sm:focus-within:pointer-events-auto"
+          )}
+        >
+          <Checkbox
+            id="select-all"
+            checked={allSelected}
+            onCheckedChange={onSelectAll}
+            aria-label="Select all chats"
+          />
+          {isSelecting && (
+            <label
+              htmlFor="select-all"
+              className="sr-only"
+            >
+              Select all
+            </label>
           )}
         </div>
       </div>

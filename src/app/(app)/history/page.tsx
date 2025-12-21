@@ -20,8 +20,9 @@ export default function HistoryPage() {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isSelecting, setIsSelecting] = useState(false);
+  const [selectMode, setSelectMode] = useState<'off' | 'manual' | 'implicit'>('off');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const isSelecting = selectMode !== 'off';
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -55,8 +56,19 @@ export default function HistoryPage() {
     thread.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const enterSelectMode = useCallback((mode: 'manual' | 'implicit') => {
+    setSelectMode((prev) => (prev === 'manual' ? prev : mode));
+  }, []);
+
+  useEffect(() => {
+    if (selectedIds.size === 0 && selectMode === 'implicit') {
+      setSelectMode('off');
+    }
+  }, [selectedIds, selectMode]);
+
   // Selection handlers
   const handleToggleSelect = (id: string) => {
+    enterSelectMode('implicit');
     setSelectedIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -69,6 +81,7 @@ export default function HistoryPage() {
   };
 
   const handleSelectAll = () => {
+    enterSelectMode('implicit');
     if (selectedIds.size === filteredThreads.length) {
       setSelectedIds(new Set());
     } else {
@@ -78,11 +91,11 @@ export default function HistoryPage() {
 
   const handleClearSelection = () => {
     setSelectedIds(new Set());
-    setIsSelecting(false);
+    setSelectMode('off');
   };
 
   const handleEnterSelectMode = () => {
-    setIsSelecting(true);
+    enterSelectMode('implicit');
   };
 
   // Thread actions
@@ -150,8 +163,7 @@ export default function HistoryPage() {
 
       {/* Main Content Wrapper */}
       <div className="flex-1 min-h-0 flex flex-col">
-        {/* Centered content container */}
-        <div className="max-w-4xl mx-auto w-full flex-1 min-h-0 flex flex-col px-4 md:px-6">
+        <div className="w-full flex-1 min-h-0 flex flex-col px-4 md:px-6">
           {/* Toolbar */}
           <ChatsToolbar
             searchQuery={searchQuery}
@@ -160,7 +172,7 @@ export default function HistoryPage() {
             isSelecting={isSelecting}
             selectedCount={selectedIds.size}
             allSelected={selectedIds.size === filteredThreads.length && filteredThreads.length > 0}
-            onToggleSelectMode={() => setIsSelecting(!isSelecting)}
+            onEnterSelectMode={() => setSelectMode('manual')}
             onSelectAll={handleSelectAll}
             onClearSelection={handleClearSelection}
             onDeleteSelected={handleDeleteSelected}

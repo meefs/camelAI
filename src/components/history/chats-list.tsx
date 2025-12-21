@@ -3,6 +3,7 @@
 import type { Thread } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Separator } from '@/components/ui/separator';
 import { ChatRow } from './chat-row';
 import { MessagesSquare } from 'lucide-react';
 
@@ -22,9 +23,14 @@ function LoadingSkeleton() {
   return (
     <div className="space-y-2 py-2">
       {Array.from({ length: 5 }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 px-3 py-3">
-          <Skeleton className="h-5 w-5 rounded" />
-          <div className="flex-1 space-y-2">
+        <div
+          key={i}
+          className="relative flex items-center gap-3 rounded-lg pl-12 pr-3 py-3 sm:pl-3"
+        >
+          <div className="absolute left-4 sm:left-[-1rem] top-1/2 -translate-x-1/2 -translate-y-1/2">
+            <Skeleton className="h-5 w-5 rounded" />
+          </div>
+          <div className="flex-1 min-w-0 space-y-2">
             <Skeleton className="h-4 w-3/4" />
             <Skeleton className="h-3 w-1/3" />
           </div>
@@ -71,7 +77,13 @@ export function ChatsList({
   onEnterSelectMode,
 }: ChatsListProps) {
   if (loading) {
-    return <LoadingSkeleton />;
+    return (
+      <ScrollArea className="flex-1 sm:-ml-6 sm:w-[calc(100%+1.5rem)]">
+        <div className="sm:pl-6">
+          <LoadingSkeleton />
+        </div>
+      </ScrollArea>
+    );
   }
 
   if (threads.length === 0) {
@@ -79,20 +91,24 @@ export function ChatsList({
   }
 
   return (
-    <ScrollArea className="flex-1 -mx-1">
-      <div className="px-1 py-2 space-y-1">
-        {threads.map((thread) => (
-          <ChatRow
-            key={thread.id}
-            thread={thread}
-            isSelecting={isSelecting}
-            isSelected={selectedIds.has(thread.id)}
-            onToggleSelect={onToggleSelect}
-            onOpen={onOpenThread}
-            onRename={onRenameThread}
-            onDelete={onDeleteThread}
-            onEnterSelectMode={onEnterSelectMode}
-          />
+    <ScrollArea className="flex-1 sm:-ml-6 sm:w-[calc(100%+1.5rem)]">
+      <div className="py-2 sm:pl-6">
+        {threads.map((thread, index) => (
+          <div key={thread.id}>
+            <ChatRow
+              thread={thread}
+              isSelecting={isSelecting}
+              isSelected={selectedIds.has(thread.id)}
+              onToggleSelect={onToggleSelect}
+              onOpen={onOpenThread}
+              onRename={onRenameThread}
+              onDelete={onDeleteThread}
+              onEnterSelectMode={onEnterSelectMode}
+            />
+            {index < threads.length - 1 && (
+              <Separator />
+            )}
+          </div>
         ))}
       </div>
     </ScrollArea>

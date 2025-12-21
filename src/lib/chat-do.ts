@@ -16,9 +16,14 @@ export async function getThreads(org = 'default'): Promise<Thread[]> {
   return rpc.getThreads(org);
 }
 
-export async function createThread(org = 'default', title: string | undefined, projectId: string): Promise<Thread> {
+export async function createThread(
+  org = 'default',
+  title: string | undefined,
+  projectId: string,
+  createdBy?: string
+): Promise<Thread> {
   const rpc = await getRpc();
-  return rpc.createThread(org, title, projectId);
+  return rpc.createThread(org, title, projectId, createdBy);
 }
 
 export async function getThread(id: string, org = 'default'): Promise<Thread | null> {
