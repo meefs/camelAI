@@ -302,6 +302,29 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     });
   }
 
+  // Detect successful deploy (PUT to dispatch script upload endpoint)
+  if (resp.ok && method === 'PUT' && DISPATCH_SCRIPT_UPLOAD.test(pathname)) {
+    console.log('[cf-api-proxy] deploy success detected', {
+      method,
+      path: pathname,
+      scriptName: scriptNameForToken,
+    });
+
+    // Look up threadId from deploy token and notify the DO
+    const threadId = await tokenKv.get(`deploy_token_thread:${proxyToken}`);
+    if (threadId) {
+      try {
+        const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+        await threadStub.notifyDeploySuccess(scriptNameForToken);
+        console.log('[cf-api-proxy] notified thread of deploy success:', threadId);
+      } catch (e) {
+        console.error('[cf-api-proxy] failed to notify thread:', e);
+      }
+    } else {
+      console.warn('[cf-api-proxy] no threadId found for deploy token');
+    }
+  }
+
   return new Response(respBody, { status: resp.status, headers: resp.headers });
 }
 
@@ -327,7 +350,10 @@ export default {
       return threadStub.fetch(request);
     }
 
-    // Pass all other requests to OpenNext/Next.js
+    // Pass all other requests to OpenNext/Next.js if dev env var is not set
+	if (env.NEXTJS_ENV == 'development') {
+	  return new Response('Not Found', { status: 404 });
+	}
     return openNextHandler.fetch(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;
@@ -336,6 +362,3 @@ export default {
 export { ChatIndexDO, ChatThreadDO };
 export { SessionDO, UserDO, OrgDO };
 
-// Re-export OpenNext's DO handlers if needed for caching
-// @ts-ignore - .open-next/worker.js is generated at build time
-export { DOQueueHandler, DOShardedTagCache } from "../.open-next/worker.js";
