@@ -18,13 +18,11 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 
-interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
-  threadId?: string
-}
+interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {}
 
-export function AppSidebar({ threadId, ...props }: AppSidebarProps) {
+export function AppSidebar(props: AppSidebarProps) {
   const pathname = usePathname()
-  const isHome = !threadId && pathname === "/"
+  const isHome = pathname === "/"
   const isHistory = pathname === "/history"
 
   return (

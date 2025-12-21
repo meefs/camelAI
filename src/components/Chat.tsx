@@ -5,8 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowDown, Copy, Check } from 'lucide-react';
 import type { Thread, Message } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { AppSidebar } from '@/components/sidebar/app-sidebar';
-import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar';
+import { SidebarTrigger } from '@/components/ui/sidebar';
 import {
   Tooltip,
   TooltipContent,
@@ -465,44 +464,42 @@ export default function Chat({ threadId }: ChatProps) {
 
   return (
     <TooltipProvider>
-      <SidebarProvider>
-        <AppSidebar threadId={threadId} />
-        <SidebarInset className="h-svh overflow-hidden flex flex-col">
-          {/* Sticky Header */}
-          <header className="sticky top-0 z-30 shrink-0">
-            {/* Header content */}
-            <div className="flex h-12 items-center gap-2 px-4">
-              <SidebarTrigger className="-ml-1" />
-              <div
-                data-orientation="vertical"
-                role="none"
-                className="bg-border shrink-0 w-px h-4 mr-2"
-              />
-              <Breadcrumb>
-                <BreadcrumbList>
-                  <BreadcrumbItem>
-                    <BreadcrumbPage>{threadId ? 'Chat' : 'New Chat'}</BreadcrumbPage>
-                  </BreadcrumbItem>
-                </BreadcrumbList>
-              </Breadcrumb>
-            </div>
-            {/* Gradient overlay that fades into content */}
+      <>
+        {/* Sticky Header */}
+        <header className="sticky top-0 z-30 shrink-0">
+          {/* Header content */}
+          <div className="flex h-12 items-center gap-2 px-4">
+            <SidebarTrigger className="-ml-1" />
             <div
-              className="absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent pointer-events-none"
-              aria-hidden="true"
+              data-orientation="vertical"
+              role="none"
+              className="bg-border shrink-0 w-px h-4 mr-2"
             />
-          </header>
+            <Breadcrumb>
+              <BreadcrumbList>
+                <BreadcrumbItem>
+                  <BreadcrumbPage>{threadId ? 'Chat' : 'New Chat'}</BreadcrumbPage>
+                </BreadcrumbItem>
+              </BreadcrumbList>
+            </Breadcrumb>
+          </div>
+          {/* Gradient overlay that fades into content */}
+          <div
+            className="absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent pointer-events-none"
+            aria-hidden="true"
+          />
+        </header>
 
-          {threadId ? (
-            <>
-              {/* Chat Body - Single Scroll Container */}
-              <div
-                ref={scrollContainerRef}
-                onScroll={handleScroll}
-                className="flex-1 overflow-y-auto overflow-x-hidden"
-              >
-                {/* Centered message column */}
-                <div className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 space-y-6">
+        {threadId ? (
+          <>
+            {/* Chat Body - Single Scroll Container */}
+            <div
+              ref={scrollContainerRef}
+              onScroll={handleScroll}
+              className="flex-1 overflow-y-auto overflow-x-hidden"
+            >
+              {/* Centered message column */}
+              <div className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 space-y-6">
                   {messages.map(msg => (
                     <div key={msg.id} className={cn("group", msg.role === 'user' ? "mt-6 mb-1" : "")}>
                       {msg.role === 'user' ? (
@@ -639,67 +636,66 @@ export default function Chat({ threadId }: ChatProps) {
                   )}
                   <div ref={messagesEndRef} />
                 </div>
-              </div>
+            </div>
 
-              {/* Sticky Composer */}
-              <div className="sticky bottom-0 z-20 shrink-0">
-                {/* Scroll to bottom button */}
-                <div className="relative">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className={cn(
-                      "absolute -top-12 left-1/2 -translate-x-1/2 rounded-full shadow-md transition-all duration-200",
-                      "bg-background/80 backdrop-blur-sm border-border/50",
-                      showScrollButton ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
-                    )}
-                    onClick={scrollToBottom}
-                  >
-                    <ArrowDown className="h-4 w-4" />
-                  </Button>
-                </div>
-                {/* Gradient fade above composer */}
-                <div
-                  className="absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent pointer-events-none"
-                  aria-hidden="true"
-                />
-                {/* Composer container */}
-                <div className="bg-background pt-2 pb-4 px-4">
-                  <div className="max-w-3xl mx-auto w-full">
-                    <PromptInput
-                      value={input}
-                      onChange={setInput}
-                      onSubmit={sendMessage}
-                      placeholder="Type a message..."
-                      isLoading={loading}
-                      disabled={!connected}
-                    />
-                  </div>
-                </div>
+            {/* Sticky Composer */}
+            <div className="sticky bottom-0 z-20 shrink-0">
+              {/* Scroll to bottom button */}
+              <div className="relative">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className={cn(
+                    "absolute -top-12 left-1/2 -translate-x-1/2 rounded-full shadow-md transition-all duration-200",
+                    "bg-background/80 backdrop-blur-sm border-border/50",
+                    showScrollButton ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
+                  )}
+                  onClick={scrollToBottom}
+                >
+                  <ArrowDown className="h-4 w-4" />
+                </Button>
               </div>
-            </>
-          ) : (
-            /* Welcome Screen */
-            <div className="flex-1 flex flex-col items-center justify-center px-4">
-              <div className="w-full max-w-3xl space-y-8">
-                <div className="text-center">
-                  <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
-                  <p className="text-muted-foreground">What would you like to explore today?</p>
+              {/* Gradient fade above composer */}
+              <div
+                className="absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent pointer-events-none"
+                aria-hidden="true"
+              />
+              {/* Composer container */}
+              <div className="bg-background pt-2 pb-4 px-4">
+                <div className="max-w-3xl mx-auto w-full">
+                  <PromptInput
+                    value={input}
+                    onChange={setInput}
+                    onSubmit={sendMessage}
+                    placeholder="Type a message..."
+                    isLoading={loading}
+                    disabled={!connected}
+                  />
                 </div>
-
-                <PromptInput
-                  value={welcomeInput}
-                  onChange={setWelcomeInput}
-                  onSubmit={startNewChat}
-                  placeholder="Ask anything..."
-                  isLoading={isCreatingThread}
-                  minHeight="80px"
-                />
               </div>
             </div>
-          )}
-        </SidebarInset>
-      </SidebarProvider>
+          </>
+        ) : (
+          /* Welcome Screen */
+          <div className="flex-1 flex flex-col items-center justify-center px-4">
+            <div className="w-full max-w-3xl space-y-8">
+              <div className="text-center">
+                <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
+                <p className="text-muted-foreground">What would you like to explore today?</p>
+              </div>
+
+              <PromptInput
+                value={welcomeInput}
+                onChange={setWelcomeInput}
+                onSubmit={startNewChat}
+                placeholder="Ask anything..."
+                isLoading={isCreatingThread}
+                minHeight="80px"
+              />
+            </div>
+          </div>
+        )}
+      </>
     </TooltipProvider>
   );
 }
