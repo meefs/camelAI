@@ -274,6 +274,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // These are intentionally transient - we re-warm after hibernation
   private warmingPromise: Promise<void> | null = null;
   private warmedForOrg: string | null = null;
+  // Track env vars setup (async, awaited by warmSandbox before running sync)
+  private envVarsPromise: Promise<void> | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -308,6 +310,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         version INTEGER PRIMARY KEY
       )
     `);
+
     const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
     const version = rows[0]?.version ?? 0;
 
@@ -334,43 +337,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private loadPersistentState() {
-    // Load Claude's session ID if we have one from a previous conversation
-    const rows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'claude_session_id').toArray();
-    if (rows.length > 0) {
-      this.claudeSessionId = (rows[0] as { value: string }).value;
-    }
+    // Load all metadata in a single query for efficiency
+    const allRows = this.sql.exec<{ key: string; value: string }>('SELECT key, value FROM metadata').toArray();
+    const metadata = new Map(allRows.map(r => [r.key, r.value]));
 
-    const tokenRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'deploy_token').toArray();
-    if (tokenRows.length > 0) {
-      this.deployToken = (tokenRows[0] as { value: string }).value;
-    }
-    const scriptRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'deploy_script_name').toArray();
-    if (scriptRows.length > 0) {
-      this.deployScriptName = (scriptRows[0] as { value: string }).value;
-    }
-
-    const projectRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'project_id').toArray();
-    if (projectRows.length > 0) {
-      this.projectId = (projectRows[0] as { value: string }).value;
-    }
-    const threadRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'thread_id').toArray();
-    if (threadRows.length > 0) {
-      this.threadId = (threadRows[0] as { value: string }).value;
-    }
-
-    // Load transient state that was persisted for hibernation recovery
-    const orgRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'current_org').toArray();
-    if (orgRows.length > 0) {
-      this.currentOrg = (orgRows[0] as { value: string }).value;
-    }
-    const processRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'current_process_id').toArray();
-    if (processRows.length > 0) {
-      this.currentProcessId = (processRows[0] as { value: string }).value;
-    }
-    const proxyTokenRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'current_proxy_token').toArray();
-    if (proxyTokenRows.length > 0) {
-      this.currentProxyToken = (proxyTokenRows[0] as { value: string }).value;
-    }
+    this.claudeSessionId = metadata.get('claude_session_id') ?? null;
+    this.deployToken = metadata.get('deploy_token') ?? null;
+    this.deployScriptName = metadata.get('deploy_script_name') ?? null;
+    this.projectId = metadata.get('project_id') ?? null;
+    this.threadId = metadata.get('thread_id') ?? null;
+    // Transient state for hibernation recovery
+    this.currentOrg = metadata.get('current_org') ?? null;
+    this.currentProcessId = metadata.get('current_process_id') ?? null;
+    this.currentProxyToken = metadata.get('current_proxy_token') ?? null;
   }
 
   private async cleanupOrphanedState() {
@@ -533,25 +512,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       await this.ensureDeployToken();
 
-      // Persist env vars at the sandbox/container level so any subsequent processes (not just the
-      // Claude driver) inherit the Wrangler proxy configuration.
-      try {
-        const sandboxId = this.ctx.id.toString().slice(0, 63);
-        this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
-        const envVars: Record<string, string> = {
-          WRANGLER_SEND_METRICS: 'false',
-          CI: '1',
-        };
-        const projectId = await this.ensureProjectId(org);
-        if (projectId) envVars.PROJECT_ID = projectId;
-        if (this.chiridionBaseUrl) envVars.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
-        if (this.chiridionBaseUrl) envVars.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl.replace(/\/+$/, '')}/client/v4`;
-        if (this.deployToken) envVars.CLOUDFLARE_API_TOKEN = this.deployToken;
-        if (this.env.CF_ACCOUNT_ID) envVars.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
-        await this.sandbox.setEnvVars(envVars);
-      } catch (e) {
-        console.warn('[DO] Failed to persist sandbox env vars:', e);
-      }
+      // Get sandbox reference
+      const sandboxId = this.ctx.id.toString().slice(0, 63);
+      this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
+
+      // Start setting env vars asynchronously (warmSandbox will await this)
+      this.envVarsPromise = this.setupSandboxEnvVars(org);
 
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
@@ -576,6 +542,28 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     return new Response('Not found', { status: 404 });
+  }
+
+  // Set sandbox env vars asynchronously (called on connect, awaited by warmSandbox)
+  private async setupSandboxEnvVars(org: string): Promise<void> {
+    if (!this.sandbox) return;
+
+    try {
+      const envVars: Record<string, string> = {
+        WRANGLER_SEND_METRICS: 'false',
+        CI: '1',
+      };
+      const projectId = await this.ensureProjectId(org);
+      if (projectId) envVars.PROJECT_ID = projectId;
+      if (this.chiridionBaseUrl) envVars.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
+      if (this.chiridionBaseUrl) envVars.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl.replace(/\/+$/, '')}/client/v4`;
+      if (this.deployToken) envVars.CLOUDFLARE_API_TOKEN = this.deployToken;
+      if (this.env.CF_ACCOUNT_ID) envVars.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
+
+      await this.sandbox.setEnvVars(envVars);
+    } catch (e) {
+      console.warn('[DO] Failed to set sandbox env vars:', e);
+    }
   }
 
   // Warm up the sandbox container and sync from R2
@@ -606,6 +594,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private async doWarmSandbox(org: string) {
     try {
+      // Wait for env vars to be set first
+      if (this.envVarsPromise) {
+        await this.envVarsPromise;
+      }
+
       const sandboxId = this.ctx.id.toString().slice(0, 63);
       const sandbox = getSandbox(this.env.SANDBOX, sandboxId);
       this.sandbox = sandbox;
@@ -651,7 +644,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // Run sync-only to download files from R2
       console.log('[DO] Warming sandbox with R2 sync for prefix:', prefix);
       await sandbox.exec('sh /app/run-driver.sh', { env: processEnv });
-      console.log('[DO] Sandbox warm complete');
     } catch (e) {
       console.error('Failed to warm sandbox:', e);
     }
@@ -705,6 +697,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         if (this.env.R2_MOUNT_READONLY) processEnv.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
 
         if (this.chiridionBaseUrl) processEnv.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
+        if (this.chiridionBaseUrl) processEnv.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl.replace(/\/+$/, '')}/client/v4`;
         if (this.chiridionSessionId) processEnv.CHIRIDION_SESSION_ID = this.chiridionSessionId;
 
         // Configure Wrangler to use our local Cloudflare API proxy and a per-sandbox deploy token.
