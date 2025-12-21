@@ -4,8 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Thread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { AppSidebar } from '@/components/sidebar/app-sidebar';
-import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar';
+import { SidebarTrigger } from '@/components/ui/sidebar';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -129,61 +128,58 @@ export default function HistoryPage() {
   }
 
   return (
-    <SidebarProvider>
-      <AppSidebar />
-      <SidebarInset className="h-svh overflow-hidden flex flex-col">
-        {/* Sticky Header */}
-        <header className="sticky top-0 z-30 shrink-0 bg-background">
-          <div className="flex h-12 items-center gap-2 px-4">
-            <SidebarTrigger className="-ml-1" />
-            <div
-              data-orientation="vertical"
-              role="none"
-              className="bg-border shrink-0 w-px h-4 mr-2"
-            />
-            <Breadcrumb>
-              <BreadcrumbList>
-                <BreadcrumbItem>
-                  <BreadcrumbPage>Chat History</BreadcrumbPage>
-                </BreadcrumbItem>
-              </BreadcrumbList>
-            </Breadcrumb>
-          </div>
-        </header>
-
-        {/* Main Content Wrapper */}
-        <div className="flex-1 min-h-0 flex flex-col">
-          {/* Centered content container */}
-          <div className="max-w-4xl mx-auto w-full flex-1 min-h-0 flex flex-col px-4 md:px-6">
-            {/* Toolbar */}
-            <ChatsToolbar
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              totalCount={filteredThreads.length}
-              isSelecting={isSelecting}
-              selectedCount={selectedIds.size}
-              allSelected={selectedIds.size === filteredThreads.length && filteredThreads.length > 0}
-              onToggleSelectMode={() => setIsSelecting(!isSelecting)}
-              onSelectAll={handleSelectAll}
-              onClearSelection={handleClearSelection}
-              onDeleteSelected={handleDeleteSelected}
-            />
-
-            {/* Scrollable List */}
-            <ChatsList
-              threads={filteredThreads}
-              loading={loading}
-              isSelecting={isSelecting}
-              selectedIds={selectedIds}
-              onToggleSelect={handleToggleSelect}
-              onOpenThread={handleOpenThread}
-              onRenameThread={handleRenameThread}
-              onDeleteThread={handleDeleteThread}
-              onEnterSelectMode={handleEnterSelectMode}
-            />
-          </div>
+    <>
+      {/* Sticky Header */}
+      <header className="sticky top-0 z-30 shrink-0 bg-background">
+        <div className="flex h-12 items-center gap-2 px-4">
+          <SidebarTrigger className="-ml-1" />
+          <div
+            data-orientation="vertical"
+            role="none"
+            className="bg-border shrink-0 w-px h-4 mr-2"
+          />
+          <Breadcrumb>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbPage>Chat History</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         </div>
-      </SidebarInset>
-    </SidebarProvider>
+      </header>
+
+      {/* Main Content Wrapper */}
+      <div className="flex-1 min-h-0 flex flex-col">
+        {/* Centered content container */}
+        <div className="max-w-4xl mx-auto w-full flex-1 min-h-0 flex flex-col px-4 md:px-6">
+          {/* Toolbar */}
+          <ChatsToolbar
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            totalCount={filteredThreads.length}
+            isSelecting={isSelecting}
+            selectedCount={selectedIds.size}
+            allSelected={selectedIds.size === filteredThreads.length && filteredThreads.length > 0}
+            onToggleSelectMode={() => setIsSelecting(!isSelecting)}
+            onSelectAll={handleSelectAll}
+            onClearSelection={handleClearSelection}
+            onDeleteSelected={handleDeleteSelected}
+          />
+
+          {/* Scrollable List */}
+          <ChatsList
+            threads={filteredThreads}
+            loading={loading}
+            isSelecting={isSelecting}
+            selectedIds={selectedIds}
+            onToggleSelect={handleToggleSelect}
+            onOpenThread={handleOpenThread}
+            onRenameThread={handleRenameThread}
+            onDeleteThread={handleDeleteThread}
+            onEnterSelectMode={handleEnterSelectMode}
+          />
+        </div>
+      </div>
+    </>
   );
 }
