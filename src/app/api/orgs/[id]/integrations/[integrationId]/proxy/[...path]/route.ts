@@ -56,7 +56,7 @@ async function authenticateRequest(
   const token = authHeader.substring(7);
 
   // Validate token from KV
-  const tokenData = await authDO.validateApiToken(token, orgId);
+  const tokenData = await authDO.validateApiToken(token);
   if (!tokenData) {
     return { authorized: false, error: 'Invalid or expired API token' };
   }

@@ -33,7 +33,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       return forbiddenResponse('Only admins can revoke API tokens');
     }
 
-    await authDO.deleteOrgApiToken(orgId, tokenId);
+    await authDO.deleteApiToken(tokenId);
 
     return jsonResponse({ success: true });
   } catch (error) {

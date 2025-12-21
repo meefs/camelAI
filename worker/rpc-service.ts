@@ -528,13 +528,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     });
   }
 
-  async validateApiToken(tokenId: string, _orgId: string): Promise<ApiTokenData | null> {
-    // orgId param kept for API compatibility but not needed for KV lookup
+  async validateApiToken(tokenId: string): Promise<ApiTokenData | null> {
     return validateApiTokenKV(this.env.API_TOKENS, tokenId);
   }
 
-  async deleteOrgApiToken(_orgId: string, tokenId: string): Promise<void> {
-    // orgId param kept for API compatibility but not needed for KV delete
+  async deleteApiToken(tokenId: string): Promise<void> {
     await deleteApiToken(this.env.API_TOKENS, tokenId);
   }
 

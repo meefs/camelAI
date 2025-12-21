@@ -228,12 +228,12 @@ export async function createOrgApiToken(
   return rpc.createOrgApiToken(orgId, userId, input);
 }
 
-export async function validateApiToken(tokenId: string, orgId: string): Promise<ApiTokenData | null> {
+export async function validateApiToken(tokenId: string): Promise<ApiTokenData | null> {
   const rpc = await getRpc();
-  return rpc.validateApiToken(tokenId, orgId);
+  return rpc.validateApiToken(tokenId);
 }
 
-export async function deleteOrgApiToken(orgId: string, tokenId: string): Promise<void> {
+export async function deleteApiToken(tokenId: string): Promise<void> {
   const rpc = await getRpc();
-  await rpc.deleteOrgApiToken(orgId, tokenId);
+  await rpc.deleteApiToken(tokenId);
 }
