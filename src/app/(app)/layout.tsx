@@ -6,8 +6,8 @@ import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state';
 
-function getDefaultSidebarOpen(): boolean {
-  const cookieStore = cookies();
+async function getDefaultSidebarOpen(): Promise<boolean> {
+  const cookieStore = await cookies();
   const value = cookieStore.get(SIDEBAR_COOKIE_NAME)?.value;
 
   if (value === 'true') {
@@ -21,8 +21,8 @@ function getDefaultSidebarOpen(): boolean {
   return true;
 }
 
-export default function AppLayout({ children }: { children: ReactNode }) {
-  const defaultOpen = getDefaultSidebarOpen();
+export default async function AppLayout({ children }: { children: ReactNode }) {
+  const defaultOpen = await getDefaultSidebarOpen();
 
   return (
     <SidebarProvider defaultOpen={defaultOpen}>

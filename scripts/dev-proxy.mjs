@@ -5,7 +5,7 @@ import httpProxy from 'http-proxy';
 
 const nextPort = Number(process.env.NEXT_DEV_PORT || 3001);
 const wranglerPort = Number(process.env.WRANGLER_DEV_PORT || 8787);
-const proxyPort = Number(process.env.PROXY_DEV_PORT || 3000);
+const proxyPort = Number(process.env.PROXY_DEV_PORT || 3100);
 
 const nextTarget = `http://localhost:${nextPort}`;
 const wranglerTarget = `http://localhost:${wranglerPort}`;

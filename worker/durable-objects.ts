@@ -442,8 +442,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     // Persist mappings in KV:
     // 1. token -> script_name (for CF API proxy to override script name)
     // 2. script_name -> org (for outbound worker to route integration requests)
+    // 3. token -> thread_id (for CF API proxy to notify DO on deploy success)
     const tokenKv = this.env.PLATFORM_SCRIPT_TOKENS ?? this.env.EMAIL_TO_USER;
     await tokenKv.put(`platform_script_token:${this.deployToken}`, this.deployScriptName);
+
+    if (this.threadId) {
+      await tokenKv.put(`deploy_token_thread:${this.deployToken}`, this.threadId);
+    }
 
     if (this.currentOrg) {
       await tokenKv.put(`script_to_org:${this.deployScriptName}`, this.currentOrg);
@@ -934,5 +939,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   deleteAllMessages(): boolean {
     this.sql.exec('DELETE FROM messages');
     return true;
+  }
+
+  /**
+   * Called by the CF API proxy when a wrangler deploy succeeds.
+   * Broadcasts a deploy_success event to all connected WebSocket clients.
+   */
+  notifyDeploySuccess(scriptName: string): void {
+    console.log('[DO] Deploy success notification for script:', scriptName);
+    this.broadcast({
+      type: 'deploy_success',
+      scriptName,
+      timestamp: Date.now(),
+    });
   }
 }
