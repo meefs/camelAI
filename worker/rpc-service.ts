@@ -14,8 +14,19 @@ import type {
   UpdateIntegrationInput,
   CreateApiTokenInput,
 } from '../src/types';
-import { getIntegrationDefinition } from '../src/lib/integration-registry';
+import { getIntegrationDefinition, isProxyable, type ProxyConfig } from '../src/lib/integration-registry';
 import { encryptCredentials, decryptCredentials } from '../src/lib/integration-crypto';
+
+/**
+ * Configuration returned to callers for making proxied requests.
+ * Contains everything needed to build and authenticate the upstream request.
+ */
+export interface IntegrationProxyConfig {
+  baseUrl: string;
+  authHeader: { name: string; value: string } | null;
+  defaultHeaders: Record<string, string>;
+  authType: ProxyConfig['authType'];
+}
 
 interface DoRpcEnv extends AuthEnv, ChatEnv {
   INTEGRATION_SECRET_KEY: string;
@@ -513,5 +524,125 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async deleteOrgApiToken(orgId: string, tokenId: string): Promise<void> {
     const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
     await stub.deleteApiToken(tokenId);
+  }
+
+  /**
+   * Get proxy configuration for an integration.
+   * Returns everything needed to make an authenticated request to the upstream API.
+   * Called by outbound workers via service binding (no additional auth needed).
+   */
+  async getIntegrationProxyConfig(
+    orgId: string,
+    integrationId: string
+  ): Promise<{ config: IntegrationProxyConfig } | { error: string; status: number }> {
+    // Get integration
+    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    const record = await stub.getIntegration(integrationId);
+
+    if (!record) {
+      return { error: 'Integration not found', status: 404 };
+    }
+
+    if (record.enabled !== 1) {
+      return { error: 'Integration is disabled', status: 400 };
+    }
+
+    // Check if proxyable
+    if (!isProxyable(record.integration_type)) {
+      return {
+        error: `Integration type '${record.integration_type}' does not support HTTP proxy`,
+        status: 400,
+      };
+    }
+
+    const definition = getIntegrationDefinition(record.integration_type);
+    if (!definition?.proxyConfig) {
+      return { error: 'Proxy configuration not found', status: 500 };
+    }
+
+    // Get credentials
+    if (!record.credentials_encrypted) {
+      return { error: 'No credentials configured for integration', status: 500 };
+    }
+
+    const credentials = await decryptCredentials(
+      record.credentials_encrypted,
+      this.env.INTEGRATION_SECRET_KEY
+    );
+
+    const integrationConfig = JSON.parse(record.config) as Record<string, unknown>;
+
+    // Build base URL
+    let baseUrl = definition.proxyConfig.baseUrl;
+    if (!baseUrl && integrationConfig.instance_url) {
+      baseUrl = String(integrationConfig.instance_url);
+    }
+
+    // Build auth header
+    const authHeader = this.buildAuthHeader(definition.proxyConfig, credentials);
+
+    // Build default headers
+    const defaultHeaders: Record<string, string> = {
+      ...(definition.proxyConfig.defaultHeaders || {}),
+    };
+
+    // Add config-based headers
+    if (definition.proxyConfig.configHeaders) {
+      for (const [headerName, configField] of Object.entries(definition.proxyConfig.configHeaders)) {
+        const value = integrationConfig[configField];
+        if (value !== undefined && value !== null && value !== '') {
+          defaultHeaders[headerName] = String(value);
+        }
+      }
+    }
+
+    return {
+      config: {
+        baseUrl,
+        authHeader,
+        defaultHeaders,
+        authType: definition.proxyConfig.authType,
+      },
+    };
+  }
+
+  /**
+   * Build authorization header based on auth type
+   */
+  private buildAuthHeader(
+    proxyConfig: ProxyConfig,
+    credentials: Record<string, unknown>
+  ): { name: string; value: string } | null {
+    const apiKey = (credentials.api_key || credentials.access_token) as string | undefined;
+
+    const headerName =
+      proxyConfig.authType === 'header' && proxyConfig.authHeader
+        ? proxyConfig.authHeader
+        : 'Authorization';
+
+    switch (proxyConfig.authType) {
+      case 'bearer':
+        return apiKey ? { name: headerName, value: `Bearer ${apiKey}` } : null;
+
+      case 'basic': {
+        const key = credentials.api_key as string | undefined;
+        const secret = credentials.api_secret as string | undefined;
+        if (key && secret) {
+          const encoded = btoa(`${key}:${secret}`);
+          return { name: headerName, value: `Basic ${encoded}` };
+        }
+        return null;
+      }
+
+      case 'header':
+        return apiKey ? { name: headerName, value: apiKey } : null;
+
+      case 'query':
+        // Query params are handled differently - return the key for the caller to use
+        return apiKey ? { name: '_query_api_key', value: apiKey } : null;
+
+      default:
+        return apiKey ? { name: headerName, value: `Bearer ${apiKey}` } : null;
+    }
   }
 }

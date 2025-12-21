@@ -4,13 +4,16 @@
  * Intercepts all outgoing fetch() requests from user workers deployed
  * in the Workers for Platforms dispatch namespace. This allows us to:
  *
- * 1. Proxy integration requests (localhost:8080) to Chiridion's
- *    authenticated integration proxy
+ * 1. Proxy integration requests (localhost:8080) to upstream APIs
+ *    with credentials from Chiridion's integration storage
  * 2. Log/audit all outbound requests from user workers
  * 3. Block requests to disallowed destinations
  *
  * All integrations use port 8080. The integration ID is extracted from
  * the auth header and determines the upstream destination.
+ *
+ * Authentication: Uses service binding to call DoRpcService directly.
+ * No shared secrets needed - service bindings are trusted.
  *
  * Usage in user workers:
  *   // Any SDK - use integration ID as the API key, point to localhost:8080
@@ -26,11 +29,31 @@
  *   });
  */
 
+/**
+ * Proxy configuration returned by the RPC service
+ */
+interface IntegrationProxyConfig {
+  baseUrl: string;
+  authHeader: { name: string; value: string } | null;
+  defaultHeaders: Record<string, string>;
+  authType: 'bearer' | 'basic' | 'header' | 'query';
+}
+
+/**
+ * RPC service interface for the service binding
+ */
+interface DoRpcService {
+  getIntegrationProxyConfig(
+    orgId: string,
+    integrationId: string
+  ): Promise<{ config: IntegrationProxyConfig } | { error: string; status: number }>;
+}
+
 interface Env {
   // Passed from dispatcher via outbound parameters
   params: OutboundParams;
-  // Chiridion app URL for proxying
-  CHIRIDION_APP_URL: string;
+  // Service binding to Chiridion's RPC service
+  CHIRIDION: DoRpcService;
 }
 
 interface OutboundParams {
@@ -103,12 +126,37 @@ export default {
         );
       }
 
-      // Build the proxy URL
-      const proxyPath = `/api/orgs/${params.orgId}/integrations/${integrationId}/proxy${url.pathname}${url.search}`;
-      const proxyUrl = new URL(proxyPath, env.CHIRIDION_APP_URL);
+      console.log(
+        `[outbound] ${request.method} ${url.pathname} -> integration:${integrationId.slice(0, 8)}... (script: ${params.scriptName})`
+      );
 
-      // Build headers - forward relevant ones but NOT the original auth
+      // Get proxy config via service binding (trusted, no auth needed)
+      const result = await env.CHIRIDION.getIntegrationProxyConfig(params.orgId, integrationId);
+
+      if ('error' in result) {
+        return new Response(
+          JSON.stringify({ error: result.error }),
+          {
+            status: result.status,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
+      }
+
+      const { config } = result;
+
+      // Build target URL
+      const targetUrl = new URL(url.pathname + url.search, config.baseUrl);
+
+      // Handle auth via query param if configured
+      if (config.authType === 'query' && config.authHeader?.name === '_query_api_key') {
+        targetUrl.searchParams.append('api_key', config.authHeader.value);
+      }
+
+      // Build headers
       const headers = new Headers();
+
+      // Copy relevant headers from original request
       const headersToForward = ['content-type', 'accept', 'user-agent', 'content-length'];
       for (const header of headersToForward) {
         const value = request.headers.get(header);
@@ -117,26 +165,43 @@ export default {
         }
       }
 
-      // For outbound workers, we authenticate based on the script/org context
-      // rather than requiring an API token. The fact that the request came through
-      // the dispatch namespace proves it's from a legitimate user worker.
-      headers.set('x-chiridion-outbound', 'true');
-      headers.set('x-chiridion-script-name', params.scriptName);
-      headers.set('x-chiridion-org-id', params.orgId);
+      // Set default content-type if not present
+      if (!headers.has('content-type') && ['POST', 'PUT', 'PATCH'].includes(request.method)) {
+        headers.set('content-type', 'application/json');
+      }
 
-      console.log(
-        `[outbound] ${request.method} ${url.pathname} -> integration:${integrationId.slice(0, 8)}... (script: ${params.scriptName})`
-      );
+      // Add auth header (unless it's a query param auth type)
+      if (config.authHeader && config.authHeader.name !== '_query_api_key') {
+        headers.set(config.authHeader.name, config.authHeader.value);
+      }
+
+      // Add default headers from proxy config
+      for (const [key, value] of Object.entries(config.defaultHeaders)) {
+        headers.set(key, value);
+      }
 
       // Make the proxied request
-      const proxyRequest = new Request(proxyUrl.toString(), {
-        method: request.method,
-        headers,
-        body: request.body,
-      });
-
       try {
-        return await fetch(proxyRequest);
+        const response = await fetch(targetUrl.toString(), {
+          method: request.method,
+          headers,
+          body: request.body,
+        });
+
+        // Build response headers (filter out problematic ones)
+        const responseHeaders = new Headers();
+        const headersToSkip = ['content-encoding', 'content-length', 'transfer-encoding'];
+        response.headers.forEach((value, key) => {
+          if (!headersToSkip.includes(key.toLowerCase())) {
+            responseHeaders.set(key, value);
+          }
+        });
+
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: responseHeaders,
+        });
       } catch (e) {
         const error = e as Error;
         console.error('[outbound] Proxy error:', error.message);
