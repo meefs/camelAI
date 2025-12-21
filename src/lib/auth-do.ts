@@ -9,8 +9,8 @@ import type {
   UpdateIntegrationInput,
   CreateApiTokenInput,
 } from '@/types';
-import type { ApiTokenData } from '../../worker/auth';
 import type { SessionData, UserProfile } from '../../worker/auth';
+import type { ApiTokenData } from '../../worker/api-tokens';
 import type { DoRpcService } from '../../worker/rpc-service';
 
 interface AuthEnv {

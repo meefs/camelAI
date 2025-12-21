@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { AuthEnv, SessionData, UserProfile, OrgIntegrationRecord, ApiTokenData } from './auth';
+import type { AuthEnv, SessionData, UserProfile, OrgIntegrationRecord } from './auth';
 import type { ChatEnv } from './durable-objects';
 import type {
   Message,
@@ -16,6 +16,12 @@ import type {
 } from '../src/types';
 import { getIntegrationDefinition, isProxyable, type ProxyConfig } from '../src/lib/integration-registry';
 import { encryptCredentials, decryptCredentials } from '../src/lib/integration-crypto';
+import {
+  createApiToken,
+  validateApiToken as validateApiTokenKV,
+  deleteApiToken,
+  type ApiTokenData,
+} from './api-tokens';
 
 /**
  * Configuration returned to callers for making proxied requests.
@@ -501,7 +507,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
   }
 
-  // API Token functions (all operations go through OrgDO for consistency)
+  // API Token functions (direct KV access)
   async createOrgApiToken(
     orgId: string,
     userId: string,
@@ -512,18 +518,24 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       ? Date.now() + input.expires_in_days * 24 * 60 * 60 * 1000
       : null;
 
-    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-    return stub.createApiToken(orgId, userId, input.name, scopes, input.integration_id || null, expiresAt);
+    return createApiToken(this.env.API_TOKENS, {
+      orgId,
+      userId,
+      name: input.name,
+      scopes,
+      integrationId: input.integration_id || null,
+      expiresAt,
+    });
   }
 
-  async validateApiToken(tokenId: string, orgId: string): Promise<ApiTokenData | null> {
-    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-    return stub.validateApiToken(tokenId);
+  async validateApiToken(tokenId: string, _orgId: string): Promise<ApiTokenData | null> {
+    // orgId param kept for API compatibility but not needed for KV lookup
+    return validateApiTokenKV(this.env.API_TOKENS, tokenId);
   }
 
-  async deleteOrgApiToken(orgId: string, tokenId: string): Promise<void> {
-    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-    await stub.deleteApiToken(tokenId);
+  async deleteOrgApiToken(_orgId: string, tokenId: string): Promise<void> {
+    // orgId param kept for API compatibility but not needed for KV delete
+    await deleteApiToken(this.env.API_TOKENS, tokenId);
   }
 
   /**

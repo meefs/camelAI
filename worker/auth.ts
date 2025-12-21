@@ -7,7 +7,6 @@ export interface AuthEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   EMAIL_TO_USER: KVNamespace;
-  API_TOKENS: KVNamespace;
 }
 
 // Types
@@ -72,16 +71,6 @@ export interface OrgIntegrationRecord {
   created_by: string;
   created_at: number;
   updated_at: number;
-}
-
-export interface ApiTokenData {
-  org_id: string;
-  user_id: string;
-  integration_id: string | null;
-  name: string;
-  scopes: string[];
-  created_at: number;
-  expires_at: number | null;
 }
 
 // Session Durable Object - one per session
@@ -580,64 +569,5 @@ export class OrgDO extends DurableObject<AuthEnv> {
 
   async deleteIntegration(id: string): Promise<void> {
     this.sql.exec('DELETE FROM integrations WHERE id = ?', id);
-  }
-
-  // API Token methods (using KV through DO for consistency)
-  private generateTokenId(): string {
-    const bytes = new Uint8Array(24);
-    crypto.getRandomValues(bytes);
-    const base64 = btoa(String.fromCharCode(...bytes))
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '');
-    return `tok_${base64}`;
-  }
-
-  async createApiToken(
-    orgId: string,
-    userId: string,
-    name: string,
-    scopes: string[],
-    integrationId: string | null,
-    expiresAt: number | null
-  ): Promise<{ tokenId: string; tokenData: ApiTokenData }> {
-    const tokenId = this.generateTokenId();
-    const tokenData: ApiTokenData = {
-      org_id: orgId,
-      user_id: userId,
-      integration_id: integrationId,
-      name,
-      scopes,
-      created_at: Date.now(),
-      expires_at: expiresAt,
-    };
-
-    const kvOptions: KVNamespacePutOptions = {};
-    if (expiresAt) {
-      kvOptions.expirationTtl = Math.floor((expiresAt - Date.now()) / 1000);
-    }
-
-    await this.env.API_TOKENS.put(tokenId, JSON.stringify(tokenData), kvOptions);
-
-    return { tokenId, tokenData };
-  }
-
-  async validateApiToken(tokenId: string): Promise<ApiTokenData | null> {
-    const data = await this.env.API_TOKENS.get(tokenId);
-    if (!data) return null;
-
-    const tokenData = JSON.parse(data) as ApiTokenData;
-
-    // Double-check expiration (KV TTL should handle this)
-    if (tokenData.expires_at && tokenData.expires_at < Date.now()) {
-      await this.env.API_TOKENS.delete(tokenId);
-      return null;
-    }
-
-    return tokenData;
-  }
-
-  async deleteApiToken(tokenId: string): Promise<void> {
-    await this.env.API_TOKENS.delete(tokenId);
   }
 }

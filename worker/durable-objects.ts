@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, parseSSEStream, type Sandbox, type LogEvent } from '@cloudflare/sandbox';
 import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
+import { createApiToken, deleteApiToken } from './api-tokens';
 import type { OrgDO } from './auth';
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
@@ -413,16 +414,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     integrationId: string | null
   ): Promise<string | null> {
     try {
-      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-      const expiresAt = Date.now() + 60 * 60 * 1000; // 1 hour TTL (fallback)
-      const result = await orgStub.createApiToken(
+      const result = await createApiToken(this.env.API_TOKENS, {
         orgId,
-        'sandbox', // userId - use 'sandbox' as the system user
-        'sandbox-proxy-token',
-        ['proxy'],
+        userId: 'sandbox', // system user for sandbox tokens
+        name: 'sandbox-proxy-token',
+        scopes: ['proxy'],
         integrationId,
-        expiresAt
-      );
+        expiresAt: Date.now() + 60 * 60 * 1000, // 1 hour TTL
+      });
       return result.tokenId;
     } catch (e) {
       console.error('[DO] Failed to mint integration proxy token:', e);
@@ -434,11 +433,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
    * Expire the current proxy token immediately.
    * Called when the sandbox process exits.
    */
-  private async expireProxyToken(orgId: string): Promise<void> {
+  private async expireProxyToken(): Promise<void> {
     if (!this.currentProxyToken) return;
     try {
-      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-      await orgStub.deleteApiToken(this.currentProxyToken);
+      await deleteApiToken(this.env.API_TOKENS, this.currentProxyToken);
       console.log('[DO] Expired proxy token:', this.currentProxyToken.slice(0, 12) + '...');
       this.currentProxyToken = null;
     } catch (e) {
@@ -734,7 +732,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                     indexStub.updateThread(data.threadId, title);
                   }
                   // Expire proxy token now that process is done
-                  await this.expireProxyToken(org);
+                  await this.expireProxyToken();
                   return; // Exit early, don't wait for stream to close
                 }
               } catch {
@@ -758,7 +756,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                   this.broadcast({ type: 'message', message: assistantMsg });
                   this.currentProcessId = null;
                   // Expire proxy token now that process is done
-                  await this.expireProxyToken(org);
+                  await this.expireProxyToken();
                   return;
                 }
               } catch {
@@ -774,13 +772,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         const assistantMsg = this.addMessage('assistant', responseContent);
         this.broadcast({ type: 'message', message: assistantMsg });
         // Expire proxy token now that process is done
-        await this.expireProxyToken(org);
+        await this.expireProxyToken();
       }
     } catch (e) {
       console.error('WebSocket message error:', e);
       this.currentProcessId = null;
       // Expire proxy token on error
-      await this.expireProxyToken(this.currentOrg || 'default');
+      await this.expireProxyToken();
       ws.send(JSON.stringify({ type: 'error', error: String(e) }));
     }
   }
@@ -793,7 +791,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         await this.sandbox.killProcess(this.currentProcessId);
         this.currentProcessId = null;
         // Expire proxy token when process is stopped
-        await this.expireProxyToken(this.currentOrg || 'default');
+        await this.expireProxyToken();
       } catch (e) {
         console.error('[DO] Failed to kill process:', e);
       }
