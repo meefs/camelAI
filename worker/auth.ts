@@ -73,6 +73,27 @@ export interface OrgIntegrationRecord {
   updated_at: number;
 }
 
+/**
+ * Migration Pattern for Durable Objects
+ * ======================================
+ *
+ * Each DO uses a `_schema_version` table to track schema version.
+ * Migrations run in `blockConcurrencyWhile()` to prevent race conditions.
+ *
+ * To add a new migration:
+ * 1. Add a new `if (version < N)` block in the `migrate()` method
+ * 2. Put your schema changes inside the block
+ * 3. End with: `this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (N)')`
+ *
+ * Example:
+ *   if (version < 2) {
+ *     this.sql.exec('ALTER TABLE foo ADD COLUMN bar TEXT');
+ *     this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (2)');
+ *   }
+ *
+ * Note: PRAGMA user_version is NOT supported by Cloudflare SQLite.
+ */
+
 // Session Durable Object - one per session
 export class SessionDO extends DurableObject<AuthEnv> {
   private sql: SqlStorage;
@@ -80,12 +101,33 @@ export class SessionDO extends DurableObject<AuthEnv> {
   constructor(ctx: DurableObjectState, env: AuthEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+
+    ctx.blockConcurrencyWhile(async () => {
+      this.migrate();
+    });
+  }
+
+  private migrate() {
+    // Create schema version table first (if not exists)
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS session_data (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
+      CREATE TABLE IF NOT EXISTS _schema_version (
+        version INTEGER PRIMARY KEY
       )
     `);
+    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+    const version = rows[0]?.version ?? 0;
+
+    if (version < 1) {
+      // V1: Fresh start
+      this.sql.exec('DROP TABLE IF EXISTS session_data');
+      this.sql.exec(`
+        CREATE TABLE session_data (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      `);
+      this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
+    }
   }
 
   async getData(): Promise<SessionData | null> {
@@ -139,27 +181,50 @@ export class UserDO extends DurableObject<AuthEnv> {
   constructor(ctx: DurableObjectState, env: AuthEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+
+    ctx.blockConcurrencyWhile(async () => {
+      this.migrate();
+    });
+  }
+
+  private migrate() {
+    // Create schema version table first (if not exists)
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS profile (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
+      CREATE TABLE IF NOT EXISTS _schema_version (
+        version INTEGER PRIMARY KEY
       )
     `);
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS orgs (
-        org_id TEXT PRIMARY KEY,
-        role TEXT NOT NULL,
-        joined_at INTEGER NOT NULL
-      )
-    `);
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS projects (
-        org_id TEXT NOT NULL,
-        project_id TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (org_id, project_id)
-      )
-    `);
+    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+    const version = rows[0]?.version ?? 0;
+
+    if (version < 1) {
+      // V1: Fresh start
+      this.sql.exec('DROP TABLE IF EXISTS profile');
+      this.sql.exec('DROP TABLE IF EXISTS orgs');
+      this.sql.exec('DROP TABLE IF EXISTS projects');
+      this.sql.exec(`
+        CREATE TABLE profile (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE orgs (
+          org_id TEXT PRIMARY KEY,
+          role TEXT NOT NULL,
+          joined_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE projects (
+          org_id TEXT NOT NULL,
+          project_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (org_id, project_id)
+        )
+      `);
+      this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
+    }
   }
 
   // Profile methods
@@ -277,44 +342,68 @@ export class OrgDO extends DurableObject<AuthEnv> {
   constructor(ctx: DurableObjectState, env: AuthEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+
+    ctx.blockConcurrencyWhile(async () => {
+      this.migrate();
+    });
+  }
+
+  private migrate() {
+    // Create schema version table first (if not exists)
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS org_info (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
+      CREATE TABLE IF NOT EXISTS _schema_version (
+        version INTEGER PRIMARY KEY
       )
     `);
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS members (
-        user_id TEXT PRIMARY KEY,
-        role TEXT NOT NULL,
-        joined_at INTEGER NOT NULL
-      )
-    `);
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS invitations (
-        id TEXT PRIMARY KEY,
-        email TEXT NOT NULL,
-        role TEXT NOT NULL,
-        invited_by TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL
-      )
-    `);
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS integrations (
-        id TEXT PRIMARY KEY,
-        integration_type TEXT NOT NULL,
-        name TEXT NOT NULL,
-        category TEXT NOT NULL,
-        auth_method TEXT NOT NULL,
-        config TEXT NOT NULL,
-        credentials_encrypted TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_by TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
+    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+    const version = rows[0]?.version ?? 0;
+
+    if (version < 1) {
+      // V1: Fresh start
+      this.sql.exec('DROP TABLE IF EXISTS org_info');
+      this.sql.exec('DROP TABLE IF EXISTS members');
+      this.sql.exec('DROP TABLE IF EXISTS invitations');
+      this.sql.exec('DROP TABLE IF EXISTS integrations');
+      this.sql.exec(`
+        CREATE TABLE org_info (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE members (
+          user_id TEXT PRIMARY KEY,
+          role TEXT NOT NULL,
+          joined_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE invitations (
+          id TEXT PRIMARY KEY,
+          email TEXT NOT NULL,
+          role TEXT NOT NULL,
+          invited_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE integrations (
+          id TEXT PRIMARY KEY,
+          integration_type TEXT NOT NULL,
+          name TEXT NOT NULL,
+          category TEXT NOT NULL,
+          auth_method TEXT NOT NULL,
+          config TEXT NOT NULL,
+          credentials_encrypted TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
+    }
   }
 
   // Org info methods

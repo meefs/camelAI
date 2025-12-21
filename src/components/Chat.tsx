@@ -149,11 +149,12 @@ export default function Chat({ threadId }: ChatProps) {
     // Increment connection ID to invalidate any pending callbacks from old connections
     const thisConnectionId = ++connectionIdRef.current;
 
-    // Close existing connection
-    if (wsRef.current) {
+    // Close existing connection only if it's actually open
+    // (closing a CONNECTING WebSocket causes a console error)
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.close();
-      wsRef.current = null;
     }
+    wsRef.current = null;
 
     setConnected(false);
     if (!isReconnect) {
@@ -340,7 +341,9 @@ export default function Chat({ threadId }: ChatProps) {
     return () => {
       // Increment connection ID to stop any pending reconnects from this effect
       connectionIdRef.current++;
-      if (wsRef.current) {
+      // Only close if WebSocket is actually open (not still connecting)
+      // This prevents React StrictMode from closing before connection is established
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.close();
       }
       if (reconnectTimeoutRef.current) {

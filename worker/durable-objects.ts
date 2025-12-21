@@ -93,86 +93,47 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS projects (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        created_by TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS threads (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        project_id TEXT NOT NULL,
-        created_by TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
-    try {
-      this.sql.exec('ALTER TABLE threads ADD COLUMN project_id TEXT');
-    } catch {
-      // Column already exists.
-    }
-    try {
-      this.sql.exec('ALTER TABLE threads ADD COLUMN created_by TEXT');
-    } catch {
-      // Column already exists.
-    }
-    try {
-      this.sql.exec('ALTER TABLE projects ADD COLUMN created_by TEXT');
-    } catch {
-      // Column already exists.
-    }
-    this.sql.exec('CREATE INDEX IF NOT EXISTS projects_created_by ON projects(created_by)');
-    this.sql.exec('CREATE INDEX IF NOT EXISTS threads_created_by ON threads(created_by)');
-    try {
-      const missing = this.sql.exec(
-        'SELECT id FROM threads WHERE project_id IS NULL OR project_id = ? LIMIT 1',
-        ''
-      ).toArray() as { id: string }[];
-      if (missing.length > 0) {
-        const migratedProjectId = this.ensureMigrationProject();
-        this.sql.exec(
-          'UPDATE threads SET project_id = ? WHERE project_id IS NULL OR project_id = ?',
-          migratedProjectId,
-          ''
-        );
-      }
-    } catch {
-      // Ignore if the column is not available yet.
-    }
-    try {
-      this.sql.exec(
-        `UPDATE threads
-         SET created_by = (
-           SELECT created_by FROM projects WHERE projects.id = threads.project_id
-         )
-         WHERE created_by IS NULL OR created_by = ?`,
-        ''
-      );
-      this.sql.exec('UPDATE threads SET created_by = ? WHERE created_by IS NULL OR created_by = ?', 'system', '');
-    } catch {
-      // Ignore if the column is not available yet.
-    }
-    try {
-      this.sql.exec('UPDATE projects SET created_by = ? WHERE created_by IS NULL OR created_by = ?', 'system', '');
-    } catch {
-      // Ignore if the column is not available yet.
-    }
+
+    ctx.blockConcurrencyWhile(async () => {
+      this.migrate();
+    });
   }
 
-  private ensureMigrationProject(): string {
-    const rows = this.sql.exec(
-      'SELECT id FROM projects WHERE name = ? AND created_by = ? LIMIT 1',
-      'Migrated Threads',
-      'system'
-    ).toArray() as { id: string }[];
-    if (rows.length > 0) return rows[0].id;
-    return this.createProject('Migrated Threads', 'system').id;
+  private migrate() {
+    // Create schema version table first (if not exists)
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS _schema_version (
+        version INTEGER PRIMARY KEY
+      )
+    `);
+    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+    const version = rows[0]?.version ?? 0;
+
+    if (version < 1) {
+      // V1: Fresh start - drop old tables and create new schema
+      this.sql.exec('DROP TABLE IF EXISTS projects');
+      this.sql.exec('DROP TABLE IF EXISTS threads');
+      this.sql.exec(`
+        CREATE TABLE projects (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE threads (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          project_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec('CREATE INDEX projects_created_by ON projects(created_by)');
+      this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
+    }
   }
 
   getProjects(): Project[] {
@@ -295,38 +256,84 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
 // One DO per thread - handles WebSocket + messages
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private sql: SqlStorage;
+  private initialized = false;
+  // Persistent state (loaded from SQL, survives hibernation)
   private claudeSessionId: string | null = null;
+  private deployToken: string | null = null;
+  private deployScriptName: string | null = null;
+  private projectId: string | null = null;
+  private threadId: string | null = null;
+  // Transient state (lost on hibernation, restored from storage or recreated)
   private currentProcessId: string | null = null;
   private currentProxyToken: string | null = null;
   private currentOrg: string | null = null;
   private sandbox: ReturnType<typeof getSandbox> | null = null;
   private chiridionBaseUrl: string | null = null;
   private chiridionSessionId: string | null = null;
-  private deployToken: string | null = null;
-  private deployScriptName: string | null = null;
-  private projectId: string | null = null;
-  private threadId: string | null = null;
   // Track sandbox warming to prevent duplicate warm-ups from React StrictMode double-mount
+  // These are intentionally transient - we re-warm after hibernation
   private warmingPromise: Promise<void> | null = null;
   private warmedForOrg: string | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+
+    // Use blockConcurrencyWhile for one-time initialization
+    // This only runs once when the DO is first created, not on every hibernation wake
+    ctx.blockConcurrencyWhile(async () => {
+      await this.initialize();
+    });
+  }
+
+  private async initialize() {
+    if (this.initialized) return;
+
+    // Run schema migrations
+    this.migrate();
+
+    // Load persistent state from metadata
+    this.loadPersistentState();
+
+    // Check for orphaned process state and clean up
+    await this.cleanupOrphanedState();
+
+    this.initialized = true;
+  }
+
+  private migrate() {
+    // Create schema version table first (if not exists)
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+      CREATE TABLE IF NOT EXISTS _schema_version (
+        version INTEGER PRIMARY KEY
       )
     `);
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS metadata (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      )
-    `);
+    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+    const version = rows[0]?.version ?? 0;
+
+    if (version < 1) {
+      // V1: Fresh start - drop old tables and create new schema
+      this.sql.exec('DROP TABLE IF EXISTS messages');
+      this.sql.exec('DROP TABLE IF EXISTS metadata');
+      this.sql.exec(`
+        CREATE TABLE messages (
+          id TEXT PRIMARY KEY,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE metadata (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      `);
+      this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
+    }
+  }
+
+  private loadPersistentState() {
     // Load Claude's session ID if we have one from a previous conversation
     const rows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'claude_session_id').toArray();
     if (rows.length > 0) {
@@ -350,6 +357,57 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (threadRows.length > 0) {
       this.threadId = (threadRows[0] as { value: string }).value;
     }
+
+    // Load transient state that was persisted for hibernation recovery
+    const orgRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'current_org').toArray();
+    if (orgRows.length > 0) {
+      this.currentOrg = (orgRows[0] as { value: string }).value;
+    }
+    const processRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'current_process_id').toArray();
+    if (processRows.length > 0) {
+      this.currentProcessId = (processRows[0] as { value: string }).value;
+    }
+    const proxyTokenRows = this.sql.exec('SELECT value FROM metadata WHERE key = ?', 'current_proxy_token').toArray();
+    if (proxyTokenRows.length > 0) {
+      this.currentProxyToken = (proxyTokenRows[0] as { value: string }).value;
+    }
+  }
+
+  private async cleanupOrphanedState() {
+    // If we have a stored process ID from before hibernation, the process is likely dead
+    // Clean up the orphaned proxy token
+    if (this.currentProxyToken) {
+      console.log('[DO] Cleaning up orphaned proxy token from pre-hibernation state');
+      try {
+        await deleteApiToken(this.env.API_TOKENS, this.currentProxyToken);
+      } catch (e) {
+        console.error('[DO] Failed to clean up orphaned proxy token:', e);
+      }
+      this.currentProxyToken = null;
+      this.sql.exec('DELETE FROM metadata WHERE key = ?', 'current_proxy_token');
+    }
+    if (this.currentProcessId) {
+      console.log('[DO] Clearing orphaned process ID from pre-hibernation state:', this.currentProcessId);
+      this.currentProcessId = null;
+      this.sql.exec('DELETE FROM metadata WHERE key = ?', 'current_process_id');
+    }
+  }
+
+  private persistTransientState() {
+    // Persist transient state that we want to recover after hibernation
+    if (this.currentOrg) {
+      this.sql.exec('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)', 'current_org', this.currentOrg);
+    }
+    if (this.currentProcessId) {
+      this.sql.exec('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)', 'current_process_id', this.currentProcessId);
+    }
+    if (this.currentProxyToken) {
+      this.sql.exec('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)', 'current_proxy_token', this.currentProxyToken);
+    }
+  }
+
+  private clearTransientState() {
+    this.sql.exec('DELETE FROM metadata WHERE key IN (?, ?, ?)', 'current_org', 'current_process_id', 'current_proxy_token');
   }
 
   private async ensureProjectId(org: string): Promise<string | null> {
@@ -706,6 +764,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         const process = await this.sandbox.startProcess('sh /app/run-driver.sh', { env: processEnv });
 
         this.currentProcessId = process.id;
+        // Persist transient state so we can clean up orphaned tokens after hibernation
+        this.persistTransientState();
         console.log('[DO] Started process:', process.id, 'PID:', process.pid);
 
         let finalContent = '';
@@ -757,7 +817,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                   const responseContent = finalContent || '(no response)';
                   const assistantMsg = this.addMessage('assistant', responseContent);
                   this.broadcast({ type: 'message', message: assistantMsg });
-                  this.currentProcessId = null;
 
                   // Auto-title on first message
                   if (data.autoTitle && data.threadId && data.org) {
@@ -766,8 +825,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                     const indexStub = this.env.CHAT_INDEX.get(indexId);
                     indexStub.updateThread(data.threadId, title);
                   }
-                  // Expire proxy token now that process is done
+                  // Expire proxy token and clear state now that process is done
                   await this.expireProxyToken();
+                  this.currentProcessId = null;
+                  this.clearTransientState();
                   return; // Exit early, don't wait for stream to close
                 }
               } catch {
@@ -789,9 +850,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                   const responseContent = finalContent || '(no response)';
                   const assistantMsg = this.addMessage('assistant', responseContent);
                   this.broadcast({ type: 'message', message: assistantMsg });
-                  this.currentProcessId = null;
-                  // Expire proxy token now that process is done
+                  // Expire proxy token and clear state now that process is done
                   await this.expireProxyToken();
+                  this.currentProcessId = null;
+                  this.clearTransientState();
                   return;
                 }
               } catch {
@@ -802,18 +864,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }
 
         // Fallback: if we get here without a result event, still complete
-        this.currentProcessId = null;
         const responseContent = finalContent || '(no response)';
         const assistantMsg = this.addMessage('assistant', responseContent);
         this.broadcast({ type: 'message', message: assistantMsg });
-        // Expire proxy token now that process is done
+        // Expire proxy token and clear state now that process is done
         await this.expireProxyToken();
+        this.currentProcessId = null;
+        this.clearTransientState();
       }
     } catch (e) {
       console.error('WebSocket message error:', e);
-      this.currentProcessId = null;
-      // Expire proxy token on error
+      // Expire proxy token and clear state on error
       await this.expireProxyToken();
+      this.currentProcessId = null;
+      this.clearTransientState();
       ws.send(JSON.stringify({ type: 'error', error: String(e) }));
     }
   }
@@ -824,9 +888,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       try {
         console.log('[DO] Killing process:', this.currentProcessId);
         await this.sandbox.killProcess(this.currentProcessId);
-        this.currentProcessId = null;
-        // Expire proxy token when process is stopped
+        // Expire proxy token and clear state when process is stopped
         await this.expireProxyToken();
+        this.currentProcessId = null;
+        this.clearTransientState();
       } catch (e) {
         console.error('[DO] Failed to kill process:', e);
       }
