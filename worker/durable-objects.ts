@@ -281,8 +281,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // These are intentionally transient - we re-warm after hibernation
   private warmingPromise: Promise<void> | null = null;
   private warmedForOrg: string | null = null;
-  // Track env vars setup (async, awaited by warmSandbox before running sync)
-  private envVarsPromise: Promise<void> | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -528,9 +526,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const sandboxId = this.ctx.id.toString().slice(0, 63);
       this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
 
-      // Start setting env vars asynchronously (warmSandbox will await this)
-      this.envVarsPromise = this.setupSandboxEnvVars(org);
-
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
 
@@ -554,28 +549,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     return new Response('Not found', { status: 404 });
-  }
-
-  // Set sandbox env vars asynchronously (called on connect, awaited by warmSandbox)
-  private async setupSandboxEnvVars(org: string): Promise<void> {
-    if (!this.sandbox) return;
-
-    try {
-      const envVars: Record<string, string> = {
-        WRANGLER_SEND_METRICS: 'false',
-        CI: '1',
-      };
-      const projectId = await this.ensureProjectId(org);
-      if (projectId) envVars.PROJECT_ID = projectId;
-      if (this.chiridionBaseUrl) envVars.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
-      if (this.chiridionBaseUrl) envVars.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl.replace(/\/+$/, '')}/client/v4`;
-      if (this.deployToken) envVars.CLOUDFLARE_API_TOKEN = this.deployToken;
-      if (this.env.CF_ACCOUNT_ID) envVars.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
-
-      await this.sandbox.setEnvVars(envVars);
-    } catch (e) {
-      console.warn('[DO] Failed to set sandbox env vars:', e);
-    }
   }
 
   // Warm up the sandbox container and sync from R2
@@ -606,11 +579,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private async doWarmSandbox(org: string) {
     try {
-      // Wait for env vars to be set first
-      if (this.envVarsPromise) {
-        await this.envVarsPromise;
-      }
-
       const sandboxId = this.ctx.id.toString().slice(0, 63);
       const sandbox = getSandbox(this.env.SANDBOX, sandboxId);
       this.sandbox = sandbox;
@@ -657,7 +625,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       console.log('[DO] Warming sandbox with R2 sync for prefix:', prefix);
       await sandbox.exec('sh /app/run-driver.sh', { env: processEnv });
     } catch (e) {
-      console.error('Failed to warm sandbox:', e);
+      console.error('[DO] doWarmSandbox: sandbox.exec FAILED:', e);
+      // Log more details about the error
+      if (e instanceof Error) {
+        console.error('[DO] doWarmSandbox: error name:', e.name);
+        console.error('[DO] doWarmSandbox: error message:', e.message);
+        console.error('[DO] doWarmSandbox: error stack:', e.stack);
+      }
     }
   }
 
@@ -878,7 +852,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.clearTransientState();
       }
     } catch (e) {
-      console.error('WebSocket message error:', e);
+      console.error('[DO] WebSocket message error:', e);
+      // Log more details about the error
+      if (e instanceof Error) {
+        console.error('[DO] WebSocket error name:', e.name);
+        console.error('[DO] WebSocket error message:', e.message);
+        console.error('[DO] WebSocket error stack:', e.stack);
+      }
       // Expire proxy token and clear state on error
       await this.expireProxyToken();
       this.currentProcessId = null;
