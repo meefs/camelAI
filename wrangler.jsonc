@@ -4,6 +4,10 @@
 	"main": "worker/index.ts",
 	"compatibility_date": "2025-12-01",
 	"compatibility_flags": ["nodejs_compat"],
+	"routes": [
+		{ "pattern": "chiridion.ai/*", "zone_name": "chiridion.ai" },
+		{ "pattern": "www.chiridion.ai/*", "zone_name": "chiridion.ai" }
+	],
 	"vars": {
 		"R2_BUCKET_NAME": "chiridion-sandbox",
 		"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
