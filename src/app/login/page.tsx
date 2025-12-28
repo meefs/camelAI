@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -24,17 +24,20 @@ const inspirationalPrompts = [
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, loading, login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  const redirectTo = searchParams.get('redirect') || '/';
+
   useEffect(() => {
     if (!loading && user) {
-      router.push('/');
+      router.push(redirectTo);
     }
-  }, [user, loading, router]);
+  }, [user, loading, router, redirectTo]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,7 +46,7 @@ export default function LoginPage() {
 
     try {
       await login(email, password);
-      router.push('/');
+      router.push(redirectTo);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
