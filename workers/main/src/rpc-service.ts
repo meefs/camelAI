@@ -13,9 +13,9 @@ import type {
   CreateIntegrationInput,
   UpdateIntegrationInput,
   CreateApiTokenInput,
-} from '../src/types';
-import { getIntegrationDefinition, isProxyable, type ProxyConfig } from '../src/lib/integration-registry';
-import { encryptCredentials, decryptCredentials } from '../src/lib/integration-crypto';
+} from '../../../src/types';
+import { getIntegrationDefinition, isProxyable, type ProxyConfig } from '../../../src/lib/integration-registry';
+import { encryptCredentials, decryptCredentials } from '../../../src/lib/integration-crypto';
 import {
   createApiToken,
   validateApiToken as validateApiTokenKV,

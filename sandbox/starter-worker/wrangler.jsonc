@@ -1,0 +1,7 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "ignored",
+	"main": "src/index.mjs",
+	"compatibility_date": "2025-12-01",
+	"compatibility_flags": ["nodejs_compat"]
+}

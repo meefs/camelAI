@@ -21,16 +21,14 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
    - Tailwind CSS v4 + shadcn/ui components
    - AuthContext for session/org state management
 
-2. **Worker** (`worker/`)
-   - Cloudflare Workers with Durable Objects
-  - **Chat DOs:**
-    - `ChatThreadDO` - Manages individual chat sessions
-    - `ChatIndexDO` - Indexes all chat threads and projects per org
-   - **Auth DOs:**
-     - `SessionDO` - Session state with 30-day expiry
-     - `UserDO` - User profiles and password hashes
-     - `OrgDO` - Organizations, members, and invitations
-   - `ThreadSandbox` - Executes Claude SDK in containers
+2. **Workers** (`workers/`)
+   - `main/` - Main Chiridion app worker
+     - Cloudflare Workers with Durable Objects
+     - **Chat DOs:** `ChatThreadDO`, `ChatIndexDO`
+     - **Auth DOs:** `SessionDO`, `UserDO`, `OrgDO`
+     - `ThreadSandbox` - Executes Claude SDK in containers
+   - `dispatcher/` - Routes `*.chiridion.ai` to user workers (WfP)
+   - `outbound/` - Intercepts user worker outbound requests for integration proxy
 
 3. **Sandbox** (`sandbox/`)
    - `driver.mjs` - Runs inside Cloudflare Container
@@ -47,10 +45,10 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `src/app/signup/page.tsx` | Signup page |
 | `src/lib/auth.ts` | Cookie handling, validation helpers |
 | `src/lib/auth-do.ts` | Functions to interact with auth DOs |
-| `worker/durable-objects.ts` | WebSocket handler, container orchestration |
-| `worker/auth.ts` | SessionDO, UserDO, OrgDO implementations |
-| `worker/password.ts` | PBKDF2 password hashing |
-| `worker/index.ts` | Worker entry point |
+| `workers/main/src/durable-objects.ts` | WebSocket handler, container orchestration |
+| `workers/main/src/auth.ts` | SessionDO, UserDO, OrgDO implementations |
+| `workers/main/src/password.ts` | PBKDF2 password hashing |
+| `workers/main/src/index.ts` | Worker entry point |
 | `scripts/dev.mjs` | Dev runner (watch + rebuild + wrangler) |
 | `sandbox/driver.mjs` | Claude SDK runner inside container |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
@@ -232,11 +230,17 @@ chiridion-app/
 │   ├── lib/
 │   │   └── utils.ts         # cn() helper for Tailwind classes
 │   └── types.ts             # TypeScript types
-├── worker/
-│   ├── index.ts             # Worker entry (production)
-│   ├── durable-objects.ts   # Chat DOs
-│   ├── auth.ts              # Auth DOs
-│   └── password.ts          # Password hashing
+├── workers/
+│   ├── main/
+│   │   └── src/
+│   │       ├── index.ts         # Worker entry point
+│   │       ├── durable-objects.ts # Chat DOs
+│   │       ├── auth.ts          # Auth DOs
+│   │       └── password.ts      # Password hashing
+│   ├── dispatcher/          # WfP subdomain router
+│   │   └── src/
+│   └── outbound/            # WfP outbound proxy
+│       └── src/
 ├── sandbox/                 # Container driver code
 ├── scripts/                 # Dev scripts
 │   └── dev.mjs              # Watch + rebuild + wrangler

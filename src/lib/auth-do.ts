@@ -9,9 +9,9 @@ import type {
   UpdateIntegrationInput,
   CreateApiTokenInput,
 } from '@/types';
-import type { SessionData, UserProfile } from '../../worker/auth';
-import type { ApiTokenData } from '../../worker/api-tokens';
-import type { DoRpcService } from '../../worker/rpc-service';
+import type { SessionData, UserProfile } from '../../workers/main/src/auth';
+import type { ApiTokenData } from '../../workers/main/src/api-tokens';
+import type { DoRpcService } from '../../workers/main/src/rpc-service';
 
 interface AuthEnv {
   DO_RPC: DoRpcService;

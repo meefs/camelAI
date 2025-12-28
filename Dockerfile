@@ -1,4 +1,4 @@
-FROM docker.io/cloudflare/sandbox:0.6.6
+FROM docker.io/cloudflare/sandbox:0.6.6-python
 
 # Must match the @cloudflare/sandbox npm package version.
 
