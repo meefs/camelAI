@@ -14,11 +14,5 @@
 			"service": "chiridion-app",
 			"entrypoint": "DoRpcService"
 		}
-	],
-	"durable_objects": {
-		"bindings": [
-			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
-			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" }
-		]
-	}
+	]
 }
