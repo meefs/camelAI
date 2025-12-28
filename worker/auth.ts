@@ -18,11 +18,22 @@ export interface SessionData {
   expires_at: number;
 }
 
+const SUPERUSER_EMAILS = new Set([
+  'admin@example.com',
+  '1033072+Vercantez@users.noreply.github.com',
+]);
+
+function isSuperuserEmail(email: string | null): boolean {
+  if (!email) return false;
+  return SUPERUSER_EMAILS.has(email.toLowerCase());
+}
+
 export interface UserProfile {
   id: string;
   email: string;
   name: string | null;
   created_at: number;
+  is_superuser: boolean;
 }
 
 export interface UserOrg {
@@ -225,13 +236,35 @@ export class UserDO extends DurableObject<AuthEnv> {
       `);
       this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
     }
+
+    if (version < 2) {
+      const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
+      if (rows.length > 0) {
+        const profile = JSON.parse((rows[0] as { value: string }).value) as UserProfile;
+        const shouldBeSuperuser = isSuperuserEmail(profile.email);
+        if (profile.is_superuser !== shouldBeSuperuser) {
+          profile.is_superuser = shouldBeSuperuser;
+          this.sql.exec(
+            'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
+            'data',
+            JSON.stringify(profile)
+          );
+        }
+      }
+      this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (2)');
+    }
   }
 
   // Profile methods
   async getProfile(): Promise<UserProfile | null> {
     const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
     if (rows.length === 0) return null;
-    return JSON.parse((rows[0] as { value: string }).value) as UserProfile;
+    const profile = JSON.parse((rows[0] as { value: string }).value) as UserProfile;
+    if (typeof profile.is_superuser !== 'boolean') {
+      profile.is_superuser = isSuperuserEmail(profile.email);
+      await this.setProfile(profile);
+    }
+    return profile;
   }
 
   async setProfile(profile: UserProfile): Promise<void> {
@@ -269,7 +302,13 @@ export class UserDO extends DurableObject<AuthEnv> {
     name: string | null
   ): Promise<UserProfile> {
     const now = Date.now();
-    const profile: UserProfile = { id, email, name, created_at: now };
+    const profile: UserProfile = {
+      id,
+      email,
+      name,
+      created_at: now,
+      is_superuser: isSuperuserEmail(email),
+    };
     const passwordHash = await hashPassword(password);
 
     await this.setProfile(profile);

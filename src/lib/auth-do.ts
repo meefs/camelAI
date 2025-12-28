@@ -8,6 +8,7 @@ import type {
   CreateIntegrationInput,
   UpdateIntegrationInput,
   CreateApiTokenInput,
+  AdminOverview,
 } from '@/types';
 import type { SessionData, UserProfile } from '../../worker/auth';
 import type { ApiTokenData } from '../../worker/api-tokens';
@@ -99,6 +100,12 @@ export async function addUserProject(userId: string, orgId: string, projectId: s
 export async function removeUserProject(userId: string, orgId: string, projectId: string): Promise<void> {
   const rpc = await getRpc();
   await rpc.removeUserProject(userId, orgId, projectId);
+}
+
+// Admin functions
+export async function getAdminOverview(): Promise<AdminOverview> {
+  const rpc = await getRpc();
+  return rpc.getAdminOverview();
 }
 
 // Organization functions

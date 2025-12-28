@@ -30,6 +30,7 @@ export interface User {
   email: string;
   name: string | null;
   created_at: number;
+  is_superuser: boolean;
 }
 
 export interface Session {
@@ -78,6 +79,22 @@ export interface AuthState {
   orgs: OrgMembership[];
   loading: boolean;
   error: string | null;
+}
+
+export interface AdminUserSummary {
+  id: string;
+  email: string;
+  name: string | null;
+  created_at: number;
+  is_superuser: boolean;
+  org_count: number;
+}
+
+export interface AdminOverview {
+  users: AdminUserSummary[];
+  total_users: number;
+  total_orgs: number;
+  total_memberships: number;
 }
 
 // Integration types

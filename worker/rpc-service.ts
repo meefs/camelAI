@@ -13,6 +13,8 @@ import type {
   CreateIntegrationInput,
   UpdateIntegrationInput,
   CreateApiTokenInput,
+  AdminOverview,
+  AdminUserSummary,
 } from '../src/types';
 import { getIntegrationDefinition, isProxyable, type ProxyConfig } from '../src/lib/integration-registry';
 import { encryptCredentials, decryptCredentials } from '../src/lib/integration-crypto';
@@ -168,6 +170,55 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     await userStub.removeProject(orgId, projectId);
   }
 
+  // Admin functions
+  async getAdminOverview(): Promise<AdminOverview> {
+    const users: AdminUserSummary[] = [];
+    const orgIds = new Set<string>();
+    const seenUserIds = new Set<string>();
+    let totalMemberships = 0;
+    let cursor: string | undefined;
+
+    while (true) {
+      const list = await this.env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
+      for (const key of list.keys) {
+        const userId = await this.env.EMAIL_TO_USER.get(key.name);
+        if (!userId || seenUserIds.has(userId)) continue;
+        seenUserIds.add(userId);
+
+        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+        const profile = await userStub.getProfile();
+        if (!profile) continue;
+
+        const orgs = await userStub.getOrgs();
+        for (const org of orgs) {
+          orgIds.add(org.org_id);
+        }
+        totalMemberships += orgs.length;
+
+        users.push({
+          id: profile.id,
+          email: profile.email,
+          name: profile.name,
+          created_at: profile.created_at,
+          is_superuser: profile.is_superuser,
+          org_count: orgs.length,
+        });
+      }
+
+      if (list.list_complete || !list.cursor) break;
+      cursor = list.cursor;
+    }
+
+    users.sort((a, b) => b.created_at - a.created_at);
+
+    return {
+      users,
+      total_users: users.length,
+      total_orgs: orgIds.size,
+      total_memberships: totalMemberships,
+    };
+  }
+
   // Organization functions
   async getOrg(orgId: string): Promise<Organization | null> {
     const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
@@ -220,6 +271,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
             email: user.email,
             name: user.name,
             created_at: user.created_at,
+            is_superuser: user.is_superuser,
           },
           role: m.role,
           joined_at: m.joined_at,
