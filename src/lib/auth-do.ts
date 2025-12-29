@@ -9,6 +9,11 @@ import type {
   UpdateIntegrationInput,
   CreateApiTokenInput,
   AdminOverview,
+  AdminUserSummary,
+  PaginatedResult,
+  PaginationParams,
+  Thread,
+  Project,
 } from '@/types';
 import type { SessionData, UserProfile } from '../../worker/auth';
 import type { ApiTokenData } from '../../worker/api-tokens';
@@ -177,6 +182,35 @@ export async function adminUpdateProject(
 ): Promise<{ id: string; name: string; created_by: string; created_at: number; updated_at: number } | null> {
   const rpc = await getRpc();
   return rpc.adminUpdateProject(projectId, updates);
+}
+
+// Paginated admin functions
+export async function adminGetUsersPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<AdminUserSummary>> {
+  const rpc = await getRpc();
+  return rpc.adminGetUsersPaginated(params);
+}
+
+export async function adminGetOrgsPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<Organization & { member_count: number }>> {
+  const rpc = await getRpc();
+  return rpc.adminGetOrgsPaginated(params);
+}
+
+export async function adminGetThreadsPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<Thread & { org_id: string }>> {
+  const rpc = await getRpc();
+  return rpc.adminGetThreadsPaginated(params);
+}
+
+export async function adminGetProjectsPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<Project & { org_id: string }>> {
+  const rpc = await getRpc();
+  return rpc.adminGetProjectsPaginated(params);
 }
 
 // Organization functions

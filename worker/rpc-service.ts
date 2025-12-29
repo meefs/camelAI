@@ -15,6 +15,8 @@ import type {
   CreateApiTokenInput,
   AdminOverview,
   AdminUserSummary,
+  PaginatedResult,
+  PaginationParams,
 } from '../src/types';
 import { getIntegrationDefinition, isProxyable, type ProxyConfig } from '../src/lib/integration-registry';
 import { encryptCredentials, decryptCredentials } from '../src/lib/integration-crypto';
@@ -466,6 +468,95 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     }
 
     return null;
+  }
+
+  // Helper: Collect all org IDs from user memberships
+  private async collectAllOrgIds(): Promise<Set<string>> {
+    const orgIds = new Set<string>();
+    let cursor: string | undefined;
+
+    while (true) {
+      const list = await this.env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
+      for (const key of list.keys) {
+        const userId = await this.env.EMAIL_TO_USER.get(key.name);
+        if (!userId) continue;
+
+        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+        const orgs = await userStub.getOrgs();
+        for (const org of orgs) {
+          orgIds.add(org.org_id);
+        }
+      }
+
+      if (list.list_complete || !list.cursor) break;
+      cursor = list.cursor;
+    }
+
+    return orgIds;
+  }
+
+  // Admin: Get paginated users
+  async adminGetUsersPaginated(
+    params: PaginationParams = {}
+  ): Promise<PaginatedResult<AdminUserSummary>> {
+    const { offset = 0, limit = 50 } = params;
+
+    // Get all users first (we need the full list to know total)
+    const overview = await this.getAdminOverview();
+    const total = overview.users.length;
+
+    // Apply pagination
+    const items = overview.users.slice(offset, offset + limit);
+
+    return { items, total, offset, limit };
+  }
+
+  // Admin: Get paginated organizations
+  async adminGetOrgsPaginated(
+    params: PaginationParams = {}
+  ): Promise<PaginatedResult<Organization & { member_count: number }>> {
+    const { offset = 0, limit = 50 } = params;
+
+    // Get all orgs first
+    const allOrgs = await this.adminGetAllOrgs();
+    const total = allOrgs.length;
+
+    // Apply pagination
+    const items = allOrgs.slice(offset, offset + limit);
+
+    return { items, total, offset, limit };
+  }
+
+  // Admin: Get paginated threads
+  async adminGetThreadsPaginated(
+    params: PaginationParams = {}
+  ): Promise<PaginatedResult<Thread & { org_id: string }>> {
+    const { offset = 0, limit = 50 } = params;
+
+    // Get all threads first
+    const allThreads = await this.adminGetAllThreads();
+    const total = allThreads.length;
+
+    // Apply pagination
+    const items = allThreads.slice(offset, offset + limit);
+
+    return { items, total, offset, limit };
+  }
+
+  // Admin: Get paginated projects
+  async adminGetProjectsPaginated(
+    params: PaginationParams = {}
+  ): Promise<PaginatedResult<Project & { org_id: string }>> {
+    const { offset = 0, limit = 50 } = params;
+
+    // Get all projects first
+    const allProjects = await this.adminGetAllProjects();
+    const total = allProjects.length;
+
+    // Apply pagination
+    const items = allProjects.slice(offset, offset + limit);
+
+    return { items, total, offset, limit };
   }
 
   // Organization functions

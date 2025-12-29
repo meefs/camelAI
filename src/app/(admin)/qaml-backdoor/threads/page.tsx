@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
+import { AdminPagination } from '@/components/admin/admin-pagination';
 import { Badge } from '@/components/ui/badge';
 import {
   Table,
@@ -13,6 +14,8 @@ import {
 
 export const dynamic = 'force-dynamic';
 
+const LIMIT = 50;
+
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -22,8 +25,18 @@ function formatTimestamp(value: number) {
   return dateFormatter.format(new Date(value));
 }
 
-export default async function AdminThreadsPage() {
-  const threads = await authDO.adminGetAllThreads();
+interface Props {
+  searchParams: Promise<{ offset?: string }>;
+}
+
+export default async function AdminThreadsPage({ searchParams }: Props) {
+  const params = await searchParams;
+  const offset = parseInt(params.offset || '0', 10);
+
+  const { items: threads, total } = await authDO.adminGetThreadsPaginated({
+    offset,
+    limit: LIMIT,
+  });
 
   return (
     <>
@@ -40,7 +53,7 @@ export default async function AdminThreadsPage() {
             <div>
               <h1 className="text-lg font-semibold tracking-tight">Threads</h1>
               <p className="text-sm text-muted-foreground">
-                {threads.length} total threads
+                {total} total threads
               </p>
             </div>
           </div>
@@ -103,6 +116,13 @@ export default async function AdminThreadsPage() {
               </TableBody>
             </Table>
           </div>
+
+          <AdminPagination
+            total={total}
+            offset={offset}
+            limit={LIMIT}
+            baseUrl="/qaml-backdoor/threads"
+          />
         </div>
       </div>
     </>

@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
+import { AdminPagination } from '@/components/admin/admin-pagination';
 import { Badge } from '@/components/ui/badge';
 import {
   Table,
@@ -13,6 +14,8 @@ import {
 
 export const dynamic = 'force-dynamic';
 
+const LIMIT = 50;
+
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -22,8 +25,18 @@ function formatTimestamp(value: number) {
   return dateFormatter.format(new Date(value));
 }
 
-export default async function AdminProjectsPage() {
-  const projects = await authDO.adminGetAllProjects();
+interface Props {
+  searchParams: Promise<{ offset?: string }>;
+}
+
+export default async function AdminProjectsPage({ searchParams }: Props) {
+  const params = await searchParams;
+  const offset = parseInt(params.offset || '0', 10);
+
+  const { items: projects, total } = await authDO.adminGetProjectsPaginated({
+    offset,
+    limit: LIMIT,
+  });
 
   return (
     <>
@@ -40,7 +53,7 @@ export default async function AdminProjectsPage() {
             <div>
               <h1 className="text-lg font-semibold tracking-tight">Projects</h1>
               <p className="text-sm text-muted-foreground">
-                {projects.length} total projects
+                {total} total projects
               </p>
             </div>
           </div>
@@ -107,6 +120,13 @@ export default async function AdminProjectsPage() {
               </TableBody>
             </Table>
           </div>
+
+          <AdminPagination
+            total={total}
+            offset={offset}
+            limit={LIMIT}
+            baseUrl="/qaml-backdoor/projects"
+          />
         </div>
       </div>
     </>

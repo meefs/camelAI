@@ -97,6 +97,19 @@ export interface AdminOverview {
   total_memberships: number;
 }
 
+// Paginated result types for admin lists
+export interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface PaginationParams {
+  offset?: number;
+  limit?: number;
+}
+
 // Integration types
 export type IntegrationCategory =
   | 'databases'
