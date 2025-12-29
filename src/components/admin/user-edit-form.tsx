@@ -1,0 +1,97 @@
+'use client';
+
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import type { User } from '@/types';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+
+interface UserEditFormProps {
+  user: User;
+}
+
+export function UserEditForm({ user }: UserEditFormProps) {
+  const router = useRouter();
+  const [name, setName] = useState(user.name || '');
+  const [isSuperuser, setIsSuperuser] = useState(user.is_superuser);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setSuccess(false);
+
+    try {
+      const res = await fetch(`/api/admin/users/${user.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name || null,
+          is_superuser: isSuperuser,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json() as { error?: string };
+        throw new Error(data.error || 'Failed to update user');
+      }
+
+      setSuccess(true);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {success && (
+        <Alert>
+          <AlertDescription>User updated successfully</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="space-y-2">
+        <Label htmlFor="name">Display Name</Label>
+        <Input
+          id="name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Enter display name"
+        />
+      </div>
+
+      <div className="flex items-center gap-3">
+        <Checkbox
+          id="superuser"
+          checked={isSuperuser}
+          onCheckedChange={(checked) => setIsSuperuser(checked === true)}
+        />
+        <div className="space-y-0.5">
+          <Label htmlFor="superuser">Superuser</Label>
+          <p className="text-xs text-muted-foreground">
+            Grant full admin access to this user
+          </p>
+        </div>
+      </div>
+
+      <Button type="submit" disabled={loading}>
+        {loading ? 'Saving...' : 'Save Changes'}
+      </Button>
+    </form>
+  );
+}

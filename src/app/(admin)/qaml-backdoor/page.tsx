@@ -1,31 +1,15 @@
-import { notFound, redirect } from 'next/navigation';
 import * as authDO from '@/lib/auth-do';
-import { getSessionId } from '@/lib/auth';
 import { AdminDashboard } from '@/components/admin/admin-dashboard';
 
 export const dynamic = 'force-dynamic';
 
 export default async function AdminPage() {
-  const sessionId = await getSessionId();
-  if (!sessionId) {
-    redirect('/login');
-  }
+  const [overview, threads, projects] = await Promise.all([
+    authDO.getAdminOverview(),
+    authDO.adminGetAllThreads(),
+    authDO.adminGetAllProjects(),
+  ]);
 
-  const session = await authDO.getSession(sessionId);
-  if (!session) {
-    redirect('/login');
-  }
-
-  const user = await authDO.getUserById(session.user_id);
-  if (!user) {
-    redirect('/login');
-  }
-
-  if (!user.is_superuser) {
-    notFound();
-  }
-
-  const overview = await authDO.getAdminOverview();
   const safeOverview = {
     users: overview.users.map((entry) => ({
       id: entry.id,
@@ -39,5 +23,12 @@ export default async function AdminPage() {
     total_orgs: overview.total_orgs,
     total_memberships: overview.total_memberships,
   };
-  return <AdminDashboard overview={safeOverview} />;
+
+  return (
+    <AdminDashboard
+      overview={safeOverview}
+      threadCount={threads.length}
+      projectCount={projects.length}
+    />
+  );
 }

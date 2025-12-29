@@ -108,6 +108,77 @@ export async function getAdminOverview(): Promise<AdminOverview> {
   return rpc.getAdminOverview();
 }
 
+export async function adminUpdateUser(
+  userId: string,
+  updates: { name?: string; is_superuser?: boolean }
+): Promise<User | null> {
+  const rpc = await getRpc();
+  const profile = await rpc.adminUpdateUser(userId, updates);
+  if (!profile) return null;
+  return {
+    id: profile.id,
+    email: profile.email,
+    name: profile.name,
+    created_at: profile.created_at,
+    is_superuser: profile.is_superuser,
+  };
+}
+
+export async function adminGetAllOrgs(): Promise<Array<Organization & { member_count: number }>> {
+  const rpc = await getRpc();
+  return rpc.adminGetAllOrgs();
+}
+
+export async function adminGetAllThreads(): Promise<Array<{
+  id: string;
+  title: string;
+  project_id: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  org_id: string;
+}>> {
+  const rpc = await getRpc();
+  return rpc.adminGetAllThreads();
+}
+
+export async function adminGetAllProjects(): Promise<Array<{
+  id: string;
+  name: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  org_id: string;
+}>> {
+  const rpc = await getRpc();
+  return rpc.adminGetAllProjects();
+}
+
+export async function adminGetThreadWithMessages(threadId: string): Promise<{
+  thread: { id: string; title: string; project_id: string; created_by: string; created_at: number; updated_at: number };
+  messages: Array<{ id: string; thread_id: string; role: 'user' | 'assistant'; content: string; created_at: number }>;
+  org_id: string;
+} | null> {
+  const rpc = await getRpc();
+  return rpc.adminGetThreadWithMessages(threadId);
+}
+
+export async function adminUpdateThread(
+  threadId: string,
+  updates: { title?: string }
+): Promise<{ id: string; title: string; project_id: string; created_by: string; created_at: number; updated_at: number } | null> {
+  const rpc = await getRpc();
+  return rpc.adminUpdateThread(threadId, updates);
+}
+
+export async function adminUpdateProject(
+  projectId: string,
+  updates: { name?: string }
+): Promise<{ id: string; name: string; created_by: string; created_at: number; updated_at: number } | null> {
+  const rpc = await getRpc();
+  return rpc.adminUpdateProject(projectId, updates);
+}
+
 // Organization functions
 export async function getOrg(orgId: string): Promise<Organization | null> {
   const rpc = await getRpc();
