@@ -82,6 +82,17 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return errorResponse('User is not a member of this organization', 404);
     }
 
+    // Prevent demoting the last admin
+    if (role === 'member') {
+      const members = await authDO.getOrgMembers(orgId);
+      const admins = members.filter((m) => m.role === 'admin');
+      const isTargetCurrentlyAdmin = admins.some((m) => m.user.id === userId);
+
+      if (isTargetCurrentlyAdmin && admins.length === 1) {
+        return errorResponse('Cannot demote the last admin. Promote another member to admin first.');
+      }
+    }
+
     await authDO.updateOrgMemberRole(orgId, userId, role);
     return jsonResponse({ success: true });
   } catch (error) {
@@ -111,6 +122,27 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       return errorResponse('User ID is required');
     }
 
+    // Check if target user is a member
+    const isMember = await authDO.isOrgMember(userId, orgId);
+    if (!isMember) {
+      return errorResponse('User is not a member of this organization', 404);
+    }
+
+    // Prevent removing the last member (would orphan the org)
+    const members = await authDO.getOrgMembers(orgId);
+    if (members.length === 1) {
+      return errorResponse('Cannot remove the last member of an organization');
+    }
+
+    // If removing an admin, ensure at least one admin remains
+    const targetMember = members.find((m) => m.user.id === userId);
+    if (targetMember?.role === 'admin') {
+      const admins = members.filter((m) => m.role === 'admin');
+      if (admins.length === 1) {
+        return errorResponse('Cannot remove the last admin. Promote another member to admin first.');
+      }
+    }
+
     // Users can leave an org themselves
     if (userId === session.user_id) {
       await authDO.removeOrgMember(orgId, userId);
@@ -121,12 +153,6 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const isAdmin = await authDO.isOrgAdmin(session.user_id, orgId);
     if (!isAdmin) {
       return forbiddenResponse('Only admins can remove members');
-    }
-
-    // Check if target user is a member
-    const isMember = await authDO.isOrgMember(userId, orgId);
-    if (!isMember) {
-      return errorResponse('User is not a member of this organization', 404);
     }
 
     await authDO.removeOrgMember(orgId, userId);

@@ -24,6 +24,7 @@ const mockUser = {
   email: 'test@example.com',
   name: 'Test User',
   created_at: Date.now(),
+  is_superuser: false,
 };
 
 const mockOrg = {
@@ -46,6 +47,7 @@ interface User {
   email: string;
   name: string | null;
   created_at: number;
+  is_superuser: boolean;
 }
 
 interface Organization {

@@ -58,6 +58,7 @@ export async function POST(request: NextRequest) {
         email: user.email,
         name: user.name,
         created_at: user.created_at,
+        is_superuser: user.is_superuser,
       },
       currentOrg: org,
       orgs,
