@@ -5,19 +5,13 @@ import { useRouter } from 'next/navigation';
 import { ArrowDown, Copy, Check, RefreshCw, ExternalLink, X } from 'lucide-react';
 import type { Thread, Message } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { SidebarTrigger } from '@/components/ui/sidebar';
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbList,
-  BreadcrumbPage,
-} from '@/components/ui/breadcrumb';
+import { PageHeader } from '@/components/page-header';
 import { PromptInput } from '@/components/prompt-input';
 import { Button } from '@/components/ui/button';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
@@ -506,30 +500,7 @@ export default function Chat({ threadId }: ChatProps) {
   return (
     <TooltipProvider>
       <>
-        {/* Sticky Header */}
-        <header className="sticky top-0 z-30 shrink-0">
-          {/* Header content */}
-          <div className="flex h-12 items-center gap-2 px-4">
-            <SidebarTrigger className="-ml-1" />
-            <div
-              data-orientation="vertical"
-              role="none"
-              className="bg-border shrink-0 w-px h-4 mr-2"
-            />
-            <Breadcrumb>
-              <BreadcrumbList>
-                <BreadcrumbItem>
-                  <BreadcrumbPage>{threadId ? 'Chat' : 'New Chat'}</BreadcrumbPage>
-                </BreadcrumbItem>
-              </BreadcrumbList>
-            </Breadcrumb>
-          </div>
-          {/* Gradient overlay that fades into content */}
-          <div
-            className="absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent pointer-events-none"
-            aria-hidden="true"
-          />
-        </header>
+        <PageHeader breadcrumbs={[{ label: threadId ? 'Chat' : 'New Chat' }]} />
 
         {threadId ? (
           <div className="flex-1 flex min-h-0">
