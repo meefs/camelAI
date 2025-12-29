@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+const SESSION_COOKIE_NAME = 'chiridion_session';
+
 export function middleware(request: NextRequest) {
-  const sessionCookie = request.cookies.get('session');
+  const sessionCookie = request.cookies.get(SESSION_COOKIE_NAME);
   const { pathname } = request.nextUrl;
 
   // Public routes that don't require auth
