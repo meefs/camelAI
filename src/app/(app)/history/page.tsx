@@ -4,13 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Thread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { SidebarTrigger } from '@/components/ui/sidebar';
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbList,
-  BreadcrumbPage,
-} from '@/components/ui/breadcrumb';
+import { PageHeader } from '@/components/page-header';
 import { ChatsToolbar } from '@/components/history/chats-toolbar';
 import { ChatsList } from '@/components/history/chats-list';
 
@@ -136,30 +130,9 @@ export default function HistoryPage() {
     router.push(`/chat/${id}`);
   };
 
-  if (authLoading) {
-    return null;
-  }
-
   return (
     <>
-      {/* Sticky Header */}
-      <header className="sticky top-0 z-30 shrink-0 bg-background">
-        <div className="flex h-12 items-center gap-2 px-4">
-          <SidebarTrigger className="-ml-1" />
-          <div
-            data-orientation="vertical"
-            role="none"
-            className="bg-border shrink-0 w-px h-4 mr-2"
-          />
-          <Breadcrumb>
-            <BreadcrumbList>
-              <BreadcrumbItem>
-                <BreadcrumbPage>Chat History</BreadcrumbPage>
-              </BreadcrumbItem>
-            </BreadcrumbList>
-          </Breadcrumb>
-        </div>
-      </header>
+      <PageHeader breadcrumbs={[{ label: 'Chat History' }]} />
 
       {/* Main Content Wrapper */}
       <div className="flex-1 min-h-0 flex flex-col">

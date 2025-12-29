@@ -16,11 +16,36 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
+import { Skeleton } from "@/components/ui/skeleton"
 import { useAuth } from "@/contexts/AuthContext"
+
+function TeamSwitcherSkeleton() {
+  return (
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <div
+          aria-hidden="true"
+          className="flex h-12 w-full items-center gap-2 rounded-[calc(var(--radius-sm)+2px)] p-2"
+        >
+          <Skeleton className="h-8 w-8 rounded-lg" />
+          <div className="flex-1 space-y-1">
+            <Skeleton className="h-4 w-28" />
+            <Skeleton className="h-3 w-16" />
+          </div>
+          <Skeleton className="h-4 w-4 rounded" />
+        </div>
+      </SidebarMenuItem>
+    </SidebarMenu>
+  )
+}
 
 export function TeamSwitcher() {
   const { isMobile } = useSidebar()
-  const { currentOrg, orgs, switchOrg } = useAuth()
+  const { currentOrg, orgs, switchOrg, loading } = useAuth()
+
+  if (loading && !currentOrg) {
+    return <TeamSwitcherSkeleton />
+  }
 
   if (!currentOrg) {
     return null
