@@ -48,6 +48,9 @@
 		},
 		"staging": {
 			"name": "chiridion-dispatcher-staging",
+			"routes": [
+				{ "pattern": "*.staging.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			],
 			"dispatch_namespaces": [
 				{
 					"binding": "DISPATCHER",
@@ -61,6 +64,9 @@
 		},
 		"dev-miguel": {
 			"name": "chiridion-dispatcher-dev-miguel",
+			"routes": [
+				{ "pattern": "*.dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			],
 			"dispatch_namespaces": [
 				{
 					"binding": "DISPATCHER",
@@ -74,6 +80,9 @@
 		},
 		"dev-illiana": {
 			"name": "chiridion-dispatcher-dev-illiana",
+			"routes": [
+				{ "pattern": "*.dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			],
 			"dispatch_namespaces": [
 				{
 					"binding": "DISPATCHER",
