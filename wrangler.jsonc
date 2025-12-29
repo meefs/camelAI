@@ -108,6 +108,37 @@
 			"routes": [
 				{ "pattern": "staging.chiridion.ai/*", "zone_name": "chiridion.ai" }
 			],
+			"vars": {
+				"R2_BUCKET_NAME": "chiridion-sandbox",
+				"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+				"R2_MOUNT_DIR": "/home/claude",
+				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
+				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+				"CF_DISPATCH_NAMESPACE": "chiridion-platform"
+			},
+			"assets": {
+				"binding": "ASSETS",
+				"directory": ".open-next/assets"
+			},
+			"images": {
+				"binding": "IMAGES"
+			},
+			"r2_buckets": [
+				{
+					"binding": "R2_BUCKET",
+					"bucket_name": "chiridion-sandbox"
+				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "EMAIL_TO_USER",
+					"id": "ab267c4f44b847dda8bdca400a4e1884"
+				},
+				{
+					"binding": "API_TOKENS",
+					"id": "e894eb2caf1641ad8870da994b992fce"
+				}
+			],
 			"services": [
 				{
 					"binding": "WORKER_SELF_REFERENCE",
@@ -126,12 +157,53 @@
 					"instance_type": "basic",
 					"max_instances": 10
 				}
-			]
+			],
+			"durable_objects": {
+				"bindings": [
+					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
+					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
+					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
+					{ "name": "SESSION", "class_name": "SessionDO" },
+					{ "name": "USER", "class_name": "UserDO" },
+					{ "name": "ORG", "class_name": "OrgDO" }
+				]
+			}
 		},
 		"dev-miguel": {
 			"name": "chiridion-app-dev-miguel",
 			"routes": [
 				{ "pattern": "dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			],
+			"vars": {
+				"R2_BUCKET_NAME": "chiridion-sandbox",
+				"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+				"R2_MOUNT_DIR": "/home/claude",
+				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
+				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+				"CF_DISPATCH_NAMESPACE": "chiridion-platform"
+			},
+			"assets": {
+				"binding": "ASSETS",
+				"directory": ".open-next/assets"
+			},
+			"images": {
+				"binding": "IMAGES"
+			},
+			"r2_buckets": [
+				{
+					"binding": "R2_BUCKET",
+					"bucket_name": "chiridion-sandbox"
+				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "EMAIL_TO_USER",
+					"id": "ab267c4f44b847dda8bdca400a4e1884"
+				},
+				{
+					"binding": "API_TOKENS",
+					"id": "e894eb2caf1641ad8870da994b992fce"
+				}
 			],
 			"services": [
 				{
@@ -143,12 +215,61 @@
 					"service": "chiridion-app-dev-miguel",
 					"entrypoint": "DoRpcService"
 				}
-			]
+			],
+			"containers": [
+				{
+					"class_name": "ThreadSandbox",
+					"image": "./Dockerfile",
+					"instance_type": "basic",
+					"max_instances": 5
+				}
+			],
+			"durable_objects": {
+				"bindings": [
+					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
+					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
+					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
+					{ "name": "SESSION", "class_name": "SessionDO" },
+					{ "name": "USER", "class_name": "UserDO" },
+					{ "name": "ORG", "class_name": "OrgDO" }
+				]
+			}
 		},
 		"dev-illiana": {
 			"name": "chiridion-app-dev-illiana",
 			"routes": [
 				{ "pattern": "dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			],
+			"vars": {
+				"R2_BUCKET_NAME": "chiridion-sandbox",
+				"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+				"R2_MOUNT_DIR": "/home/claude",
+				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
+				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+				"CF_DISPATCH_NAMESPACE": "chiridion-platform"
+			},
+			"assets": {
+				"binding": "ASSETS",
+				"directory": ".open-next/assets"
+			},
+			"images": {
+				"binding": "IMAGES"
+			},
+			"r2_buckets": [
+				{
+					"binding": "R2_BUCKET",
+					"bucket_name": "chiridion-sandbox"
+				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "EMAIL_TO_USER",
+					"id": "ab267c4f44b847dda8bdca400a4e1884"
+				},
+				{
+					"binding": "API_TOKENS",
+					"id": "e894eb2caf1641ad8870da994b992fce"
+				}
 			],
 			"services": [
 				{
@@ -160,7 +281,25 @@
 					"service": "chiridion-app-dev-illiana",
 					"entrypoint": "DoRpcService"
 				}
-			]
+			],
+			"containers": [
+				{
+					"class_name": "ThreadSandbox",
+					"image": "./Dockerfile",
+					"instance_type": "basic",
+					"max_instances": 5
+				}
+			],
+			"durable_objects": {
+				"bindings": [
+					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
+					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
+					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
+					{ "name": "SESSION", "class_name": "SessionDO" },
+					{ "name": "USER", "class_name": "UserDO" },
+					{ "name": "ORG", "class_name": "OrgDO" }
+				]
+			}
 		}
 	}
 }
