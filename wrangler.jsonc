@@ -105,6 +105,9 @@
 		},
 		"staging": {
 			"name": "chiridion-app-staging",
+			"routes": [
+				{ "pattern": "staging.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			],
 			"services": [
 				{
 					"binding": "WORKER_SELF_REFERENCE",
@@ -127,6 +130,9 @@
 		},
 		"dev-miguel": {
 			"name": "chiridion-app-dev-miguel",
+			"routes": [
+				{ "pattern": "dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			],
 			"services": [
 				{
 					"binding": "WORKER_SELF_REFERENCE",
@@ -141,6 +147,9 @@
 		},
 		"dev-illiana": {
 			"name": "chiridion-app-dev-illiana",
+			"routes": [
+				{ "pattern": "dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			],
 			"services": [
 				{
 					"binding": "WORKER_SELF_REFERENCE",
