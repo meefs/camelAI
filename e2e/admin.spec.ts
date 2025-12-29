@@ -5,8 +5,15 @@
  *
  * Note: These tests require a running server (npm run dev)
  *
- * Superuser tests require an account with an email in the SUPERUSER_EMAILS allowlist
- * (defined in worker/auth.ts). For local testing, add a test email to that list.
+ * Superuser tests require environment variables:
+ *   SUPERUSER_TEST_EMAIL - Email of an account in the SUPERUSER_EMAILS allowlist (worker/auth.ts)
+ *   SUPERUSER_TEST_PASSWORD - Password for that account
+ *
+ * Example:
+ *   SUPERUSER_TEST_EMAIL=admin@example.com SUPERUSER_TEST_PASSWORD=mypassword npm run test:e2e -- e2e/admin.spec.ts
+ *
+ * Access control tests (non-superuser gets 404) run without these env vars.
+ * Superuser-specific tests will be skipped if env vars are not set.
  */
 
 import { test, expect, Page } from '@playwright/test';
@@ -15,10 +22,9 @@ import { test, expect, Page } from '@playwright/test';
 const generateEmail = () =>
   `test-${Date.now()}-${Math.random().toString(36).substring(7)}@example.com`;
 
-// Superuser email - must be in SUPERUSER_EMAILS allowlist in worker/auth.ts
-// For CI, add 'admin-test@example.com' to the allowlist or use env var
-const SUPERUSER_EMAIL = process.env.SUPERUSER_TEST_EMAIL || 'admin-test@example.com';
-const SUPERUSER_PASSWORD = 'testpassword123';
+// Superuser credentials from environment - must be in SUPERUSER_EMAILS allowlist
+const SUPERUSER_EMAIL = process.env.SUPERUSER_TEST_EMAIL;
+const SUPERUSER_PASSWORD = process.env.SUPERUSER_TEST_PASSWORD;
 
 /**
  * Helper to create a regular (non-superuser) account and login
@@ -41,6 +47,9 @@ async function loginAsRegularUser(page: Page): Promise<string> {
  * Assumes the superuser account already exists (created manually or in test setup)
  */
 async function loginAsSuperuser(page: Page): Promise<void> {
+  if (!SUPERUSER_EMAIL || !SUPERUSER_PASSWORD) {
+    throw new Error('SUPERUSER_TEST_EMAIL and SUPERUSER_TEST_PASSWORD env vars required');
+  }
   await page.goto('/login');
   await page.fill('input#email', SUPERUSER_EMAIL);
   await page.fill('input#password', SUPERUSER_PASSWORD);
@@ -50,8 +59,13 @@ async function loginAsSuperuser(page: Page): Promise<void> {
 
 /**
  * Helper to ensure superuser account exists
+ * Returns false if credentials are not configured or login fails
  */
 async function ensureSuperuserExists(page: Page): Promise<boolean> {
+  if (!SUPERUSER_EMAIL || !SUPERUSER_PASSWORD) {
+    return false;
+  }
+
   // Try to login first
   await page.goto('/login');
   await page.fill('input#email', SUPERUSER_EMAIL);
