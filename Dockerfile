@@ -3,7 +3,9 @@ FROM docker.io/cloudflare/sandbox:0.6.6-python
 # Must match the @cloudflare/sandbox npm package version.
 
 # Optional: app ports you plan to expose via the Sandbox API (control plane uses 3000)
-EXPOSE 8080
+# 8080: WS server for Claude SDK
+# 8081: Integration proxy for external APIs
+EXPOSE 8080 8081
 
 # R2 sync support (rclone for downloading/uploading on init/shutdown)
 ENV DEBIAN_FRONTEND=noninteractive
@@ -27,12 +29,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && chmod +x /usr/local/bin/rclone \
   && rm -rf /tmp/rclone*
 
-# Copy and install Claude SDK driver + integration proxy
-COPY sandbox/package.json sandbox/driver.mjs sandbox/proxy.mjs sandbox/run-driver.sh /app/
+# Copy and install Claude SDK driver + integration proxy + WS server
+COPY sandbox/package.json sandbox/driver.mjs sandbox/proxy.mjs sandbox/ws-server.mjs sandbox/run-driver.sh sandbox/run-ws-server.sh /app/
 COPY sandbox/starter-worker /app/starter-worker
 WORKDIR /app
 RUN bun install
-RUN chmod +x /app/run-driver.sh && chmod -R a+rX /app
+RUN chmod +x /app/run-driver.sh /app/run-ws-server.sh && chmod -R a+rX /app
 
 # Create non-root user for running the Claude agent
 RUN if ! id -u claude >/dev/null 2>&1; then useradd -m -s /bin/bash -u 1000 claude; fi && \

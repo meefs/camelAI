@@ -103,7 +103,7 @@ export default function Chat({ threadId }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [connected, setConnected] = useState(false);
+  const [ready, setReady] = useState(false); // Container is ready to receive messages
   const [streaming, setStreaming] = useState<StreamingState>({ content: [], isStreaming: false });
   const [welcomeInput, setWelcomeInput] = useState('');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
@@ -121,6 +121,8 @@ export default function Chat({ threadId }: ChatProps) {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
+  // Ref to hold stable connect function for effect
+  const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -141,6 +143,21 @@ export default function Chat({ threadId }: ChatProps) {
     }
   }, [user, currentOrg, fetchThreads]);
 
+  // Fetch messages from REST API
+  const fetchMessages = useCallback(async (threadId: string) => {
+    try {
+      const res = await fetch(`/api/threads/${threadId}/messages`);
+      if (res.ok) {
+        const data = await res.json() as unknown;
+        const msgs = Array.isArray(data) ? (data as Message[]) : [];
+        setMessages(msgs);
+        isFirstMessage.current = msgs.length === 0;
+      }
+    } catch (e) {
+      console.error('Failed to fetch messages:', e);
+    }
+  }, []);
+
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
     // Clear any pending reconnect
@@ -152,19 +169,22 @@ export default function Chat({ threadId }: ChatProps) {
     // Increment connection ID to invalidate any pending callbacks from old connections
     const thisConnectionId = ++connectionIdRef.current;
 
-    // Close existing connection only if it's actually open
-    // (closing a CONNECTING WebSocket causes a console error)
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    // Close existing connection regardless of state
+    // This prevents orphaned WebSockets from React StrictMode double-mounting
+    if (wsRef.current) {
       wsRef.current.close();
+      wsRef.current = null;
     }
-    wsRef.current = null;
 
-    setConnected(false);
+    setReady(false);
     if (!isReconnect) {
       setMessages([]);
       isFirstMessage.current = true;
       reconnectAttempts.current = 0;
     }
+
+    // Fetch existing messages from REST API
+    fetchMessages(id);
 
     // WebSocket is handled by the worker at /ws/{threadId} on the same origin as the page.
     const wsHost = window.location.host;
@@ -176,46 +196,44 @@ export default function Chat({ threadId }: ChatProps) {
 
     ws.onopen = () => {
       // Ignore if this connection was superseded
-      if (connectionIdRef.current !== thisConnectionId) return;
-      setConnected(true);
+      if (connectionIdRef.current !== thisConnectionId) {
+        return;
+      }
       reconnectAttempts.current = 0;
 
-      // Send pending message if exists (from welcome screen, stored in sessionStorage)
-      const storedMessage = sessionStorage.getItem('pendingMessage');
-      if (storedMessage) {
-        sessionStorage.removeItem('pendingMessage');
-        setLoading(true);
-        setStreaming({ content: [], isStreaming: false });
-        ws.send(JSON.stringify({
-          type: 'message',
-          content: storedMessage,
-          threadId: id,
-          org: currentOrg?.id || 'default',
-          autoTitle: true,
-        }));
-        isFirstMessage.current = false;
-        setTimeout(fetchThreads, 500);
-      }
+      // Send init message to container
+      ws.send(JSON.stringify({
+        type: 'init',
+        threadId: id,
+        org: currentOrg?.id || 'default',
+      }));
     };
 
     ws.onmessage = (event) => {
       // Ignore messages from stale WebSocket instances (e.g., from StrictMode double-mount)
-      if (wsRef.current !== ws) return;
+      if (wsRef.current !== ws) {
+        return;
+      }
 
       const data = JSON.parse(event.data);
 
-      if (data.type === 'history') {
-        // Initial message history - merge with existing on reconnect
-        if (isReconnect) {
-          setMessages(prev => {
-            const existingIds = new Set(prev.map(m => m.id));
-            const newMessages = data.messages.filter((m: Message) => !existingIds.has(m.id));
-            return [...prev, ...newMessages];
-          });
-        } else {
-          setMessages(data.messages);
+      if (data.type === 'ready') {
+        // Container is ready to receive messages
+        setReady(true);
+
+        // Send pending message if exists (from welcome screen, stored in sessionStorage)
+        const storedMessage = sessionStorage.getItem('pendingMessage');
+        if (storedMessage) {
+          sessionStorage.removeItem('pendingMessage');
+          setLoading(true);
+          setStreaming({ content: [], isStreaming: false });
+          ws.send(JSON.stringify({
+            type: 'message',
+            content: storedMessage,
+          }));
+          isFirstMessage.current = false;
+          setTimeout(fetchThreads, 500);
         }
-        isFirstMessage.current = data.messages.length === 0;
       } else if (data.type === 'sdk_event') {
         // Handle SDK events for streaming
         const sdkEvent = data.event as SDKEvent;
@@ -287,7 +305,6 @@ export default function Chat({ threadId }: ChatProps) {
         setLoading(false);
       } else if (data.type === 'deploy_success') {
         // Wrangler deploy completed - show the deployed app in iframe
-        console.log('Deploy success:', data.scriptName);
         setDeployedApp(data.scriptName);
         setIframeLoading(true);
         setIframeKey(prev => prev + 1);
@@ -304,44 +321,70 @@ export default function Chat({ threadId }: ChatProps) {
 
     ws.onclose = () => {
       // Ignore if this connection was superseded by a new one
-      if (connectionIdRef.current !== thisConnectionId) return;
+      if (connectionIdRef.current !== thisConnectionId) {
+        return;
+      }
 
-      setConnected(false);
+      setReady(false);
       wsRef.current = null;
 
-      // Auto-reconnect
+      // Auto-reconnect with exponential backoff
       const maxAttempts = 5;
       if (reconnectAttempts.current < maxAttempts) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
         reconnectAttempts.current++;
-        console.log(`WebSocket closed, reconnecting in ${delay}ms (attempt ${reconnectAttempts.current}/${maxAttempts})`);
         reconnectTimeoutRef.current = setTimeout(() => {
           // Check again that we haven't been superseded
           if (connectionIdRef.current === thisConnectionId) {
             connectWebSocket(id, true);
           }
         }, delay);
-      } else {
-        console.log('WebSocket reconnection failed after max attempts');
       }
     };
 
     ws.onerror = () => {
       // Ignore errors from superseded connections
-      if (connectionIdRef.current !== thisConnectionId) return;
-      const state = ws.readyState;
-      const stateNames = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
-      console.error(`WebSocket error: Connection to ${ws.url} failed (state: ${stateNames[state] || state}). Check that the server is running.`);
+      if (connectionIdRef.current !== thisConnectionId) {
+        return;
+      }
     };
 
-  }, [currentOrg]);
+  }, [currentOrg, fetchMessages, fetchThreads]);
+
+  // Keep the ref updated with the latest function
+  connectWebSocketRef.current = connectWebSocket;
+
+  // Track which threadId we're connected to
+  const connectedThreadIdRef = useRef<string | null>(null);
 
   // Connect when threadId changes
   useEffect(() => {
-    if (threadId) {
-      connectWebSocket(threadId);
-    } else {
-      // Increment connection ID to stop any pending reconnects
+    if (!threadId) {
+      // No threadId - cleanup any existing connection
+      if (connectedThreadIdRef.current) {
+        connectionIdRef.current++;
+        connectedThreadIdRef.current = null;
+        if (wsRef.current) {
+          wsRef.current.close();
+          wsRef.current = null;
+        }
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
+        setMessages([]);
+        setReady(false);
+      }
+      return;
+    }
+
+    // Already connected to this thread? Nothing to do.
+    if (connectedThreadIdRef.current === threadId) {
+      return;
+    }
+
+    // Switching threads - close old connection first
+    if (connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId) {
       connectionIdRef.current++;
       if (wsRef.current) {
         wsRef.current.close();
@@ -351,23 +394,17 @@ export default function Chat({ threadId }: ChatProps) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
-      setMessages([]);
-      setConnected(false);
     }
 
-    return () => {
-      // Increment connection ID to stop any pending reconnects from this effect
-      connectionIdRef.current++;
-      // Only close if WebSocket is actually open (not still connecting)
-      // This prevents React StrictMode from closing before connection is established
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.close();
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-    };
-  }, [threadId, connectWebSocket]);
+    // Connect to the new thread
+    connectedThreadIdRef.current = threadId;
+    connectWebSocketRef.current?.(threadId);
+
+    // No cleanup function - we handle cleanup explicitly when threadId changes
+    // This prevents StrictMode from closing connections on remount
+    // Browser closes WebSocket automatically on navigation
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId]);
 
   // Reconnect on visibility change (tab becomes visible)
   useEffect(() => {
@@ -385,16 +422,15 @@ export default function Chat({ threadId }: ChatProps) {
             clearTimeout(reconnectTimeoutRef.current);
             reconnectTimeoutRef.current = null;
           }
-          console.log('Tab visible, reconnecting WebSocket...');
           reconnectAttempts.current = 0; // Fresh start when user returns to tab
-          connectWebSocket(threadId, true);
+          connectWebSocketRef.current?.(threadId, true);
         }
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [threadId, connectWebSocket]);
+  }, [threadId]);
 
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {
@@ -480,20 +516,17 @@ export default function Chat({ threadId }: ChatProps) {
   }
 
   function sendMessage() {
-    if (!input.trim() || !threadId || loading || !wsRef.current || !connected) return;
+    if (!input.trim() || !threadId || loading || !wsRef.current || !ready) return;
 
     const userMessage = input.trim();
     setInput('');
     setLoading(true);
     setStreaming({ content: [], isStreaming: false });
 
-    // Send via WebSocket
+    // Send via WebSocket - simplified message format for new architecture
     wsRef.current.send(JSON.stringify({
       type: 'message',
       content: userMessage,
-      threadId: threadId,
-      org: currentOrg?.id || 'default',
-      autoTitle: isFirstMessage.current,
     }));
 
     if (isFirstMessage.current) {
@@ -712,7 +745,7 @@ export default function Chat({ threadId }: ChatProps) {
                     onSubmit={sendMessage}
                     placeholder="Type a message..."
                     isLoading={loading}
-                    disabled={!connected}
+                    disabled={!ready}
                   />
                 </div>
               </div>
