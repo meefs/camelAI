@@ -105,9 +105,6 @@
 		},
 		"staging": {
 			"name": "chiridion-app-staging",
-			"routes": [
-				{ "pattern": "staging.chiridion.ai/*", "zone_name": "chiridion.ai" }
-			],
 			"services": [
 				{
 					"binding": "WORKER_SELF_REFERENCE",
