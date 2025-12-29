@@ -8,6 +8,12 @@ import type {
   CreateIntegrationInput,
   UpdateIntegrationInput,
   CreateApiTokenInput,
+  AdminOverview,
+  AdminUserSummary,
+  PaginatedResult,
+  PaginationParams,
+  Thread,
+  Project,
 } from '@/types';
 import type { SessionData, UserProfile } from '../../workers/main/src/auth';
 import type { ApiTokenData } from '../../workers/main/src/api-tokens';
@@ -99,6 +105,112 @@ export async function addUserProject(userId: string, orgId: string, projectId: s
 export async function removeUserProject(userId: string, orgId: string, projectId: string): Promise<void> {
   const rpc = await getRpc();
   await rpc.removeUserProject(userId, orgId, projectId);
+}
+
+// Admin functions
+export async function getAdminOverview(): Promise<AdminOverview> {
+  const rpc = await getRpc();
+  return rpc.getAdminOverview();
+}
+
+export async function adminUpdateUser(
+  userId: string,
+  updates: { name?: string; is_superuser?: boolean }
+): Promise<User | null> {
+  const rpc = await getRpc();
+  const profile = await rpc.adminUpdateUser(userId, updates);
+  if (!profile) return null;
+  return {
+    id: profile.id,
+    email: profile.email,
+    name: profile.name,
+    created_at: profile.created_at,
+    is_superuser: profile.is_superuser,
+  };
+}
+
+export async function adminGetAllOrgs(): Promise<Array<Organization & { member_count: number }>> {
+  const rpc = await getRpc();
+  return rpc.adminGetAllOrgs();
+}
+
+export async function adminGetAllThreads(): Promise<Array<{
+  id: string;
+  title: string;
+  project_id: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  org_id: string;
+}>> {
+  const rpc = await getRpc();
+  return rpc.adminGetAllThreads();
+}
+
+export async function adminGetAllProjects(): Promise<Array<{
+  id: string;
+  name: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  org_id: string;
+}>> {
+  const rpc = await getRpc();
+  return rpc.adminGetAllProjects();
+}
+
+export async function adminGetThreadWithMessages(threadId: string): Promise<{
+  thread: { id: string; title: string; project_id: string; created_by: string; created_at: number; updated_at: number };
+  messages: Array<{ id: string; thread_id: string; role: 'user' | 'assistant'; content: string; created_at: number }>;
+  org_id: string;
+} | null> {
+  const rpc = await getRpc();
+  return rpc.adminGetThreadWithMessages(threadId);
+}
+
+export async function adminUpdateThread(
+  threadId: string,
+  updates: { title?: string }
+): Promise<{ id: string; title: string; project_id: string; created_by: string; created_at: number; updated_at: number } | null> {
+  const rpc = await getRpc();
+  return rpc.adminUpdateThread(threadId, updates);
+}
+
+export async function adminUpdateProject(
+  projectId: string,
+  updates: { name?: string }
+): Promise<{ id: string; name: string; created_by: string; created_at: number; updated_at: number } | null> {
+  const rpc = await getRpc();
+  return rpc.adminUpdateProject(projectId, updates);
+}
+
+// Paginated admin functions
+export async function adminGetUsersPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<AdminUserSummary>> {
+  const rpc = await getRpc();
+  return rpc.adminGetUsersPaginated(params);
+}
+
+export async function adminGetOrgsPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<Organization & { member_count: number }>> {
+  const rpc = await getRpc();
+  return rpc.adminGetOrgsPaginated(params);
+}
+
+export async function adminGetThreadsPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<Thread & { org_id: string }>> {
+  const rpc = await getRpc();
+  return rpc.adminGetThreadsPaginated(params);
+}
+
+export async function adminGetProjectsPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<Project & { org_id: string }>> {
+  const rpc = await getRpc();
+  return rpc.adminGetProjectsPaginated(params);
 }
 
 // Organization functions

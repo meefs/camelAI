@@ -31,8 +31,8 @@ function createMockRequest(
     url: url.toString(),
     cookies: {
       get: (name: string) => {
-        if (name === 'session' && options.hasSession) {
-          return { name: 'session', value: 'mock-session-token' };
+        if (name === 'chiridion_session' && options.hasSession) {
+          return { name: 'chiridion_session', value: 'mock-session-token' };
         }
         return undefined;
       },

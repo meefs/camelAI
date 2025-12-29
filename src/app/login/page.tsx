@@ -34,6 +34,16 @@ export default function LoginPage() {
   );
 }
 
+// Validate redirect URL to prevent open redirects
+function getSafeRedirect(redirect: string | null): string {
+  if (!redirect) return '/';
+  // Must start with single slash and not be a protocol-relative URL
+  if (redirect.startsWith('/') && !redirect.startsWith('//') && !redirect.includes(':')) {
+    return redirect;
+  }
+  return '/';
+}
+
 function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -43,7 +53,7 @@ function LoginContent() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const redirectTo = searchParams.get('redirect') || '/';
+  const redirectTo = getSafeRedirect(searchParams.get('redirect'));
 
   useEffect(() => {
     if (!loading && user) {

@@ -49,6 +49,18 @@
 			"max_instances": 5
 		}
 	],
+	// Service bindings for local dev (without --env flag)
+	"services": [
+		{
+			"binding": "WORKER_SELF_REFERENCE",
+			"service": "chiridion-app"
+		},
+		{
+			"binding": "DO_RPC",
+			"service": "chiridion-app",
+			"entrypoint": "DoRpcService"
+		}
+	],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },

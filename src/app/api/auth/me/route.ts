@@ -37,6 +37,7 @@ export async function GET() {
         email: user.email,
         name: user.name,
         created_at: user.created_at,
+        is_superuser: user.is_superuser,
       },
       currentOrg,
       orgs,
