@@ -1,6 +1,6 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare';
 import type { Thread, Message, Project } from '@/types';
-import type { DoRpcService } from '../../worker/rpc-service';
+import type { DoRpcService } from '../../workers/main/src/rpc-service';
 
 interface Env {
   DO_RPC: DoRpcService;

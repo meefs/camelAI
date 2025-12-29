@@ -1,0 +1,26 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "chiridion-app-test",
+	"main": "workers/main/src/index.ts",
+	"compatibility_date": "2025-12-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"kv_namespaces": [
+		{
+			"binding": "EMAIL_TO_USER",
+			"id": "test-email-to-user"
+		},
+		{
+			"binding": "API_TOKENS",
+			"id": "test-api-tokens"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
+			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
+			{ "name": "SESSION", "class_name": "SessionDO" },
+			{ "name": "USER", "class_name": "UserDO" },
+			{ "name": "ORG", "class_name": "OrgDO" }
+		]
+	}
+}

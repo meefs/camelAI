@@ -119,7 +119,6 @@ export default function Chat({ threadId }: ChatProps) {
   const isFirstMessage = useRef(true);
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const pendingMessage = useRef<string | null>(null);
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
 
@@ -181,15 +180,15 @@ export default function Chat({ threadId }: ChatProps) {
       setConnected(true);
       reconnectAttempts.current = 0;
 
-      // Send pending message if exists (from welcome screen)
-      if (pendingMessage.current) {
-        const msg = pendingMessage.current;
-        pendingMessage.current = null;
+      // Send pending message if exists (from welcome screen, stored in sessionStorage)
+      const storedMessage = sessionStorage.getItem('pendingMessage');
+      if (storedMessage) {
+        sessionStorage.removeItem('pendingMessage');
         setLoading(true);
         setStreaming({ content: [], isStreaming: false });
         ws.send(JSON.stringify({
           type: 'message',
-          content: msg,
+          content: storedMessage,
           threadId: id,
           org: currentOrg?.id || 'default',
           autoTitle: true,
@@ -449,7 +448,9 @@ export default function Chat({ threadId }: ChatProps) {
     if (!welcomeInput.trim() || isCreatingThread) return;
 
     setIsCreatingThread(true);
-    pendingMessage.current = welcomeInput.trim();
+    const msg = welcomeInput.trim();
+    // Store in sessionStorage to survive component remount during navigation
+    sessionStorage.setItem('pendingMessage', msg);
     setWelcomeInput('');
 
     try {
@@ -463,7 +464,7 @@ export default function Chat({ threadId }: ChatProps) {
       router.push(`/chat/${thread.id}`);
     } catch (error) {
       console.error('Failed to create thread:', error);
-      pendingMessage.current = null;
+      sessionStorage.removeItem('pendingMessage');
       setIsCreatingThread(false);
     }
   }

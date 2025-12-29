@@ -1,6 +1,6 @@
 // Custom worker that wraps OpenNext and handles WebSocket + Durable Objects
 // @ts-ignore - .open-next/worker.js is generated at build time
-import openNextHandler from "../.open-next/worker.js";
+import openNextHandler from "../../../.open-next/worker.js";
 import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
 import { Sandbox } from '@cloudflare/sandbox';
@@ -202,13 +202,20 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       }
     }
   }
-  // Also override the script name for the "workers/scripts/:scriptName/*" API family.
+  // Convert regular worker script calls to WFP dispatch namespace format when configured.
+  // This allows wrangler in the container to use standard deploy commands while we route to WFP.
   if (!dispatchMatch && scriptNameForToken) {
     const scriptsMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/scripts\/([^\/]+)(\/.*)?$/);
     if (scriptsMatch) {
       const rewrittenAccount = accountId ?? scriptsMatch[1]!;
       const tail = scriptsMatch[3] ?? '';
-      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
+      if (dispatchNamespace) {
+        // Rewrite to WFP dispatch namespace format
+        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
+      } else {
+        // Just override the script name
+        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
+      }
     }
   }
 

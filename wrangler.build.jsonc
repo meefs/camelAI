@@ -1,7 +1,7 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "chiridion-app",
-	"main": "worker/index.ts",
+	"main": "workers/main/src/index.ts",
 	"compatibility_date": "2025-12-01",
 	"compatibility_flags": ["nodejs_compat"],
 	"assets": {
@@ -14,11 +14,5 @@
 			"service": "chiridion-app",
 			"entrypoint": "DoRpcService"
 		}
-	],
-	"durable_objects": {
-		"bindings": [
-			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
-			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" }
-		]
-	}
+	]
 }

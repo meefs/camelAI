@@ -1,0 +1,57 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "chiridion-outbound",
+	"main": "src/index.ts",
+	"compatibility_date": "2024-12-01",
+	"compatibility_flags": ["nodejs_compat"],
+	// Dev default: service binding to main app
+	"services": [
+		{
+			"binding": "CHIRIDION",
+			"service": "chiridion-app",
+			"entrypoint": "DoRpcService"
+		}
+	],
+	"env": {
+		"prod": {
+			"name": "chiridion-outbound",
+			"services": [
+				{
+					"binding": "CHIRIDION",
+					"service": "chiridion-app",
+					"entrypoint": "DoRpcService"
+				}
+			]
+		},
+		"staging": {
+			"name": "chiridion-outbound-staging",
+			"services": [
+				{
+					"binding": "CHIRIDION",
+					"service": "chiridion-app-staging",
+					"entrypoint": "DoRpcService"
+				}
+			]
+		},
+		"dev-miguel": {
+			"name": "chiridion-outbound-dev-miguel",
+			"services": [
+				{
+					"binding": "CHIRIDION",
+					"service": "chiridion-app-dev-miguel",
+					"entrypoint": "DoRpcService"
+				}
+			]
+		},
+		"dev-illiana": {
+			"name": "chiridion-outbound-dev-illiana",
+			"services": [
+				{
+					"binding": "CHIRIDION",
+					"service": "chiridion-app-dev-illiana",
+					"entrypoint": "DoRpcService"
+				}
+			]
+		}
+	}
+}
