@@ -32,7 +32,7 @@ import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
 
-const PROXY_PORT = 8080;
+const PROXY_PORT = process.env.PROXY_PORT ? parseInt(process.env.PROXY_PORT, 10) : 8081;
 const CREDS_FILE = '/tmp/proxy-creds';
 
 /**

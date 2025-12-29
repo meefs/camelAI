@@ -55,7 +55,7 @@ export function PromptInput({
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          disabled={disabled || isLoading}
+          disabled={disabled}
           className="text-base p-3.5 max-h-96 overflow-y-auto"
           style={{ minHeight }}
         />

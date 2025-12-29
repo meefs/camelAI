@@ -97,11 +97,14 @@ const server = http.createServer((req, res) => {
 });
 
 server.on('upgrade', (req, socket, head) => {
-  socket.on('error', () => {});
+  socket.on('error', (err) => {
+    console.error('[dev-proxy] socket error:', err.message);
+  });
   const target =
     req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'))
       ? wranglerTarget
       : nextTarget;
+  console.log('[dev-proxy] WebSocket upgrade:', req.url, '->', target);
   proxy.ws(req, socket, head, { target });
 });
 
