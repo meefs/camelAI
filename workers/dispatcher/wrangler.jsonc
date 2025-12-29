@@ -4,6 +4,7 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2024-12-01",
 	"compatibility_flags": ["nodejs_compat"],
+	// Dev defaults (inherited by all envs)
 	"dispatch_namespaces": [
 		{
 			"binding": "DISPATCHER",
@@ -14,27 +15,24 @@
 			}
 		}
 	],
-	// KV namespace for script->org mapping (same as main app's EMAIL_TO_USER)
+	// Shared dev/staging KV namespace
 	"kv_namespaces": [
 		{
 			"binding": "SCRIPT_MAPPINGS",
-			"id": "45b452b3b19c42f6991408c140149a70"
-		}
-	],
-	// Subdomain routing for chiridion.ai
-	"routes": [
-		{
-			"pattern": "*.chiridion.ai/*",
-			"zone_name": "chiridion.ai"
+			"id": "ab267c4f44b847dda8bdca400a4e1884"
 		}
 	],
 	"env": {
-		"staging": {
-			"name": "chiridion-dispatcher-staging",
+		"prod": {
+			"name": "chiridion-dispatcher",
+			"routes": [
+				{ "pattern": "*.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			],
+			// Prod KV namespace
 			"kv_namespaces": [
 				{
 					"binding": "SCRIPT_MAPPINGS",
-					"id": "ab267c4f44b847dda8bdca400a4e1884"
+					"id": "45b452b3b19c42f6991408c140149a70"
 				}
 			],
 			"dispatch_namespaces": [
@@ -42,7 +40,46 @@
 					"binding": "DISPATCHER",
 					"namespace": "chiridion-platform",
 					"outbound": {
+						"service": "chiridion-outbound",
+						"parameters": ["params"]
+					}
+				}
+			]
+		},
+		"staging": {
+			"name": "chiridion-dispatcher-staging",
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCHER",
+					"namespace": "chiridion-platform",
+					"outbound": {
 						"service": "chiridion-outbound-staging",
+						"parameters": ["params"]
+					}
+				}
+			]
+		},
+		"dev-miguel": {
+			"name": "chiridion-dispatcher-dev-miguel",
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCHER",
+					"namespace": "chiridion-platform",
+					"outbound": {
+						"service": "chiridion-outbound-dev-miguel",
+						"parameters": ["params"]
+					}
+				}
+			]
+		},
+		"dev-illiana": {
+			"name": "chiridion-dispatcher-dev-illiana",
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCHER",
+					"namespace": "chiridion-platform",
+					"outbound": {
+						"service": "chiridion-outbound-dev-illiana",
 						"parameters": ["params"]
 					}
 				}
