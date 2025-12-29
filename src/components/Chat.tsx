@@ -145,15 +145,33 @@ export default function Chat({ threadId }: ChatProps) {
     }
   }, [user, currentOrg, fetchThreads]);
 
-  // Fetch messages from REST API
-  const fetchMessages = useCallback(async (threadId: string) => {
+  // Fetch messages from REST API - merges with existing to avoid losing local messages
+  const fetchMessages = useCallback(async (threadId: string, isReconnect = false) => {
     try {
       const res = await fetch(`/api/threads/${threadId}/messages`);
       if (res.ok) {
         const data = await res.json() as unknown;
-        const msgs = Array.isArray(data) ? (data as Message[]) : [];
-        setMessages(msgs);
-        isFirstMessage.current = msgs.length === 0;
+        const fetchedMsgs = Array.isArray(data) ? (data as Message[]) : [];
+
+        if (isReconnect) {
+          // Merge: keep local messages, add any from API that aren't already present
+          setMessages(prev => {
+            const existingIds = new Set(prev.map(m => m.id));
+            const newFromApi = fetchedMsgs.filter(m => !existingIds.has(m.id));
+            // Also check if API has messages we don't have locally
+            const apiIds = new Set(fetchedMsgs.map(m => m.id));
+            const localOnly = prev.filter(m => !apiIds.has(m.id));
+            // Combine: API messages + local-only messages, sorted by created_at
+            const merged = [...fetchedMsgs, ...localOnly].sort(
+              (a, b) => (a.created_at ?? 0) - (b.created_at ?? 0)
+            );
+            return merged;
+          });
+        } else {
+          // Fresh load - replace entirely
+          setMessages(fetchedMsgs);
+          isFirstMessage.current = fetchedMsgs.length === 0;
+        }
       }
     } catch (e) {
       console.error('Failed to fetch messages:', e);
@@ -180,13 +198,12 @@ export default function Chat({ threadId }: ChatProps) {
 
     setReady(false);
     if (!isReconnect) {
-      setMessages([]);
       isFirstMessage.current = true;
       reconnectAttempts.current = 0;
     }
 
-    // Fetch existing messages from REST API
-    fetchMessages(id);
+    // Fetch existing messages from REST API (merge on reconnect to preserve local messages)
+    fetchMessages(id, isReconnect);
 
     // WebSocket is handled by the worker at /ws/{threadId} on the same origin as the page.
     const wsHost = window.location.host;
