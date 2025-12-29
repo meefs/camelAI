@@ -38,18 +38,33 @@ function getQueryOptions(resumeSessionId) {
   return options;
 }
 
+// Convert SDK message content to a string for persistence
+function contentToString(content) {
+  if (!content || !Array.isArray(content)) return '';
+
+  const parts = [];
+  for (const block of content) {
+    if (block.type === 'text' && block.text) {
+      parts.push(block.text);
+    } else if (block.type === 'tool_use') {
+      parts.push(`[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`);
+    } else if (block.type === 'tool_result') {
+      const resultContent = typeof block.content === 'string'
+        ? block.content
+        : JSON.stringify(block.content);
+      parts.push(`[Tool Result]\n${resultContent}`);
+    }
+  }
+  return parts.join('\n\n');
+}
+
 // Handle a user message - query Claude SDK and stream events
 async function handleUserMessage(ws, content) {
-  // Log user message for DO persistence
-  logForPersistence({ type: 'user_message', content });
-
   // Create abort controller for stop functionality
   currentAbortController = new AbortController();
 
   try {
     const options = getQueryOptions(sessionId);
-
-    let finalContent = '';
 
     for await (const event of query({ prompt: content, options })) {
       // Check if aborted
@@ -69,20 +84,43 @@ async function handleUserMessage(ws, content) {
         }
       }
 
-      // Track final content for persistence
-      if (event.type === 'assistant' && event.message?.content) {
-        const textBlock = event.message.content.find(b => b.type === 'text');
-        if (textBlock?.text) {
-          finalContent = textBlock.text;
-        }
-      } else if (event.type === 'result') {
-        finalContent = event.result || finalContent;
-      }
-    }
+      // Persist user messages (original prompt + tool results)
+      if (event.type === 'user' && event.message) {
+        const msgContent = contentToString(event.message.content);
+        if (msgContent) {
+          logForPersistence({ type: 'user_message', content: msgContent });
 
-    // Log assistant message for DO persistence
-    if (finalContent) {
-      logForPersistence({ type: 'assistant_message', content: finalContent });
+          // Send confirmation to client
+          ws.send(JSON.stringify({
+            type: 'message',
+            message: {
+              id: event.uuid || `msg_${Date.now()}`,
+              role: 'user',
+              content: msgContent,
+              created_at: Date.now(),
+            }
+          }));
+        }
+      }
+
+      // Persist assistant messages (full response with all content blocks)
+      if (event.type === 'assistant' && event.message?.content) {
+        const msgContent = contentToString(event.message.content);
+        if (msgContent) {
+          logForPersistence({ type: 'assistant_message', content: msgContent });
+
+          // Send confirmation to client
+          ws.send(JSON.stringify({
+            type: 'message',
+            message: {
+              id: event.uuid || `msg_${Date.now()}`,
+              role: 'assistant',
+              content: msgContent,
+              created_at: Date.now(),
+            }
+          }));
+        }
+      }
     }
 
   } catch (e) {

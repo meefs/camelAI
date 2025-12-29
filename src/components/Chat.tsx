@@ -123,6 +123,8 @@ export default function Chat({ threadId }: ChatProps) {
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
   const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
+  // Queue message to send when connection becomes ready
+  const pendingMessageRef = useRef<string | null>(null);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -221,10 +223,11 @@ export default function Chat({ threadId }: ChatProps) {
         // Container is ready to receive messages
         setReady(true);
 
-        // Send pending message if exists (from welcome screen, stored in sessionStorage)
-        const storedMessage = sessionStorage.getItem('pendingMessage');
+        // Send pending message if exists (from welcome screen or queued while disconnected)
+        const storedMessage = sessionStorage.getItem('pendingMessage') || pendingMessageRef.current;
         if (storedMessage) {
           sessionStorage.removeItem('pendingMessage');
+          pendingMessageRef.current = null;
           setLoading(true);
           setStreaming({ content: [], isStreaming: false });
           ws.send(JSON.stringify({
@@ -285,20 +288,16 @@ export default function Chat({ threadId }: ChatProps) {
             content: [...prev.content, ...sdkEvent.message!.content],
           }));
         } else if (sdkEvent.type === 'result') {
-          // Result event received - streaming complete but wait for final message
-          // Don't clear streaming content here - wait for 'message' event
-          setStreaming(prev => ({ ...prev, isStreaming: false }));
+          // Query complete - clear loading and streaming state
+          setStreaming({ content: [], isStreaming: false });
+          setLoading(false);
         }
       } else if (data.type === 'message') {
-        // Final message - clear streaming and add to messages
-        setStreaming({ content: [], isStreaming: false });
+        // Message from ws-server - add to messages list (with dedup)
         setMessages(prev => {
           if (prev.some(m => m.id === data.message.id)) return prev;
           return [...prev, data.message];
         });
-        if (data.message.role === 'assistant') {
-          setLoading(false);
-        }
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
         setStreaming({ content: [], isStreaming: false });
@@ -516,23 +515,34 @@ export default function Chat({ threadId }: ChatProps) {
   }
 
   function sendMessage() {
-    if (!input.trim() || !threadId || loading || !wsRef.current || !ready) return;
+    if (!input.trim() || !threadId || loading) return;
 
     const userMessage = input.trim();
     setInput('');
-    setLoading(true);
-    setStreaming({ content: [], isStreaming: false });
 
-    // Send via WebSocket - simplified message format for new architecture
-    wsRef.current.send(JSON.stringify({
-      type: 'message',
-      content: userMessage,
-    }));
+    // If WebSocket is connected and ready, send immediately
+    if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
+      setLoading(true);
+      setStreaming({ content: [], isStreaming: false });
+      wsRef.current.send(JSON.stringify({
+        type: 'message',
+        content: userMessage,
+      }));
 
-    if (isFirstMessage.current) {
-      isFirstMessage.current = false;
-      // Refresh thread list after a moment to get auto-generated title
-      setTimeout(fetchThreads, 500);
+      if (isFirstMessage.current) {
+        isFirstMessage.current = false;
+        setTimeout(fetchThreads, 500);
+      }
+    } else {
+      // Queue the message and trigger reconnect
+      pendingMessageRef.current = userMessage;
+      setLoading(true);
+
+      // If not connected at all, trigger reconnect
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        connectWebSocketRef.current?.(threadId, true);
+      }
+      // If connected but not ready, the message will be sent when ready event arrives
     }
   }
 
@@ -745,7 +755,6 @@ export default function Chat({ threadId }: ChatProps) {
                     onSubmit={sendMessage}
                     placeholder="Type a message..."
                     isLoading={loading}
-                    disabled={!ready}
                   />
                 </div>
               </div>

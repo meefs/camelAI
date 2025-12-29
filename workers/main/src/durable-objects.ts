@@ -358,23 +358,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private async cleanupOrphanedState() {
-    // If we have a stored process ID from before hibernation, the process is likely dead
-    // Clean up the orphaned proxy token
+    // Clean up orphaned proxy tokens - they expire anyway but good hygiene
     if (this.currentProxyToken) {
-      console.log('[DO] Cleaning up orphaned proxy token from pre-hibernation state');
       try {
         await deleteApiToken(this.env.API_TOKENS, this.currentProxyToken);
-      } catch (e) {
-        console.error('[DO] Failed to clean up orphaned proxy token:', e);
+      } catch {
+        // Token may have already expired
       }
       this.currentProxyToken = null;
       this.sql.exec('DELETE FROM metadata WHERE key = ?', 'current_proxy_token');
     }
-    if (this.currentProcessId) {
-      console.log('[DO] Clearing orphaned process ID from pre-hibernation state:', this.currentProcessId);
-      this.currentProcessId = null;
-      this.sql.exec('DELETE FROM metadata WHERE key = ?', 'current_process_id');
-    }
+    // NOTE: Don't clear currentProcessId here - the ws-server process may still be running
+    // We'll verify it via health check when a WebSocket connection comes in
   }
 
   private persistTransientState() {
@@ -526,9 +521,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const sandboxId = this.ctx.id.toString().slice(0, 63);
       this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
 
-      // Check if WS server is already running (from a previous request)
-      let processId = this.currentProcessId;
-      const alreadyReady = processId ? await this.checkWsServerReady() : false;
+      // Check if WS server is already running (survives DO hibernation)
+      // Always check health endpoint - processId may be null after hibernation
+      // but the container/process could still be running
+      const alreadyReady = await this.checkWsServerReady();
 
       if (!alreadyReady) {
         const process = await this.startWsServerProcess(org);
@@ -536,10 +532,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           console.error('[DO] Failed to start container');
           return new Response('Failed to start container', { status: 500 });
         }
-        processId = process.id;
 
         // Start log streaming immediately to capture startup errors
-        this.ctx.waitUntil(this.streamLogsForPersistence(processId));
+        this.ctx.waitUntil(this.streamLogsForPersistence(process.id));
 
         // Wait for the WS server to be ready by watching for startup log
         try {
@@ -548,6 +543,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           console.error('[DO] Container WS server failed to start:', e);
           return new Response('Container WS server failed to start', { status: 500 });
         }
+      } else if (this.currentProcessId) {
+        // Reusing existing process - ensure log streaming is running
+        // (it may have stopped when DO hibernated)
+        this.ctx.waitUntil(this.streamLogsForPersistence(this.currentProcessId));
       }
 
       // Proxy WebSocket directly to container port 8080
