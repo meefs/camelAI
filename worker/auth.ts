@@ -21,6 +21,8 @@ export interface SessionData {
 const SUPERUSER_EMAILS = new Set([
   'admin@example.com',
   '1033072+Vercantez@users.noreply.github.com',
+  // Test email for E2E tests - see e2e/admin.spec.ts
+  'admin-test@example.com',
 ]);
 
 function isSuperuserEmail(email: string | null): boolean {
