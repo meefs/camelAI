@@ -426,12 +426,6 @@ export default function Chat({ threadId }: ChatProps) {
           });
           setLoading(false);
         }
-      } else if (data.type === 'message') {
-        // Message from ws-server - add to messages list (with dedup)
-        setMessages(prev => {
-          if (prev.some(m => m.id === data.message.id)) return prev;
-          return [...prev, data.message];
-        });
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
         setError(data.error || 'An unknown error occurred');

@@ -138,22 +138,6 @@ async function processEvents(ws) {
         }
       }
 
-      // Send complete assistant messages to client for rich UI rendering
-      if (event.type === 'assistant' && event.message?.content && event.message.stop_reason) {
-        const msgContent = contentToString(event.message.content);
-        if (msgContent) {
-          ws.send(JSON.stringify({
-            type: 'message',
-            message: {
-              id: event.uuid || `msg_${Date.now()}`,
-              role: 'assistant',
-              content: event.message.content,
-              created_at: Date.now(),
-            }
-          }));
-        }
-      }
-
       // Result means this turn is complete - persist the assistant message from result
       if (event.type === 'result') {
         if (event.result && typeof event.result === 'string') {
