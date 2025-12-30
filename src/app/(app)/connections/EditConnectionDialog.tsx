@@ -206,7 +206,7 @@ export function EditConnectionDialog({
                   {connection.has_credentials && !updateCredentials ? (
                     <Alert>
                       <AlertDescription>
-                        Credentials are stored securely. Click "Update Credentials" to replace
+                        Credentials are stored securely. Click &quot;Update Credentials&quot; to replace
                         them.
                       </AlertDescription>
                     </Alert>

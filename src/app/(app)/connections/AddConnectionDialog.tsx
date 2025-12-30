@@ -203,7 +203,7 @@ export function AddConnectionDialog({
             {typeDef.authMethod === 'oauth2' && (
               <Alert>
                 <AlertDescription>
-                  This connection uses OAuth 2.0. After saving, you'll be redirected to
+                  This connection uses OAuth 2.0. After saving, you&apos;ll be redirected to
                   authorize access.
                 </AlertDescription>
               </Alert>

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Integration } from '@/types';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
+import { IntegrationIcon } from '@/lib/integration-icons';
 import { PageHeader } from '@/components/page-header';
 import { AddConnectionDialog } from './AddConnectionDialog';
 import { EditConnectionDialog } from './EditConnectionDialog';
@@ -252,9 +253,7 @@ export default function ConnectionsPage() {
                           <div className="flex items-start justify-between gap-4">
                             <div className="flex items-center gap-3">
                               <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
-                                {categoryIcons[connection.category] || (
-                                  <Settings className="size-5" />
-                                )}
+                                <IntegrationIcon type={connection.integration_type} />
                               </div>
                               <div>
                                 <CardTitle className="text-base">
@@ -327,7 +326,7 @@ export default function ConnectionsPage() {
           <DialogHeader>
             <DialogTitle>Add a connection</DialogTitle>
             <DialogDescription>
-              Choose a service to connect. You'll configure credentials next.
+              Choose a service to connect. You&apos;ll configure credentials next.
             </DialogDescription>
           </DialogHeader>
 
@@ -363,9 +362,7 @@ export default function ConnectionsPage() {
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="flex items-center gap-3">
                                       <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
-                                        {categoryIcons[type.category] || (
-                                          <Settings className="size-5" />
-                                        )}
+                                        <IntegrationIcon type={type.type} />
                                       </div>
                                       <div>
                                         <CardTitle className="text-base">
@@ -417,7 +414,7 @@ export default function ConnectionsPage() {
                           <div className="flex items-start justify-between gap-3">
                             <div className="flex items-center gap-3">
                               <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
-                                {categoryIcons[type.category] || <Settings className="size-5" />}
+                                <IntegrationIcon type={type.type} />
                               </div>
                               <div>
                                 <CardTitle className="text-base">{type.displayName}</CardTitle>
