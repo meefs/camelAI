@@ -189,7 +189,7 @@ export default function Chat({ threadId }: ChatProps) {
     }
   }, [user, currentOrg, fetchThreads]);
 
-  // Fetch messages from REST API - merges with existing to avoid losing local messages
+  // Fetch messages from REST API
   const fetchMessages = useCallback(async (threadId: string, isReconnect = false) => {
     try {
       const res = await fetch(`/api/threads/${threadId}/messages`);
@@ -197,67 +197,12 @@ export default function Chat({ threadId }: ChatProps) {
         const data = await res.json() as unknown;
         const fetchedMsgs = Array.isArray(data) ? (data as Message[]) : [];
 
-        if (isReconnect) {
-          // Merge: reconcile local messages with server messages
-          setMessages(prev => {
-            // Build map of server messages by content+role for reconciliation
-            const serverMsgMap = new Map<string, Message>();
-            for (const msg of fetchedMsgs) {
-              // Use content (stringified if needed) + role as key
-              const contentStr = typeof msg.content === 'string'
-                ? msg.content
-                : JSON.stringify(msg.content);
-              const key = `${msg.role}:${contentStr}`;
-              // Keep the earliest message if duplicates exist
-              if (!serverMsgMap.has(key) || (msg.created_at ?? 0) < (serverMsgMap.get(key)!.created_at ?? 0)) {
-                serverMsgMap.set(key, msg);
-              }
-            }
+        // Always replace with server state - local-only messages (local_*, turn_*)
+        // that weren't persisted are stale. Pending messages will be re-added
+        // when the ready event fires.
+        setMessages(fetchedMsgs);
 
-            // Process local messages - replace with server version if found
-            const reconciledLocal: Message[] = [];
-            const reconciledServerIds = new Set<string>();
-
-            for (const localMsg of prev) {
-              // Skip non-local messages (already from server)
-              if (!localMsg.id.startsWith('local_') && !localMsg.id.startsWith('turn_')) {
-                reconciledLocal.push(localMsg);
-                continue;
-              }
-
-              // Try to find matching server message
-              const contentStr = typeof localMsg.content === 'string'
-                ? localMsg.content
-                : JSON.stringify(localMsg.content);
-              const key = `${localMsg.role}:${contentStr}`;
-              const serverMatch = serverMsgMap.get(key);
-
-              if (serverMatch) {
-                // Replace local with server message
-                reconciledLocal.push(serverMatch);
-                reconciledServerIds.add(serverMatch.id);
-              } else {
-                // Keep local message (not yet persisted)
-                reconciledLocal.push(localMsg);
-              }
-            }
-
-            // Add any server messages not already reconciled
-            for (const serverMsg of fetchedMsgs) {
-              if (!reconciledServerIds.has(serverMsg.id) &&
-                  !reconciledLocal.some(m => m.id === serverMsg.id)) {
-                reconciledLocal.push(serverMsg);
-              }
-            }
-
-            // Sort by created_at
-            return reconciledLocal.sort(
-              (a, b) => (a.created_at ?? 0) - (b.created_at ?? 0)
-            );
-          });
-        } else {
-          // Fresh load - replace entirely
-          setMessages(fetchedMsgs);
+        if (!isReconnect) {
           isFirstMessage.current = fetchedMsgs.length === 0;
         }
       }

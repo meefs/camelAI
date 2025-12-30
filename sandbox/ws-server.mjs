@@ -14,6 +14,7 @@ let sessionId = process.env.RESUME_SESSION_ID || null;
 let activeQuery = null;
 let messageResolver = null;
 let queryIterator = null;
+let messageQueue = []; // Queue for messages arriving before resolver is ready
 
 if (sessionId) {
   console.error('[ws-server] Will resume Claude session:', sessionId);
@@ -66,10 +67,16 @@ function contentToString(content) {
 // Async generator that yields user messages on demand
 async function* createMessageStream() {
   while (true) {
-    // Wait for next message
-    const message = await new Promise((resolve) => {
-      messageResolver = resolve;
-    });
+    // Check queue first for any buffered messages
+    let message;
+    if (messageQueue.length > 0) {
+      message = messageQueue.shift();
+    } else {
+      // Wait for next message
+      message = await new Promise((resolve) => {
+        messageResolver = resolve;
+      });
+    }
 
     if (message === null) {
       // Signal to stop
@@ -170,11 +177,14 @@ async function handleUserMessage(ws, content) {
   // Initialize session if needed
   initSession();
 
-  // Send message to the query via the resolver
+  // Send message to the query via the resolver, or queue if not ready yet
   if (messageResolver) {
     const resolver = messageResolver;
     messageResolver = null;
     resolver(content);
+  } else {
+    // Queue message - will be picked up when stream starts pulling
+    messageQueue.push(content);
   }
 
   // Process events until turn is complete
@@ -271,6 +281,9 @@ Bun.serve({
         messageResolver(null);
         messageResolver = null;
       }
+
+      // Clear message queue
+      messageQueue = [];
 
       // Clean up query
       activeQuery = null;
