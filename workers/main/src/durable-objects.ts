@@ -679,10 +679,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const PERSIST_PREFIX = '[PERSIST]';
 
       let eventCount = 0;
+      let lastEventTime = Date.now();
       console.log('[EXPERIMENT] Starting log stream iteration');
+
+      // Start a background timer to report if we're waiting for events
+      const waitCheckInterval = setInterval(() => {
+        const waitTime = Math.round((Date.now() - lastEventTime) / 1000);
+        console.log(`[EXPERIMENT] Waiting for next log event... ${waitTime}s since last event`);
+      }, 5000);
+
+      try {
       for await (const logEvent of parseSSEStream<LogEvent>(logStream)) {
         eventCount++;
-        console.log(`[EXPERIMENT] Log event #${eventCount}, type: ${logEvent.type}`);
+        lastEventTime = Date.now();
+        console.log(`[EXPERIMENT] Log event #${eventCount}, type: ${logEvent.type}, data preview: ${String(logEvent.data || '').substring(0, 100)}`);
         // Parse persistence events from stderr (prefixed with [PERSIST])
         // Note: stdout may not be captured correctly in Cloudflare Container environments
         if (logEvent.type === 'stderr' && logEvent.data) {
@@ -774,6 +784,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           this.isStreamingLogs = false;
           this.clearTransientState();
         }
+      }
+      } finally {
+        clearInterval(waitCheckInterval);
       }
     } catch (e) {
       console.error('[DO] Log streaming error:', e);
