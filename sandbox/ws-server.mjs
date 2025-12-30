@@ -153,14 +153,21 @@ async function processEvents(ws) {
         }
 
         // Turn complete when we see message_delta with stop_reason
-        if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
-          console.error('[ws-server] Turn complete via stream_event, stop_reason:', streamEvent.delta.stop_reason);
-          if (streamedText) {
-            assistantMessageId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-            logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
-            console.error('[ws-server] Persisted assistant message, id:', assistantMessageId, 'length:', streamedText.length);
+        if (streamEvent.type === 'message_delta') {
+          console.error('[ws-server] Got message_delta event:', JSON.stringify(streamEvent.delta).substring(0, 200));
+          if (streamEvent.delta?.stop_reason) {
+            console.error('[ws-server] Turn complete via stream_event, stop_reason:', streamEvent.delta.stop_reason);
+            console.error('[ws-server] Streamed text length:', streamedText.length);
+            if (streamedText) {
+              assistantMessageId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+              console.error('[ws-server] About to log for persistence, id:', assistantMessageId);
+              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
+              console.error('[ws-server] Logged for persistence successfully');
+            } else {
+              console.error('[ws-server] No streamed text to persist!');
+            }
+            break;
           }
-          break;
         }
       }
 
