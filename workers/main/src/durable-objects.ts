@@ -678,7 +678,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       let stderrBuffer = '';
       const PERSIST_PREFIX = '[PERSIST]';
 
+      let eventCount = 0;
+      console.log('[EXPERIMENT] Starting log stream iteration');
       for await (const logEvent of parseSSEStream<LogEvent>(logStream)) {
+        eventCount++;
+        console.log(`[EXPERIMENT] Log event #${eventCount}, type: ${logEvent.type}`);
         // Parse persistence events from stderr (prefixed with [PERSIST])
         // Note: stdout may not be captured correctly in Cloudflare Container environments
         if (logEvent.type === 'stderr' && logEvent.data) {
@@ -773,7 +777,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
     } catch (e) {
       console.error('[DO] Log streaming error:', e);
+      console.log('[EXPERIMENT] Log stream ended with error');
     } finally {
+      console.log('[EXPERIMENT] Log stream finally block - streaming ended');
       this.isStreamingLogs = false;
     }
   }
