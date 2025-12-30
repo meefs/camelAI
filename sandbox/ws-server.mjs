@@ -153,21 +153,12 @@ async function processEvents(ws) {
         }
 
         // Turn complete when we see message_delta with stop_reason
-        if (streamEvent.type === 'message_delta') {
-          console.error('[ws-server] Got message_delta event:', JSON.stringify(streamEvent.delta).substring(0, 200));
-          if (streamEvent.delta?.stop_reason) {
-            console.error('[ws-server] Turn complete via stream_event, stop_reason:', streamEvent.delta.stop_reason);
-            console.error('[ws-server] Streamed text length:', streamedText.length);
-            if (streamedText) {
-              assistantMessageId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-              console.error('[ws-server] About to log for persistence, id:', assistantMessageId);
-              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
-              console.error('[ws-server] Logged for persistence successfully');
-            } else {
-              console.error('[ws-server] No streamed text to persist!');
-            }
-            break;
+        if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
+          if (streamedText) {
+            assistantMessageId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
           }
+          break;
         }
       }
 
@@ -181,10 +172,8 @@ async function processEvents(ws) {
 
         // Check if turn is complete (stop_reason indicates end of turn)
         if (event.message.stop_reason) {
-          console.error('[ws-server] Turn complete via assistant event, stop_reason:', event.message.stop_reason);
           if (streamedText) {
             logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
-            console.error('[ws-server] Persisted assistant message, id:', assistantMessageId, 'length:', streamedText.length);
           }
           break;
         }
@@ -202,12 +191,10 @@ async function processEvents(ws) {
 
       // Result means this turn is complete (fallback for non-stateful mode)
       if (event.type === 'result') {
-        console.error('[ws-server] Turn complete via result event');
         if (event.result && typeof event.result === 'string') {
           const msgId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           logForPersistence({ type: 'assistant_message', id: msgId, content: event.result });
         } else if (streamedText) {
-          // Use accumulated streamed text if result doesn't have content
           logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
         }
         break;
@@ -302,14 +289,11 @@ Bun.serve({
         const data = JSON.parse(message);
 
         if (data.type === 'init') {
-          console.error('[ws-server] Got init, sending ready');
           // Resume session if provided
           if (data.sessionId) {
             sessionId = data.sessionId;
           }
-          // Send ready confirmation
           ws.send(JSON.stringify({ type: 'ready' }));
-          console.error('[ws-server] Sent ready');
 
         } else if (data.type === 'message') {
           await handleUserMessage(ws, data.content);
@@ -355,8 +339,3 @@ Bun.serve({
 });
 
 console.error(`[ws-server] Listening on port ${PORT}`);
-
-// EXPERIMENT: Periodic log to verify stderr is being captured
-setInterval(() => {
-  console.error(`[ws-server] Heartbeat at ${new Date().toISOString()}`);
-}, 5000);

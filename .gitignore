@@ -66,3 +66,4 @@ playwright-report/
 # Swap files
 *.swp
 *.swo
+sandbox/bun.lock

@@ -283,6 +283,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private warmedForOrg: string | null = null;
   // Track if log streaming is active to prevent duplicate streams
   private isStreamingLogs = false;
+  // Custom waitForLog implementation - resolves when we see the target log line
+  private serverReadyResolver: ((value: void) => void) | null = null;
+  private serverReadyPromise: Promise<void> | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -535,12 +538,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           return new Response('Failed to start container', { status: 500 });
         }
 
-        // Start log streaming immediately to capture startup errors
+        // Create ready promise BEFORE starting log streaming
+        // This ensures we catch the log line when it comes through
+        const readyPromise = this.createServerReadyPromise(30000);
+
+        // Start log streaming - it will resolve the ready promise when it sees the log
         this.ctx.waitUntil(this.streamLogsForPersistence(process.id));
 
-        // Wait for the WS server to be ready by watching for startup log
+        // Wait for the WS server to be ready (detected via our log stream)
         try {
-          await process.waitForLog('[ws-server] Listening', 30000); // 30s timeout
+          await readyPromise;
         } catch (e) {
           console.error('[DO] Container WS server failed to start:', e);
           return new Response('Container WS server failed to start', { status: 500 });
@@ -552,39 +559,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.ctx.waitUntil(this.streamLogsForPersistence(this.currentProcessId));
       }
 
-      // EXPERIMENT 4: Test polling getLogs() instead of streaming
-      const processForPolling = this.currentProcessId;
-      this.ctx.waitUntil((async () => {
-        let lastStderrLength = 0;
-        for (let i = 1; i <= 30; i++) {
-          await new Promise(r => setTimeout(r, 2000));
-          console.log(`[EXPERIMENT] Timer tick ${i} after wsConnect (${i * 2}s elapsed)`);
-
-          // Try polling getLogs on the process
-          if (processForPolling) {
-            try {
-              const proc = await this.sandbox!.getProcess(processForPolling);
-              if (proc) {
-                const logs = await proc.getLogs();
-                if (logs.stderr.length > lastStderrLength) {
-                  const newStderr = logs.stderr.substring(lastStderrLength);
-                  console.log(`[EXPERIMENT] New stderr via getLogs (${newStderr.length} chars): ${newStderr.substring(0, 200)}`);
-                  lastStderrLength = logs.stderr.length;
-                }
-              }
-            } catch (e) {
-              console.log(`[EXPERIMENT] getLogs error: ${e}`);
-            }
-          }
-        }
-        console.log('[EXPERIMENT] Timer completed all 30 ticks');
-      })());
-
       // Proxy WebSocket directly to container port 8080
-      console.log('[EXPERIMENT] About to call wsConnect');
-      const wsResponse = this.sandbox.wsConnect(request, 8080);
-      console.log('[EXPERIMENT] wsConnect returned, returning response');
-      return wsResponse;
+      return this.sandbox.wsConnect(request, 8080);
     }
 
     return new Response('Not found', { status: 404 });
@@ -683,8 +659,26 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
+  // Create a promise that resolves when the server is ready (via log streaming)
+  private createServerReadyPromise(timeoutMs: number): Promise<void> {
+    this.serverReadyPromise = new Promise((resolve, reject) => {
+      this.serverReadyResolver = resolve;
+      // Set timeout for server startup
+      setTimeout(() => {
+        if (this.serverReadyResolver) {
+          this.serverReadyResolver = null;
+          reject(new Error(`Server did not become ready within ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+    });
+    return this.serverReadyPromise;
+  }
 
-  // Stream container logs in background for message persistence
+
+  // Stream container logs in background for:
+  // 1. Custom waitForLog - resolve ready promise when server starts
+  // 2. Message persistence - parse [PERSIST] prefixed JSON lines for DB storage
+  // 3. Session ID capture - store Claude session ID for resumption
   private async streamLogsForPersistence(processId: string): Promise<void> {
     if (this.isStreamingLogs) {
       return;
@@ -697,23 +691,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       let stderrBuffer = '';
       const PERSIST_PREFIX = '[PERSIST]';
 
-      let eventCount = 0;
-      let lastEventTime = Date.now();
-      console.log('[EXPERIMENT] Starting log stream iteration');
-
-      // Start a background timer to report if we're waiting for events
-      const waitCheckInterval = setInterval(() => {
-        const waitTime = Math.round((Date.now() - lastEventTime) / 1000);
-        console.log(`[EXPERIMENT] Waiting for next log event... ${waitTime}s since last event`);
-      }, 5000);
-
-      try {
       for await (const logEvent of parseSSEStream<LogEvent>(logStream)) {
-        eventCount++;
-        lastEventTime = Date.now();
-        console.log(`[EXPERIMENT] Log event #${eventCount}, type: ${logEvent.type}, data preview: ${String(logEvent.data || '').substring(0, 100)}`);
         // Parse persistence events from stderr (prefixed with [PERSIST])
-        // Note: stdout may not be captured correctly in Cloudflare Container environments
+        // Note: Only startup logs are captured in CF Containers, not ongoing output
         if (logEvent.type === 'stderr' && logEvent.data) {
           stderrBuffer += logEvent.data;
           const lines = stderrBuffer.split('\n');
@@ -721,6 +701,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
           for (const line of lines) {
             if (!line.trim()) continue;
+
+            // Check for server ready log (for custom waitForLog)
+            if (line.includes('[ws-server] Listening') && this.serverReadyResolver) {
+              console.log('[DO] Server ready detected via log stream');
+              this.serverReadyResolver();
+              this.serverReadyResolver = null;
+            }
 
             // Check for persistence events
             if (line.startsWith(PERSIST_PREFIX)) {
@@ -804,14 +791,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           this.clearTransientState();
         }
       }
-      } finally {
-        clearInterval(waitCheckInterval);
-      }
     } catch (e) {
       console.error('[DO] Log streaming error:', e);
-      console.log('[EXPERIMENT] Log stream ended with error');
     } finally {
-      console.log('[EXPERIMENT] Log stream finally block - streaming ended');
       this.isStreamingLogs = false;
     }
   }
