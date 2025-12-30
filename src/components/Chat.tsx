@@ -540,12 +540,14 @@ export default function Chat({ threadId }: ChatProps) {
 
   // Track which threadId we're connected to
   const connectedThreadIdRef = useRef<string | null>(null);
+  const connectedOrgIdRef = useRef<string | null>(null);
 
   // Cleanup on unmount to avoid orphaned WebSockets or reconnect timers
   useEffect(() => {
     return () => {
       connectionIdRef.current++;
       connectedThreadIdRef.current = null;
+      connectedOrgIdRef.current = null;
 
       if (wsRef.current) {
         wsRef.current.close();
@@ -571,6 +573,7 @@ export default function Chat({ threadId }: ChatProps) {
       if (connectedThreadIdRef.current) {
         connectionIdRef.current++;
         connectedThreadIdRef.current = null;
+        connectedOrgIdRef.current = null;
         if (wsRef.current) {
           wsRef.current.close();
           wsRef.current = null;
@@ -585,33 +588,40 @@ export default function Chat({ threadId }: ChatProps) {
       return;
     }
 
-    // Already connected to this thread? Nothing to do.
-    if (connectedThreadIdRef.current === threadId) {
+    const nextOrgId = currentOrg?.id || 'default';
+    const threadChanged = connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId;
+    const orgChanged = connectedOrgIdRef.current && connectedOrgIdRef.current !== nextOrgId;
+
+    // Already connected to this thread+org? Nothing to do.
+    if (connectedThreadIdRef.current === threadId && connectedOrgIdRef.current === nextOrgId) {
       return;
     }
 
-    // Switching threads - close old connection first
-    if (connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId) {
-      connectionIdRef.current++;
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
+    // Switching threads or orgs - close old connection first
+    if (connectedThreadIdRef.current || connectedOrgIdRef.current) {
+      if (threadChanged || orgChanged) {
+        connectionIdRef.current++;
+        if (wsRef.current) {
+          wsRef.current.close();
+          wsRef.current = null;
+        }
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
       }
     }
 
-    // Connect to the new thread
+    // Connect to the new thread/org
     connectedThreadIdRef.current = threadId;
+    connectedOrgIdRef.current = nextOrgId;
     connectWebSocketRef.current?.(threadId);
 
     // No cleanup function - we handle cleanup explicitly when threadId changes
     // This prevents StrictMode from closing connections on remount
     // Browser closes WebSocket automatically on navigation
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId]);
+  }, [threadId, currentOrg?.id]);
 
   // Reconnect on visibility change (tab becomes visible)
   useEffect(() => {
