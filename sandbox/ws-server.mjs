@@ -355,3 +355,8 @@ Bun.serve({
 });
 
 console.error(`[ws-server] Listening on port ${PORT}`);
+
+// EXPERIMENT: Periodic log to verify stderr is being captured
+setInterval(() => {
+  console.error(`[ws-server] Heartbeat at ${new Date().toISOString()}`);
+}, 5000);
