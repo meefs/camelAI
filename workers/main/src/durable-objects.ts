@@ -678,14 +678,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             try {
               const event = JSON.parse(line);
 
-              // Persist user messages
-              if (event.type === 'user_message') {
-                this.addMessage('user', event.content);
+              // Persist user messages (use ID from log event for dedup)
+              if (event.type === 'user_message' && event.id) {
+                this.addMessageWithId(event.id, 'user', event.content);
               }
 
-              // Persist assistant messages
-              if (event.type === 'assistant_message') {
-                this.addMessage('assistant', event.content);
+              // Persist assistant messages (use ID from log event for dedup)
+              if (event.type === 'assistant_message' && event.id) {
+                this.addMessageWithId(event.id, 'assistant', event.content);
               }
 
               // Store session ID
@@ -736,37 +736,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return this.sql.exec('SELECT id, ? as thread_id, role, content, created_at FROM messages ORDER BY created_at ASC', threadId).toArray() as unknown as Message[];
   }
 
-  // Generate a deterministic hash for content deduplication
-  private hashContent(role: string, content: string): string {
-    // Simple hash for dedup - use first 100 chars + length + role
-    const key = `${role}:${content.length}:${content.slice(0, 100)}`;
-    let hash = 0;
-    for (let i = 0; i < key.length; i++) {
-      const char = key.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32bit integer
-    }
-    return `msg_${Math.abs(hash).toString(16)}`;
-  }
-
-  addMessage(role: string, content: string): Message | null {
+  /**
+   * Add a message with a specific ID (used by log streaming for dedup).
+   * Returns null if the ID already exists (log replay).
+   */
+  addMessageWithId(id: string, role: string, content: string): Message | null {
     const threadId = this.ctx.id.toString();
 
-    // Check for duplicate using content hash
-    const contentHash = this.hashContent(role, content);
+    // Check if this exact ID already exists (dedup log replays)
     const existing = this.sql.exec<{ id: string }>(
       'SELECT id FROM messages WHERE id = ?',
-      contentHash
+      id
     ).toArray();
 
     if (existing.length > 0) {
-      console.log('[DO] Skipping duplicate message:', contentHash);
-      return null;
+      return null; // Already persisted, skip silently
     }
 
     const now = Date.now();
-    this.sql.exec('INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', contentHash, role, content, now);
-    return { id: contentHash, thread_id: threadId, role: role as 'user' | 'assistant', content, created_at: now };
+    this.sql.exec('INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', id, role, content, now);
+    return { id, thread_id: threadId, role: role as 'user' | 'assistant', content, created_at: now };
+  }
+
+  /**
+   * Add a message with auto-generated ID (used by RPC for external callers).
+   */
+  addMessage(role: string, content: string): Message {
+    const threadId = this.ctx.id.toString();
+    const id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = Date.now();
+    this.sql.exec('INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', id, role, content, now);
+    return { id, thread_id: threadId, role: role as 'user' | 'assistant', content, created_at: now };
   }
 
   deleteAllMessages(): boolean {

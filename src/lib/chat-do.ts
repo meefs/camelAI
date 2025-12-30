@@ -46,7 +46,7 @@ export async function getMessages(threadId: string): Promise<Message[]> {
   return rpc.getMessages(threadId);
 }
 
-export async function addMessage(threadId: string, role: string, content: string, org = 'default'): Promise<Message | null> {
+export async function addMessage(threadId: string, role: string, content: string, org = 'default'): Promise<Message> {
   const rpc = await getRpc();
   return rpc.addMessage(threadId, role, content, org);
 }

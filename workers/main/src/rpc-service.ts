@@ -752,11 +752,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return getThreadStub(this.env, threadId).getMessages();
   }
 
-  async addMessage(threadId: string, role: string, content: string, org = 'default'): Promise<Message | null> {
+  async addMessage(threadId: string, role: string, content: string, org = 'default'): Promise<Message> {
     const msg = await getThreadStub(this.env, threadId).addMessage(role, content);
-    if (msg) {
-      await getIndexStub(this.env, org).touchThread(threadId);
-    }
+    await getIndexStub(this.env, org).touchThread(threadId);
     return msg;
   }
 

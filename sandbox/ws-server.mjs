@@ -141,7 +141,9 @@ async function processEvents(ws) {
       // Result means this turn is complete - persist the assistant message from result
       if (event.type === 'result') {
         if (event.result && typeof event.result === 'string') {
-          logForPersistence({ type: 'assistant_message', content: event.result });
+          // Use event UUID or generate timestamp-based ID for dedup
+          const msgId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          logForPersistence({ type: 'assistant_message', id: msgId, content: event.result });
         }
         break;
       }
@@ -160,8 +162,10 @@ async function processEvents(ws) {
 
 // Handle a user message
 async function handleUserMessage(ws, content) {
-  // Log user message for DB persistence
-  logForPersistence({ type: 'user_message', content });
+  // Log user message for DB persistence with timestamp-based ID
+  // This allows repeated identical messages while deduping log replays
+  const msgId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  logForPersistence({ type: 'user_message', id: msgId, content });
 
   // Initialize session if needed
   initSession();

@@ -42,9 +42,6 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
 
     const body = await request.json() as { role: string; content: string };
     const message = await chatDO.addMessage(id, body.role, body.content, session.org_id);
-    if (!message) {
-      return NextResponse.json({ error: 'Duplicate message' }, { status: 409 });
-    }
     return NextResponse.json(message);
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
