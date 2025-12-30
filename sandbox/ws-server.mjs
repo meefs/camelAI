@@ -113,8 +113,9 @@ function initSession() {
 async function processEvents(ws) {
   if (!queryIterator) return;
 
-  let lastAssistantContent = null;
-  let lastAssistantId = null;
+  // Accumulate text from stream_event content_block_delta events
+  let streamedText = '';
+  let assistantMessageId = null;
 
   try {
     while (true) {
@@ -139,20 +140,43 @@ async function processEvents(ws) {
         }
       }
 
-      // Track assistant messages - persist when turn is complete
+      // Handle stream_event wrapper (this is what we actually receive from the SDK)
+      if (event.type === 'stream_event' && event.event) {
+        const streamEvent = event.event;
+
+        // Accumulate text from content_block_delta events
+        if (streamEvent.type === 'content_block_delta' &&
+            streamEvent.delta?.type === 'text_delta' &&
+            streamEvent.delta?.text) {
+          streamedText += streamEvent.delta.text;
+        }
+
+        // Turn complete when we see message_delta with stop_reason
+        if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
+          console.error('[ws-server] Turn complete via stream_event, stop_reason:', streamEvent.delta.stop_reason);
+          if (streamedText) {
+            assistantMessageId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
+            console.error('[ws-server] Persisted assistant message, id:', assistantMessageId, 'length:', streamedText.length);
+          }
+          break;
+        }
+      }
+
+      // Track assistant messages (backup for non-streaming mode)
       if (event.type === 'assistant' && event.message) {
         const msgContent = contentToString(event.message.content);
-        if (msgContent) {
-          lastAssistantContent = msgContent;
-          lastAssistantId = event.message.id || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        if (msgContent && !streamedText) {
+          streamedText = msgContent;
+          assistantMessageId = event.message.id || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         }
 
         // Check if turn is complete (stop_reason indicates end of turn)
         if (event.message.stop_reason) {
-          console.error('[ws-server] Turn complete, stop_reason:', event.message.stop_reason);
-          if (lastAssistantContent) {
-            logForPersistence({ type: 'assistant_message', id: lastAssistantId, content: lastAssistantContent });
-            console.error('[ws-server] Persisted assistant message, id:', lastAssistantId);
+          console.error('[ws-server] Turn complete via assistant event, stop_reason:', event.message.stop_reason);
+          if (streamedText) {
+            logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
+            console.error('[ws-server] Persisted assistant message, id:', assistantMessageId, 'length:', streamedText.length);
           }
           break;
         }
@@ -170,9 +194,13 @@ async function processEvents(ws) {
 
       // Result means this turn is complete (fallback for non-stateful mode)
       if (event.type === 'result') {
+        console.error('[ws-server] Turn complete via result event');
         if (event.result && typeof event.result === 'string') {
           const msgId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           logForPersistence({ type: 'assistant_message', id: msgId, content: event.result });
+        } else if (streamedText) {
+          // Use accumulated streamed text if result doesn't have content
+          logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
         }
         break;
       }
