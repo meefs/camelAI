@@ -24,40 +24,40 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle, Key } from 'lucide-react';
 
-interface EditIntegrationDialogProps {
+interface EditConnectionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  integration: Integration;
-  integrationTypes: IntegrationDefinition[];
+  connection: Integration;
+  connectionTypes: IntegrationDefinition[];
   orgId: string;
   onSuccess: () => void;
 }
 
-export function EditIntegrationDialog({
+export function EditConnectionDialog({
   open,
   onOpenChange,
-  integration,
-  integrationTypes,
+  connection,
+  connectionTypes,
   orgId,
   onSuccess,
-}: EditIntegrationDialogProps) {
-  const [name, setName] = useState(integration.name);
-  const [config, setConfig] = useState<Record<string, unknown>>(integration.config);
+}: EditConnectionDialogProps) {
+  const [name, setName] = useState(connection.name);
+  const [config, setConfig] = useState<Record<string, unknown>>(connection.config);
   const [credentials, setCredentials] = useState<Record<string, unknown>>({});
   const [updateCredentials, setUpdateCredentials] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const typeDef = integrationTypes.find((t) => t.type === integration.integration_type);
+  const typeDef = connectionTypes.find((t) => t.type === connection.integration_type);
 
-  // Reset form when integration changes
+  // Reset form when connection changes
   useEffect(() => {
-    setName(integration.name);
-    setConfig(integration.config);
+    setName(connection.name);
+    setConfig(connection.config);
     setCredentials({});
     setUpdateCredentials(false);
     setError(null);
-  }, [integration]);
+  }, [connection]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,7 +74,7 @@ export function EditIntegrationDialog({
         body.credentials = credentials;
       }
 
-      const res = await fetch(`/api/orgs/${orgId}/integrations/${integration.id}`, {
+      const res = await fetch(`/api/orgs/${orgId}/integrations/${connection.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -82,20 +82,20 @@ export function EditIntegrationDialog({
 
       if (!res.ok) {
         const data = (await res.json()) as { error?: string };
-        throw new Error(data.error || 'Failed to update integration');
+        throw new Error(data.error || 'Failed to update connection');
       }
 
       onSuccess();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update integration');
+      setError(err instanceof Error ? err.message : 'Failed to update connection');
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleClose = () => {
-    setName(integration.name);
-    setConfig(integration.config);
+    setName(connection.name);
+    setConfig(connection.config);
     setCredentials({});
     setUpdateCredentials(false);
     setError(null);
@@ -114,11 +114,11 @@ export function EditIntegrationDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="border-zinc-800 bg-zinc-900 text-white sm:max-w-md">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Edit {integration.name}</DialogTitle>
-          <DialogDescription className="text-zinc-400">
-            Update configuration for this {typeDef.displayName} integration
+          <DialogTitle>Edit {connection.name}</DialogTitle>
+          <DialogDescription>
+            Update configuration for this {typeDef.displayName} connection
           </DialogDescription>
         </DialogHeader>
 
@@ -140,7 +140,6 @@ export function EditIntegrationDialog({
                 onChange={(e) => setName(e.target.value)}
                 placeholder={typeDef.displayName}
                 required
-                className="border-zinc-700 bg-zinc-800"
               />
             </div>
 
@@ -156,10 +155,10 @@ export function EditIntegrationDialog({
                     value={(config[field.name] as string) || (field.default as string) || ''}
                     onValueChange={(value) => handleConfigChange(field.name, value)}
                   >
-                    <SelectTrigger className="border-zinc-700 bg-zinc-800">
+                    <SelectTrigger>
                       <SelectValue placeholder={`Select ${field.label.toLowerCase()}`} />
                     </SelectTrigger>
-                    <SelectContent className="border-zinc-700 bg-zinc-800">
+                    <SelectContent>
                       {field.options.map((opt) => (
                         <SelectItem key={opt.value} value={opt.value}>
                           {opt.label}
@@ -180,7 +179,6 @@ export function EditIntegrationDialog({
                     }
                     placeholder={field.placeholder}
                     required={field.required}
-                    className="border-zinc-700 bg-zinc-800"
                   />
                 )}
               </div>
@@ -189,10 +187,10 @@ export function EditIntegrationDialog({
             {/* Credentials section */}
             {typeDef.credentialSchema.length > 0 && (
               <>
-                <div className="mt-2 border-t border-zinc-800 pt-4">
+                <div className="mt-2 border-t pt-4">
                   <div className="mb-3 flex items-center justify-between">
-                    <p className="text-sm font-medium text-zinc-300">Credentials</p>
-                    {integration.has_credentials && !updateCredentials && (
+                    <p className="text-sm font-medium">Credentials</p>
+                    {connection.has_credentials && !updateCredentials && (
                       <Button
                         type="button"
                         variant="outline"
@@ -205,11 +203,11 @@ export function EditIntegrationDialog({
                     )}
                   </div>
 
-                  {integration.has_credentials && !updateCredentials ? (
-                    <Alert className="border-zinc-700 bg-zinc-800">
-                      <AlertDescription className="text-zinc-400">
-                        Credentials are stored securely. Click &quot;Update Credentials&quot; to
-                        replace them.
+                  {connection.has_credentials && !updateCredentials ? (
+                    <Alert>
+                      <AlertDescription>
+                        Credentials are stored securely. Click "Update Credentials" to replace
+                        them.
                       </AlertDescription>
                     </Alert>
                   ) : (
@@ -230,7 +228,6 @@ export function EditIntegrationDialog({
                           }
                           placeholder={field.placeholder}
                           required={updateCredentials && field.required}
-                          className="border-zinc-700 bg-zinc-800"
                         />
                       </div>
                     ))

@@ -23,17 +23,16 @@ function TeamSwitcherSkeleton() {
   return (
     <SidebarMenu>
       <SidebarMenuItem>
-        <div
-          aria-hidden="true"
-          className="flex h-12 w-full items-center gap-2 rounded-[calc(var(--radius-sm)+2px)] p-2"
-        >
-          <Skeleton className="h-8 w-8 rounded-lg" />
-          <div className="flex-1 space-y-1">
-            <Skeleton className="h-4 w-28" />
-            <Skeleton className="h-3 w-16" />
+        <SidebarMenuButton size="lg" asChild>
+          <div aria-hidden="true" className="flex items-center gap-2">
+            <Skeleton className="h-8 w-8 rounded-lg" />
+            <div className="flex-1 space-y-1 group-data-[collapsible=icon]:hidden">
+              <Skeleton className="h-4 w-28" />
+              <Skeleton className="h-3 w-16" />
+            </div>
+            <Skeleton className="h-4 w-4 rounded group-data-[collapsible=icon]:hidden" />
           </div>
-          <Skeleton className="h-4 w-4 rounded" />
-        </div>
+        </SidebarMenuButton>
       </SidebarMenuItem>
     </SidebarMenu>
   )
