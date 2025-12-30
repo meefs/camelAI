@@ -99,6 +99,7 @@ export default function Chat({ threadId }: ChatProps) {
   const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false); // Container is ready to receive messages
   const [streaming, setStreaming] = useState<StreamingState>({ content: [], isStreaming: false });
+  const [error, setError] = useState<string | null>(null);
   const [welcomeInput, setWelcomeInput] = useState('');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -239,6 +240,17 @@ export default function Chat({ threadId }: ChatProps) {
         if (storedMessage) {
           sessionStorage.removeItem('pendingMessage');
           pendingMessageRef.current = null;
+
+          // Add user message to local state immediately
+          const userMsg: Message = {
+            id: `local_${Date.now()}`,
+            thread_id: id,
+            role: 'user',
+            content: storedMessage,
+            created_at: Date.now(),
+          };
+          setMessages(prev => [...prev, userMsg]);
+
           setLoading(true);
           setStreaming({ content: [], isStreaming: false });
           ws.send(JSON.stringify({
@@ -311,6 +323,7 @@ export default function Chat({ threadId }: ChatProps) {
         });
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
+        setError(data.error || 'An unknown error occurred');
         setStreaming({ content: [], isStreaming: false });
         setLoading(false);
       } else if (data.type === 'deploy_success') {
@@ -531,6 +544,19 @@ export default function Chat({ threadId }: ChatProps) {
     const userMessage = input.trim();
     setInput('');
 
+    // Clear any previous error
+    setError(null);
+
+    // Add user message to local state immediately
+    const userMsg: Message = {
+      id: `local_${Date.now()}`,
+      thread_id: threadId,
+      role: 'user',
+      content: userMessage,
+      created_at: Date.now(),
+    };
+    setMessages(prev => [...prev, userMsg]);
+
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
@@ -706,6 +732,29 @@ export default function Chat({ threadId }: ChatProps) {
                       <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
                       <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
                       <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                  )}
+
+                  {/* Error display */}
+                  {error && (
+                    <div className="bg-destructive/10 border border-destructive/20 px-4 py-3 rounded-xl">
+                      <div className="flex items-start gap-3">
+                        <svg className="w-5 h-5 text-destructive shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-destructive mb-1">Something went wrong</p>
+                          <p className="text-sm text-muted-foreground">{error}</p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="shrink-0 text-muted-foreground hover:text-foreground"
+                          onClick={() => setError(null)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   )}
                   <div ref={messagesEndRef} />

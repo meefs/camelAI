@@ -9,12 +9,15 @@ if (!ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-// State - initialize sessionId from env var for session resumption
+// State
 let sessionId = process.env.RESUME_SESSION_ID || null;
+let activeQuery = null;
+let messageResolver = null;
+let queryIterator = null;
+
 if (sessionId) {
-  console.error('[ws-server] Resuming Claude session:', sessionId);
+  console.error('[ws-server] Will resume Claude session:', sessionId);
 }
-let currentAbortController = null;
 
 // Log to stdout for DO persistence (NDJSON format)
 function logForPersistence(event) {
@@ -22,7 +25,7 @@ function logForPersistence(event) {
 }
 
 // Query options for Claude SDK
-function getQueryOptions(resumeSessionId) {
+function getQueryOptions() {
   const options = {
     includePartialMessages: true,
     permissionMode: 'bypassPermissions',
@@ -31,8 +34,8 @@ function getQueryOptions(resumeSessionId) {
     settingSources: ['project', 'user'],
   };
 
-  if (resumeSessionId) {
-    options.resume = resumeSessionId;
+  if (sessionId) {
+    options.resume = sessionId;
   }
 
   return options;
@@ -58,18 +61,56 @@ function contentToString(content) {
   return parts.join('\n\n');
 }
 
-// Handle a user message - query Claude SDK and stream events
-async function handleUserMessage(ws, content) {
-  // Create abort controller for stop functionality
-  currentAbortController = new AbortController();
+// Async generator that yields user messages on demand
+async function* createMessageStream() {
+  while (true) {
+    // Wait for next message
+    const message = await new Promise((resolve) => {
+      messageResolver = resolve;
+    });
+
+    if (message === null) {
+      // Signal to stop
+      return;
+    }
+
+    // Yield the user message
+    yield {
+      type: 'user',
+      session_id: sessionId || '',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: message }],
+      },
+      parent_tool_use_id: null,
+    };
+  }
+}
+
+// Initialize the stateful query session
+function initSession() {
+  if (activeQuery) return;
+
+  console.error('[ws-server] Initializing stateful session');
+  const options = getQueryOptions();
+  const messageStream = createMessageStream();
+
+  activeQuery = query({ prompt: messageStream, options });
+  queryIterator = activeQuery[Symbol.asyncIterator]();
+}
+
+// Process events from the query until we need more user input
+async function processEvents(ws) {
+  if (!queryIterator) return;
 
   try {
-    const options = getQueryOptions(sessionId);
+    while (true) {
+      const { value: event, done } = await queryIterator.next();
 
-    for await (const event of query({ prompt: content, options })) {
-      // Check if aborted
-      if (currentAbortController.signal.aborted) {
-        ws.send(JSON.stringify({ type: 'stopped' }));
+      if (done) {
+        console.error('[ws-server] Query completed');
+        activeQuery = null;
+        queryIterator = null;
         break;
       }
 
@@ -81,16 +122,16 @@ async function handleUserMessage(ws, content) {
         if (!sessionId) {
           sessionId = event.session_id;
           logForPersistence({ type: 'session_id', sessionId: event.session_id });
+          console.error('[ws-server] Got session ID:', sessionId);
         }
       }
 
-      // Persist user messages (original prompt + tool results)
+      // Persist user messages (tool results)
       if (event.type === 'user' && event.message) {
         const msgContent = contentToString(event.message.content);
         if (msgContent) {
           logForPersistence({ type: 'user_message', content: msgContent });
 
-          // Send confirmation to client
           ws.send(JSON.stringify({
             type: 'message',
             message: {
@@ -109,7 +150,6 @@ async function handleUserMessage(ws, content) {
         if (msgContent) {
           logForPersistence({ type: 'assistant_message', content: msgContent });
 
-          // Send confirmation to client
           ws.send(JSON.stringify({
             type: 'message',
             message: {
@@ -121,18 +161,42 @@ async function handleUserMessage(ws, content) {
           }));
         }
       }
-    }
 
+      // Result means this turn is complete, wait for next user message
+      if (event.type === 'result') {
+        console.error('[ws-server] Turn complete, waiting for next message');
+        break;
+      }
+    }
   } catch (e) {
     const errorMsg = String(e);
+    console.error('[ws-server] Query error:', errorMsg);
     ws.send(JSON.stringify({ type: 'error', error: errorMsg }));
     logForPersistence({ type: 'error', error: errorMsg });
-  } finally {
-    currentAbortController = null;
+
+    // Reset session on error
+    activeQuery = null;
+    queryIterator = null;
   }
 }
 
-// Track active WebSocket connection for broadcasting
+// Handle a user message
+async function handleUserMessage(ws, content) {
+  // Initialize session if needed
+  initSession();
+
+  // Send message to the query via the resolver
+  if (messageResolver) {
+    const resolver = messageResolver;
+    messageResolver = null;
+    resolver(content);
+  }
+
+  // Process events until turn is complete
+  await processEvents(ws);
+}
+
+// Track active WebSocket connection
 let activeWs = null;
 
 // Bun WebSocket server with HTTP health endpoint
@@ -198,8 +262,13 @@ Bun.serve({
           await handleUserMessage(ws, data.content);
 
         } else if (data.type === 'stop') {
-          if (currentAbortController) {
-            currentAbortController.abort();
+          // Interrupt the query if running
+          if (activeQuery) {
+            try {
+              await activeQuery.interrupt();
+            } catch (e) {
+              console.error('[ws-server] Interrupt error:', e);
+            }
           }
         }
       } catch (e) {
@@ -209,10 +278,18 @@ Bun.serve({
     },
 
     close(ws) {
-      console.error('[ws-server] WebSocket closed, waiting for new connection');
+      console.error('[ws-server] WebSocket closed');
       activeWs = null;
-      // Keep server running to accept new connections
-      // R2 sync happens when container shuts down (run-ws-server.sh EXIT trap)
+
+      // Signal message stream to stop
+      if (messageResolver) {
+        messageResolver(null);
+        messageResolver = null;
+      }
+
+      // Clean up query
+      activeQuery = null;
+      queryIterator = null;
     },
 
     error(ws, error) {
