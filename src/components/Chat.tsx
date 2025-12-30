@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowDown, Copy, Check, RefreshCw, ExternalLink, X } from 'lucide-react';
-import type { Thread, Message } from '@/types';
+import type { Thread, Message, ContentBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   Tooltip,
@@ -30,32 +30,78 @@ function formatMessageTime(timestamp: number): string {
   });
 }
 
-// SDK event content block types
-interface TextBlock {
-  type: 'text';
-  text: string;
+// Convert content to string for copy functionality
+function contentToString(content: string | ContentBlock[]): string {
+  if (typeof content === 'string') return content;
+  return content
+    .map(block => {
+      if (block.type === 'text') return block.text;
+      if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
+      if (block.type === 'tool_result') return `[Result]\n${block.content}`;
+      if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+      return '';
+    })
+    .join('\n\n');
 }
 
-interface ToolUseBlock {
-  type: 'tool_use';
-  id: string;
-  name: string;
-  input: Record<string, unknown>;
+// Render content blocks with proper styling
+function ContentBlockRenderer({ content, isStreaming = false }: { content: string | ContentBlock[]; isStreaming?: boolean }) {
+  // String content - render as markdown
+  if (typeof content === 'string') {
+    return <MarkdownRenderer content={content} isStreaming={isStreaming} />;
+  }
+
+  // Array of content blocks - render each with proper styling
+  return (
+    <div className="space-y-4">
+      {content.map((block, i) => (
+        <div key={i}>
+          {block.type === 'text' && (
+            <div className="max-w-none">
+              <MarkdownRenderer content={block.text} isStreaming={isStreaming} />
+            </div>
+          )}
+          {block.type === 'thinking' && (
+            <div className="bg-muted/50 border border-border px-4 py-3 rounded-xl">
+              <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+                <span className="font-medium">Thinking</span>
+              </div>
+              <p className="whitespace-pre-wrap text-muted-foreground text-sm">{block.thinking}</p>
+            </div>
+          )}
+          {block.type === 'tool_use' && (
+            <div className="bg-amber-500/10 border border-amber-500/20 px-4 py-3 rounded-xl">
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm mb-2">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <span className="font-mono font-medium">{block.name}</span>
+              </div>
+              <pre className="text-xs text-muted-foreground overflow-x-auto">{JSON.stringify(block.input, null, 2)}</pre>
+            </div>
+          )}
+          {block.type === 'tool_result' && (
+            <div className="bg-green-500/10 border border-green-500/20 px-4 py-3 rounded-xl">
+              <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm mb-2">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                <span className="font-medium">Result</span>
+              </div>
+              <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">{block.content}</pre>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 }
 
-interface ToolResultBlock {
-  type: 'tool_result';
-  tool_use_id: string;
-  content: string;
-}
-
-interface ThinkingBlock {
-  type: 'thinking';
-  thinking: string;
-}
-
-type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock;
-
+// SDK event types (ContentBlock imported from @/types)
 interface SDKEvent {
   type: string;
   subtype?: string;
@@ -76,10 +122,13 @@ interface SDKEvent {
       type?: string;
       text?: string;
       stop_reason?: string;
+      partial_json?: string;
     };
     content_block?: {
       type: string;
       text?: string;
+      id?: string;
+      name?: string;
     };
   };
 }
@@ -271,23 +320,70 @@ export default function Chat({ threadId }: ChatProps) {
           // Handle streaming deltas
           const evt = sdkEvent.event;
           if (evt?.type === 'content_block_start') {
-            // Just mark as streaming, don't add block yet - let delta handle it
-            setStreaming(prev => ({ ...prev, isStreaming: true }));
-          } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
-            // Append or create text block
+            const block = evt.content_block;
+            if (block?.type === 'tool_use') {
+              // Add tool_use block immediately
+              setStreaming(prev => ({
+                ...prev,
+                isStreaming: true,
+                content: [...prev.content, {
+                  type: 'tool_use' as const,
+                  id: block.id || '',
+                  name: block.name || '',
+                  input: {},
+                }],
+              }));
+            } else {
+              // For text blocks, just mark as streaming - delta will add content
+              setStreaming(prev => ({ ...prev, isStreaming: true }));
+            }
+          } else if (evt?.type === 'content_block_delta') {
+            if (evt.delta?.type === 'text_delta' && evt.delta.text) {
+              // Append text to current text block or create new one
+              setStreaming(prev => {
+                const newContent = [...prev.content];
+                const lastBlock = newContent[newContent.length - 1];
+                if (lastBlock?.type === 'text') {
+                  newContent[newContent.length - 1] = {
+                    ...lastBlock,
+                    text: lastBlock.text + evt.delta!.text,
+                  };
+                } else {
+                  newContent.push({ type: 'text', text: evt.delta!.text! });
+                }
+                return { ...prev, content: newContent };
+              });
+            } else if (evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
+              // Append to tool_use input (accumulate JSON string)
+              setStreaming(prev => {
+                const newContent = [...prev.content];
+                const lastToolUse = [...newContent].reverse().find(b => b.type === 'tool_use');
+                if (lastToolUse && lastToolUse.type === 'tool_use') {
+                  const idx = newContent.indexOf(lastToolUse);
+                  const currentInput = (lastToolUse as any)._inputJson || '';
+                  newContent[idx] = {
+                    ...lastToolUse,
+                    _inputJson: currentInput + evt.delta!.partial_json,
+                  } as any;
+                }
+                return { ...prev, content: newContent };
+              });
+            }
+          } else if (evt?.type === 'content_block_stop') {
+            // Finalize tool_use input JSON
             setStreaming(prev => {
-              const newContent = [...prev.content];
-              const lastBlock = newContent[newContent.length - 1];
-              if (lastBlock?.type === 'text') {
-                // Append to existing text block
-                newContent[newContent.length - 1] = {
-                  ...lastBlock,
-                  text: lastBlock.text + evt.delta!.text,
-                };
-              } else {
-                // Create new text block
-                newContent.push({ type: 'text', text: evt.delta!.text! });
-              }
+              const newContent = prev.content.map(block => {
+                if (block.type === 'tool_use' && (block as any)._inputJson) {
+                  try {
+                    const input = JSON.parse((block as any)._inputJson);
+                    const { _inputJson, ...rest } = block as any;
+                    return { ...rest, input };
+                  } catch {
+                    return block;
+                  }
+                }
+                return block;
+              });
               return { ...prev, content: newContent };
             });
           } else if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
@@ -295,24 +391,39 @@ export default function Chat({ threadId }: ChatProps) {
             setStreaming(prev => ({ ...prev, isStreaming: false }));
           }
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
-          // Only use assistant events when streaming is done (has stop_reason)
-          // During streaming, we use deltas for smoother updates
+          // Use full assistant message content (includes properly parsed tool inputs)
           if (sdkEvent.message!.stop_reason) {
             setStreaming(prev => ({
               ...prev,
-              content: sdkEvent.message!.content,
+              content: [...prev.content.filter(b => b.type === 'tool_result'), ...sdkEvent.message!.content],
               isStreaming: false,
             }));
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
-          // Append user content blocks (tool_result) to current assistant content
+          // Append user content blocks (tool_result) to current content
           setStreaming(prev => ({
             ...prev,
             content: [...prev.content, ...sdkEvent.message!.content],
           }));
         } else if (sdkEvent.type === 'result') {
-          // Query complete - clear loading and streaming state
-          setStreaming({ content: [], isStreaming: false });
+          // Query complete - convert streaming content to a message, then clear
+          setStreaming(prev => {
+            if (prev.content.length > 0) {
+              // Add accumulated content as a message
+              const msgId = `turn_${Date.now()}`;
+              setMessages(msgs => {
+                if (msgs.some(m => m.id === msgId)) return msgs;
+                return [...msgs, {
+                  id: msgId,
+                  thread_id: threadId || '',
+                  role: 'assistant' as const,
+                  content: prev.content,
+                  created_at: Date.now(),
+                }];
+              });
+            }
+            return { content: [], isStreaming: false };
+          });
           setLoading(false);
         }
       } else if (data.type === 'message') {
@@ -606,7 +717,7 @@ export default function Chat({ threadId }: ChatProps) {
                         /* User message - right aligned with bubble and hover actions */
                         <div className="flex flex-col items-end gap-1">
                           <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
-                            <MarkdownRenderer content={msg.content} />
+                            <ContentBlockRenderer content={msg.content} />
                           </div>
                           {/* Hover action row */}
                           <div
@@ -623,7 +734,7 @@ export default function Chat({ threadId }: ChatProps) {
                                   variant="ghost"
                                   size="icon-sm"
                                   className="text-muted-foreground"
-                                  onClick={() => copyMessage(msg.id, msg.content)}
+                                  onClick={() => copyMessage(msg.id, contentToString(msg.content))}
                                 >
                                   {copiedMessageId === msg.id ? <Check /> : <Copy />}
                                 </Button>
@@ -638,7 +749,7 @@ export default function Chat({ threadId }: ChatProps) {
                         /* Assistant message - full width, no bubble, with hover actions */
                         <div className="flex flex-col gap-1">
                           <div className="max-w-none">
-                            <MarkdownRenderer content={msg.content} />
+                            <ContentBlockRenderer content={msg.content} />
                           </div>
                           {/* Hover action row */}
                           <div
@@ -655,7 +766,7 @@ export default function Chat({ threadId }: ChatProps) {
                                   variant="ghost"
                                   size="icon-sm"
                                   className="text-muted-foreground"
-                                  onClick={() => copyMessage(msg.id, msg.content)}
+                                  onClick={() => copyMessage(msg.id, contentToString(msg.content))}
                                 >
                                   {copiedMessageId === msg.id ? <Check /> : <Copy />}
                                 </Button>

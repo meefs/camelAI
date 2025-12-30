@@ -281,6 +281,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // These are intentionally transient - we re-warm after hibernation
   private warmingPromise: Promise<void> | null = null;
   private warmedForOrg: string | null = null;
+  // Track if log streaming is active to prevent duplicate streams
+  private isStreamingLogs = false;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -538,14 +540,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
         // Wait for the WS server to be ready by watching for startup log
         try {
-          await process.waitForLog('[ws-server] Listening', 120000); // 2 min - R2 sync can be slow
+          await process.waitForLog('[ws-server] Listening', 30000); // 30s timeout
         } catch (e) {
           console.error('[DO] Container WS server failed to start:', e);
           return new Response('Container WS server failed to start', { status: 500 });
         }
-      } else if (this.currentProcessId) {
+      } else if (this.currentProcessId && !this.isStreamingLogs) {
         // Reusing existing process - ensure log streaming is running
         // (it may have stopped when DO hibernated)
+        // Only start if not already streaming to prevent duplicate log processing
         this.ctx.waitUntil(this.streamLogsForPersistence(this.currentProcessId));
       }
 
@@ -650,6 +653,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   // Stream container logs in background for message persistence
   private async streamLogsForPersistence(processId: string): Promise<void> {
+    if (this.isStreamingLogs) {
+      return;
+    }
+    this.isStreamingLogs = true;
+
     try {
       const logStream = await this.sandbox!.streamProcessLogs(processId);
       let outputBuffer = '';
@@ -697,11 +705,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           // Clean up
           await this.expireProxyToken();
           this.currentProcessId = null;
+          this.isStreamingLogs = false;
           this.clearTransientState();
         }
       }
     } catch (e) {
       console.error('[DO] Log streaming error:', e);
+    } finally {
+      this.isStreamingLogs = false;
     }
   }
 
@@ -725,12 +736,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return this.sql.exec('SELECT id, ? as thread_id, role, content, created_at FROM messages ORDER BY created_at ASC', threadId).toArray() as unknown as Message[];
   }
 
-  addMessage(role: string, content: string): Message {
-    const id = crypto.randomUUID();
-    const now = Date.now();
+  // Generate a deterministic hash for content deduplication
+  private hashContent(role: string, content: string): string {
+    // Simple hash for dedup - use first 100 chars + length + role
+    const key = `${role}:${content.length}:${content.slice(0, 100)}`;
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      const char = key.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return `msg_${Math.abs(hash).toString(16)}`;
+  }
+
+  addMessage(role: string, content: string): Message | null {
     const threadId = this.ctx.id.toString();
-    this.sql.exec('INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', id, role, content, now);
-    return { id, thread_id: threadId, role: role as 'user' | 'assistant', content, created_at: now };
+
+    // Check for duplicate using content hash
+    const contentHash = this.hashContent(role, content);
+    const existing = this.sql.exec<{ id: string }>(
+      'SELECT id FROM messages WHERE id = ?',
+      contentHash
+    ).toArray();
+
+    if (existing.length > 0) {
+      console.log('[DO] Skipping duplicate message:', contentHash);
+      return null;
+    }
+
+    const now = Date.now();
+    this.sql.exec('INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', contentHash, role, content, now);
+    return { id: contentHash, thread_id: threadId, role: role as 'user' | 'assistant', content, created_at: now };
   }
 
   deleteAllMessages(): boolean {

@@ -20,8 +20,10 @@ if (sessionId) {
 }
 
 // Log to stdout for DO persistence (NDJSON format)
+// Use Bun.write for synchronous, unbuffered writes
 function logForPersistence(event) {
-  console.log(JSON.stringify(event));
+  const line = JSON.stringify(event) + '\n';
+  Bun.write(Bun.stdout, line);
 }
 
 // Query options for Claude SDK
@@ -126,45 +128,37 @@ async function processEvents(ws) {
         }
       }
 
-      // Persist user messages (tool results)
+      // Persist tool results (user events) - but don't send as separate messages
+      // Tool results are part of the assistant's turn, not standalone user messages
       if (event.type === 'user' && event.message) {
         const msgContent = contentToString(event.message.content);
         if (msgContent) {
-          logForPersistence({ type: 'user_message', content: msgContent });
-
-          ws.send(JSON.stringify({
-            type: 'message',
-            message: {
-              id: event.uuid || `msg_${Date.now()}`,
-              role: 'user',
-              content: msgContent,
-              created_at: Date.now(),
-            }
-          }));
+          // Log for DB persistence only
+          logForPersistence({ type: 'tool_result', content: msgContent });
         }
       }
 
-      // Persist assistant messages (full response with all content blocks)
-      if (event.type === 'assistant' && event.message?.content) {
+      // Send complete assistant messages to client for rich UI rendering
+      if (event.type === 'assistant' && event.message?.content && event.message.stop_reason) {
         const msgContent = contentToString(event.message.content);
         if (msgContent) {
-          logForPersistence({ type: 'assistant_message', content: msgContent });
-
           ws.send(JSON.stringify({
             type: 'message',
             message: {
               id: event.uuid || `msg_${Date.now()}`,
               role: 'assistant',
-              content: msgContent,
+              content: event.message.content,
               created_at: Date.now(),
             }
           }));
         }
       }
 
-      // Result means this turn is complete, wait for next user message
+      // Result means this turn is complete - persist the assistant message from result
       if (event.type === 'result') {
-        console.error('[ws-server] Turn complete, waiting for next message');
+        if (event.result && typeof event.result === 'string') {
+          logForPersistence({ type: 'assistant_message', content: event.result });
+        }
         break;
       }
     }
@@ -182,6 +176,9 @@ async function processEvents(ws) {
 
 // Handle a user message
 async function handleUserMessage(ws, content) {
+  // Log user message for DB persistence
+  logForPersistence({ type: 'user_message', content });
+
   // Initialize session if needed
   initSession();
 

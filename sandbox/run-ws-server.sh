@@ -53,7 +53,7 @@ sync_to_r2() {
   fi
 
   echo "[sandbox] Uploading ${TARGET_DIR} to R2 prefix ${PREFIX}..." >&2
-  rclone sync "$TARGET_DIR" "$REMOTE" --exclude ".keep" 2>&1 | head -20 >&2
+  rclone sync "$TARGET_DIR" "$REMOTE" --exclude ".keep" --timeout 10s --contimeout 5s 2>&1 | head -20 >&2
   echo "[sandbox] Upload complete." >&2
 }
 
@@ -108,7 +108,7 @@ EOF
   fi
 
   echo "[sandbox] Downloading from R2 prefix ${PREFIX} to ${TARGET_DIR}..." >&2
-  rclone sync "$REMOTE" "$TARGET_DIR" --exclude ".keep" 2>&1 | head -20 >&2
+  rclone sync "$REMOTE" "$TARGET_DIR" --exclude ".keep" --timeout 10s --contimeout 5s 2>&1 | head -20 >&2
   echo "[sandbox] Download complete." >&2
 
   # Mark as synced
