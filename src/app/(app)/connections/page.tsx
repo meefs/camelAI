@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Integration } from '@/types';
@@ -19,25 +19,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   AlertCircle,
-  Building2,
   Check,
-  Cloud,
-  Database,
-  MessageSquare,
   Plug,
   Plus,
   Settings,
-  Sparkles,
   Trash2,
 } from 'lucide-react';
-
-const categoryIcons: Record<string, ReactNode> = {
-  databases: <Database className="size-4" />,
-  saas: <Building2 className="size-4" />,
-  ai_services: <Sparkles className="size-4" />,
-  cloud_providers: <Cloud className="size-4" />,
-  communication: <MessageSquare className="size-4" />,
-};
 
 const categoryLabels: Record<string, string> = {
   databases: 'Databases',
@@ -336,118 +323,69 @@ export default function ConnectionsPage() {
                 <div className="py-6 text-sm text-muted-foreground">
                   No connection types are available right now.
                 </div>
-              ) : categories.length > 0 ? (
-                <Tabs defaultValue={categories[0]} className="w-full">
+              ) : (
+                <Tabs defaultValue="all" className="w-full">
                   <TabsList className="mb-4">
+                    <TabsTrigger value="all">All</TabsTrigger>
                     {categories.map((category) => (
                       <TabsTrigger key={category} value={category}>
-                        <span className="mr-2">{categoryIcons[category]}</span>
                         {categoryLabels[category] || category}
                       </TabsTrigger>
                     ))}
                   </TabsList>
+                  <TabsContent value="all">
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {connectionTypes.map((type) => (
+                        <button
+                          key={type.type}
+                          onClick={() => handleAddClick(type.type)}
+                          className="flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
+                        >
+                          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                            <IntegrationIcon type={type.type} className="size-5" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-medium">
+                              {type.displayName}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {type.authMethod === 'oauth2' ? 'OAuth' : 'API Key'}
+                            </div>
+                          </div>
+                          <Plus className="size-4 shrink-0 text-muted-foreground" />
+                        </button>
+                      ))}
+                    </div>
+                  </TabsContent>
                   {categories.map((category) => (
                     <TabsContent key={category} value={category}>
-                      <div className="grid gap-4 md:grid-cols-2">
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                         {connectionTypes
                           .filter((type) => type.category === category)
-                          .map((type) => {
-                            const isConfigured = connections.some(
-                              (connection) => connection.integration_type === type.type
-                            );
-
-                            return (
-                              <Card key={type.type} className="transition-shadow hover:shadow-sm">
-                                <CardHeader className="pb-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="flex items-center gap-3">
-                                      <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
-                                        <IntegrationIcon type={type.type} />
-                                      </div>
-                                      <div>
-                                        <CardTitle className="text-base">
-                                          {type.displayName}
-                                        </CardTitle>
-                                        <CardDescription className="text-xs">
-                                          {type.authMethod === 'oauth2' ? 'OAuth 2.0' : 'API Key'}
-                                        </CardDescription>
-                                      </div>
-                                    </div>
-                                    {isConfigured && (
-                                      <Badge variant="secondary" className="text-[10px]">
-                                        Connected
-                                      </Badge>
-                                    )}
-                                  </div>
-                                </CardHeader>
-                                <CardContent>
-                                  <p className="mb-4 text-sm text-muted-foreground">
-                                    {type.description}
-                                  </p>
-                                  <Button
-                                    variant={isConfigured ? 'outline' : 'default'}
-                                    size="sm"
-                                    className="w-full"
-                                    onClick={() => handleAddClick(type.type)}
-                                  >
-                                    <Plus className="mr-2 size-4" />
-                                    {isConfigured ? 'Add Another' : 'Configure'}
-                                  </Button>
-                                </CardContent>
-                              </Card>
-                            );
-                          })}
+                          .map((type) => (
+                            <button
+                              key={type.type}
+                              onClick={() => handleAddClick(type.type)}
+                              className="flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
+                            >
+                              <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                                <IntegrationIcon type={type.type} className="size-5" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-sm font-medium">
+                                  {type.displayName}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {type.authMethod === 'oauth2' ? 'OAuth' : 'API Key'}
+                                </div>
+                              </div>
+                              <Plus className="size-4 shrink-0 text-muted-foreground" />
+                            </button>
+                          ))}
                       </div>
                     </TabsContent>
                   ))}
                 </Tabs>
-              ) : (
-                <div className="grid gap-4 md:grid-cols-2">
-                  {connectionTypes.map((type) => {
-                    const isConfigured = connections.some(
-                      (connection) => connection.integration_type === type.type
-                    );
-
-                    return (
-                      <Card key={type.type} className="transition-shadow hover:shadow-sm">
-                        <CardHeader className="pb-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex items-center gap-3">
-                              <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
-                                <IntegrationIcon type={type.type} />
-                              </div>
-                              <div>
-                                <CardTitle className="text-base">{type.displayName}</CardTitle>
-                                <CardDescription className="text-xs">
-                                  {type.authMethod === 'oauth2' ? 'OAuth 2.0' : 'API Key'}
-                                </CardDescription>
-                              </div>
-                            </div>
-                            {isConfigured && (
-                              <Badge variant="secondary" className="text-[10px]">
-                                Connected
-                              </Badge>
-                            )}
-                          </div>
-                        </CardHeader>
-                        <CardContent>
-                          <p className="mb-4 text-sm text-muted-foreground">
-                            {type.description}
-                          </p>
-                          <Button
-                            variant={isConfigured ? 'outline' : 'default'}
-                            size="sm"
-                            className="w-full"
-                            onClick={() => handleAddClick(type.type)}
-                          >
-                            <Plus className="mr-2 size-4" />
-                            {isConfigured ? 'Add Another' : 'Configure'}
-                          </Button>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
               )}
             </div>
           </ScrollArea>
