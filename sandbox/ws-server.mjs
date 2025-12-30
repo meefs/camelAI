@@ -21,10 +21,11 @@ if (sessionId) {
 }
 
 // Log to stdout for DO persistence (NDJSON format)
-// Use Bun.write for synchronous, unbuffered writes
+// Use process.stdout.write for synchronous, unbuffered writes
+// Note: Bun.write may not work correctly in container environments
 function logForPersistence(event) {
   const line = JSON.stringify(event) + '\n';
-  Bun.write(Bun.stdout, line);
+  process.stdout.write(line);
 }
 
 // Query options for Claude SDK
