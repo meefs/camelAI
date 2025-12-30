@@ -18,6 +18,16 @@ function formatTimestamp(value: number) {
   return dateFormatter.format(new Date(value));
 }
 
+function getTextContent(content: string | Array<{ type: string; text?: string }>): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  return content
+    .filter((block) => block.type === 'text' && block.text)
+    .map((block) => block.text)
+    .join('\n');
+}
+
 interface Props {
   params: Promise<{ id: string }>;
 }
@@ -145,9 +155,10 @@ export default async function AdminThreadDetailPage({ params }: Props) {
                             </span>
                           </div>
                           <div className="text-sm whitespace-pre-wrap break-words">
-                            {msg.content.length > 1000
-                              ? msg.content.slice(0, 1000) + '...'
-                              : msg.content}
+                            {(() => {
+                              const text = getTextContent(msg.content);
+                              return text.length > 1000 ? text.slice(0, 1000) + '...' : text;
+                            })()}
                           </div>
                         </div>
                       ))}

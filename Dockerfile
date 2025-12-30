@@ -7,30 +7,19 @@ FROM docker.io/cloudflare/sandbox:0.6.6-python
 # 8081: Integration proxy for external APIs
 EXPOSE 8080 8081
 
-# R2 sync support (rclone for downloading/uploading on init/shutdown)
+# R2 sync support (tar+zstd for fast snapshot-based sync)
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/claude
-ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     -o Dpkg::Options::="--force-confnew" \
     ca-certificates \
     curl \
-    unzip \
+    zstd \
   && rm -rf /var/lib/apt/lists/* \
-  && npm install -g wrangler@4.55.0 \
-  && case "${TARGETARCH}" in \
-    amd64) RCLONE_ARCH="amd64" ;; \
-    arm64) RCLONE_ARCH="arm64" ;; \
-    *) echo "Unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
-  esac \
-  && curl -L -o /tmp/rclone.zip "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-linux-${RCLONE_ARCH}.zip" \
-  && unzip /tmp/rclone.zip -d /tmp \
-  && mv "/tmp/rclone-v1.68.2-linux-${RCLONE_ARCH}/rclone" /usr/local/bin/ \
-  && chmod +x /usr/local/bin/rclone \
-  && rm -rf /tmp/rclone*
+  && npm install -g wrangler@4.55.0
 
 # Copy and install Claude SDK driver + integration proxy + WS server
-COPY sandbox/package.json sandbox/driver.mjs sandbox/proxy.mjs sandbox/ws-server.mjs sandbox/run-driver.sh sandbox/run-ws-server.sh /app/
+COPY sandbox/package.json sandbox/driver.mjs sandbox/proxy.mjs sandbox/ws-server.mjs sandbox/sync.mjs sandbox/run-driver.sh sandbox/run-ws-server.sh /app/
 COPY sandbox/starter-worker /app/starter-worker
 WORKDIR /app
 RUN bun install
