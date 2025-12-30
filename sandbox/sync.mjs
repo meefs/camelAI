@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
  * R2 sync utility using tar+zstd for efficient snapshot-based sync.
- * Version: 5 (2024-12-30) - Fixed R2 requirement: all non-trailing parts must be exactly same size
  *
  * Usage:
  *   node sync.mjs download <target-dir>
@@ -26,22 +25,14 @@ const SNAPSHOT_KEY = 'workspace.tar.zst';
 // Check if required binaries are available
 function checkBinaries() {
   const binaries = ['tar', 'zstd'];
-  const missing = [];
-
   for (const bin of binaries) {
     try {
       execSync(`which ${bin}`, { stdio: 'pipe' });
     } catch {
-      missing.push(bin);
+      console.error(`[sync] Missing required binary: ${bin}`);
+      return false;
     }
   }
-
-  if (missing.length > 0) {
-    console.error(`[sync] Missing required binaries: ${missing.join(', ')}`);
-    return false;
-  }
-
-  console.error('[sync] All required binaries available (tar, zstd)');
   return true;
 }
 
@@ -75,7 +66,7 @@ function getS3Client(config) {
 async function clearDirectory(targetDir) {
   const resolved = path.resolve(targetDir);
   if (!resolved || resolved === '/') {
-    throw new Error(`[sync] Refusing to wipe directory "${resolved}"`);
+    throw new Error(`Refusing to wipe directory "${resolved}"`);
   }
 
   await fs.mkdir(resolved, { recursive: true });
@@ -86,9 +77,6 @@ async function clearDirectory(targetDir) {
 }
 
 async function download(targetDir) {
-  console.error('[sync] download() called with:', targetDir);
-
-  // Check binaries first
   if (!checkBinaries()) {
     throw new Error('Required binaries (tar, zstd) not available');
   }
@@ -107,16 +95,15 @@ async function download(targetDir) {
     await client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: key }));
   } catch (err) {
     if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
-      console.error(`[sync] No snapshot found at ${key}, starting fresh`);
+      console.error('[sync] No snapshot found, starting fresh');
       return true;
     }
     throw err;
   }
 
-  console.error(`[sync] Downloading snapshot from ${key}...`);
+  console.error('[sync] Downloading snapshot...');
   const startTime = Date.now();
 
-  console.error(`[sync] Clearing ${targetDir} before restore...`);
   await clearDirectory(targetDir);
 
   const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
@@ -145,23 +132,14 @@ async function download(targetDir) {
 }
 
 async function upload(sourceDir) {
-  console.error('[sync] upload() called with:', sourceDir);
-
-  // Check binaries first
   if (!checkBinaries()) {
     throw new Error('Required binaries (tar, zstd) not available');
   }
 
-  // Check source directory exists and is accessible
-  try {
-    const stats = await fs.stat(sourceDir);
-    if (!stats.isDirectory()) {
-      throw new Error(`${sourceDir} is not a directory`);
-    }
-    console.error(`[sync] Source directory exists: ${sourceDir}`);
-  } catch (err) {
-    console.error(`[sync] Cannot access source directory: ${err.message}`);
-    throw err;
+  // Check source directory exists
+  const stats = await fs.stat(sourceDir);
+  if (!stats.isDirectory()) {
+    throw new Error(`${sourceDir} is not a directory`);
   }
 
   const config = getConfig();
@@ -169,7 +147,6 @@ async function upload(sourceDir) {
     console.error('[sync] No R2 credentials configured, skipping upload');
     return false;
   }
-  console.error('[sync] Config loaded, bucket:', config.bucket, 'prefix:', config.prefix);
 
   const readonly = process.env.R2_MOUNT_READONLY;
   if (readonly === '1' || readonly === 'true' || readonly === 'TRUE') {
@@ -177,38 +154,24 @@ async function upload(sourceDir) {
     return true;
   }
 
-  console.error(`[sync] Creating snapshot of ${sourceDir}...`);
   const startTime = Date.now();
 
-  // Pipe: tar c -> zstd -> multipart upload (streams 5MB chunks)
-  console.error('[sync] Spawning tar...');
+  // Pipe: tar c -> zstd -> multipart upload
   const tar = spawn('tar', ['cf', '-', '-C', sourceDir, '.'], { stdio: ['inherit', 'pipe', 'pipe'] });
-  console.error('[sync] Spawning zstd...');
   const zstd = spawn('zstd', ['-1', '-T0'], { stdio: ['pipe', 'pipe', 'pipe'] });
 
-  // Log stderr from tar/zstd for debugging
-  tar.stderr.on('data', (data) => console.error(`[sync] tar stderr: ${data.toString().trim()}`));
-  zstd.stderr.on('data', (data) => console.error(`[sync] zstd stderr: ${data.toString().trim()}`));
-  tar.on('error', (err) => console.error('[sync] tar spawn error:', err.message));
-  zstd.on('error', (err) => console.error('[sync] zstd spawn error:', err.message));
-
-  console.error('[sync] Piping tar -> zstd...');
   tar.stdout.pipe(zstd.stdin);
-  console.error('[sync] Starting multipart upload...');
 
   const client = getS3Client(config);
   const key = `${config.prefix}${SNAPSHOT_KEY}`;
-  console.error('[sync] Key:', key);
 
   // Start multipart upload
-  console.error('[sync] Creating multipart upload...');
   const createResp = await client.send(new CreateMultipartUploadCommand({
     Bucket: config.bucket,
     Key: key,
     ContentType: 'application/zstd',
   }));
   const uploadId = createResp.UploadId;
-  console.error('[sync] Multipart upload created, uploadId:', uploadId);
 
   const parts = [];
   const uploadPromises = [];
@@ -217,25 +180,15 @@ async function upload(sourceDir) {
   let currentSize = 0;
   let totalBytes = 0;
   let activeUploads = 0;
-  let chunksReceived = 0;
 
-  console.error('[sync] tar pid:', tar.pid, 'zstd pid:', zstd.pid);
-
-  // Track early exits from tar/zstd
+  // Track exits from tar/zstd
   let tarExited = false;
   let zstdExited = false;
-  tar.on('exit', (code, signal) => {
-    tarExited = true;
-    console.error(`[sync] tar exited early: code=${code}, signal=${signal}`);
-  });
-  zstd.on('exit', (code, signal) => {
-    zstdExited = true;
-    console.error(`[sync] zstd exited early: code=${code}, signal=${signal}`);
-  });
+  tar.on('exit', () => { tarExited = true; });
+  zstd.on('exit', () => { zstdExited = true; });
 
   // Upload a part with concurrency limiting
   const uploadPart = async (partNum, data) => {
-    console.error(`[sync] Uploading part ${partNum}, size: ${(data.length / 1024 / 1024).toFixed(2)}MB`);
     while (activeUploads >= MAX_CONCURRENT_UPLOADS) {
       await new Promise(r => setTimeout(r, 10));
     }
@@ -250,25 +203,15 @@ async function upload(sourceDir) {
         ContentLength: data.length,
       }));
       parts.push({ PartNumber: partNum, ETag: uploadResp.ETag });
-      console.error(`[sync] Part ${partNum} uploaded successfully`);
     } finally {
       activeUploads--;
     }
   };
 
   try {
-    console.error('[sync] Entering streaming loop...');
-
     // Stream chunks and upload as parts when we hit 5MB
     // R2 requires all non-trailing parts to be EXACTLY the same size
     for await (const chunk of zstd.stdout) {
-      chunksReceived++;
-      if (chunksReceived === 1) {
-        console.error('[sync] Received first chunk, size:', chunk.length);
-      } else if (chunksReceived % 100 === 0) {
-        console.error(`[sync] Received ${chunksReceived} chunks, ${(totalBytes / 1024 / 1024).toFixed(1)}MB so far`);
-      }
-
       currentBuffer.push(chunk);
       currentSize += chunk.length;
       totalBytes += chunk.length;
@@ -282,32 +225,27 @@ async function upload(sourceDir) {
         uploadPromises.push(uploadPart(partNumber, partData));
         partNumber++;
 
-        // Keep remainder for next iteration
         currentBuffer = remainder.length > 0 ? [remainder] : [];
         currentSize = remainder.length;
       }
     }
 
     // Wait for processes to finish
-    console.error('[sync] Waiting for tar/zstd to finish...');
     await Promise.all([
       new Promise((resolve, reject) => {
-        if (tarExited) return resolve(); // Already exited
+        if (tarExited) return resolve();
         tar.on('close', (code) => code === 0 ? resolve() : reject(new Error(`tar exited with ${code}`)));
         tar.on('error', reject);
       }),
       new Promise((resolve, reject) => {
-        if (zstdExited) return resolve(); // Already exited
+        if (zstdExited) return resolve();
         zstd.on('close', (code) => code === 0 ? resolve() : reject(new Error(`zstd exited with ${code}`)));
         zstd.on('error', reject);
       }),
     ]);
-    console.error('[sync] tar/zstd finished');
 
     // Wait for all in-flight uploads to complete
-    console.error(`[sync] Waiting for ${uploadPromises.length} upload promises...`);
     await Promise.all(uploadPromises);
-    console.error(`[sync] All uploads complete, ${parts.length} parts uploaded`);
 
     // If we never uploaded any parts, data is < 5MB - abort multipart and use simple upload
     if (parts.length === 0) {
@@ -334,18 +272,12 @@ async function upload(sourceDir) {
 
     // Upload remaining data as final part
     if (currentSize > 0) {
-      console.error(`[sync] Uploading final chunk: ${currentSize} bytes`);
       const partData = Buffer.concat(currentBuffer);
       await uploadPart(partNumber, partData);
-      console.error('[sync] Final chunk uploaded');
-    } else {
-      console.error('[sync] No remaining data to upload');
     }
 
     // Sort parts by PartNumber (required for CompleteMultipartUpload)
-    console.error(`[sync] Sorting ${parts.length} parts...`);
     parts.sort((a, b) => a.PartNumber - b.PartNumber);
-    console.error('[sync] Parts sorted, completing multipart upload...');
 
     // Complete the multipart upload
     await client.send(new CompleteMultipartUploadCommand({
@@ -354,7 +286,6 @@ async function upload(sourceDir) {
       UploadId: uploadId,
       MultipartUpload: { Parts: parts },
     }));
-    console.error('[sync] CompleteMultipartUpload succeeded');
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const sizeMB = (totalBytes / 1024 / 1024).toFixed(1);
@@ -364,16 +295,11 @@ async function upload(sourceDir) {
   } catch (err) {
     // Abort the multipart upload on error
     console.error('[sync] Upload failed:', err.message);
-    console.error('[sync] Error details:', JSON.stringify({
-      name: err.name,
-      code: err.code,
-      $metadata: err.$metadata,
-    }, null, 2));
     await client.send(new AbortMultipartUploadCommand({
       Bucket: config.bucket,
       Key: key,
       UploadId: uploadId,
-    })).catch(() => {}); // Ignore abort errors
+    })).catch(() => {});
     tar.kill('SIGTERM');
     zstd.kill('SIGTERM');
     throw err;
@@ -381,32 +307,15 @@ async function upload(sourceDir) {
 }
 
 // CLI entry point
-console.error('[sync] sync.mjs v5 starting');
 const [,, command, dir] = process.argv;
 
 if (!command || !dir) {
   console.error('Usage: node sync.mjs <download|upload> <directory>');
   process.exit(1);
 }
-console.error(`[sync] Command: ${command}, Directory: ${dir}`);
-
-// Catch unhandled errors
-process.on('uncaughtException', (err) => {
-  console.error('[sync] Uncaught exception:', err.message);
-  console.error('[sync] Stack:', err.stack);
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[sync] Unhandled rejection at:', promise);
-  console.error('[sync] Reason:', reason);
-  process.exit(1);
-});
 
 // Ignore SIGPIPE (can happen if tar/zstd close unexpectedly)
-process.on('SIGPIPE', () => {
-  console.error('[sync] Received SIGPIPE, ignoring');
-});
+process.on('SIGPIPE', () => {});
 
 try {
   if (command === 'download') {
@@ -419,6 +328,5 @@ try {
   }
 } catch (err) {
   console.error(`[sync] Error: ${err.message}`);
-  console.error(`[sync] Stack: ${err.stack}`);
   process.exit(1);
 }
