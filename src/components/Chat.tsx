@@ -187,6 +187,7 @@ export default function Chat({ threadId }: ChatProps) {
   const wsRef = useRef<WebSocket | null>(null);
   const isFirstMessage = useRef(true);
   const reconnectAttempts = useRef(0);
+  const currentMessageUuidRef = useRef<string | null>(null); // Track SDK uuid for stable deduplication
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
@@ -414,11 +415,20 @@ export default function Chat({ threadId }: ChatProps) {
             setStreaming(prev => ({ ...prev, isStreaming: false }));
           }
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
-          // Use full assistant message content (includes properly parsed tool inputs)
+          // Track the SDK uuid for this message (stable across partial updates)
+          const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
+          const sdkMsgId = (sdkEvent.message as { id?: string }).id;
+          if (sdkUuid || sdkMsgId) {
+            currentMessageUuidRef.current = sdkUuid || sdkMsgId || null;
+          }
+
+          // Use full assistant message content when complete
           if (sdkEvent.message!.stop_reason) {
-            // Use SDK message ID for stable deduplication (prevents race condition duplicates)
-            const sdkMsgId = (sdkEvent.message as { id?: string }).id;
-            const msgId = sdkMsgId || `asst_${Date.now()}`;
+            const msgId = currentMessageUuidRef.current;
+            if (!msgId) {
+              console.error('No stable message ID available');
+              return;
+            }
             const finalContent = [...sdkEvent.message!.content];
 
             setStreaming(prev => {
@@ -448,9 +458,28 @@ export default function Chat({ threadId }: ChatProps) {
             content: [...prev.content, ...sdkEvent.message!.content],
           }));
         } else if (sdkEvent.type === 'result') {
-          // Query complete - just ensure cleanup
-          // Messages are already added by 'assistant' event handler
-          setStreaming({ content: [], isStreaming: false });
+          // Query complete - add any remaining streaming content as fallback
+          // (in case 'assistant' handler didn't fire or stop_reason wasn't set)
+          const fallbackMsgId = currentMessageUuidRef.current;
+          setStreaming(prev => {
+            if (prev.content.length > 0 && fallbackMsgId) {
+              // There's still content - assistant handler didn't add it
+              setMessages(msgs => {
+                // Use the tracked SDK uuid for deduplication
+                if (msgs.some(m => m.id === fallbackMsgId)) return msgs;
+                return [...msgs, {
+                  id: fallbackMsgId,
+                  thread_id: threadId || '',
+                  role: 'assistant' as const,
+                  content: prev.content,
+                  created_at: Date.now(),
+                }];
+              });
+            }
+            return { content: [], isStreaming: false };
+          });
+          // Reset the uuid ref for next message
+          currentMessageUuidRef.current = null;
           setLoading(false);
         }
       } else if (data.type === 'error') {
