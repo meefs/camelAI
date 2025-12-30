@@ -1,8 +1,10 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { spawn } from 'child_process';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const PORT = 8080;
+const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 
 if (!ANTHROPIC_API_KEY) {
   console.error('ANTHROPIC_API_KEY env var required');
@@ -27,6 +29,32 @@ const PERSIST_PREFIX = '[PERSIST]';
 function logForPersistence(event) {
   const line = JSON.stringify(event);
   console.error(`${PERSIST_PREFIX}${line}`);
+}
+
+// Sync workspace to R2 after each turn (async, non-blocking)
+let syncInProgress = false;
+function syncWorkspace() {
+  if (syncInProgress) {
+    console.error('[ws-server] Sync already in progress, skipping');
+    return;
+  }
+  syncInProgress = true;
+  console.error('[ws-server] Starting workspace sync...');
+  const proc = spawn('node', ['/app/sync.mjs', 'upload', SYNC_DIR], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  proc.on('close', (code) => {
+    syncInProgress = false;
+    if (code === 0) {
+      console.error('[ws-server] Workspace sync complete');
+    } else {
+      console.error(`[ws-server] Workspace sync failed with code ${code}`);
+    }
+  });
+  proc.on('error', (err) => {
+    syncInProgress = false;
+    console.error('[ws-server] Workspace sync error:', err.message);
+  });
 }
 
 // Query options for Claude SDK
@@ -200,6 +228,9 @@ async function processEvents(ws) {
         break;
       }
     }
+
+    // Sync workspace to R2 after turn completes
+    syncWorkspace();
   } catch (e) {
     const errorMsg = String(e);
     console.error('[ws-server] Query error:', errorMsg);
