@@ -112,6 +112,9 @@ function initSession() {
 async function processEvents(ws) {
   if (!queryIterator) return;
 
+  let lastAssistantContent = null;
+  let lastAssistantId = null;
+
   try {
     while (true) {
       const { value: event, done } = await queryIterator.next();
@@ -135,6 +138,25 @@ async function processEvents(ws) {
         }
       }
 
+      // Track assistant messages - persist when turn is complete
+      if (event.type === 'assistant' && event.message) {
+        const msgContent = contentToString(event.message.content);
+        if (msgContent) {
+          lastAssistantContent = msgContent;
+          lastAssistantId = event.message.id || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        }
+
+        // Check if turn is complete (stop_reason indicates end of turn)
+        if (event.message.stop_reason) {
+          console.error('[ws-server] Turn complete, stop_reason:', event.message.stop_reason);
+          if (lastAssistantContent) {
+            logForPersistence({ type: 'assistant_message', id: lastAssistantId, content: lastAssistantContent });
+            console.error('[ws-server] Persisted assistant message, id:', lastAssistantId);
+          }
+          break;
+        }
+      }
+
       // Persist tool results (user events) - but don't send as separate messages
       // Tool results are part of the assistant's turn, not standalone user messages
       if (event.type === 'user' && event.message) {
@@ -145,10 +167,9 @@ async function processEvents(ws) {
         }
       }
 
-      // Result means this turn is complete - persist the assistant message from result
+      // Result means this turn is complete (fallback for non-stateful mode)
       if (event.type === 'result') {
         if (event.result && typeof event.result === 'string') {
-          // Use event UUID or generate timestamp-based ID for dedup
           const msgId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           logForPersistence({ type: 'assistant_message', id: msgId, content: event.result });
         }
