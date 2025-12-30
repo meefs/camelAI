@@ -552,8 +552,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.ctx.waitUntil(this.streamLogsForPersistence(this.currentProcessId));
       }
 
+      // EXPERIMENT: Test if ctx.waitUntil tasks run after wsConnect
+      this.ctx.waitUntil((async () => {
+        for (let i = 1; i <= 20; i++) {
+          await new Promise(r => setTimeout(r, 2000));
+          console.log(`[EXPERIMENT] Timer tick ${i} after wsConnect (${i * 2}s elapsed)`);
+        }
+        console.log('[EXPERIMENT] Timer completed all 20 ticks');
+      })());
+
       // Proxy WebSocket directly to container port 8080
-      return this.sandbox.wsConnect(request, 8080);
+      console.log('[EXPERIMENT] About to call wsConnect');
+      const wsResponse = this.sandbox.wsConnect(request, 8080);
+      console.log('[EXPERIMENT] wsConnect returned, returning response');
+      return wsResponse;
     }
 
     return new Response('Not found', { status: 404 });
@@ -579,6 +591,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (this.chiridionBaseUrl) processEnv.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
       if (this.chiridionBaseUrl) processEnv.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl.replace(/\/+$/, '')}/client/v4`;
       if (this.chiridionSessionId) processEnv.CHIRIDION_SESSION_ID = this.chiridionSessionId;
+      if (this.threadId) processEnv.THREAD_ID = this.threadId;
+      if (org) processEnv.ORG_ID = org;
 
       // Configure Wrangler
       if (this.deployToken) processEnv.CLOUDFLARE_API_TOKEN = this.deployToken;
