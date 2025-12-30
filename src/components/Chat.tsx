@@ -541,6 +541,29 @@ export default function Chat({ threadId }: ChatProps) {
   // Track which threadId we're connected to
   const connectedThreadIdRef = useRef<string | null>(null);
 
+  // Cleanup on unmount to avoid orphaned WebSockets or reconnect timers
+  useEffect(() => {
+    return () => {
+      connectionIdRef.current++;
+      connectedThreadIdRef.current = null;
+
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+
+      if (iframeRetryRef.current) {
+        clearTimeout(iframeRetryRef.current);
+        iframeRetryRef.current = null;
+      }
+    };
+  }, []);
+
   // Connect when threadId changes
   useEffect(() => {
     if (!threadId) {
