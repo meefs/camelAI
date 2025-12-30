@@ -44,6 +44,31 @@ function contentToString(content: string | ContentBlock[]): string {
     .join('\n\n');
 }
 
+// Parse message content - handles both plain string and JSON-encoded ContentBlock[]
+function parseMessageContent(content: string | ContentBlock[]): string | ContentBlock[] {
+  // Already an array - return as-is
+  if (Array.isArray(content)) return content;
+
+  // Not a string - return as-is
+  if (typeof content !== 'string') return content;
+
+  // Try to parse as JSON array of content blocks
+  const trimmed = content.trim();
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].type) {
+        return parsed as ContentBlock[];
+      }
+    } catch {
+      // Not valid JSON - fall through to return as string
+    }
+  }
+
+  // Plain string content
+  return content;
+}
+
 // Render content blocks with proper styling
 function ContentBlockRenderer({ content, isStreaming = false }: { content: string | ContentBlock[]; isStreaming?: boolean }) {
   // String content - render as markdown
@@ -197,13 +222,19 @@ export default function Chat({ threadId }: ChatProps) {
         const data = await res.json() as unknown;
         const fetchedMsgs = Array.isArray(data) ? (data as Message[]) : [];
 
+        // Parse content for each message (handles JSON-encoded ContentBlock[])
+        const parsedMsgs = fetchedMsgs.map(msg => ({
+          ...msg,
+          content: parseMessageContent(msg.content),
+        }));
+
         // Always replace with server state - local-only messages (local_*, turn_*)
         // that weren't persisted are stale. Pending messages will be re-added
         // when the ready event fires.
-        setMessages(fetchedMsgs);
+        setMessages(parsedMsgs);
 
         if (!isReconnect) {
-          isFirstMessage.current = fetchedMsgs.length === 0;
+          isFirstMessage.current = parsedMsgs.length === 0;
         }
       }
     } catch (e) {

@@ -17,6 +17,7 @@ let activeQuery = null;
 let messageResolver = null;
 let queryIterator = null;
 let messageQueue = []; // Queue for messages arriving before resolver is ready
+let accumulatedContent = []; // Accumulate full content blocks for persistence
 
 if (sessionId) {
   console.error('[ws-server] Will resume Claude session:', sessionId);
@@ -74,26 +75,6 @@ function getQueryOptions() {
   return options;
 }
 
-// Convert SDK message content to a string for persistence
-function contentToString(content) {
-  if (!content || !Array.isArray(content)) return '';
-
-  const parts = [];
-  for (const block of content) {
-    if (block.type === 'text' && block.text) {
-      parts.push(block.text);
-    } else if (block.type === 'tool_use') {
-      parts.push(`[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`);
-    } else if (block.type === 'tool_result') {
-      const resultContent = typeof block.content === 'string'
-        ? block.content
-        : JSON.stringify(block.content);
-      parts.push(`[Tool Result]\n${resultContent}`);
-    }
-  }
-  return parts.join('\n\n');
-}
-
 // Async generator that yields user messages on demand
 async function* createMessageStream() {
   while (true) {
@@ -147,7 +128,6 @@ function startEventLoop(ws) {
 
   (async () => {
     // Track state for current turn
-    let streamedText = '';
     let assistantMessageId = null;
 
     try {
@@ -175,21 +155,57 @@ function startEventLoop(ws) {
         if (event.type === 'stream_event' && event.event) {
           const streamEvent = event.event;
 
-          // Accumulate text from content_block_delta events
-          if (streamEvent.type === 'content_block_delta' &&
-              streamEvent.delta?.type === 'text_delta' &&
-              streamEvent.delta?.text) {
-            streamedText += streamEvent.delta.text;
+          // Track content block starts - add new block to accumulated content
+          if (streamEvent.type === 'content_block_start' && streamEvent.content_block) {
+            const block = streamEvent.content_block;
+            if (block.type === 'text') {
+              accumulatedContent.push({ type: 'text', text: '' });
+            } else if (block.type === 'tool_use') {
+              accumulatedContent.push({
+                type: 'tool_use',
+                id: block.id,
+                name: block.name,
+                input: {},
+                _inputJson: ''
+              });
+            } else if (block.type === 'thinking') {
+              accumulatedContent.push({ type: 'thinking', thinking: '' });
+            }
+          }
+
+          // Accumulate content from delta events
+          if (streamEvent.type === 'content_block_delta' && streamEvent.delta) {
+            const lastBlock = accumulatedContent[accumulatedContent.length - 1];
+            if (streamEvent.delta.type === 'text_delta' && streamEvent.delta.text && lastBlock?.type === 'text') {
+              lastBlock.text += streamEvent.delta.text;
+            } else if (streamEvent.delta.type === 'input_json_delta' && streamEvent.delta.partial_json && lastBlock?.type === 'tool_use') {
+              lastBlock._inputJson = (lastBlock._inputJson || '') + streamEvent.delta.partial_json;
+            } else if (streamEvent.delta.type === 'thinking_delta' && streamEvent.delta.thinking && lastBlock?.type === 'thinking') {
+              lastBlock.thinking += streamEvent.delta.thinking;
+            }
           }
 
           // Turn complete when we see message_delta with stop_reason
           if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
-            if (streamedText) {
+            if (accumulatedContent.length > 0) {
+              // Finalize tool_use input JSON
+              const finalContent = accumulatedContent.map(block => {
+                if (block.type === 'tool_use' && block._inputJson) {
+                  try {
+                    block.input = JSON.parse(block._inputJson);
+                  } catch (e) {
+                    block.input = { _raw: block._inputJson };
+                  }
+                  delete block._inputJson;
+                }
+                return block;
+              });
               assistantMessageId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
+              // Store content as JSON array for proper rendering
+              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: JSON.stringify(finalContent) });
             }
             // Reset for next turn, but DON'T break - keep loop running
-            streamedText = '';
+            accumulatedContent = [];
             assistantMessageId = null;
             syncWorkspace();
           }
@@ -197,38 +213,36 @@ function startEventLoop(ws) {
 
         // Track assistant messages (backup for non-streaming mode)
         if (event.type === 'assistant' && event.message) {
-          const msgContent = contentToString(event.message.content);
-          if (msgContent && !streamedText) {
-            streamedText = msgContent;
-            assistantMessageId = event.message.id || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          // Use full content from assistant event if we don't have accumulated content
+          if (accumulatedContent.length === 0 && event.message.content) {
+            accumulatedContent = [...event.message.content];
           }
+          assistantMessageId = event.message.id || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
           // Turn complete
           if (event.message.stop_reason) {
-            if (streamedText) {
-              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
+            if (accumulatedContent.length > 0) {
+              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: JSON.stringify(accumulatedContent) });
             }
-            streamedText = '';
+            accumulatedContent = [];
             assistantMessageId = null;
             syncWorkspace();
           }
         }
 
-        // Persist tool results
-        if (event.type === 'user' && event.message) {
-          const msgContent = contentToString(event.message.content);
-          if (msgContent) {
-            logForPersistence({ type: 'tool_result', content: msgContent });
-          }
+        // Persist tool results (these come from SDK as user messages)
+        if (event.type === 'user' && event.message?.content) {
+          // Tool results don't need separate persistence - they're part of the SDK state
         }
 
         // Result means query is complete (end of session)
         if (event.type === 'result') {
-          if (event.result && typeof event.result === 'string') {
+          if (accumulatedContent.length > 0) {
+            const msgId = assistantMessageId || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            logForPersistence({ type: 'assistant_message', id: msgId, content: JSON.stringify(accumulatedContent) });
+          } else if (event.result && typeof event.result === 'string') {
             const msgId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
             logForPersistence({ type: 'assistant_message', id: msgId, content: event.result });
-          } else if (streamedText) {
-            logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
           }
           syncWorkspace();
           break;
@@ -243,6 +257,7 @@ function startEventLoop(ws) {
       activeQuery = null;
       queryIterator = null;
       eventLoopRunning = false;
+      accumulatedContent = [];
     }
   })();
 }
