@@ -49,7 +49,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/main/src/auth.ts` | SessionDO, UserDO, OrgDO implementations |
 | `workers/main/src/password.ts` | PBKDF2 password hashing |
 | `workers/main/src/index.ts` | Worker entry point |
-| `scripts/dev.mjs` | Dev runner (watch + rebuild + wrangler) |
+| `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
 | `sandbox/driver.mjs` | Claude SDK runner inside container |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
 | `src/lib/integration-crypto.ts` | Credential encryption utilities |
@@ -164,7 +164,8 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 ```bash
 npm run dev
 ```
-Watches files, rebuilds the OpenNext bundle, and restarts the local worker as needed (reload-style, not HMR).
+Runs `wrangler dev` + `next dev` with a local proxy. The proxy routes `/ws/*` and `/client/v4/*` to Wrangler and everything else to Next.
+Default ports: proxy `3100`, Wrangler `8787`, Next `3001` (override with `PROXY_DEV_PORT`, `WRANGLER_DEV_PORT`, `NEXT_DEV_PORT`).
 
 ### Environment Variables
 
@@ -200,7 +201,7 @@ npm run test:e2e
 npm run build:cf
 
 # Deploy to production
-npm run deploy
+npm run deploy:prod
 
 # Deploy to staging
 npm run deploy:staging
@@ -243,7 +244,7 @@ chiridion-app/
 │       └── src/
 ├── sandbox/                 # Container driver code
 ├── scripts/                 # Dev scripts
-│   └── dev.mjs              # Watch + rebuild + wrangler
+│   └── dev-proxy.mjs        # Wrangler + Next dev + proxy
 ├── e2e/                     # Playwright E2E tests
 ├── tests/                   # Vitest unit tests
 ├── wrangler.jsonc           # Production config
