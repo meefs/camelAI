@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     -o Dpkg::Options::="--force-confnew" \
     ca-certificates \
     curl \
+    tar \
     zstd \
   && rm -rf /var/lib/apt/lists/* \
   && npm install -g wrangler@4.55.0
