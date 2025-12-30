@@ -155,14 +155,16 @@ function startEventLoop(ws) {
           }
         }
 
-        // Persist from assistant event with stop_reason (complete message with stable ID)
-        if (event.type === 'assistant' && event.message?.stop_reason) {
+        // Persist assistant messages (following SDK demo pattern - no stop_reason check)
+        if (event.type === 'assistant' && event.message) {
           const messageId = event.message.id;
           const content = event.message.content;
 
-          if (messageId && content && content.length > 0) {
+          // Persist if we have content (content is always an array of blocks)
+          if (messageId && Array.isArray(content) && content.length > 0) {
             const contentJson = JSON.stringify(content);
             logForPersistence({ type: 'assistant_message', id: messageId, content: contentJson });
+            console.error('[ws-server] Persisted assistant message:', messageId);
           }
         }
 

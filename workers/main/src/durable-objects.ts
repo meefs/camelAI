@@ -693,7 +693,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       for await (const logEvent of parseSSEStream<LogEvent>(logStream)) {
         // Parse persistence events from stderr (prefixed with [PERSIST])
-        // Note: Only startup logs are captured in CF Containers, not ongoing output
         if (logEvent.type === 'stderr' && logEvent.data) {
           stderrBuffer += logEvent.data;
           const lines = stderrBuffer.split('\n');

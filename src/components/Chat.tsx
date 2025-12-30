@@ -407,35 +407,26 @@ export default function Chat({ threadId }: ChatProps) {
               return { ...prev, content: newContent };
             });
           } else if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
-            // Message complete - convert streaming content to a message
-            setStreaming(prev => {
-              if (prev.content.length > 0) {
-                const msgId = `turn_${Date.now()}`;
-                setMessages(msgs => {
-                  if (msgs.some(m => m.id === msgId)) return msgs;
-                  return [...msgs, {
-                    id: msgId,
-                    thread_id: threadId || '',
-                    role: 'assistant' as const,
-                    content: prev.content,
-                    created_at: Date.now(),
-                  }];
-                });
-              }
-              return { content: [], isStreaming: false };
-            });
-            setLoading(false);
+            // Message streaming complete - just mark as not streaming
+            // Keep content for the 'assistant' handler to merge tool_result blocks
+            // The actual message will be added by the 'assistant' event handler
+            // to avoid duplicate messages (race condition with timestamp-based IDs)
+            setStreaming(prev => ({ ...prev, isStreaming: false }));
           }
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
           // Use full assistant message content (includes properly parsed tool inputs)
           if (sdkEvent.message!.stop_reason) {
+            // Use SDK message ID for stable deduplication (prevents race condition duplicates)
+            const sdkMsgId = (sdkEvent.message as { id?: string }).id;
+            const msgId = sdkMsgId || `asst_${Date.now()}`;
             const finalContent = [...sdkEvent.message!.content];
+
             setStreaming(prev => {
               // Include any tool_result blocks from streaming
               const content = [...prev.content.filter(b => b.type === 'tool_result'), ...finalContent];
               if (content.length > 0) {
-                const msgId = `turn_${Date.now()}`;
                 setMessages(msgs => {
+                  // Check for duplicate using stable SDK ID
                   if (msgs.some(m => m.id === msgId)) return msgs;
                   return [...msgs, {
                     id: msgId,
@@ -457,24 +448,9 @@ export default function Chat({ threadId }: ChatProps) {
             content: [...prev.content, ...sdkEvent.message!.content],
           }));
         } else if (sdkEvent.type === 'result') {
-          // Query complete - convert streaming content to a message, then clear
-          setStreaming(prev => {
-            if (prev.content.length > 0) {
-              // Add accumulated content as a message
-              const msgId = `turn_${Date.now()}`;
-              setMessages(msgs => {
-                if (msgs.some(m => m.id === msgId)) return msgs;
-                return [...msgs, {
-                  id: msgId,
-                  thread_id: threadId || '',
-                  role: 'assistant' as const,
-                  content: prev.content,
-                  created_at: Date.now(),
-                }];
-              });
-            }
-            return { content: [], isStreaming: false };
-          });
+          // Query complete - just ensure cleanup
+          // Messages are already added by 'assistant' event handler
+          setStreaming({ content: [], isStreaming: false });
           setLoading(false);
         }
       } else if (data.type === 'error') {
