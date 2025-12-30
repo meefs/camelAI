@@ -376,8 +376,9 @@ export default function Chat({ threadId }: ChatProps) {
               return { ...prev, content: newContent };
             });
           } else if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
-            // Message complete
+            // Message complete - turn finished, allow new input
             setStreaming(prev => ({ ...prev, isStreaming: false }));
+            setLoading(false);
           }
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
           // Use full assistant message content (includes properly parsed tool inputs)
@@ -387,6 +388,7 @@ export default function Chat({ threadId }: ChatProps) {
               content: [...prev.content.filter(b => b.type === 'tool_result'), ...sdkEvent.message!.content],
               isStreaming: false,
             }));
+            setLoading(false);
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
           // Append user content blocks (tool_result) to current content
