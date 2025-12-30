@@ -332,125 +332,127 @@ export default function ConnectionsPage() {
           </DialogHeader>
 
           <ScrollArea className="max-h-[60vh] pr-4">
-            {connectionTypes.length === 0 ? (
-              <div className="py-6 text-sm text-muted-foreground">
-                No connection types are available right now.
-              </div>
-            ) : categories.length > 0 ? (
-              <Tabs defaultValue={categories[0]} className="w-full">
-                <TabsList className="mb-4">
+            <div className="p-1">
+              {connectionTypes.length === 0 ? (
+                <div className="py-6 text-sm text-muted-foreground">
+                  No connection types are available right now.
+                </div>
+              ) : categories.length > 0 ? (
+                <Tabs defaultValue={categories[0]} className="w-full">
+                  <TabsList className="mb-4">
+                    {categories.map((category) => (
+                      <TabsTrigger key={category} value={category}>
+                        <span className="mr-2">{categoryIcons[category]}</span>
+                        {categoryLabels[category] || category}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
                   {categories.map((category) => (
-                    <TabsTrigger key={category} value={category}>
-                      <span className="mr-2">{categoryIcons[category]}</span>
-                      {categoryLabels[category] || category}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-                {categories.map((category) => (
-                  <TabsContent key={category} value={category}>
-                    <div className="grid gap-4 md:grid-cols-2">
-                      {connectionTypes
-                        .filter((type) => type.category === category)
-                        .map((type) => {
-                          const isConfigured = connections.some(
-                            (connection) => connection.integration_type === type.type
-                          );
+                    <TabsContent key={category} value={category}>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        {connectionTypes
+                          .filter((type) => type.category === category)
+                          .map((type) => {
+                            const isConfigured = connections.some(
+                              (connection) => connection.integration_type === type.type
+                            );
 
-                          return (
-                            <Card key={type.type} className="transition-shadow hover:shadow-sm">
-                              <CardHeader className="pb-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="flex items-center gap-3">
-                                    <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
-                                      {categoryIcons[type.category] || (
-                                        <Settings className="size-5" />
-                                      )}
+                            return (
+                              <Card key={type.type} className="transition-shadow hover:shadow-sm">
+                                <CardHeader className="pb-3">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="flex items-center gap-3">
+                                      <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
+                                        {categoryIcons[type.category] || (
+                                          <Settings className="size-5" />
+                                        )}
+                                      </div>
+                                      <div>
+                                        <CardTitle className="text-base">
+                                          {type.displayName}
+                                        </CardTitle>
+                                        <CardDescription className="text-xs">
+                                          {type.authMethod === 'oauth2' ? 'OAuth 2.0' : 'API Key'}
+                                        </CardDescription>
+                                      </div>
                                     </div>
-                                    <div>
-                                      <CardTitle className="text-base">
-                                        {type.displayName}
-                                      </CardTitle>
-                                      <CardDescription className="text-xs">
-                                        {type.authMethod === 'oauth2' ? 'OAuth 2.0' : 'API Key'}
-                                      </CardDescription>
-                                    </div>
+                                    {isConfigured && (
+                                      <Badge variant="secondary" className="text-[10px]">
+                                        Connected
+                                      </Badge>
+                                    )}
                                   </div>
-                                  {isConfigured && (
-                                    <Badge variant="secondary" className="text-[10px]">
-                                      Connected
-                                    </Badge>
-                                  )}
-                                </div>
-                              </CardHeader>
-                              <CardContent>
-                                <p className="mb-4 text-sm text-muted-foreground">
-                                  {type.description}
-                                </p>
-                                <Button
-                                  variant={isConfigured ? 'outline' : 'default'}
-                                  size="sm"
-                                  className="w-full"
-                                  onClick={() => handleAddClick(type.type)}
-                                >
-                                  <Plus className="mr-2 size-4" />
-                                  {isConfigured ? 'Add Another' : 'Configure'}
-                                </Button>
-                              </CardContent>
-                            </Card>
-                          );
-                        })}
-                    </div>
-                  </TabsContent>
-                ))}
-              </Tabs>
-            ) : (
-              <div className="grid gap-4 md:grid-cols-2">
-                {connectionTypes.map((type) => {
-                  const isConfigured = connections.some(
-                    (connection) => connection.integration_type === type.type
-                  );
+                                </CardHeader>
+                                <CardContent>
+                                  <p className="mb-4 text-sm text-muted-foreground">
+                                    {type.description}
+                                  </p>
+                                  <Button
+                                    variant={isConfigured ? 'outline' : 'default'}
+                                    size="sm"
+                                    className="w-full"
+                                    onClick={() => handleAddClick(type.type)}
+                                  >
+                                    <Plus className="mr-2 size-4" />
+                                    {isConfigured ? 'Add Another' : 'Configure'}
+                                  </Button>
+                                </CardContent>
+                              </Card>
+                            );
+                          })}
+                      </div>
+                    </TabsContent>
+                  ))}
+                </Tabs>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {connectionTypes.map((type) => {
+                    const isConfigured = connections.some(
+                      (connection) => connection.integration_type === type.type
+                    );
 
-                  return (
-                    <Card key={type.type} className="transition-shadow hover:shadow-sm">
-                      <CardHeader className="pb-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-center gap-3">
-                            <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
-                              {categoryIcons[type.category] || <Settings className="size-5" />}
+                    return (
+                      <Card key={type.type} className="transition-shadow hover:shadow-sm">
+                        <CardHeader className="pb-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-3">
+                              <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
+                                {categoryIcons[type.category] || <Settings className="size-5" />}
+                              </div>
+                              <div>
+                                <CardTitle className="text-base">{type.displayName}</CardTitle>
+                                <CardDescription className="text-xs">
+                                  {type.authMethod === 'oauth2' ? 'OAuth 2.0' : 'API Key'}
+                                </CardDescription>
+                              </div>
                             </div>
-                            <div>
-                              <CardTitle className="text-base">{type.displayName}</CardTitle>
-                              <CardDescription className="text-xs">
-                                {type.authMethod === 'oauth2' ? 'OAuth 2.0' : 'API Key'}
-                              </CardDescription>
-                            </div>
+                            {isConfigured && (
+                              <Badge variant="secondary" className="text-[10px]">
+                                Connected
+                              </Badge>
+                            )}
                           </div>
-                          {isConfigured && (
-                            <Badge variant="secondary" className="text-[10px]">
-                              Connected
-                            </Badge>
-                          )}
-                        </div>
-                      </CardHeader>
-                      <CardContent>
-                        <p className="mb-4 text-sm text-muted-foreground">
-                          {type.description}
-                        </p>
-                        <Button
-                          variant={isConfigured ? 'outline' : 'default'}
-                          size="sm"
-                          className="w-full"
-                          onClick={() => handleAddClick(type.type)}
-                        >
-                          <Plus className="mr-2 size-4" />
-                          {isConfigured ? 'Add Another' : 'Configure'}
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
+                        </CardHeader>
+                        <CardContent>
+                          <p className="mb-4 text-sm text-muted-foreground">
+                            {type.description}
+                          </p>
+                          <Button
+                            variant={isConfigured ? 'outline' : 'default'}
+                            size="sm"
+                            className="w-full"
+                            onClick={() => handleAddClick(type.type)}
+                          >
+                            <Plus className="mr-2 size-4" />
+                            {isConfigured ? 'Add Another' : 'Configure'}
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </ScrollArea>
         </DialogContent>
       </Dialog>
