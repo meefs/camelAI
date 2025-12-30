@@ -338,13 +338,9 @@ export default function ConnectionsPage() {
               </div>
             ) : categories.length > 0 ? (
               <Tabs defaultValue={categories[0]} className="w-full">
-                <TabsList className="mb-4 w-full justify-start gap-1 overflow-x-auto">
+                <TabsList className="mb-4">
                   {categories.map((category) => (
-                    <TabsTrigger
-                      key={category}
-                      value={category}
-                      className="data-[state=active]:bg-background"
-                    >
+                    <TabsTrigger key={category} value={category}>
                       <span className="mr-2">{categoryIcons[category]}</span>
                       {categoryLabels[category] || category}
                     </TabsTrigger>
