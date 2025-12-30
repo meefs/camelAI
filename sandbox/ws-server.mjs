@@ -17,7 +17,6 @@ let activeQuery = null;
 let messageResolver = null;
 let queryIterator = null;
 let messageQueue = []; // Queue for messages arriving before resolver is ready
-let accumulatedContent = []; // Accumulate full content blocks for persistence
 
 if (sessionId) {
   console.error('[ws-server] Will resume Claude session:', sessionId);
@@ -30,20 +29,6 @@ const PERSIST_PREFIX = '[PERSIST]';
 function logForPersistence(event) {
   const line = JSON.stringify(event);
   console.error(`${PERSIST_PREFIX}${line}`);
-}
-
-// Generate a stable hash-based ID for content deduplication
-// Uses first 16 chars of content + simple hash to create reproducible IDs
-function generateContentId(prefix, content) {
-  const str = typeof content === 'string' ? content : JSON.stringify(content);
-  // Simple hash function (djb2)
-  let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) + hash) + str.charCodeAt(i);
-    hash = hash & hash; // Convert to 32bit integer
-  }
-  const hashStr = Math.abs(hash).toString(36);
-  return `${prefix}_${hashStr}`;
 }
 
 // Sync workspace to R2 after each turn (async, non-blocking)
@@ -141,9 +126,6 @@ function startEventLoop(ws) {
   eventLoopRunning = true;
 
   (async () => {
-    // Track state for current turn
-    let assistantMessageId = null;
-
     try {
       while (true) {
         const { value: event, done } = await queryIterator.next();
@@ -165,79 +147,22 @@ function startEventLoop(ws) {
           }
         }
 
-        // Handle stream_event wrapper (this is what we actually receive from the SDK)
+        // Handle stream_event wrapper - sync workspace when turn completes
         if (event.type === 'stream_event' && event.event) {
           const streamEvent = event.event;
-
-          // Track content block starts - add new block to accumulated content
-          if (streamEvent.type === 'content_block_start' && streamEvent.content_block) {
-            const block = streamEvent.content_block;
-            if (block.type === 'text') {
-              accumulatedContent.push({ type: 'text', text: '' });
-            } else if (block.type === 'tool_use') {
-              accumulatedContent.push({
-                type: 'tool_use',
-                id: block.id,
-                name: block.name,
-                input: {},
-                _inputJson: ''
-              });
-            } else if (block.type === 'thinking') {
-              accumulatedContent.push({ type: 'thinking', thinking: '' });
-            }
-          }
-
-          // Accumulate content from delta events
-          if (streamEvent.type === 'content_block_delta' && streamEvent.delta) {
-            const lastBlock = accumulatedContent[accumulatedContent.length - 1];
-            if (streamEvent.delta.type === 'text_delta' && streamEvent.delta.text && lastBlock?.type === 'text') {
-              lastBlock.text += streamEvent.delta.text;
-            } else if (streamEvent.delta.type === 'input_json_delta' && streamEvent.delta.partial_json && lastBlock?.type === 'tool_use') {
-              lastBlock._inputJson = (lastBlock._inputJson || '') + streamEvent.delta.partial_json;
-            } else if (streamEvent.delta.type === 'thinking_delta' && streamEvent.delta.thinking && lastBlock?.type === 'thinking') {
-              lastBlock.thinking += streamEvent.delta.thinking;
-            }
-          }
-
-          // Turn complete when we see message_delta with stop_reason
-          // Don't persist here - wait for assistant event which has stable message ID
           if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
-            if (accumulatedContent.length > 0) {
-              // Finalize tool_use input JSON for the accumulated content
-              accumulatedContent = accumulatedContent.map(block => {
-                if (block.type === 'tool_use' && block._inputJson) {
-                  try {
-                    block.input = JSON.parse(block._inputJson);
-                  } catch (e) {
-                    block.input = { _raw: block._inputJson };
-                  }
-                  delete block._inputJson;
-                }
-                return block;
-              });
-            }
-            // Don't reset or persist yet - wait for assistant event with stable ID
             syncWorkspace();
           }
         }
 
-        // Persist from assistant event which has stable API message ID
-        if (event.type === 'assistant' && event.message) {
-          // Use full content from assistant event (more reliable than streaming accumulation)
-          if (event.message.content && event.message.content.length > 0) {
-            accumulatedContent = [...event.message.content];
-          }
-          // Stable message ID from Anthropic API (e.g., msg_01ABC...)
-          assistantMessageId = event.message.id || null;
+        // Persist from assistant event with stop_reason (complete message with stable ID)
+        if (event.type === 'assistant' && event.message?.stop_reason) {
+          const messageId = event.message.id;
+          const content = event.message.content;
 
-          // Turn complete - persist with stable ID
-          if (event.message.stop_reason) {
-            if (accumulatedContent.length > 0 && assistantMessageId) {
-              const contentJson = JSON.stringify(accumulatedContent);
-              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: contentJson });
-            }
-            accumulatedContent = [];
-            assistantMessageId = null;
+          if (messageId && content && content.length > 0) {
+            const contentJson = JSON.stringify(content);
+            logForPersistence({ type: 'assistant_message', id: messageId, content: contentJson });
           }
         }
 
@@ -248,14 +173,7 @@ function startEventLoop(ws) {
 
         // Result means query is complete (end of session)
         if (event.type === 'result') {
-          if (accumulatedContent.length > 0) {
-            const contentJson = JSON.stringify(accumulatedContent);
-            const msgId = assistantMessageId || generateContentId('asst', contentJson);
-            logForPersistence({ type: 'assistant_message', id: msgId, content: contentJson });
-          } else if (event.result && typeof event.result === 'string') {
-            const msgId = generateContentId('asst', event.result);
-            logForPersistence({ type: 'assistant_message', id: msgId, content: event.result });
-          }
+          // Final result - sync and exit
           syncWorkspace();
           break;
         }
@@ -269,7 +187,6 @@ function startEventLoop(ws) {
       activeQuery = null;
       queryIterator = null;
       eventLoopRunning = false;
-      accumulatedContent = [];
     }
   })();
 }
@@ -385,9 +302,8 @@ Bun.serve({
         messageResolver = null;
       }
 
-      // Clear message queue and accumulated content
+      // Clear message queue
       messageQueue = [];
-      accumulatedContent = [];
 
       // Clean up query
       activeQuery = null;
