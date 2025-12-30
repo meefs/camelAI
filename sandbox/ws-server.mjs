@@ -20,12 +20,13 @@ if (sessionId) {
   console.error('[ws-server] Will resume Claude session:', sessionId);
 }
 
-// Log to stdout for DO persistence (NDJSON format)
-// Use process.stdout.write for synchronous, unbuffered writes
-// Note: Bun.write may not work correctly in container environments
+// Log for DO persistence (NDJSON format)
+// Use stderr with a special prefix that DO can parse
+// Note: stdout may not be captured correctly in Cloudflare Container environments
+const PERSIST_PREFIX = '[PERSIST]';
 function logForPersistence(event) {
-  const line = JSON.stringify(event) + '\n';
-  process.stdout.write(line);
+  const line = JSON.stringify(event);
+  console.error(`${PERSIST_PREFIX}${line}`);
 }
 
 // Query options for Claude SDK

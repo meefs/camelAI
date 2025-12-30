@@ -661,13 +661,59 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     try {
       const logStream = await this.sandbox!.streamProcessLogs(processId);
       let outputBuffer = '';
+      let stderrBuffer = '';
+      const PERSIST_PREFIX = '[PERSIST]';
 
       for await (const logEvent of parseSSEStream<LogEvent>(logStream)) {
-        // Forward container stderr to DO logs for debugging
+        // Parse persistence events from stderr (prefixed with [PERSIST])
+        // Note: stdout may not be captured correctly in Cloudflare Container environments
         if (logEvent.type === 'stderr' && logEvent.data) {
-          console.log('[Container]', logEvent.data.trim());
+          stderrBuffer += logEvent.data;
+          const lines = stderrBuffer.split('\n');
+          stderrBuffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+
+            // Check for persistence events
+            if (line.startsWith(PERSIST_PREFIX)) {
+              try {
+                const jsonStr = line.slice(PERSIST_PREFIX.length);
+                const event = JSON.parse(jsonStr);
+
+                // Persist user messages (use ID from log event for dedup)
+                if (event.type === 'user_message' && event.id) {
+                  this.addMessageWithId(event.id, 'user', event.content);
+                  console.log('[DO] Persisted user message:', event.id);
+                }
+
+                // Persist assistant messages (use ID from log event for dedup)
+                if (event.type === 'assistant_message' && event.id) {
+                  this.addMessageWithId(event.id, 'assistant', event.content);
+                  console.log('[DO] Persisted assistant message:', event.id);
+                }
+
+                // Store session ID
+                if (event.type === 'session_id') {
+                  this.claudeSessionId = event.sessionId;
+                  this.sql.exec(
+                    'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+                    'claude_session_id',
+                    event.sessionId
+                  );
+                  console.log('[DO] Stored Claude session ID:', event.sessionId);
+                }
+              } catch {
+                // Skip malformed lines
+              }
+            } else {
+              // Regular stderr logging
+              console.log('[Container]', line.trim());
+            }
+          }
         }
 
+        // Also check stdout for backwards compatibility
         if (logEvent.type === 'stdout' && logEvent.data) {
           outputBuffer += logEvent.data;
           const lines = outputBuffer.split('\n');
@@ -701,7 +747,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               // Skip malformed lines
             }
           }
-        } else if (logEvent.type === 'exit') {
+        }
+
+        if (logEvent.type === 'exit') {
           // Clean up
           await this.expireProxyToken();
           this.currentProcessId = null;
