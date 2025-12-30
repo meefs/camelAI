@@ -552,13 +552,32 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.ctx.waitUntil(this.streamLogsForPersistence(this.currentProcessId));
       }
 
-      // EXPERIMENT: Test if ctx.waitUntil tasks run after wsConnect
+      // EXPERIMENT 4: Test polling getLogs() instead of streaming
+      const processForPolling = this.currentProcessId;
       this.ctx.waitUntil((async () => {
-        for (let i = 1; i <= 20; i++) {
+        let lastStderrLength = 0;
+        for (let i = 1; i <= 30; i++) {
           await new Promise(r => setTimeout(r, 2000));
           console.log(`[EXPERIMENT] Timer tick ${i} after wsConnect (${i * 2}s elapsed)`);
+
+          // Try polling getLogs on the process
+          if (processForPolling) {
+            try {
+              const proc = await this.sandbox!.getProcess(processForPolling);
+              if (proc) {
+                const logs = await proc.getLogs();
+                if (logs.stderr.length > lastStderrLength) {
+                  const newStderr = logs.stderr.substring(lastStderrLength);
+                  console.log(`[EXPERIMENT] New stderr via getLogs (${newStderr.length} chars): ${newStderr.substring(0, 200)}`);
+                  lastStderrLength = logs.stderr.length;
+                }
+              }
+            } catch (e) {
+              console.log(`[EXPERIMENT] getLogs error: ${e}`);
+            }
+          }
         }
-        console.log('[EXPERIMENT] Timer completed all 20 ticks');
+        console.log('[EXPERIMENT] Timer completed all 30 ticks');
       })());
 
       // Proxy WebSocket directly to container port 8080
