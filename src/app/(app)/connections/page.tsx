@@ -180,13 +180,7 @@ export default function ConnectionsPage() {
     return connectionTypes.find((item) => item.type === type);
   };
 
-  if (authLoading || loading) {
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <div className="text-sm text-muted-foreground">Loading connections...</div>
-      </div>
-    );
-  }
+  const isLoading = authLoading || loading;
 
   return (
     <>
@@ -202,7 +196,7 @@ export default function ConnectionsPage() {
                   Connect external services so your apps can read and write data.
                 </p>
               </div>
-              <Button onClick={() => setPickerOpen(true)}>
+              <Button onClick={() => setPickerOpen(true)} disabled={isLoading}>
                 <Plus className="mr-2 size-4" />
                 Add Connection
               </Button>
@@ -215,7 +209,11 @@ export default function ConnectionsPage() {
               </Alert>
             )}
 
-            {connections.length === 0 ? (
+            {isLoading ? (
+              <div className="mt-6 flex items-center justify-center py-16 text-sm text-muted-foreground">
+                Loading connections...
+              </div>
+            ) : connections.length === 0 ? (
               <Card className="mt-6 border-dashed">
                 <CardHeader className="flex flex-row items-start gap-4">
                   <div className="flex size-12 items-center justify-center rounded-lg bg-muted">
