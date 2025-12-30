@@ -35,6 +35,13 @@ export async function getSession(sessionId: string): Promise<SessionData | null>
   return rpc.getSession(sessionId);
 }
 
+export async function getSessionWithUser(
+  sessionId: string
+): Promise<{ session: SessionData; user: UserProfile } | null> {
+  const rpc = await getRpc();
+  return rpc.getSessionWithUser(sessionId);
+}
+
 export async function createSession(
   userId: string,
   orgId: string

@@ -57,6 +57,20 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return stub.getData();
   }
 
+  async getSessionWithUser(
+    sessionId: string
+  ): Promise<{ session: SessionData; user: UserProfile } | null> {
+    const sessionStub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
+    const session = await sessionStub.getData();
+    if (!session) return null;
+
+    const userStub = this.env.USER.get(this.env.USER.idFromName(session.user_id));
+    const user = await userStub.getProfile();
+    if (!user) return null;
+
+    return { session, user };
+  }
+
   async createSession(
     userId: string,
     orgId: string

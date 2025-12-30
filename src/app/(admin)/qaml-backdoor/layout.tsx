@@ -30,21 +30,21 @@ export default async function AdminLayout({ children }: { children: ReactNode })
     redirect('/login');
   }
 
-  const session = await authDO.getSession(sessionId);
-  if (!session) {
+  // Run auth check and sidebar cookie read in parallel
+  const [sessionWithUser, defaultOpen] = await Promise.all([
+    authDO.getSessionWithUser(sessionId),
+    getDefaultSidebarOpen(),
+  ]);
+
+  if (!sessionWithUser) {
     redirect('/login');
   }
 
-  const user = await authDO.getUserById(session.user_id);
-  if (!user) {
-    redirect('/login');
-  }
+  const { user } = sessionWithUser;
 
   if (!user.is_superuser) {
     notFound();
   }
-
-  const defaultOpen = await getDefaultSidebarOpen();
 
   return (
     <SidebarProvider defaultOpen={defaultOpen}>
