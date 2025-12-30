@@ -781,24 +781,30 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   async notifyDeploySuccess(scriptName: string): Promise<void> {
     console.log('[DO] Deploy success notification for script:', scriptName);
 
-    // With wsConnect(), we can't broadcast directly - send to container's /broadcast endpoint
-    if (this.sandbox) {
-      try {
-        const resp = await this.sandbox.fetch(new Request('http://localhost:8080/broadcast', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'deploy_success',
-            scriptName,
-            timestamp: Date.now(),
-          }),
-        }));
-        if (!resp.ok) {
-          console.error('[DO] Failed to broadcast deploy success:', resp.status);
-        }
-      } catch (e) {
-        console.error('[DO] Error broadcasting deploy success:', e);
+    // Ensure we have a sandbox reference
+    if (!this.sandbox) {
+      const sandboxId = this.ctx.id.toString().slice(0, 63);
+      this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
+    }
+
+    // Use exec + curl because sandbox.fetch() routes through control plane, not to port 8080
+    try {
+      const payload = JSON.stringify({
+        type: 'deploy_success',
+        scriptName,
+        timestamp: Date.now(),
+      });
+      // Escape single quotes in payload for shell
+      const escapedPayload = payload.replace(/'/g, "'\\''");
+      const result = await this.sandbox.exec(
+        `curl -s -X POST -H 'Content-Type: application/json' -d '${escapedPayload}' http://localhost:8080/broadcast`,
+        { timeout: 5000 }
+      );
+      if (result.exitCode !== 0) {
+        console.error('[DO] Failed to broadcast deploy success:', result.stderr);
       }
+    } catch (e) {
+      console.error('[DO] Error broadcasting deploy success:', e);
     }
   }
 }
