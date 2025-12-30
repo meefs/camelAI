@@ -32,6 +32,20 @@ function logForPersistence(event) {
   console.error(`${PERSIST_PREFIX}${line}`);
 }
 
+// Generate a stable hash-based ID for content deduplication
+// Uses first 16 chars of content + simple hash to create reproducible IDs
+function generateContentId(prefix, content) {
+  const str = typeof content === 'string' ? content : JSON.stringify(content);
+  // Simple hash function (djb2)
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) + str.charCodeAt(i);
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  const hashStr = Math.abs(hash).toString(36);
+  return `${prefix}_${hashStr}`;
+}
+
 // Sync workspace to R2 after each turn (async, non-blocking)
 let syncInProgress = false;
 function syncWorkspace() {
@@ -186,10 +200,11 @@ function startEventLoop(ws) {
           }
 
           // Turn complete when we see message_delta with stop_reason
+          // Don't persist here - wait for assistant event which has stable message ID
           if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
             if (accumulatedContent.length > 0) {
-              // Finalize tool_use input JSON
-              const finalContent = accumulatedContent.map(block => {
+              // Finalize tool_use input JSON for the accumulated content
+              accumulatedContent = accumulatedContent.map(block => {
                 if (block.type === 'tool_use' && block._inputJson) {
                   try {
                     block.input = JSON.parse(block._inputJson);
@@ -200,33 +215,29 @@ function startEventLoop(ws) {
                 }
                 return block;
               });
-              assistantMessageId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-              // Store content as JSON array for proper rendering
-              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: JSON.stringify(finalContent) });
             }
-            // Reset for next turn, but DON'T break - keep loop running
-            accumulatedContent = [];
-            assistantMessageId = null;
+            // Don't reset or persist yet - wait for assistant event with stable ID
             syncWorkspace();
           }
         }
 
-        // Track assistant messages (backup for non-streaming mode)
+        // Persist from assistant event which has stable API message ID
         if (event.type === 'assistant' && event.message) {
-          // Use full content from assistant event if we don't have accumulated content
-          if (accumulatedContent.length === 0 && event.message.content) {
+          // Use full content from assistant event (more reliable than streaming accumulation)
+          if (event.message.content && event.message.content.length > 0) {
             accumulatedContent = [...event.message.content];
           }
-          assistantMessageId = event.message.id || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          // Stable message ID from Anthropic API (e.g., msg_01ABC...)
+          assistantMessageId = event.message.id || null;
 
-          // Turn complete
+          // Turn complete - persist with stable ID
           if (event.message.stop_reason) {
-            if (accumulatedContent.length > 0) {
-              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: JSON.stringify(accumulatedContent) });
+            if (accumulatedContent.length > 0 && assistantMessageId) {
+              const contentJson = JSON.stringify(accumulatedContent);
+              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: contentJson });
             }
             accumulatedContent = [];
             assistantMessageId = null;
-            syncWorkspace();
           }
         }
 
@@ -238,10 +249,11 @@ function startEventLoop(ws) {
         // Result means query is complete (end of session)
         if (event.type === 'result') {
           if (accumulatedContent.length > 0) {
-            const msgId = assistantMessageId || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-            logForPersistence({ type: 'assistant_message', id: msgId, content: JSON.stringify(accumulatedContent) });
+            const contentJson = JSON.stringify(accumulatedContent);
+            const msgId = assistantMessageId || generateContentId('asst', contentJson);
+            logForPersistence({ type: 'assistant_message', id: msgId, content: contentJson });
           } else if (event.result && typeof event.result === 'string') {
-            const msgId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            const msgId = generateContentId('asst', event.result);
             logForPersistence({ type: 'assistant_message', id: msgId, content: event.result });
           }
           syncWorkspace();
@@ -373,8 +385,9 @@ Bun.serve({
         messageResolver = null;
       }
 
-      // Clear message queue
+      // Clear message queue and accumulated content
       messageQueue = [];
+      accumulatedContent = [];
 
       // Clean up query
       activeQuery = null;
