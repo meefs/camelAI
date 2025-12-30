@@ -233,8 +233,8 @@
 				{
 					"class_name": "ThreadSandbox",
 					"image": "./Dockerfile",
-					"instance_type": "basic",
-					"max_instances": 20
+					"instance_type": "standard-1",
+					"max_instances": 5
 				}
 			],
 			"durable_objects": {

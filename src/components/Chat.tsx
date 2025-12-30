@@ -376,18 +376,47 @@ export default function Chat({ threadId }: ChatProps) {
               return { ...prev, content: newContent };
             });
           } else if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
-            // Message complete - turn finished, allow new input
-            setStreaming(prev => ({ ...prev, isStreaming: false }));
+            // Message complete - convert streaming content to a message
+            setStreaming(prev => {
+              if (prev.content.length > 0) {
+                const msgId = `turn_${Date.now()}`;
+                setMessages(msgs => {
+                  if (msgs.some(m => m.id === msgId)) return msgs;
+                  return [...msgs, {
+                    id: msgId,
+                    thread_id: threadId || '',
+                    role: 'assistant' as const,
+                    content: prev.content,
+                    created_at: Date.now(),
+                  }];
+                });
+              }
+              return { content: [], isStreaming: false };
+            });
             setLoading(false);
           }
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
           // Use full assistant message content (includes properly parsed tool inputs)
           if (sdkEvent.message!.stop_reason) {
-            setStreaming(prev => ({
-              ...prev,
-              content: [...prev.content.filter(b => b.type === 'tool_result'), ...sdkEvent.message!.content],
-              isStreaming: false,
-            }));
+            const finalContent = [...sdkEvent.message!.content];
+            setStreaming(prev => {
+              // Include any tool_result blocks from streaming
+              const content = [...prev.content.filter(b => b.type === 'tool_result'), ...finalContent];
+              if (content.length > 0) {
+                const msgId = `turn_${Date.now()}`;
+                setMessages(msgs => {
+                  if (msgs.some(m => m.id === msgId)) return msgs;
+                  return [...msgs, {
+                    id: msgId,
+                    thread_id: threadId || '',
+                    role: 'assistant' as const,
+                    content,
+                    created_at: Date.now(),
+                  }];
+                });
+              }
+              return { content: [], isStreaming: false };
+            });
             setLoading(false);
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {

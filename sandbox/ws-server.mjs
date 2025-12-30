@@ -127,6 +127,8 @@ async function* createMessageStream() {
 }
 
 // Initialize the stateful query session
+let eventLoopRunning = false;
+
 function initSession() {
   if (activeQuery) return;
 
@@ -138,133 +140,134 @@ function initSession() {
   queryIterator = activeQuery[Symbol.asyncIterator]();
 }
 
-// Process events from the query until we need more user input
-async function processEvents(ws) {
-  if (!queryIterator) return;
+// Start continuous event loop - runs until query ends or error
+function startEventLoop(ws) {
+  if (eventLoopRunning || !queryIterator) return;
+  eventLoopRunning = true;
 
-  // Accumulate text from stream_event content_block_delta events
-  let streamedText = '';
-  let assistantMessageId = null;
+  (async () => {
+    // Track state for current turn
+    let streamedText = '';
+    let assistantMessageId = null;
 
-  try {
-    while (true) {
-      const { value: event, done } = await queryIterator.next();
+    try {
+      while (true) {
+        const { value: event, done } = await queryIterator.next();
 
-      if (done) {
-        console.error('[ws-server] Query completed');
-        activeQuery = null;
-        queryIterator = null;
-        break;
-      }
-
-      // Send event to client via WebSocket
-      ws.send(JSON.stringify({ type: 'sdk_event', event }));
-
-      // Capture session ID from init event
-      if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-        if (!sessionId) {
-          sessionId = event.session_id;
-          logForPersistence({ type: 'session_id', sessionId: event.session_id });
-          console.error('[ws-server] Got session ID:', sessionId);
-        }
-      }
-
-      // Handle stream_event wrapper (this is what we actually receive from the SDK)
-      if (event.type === 'stream_event' && event.event) {
-        const streamEvent = event.event;
-
-        // Accumulate text from content_block_delta events
-        if (streamEvent.type === 'content_block_delta' &&
-            streamEvent.delta?.type === 'text_delta' &&
-            streamEvent.delta?.text) {
-          streamedText += streamEvent.delta.text;
+        if (done) {
+          console.error('[ws-server] Query completed');
+          break;
         }
 
-        // Turn complete when we see message_delta with stop_reason
-        if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
-          if (streamedText) {
-            assistantMessageId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        // Send event to client via WebSocket
+        ws.send(JSON.stringify({ type: 'sdk_event', event }));
+
+        // Capture session ID from init event
+        if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
+          if (!sessionId) {
+            sessionId = event.session_id;
+            logForPersistence({ type: 'session_id', sessionId: event.session_id });
+            console.error('[ws-server] Got session ID:', sessionId);
+          }
+        }
+
+        // Handle stream_event wrapper (this is what we actually receive from the SDK)
+        if (event.type === 'stream_event' && event.event) {
+          const streamEvent = event.event;
+
+          // Accumulate text from content_block_delta events
+          if (streamEvent.type === 'content_block_delta' &&
+              streamEvent.delta?.type === 'text_delta' &&
+              streamEvent.delta?.text) {
+            streamedText += streamEvent.delta.text;
+          }
+
+          // Turn complete when we see message_delta with stop_reason
+          if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
+            if (streamedText) {
+              assistantMessageId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
+            }
+            // Reset for next turn, but DON'T break - keep loop running
+            streamedText = '';
+            assistantMessageId = null;
+            syncWorkspace();
+          }
+        }
+
+        // Track assistant messages (backup for non-streaming mode)
+        if (event.type === 'assistant' && event.message) {
+          const msgContent = contentToString(event.message.content);
+          if (msgContent && !streamedText) {
+            streamedText = msgContent;
+            assistantMessageId = event.message.id || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          }
+
+          // Turn complete
+          if (event.message.stop_reason) {
+            if (streamedText) {
+              logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
+            }
+            streamedText = '';
+            assistantMessageId = null;
+            syncWorkspace();
+          }
+        }
+
+        // Persist tool results
+        if (event.type === 'user' && event.message) {
+          const msgContent = contentToString(event.message.content);
+          if (msgContent) {
+            logForPersistence({ type: 'tool_result', content: msgContent });
+          }
+        }
+
+        // Result means query is complete (end of session)
+        if (event.type === 'result') {
+          if (event.result && typeof event.result === 'string') {
+            const msgId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            logForPersistence({ type: 'assistant_message', id: msgId, content: event.result });
+          } else if (streamedText) {
             logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
           }
+          syncWorkspace();
           break;
         }
       }
-
-      // Track assistant messages (backup for non-streaming mode)
-      if (event.type === 'assistant' && event.message) {
-        const msgContent = contentToString(event.message.content);
-        if (msgContent && !streamedText) {
-          streamedText = msgContent;
-          assistantMessageId = event.message.id || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        }
-
-        // Check if turn is complete (stop_reason indicates end of turn)
-        if (event.message.stop_reason) {
-          if (streamedText) {
-            logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
-          }
-          break;
-        }
-      }
-
-      // Persist tool results (user events) - but don't send as separate messages
-      // Tool results are part of the assistant's turn, not standalone user messages
-      if (event.type === 'user' && event.message) {
-        const msgContent = contentToString(event.message.content);
-        if (msgContent) {
-          // Log for DB persistence only
-          logForPersistence({ type: 'tool_result', content: msgContent });
-        }
-      }
-
-      // Result means this turn is complete (fallback for non-stateful mode)
-      if (event.type === 'result') {
-        if (event.result && typeof event.result === 'string') {
-          const msgId = event.uuid || `asst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          logForPersistence({ type: 'assistant_message', id: msgId, content: event.result });
-        } else if (streamedText) {
-          logForPersistence({ type: 'assistant_message', id: assistantMessageId, content: streamedText });
-        }
-        break;
-      }
+    } catch (e) {
+      const errorMsg = String(e);
+      console.error('[ws-server] Query error:', errorMsg);
+      ws.send(JSON.stringify({ type: 'error', error: errorMsg }));
+      logForPersistence({ type: 'error', error: errorMsg });
+    } finally {
+      activeQuery = null;
+      queryIterator = null;
+      eventLoopRunning = false;
     }
-
-    // Sync workspace to R2 after turn completes
-    syncWorkspace();
-  } catch (e) {
-    const errorMsg = String(e);
-    console.error('[ws-server] Query error:', errorMsg);
-    ws.send(JSON.stringify({ type: 'error', error: errorMsg }));
-    logForPersistence({ type: 'error', error: errorMsg });
-
-    // Reset session on error
-    activeQuery = null;
-    queryIterator = null;
-  }
+  })();
 }
 
 // Handle a user message
-async function handleUserMessage(ws, content) {
+function handleUserMessage(ws, content) {
   // Log user message for DB persistence with timestamp-based ID
-  // This allows repeated identical messages while deduping log replays
   const msgId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   logForPersistence({ type: 'user_message', id: msgId, content });
 
   // Initialize session if needed
   initSession();
 
-  // Send message to the query via the resolver, or queue if not ready yet
+  // Start event loop if not running (it runs continuously)
+  startEventLoop(ws);
+
+  // Feed message to the generator
   if (messageResolver) {
     const resolver = messageResolver;
     messageResolver = null;
     resolver(content);
   } else {
-    // Queue message - will be picked up when stream starts pulling
+    // Queue message - will be picked up when generator pulls
     messageQueue.push(content);
   }
-
-  // Process events until turn is complete
-  await processEvents(ws);
 }
 
 // Track active WebSocket connection
@@ -327,7 +330,7 @@ Bun.serve({
           ws.send(JSON.stringify({ type: 'ready' }));
 
         } else if (data.type === 'message') {
-          await handleUserMessage(ws, data.content);
+          handleUserMessage(ws, data.content);
 
         } else if (data.type === 'stop') {
           // Interrupt the query if running
