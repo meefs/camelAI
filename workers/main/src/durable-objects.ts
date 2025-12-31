@@ -549,7 +549,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         try {
           await readyPromise;
         } catch (e) {
-          console.error('[DO] Container WS server failed to start:', e);
+          console.error('[DO] Container WS server failed to start:', {
+            threadId: this.threadId,
+            org,
+            processId: this.currentProcessId,
+            error: String(e),
+          });
           return new Response('Container WS server failed to start', { status: 500 });
         }
       } else if (this.currentProcessId && !this.isStreamingLogs) {
@@ -569,6 +574,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // Start the WebSocket server process in the container
   private async startWsServerProcess(org: string): Promise<Process | null> {
     try {
+      console.log('[DO] Starting WS server process', {
+        threadId: this.threadId,
+        org,
+        hasApiKey: Boolean(this.env.ANTHROPIC_API_KEY),
+        hasProjectId: Boolean(this.projectId),
+      });
       const processEnv: Record<string, string> = {
         ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
       };
@@ -639,9 +650,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const process = await this.sandbox!.startProcess('sh /app/run-ws-server.sh', { env: processEnv });
       this.currentProcessId = process.id;
       this.persistTransientState();
+      console.log('[DO] WS server process started', {
+        threadId: this.threadId,
+        org,
+        processId: process.id,
+      });
       return process;
     } catch (e) {
-      console.error('[DO] Failed to start WS server process:', e);
+      console.error('[DO] Failed to start WS server process:', {
+        threadId: this.threadId,
+        org,
+        error: String(e),
+      });
       return null;
     }
   }
@@ -686,6 +706,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.isStreamingLogs = true;
 
     try {
+      console.log('[DO] Starting sandbox log stream', { processId, threadId: this.threadId });
       const logStream = await this.sandbox!.streamProcessLogs(processId);
       let outputBuffer = '';
       let stderrBuffer = '';
@@ -796,7 +817,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }
       }
     } catch (e) {
-      console.error('[DO] Log streaming error:', e);
+      console.error('[DO] Log streaming error:', {
+        processId,
+        threadId: this.threadId,
+        error: String(e),
+      });
     } finally {
       this.isStreamingLogs = false;
     }
