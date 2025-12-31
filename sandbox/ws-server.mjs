@@ -28,6 +28,8 @@ function createSession(id) {
     attachedWs: null,
     eventBuffer: [],
     nextEventId: 1,
+    lastEventSummary: null,
+    lastEventAt: null,
   };
   sessions.set(id, session);
   lastSessionId = id;
@@ -57,6 +59,34 @@ function logForPersistence(event) {
   const line = JSON.stringify(event);
   console.error(`${PERSIST_PREFIX}${line}`);
 }
+
+function summarizeError(error) {
+  if (!error || typeof error !== 'object') {
+    return { message: String(error) };
+  }
+  return {
+    message: String(error),
+    name: error.name,
+    stack: error.stack,
+    cause: error.cause ? String(error.cause) : undefined,
+  };
+}
+
+process.on('uncaughtException', (error) => {
+  console.error('[ws-server] Uncaught exception:', summarizeError(error));
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('[ws-server] Unhandled rejection:', summarizeError(error));
+});
+
+process.on('exit', (code) => {
+  console.error('[ws-server] Process exit:', code);
+});
+
+process.on('SIGTERM', () => {
+  console.error('[ws-server] Received SIGTERM');
+});
 
 // Sync workspace to R2 after each turn (async, non-blocking)
 let syncInProgress = false;
@@ -185,11 +215,20 @@ function initSession(session) {
   if (session.activeQuery) return;
 
   console.error('[ws-server] Initializing stateful session', session.id);
-  const options = getQueryOptions(session);
-  const messageStream = createMessageStream(session);
+  try {
+    const options = getQueryOptions(session);
+    const messageStream = createMessageStream(session);
 
-  session.activeQuery = query({ prompt: messageStream, options });
-  session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
+    session.activeQuery = query({ prompt: messageStream, options });
+    session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
+  } catch (error) {
+    console.error('[ws-server] Failed to initialize session', {
+      sessionId: session.id,
+      claudeSessionId: session.claudeSessionId,
+      error: summarizeError(error),
+    });
+    bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
+  }
 }
 
 // Start continuous event loop - runs until query ends or error
@@ -206,6 +245,13 @@ function startEventLoop(session) {
           console.error('[ws-server] Query completed');
           break;
         }
+
+        session.lastEventSummary = {
+          type: event.type,
+          subtype: event.subtype,
+          streamType: event.event?.type,
+        };
+        session.lastEventAt = Date.now();
 
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
@@ -254,7 +300,13 @@ function startEventLoop(session) {
       }
     } catch (e) {
       const errorMsg = String(e);
-      console.error('[ws-server] Query error:', errorMsg);
+      console.error('[ws-server] Query error:', {
+        sessionId: session.id,
+        claudeSessionId: session.claudeSessionId,
+        lastEvent: session.lastEventSummary,
+        lastEventAt: session.lastEventAt,
+        error: summarizeError(e),
+      });
       bufferEvent(session, { type: 'error', error: errorMsg });
       logForPersistence({ type: 'error', error: errorMsg });
     } finally {

@@ -783,6 +783,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }
 
         if (logEvent.type === 'exit') {
+          console.error('[DO] Sandbox process exited', {
+            processId,
+            threadId: this.threadId,
+            logEvent,
+          });
           // Clean up
           await this.expireProxyToken();
           this.currentProcessId = null;
