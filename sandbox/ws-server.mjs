@@ -16,8 +16,8 @@ if (!ANTHROPIC_API_KEY) {
 
 // Session state
 const sessions = new Map();
+const claudeSessionToSession = new Map();
 const MAX_EVENT_BUFFER = 500;
-let lastSessionId = null;
 const previewServers = new Map();
 
 function createSession(id) {
@@ -37,7 +37,6 @@ function createSession(id) {
     lastEventAt: null,
   };
   sessions.set(id, session);
-  lastSessionId = id;
   return session;
 }
 
@@ -47,9 +46,6 @@ async function ensurePreviewExposed(port, threadId) {
   if (!baseUrl || !previewToken) {
     throw new Error('Missing CHIRIDION_PREVIEW_BASE_URL or CHIRIDION_PREVIEW_TOKEN');
   }
-  if (!threadId) {
-    throw new Error('Missing threadId for preview exposure');
-  }
 
   const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/sandbox/preview`, {
     method: 'POST',
@@ -57,7 +53,7 @@ async function ensurePreviewExposed(port, threadId) {
       'Content-Type': 'application/json',
       'X-Chiridion-Preview-Token': previewToken,
     },
-    body: JSON.stringify({ threadId, port }),
+    body: JSON.stringify(threadId ? { threadId, port } : { port }),
   });
 
   if (!res.ok) {
@@ -87,8 +83,11 @@ const previewTool = tool(
     const command = args.command;
     const extraSessionId = typeof extra?.sessionId === 'string' ? extra.sessionId : null;
     const extraSession = extraSessionId && sessions.has(extraSessionId) ? sessions.get(extraSessionId) : null;
-    const fallbackSession = extraSession ?? (lastSessionId ? sessions.get(lastSessionId) : null);
-    const threadId = args.threadId || fallbackSession?.threadId || null;
+    const claudeSession = extraSessionId && claudeSessionToSession.has(extraSessionId)
+      ? claudeSessionToSession.get(extraSessionId)
+      : null;
+    const activeSession = extraSession || claudeSession || null;
+    const threadId = args.threadId || activeSession?.threadId || null;
 
     if (!path.isAbsolute(cwd)) {
       return {
@@ -147,6 +146,11 @@ const previewTool = tool(
 
     previewServers.set(port, { process: child, cwd, command, url });
 
+    const sessionForEvent = activeSession || (threadId && sessions.get(threadId)) || null;
+    if (sessionForEvent) {
+      bufferEvent(sessionForEvent, { type: 'preview_ready', url, port });
+    }
+
     child.on('exit', (code, signal) => {
       previewServers.delete(port);
       console.error('[ws-server] Preview server exited', { port, code, signal });
@@ -173,12 +177,11 @@ const previewMcpServer = createSdkMcpServer({
 function getOrCreateSession(id) {
   if (id && sessions.has(id)) return sessions.get(id);
   if (id && !sessions.has(id)) return createSession(id);
-  if (lastSessionId && sessions.has(lastSessionId)) return sessions.get(lastSessionId);
-  const newId = crypto.randomUUID();
-  return createSession(newId);
+  return createSession(crypto.randomUUID());
 }
 
 function resolveSessionFromMessage(ws, data) {
+  if (data?.threadId) return getOrCreateSession(data.threadId);
   if (data?.sessionId) return getOrCreateSession(data.sessionId);
   const wsSessionId = ws?.data?.sessionId;
   if (wsSessionId && sessions.has(wsSessionId)) return sessions.get(wsSessionId);
@@ -397,6 +400,7 @@ function startEventLoop(session) {
         if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
           if (!session.claudeSessionId) {
             session.claudeSessionId = event.session_id;
+            claudeSessionToSession.set(event.session_id, session);
             logForPersistence({ type: 'session_id', threadId: session.threadId, sessionId: event.session_id });
             console.error('[ws-server] Got session ID:', session.claudeSessionId);
           }

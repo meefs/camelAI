@@ -86,17 +86,17 @@ async function handleSandboxPreview(request: Request, env: Env): Promise<Respons
 
   const threadId = body.threadId;
   const port = body.port;
-  if (!threadId || typeof threadId !== 'string') {
-    return json({ error: 'Missing threadId' }, { status: 400 });
-  }
   if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
     return json({ error: 'Invalid port' }, { status: 400 });
   }
-
-  const indexStub = env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(orgId));
-  const thread = await indexStub.getThread(threadId);
-  if (!thread) {
-    return json({ error: 'Thread not found' }, { status: 404 });
+  if (threadId) {
+    const indexStub = env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(orgId));
+    const thread = await indexStub.getThread(threadId);
+    if (!thread) {
+      return json({ error: 'Thread not found' }, { status: 404 });
+    }
+  } else if (!previewToken) {
+    return json({ error: 'Missing threadId' }, { status: 400 });
   }
 
   const sandboxId = getSandboxIdForOrg(orgId);
