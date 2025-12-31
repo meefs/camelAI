@@ -101,9 +101,11 @@ async function handleSandboxPreview(request: Request, env: Env): Promise<Respons
 
   const sandboxId = getSandboxIdForOrg(orgId);
   const sandbox = getSandbox(env.SANDBOX, sandboxId, { normalizeId: true });
+  const sandboxDoId = env.SANDBOX.idFromName(sandboxId).toString();
   const hostname = new URL(request.url).hostname;
 
   try {
+    console.log('[sandbox-preview] resolved sandbox', { orgId, sandboxId, sandboxDoId, hostname });
     const existing = await sandbox.getExposedPorts(hostname);
     const active = existing.find((entry) => entry.port === port && entry.status === 'active');
     if (active) {

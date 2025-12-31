@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, parseSSEStream, type Sandbox, type LogEvent, type Process } from '@cloudflare/sandbox';
 import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
 import { createApiToken, deleteApiToken } from './api-tokens';
-import type { OrgDO } from './auth';
+import type { OrgDO, SessionDO } from './auth';
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
@@ -71,6 +71,7 @@ export interface ChatEnv {
   CHAT_INDEX: DurableObjectNamespace<ChatIndexDO>;
   SANDBOX: DurableObjectNamespace<Sandbox>;
   ORG: DurableObjectNamespace<OrgDO>;
+  SESSION: DurableObjectNamespace<SessionDO>;
   API_TOKENS: KVNamespace;
   R2_BUCKET: R2Bucket;
   ANTHROPIC_API_KEY: string;
@@ -300,6 +301,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
+  private logSandboxDebug(message: string, data?: Record<string, unknown>) {
+    if (data) {
+      console.log('[DO][sandbox]', message, data);
+    } else {
+      console.log('[DO][sandbox]', message);
+    }
+  }
+
   private async initialize() {
     if (this.initialized) return;
 
@@ -410,6 +419,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!this.sandbox) return null;
     try {
       const processes = await this.sandbox.listProcesses();
+      this.logSandboxDebug('listed sandbox processes', {
+        threadId: this.threadId,
+        org: this.currentOrg,
+        sandboxId: this.sandboxId,
+        count: processes.length,
+        processes: processes.map((p) => ({ id: p.id, status: p.status })),
+      });
       const running = processes.find(p => p.status === 'running') || processes[0];
       if (running) {
         this.currentProcessId = running.id;
@@ -549,6 +565,25 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!org) {
       return new Response('Missing org', { status: 400 });
     }
+    const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
+    const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
+    const sessionId = headerSessionId || cookieSessionId;
+    if (!sessionId) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+    const sessionStub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
+    const session = await sessionStub.getData();
+    if (!session) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+    if (session.org_id !== org) {
+      console.warn('[DO] WebSocket org mismatch', {
+        threadId: this.threadId,
+        requestedOrg: org,
+        sessionOrg: session.org_id,
+      });
+      return new Response('Forbidden', { status: 403 });
+    }
     const pathParts = url.pathname.split('/').filter(Boolean);
     const threadId = pathParts[pathParts.length - 1] || null;
     if (threadId && !this.threadId) {
@@ -559,10 +594,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         threadId
       );
     }
+    if (threadId) {
+      const indexStub = this.env.CHAT_INDEX.get(this.env.CHAT_INDEX.idFromName(org));
+      const thread = await indexStub.getThread(threadId);
+      if (!thread) {
+        return new Response('Thread not found', { status: 404 });
+      }
+    }
 
     // Accept WebSocket upgrades - proxy directly to container
     if (request.headers.get('Upgrade') === 'websocket') {
       this.currentOrg = org;
+
+      this.logSandboxDebug('websocket upgrade', {
+        threadId: this.threadId,
+        org,
+        currentProcessId: this.currentProcessId,
+        currentOrg: this.currentOrg,
+      });
 
       this.chiridionBaseUrl =
         getExternalOriginFromHeaders(request, url);
@@ -576,13 +625,31 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // Get sandbox reference
       this.sandboxId = this.getSandboxIdForOrg(org);
       this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId, { normalizeId: true });
+      const sandboxDoId = this.env.SANDBOX.idFromName(this.sandboxId).toString();
+      this.logSandboxDebug('sandbox resolved', {
+        threadId: this.threadId,
+        org,
+        sandboxId: this.sandboxId,
+        sandboxDoId,
+      });
 
       // Check if WS server is already running (survives DO hibernation)
       // Always check health endpoint - processId may be null after hibernation
       // but the container/process could still be running
       const alreadyReady = await this.checkWsServerReady();
+      this.logSandboxDebug('ws server ready check', {
+        threadId: this.threadId,
+        org,
+        sandboxId: this.sandboxId,
+        alreadyReady,
+      });
 
       if (!alreadyReady) {
+        this.logSandboxDebug('ws server not ready, starting new process', {
+          threadId: this.threadId,
+          org,
+          sandboxId: this.sandboxId,
+        });
         const process = await this.startWsServerProcess(org);
         if (!process) {
           console.error('[DO] Failed to start container');
@@ -614,6 +681,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         // Only start if not already streaming to prevent duplicate log processing
         const processId = await this.ensureProcessIdFromSandbox();
         if (processId) {
+          this.logSandboxDebug('reusing existing process', {
+            threadId: this.threadId,
+            org,
+            sandboxId: this.sandboxId,
+            processId,
+          });
           this.ctx.waitUntil(this.streamLogsForPersistence(processId));
         }
       }
@@ -628,6 +701,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // Start the WebSocket server process in the container
   private async startWsServerProcess(org: string): Promise<Process | null> {
     try {
+      this.logSandboxDebug('starting WS server process', {
+        threadId: this.threadId,
+        org,
+        sandboxId: this.sandboxId,
+        currentProcessId: this.currentProcessId,
+      });
       console.log('[DO] Starting WS server process', {
         threadId: this.threadId,
         org,
@@ -704,6 +783,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const process = await this.sandbox!.startProcess('sh /app/run-ws-server.sh', { env: processEnv });
       this.currentProcessId = process.id;
       this.persistTransientState();
+      this.logSandboxDebug('WS server process started', {
+        threadId: this.threadId,
+        org,
+        sandboxId: this.sandboxId,
+        processId: process.id,
+      });
       console.log('[DO] WS server process started', {
         threadId: this.threadId,
         org,
@@ -727,8 +812,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const result = await this.sandbox!.exec('curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health', {
         timeout: 2000
       });
+      this.logSandboxDebug('health check result', {
+        threadId: this.threadId,
+        org: this.currentOrg,
+        sandboxId: this.sandboxId,
+        exitCode: result.exitCode,
+        stdout: result.stdout?.trim(),
+        stderr: result.stderr?.trim(),
+      });
       return result.stdout?.trim() === '200';
-    } catch {
+    } catch (e) {
+      this.logSandboxDebug('health check failed', {
+        threadId: this.threadId,
+        org: this.currentOrg,
+        sandboxId: this.sandboxId,
+        error: String(e),
+      });
       return false;
     }
   }
