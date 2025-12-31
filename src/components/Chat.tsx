@@ -186,7 +186,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [deployedApp, setDeployedApp] = useState<string | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [iframeKey, setIframeKey] = useState(0);
   const [iframeLoading, setIframeLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -598,24 +597,10 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       } else if (data.type === 'deploy_success') {
         // Wrangler deploy completed - show the deployed app in iframe
         setDeployedApp(data.scriptName);
-        setPreviewUrl(null);
         setIframeLoading(true);
         setIframeKey(prev => prev + 1);
 
         // Auto-reload after 3 seconds to handle worker propagation delay
-        if (iframeRetryRef.current) {
-          clearTimeout(iframeRetryRef.current);
-        }
-        iframeRetryRef.current = setTimeout(() => {
-          setIframeKey(prev => prev + 1);
-        }, 3000);
-      } else if (data.type === 'preview_ready' && typeof data.url === 'string') {
-        // Local preview exposed - show it in iframe
-        setPreviewUrl(data.url);
-        setDeployedApp(null);
-        setIframeLoading(true);
-        setIframeKey(prev => prev + 1);
-
         if (iframeRetryRef.current) {
           clearTimeout(iframeRetryRef.current);
         }
@@ -911,7 +896,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         {threadId ? (
           <div className="flex-1 flex min-h-0">
             {/* Chat Panel */}
-            <div className={cn("flex flex-col min-h-0", (previewUrl || deployedApp) ? "w-1/2" : "flex-1")}>
+            <div className={cn("flex flex-col min-h-0", deployedApp ? "w-1/2" : "flex-1")}>
             {/* Chat Body - Single Scroll Container */}
             <div
               ref={scrollContainerRef}
@@ -1119,7 +1104,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
             </div>
 
             {/* Deployed App Preview */}
-            {(previewUrl || deployedApp) && (
+            {deployedApp && (
               <div className="w-1/2 border-l border-border flex flex-col bg-background">
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border">
                   <div className="flex items-center gap-2">
@@ -1128,15 +1113,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                     ) : (
                       <div className="w-2 h-2 bg-green-500 rounded-full" />
                     )}
-                    <span className="text-sm font-medium">
-                      {previewUrl ? (() => {
-                        try {
-                          return new URL(previewUrl).host;
-                        } catch {
-                          return previewUrl;
-                        }
-                      })() : `${deployedApp}.chiridion.ai`}
-                    </span>
+                    <span className="text-sm font-medium">{deployedApp}.chiridion.ai</span>
                     {iframeLoading && <span className="text-xs text-muted-foreground">Loading...</span>}
                   </div>
                   <div className="flex items-center gap-1">
@@ -1163,7 +1140,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                           asChild
                         >
                           <a
-                            href={previewUrl || `https://${deployedApp}.chiridion.ai`}
+                            href={`https://${deployedApp}.chiridion.ai`}
                             target="_blank"
                             rel="noopener noreferrer"
                           >
@@ -1184,7 +1161,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                               iframeRetryRef.current = null;
                             }
                             setDeployedApp(null);
-                            setPreviewUrl(null);
                             setIframeLoading(true);
                           }}
                         >
@@ -1210,7 +1186,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                   )}
                   <iframe
                     key={iframeKey}
-                    src={previewUrl || `https://${deployedApp}.chiridion.ai`}
+                    src={`https://${deployedApp}.chiridion.ai`}
                     className="w-full h-full bg-white"
                     title="Deployed App Preview"
                     onLoad={() => setIframeLoading(false)}
