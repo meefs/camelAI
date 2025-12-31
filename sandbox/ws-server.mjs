@@ -42,10 +42,10 @@ function createSession(id) {
 }
 
 async function ensurePreviewExposed(port, threadId) {
-  const baseUrl = process.env.CHIRIDION_BASE_URL;
-  const sessionId = process.env.CHIRIDION_SESSION_ID;
-  if (!baseUrl || !sessionId) {
-    throw new Error('Missing CHIRIDION_BASE_URL or CHIRIDION_SESSION_ID');
+  const baseUrl = process.env.CHIRIDION_PREVIEW_BASE_URL || process.env.CHIRIDION_BASE_URL;
+  const previewToken = process.env.CHIRIDION_PREVIEW_TOKEN;
+  if (!baseUrl || !previewToken) {
+    throw new Error('Missing CHIRIDION_PREVIEW_BASE_URL or CHIRIDION_PREVIEW_TOKEN');
   }
   if (!threadId) {
     throw new Error('Missing threadId for preview exposure');
@@ -55,7 +55,7 @@ async function ensurePreviewExposed(port, threadId) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Chiridion-Session-Id': sessionId,
+      'X-Chiridion-Preview-Token': previewToken,
     },
     body: JSON.stringify({ threadId, port }),
   });
