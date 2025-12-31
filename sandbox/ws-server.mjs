@@ -128,6 +128,14 @@ function getQueryOptions(session) {
     options.resume = session.claudeSessionId;
   }
 
+  options.stderr = (message) => {
+    const trimmed = message.trimEnd();
+    if (!trimmed) return;
+    for (const line of trimmed.split('\n')) {
+      console.error(`[claude-code] ${line}`);
+    }
+  };
+
   return options;
 }
 

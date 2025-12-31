@@ -84,6 +84,7 @@ export interface ChatEnv {
   R2_API_TOKEN?: string;
   R2_PARENT_ACCESS_KEY_ID?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
+  DEBUG_CLAUDE_AGENT_SDK?: string;
 }
 
 // One DO per org - stores thread list only
@@ -605,6 +606,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (this.env.CF_ACCOUNT_ID) processEnv.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
       processEnv.WRANGLER_SEND_METRICS = 'false';
       processEnv.CI = '1';
+      processEnv.DEBUG_CLAUDE_AGENT_SDK = '1';
+      processEnv.CLAUDE_CODE_DEBUG_LOGS_DIR = '/tmp/claude-debug';
 
       // Generate prefix-scoped temp credentials
       const projectId = await this.ensureProjectId(org);
