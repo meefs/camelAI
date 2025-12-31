@@ -636,8 +636,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (this.env.CF_ACCOUNT_ID) processEnv.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
       processEnv.WRANGLER_SEND_METRICS = 'false';
       processEnv.CI = '1';
-      processEnv.DEBUG_CLAUDE_AGENT_SDK = '1';
-      processEnv.CLAUDE_CODE_DEBUG_LOGS_DIR = '/tmp/claude-debug';
 
       // Generate org-scoped temp credentials (single shared workspace per org)
       const prefix = `${org}/`;
