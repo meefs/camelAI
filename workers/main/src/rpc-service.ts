@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { getSandbox } from '@cloudflare/sandbox';
 import type { AuthEnv, SessionData, UserProfile, OrgIntegrationRecord } from './auth';
 import type { ChatEnv } from './durable-objects';
 import type {
@@ -6,6 +7,7 @@ import type {
   Organization,
   OrgMembership,
   Project,
+  SandboxFileListing,
   Thread,
   User,
   UserProject,
@@ -26,6 +28,7 @@ import {
   deleteApiToken,
   type ApiTokenData,
 } from './api-tokens';
+import { getTempR2Credentials } from './r2-credentials';
 
 /**
  * Configuration returned to callers for making proxied requests.
@@ -50,7 +53,52 @@ function getThreadStub(env: DoRpcEnv, threadId: string) {
   return env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
 }
 
+function getSandboxIdForOrg(orgId: string): string {
+  const safeOrg = orgId.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+  return `org-${safeOrg}`.slice(0, 63);
+}
+
 export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
+  private hasR2Config(): boolean {
+    return Boolean(
+      this.env.R2_BUCKET_NAME &&
+      this.env.R2_ACCOUNT_ID &&
+      this.env.R2_API_TOKEN &&
+      this.env.R2_PARENT_ACCESS_KEY_ID
+    );
+  }
+
+  private getWorkspaceRoot(): string {
+    return this.env.R2_MOUNT_DIR || '/home/claude';
+  }
+
+  private async buildSandboxEnv(orgId: string): Promise<Record<string, string>> {
+    const envVars: Record<string, string> = {
+      R2_PREFIX: `${orgId}/`,
+    };
+
+    if (this.env.R2_BUCKET_NAME) envVars.R2_BUCKET_NAME = this.env.R2_BUCKET_NAME;
+    if (this.env.R2_ACCOUNT_ID) envVars.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
+    if (this.env.R2_MOUNT_DIR) envVars.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
+    if (this.env.R2_MOUNT_READONLY) envVars.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
+
+    if (this.hasR2Config()) {
+      const tempCreds = await getTempR2Credentials(
+        this.env.R2_ACCOUNT_ID!,
+        this.env.R2_BUCKET_NAME!,
+        this.env.R2_PARENT_ACCESS_KEY_ID!,
+        this.env.R2_API_TOKEN!,
+        `${orgId}/`,
+        86400
+      );
+      envVars.AWS_ACCESS_KEY_ID = tempCreds.accessKeyId;
+      envVars.AWS_SECRET_ACCESS_KEY = tempCreds.secretAccessKey;
+      envVars.AWS_SESSION_TOKEN = tempCreds.sessionToken;
+    }
+
+    return envVars;
+  }
+
   // Session functions
   async getSession(sessionId: string): Promise<SessionData | null> {
     const stub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
@@ -733,6 +781,39 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   async deleteProject(id: string, org: string): Promise<void> {
     await getIndexStub(this.env, org).deleteProject(id);
+  }
+
+  async listWorkspaceFiles(orgId: string): Promise<SandboxFileListing> {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+
+    if (this.hasR2Config()) {
+      const marker = await sandbox.exists('/tmp/.r2-synced');
+      if (!marker.exists) {
+        const envVars = await this.buildSandboxEnv(orgId);
+        const syncResult = await sandbox.exec(
+          `node /app/sync.mjs download ${workspaceRoot}`,
+          { env: envVars, timeout: 120000 }
+        );
+        if (!syncResult.success) {
+          throw new Error(`Workspace sync failed: ${syncResult.stderr || 'unknown error'}`);
+        }
+        await sandbox.exec('touch /tmp/.r2-synced', { env: envVars, timeout: 5000 });
+      }
+    }
+
+    const listing = await sandbox.listFiles(workspaceRoot, {
+      recursive: true,
+      includeHidden: true,
+    });
+    const files = [...listing.files].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    return {
+      path: listing.path,
+      files,
+      count: listing.count,
+      timestamp: listing.timestamp,
+    };
   }
 
   // Integration functions

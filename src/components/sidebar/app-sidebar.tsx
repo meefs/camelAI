@@ -1,9 +1,10 @@
 "use client"
 
-import { Home, MessagesSquare, Cable } from "lucide-react"
+import { AppWindowMac, Cable, Home, MessagesSquare } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
+import { useAuth } from "@/contexts/AuthContext"
 import { NavUser } from "@/components/sidebar/nav-user"
 import { TeamSwitcher } from "@/components/sidebar/team-switcher"
 import {
@@ -22,9 +23,12 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
 
 export function AppSidebar(props: AppSidebarProps) {
   const pathname = usePathname()
+  const { currentOrg } = useAuth()
   const isHome = pathname === "/"
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"
+  const isComputer = pathname.startsWith("/computer")
+  const computerHref = currentOrg?.id ? `/computer/${currentOrg.id}` : "/computer"
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -55,6 +59,14 @@ export function AppSidebar(props: AppSidebarProps) {
                 <Link href="/connections">
                   <Cable />
                   <span>Connections</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild tooltip="Computer" isActive={isComputer}>
+                <Link href={computerHref}>
+                  <AppWindowMac />
+                  <span>Computer</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>

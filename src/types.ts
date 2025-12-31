@@ -50,6 +50,22 @@ export interface Message {
   created_at: number;
 }
 
+export interface SandboxFileInfo {
+  name: string;
+  absolutePath: string;
+  relativePath: string;
+  type: 'file' | 'directory' | 'symlink' | 'other';
+  size: number;
+  modifiedAt: string;
+}
+
+export interface SandboxFileListing {
+  path: string;
+  files: SandboxFileInfo[];
+  count: number;
+  timestamp: string;
+}
+
 // Auth types
 export interface User {
   id: string;
