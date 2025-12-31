@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowDown, Copy, Check, RefreshCw, ExternalLink, X } from 'lucide-react';
 import type { Thread, Message, ContentBlock } from '@/types';
@@ -20,6 +20,8 @@ import { cn } from '@/lib/utils';
 interface ChatProps {
   threadId?: string;
   orgId: string;
+  initialThreads?: Thread[];
+  initialMessages?: Message[];
 }
 
 // Format timestamp to readable time (e.g., "12:25 PM")
@@ -165,11 +167,15 @@ interface StreamingState {
   isStreaming: boolean;
 }
 
-export default function Chat({ threadId, orgId }: ChatProps) {
+export default function Chat({ threadId, orgId, initialThreads, initialMessages }: ChatProps) {
   const router = useRouter();
   const { user, currentOrg, orgs, loading: authLoading, logout, switchOrg } = useAuth();
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const parsedInitialMessages = useMemo(
+    () => (initialMessages ?? []).map(msg => ({ ...msg, content: parseMessageContent(msg.content) })),
+    [initialMessages]
+  );
+  const [threads, setThreads] = useState<Thread[]>(initialThreads ?? []);
+  const [messages, setMessages] = useState<Message[]>(parsedInitialMessages);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false); // Container is ready to receive messages
@@ -192,6 +198,24 @@ export default function Chat({ threadId, orgId }: ChatProps) {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef(0);
+  const initialMessagesRef = useRef<{ threadId?: string; messages: Message[] } | null>(
+    initialMessages ? { threadId, messages: parsedInitialMessages } : null
+  );
+  const initialThreadsRef = useRef<Thread[] | null>(initialThreads ?? null);
+  const initialThreadsOrgRef = useRef<string | null>(initialThreads ? orgId : null);
+
+  useEffect(() => {
+    if (initialMessages) {
+      initialMessagesRef.current = { threadId, messages: parsedInitialMessages };
+    }
+  }, [initialMessages, parsedInitialMessages, threadId]);
+
+  useEffect(() => {
+    if (initialThreads) {
+      initialThreadsRef.current = initialThreads;
+      initialThreadsOrgRef.current = orgId;
+    }
+  }, [initialThreads, orgId]);
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
@@ -253,13 +277,23 @@ export default function Chat({ threadId, orgId }: ChatProps) {
   }, []);
 
   useEffect(() => {
-    if (user && currentOrg) {
+    if (user && resolvedOrgId) {
+      if (initialThreadsRef.current && initialThreadsOrgRef.current === resolvedOrgId) {
+        initialThreadsRef.current = null;
+        return;
+      }
       fetchThreads();
     }
-  }, [user, currentOrg, fetchThreads]);
+  }, [user, resolvedOrgId, fetchThreads]);
 
   // Fetch messages from REST API
   const fetchMessages = useCallback(async (threadId: string, isReconnect = false) => {
+    if (!isReconnect && initialMessagesRef.current?.threadId === threadId) {
+      setMessages(initialMessagesRef.current.messages);
+      isFirstMessage.current = initialMessagesRef.current.messages.length === 0;
+      initialMessagesRef.current = null;
+      return;
+    }
     try {
       const res = await fetch(`/api/threads/${threadId}/messages`);
       if (res.ok) {
@@ -358,10 +392,21 @@ export default function Chat({ threadId, orgId }: ChatProps) {
         setReady(true);
 
         // Send pending message if exists (from welcome screen or queued while disconnected)
-        const storedMessage = sessionStorage.getItem('pendingMessage') || pendingMessageRef.current;
-        if (storedMessage) {
+        let storedMessage = pendingMessageRef.current;
+        const storedPayload = sessionStorage.getItem('pendingMessage');
+        if (storedPayload) {
           sessionStorage.removeItem('pendingMessage');
-          pendingMessageRef.current = null;
+          try {
+            const parsed = JSON.parse(storedPayload) as { message?: string; orgId?: string };
+            if (parsed.orgId === resolvedOrgId && typeof parsed.message === 'string') {
+              storedMessage = parsed.message;
+            }
+          } catch (e) {
+            console.warn('Failed to parse pending message:', e);
+          }
+        }
+        pendingMessageRef.current = null;
+        if (storedMessage) {
 
           // Add user message to local state immediately
           const userMsg: Message = {
@@ -760,12 +805,12 @@ export default function Chat({ threadId, orgId }: ChatProps) {
   }
 
   async function startNewChat() {
-    if (!welcomeInput.trim() || isCreatingThread) return;
+    if (!welcomeInput.trim() || isCreatingThread || !resolvedOrgId) return;
 
     setIsCreatingThread(true);
     const msg = welcomeInput.trim();
     // Store in sessionStorage to survive component remount during navigation
-    sessionStorage.setItem('pendingMessage', msg);
+    sessionStorage.setItem('pendingMessage', JSON.stringify({ message: msg, orgId: resolvedOrgId }));
     setWelcomeInput('');
 
     try {
