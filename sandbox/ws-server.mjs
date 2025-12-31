@@ -69,7 +69,7 @@ async function ensurePreviewExposed(port, threadId) {
   if (!data?.url) {
     throw new Error('Preview exposure response missing URL');
   }
-  return data as { url: string; port: number };
+  return data;
 }
 
 const previewTool = tool(
