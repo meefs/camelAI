@@ -3,9 +3,10 @@ FROM docker.io/cloudflare/sandbox:0.6.6-python
 # Must match the @cloudflare/sandbox npm package version.
 
 # Optional: app ports you plan to expose via the Sandbox API (control plane uses 3000)
+# Include common dev ports for local Docker sandbox proxying.
 # 8080: WS server for Claude SDK
 # 8081: Integration proxy for external APIs
-EXPOSE 8080 8081
+EXPOSE 3000 3001 4000 4200 4321 5000 5001 5173 4173 7000 8000 8080 8081 9000
 
 # R2 sync support (tar+zstd for fast snapshot-based sync)
 ENV DEBIAN_FRONTEND=noninteractive
