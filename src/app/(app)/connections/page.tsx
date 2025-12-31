@@ -317,22 +317,29 @@ export default function ConnectionsPage() {
             </DialogDescription>
           </DialogHeader>
 
-          <ScrollArea className="max-h-[60vh] pr-4">
-            <div className="p-1">
-              {connectionTypes.length === 0 ? (
-                <div className="py-6 text-sm text-muted-foreground">
-                  No connection types are available right now.
-                </div>
-              ) : (
-                <Tabs defaultValue="all" className="w-full">
-                  <TabsList className="mb-4">
-                    <TabsTrigger value="all">All</TabsTrigger>
-                    {categories.map((category) => (
-                      <TabsTrigger key={category} value={category}>
-                        {categoryLabels[category] || category}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
+          {connectionTypes.length === 0 ? (
+            <div className="py-6 text-sm text-muted-foreground">
+              No connection types are available right now.
+            </div>
+          ) : (
+            <Tabs defaultValue="all" className="w-full min-w-0">
+              <div
+                className="mb-4 w-full min-w-0 overflow-x-auto overflow-y-hidden"
+                data-connection-tabs-scroll
+              >
+                <TabsList className="w-max justify-start">
+                  <TabsTrigger value="all" className="flex-none">
+                    All
+                  </TabsTrigger>
+                  {categories.map((category) => (
+                    <TabsTrigger key={category} value={category} className="flex-none">
+                      {categoryLabels[category] || category}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
+              <ScrollArea className="max-h-[60vh] pr-4 overflow-x-hidden">
+                <div className="min-w-0 p-1">
                   <TabsContent value="all">
                     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                       {connectionTypes.map((type) => (
@@ -385,10 +392,10 @@ export default function ConnectionsPage() {
                       </div>
                     </TabsContent>
                   ))}
-                </Tabs>
-              )}
-            </div>
-          </ScrollArea>
+                </div>
+              </ScrollArea>
+            </Tabs>
+          )}
         </DialogContent>
       </Dialog>
 
