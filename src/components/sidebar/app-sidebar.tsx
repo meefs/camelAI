@@ -1,6 +1,6 @@
 "use client"
 
-import { Home, MessagesSquare } from "lucide-react"
+import { Home, MessagesSquare, Cable } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
@@ -24,6 +24,7 @@ export function AppSidebar(props: AppSidebarProps) {
   const pathname = usePathname()
   const isHome = pathname === "/"
   const isHistory = pathname === "/history"
+  const isConnections = pathname === "/connections"
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -46,6 +47,14 @@ export function AppSidebar(props: AppSidebarProps) {
                 <Link href="/history">
                   <MessagesSquare />
                   <span>Chat History</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild tooltip="Connections" isActive={isConnections}>
+                <Link href="/connections">
+                  <Cable />
+                  <span>Connections</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
