@@ -3,7 +3,6 @@
 import openNextHandler from "../../../.open-next/worker.js";
 import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
-import { validateApiToken } from './api-tokens.js';
 import { Sandbox, proxyToSandbox, getSandbox } from '@cloudflare/sandbox';
 export { DoRpcService } from './rpc-service.js';
 
@@ -21,7 +20,6 @@ interface Env extends ChatEnv, AuthEnv {
 
 const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
-const CHIRIDION_PREVIEW_TOKEN_HEADER = 'X-Chiridion-Preview-Token';
 const SESSION_COOKIE_NAME = 'chiridion_session';
 
 function json(data: unknown, init?: ResponseInit): Response {
@@ -53,27 +51,16 @@ async function handleSandboxPreview(request: Request, env: Env): Promise<Respons
     return json({ error: 'Method Not Allowed' }, { status: 405 });
   }
 
-  const previewToken = request.headers.get(CHIRIDION_PREVIEW_TOKEN_HEADER);
   const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
   const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
   const sessionId = headerSessionId || cookieSessionId;
+  if (!sessionId) {
+    return json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
-  let orgId: string | null = null;
-
-  if (previewToken) {
-    const tokenData = await validateApiToken(env.API_TOKENS, previewToken);
-    if (!tokenData || !tokenData.scopes.includes('preview')) {
-      return json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    orgId = tokenData.org_id;
-  } else if (sessionId) {
-    const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
-    const session = await sessionStub.getData();
-    if (!session) {
-      return json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    orgId = session.org_id;
-  } else {
+  const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
+  const session = await sessionStub.getData();
+  if (!session) {
     return json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -89,17 +76,17 @@ async function handleSandboxPreview(request: Request, env: Env): Promise<Respons
   if (!threadId || typeof threadId !== 'string') {
     return json({ error: 'Missing threadId' }, { status: 400 });
   }
-  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return json({ error: 'Invalid port' }, { status: 400 });
   }
 
-  const indexStub = env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(orgId));
+  const indexStub = env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(session.org_id));
   const thread = await indexStub.getThread(threadId);
   if (!thread) {
     return json({ error: 'Thread not found' }, { status: 404 });
   }
 
-  const sandboxId = getSandboxIdForOrg(orgId);
+  const sandboxId = getSandboxIdForOrg(session.org_id);
   const sandbox = getSandbox(env.SANDBOX, sandboxId, { normalizeId: true });
   const sandboxDoId = env.SANDBOX.idFromName(sandboxId).toString();
   const hostname = new URL(request.url).hostname;

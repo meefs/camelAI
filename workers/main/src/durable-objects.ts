@@ -526,23 +526,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private async mintPreviewToken(orgId: string): Promise<string | null> {
-    try {
-      const result = await createApiToken(this.env.API_TOKENS, {
-        orgId,
-        userId: 'sandbox',
-        name: 'sandbox-preview-token',
-        scopes: ['preview'],
-        integrationId: null,
-        expiresAt: Date.now() + 60 * 60 * 1000, // 1 hour TTL
-      });
-      return result.tokenId;
-    } catch (e) {
-      console.error('[DO] Failed to mint preview token:', e);
-      return null;
-    }
-  }
-
   /**
    * Expire the current proxy token immediately.
    * Called when the sandbox process exits.
@@ -771,12 +754,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         processEnv.CHIRIDION_PROXY_TOKEN = proxyToken;
         processEnv.CHIRIDION_PROXY_BASE_URL = this.chiridionBaseUrl;
         processEnv.CHIRIDION_ORG_ID = org;
-      }
-
-      const previewToken = await this.mintPreviewToken(org);
-      if (previewToken && this.chiridionBaseUrl) {
-        processEnv.CHIRIDION_PREVIEW_TOKEN = previewToken;
-        processEnv.CHIRIDION_PREVIEW_BASE_URL = this.chiridionBaseUrl;
       }
 
       // Start the WS server process
