@@ -376,6 +376,7 @@ export default function Chat({ threadId }: ChatProps) {
             type: 'message',
             content: storedMessage,
             sessionId: sessionIdRef.current,
+            threadId: id,
           }));
           isFirstMessage.current = false;
           setTimeout(fetchThreads, 500);
@@ -817,6 +818,7 @@ export default function Chat({ threadId }: ChatProps) {
         type: 'message',
         content: userMessage,
         sessionId: sessionIdRef.current,
+        threadId,
       }));
 
       if (isFirstMessage.current) {

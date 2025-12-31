@@ -287,6 +287,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // Custom waitForLog implementation - resolves when we see the target log line
   private serverReadyResolver: ((value: void) => void) | null = null;
   private serverReadyPromise: Promise<void> | null = null;
+  private sandboxId: string | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -393,6 +394,32 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private clearTransientState() {
     this.sql.exec('DELETE FROM metadata WHERE key IN (?, ?, ?)', 'current_org', 'current_process_id', 'current_proxy_token');
+  }
+
+  private getSandboxIdForOrg(org: string | null): string {
+    const rawOrg = org || this.currentOrg || 'default';
+    const safeOrg = rawOrg.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `org-${safeOrg}`.slice(0, 63);
+  }
+
+  private async ensureProcessIdFromSandbox(): Promise<string | null> {
+    if (this.currentProcessId) return this.currentProcessId;
+    if (!this.sandbox) return null;
+    try {
+      const processes = await this.sandbox.listProcesses();
+      const running = processes.find(p => p.status === 'running') || processes[0];
+      if (running) {
+        this.currentProcessId = running.id;
+        this.persistTransientState();
+        return running.id;
+      }
+    } catch (e) {
+      console.error('[DO] Failed to list sandbox processes:', {
+        threadId: this.threadId,
+        error: String(e),
+      });
+    }
+    return null;
   }
 
   private async ensureProjectId(org: string): Promise<string | null> {
@@ -524,8 +551,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       await this.ensureDeployToken();
 
       // Get sandbox reference
-      const sandboxId = this.ctx.id.toString().slice(0, 63);
-      this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
+      this.sandboxId = this.getSandboxIdForOrg(org);
+      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId);
 
       // Check if WS server is already running (survives DO hibernation)
       // Always check health endpoint - processId may be null after hibernation
@@ -558,11 +585,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           });
           return new Response('Container WS server failed to start', { status: 500 });
         }
-      } else if (this.currentProcessId && !this.isStreamingLogs) {
+      } else if (!this.isStreamingLogs) {
         // Reusing existing process - ensure log streaming is running
         // (it may have stopped when DO hibernated)
         // Only start if not already streaming to prevent duplicate log processing
-        this.ctx.waitUntil(this.streamLogsForPersistence(this.currentProcessId));
+        const processId = await this.ensureProcessIdFromSandbox();
+        if (processId) {
+          this.ctx.waitUntil(this.streamLogsForPersistence(processId));
+        }
       }
 
       // Proxy WebSocket directly to container port 8080
@@ -609,13 +639,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       processEnv.DEBUG_CLAUDE_AGENT_SDK = '1';
       processEnv.CLAUDE_CODE_DEBUG_LOGS_DIR = '/tmp/claude-debug';
 
-      // Generate prefix-scoped temp credentials
-      const projectId = await this.ensureProjectId(org);
-      if (!projectId) {
-        console.error('[DO] Missing project_id for thread');
-        return null;
-      }
-      processEnv.PROJECT_ID = projectId;
+      // Generate org-scoped temp credentials (single shared workspace per org)
       const prefix = `${org}/`;
       processEnv.R2_PREFIX = prefix;
 
@@ -737,6 +761,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               try {
                 const jsonStr = line.slice(PERSIST_PREFIX.length);
                 const event = JSON.parse(jsonStr);
+                const eventThreadId = (event as { threadId?: string }).threadId;
+                if (!eventThreadId || !this.threadId || eventThreadId !== this.threadId) {
+                  continue;
+                }
 
                 // Persist user messages (use ID from log event for dedup)
                 if (event.type === 'user_message' && event.id) {
@@ -780,6 +808,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             if (!line.trim()) continue;
             try {
               const event = JSON.parse(line);
+              const eventThreadId = (event as { threadId?: string }).threadId;
+              if (!eventThreadId || !this.threadId || eventThreadId !== this.threadId) {
+                continue;
+              }
 
               // Persist user messages (use ID from log event for dedup)
               if (event.type === 'user_message' && event.id) {
@@ -897,8 +929,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // Ensure we have a sandbox reference
     if (!this.sandbox) {
-      const sandboxId = this.ctx.id.toString().slice(0, 63);
-      this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
+      const org = this.currentOrg || 'default';
+      this.sandboxId = this.getSandboxIdForOrg(org);
+      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId);
     }
 
     // Use exec + curl because sandbox.fetch() routes through control plane, not to port 8080

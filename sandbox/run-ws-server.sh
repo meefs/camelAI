@@ -57,21 +57,13 @@ if [ ! -f "$FIRST_RUN_MARKER" ]; then
   touch "$FIRST_RUN_MARKER"
 fi
 
-# Create project dir and cd into it
-if [ -z "${PROJECT_ID:-}" ]; then
-  echo "[sandbox] PROJECT_ID is required but missing." >&2
-  exit 1
-fi
-PROJECT_DIR="$PROJECT_ID"
-mkdir -p "$TARGET_DIR/$PROJECT_DIR"
-
 # Seed a starter Workers-for-Platforms project on first run (when empty)
-if [ ! -f "$TARGET_DIR/$PROJECT_DIR/package.json" ] && [ -z "$(ls -A "$TARGET_DIR/$PROJECT_DIR" 2>/dev/null || true)" ]; then
-  echo "[sandbox] Seeding starter worker project into ${TARGET_DIR}/${PROJECT_DIR}..." >&2
-  cp -a /app/starter-worker/. "$TARGET_DIR/$PROJECT_DIR/"
+if [ ! -f "$TARGET_DIR/package.json" ] && [ -z "$(ls -A "$TARGET_DIR" 2>/dev/null || true)" ]; then
+  echo "[sandbox] Seeding starter worker project into ${TARGET_DIR}..." >&2
+  cp -a /app/starter-worker/. "$TARGET_DIR/"
 fi
 
-cd "$TARGET_DIR/$PROJECT_DIR"
+cd "$TARGET_DIR"
 
 # Write proxy credentials and start proxy
 write_proxy_creds

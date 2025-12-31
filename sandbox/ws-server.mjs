@@ -25,6 +25,7 @@ function createSession(id) {
     eventLoopRunning: false,
     messageResolver: null,
     messageQueue: [],
+    threadId: null,
     attachedWs: null,
     eventBuffer: [],
     nextEventId: 1,
@@ -268,7 +269,7 @@ function startEventLoop(session) {
         if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
           if (!session.claudeSessionId) {
             session.claudeSessionId = event.session_id;
-            logForPersistence({ type: 'session_id', sessionId: event.session_id });
+            logForPersistence({ type: 'session_id', threadId: session.threadId, sessionId: event.session_id });
             console.error('[ws-server] Got session ID:', session.claudeSessionId);
           }
         }
@@ -289,7 +290,7 @@ function startEventLoop(session) {
           // Persist if we have content (content is always an array of blocks)
           if (messageId && Array.isArray(content) && content.length > 0) {
             const contentJson = JSON.stringify(content);
-            logForPersistence({ type: 'assistant_message', id: messageId, content: contentJson });
+            logForPersistence({ type: 'assistant_message', id: messageId, threadId: session.threadId, content: contentJson });
             console.error('[ws-server] Persisted assistant message:', messageId);
           }
         }
@@ -317,6 +318,7 @@ function startEventLoop(session) {
       });
       bufferEvent(session, { type: 'error', error: errorMsg });
       logForPersistence({ type: 'error', error: errorMsg });
+      syncWorkspace();
     } finally {
       session.activeQuery = null;
       session.queryIterator = null;
@@ -329,7 +331,7 @@ function startEventLoop(session) {
 function handleUserMessage(session, content) {
   // Log user message for DB persistence with timestamp-based ID
   const msgId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  logForPersistence({ type: 'user_message', id: msgId, content });
+  logForPersistence({ type: 'user_message', id: msgId, threadId: session.threadId, content });
 
   // Initialize session if needed
   initSession(session);
@@ -411,10 +413,16 @@ Bun.serve({
 
         if (data.type === 'init') {
           const session = resolveSessionFromMessage(ws, data);
+          if (typeof data.threadId === 'string' && data.threadId) {
+            session.threadId = data.threadId;
+          }
           attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {
           const session = resolveSessionFromMessage(ws, data);
+          if (!session.threadId && typeof data.threadId === 'string' && data.threadId) {
+            session.threadId = data.threadId;
+          }
           handleUserMessage(session, data.content);
 
         } else if (data.type === 'stop') {
