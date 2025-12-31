@@ -98,8 +98,25 @@ async function handleSandboxPreview(request: Request, env: Env): Promise<Respons
   } else if (!previewToken) {
     return json({ error: 'Missing threadId' }, { status: 400 });
   }
-  const origin = new URL(request.url).origin;
-  return json({ url: `${origin}/preview/${encodeURIComponent(orgId)}/port/${port}`, port });
+
+  const sandboxId = getSandboxIdForOrg(orgId);
+  const sandbox = getSandbox(env.SANDBOX, sandboxId, { normalizeId: true });
+  const sandboxDoId = env.SANDBOX.idFromName(sandboxId).toString();
+  const hostname = new URL(request.url).hostname;
+
+  try {
+    console.log('[sandbox-preview] resolved sandbox', { orgId, sandboxId, sandboxDoId, hostname });
+    const existing = await sandbox.getExposedPorts(hostname);
+    const active = existing.find((entry) => entry.port === port && entry.status === 'active');
+    if (active) {
+      return json({ url: active.url, port: active.port });
+    }
+
+    const exposure = await sandbox.exposePort(port, { hostname });
+    return json({ url: exposure.url, port: exposure.port });
+  } catch (err) {
+    return json({ error: String(err) }, { status: 500 });
+  }
 }
 
 const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
@@ -410,23 +427,6 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-
-    const previewMatch = url.pathname.match(/^\/preview\/([^/]+)\/port\/(\d+)(?:\/(.*))?$/);
-    if (previewMatch) {
-      const orgId = decodeURIComponent(previewMatch[1]);
-      const port = Number(previewMatch[2]);
-      const restPath = previewMatch[3] ? `/${previewMatch[3]}` : '/';
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        return new Response('Invalid port', { status: 400 });
-      }
-
-      const sandboxId = getSandboxIdForOrg(orgId);
-      const sandbox = getSandbox(env.SANDBOX, sandboxId, { normalizeId: true });
-      const targetUrl = new URL(request.url);
-      targetUrl.pathname = restPath;
-      const proxiedRequest = new Request(targetUrl.toString(), request);
-      return sandbox.containerFetch(proxiedRequest, port);
-    }
 
     const sandboxProxy = await proxyToSandbox(request, { Sandbox: env.SANDBOX });
     if (sandboxProxy) {

@@ -90,12 +90,7 @@ const server = http.createServer((req, res) => {
   req.on('error', () => {});
   res.on('error', () => {});
   const target =
-    req.url && (
-      req.url.startsWith('/ws/') ||
-      req.url.startsWith('/client/v4/') ||
-      req.url.startsWith('/api/sandbox/preview') ||
-      req.url.startsWith('/preview/')
-    )
+    req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'))
       ? wranglerTarget
       : nextTarget;
   proxy.web(req, res, { target });
@@ -106,12 +101,7 @@ server.on('upgrade', (req, socket, head) => {
     console.error('[dev-proxy] socket error:', err.message);
   });
   const target =
-    req.url && (
-      req.url.startsWith('/ws/') ||
-      req.url.startsWith('/client/v4/') ||
-      req.url.startsWith('/api/sandbox/preview') ||
-      req.url.startsWith('/preview/')
-    )
+    req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'))
       ? wranglerTarget
       : nextTarget;
   console.log('[dev-proxy] WebSocket upgrade:', req.url, '->', target);
