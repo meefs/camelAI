@@ -1,4 +1,6 @@
-import Chat from '@/components/Chat';
+import { Suspense } from 'react';
+import { ChatLoading } from '@/components/chat-loading';
+import ChatPageContent from './chat-page-content';
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -6,5 +8,9 @@ interface PageProps {
 
 export default async function ChatPage({ params }: PageProps) {
   const { id } = await params;
-  return <Chat threadId={id} />;
+  return (
+    <Suspense fallback={<ChatLoading />}>
+      <ChatPageContent threadId={id} />
+    </Suspense>
+  );
 }

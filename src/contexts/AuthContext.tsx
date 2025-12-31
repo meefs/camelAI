@@ -27,16 +27,19 @@ export function useOptionalAuth() {
 
 interface AuthProviderProps {
   children: ReactNode;
+  initialState?: AuthState;
 }
 
-export function AuthProvider({ children }: AuthProviderProps) {
-  const [state, setState] = useState<AuthState>({
-    user: null,
-    currentOrg: null,
-    orgs: [],
-    loading: true,
-    error: null,
-  });
+export function AuthProvider({ children, initialState }: AuthProviderProps) {
+  const [state, setState] = useState<AuthState>(
+    initialState ?? {
+      user: null,
+      currentOrg: null,
+      orgs: [],
+      loading: true,
+      error: null,
+    }
+  );
 
   const refreshAuth = useCallback(async () => {
     try {
@@ -75,8 +78,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, []);
 
   useEffect(() => {
-    refreshAuth();
-  }, [refreshAuth]);
+    if (!initialState) {
+      refreshAuth();
+    }
+  }, [initialState, refreshAuth]);
 
   const login = async (email: string, password: string) => {
     setState((prev) => ({ ...prev, loading: true, error: null }));

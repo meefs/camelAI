@@ -16,11 +16,37 @@ export interface Project {
   updated_at: number;
 }
 
+// Content block types for structured message content
+export interface TextBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface ToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ToolResultBlock {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: string;
+}
+
+export interface ThinkingBlock {
+  type: 'thinking';
+  thinking: string;
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock;
+
 export interface Message {
   id: string;
   thread_id: string;
   role: 'user' | 'assistant';
-  content: string;
+  content: string | ContentBlock[];
   created_at: number;
 }
 

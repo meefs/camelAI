@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowDown, Copy, Check, RefreshCw, ExternalLink, X } from 'lucide-react';
-import type { Thread, Message } from '@/types';
+import type { Thread, Message, ContentBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   Tooltip,
@@ -19,6 +19,9 @@ import { cn } from '@/lib/utils';
 
 interface ChatProps {
   threadId?: string;
+  orgId: string;
+  initialThreads?: Thread[];
+  initialMessages?: Message[];
 }
 
 // Format timestamp to readable time (e.g., "12:25 PM")
@@ -30,32 +33,103 @@ function formatMessageTime(timestamp: number): string {
   });
 }
 
-// SDK event content block types
-interface TextBlock {
-  type: 'text';
-  text: string;
+// Convert content to string for copy functionality
+function contentToString(content: string | ContentBlock[]): string {
+  if (typeof content === 'string') return content;
+  return content
+    .map(block => {
+      if (block.type === 'text') return block.text;
+      if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
+      if (block.type === 'tool_result') return `[Result]\n${block.content}`;
+      if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+      return '';
+    })
+    .join('\n\n');
 }
 
-interface ToolUseBlock {
-  type: 'tool_use';
-  id: string;
-  name: string;
-  input: Record<string, unknown>;
+// Parse message content - handles both plain string and JSON-encoded ContentBlock[]
+function parseMessageContent(content: string | ContentBlock[]): string | ContentBlock[] {
+  // Already an array - return as-is
+  if (Array.isArray(content)) return content;
+
+  // Not a string - return as-is
+  if (typeof content !== 'string') return content;
+
+  // Try to parse as JSON array of content blocks
+  const trimmed = content.trim();
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].type) {
+        return parsed as ContentBlock[];
+      }
+    } catch {
+      // Not valid JSON - fall through to return as string
+    }
+  }
+
+  // Plain string content
+  return content;
 }
 
-interface ToolResultBlock {
-  type: 'tool_result';
-  tool_use_id: string;
-  content: string;
+// Render content blocks with proper styling
+function ContentBlockRenderer({ content, isStreaming = false }: { content: string | ContentBlock[]; isStreaming?: boolean }) {
+  // String content - render as markdown
+  if (typeof content === 'string') {
+    return <MarkdownRenderer content={content} isStreaming={isStreaming} />;
+  }
+
+  // Array of content blocks - render each with proper styling
+  return (
+    <div className="space-y-4">
+      {content.map((block, i) => (
+        <div key={i}>
+          {block.type === 'text' && (
+            <div className="max-w-none">
+              <MarkdownRenderer content={block.text} isStreaming={isStreaming} />
+            </div>
+          )}
+          {block.type === 'thinking' && (
+            <div className="bg-muted/50 border border-border px-4 py-3 rounded-xl">
+              <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+                <span className="font-medium">Thinking</span>
+              </div>
+              <p className="whitespace-pre-wrap text-muted-foreground text-sm">{block.thinking}</p>
+            </div>
+          )}
+          {block.type === 'tool_use' && (
+            <div className="bg-amber-500/10 border border-amber-500/20 px-4 py-3 rounded-xl">
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm mb-2">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <span className="font-mono font-medium">{block.name}</span>
+              </div>
+              <pre className="text-xs text-muted-foreground overflow-x-auto">{JSON.stringify(block.input, null, 2)}</pre>
+            </div>
+          )}
+          {block.type === 'tool_result' && (
+            <div className="bg-green-500/10 border border-green-500/20 px-4 py-3 rounded-xl">
+              <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm mb-2">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                <span className="font-medium">Result</span>
+              </div>
+              <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">{block.content}</pre>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 }
 
-interface ThinkingBlock {
-  type: 'thinking';
-  thinking: string;
-}
-
-type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock;
-
+// SDK event types (ContentBlock imported from @/types)
 interface SDKEvent {
   type: string;
   subtype?: string;
@@ -76,10 +150,13 @@ interface SDKEvent {
       type?: string;
       text?: string;
       stop_reason?: string;
+      partial_json?: string;
     };
     content_block?: {
       type: string;
       text?: string;
+      id?: string;
+      name?: string;
     };
   };
 }
@@ -90,20 +167,26 @@ interface StreamingState {
   isStreaming: boolean;
 }
 
-export default function Chat({ threadId }: ChatProps) {
+export default function Chat({ threadId, orgId, initialThreads, initialMessages }: ChatProps) {
   const router = useRouter();
   const { user, currentOrg, orgs, loading: authLoading, logout, switchOrg } = useAuth();
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const parsedInitialMessages = useMemo(
+    () => (initialMessages ?? []).map(msg => ({ ...msg, content: parseMessageContent(msg.content) })),
+    [initialMessages]
+  );
+  const [threads, setThreads] = useState<Thread[]>(initialThreads ?? []);
+  const [messages, setMessages] = useState<Message[]>(parsedInitialMessages);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false); // Container is ready to receive messages
   const [streaming, setStreaming] = useState<StreamingState>({ content: [], isStreaming: false });
+  const [error, setError] = useState<string | null>(null);
   const [welcomeInput, setWelcomeInput] = useState('');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [deployedApp, setDeployedApp] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [iframeKey, setIframeKey] = useState(0);
   const [iframeLoading, setIframeLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -112,13 +195,65 @@ export default function Chat({ threadId }: ChatProps) {
   const wsRef = useRef<WebSocket | null>(null);
   const isFirstMessage = useRef(true);
   const reconnectAttempts = useRef(0);
+  const currentMessageUuidRef = useRef<string | null>(null); // Track SDK uuid for stable deduplication
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const lastEventIdRef = useRef(0);
+  const initialMessagesRef = useRef<{ threadId?: string; messages: Message[] } | null>(
+    initialMessages ? { threadId, messages: parsedInitialMessages } : null
+  );
+  const initialThreadsRef = useRef<Thread[] | null>(initialThreads ?? null);
+  const initialThreadsOrgRef = useRef<string | null>(initialThreads ? orgId : null);
+
+  useEffect(() => {
+    if (initialMessages) {
+      initialMessagesRef.current = { threadId, messages: parsedInitialMessages };
+    }
+  }, [initialMessages, parsedInitialMessages, threadId]);
+
+  useEffect(() => {
+    if (initialThreads) {
+      initialThreadsRef.current = initialThreads;
+      initialThreadsOrgRef.current = orgId;
+    }
+  }, [initialThreads, orgId]);
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
   const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
   // Queue message to send when connection becomes ready
   const pendingMessageRef = useRef<string | null>(null);
+  const sessionStorageKey = useCallback((id: string) => `ws_session_${id}`, []);
+
+  const loadSessionState = useCallback((id: string) => {
+    try {
+      const stored = sessionStorage.getItem(sessionStorageKey(id));
+      if (stored) {
+        const parsed = JSON.parse(stored) as { sessionId?: string; lastEventId?: number };
+        sessionIdRef.current = typeof parsed.sessionId === 'string' ? parsed.sessionId : null;
+        lastEventIdRef.current = typeof parsed.lastEventId === 'number' ? parsed.lastEventId : 0;
+        return;
+      }
+    } catch (e) {
+      console.warn('Failed to load session state:', e);
+    }
+    sessionIdRef.current = null;
+    lastEventIdRef.current = 0;
+  }, [sessionStorageKey]);
+
+  const persistSessionState = useCallback((id: string) => {
+    try {
+      const payload = {
+        sessionId: sessionIdRef.current,
+        lastEventId: lastEventIdRef.current,
+      };
+      sessionStorage.setItem(sessionStorageKey(id), JSON.stringify(payload));
+    } catch (e) {
+      console.warn('Failed to persist session state:', e);
+    }
+  }, [sessionStorageKey]);
+
+  const resolvedOrgId = currentOrg?.id ?? orgId;
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -127,6 +262,15 @@ export default function Chat({ threadId }: ChatProps) {
     }
   }, [authLoading, user, router]);
 
+  useEffect(() => {
+    if (!threadId) {
+      sessionIdRef.current = null;
+      lastEventIdRef.current = 0;
+      return;
+    }
+    loadSessionState(threadId);
+  }, [threadId, loadSessionState]);
+
   const fetchThreads = useCallback(async () => {
     const res = await fetch('/api/threads');
     const data = await res.json() as unknown;
@@ -134,37 +278,42 @@ export default function Chat({ threadId }: ChatProps) {
   }, []);
 
   useEffect(() => {
-    if (user && currentOrg) {
+    if (user && resolvedOrgId) {
+      if (initialThreadsRef.current && initialThreadsOrgRef.current === resolvedOrgId) {
+        initialThreadsRef.current = null;
+        return;
+      }
       fetchThreads();
     }
-  }, [user, currentOrg, fetchThreads]);
+  }, [user, resolvedOrgId, fetchThreads]);
 
-  // Fetch messages from REST API - merges with existing to avoid losing local messages
+  // Fetch messages from REST API
   const fetchMessages = useCallback(async (threadId: string, isReconnect = false) => {
+    if (!isReconnect && initialMessagesRef.current?.threadId === threadId) {
+      setMessages(initialMessagesRef.current.messages);
+      isFirstMessage.current = initialMessagesRef.current.messages.length === 0;
+      initialMessagesRef.current = null;
+      return;
+    }
     try {
       const res = await fetch(`/api/threads/${threadId}/messages`);
       if (res.ok) {
         const data = await res.json() as unknown;
         const fetchedMsgs = Array.isArray(data) ? (data as Message[]) : [];
 
-        if (isReconnect) {
-          // Merge: keep local messages, add any from API that aren't already present
-          setMessages(prev => {
-            const existingIds = new Set(prev.map(m => m.id));
-            const newFromApi = fetchedMsgs.filter(m => !existingIds.has(m.id));
-            // Also check if API has messages we don't have locally
-            const apiIds = new Set(fetchedMsgs.map(m => m.id));
-            const localOnly = prev.filter(m => !apiIds.has(m.id));
-            // Combine: API messages + local-only messages, sorted by created_at
-            const merged = [...fetchedMsgs, ...localOnly].sort(
-              (a, b) => (a.created_at ?? 0) - (b.created_at ?? 0)
-            );
-            return merged;
-          });
-        } else {
-          // Fresh load - replace entirely
-          setMessages(fetchedMsgs);
-          isFirstMessage.current = fetchedMsgs.length === 0;
+        // Parse content for each message (handles JSON-encoded ContentBlock[])
+        const parsedMsgs = fetchedMsgs.map(msg => ({
+          ...msg,
+          content: parseMessageContent(msg.content),
+        }));
+
+        // Always replace with server state - local-only messages (local_*, turn_*)
+        // that weren't persisted are stale. Pending messages will be re-added
+        // when the ready event fires.
+        setMessages(parsedMsgs);
+
+        if (!isReconnect) {
+          isFirstMessage.current = parsedMsgs.length === 0;
         }
       }
     } catch (e) {
@@ -202,8 +351,8 @@ export default function Chat({ threadId }: ChatProps) {
     // WebSocket is handled by the worker at /ws/{threadId} on the same origin as the page.
     const wsHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const org = currentOrg?.id || 'default';
-    const wsUrl = `${protocol}//${wsHost}/ws/${id}?org=${org}`;
+    const orgIdForConnection = resolvedOrgId;
+    const wsUrl = `${protocol}//${wsHost}/ws/${id}?org=${orgIdForConnection}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -218,7 +367,9 @@ export default function Chat({ threadId }: ChatProps) {
       ws.send(JSON.stringify({
         type: 'init',
         threadId: id,
-        org: currentOrg?.id || 'default',
+        org: orgIdForConnection,
+        sessionId: sessionIdRef.current,
+        lastEventId: lastEventIdRef.current,
       }));
     };
 
@@ -230,23 +381,62 @@ export default function Chat({ threadId }: ChatProps) {
 
       const data = JSON.parse(event.data);
 
+      if (typeof data?.eventId === 'number') {
+        lastEventIdRef.current = Math.max(lastEventIdRef.current, data.eventId);
+        if (threadId) {
+          persistSessionState(threadId);
+        }
+      }
+
       if (data.type === 'ready') {
         // Container is ready to receive messages
         setReady(true);
 
         // Send pending message if exists (from welcome screen or queued while disconnected)
-        const storedMessage = sessionStorage.getItem('pendingMessage') || pendingMessageRef.current;
-        if (storedMessage) {
+        let storedMessage = pendingMessageRef.current;
+        const storedPayload = sessionStorage.getItem('pendingMessage');
+        if (storedPayload) {
           sessionStorage.removeItem('pendingMessage');
-          pendingMessageRef.current = null;
+          try {
+            const parsed = JSON.parse(storedPayload) as { message?: string; orgId?: string };
+            if (parsed.orgId === resolvedOrgId && typeof parsed.message === 'string') {
+              storedMessage = parsed.message;
+            }
+          } catch (e) {
+            console.warn('Failed to parse pending message:', e);
+          }
+        }
+        pendingMessageRef.current = null;
+        if (storedMessage) {
+
+          // Add user message to local state immediately
+          const userMsg: Message = {
+            id: `local_${Date.now()}`,
+            thread_id: id,
+            role: 'user',
+            content: storedMessage,
+            created_at: Date.now(),
+          };
+          setMessages(prev => [...prev, userMsg]);
+
           setLoading(true);
           setStreaming({ content: [], isStreaming: false });
           ws.send(JSON.stringify({
             type: 'message',
             content: storedMessage,
+            sessionId: sessionIdRef.current,
+            threadId: id,
           }));
           isFirstMessage.current = false;
           setTimeout(fetchThreads, 500);
+        }
+      } else if (data.type === 'session' && typeof data.sessionId === 'string') {
+        if (sessionIdRef.current && sessionIdRef.current !== data.sessionId) {
+          lastEventIdRef.current = 0;
+        }
+        sessionIdRef.current = data.sessionId;
+        if (threadId) {
+          persistSessionState(threadId);
         }
       } else if (data.type === 'sdk_event') {
         // Handle SDK events for streaming
@@ -259,67 +449,173 @@ export default function Chat({ threadId }: ChatProps) {
           // Handle streaming deltas
           const evt = sdkEvent.event;
           if (evt?.type === 'content_block_start') {
-            // Just mark as streaming, don't add block yet - let delta handle it
-            setStreaming(prev => ({ ...prev, isStreaming: true }));
-          } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
-            // Append or create text block
+            const block = evt.content_block;
+            if (block?.type === 'tool_use') {
+              // Add tool_use block immediately
+              setStreaming(prev => ({
+                ...prev,
+                isStreaming: true,
+                content: [...prev.content, {
+                  type: 'tool_use' as const,
+                  id: block.id || '',
+                  name: block.name || '',
+                  input: {},
+                }],
+              }));
+            } else {
+              // For text blocks, just mark as streaming - delta will add content
+              setStreaming(prev => ({ ...prev, isStreaming: true }));
+            }
+          } else if (evt?.type === 'content_block_delta') {
+            if (evt.delta?.type === 'text_delta' && evt.delta.text) {
+              // Append text to current text block or create new one
+              setStreaming(prev => {
+                const newContent = [...prev.content];
+                const lastBlock = newContent[newContent.length - 1];
+                if (lastBlock?.type === 'text') {
+                  newContent[newContent.length - 1] = {
+                    ...lastBlock,
+                    text: lastBlock.text + evt.delta!.text,
+                  };
+                } else {
+                  newContent.push({ type: 'text', text: evt.delta!.text! });
+                }
+                return { ...prev, content: newContent };
+              });
+            } else if (evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
+              // Append to tool_use input (accumulate JSON string)
+              setStreaming(prev => {
+                const newContent = [...prev.content];
+                const lastToolUse = [...newContent].reverse().find(b => b.type === 'tool_use');
+                if (lastToolUse && lastToolUse.type === 'tool_use') {
+                  const idx = newContent.indexOf(lastToolUse);
+                  const currentInput = (lastToolUse as any)._inputJson || '';
+                  newContent[idx] = {
+                    ...lastToolUse,
+                    _inputJson: currentInput + evt.delta!.partial_json,
+                  } as any;
+                }
+                return { ...prev, content: newContent };
+              });
+            }
+          } else if (evt?.type === 'content_block_stop') {
+            // Finalize tool_use input JSON
             setStreaming(prev => {
-              const newContent = [...prev.content];
-              const lastBlock = newContent[newContent.length - 1];
-              if (lastBlock?.type === 'text') {
-                // Append to existing text block
-                newContent[newContent.length - 1] = {
-                  ...lastBlock,
-                  text: lastBlock.text + evt.delta!.text,
-                };
-              } else {
-                // Create new text block
-                newContent.push({ type: 'text', text: evt.delta!.text! });
-              }
+              const newContent = prev.content.map(block => {
+                if (block.type === 'tool_use' && (block as any)._inputJson) {
+                  try {
+                    const input = JSON.parse((block as any)._inputJson);
+                    const { _inputJson, ...rest } = block as any;
+                    return { ...rest, input };
+                  } catch {
+                    return block;
+                  }
+                }
+                return block;
+              });
               return { ...prev, content: newContent };
             });
           } else if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
-            // Message complete
+            // Message streaming complete - just mark as not streaming
+            // Keep content for the 'assistant' handler to merge tool_result blocks
+            // The actual message will be added by the 'assistant' event handler
+            // to avoid duplicate messages (race condition with timestamp-based IDs)
             setStreaming(prev => ({ ...prev, isStreaming: false }));
           }
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
-          // Only use assistant events when streaming is done (has stop_reason)
-          // During streaming, we use deltas for smoother updates
+          // Track the SDK uuid for this message (stable across partial updates)
+          const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
+          const sdkMsgId = (sdkEvent.message as { id?: string }).id;
+          if (sdkUuid || sdkMsgId) {
+            currentMessageUuidRef.current = sdkUuid || sdkMsgId || null;
+          }
+
+          // Use full assistant message content when complete
           if (sdkEvent.message!.stop_reason) {
-            setStreaming(prev => ({
-              ...prev,
-              content: sdkEvent.message!.content,
-              isStreaming: false,
-            }));
+            const msgId = currentMessageUuidRef.current;
+            if (!msgId) {
+              console.error('No stable message ID available');
+              return;
+            }
+            const finalContent = [...sdkEvent.message!.content];
+
+            setStreaming(prev => {
+              // Include any tool_result blocks from streaming
+              const content = [...prev.content.filter(b => b.type === 'tool_result'), ...finalContent];
+              if (content.length > 0) {
+                setMessages(msgs => {
+                  // Check for duplicate using stable SDK ID
+                  if (msgs.some(m => m.id === msgId)) return msgs;
+                  return [...msgs, {
+                    id: msgId,
+                    thread_id: threadId || '',
+                    role: 'assistant' as const,
+                    content,
+                    created_at: Date.now(),
+                  }];
+                });
+              }
+              return { content: [], isStreaming: false };
+            });
+            setLoading(false);
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
-          // Append user content blocks (tool_result) to current assistant content
+          // Append user content blocks (tool_result) to current content
           setStreaming(prev => ({
             ...prev,
             content: [...prev.content, ...sdkEvent.message!.content],
           }));
         } else if (sdkEvent.type === 'result') {
-          // Query complete - clear loading and streaming state
-          setStreaming({ content: [], isStreaming: false });
+          // Query complete - add any remaining streaming content as fallback
+          // (in case 'assistant' handler didn't fire or stop_reason wasn't set)
+          const fallbackMsgId = currentMessageUuidRef.current;
+          setStreaming(prev => {
+            if (prev.content.length > 0 && fallbackMsgId) {
+              // There's still content - assistant handler didn't add it
+              setMessages(msgs => {
+                // Use the tracked SDK uuid for deduplication
+                if (msgs.some(m => m.id === fallbackMsgId)) return msgs;
+                return [...msgs, {
+                  id: fallbackMsgId,
+                  thread_id: threadId || '',
+                  role: 'assistant' as const,
+                  content: prev.content,
+                  created_at: Date.now(),
+                }];
+              });
+            }
+            return { content: [], isStreaming: false };
+          });
+          // Reset the uuid ref for next message
+          currentMessageUuidRef.current = null;
           setLoading(false);
         }
-      } else if (data.type === 'message') {
-        // Message from ws-server - add to messages list (with dedup)
-        setMessages(prev => {
-          if (prev.some(m => m.id === data.message.id)) return prev;
-          return [...prev, data.message];
-        });
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
+        setError(data.error || 'An unknown error occurred');
         setStreaming({ content: [], isStreaming: false });
         setLoading(false);
       } else if (data.type === 'deploy_success') {
         // Wrangler deploy completed - show the deployed app in iframe
         setDeployedApp(data.scriptName);
+        setPreviewUrl(null);
         setIframeLoading(true);
         setIframeKey(prev => prev + 1);
 
         // Auto-reload after 3 seconds to handle worker propagation delay
+        if (iframeRetryRef.current) {
+          clearTimeout(iframeRetryRef.current);
+        }
+        iframeRetryRef.current = setTimeout(() => {
+          setIframeKey(prev => prev + 1);
+        }, 3000);
+      } else if (data.type === 'preview_ready' && typeof data.url === 'string') {
+        // Local preview exposed - show it in iframe
+        setPreviewUrl(data.url);
+        setDeployedApp(null);
+        setIframeLoading(true);
+        setIframeKey(prev => prev + 1);
+
         if (iframeRetryRef.current) {
           clearTimeout(iframeRetryRef.current);
         }
@@ -366,14 +662,40 @@ export default function Chat({ threadId }: ChatProps) {
 
   // Track which threadId we're connected to
   const connectedThreadIdRef = useRef<string | null>(null);
+  const connectedOrgIdRef = useRef<string | null>(null);
+
+  // Cleanup on unmount to avoid orphaned WebSockets or reconnect timers
+  useEffect(() => {
+    return () => {
+      connectionIdRef.current++;
+      connectedThreadIdRef.current = null;
+      connectedOrgIdRef.current = null;
+
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+
+      if (iframeRetryRef.current) {
+        clearTimeout(iframeRetryRef.current);
+        iframeRetryRef.current = null;
+      }
+    };
+  }, []);
 
   // Connect when threadId changes
   useEffect(() => {
-    if (!threadId) {
-      // No threadId - cleanup any existing connection
+    if (!threadId || !resolvedOrgId) {
+      // No threadId or org - cleanup any existing connection
       if (connectedThreadIdRef.current) {
         connectionIdRef.current++;
         connectedThreadIdRef.current = null;
+        connectedOrgIdRef.current = null;
         if (wsRef.current) {
           wsRef.current.close();
           wsRef.current = null;
@@ -388,38 +710,45 @@ export default function Chat({ threadId }: ChatProps) {
       return;
     }
 
-    // Already connected to this thread? Nothing to do.
-    if (connectedThreadIdRef.current === threadId) {
+    const nextOrgId = resolvedOrgId;
+    const threadChanged = connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId;
+    const orgChanged = connectedOrgIdRef.current && connectedOrgIdRef.current !== nextOrgId;
+
+    // Already connected to this thread+org? Nothing to do.
+    if (connectedThreadIdRef.current === threadId && connectedOrgIdRef.current === nextOrgId) {
       return;
     }
 
-    // Switching threads - close old connection first
-    if (connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId) {
-      connectionIdRef.current++;
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
+    // Switching threads or orgs - close old connection first
+    if (connectedThreadIdRef.current || connectedOrgIdRef.current) {
+      if (threadChanged || orgChanged) {
+        connectionIdRef.current++;
+        if (wsRef.current) {
+          wsRef.current.close();
+          wsRef.current = null;
+        }
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
       }
     }
 
-    // Connect to the new thread
+    // Connect to the new thread/org
     connectedThreadIdRef.current = threadId;
+    connectedOrgIdRef.current = nextOrgId;
     connectWebSocketRef.current?.(threadId);
 
     // No cleanup function - we handle cleanup explicitly when threadId changes
     // This prevents StrictMode from closing connections on remount
     // Browser closes WebSocket automatically on navigation
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId]);
+  }, [threadId, resolvedOrgId]);
 
   // Reconnect on visibility change (tab becomes visible)
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && threadId) {
+      if (document.visibilityState === 'visible' && threadId && resolvedOrgId) {
         // Check if WebSocket is dead
         const needsReconnect = !wsRef.current ||
           wsRef.current.readyState === WebSocket.CLOSED ||
@@ -440,7 +769,7 @@ export default function Chat({ threadId }: ChatProps) {
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [threadId]);
+  }, [threadId, resolvedOrgId]);
 
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {
@@ -491,12 +820,12 @@ export default function Chat({ threadId }: ChatProps) {
   }
 
   async function startNewChat() {
-    if (!welcomeInput.trim() || isCreatingThread) return;
+    if (!welcomeInput.trim() || isCreatingThread || !resolvedOrgId) return;
 
     setIsCreatingThread(true);
     const msg = welcomeInput.trim();
     // Store in sessionStorage to survive component remount during navigation
-    sessionStorage.setItem('pendingMessage', msg);
+    sessionStorage.setItem('pendingMessage', JSON.stringify({ message: msg, orgId: resolvedOrgId }));
     setWelcomeInput('');
 
     try {
@@ -526,10 +855,25 @@ export default function Chat({ threadId }: ChatProps) {
   }
 
   function sendMessage() {
-    if (!input.trim() || !threadId || loading) return;
+    if (!input.trim() || !threadId || loading || !resolvedOrgId) {
+      return;
+    }
 
     const userMessage = input.trim();
     setInput('');
+
+    // Clear any previous error
+    setError(null);
+
+    // Add user message to local state immediately
+    const userMsg: Message = {
+      id: `local_${Date.now()}`,
+      thread_id: threadId,
+      role: 'user',
+      content: userMessage,
+      created_at: Date.now(),
+    };
+    setMessages(prev => [...prev, userMsg]);
 
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
@@ -538,6 +882,8 @@ export default function Chat({ threadId }: ChatProps) {
       wsRef.current.send(JSON.stringify({
         type: 'message',
         content: userMessage,
+        sessionId: sessionIdRef.current,
+        threadId,
       }));
 
       if (isFirstMessage.current) {
@@ -565,7 +911,7 @@ export default function Chat({ threadId }: ChatProps) {
         {threadId ? (
           <div className="flex-1 flex min-h-0">
             {/* Chat Panel */}
-            <div className={cn("flex flex-col min-h-0", deployedApp ? "w-1/2" : "flex-1")}>
+            <div className={cn("flex flex-col min-h-0", (previewUrl || deployedApp) ? "w-1/2" : "flex-1")}>
             {/* Chat Body - Single Scroll Container */}
             <div
               ref={scrollContainerRef}
@@ -580,7 +926,7 @@ export default function Chat({ threadId }: ChatProps) {
                         /* User message - right aligned with bubble and hover actions */
                         <div className="flex flex-col items-end gap-1">
                           <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
-                            <MarkdownRenderer content={msg.content} />
+                            <ContentBlockRenderer content={msg.content} />
                           </div>
                           {/* Hover action row */}
                           <div
@@ -597,7 +943,7 @@ export default function Chat({ threadId }: ChatProps) {
                                   variant="ghost"
                                   size="icon-sm"
                                   className="text-muted-foreground"
-                                  onClick={() => copyMessage(msg.id, msg.content)}
+                                  onClick={() => copyMessage(msg.id, contentToString(msg.content))}
                                 >
                                   {copiedMessageId === msg.id ? <Check /> : <Copy />}
                                 </Button>
@@ -612,7 +958,7 @@ export default function Chat({ threadId }: ChatProps) {
                         /* Assistant message - full width, no bubble, with hover actions */
                         <div className="flex flex-col gap-1">
                           <div className="max-w-none">
-                            <MarkdownRenderer content={msg.content} />
+                            <ContentBlockRenderer content={msg.content} />
                           </div>
                           {/* Hover action row */}
                           <div
@@ -629,7 +975,7 @@ export default function Chat({ threadId }: ChatProps) {
                                   variant="ghost"
                                   size="icon-sm"
                                   className="text-muted-foreground"
-                                  onClick={() => copyMessage(msg.id, msg.content)}
+                                  onClick={() => copyMessage(msg.id, contentToString(msg.content))}
                                 >
                                   {copiedMessageId === msg.id ? <Check /> : <Copy />}
                                 </Button>
@@ -708,6 +1054,29 @@ export default function Chat({ threadId }: ChatProps) {
                       <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                     </div>
                   )}
+
+                  {/* Error display */}
+                  {error && (
+                    <div className="bg-destructive/10 border border-destructive/20 px-4 py-3 rounded-xl">
+                      <div className="flex items-start gap-3">
+                        <svg className="w-5 h-5 text-destructive shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-destructive mb-1">Something went wrong</p>
+                          <p className="text-sm text-muted-foreground">{error}</p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="shrink-0 text-muted-foreground hover:text-foreground"
+                          onClick={() => setError(null)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   <div ref={messagesEndRef} />
                 </div>
             </div>
@@ -750,7 +1119,7 @@ export default function Chat({ threadId }: ChatProps) {
             </div>
 
             {/* Deployed App Preview */}
-            {deployedApp && (
+            {(previewUrl || deployedApp) && (
               <div className="w-1/2 border-l border-border flex flex-col bg-background">
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border">
                   <div className="flex items-center gap-2">
@@ -759,7 +1128,15 @@ export default function Chat({ threadId }: ChatProps) {
                     ) : (
                       <div className="w-2 h-2 bg-green-500 rounded-full" />
                     )}
-                    <span className="text-sm font-medium">{deployedApp}.chiridion.ai</span>
+                    <span className="text-sm font-medium">
+                      {previewUrl ? (() => {
+                        try {
+                          return new URL(previewUrl).host;
+                        } catch {
+                          return previewUrl;
+                        }
+                      })() : `${deployedApp}.chiridion.ai`}
+                    </span>
                     {iframeLoading && <span className="text-xs text-muted-foreground">Loading...</span>}
                   </div>
                   <div className="flex items-center gap-1">
@@ -786,7 +1163,7 @@ export default function Chat({ threadId }: ChatProps) {
                           asChild
                         >
                           <a
-                            href={`https://${deployedApp}.chiridion.ai`}
+                            href={previewUrl || `https://${deployedApp}.chiridion.ai`}
                             target="_blank"
                             rel="noopener noreferrer"
                           >
@@ -807,6 +1184,7 @@ export default function Chat({ threadId }: ChatProps) {
                               iframeRetryRef.current = null;
                             }
                             setDeployedApp(null);
+                            setPreviewUrl(null);
                             setIframeLoading(true);
                           }}
                         >
@@ -832,7 +1210,7 @@ export default function Chat({ threadId }: ChatProps) {
                   )}
                   <iframe
                     key={iframeKey}
-                    src={`https://${deployedApp}.chiridion.ai`}
+                    src={previewUrl || `https://${deployedApp}.chiridion.ai`}
                     className="w-full h-full bg-white"
                     title="Deployed App Preview"
                     onLoad={() => setIframeLoading(false)}

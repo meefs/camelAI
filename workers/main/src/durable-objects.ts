@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, parseSSEStream, type Sandbox, type LogEvent, type Process } from '@cloudflare/sandbox';
 import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
 import { createApiToken, deleteApiToken } from './api-tokens';
-import type { OrgDO } from './auth';
+import type { OrgDO, SessionDO } from './auth';
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
@@ -71,6 +71,7 @@ export interface ChatEnv {
   CHAT_INDEX: DurableObjectNamespace<ChatIndexDO>;
   SANDBOX: DurableObjectNamespace<Sandbox>;
   ORG: DurableObjectNamespace<OrgDO>;
+  SESSION: DurableObjectNamespace<SessionDO>;
   API_TOKENS: KVNamespace;
   R2_BUCKET: R2Bucket;
   ANTHROPIC_API_KEY: string;
@@ -84,6 +85,7 @@ export interface ChatEnv {
   R2_API_TOKEN?: string;
   R2_PARENT_ACCESS_KEY_ID?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
+  DEBUG_CLAUDE_AGENT_SDK?: string;
 }
 
 // One DO per org - stores thread list only
@@ -281,6 +283,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // These are intentionally transient - we re-warm after hibernation
   private warmingPromise: Promise<void> | null = null;
   private warmedForOrg: string | null = null;
+  // Track if log streaming is active to prevent duplicate streams
+  private isStreamingLogs = false;
+  // Custom waitForLog implementation - resolves when we see the target log line
+  private serverReadyResolver: ((value: void) => void) | null = null;
+  private serverReadyPromise: Promise<void> | null = null;
+  private sandboxId: string | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -291,6 +299,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     ctx.blockConcurrencyWhile(async () => {
       await this.initialize();
     });
+  }
+
+  private logSandboxDebug(message: string, data?: Record<string, unknown>) {
+    if (data) {
+      console.log('[DO][sandbox]', message, data);
+    } else {
+      console.log('[DO][sandbox]', message);
+    }
   }
 
   private async initialize() {
@@ -389,6 +405,42 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.sql.exec('DELETE FROM metadata WHERE key IN (?, ?, ?)', 'current_org', 'current_process_id', 'current_proxy_token');
   }
 
+  private getSandboxIdForOrg(org: string | null): string {
+    const rawOrg = org || this.currentOrg;
+    if (!rawOrg) {
+      throw new Error('Missing org for sandbox');
+    }
+    const safeOrg = rawOrg.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+    return `org-${safeOrg}`.slice(0, 63);
+  }
+
+  private async ensureProcessIdFromSandbox(): Promise<string | null> {
+    if (this.currentProcessId) return this.currentProcessId;
+    if (!this.sandbox) return null;
+    try {
+      const processes = await this.sandbox.listProcesses();
+      this.logSandboxDebug('listed sandbox processes', {
+        threadId: this.threadId,
+        org: this.currentOrg,
+        sandboxId: this.sandboxId,
+        count: processes.length,
+        processes: processes.map((p) => ({ id: p.id, status: p.status })),
+      });
+      const running = processes.find(p => p.status === 'running') || processes[0];
+      if (running) {
+        this.currentProcessId = running.id;
+        this.persistTransientState();
+        return running.id;
+      }
+    } catch (e) {
+      console.error('[DO] Failed to list sandbox processes:', {
+        threadId: this.threadId,
+        error: String(e),
+      });
+    }
+    return null;
+  }
+
   private async ensureProjectId(org: string): Promise<string | null> {
     if (this.projectId) return this.projectId;
     if (!this.threadId) {
@@ -474,6 +526,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
+  private async mintPreviewToken(orgId: string): Promise<string | null> {
+    try {
+      const result = await createApiToken(this.env.API_TOKENS, {
+        orgId,
+        userId: 'sandbox',
+        name: 'sandbox-preview-token',
+        scopes: ['preview'],
+        integrationId: null,
+        expiresAt: Date.now() + 60 * 60 * 1000, // 1 hour TTL
+      });
+      return result.tokenId;
+    } catch (e) {
+      console.error('[DO] Failed to mint preview token:', e);
+      return null;
+    }
+  }
+
   /**
    * Expire the current proxy token immediately.
    * Called when the sandbox process exits.
@@ -492,7 +561,29 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // WebSocket handling - proxies directly to container via wsConnect
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const org = url.searchParams.get('org') || 'default';
+    const org = url.searchParams.get('org');
+    if (!org) {
+      return new Response('Missing org', { status: 400 });
+    }
+    const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
+    const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
+    const sessionId = headerSessionId || cookieSessionId;
+    if (!sessionId) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+    const sessionStub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
+    const session = await sessionStub.getData();
+    if (!session) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+    if (session.org_id !== org) {
+      console.warn('[DO] WebSocket org mismatch', {
+        threadId: this.threadId,
+        requestedOrg: org,
+        sessionOrg: session.org_id,
+      });
+      return new Response('Forbidden', { status: 403 });
+    }
     const pathParts = url.pathname.split('/').filter(Boolean);
     const threadId = pathParts[pathParts.length - 1] || null;
     if (threadId && !this.threadId) {
@@ -503,10 +594,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         threadId
       );
     }
+    if (threadId) {
+      const indexStub = this.env.CHAT_INDEX.get(this.env.CHAT_INDEX.idFromName(org));
+      const thread = await indexStub.getThread(threadId);
+      if (!thread) {
+        return new Response('Thread not found', { status: 404 });
+      }
+    }
 
     // Accept WebSocket upgrades - proxy directly to container
     if (request.headers.get('Upgrade') === 'websocket') {
       this.currentOrg = org;
+
+      this.logSandboxDebug('websocket upgrade', {
+        threadId: this.threadId,
+        org,
+        currentProcessId: this.currentProcessId,
+        currentOrg: this.currentOrg,
+      });
 
       this.chiridionBaseUrl =
         getExternalOriginFromHeaders(request, url);
@@ -518,35 +623,72 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       await this.ensureDeployToken();
 
       // Get sandbox reference
-      const sandboxId = this.ctx.id.toString().slice(0, 63);
-      this.sandbox = getSandbox(this.env.SANDBOX, sandboxId);
+      this.sandboxId = this.getSandboxIdForOrg(org);
+      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId, { normalizeId: true });
+      const sandboxDoId = this.env.SANDBOX.idFromName(this.sandboxId).toString();
+      this.logSandboxDebug('sandbox resolved', {
+        threadId: this.threadId,
+        org,
+        sandboxId: this.sandboxId,
+        sandboxDoId,
+      });
 
       // Check if WS server is already running (survives DO hibernation)
       // Always check health endpoint - processId may be null after hibernation
       // but the container/process could still be running
       const alreadyReady = await this.checkWsServerReady();
+      this.logSandboxDebug('ws server ready check', {
+        threadId: this.threadId,
+        org,
+        sandboxId: this.sandboxId,
+        alreadyReady,
+      });
 
       if (!alreadyReady) {
+        this.logSandboxDebug('ws server not ready, starting new process', {
+          threadId: this.threadId,
+          org,
+          sandboxId: this.sandboxId,
+        });
         const process = await this.startWsServerProcess(org);
         if (!process) {
           console.error('[DO] Failed to start container');
           return new Response('Failed to start container', { status: 500 });
         }
 
-        // Start log streaming immediately to capture startup errors
+        // Create ready promise BEFORE starting log streaming
+        // This ensures we catch the log line when it comes through
+        const readyPromise = this.createServerReadyPromise(30000);
+
+        // Start log streaming - it will resolve the ready promise when it sees the log
         this.ctx.waitUntil(this.streamLogsForPersistence(process.id));
 
-        // Wait for the WS server to be ready by watching for startup log
+        // Wait for the WS server to be ready (detected via our log stream)
         try {
-          await process.waitForLog('[ws-server] Listening', 120000); // 2 min - R2 sync can be slow
+          await readyPromise;
         } catch (e) {
-          console.error('[DO] Container WS server failed to start:', e);
+          console.error('[DO] Container WS server failed to start:', {
+            threadId: this.threadId,
+            org,
+            processId: this.currentProcessId,
+            error: String(e),
+          });
           return new Response('Container WS server failed to start', { status: 500 });
         }
-      } else if (this.currentProcessId) {
+      } else if (!this.isStreamingLogs) {
         // Reusing existing process - ensure log streaming is running
         // (it may have stopped when DO hibernated)
-        this.ctx.waitUntil(this.streamLogsForPersistence(this.currentProcessId));
+        // Only start if not already streaming to prevent duplicate log processing
+        const processId = await this.ensureProcessIdFromSandbox();
+        if (processId) {
+          this.logSandboxDebug('reusing existing process', {
+            threadId: this.threadId,
+            org,
+            sandboxId: this.sandboxId,
+            processId,
+          });
+          this.ctx.waitUntil(this.streamLogsForPersistence(processId));
+        }
       }
 
       // Proxy WebSocket directly to container port 8080
@@ -559,6 +701,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // Start the WebSocket server process in the container
   private async startWsServerProcess(org: string): Promise<Process | null> {
     try {
+      this.logSandboxDebug('starting WS server process', {
+        threadId: this.threadId,
+        org,
+        sandboxId: this.sandboxId,
+        currentProcessId: this.currentProcessId,
+      });
+      console.log('[DO] Starting WS server process', {
+        threadId: this.threadId,
+        org,
+        hasApiKey: Boolean(this.env.ANTHROPIC_API_KEY),
+        hasProjectId: Boolean(this.projectId),
+      });
       const processEnv: Record<string, string> = {
         ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
       };
@@ -576,6 +730,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (this.chiridionBaseUrl) processEnv.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
       if (this.chiridionBaseUrl) processEnv.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl.replace(/\/+$/, '')}/client/v4`;
       if (this.chiridionSessionId) processEnv.CHIRIDION_SESSION_ID = this.chiridionSessionId;
+      if (this.threadId) processEnv.THREAD_ID = this.threadId;
+      if (org) processEnv.ORG_ID = org;
 
       // Configure Wrangler
       if (this.deployToken) processEnv.CLOUDFLARE_API_TOKEN = this.deployToken;
@@ -583,13 +739,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       processEnv.WRANGLER_SEND_METRICS = 'false';
       processEnv.CI = '1';
 
-      // Generate prefix-scoped temp credentials
-      const projectId = await this.ensureProjectId(org);
-      if (!projectId) {
-        console.error('[DO] Missing project_id for thread');
-        return null;
-      }
-      processEnv.PROJECT_ID = projectId;
+      // Generate org-scoped temp credentials (single shared workspace per org)
       const prefix = `${org}/`;
       processEnv.R2_PREFIX = prefix;
 
@@ -623,13 +773,34 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         processEnv.CHIRIDION_ORG_ID = org;
       }
 
+      const previewToken = await this.mintPreviewToken(org);
+      if (previewToken && this.chiridionBaseUrl) {
+        processEnv.CHIRIDION_PREVIEW_TOKEN = previewToken;
+        processEnv.CHIRIDION_PREVIEW_BASE_URL = this.chiridionBaseUrl;
+      }
+
       // Start the WS server process
       const process = await this.sandbox!.startProcess('sh /app/run-ws-server.sh', { env: processEnv });
       this.currentProcessId = process.id;
       this.persistTransientState();
+      this.logSandboxDebug('WS server process started', {
+        threadId: this.threadId,
+        org,
+        sandboxId: this.sandboxId,
+        processId: process.id,
+      });
+      console.log('[DO] WS server process started', {
+        threadId: this.threadId,
+        org,
+        processId: process.id,
+      });
       return process;
     } catch (e) {
-      console.error('[DO] Failed to start WS server process:', e);
+      console.error('[DO] Failed to start WS server process:', {
+        threadId: this.threadId,
+        org,
+        error: String(e),
+      });
       return null;
     }
   }
@@ -641,25 +812,119 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const result = await this.sandbox!.exec('curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health', {
         timeout: 2000
       });
+      this.logSandboxDebug('health check result', {
+        threadId: this.threadId,
+        org: this.currentOrg,
+        sandboxId: this.sandboxId,
+        exitCode: result.exitCode,
+        stdout: result.stdout?.trim(),
+        stderr: result.stderr?.trim(),
+      });
       return result.stdout?.trim() === '200';
-    } catch {
+    } catch (e) {
+      this.logSandboxDebug('health check failed', {
+        threadId: this.threadId,
+        org: this.currentOrg,
+        sandboxId: this.sandboxId,
+        error: String(e),
+      });
       return false;
     }
   }
 
+  // Create a promise that resolves when the server is ready (via log streaming)
+  private createServerReadyPromise(timeoutMs: number): Promise<void> {
+    this.serverReadyPromise = new Promise((resolve, reject) => {
+      this.serverReadyResolver = resolve;
+      // Set timeout for server startup
+      setTimeout(() => {
+        if (this.serverReadyResolver) {
+          this.serverReadyResolver = null;
+          reject(new Error(`Server did not become ready within ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+    });
+    return this.serverReadyPromise;
+  }
 
-  // Stream container logs in background for message persistence
+
+  // Stream container logs in background for:
+  // 1. Custom waitForLog - resolve ready promise when server starts
+  // 2. Message persistence - parse [PERSIST] prefixed JSON lines for DB storage
+  // 3. Session ID capture - store Claude session ID for resumption
   private async streamLogsForPersistence(processId: string): Promise<void> {
+    if (this.isStreamingLogs) {
+      return;
+    }
+    this.isStreamingLogs = true;
+
     try {
+      console.log('[DO] Starting sandbox log stream', { processId, threadId: this.threadId });
       const logStream = await this.sandbox!.streamProcessLogs(processId);
       let outputBuffer = '';
+      let stderrBuffer = '';
+      const PERSIST_PREFIX = '[PERSIST]';
 
       for await (const logEvent of parseSSEStream<LogEvent>(logStream)) {
-        // Forward container stderr to DO logs for debugging
+        // Parse persistence events from stderr (prefixed with [PERSIST])
         if (logEvent.type === 'stderr' && logEvent.data) {
-          console.log('[Container]', logEvent.data.trim());
+          stderrBuffer += logEvent.data;
+          const lines = stderrBuffer.split('\n');
+          stderrBuffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+
+            // Check for server ready log (for custom waitForLog)
+            if (line.includes('[ws-server] Listening') && this.serverReadyResolver) {
+              console.log('[DO] Server ready detected via log stream');
+              this.serverReadyResolver();
+              this.serverReadyResolver = null;
+            }
+
+            // Check for persistence events
+            if (line.startsWith(PERSIST_PREFIX)) {
+              try {
+                const jsonStr = line.slice(PERSIST_PREFIX.length);
+                const event = JSON.parse(jsonStr);
+                const eventThreadId = (event as { threadId?: string }).threadId;
+                if (!eventThreadId || !this.threadId || eventThreadId !== this.threadId) {
+                  continue;
+                }
+
+                // Persist user messages (use ID from log event for dedup)
+                if (event.type === 'user_message' && event.id) {
+                  this.addMessageWithId(event.id, 'user', event.content);
+                  console.log('[DO] Persisted user message:', event.id);
+                }
+
+                // Persist assistant messages (use ID from log event for dedup)
+                if (event.type === 'assistant_message' && event.id) {
+                  this.addMessageWithId(event.id, 'assistant', event.content);
+                  console.log('[DO] Persisted assistant message:', event.id);
+                }
+
+                // Store session ID
+                if (event.type === 'session_id') {
+                  this.claudeSessionId = event.sessionId;
+                  this.sql.exec(
+                    'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+                    'claude_session_id',
+                    event.sessionId
+                  );
+                  console.log('[DO] Stored Claude session ID:', event.sessionId);
+                }
+              } catch {
+                // Skip malformed lines
+              }
+            } else {
+              // Regular stderr logging
+              console.log('[Container]', line.trim());
+            }
+          }
         }
 
+        // Also check stdout for backwards compatibility
         if (logEvent.type === 'stdout' && logEvent.data) {
           outputBuffer += logEvent.data;
           const lines = outputBuffer.split('\n');
@@ -669,15 +934,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             if (!line.trim()) continue;
             try {
               const event = JSON.parse(line);
-
-              // Persist user messages
-              if (event.type === 'user_message') {
-                this.addMessage('user', event.content);
+              const eventThreadId = (event as { threadId?: string }).threadId;
+              if (!eventThreadId || !this.threadId || eventThreadId !== this.threadId) {
+                continue;
               }
 
-              // Persist assistant messages
-              if (event.type === 'assistant_message') {
-                this.addMessage('assistant', event.content);
+              // Persist user messages (use ID from log event for dedup)
+              if (event.type === 'user_message' && event.id) {
+                this.addMessageWithId(event.id, 'user', event.content);
+              }
+
+              // Persist assistant messages (use ID from log event for dedup)
+              if (event.type === 'assistant_message' && event.id) {
+                this.addMessageWithId(event.id, 'assistant', event.content);
               }
 
               // Store session ID
@@ -693,15 +962,29 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
               // Skip malformed lines
             }
           }
-        } else if (logEvent.type === 'exit') {
+        }
+
+        if (logEvent.type === 'exit') {
+          console.error('[DO] Sandbox process exited', {
+            processId,
+            threadId: this.threadId,
+            logEvent,
+          });
           // Clean up
           await this.expireProxyToken();
           this.currentProcessId = null;
+          this.isStreamingLogs = false;
           this.clearTransientState();
         }
       }
     } catch (e) {
-      console.error('[DO] Log streaming error:', e);
+      console.error('[DO] Log streaming error:', {
+        processId,
+        threadId: this.threadId,
+        error: String(e),
+      });
+    } finally {
+      this.isStreamingLogs = false;
     }
   }
 
@@ -725,10 +1008,35 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return this.sql.exec('SELECT id, ? as thread_id, role, content, created_at FROM messages ORDER BY created_at ASC', threadId).toArray() as unknown as Message[];
   }
 
-  addMessage(role: string, content: string): Message {
-    const id = crypto.randomUUID();
-    const now = Date.now();
+  /**
+   * Add a message with a specific ID (used by log streaming for dedup).
+   * Returns null if the ID already exists (log replay).
+   */
+  addMessageWithId(id: string, role: string, content: string): Message | null {
     const threadId = this.ctx.id.toString();
+
+    // Check if this exact ID already exists (dedup log replays)
+    const existing = this.sql.exec<{ id: string }>(
+      'SELECT id FROM messages WHERE id = ?',
+      id
+    ).toArray();
+
+    if (existing.length > 0) {
+      return null; // Already persisted, skip silently
+    }
+
+    const now = Date.now();
+    this.sql.exec('INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', id, role, content, now);
+    return { id, thread_id: threadId, role: role as 'user' | 'assistant', content, created_at: now };
+  }
+
+  /**
+   * Add a message with auto-generated ID (used by RPC for external callers).
+   */
+  addMessage(role: string, content: string): Message {
+    const threadId = this.ctx.id.toString();
+    const id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = Date.now();
     this.sql.exec('INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', id, role, content, now);
     return { id, thread_id: threadId, role: role as 'user' | 'assistant', content, created_at: now };
   }
@@ -745,24 +1053,34 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   async notifyDeploySuccess(scriptName: string): Promise<void> {
     console.log('[DO] Deploy success notification for script:', scriptName);
 
-    // With wsConnect(), we can't broadcast directly - send to container's /broadcast endpoint
-    if (this.sandbox) {
-      try {
-        const resp = await this.sandbox.fetch(new Request('http://localhost:8080/broadcast', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'deploy_success',
-            scriptName,
-            timestamp: Date.now(),
-          }),
-        }));
-        if (!resp.ok) {
-          console.error('[DO] Failed to broadcast deploy success:', resp.status);
-        }
-      } catch (e) {
-        console.error('[DO] Error broadcasting deploy success:', e);
+    // Ensure we have a sandbox reference
+    if (!this.sandbox) {
+      if (!this.currentOrg) {
+        console.error('[DO] Cannot broadcast deploy success without org');
+        return;
       }
+      this.sandboxId = this.getSandboxIdForOrg(this.currentOrg);
+      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId, { normalizeId: true });
+    }
+
+    // Use exec + curl because sandbox.fetch() routes through control plane, not to port 8080
+    try {
+      const payload = JSON.stringify({
+        type: 'deploy_success',
+        scriptName,
+        timestamp: Date.now(),
+      });
+      // Escape single quotes in payload for shell
+      const escapedPayload = payload.replace(/'/g, "'\\''");
+      const result = await this.sandbox.exec(
+        `curl -s -X POST -H 'Content-Type: application/json' -d '${escapedPayload}' http://localhost:8080/broadcast`,
+        { timeout: 5000 }
+      );
+      if (result.exitCode !== 0) {
+        console.error('[DO] Failed to broadcast deploy success:', result.stderr);
+      }
+    } catch (e) {
+      console.error('[DO] Error broadcasting deploy success:', e);
     }
   }
 }

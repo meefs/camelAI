@@ -14,6 +14,7 @@ import type {
   PaginationParams,
   Thread,
   Project,
+  Message,
 } from '@/types';
 import type { SessionData, UserProfile } from '../../workers/main/src/auth';
 import type { ApiTokenData } from '../../workers/main/src/api-tokens';
@@ -32,6 +33,13 @@ async function getRpc(): Promise<DoRpcService> {
 export async function getSession(sessionId: string): Promise<SessionData | null> {
   const rpc = await getRpc();
   return rpc.getSession(sessionId);
+}
+
+export async function getSessionWithUser(
+  sessionId: string
+): Promise<{ session: SessionData; user: UserProfile } | null> {
+  const rpc = await getRpc();
+  return rpc.getSessionWithUser(sessionId);
 }
 
 export async function createSession(
@@ -161,7 +169,7 @@ export async function adminGetAllProjects(): Promise<Array<{
 
 export async function adminGetThreadWithMessages(threadId: string): Promise<{
   thread: { id: string; title: string; project_id: string; created_by: string; created_at: number; updated_at: number };
-  messages: Array<{ id: string; thread_id: string; role: 'user' | 'assistant'; content: string; created_at: number }>;
+  messages: Message[];
   org_id: string;
 } | null> {
   const rpc = await getRpc();

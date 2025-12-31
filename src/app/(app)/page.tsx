@@ -1,5 +1,11 @@
-import Chat from '@/components/Chat';
+import { Suspense } from 'react';
+import { ChatLoading } from '@/components/chat-loading';
+import HomeContent from './page-content';
 
 export default function Home() {
-  return <Chat />;
+  return (
+    <Suspense fallback={<ChatLoading />}>
+      <HomeContent />
+    </Suspense>
+  );
 }

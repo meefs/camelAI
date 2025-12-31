@@ -1,23 +1,29 @@
-# OpenNext Starter
+# Chiridion App Starter
 
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Starter template for Chiridion: Next.js UI + Cloudflare Workers + Containers, with streaming AI over WebSockets.
 
 ## Getting Started
 
-Read the documentation at https://opennext.js.org/cloudflare.
+Read the OpenNext Cloudflare docs at https://opennext.js.org/cloudflare.
 
 ## Develop
 
-Run the local Cloudflare Workers dev server (full Durable Objects support). This watches files and rebuilds the OpenNext bundle on changes:
+Run the local dev stack (wrangler dev + next dev + proxy):
 
 ```bash
 npm run dev
 # or similar package manager command
 ```
 
-Open [http://localhost:8787](http://localhost:8787) with your browser to see the result.
+The proxy routes `/ws/*` and `/client/v4/*` to Wrangler and everything else to Next:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- App: http://localhost:3100
+- Wrangler: http://localhost:8787
+- Next: http://localhost:3001
+
+Override ports with `PROXY_DEV_PORT`, `WRANGLER_DEV_PORT`, `NEXT_DEV_PORT`.
+
+You can start editing the UI in `src/app/`.
 
 ## Preview
 
@@ -33,8 +39,14 @@ npm run preview
 Deploy the application to Cloudflare:
 
 ```bash
-npm run deploy
+npm run deploy:prod
 # or similar package manager command
+```
+
+Staging:
+
+```bash
+npm run deploy:staging
 ```
 
 ## R2 Mount (Sandbox Home Dir)
@@ -55,7 +67,7 @@ npx wrangler secret put AWS_SECRET_ACCESS_KEY
 
 ## Sandbox Starter Worker (WFP)
 
-On first run, the sandbox seeds a starter Workers for Platforms project into `$HOME/project` from `sandbox/starter-worker`.
+On first run, the sandbox seeds a starter Workers for Platforms project into `$HOME/project` from `sandbox/starter-worker` (the template is baked into the container image via `Dockerfile`).
 
 Inside the sandbox, you can deploy it via the app’s proxy endpoint:
 
