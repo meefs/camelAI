@@ -406,11 +406,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private getSandboxIdForOrg(org: string | null): string {
-    const rawOrg = org || this.currentOrg;
-    if (!rawOrg) {
-      throw new Error('Missing org for sandbox');
-    }
-    const safeOrg = rawOrg.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+    const rawOrg = org || this.currentOrg || 'default';
+    const safeOrg = rawOrg.replace(/[^a-zA-Z0-9_-]/g, '_');
     return `org-${safeOrg}`.slice(0, 63);
   }
 
@@ -1032,12 +1029,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // Ensure we have a sandbox reference
     if (!this.sandbox) {
-      if (!this.currentOrg) {
-        console.error('[DO] Cannot broadcast deploy success without org');
-        return;
-      }
-      this.sandboxId = this.getSandboxIdForOrg(this.currentOrg);
-      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId, { normalizeId: true });
+      const org = this.currentOrg || 'default';
+      this.sandboxId = this.getSandboxIdForOrg(org);
+      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId);
     }
 
     // Use exec + curl because sandbox.fetch() routes through control plane, not to port 8080
