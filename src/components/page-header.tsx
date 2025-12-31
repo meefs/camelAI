@@ -25,7 +25,7 @@ interface PageHeaderProps {
 
 export function PageHeader({ breadcrumbs, className }: PageHeaderProps) {
   return (
-    <header className={cn("sticky top-0 z-30 shrink-0 bg-background shadow-sm", className)}>
+    <header className={cn("sticky top-0 z-30 shrink-0 bg-background", className)}>
       <div className="flex h-12 items-center gap-2 px-4">
         <SidebarTrigger className="-ml-1" />
         <div

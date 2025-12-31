@@ -23,30 +23,30 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle } from 'lucide-react';
 
-interface AddIntegrationDialogProps {
+interface AddConnectionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  integrationType: string;
-  integrationTypes: IntegrationDefinition[];
+  connectionType: string;
+  connectionTypes: IntegrationDefinition[];
   orgId: string;
   onSuccess: () => void;
 }
 
-export function AddIntegrationDialog({
+export function AddConnectionDialog({
   open,
   onOpenChange,
-  integrationType,
-  integrationTypes,
+  connectionType,
+  connectionTypes,
   orgId,
   onSuccess,
-}: AddIntegrationDialogProps) {
+}: AddConnectionDialogProps) {
   const [name, setName] = useState('');
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [credentials, setCredentials] = useState<Record<string, unknown>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const typeDef = integrationTypes.find((t) => t.type === integrationType);
+  const typeDef = connectionTypes.find((t) => t.type === connectionType);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,8 +58,8 @@ export function AddIntegrationDialog({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          integration_type: integrationType,
-          name: name.trim() || typeDef?.displayName || integrationType,
+          integration_type: connectionType,
+          name: name.trim() || typeDef?.displayName || connectionType,
           config,
           credentials,
         }),
@@ -67,7 +67,7 @@ export function AddIntegrationDialog({
 
       if (!res.ok) {
         const data = (await res.json()) as { error?: string };
-        throw new Error(data.error || 'Failed to create integration');
+        throw new Error(data.error || 'Failed to create connection');
       }
 
       // Reset form
@@ -76,7 +76,7 @@ export function AddIntegrationDialog({
       setCredentials({});
       onSuccess();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create integration');
+      setError(err instanceof Error ? err.message : 'Failed to create connection');
     } finally {
       setSubmitting(false);
     }
@@ -102,12 +102,10 @@ export function AddIntegrationDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="border-zinc-800 bg-zinc-900 text-white sm:max-w-md">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Add {typeDef.displayName}</DialogTitle>
-          <DialogDescription className="text-zinc-400">
-            {typeDef.description}
-          </DialogDescription>
+          <DialogDescription>{typeDef.description}</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit}>
@@ -127,10 +125,9 @@ export function AddIntegrationDialog({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder={typeDef.displayName}
-                className="border-zinc-700 bg-zinc-800"
               />
-              <p className="text-xs text-zinc-500">
-                A friendly name to identify this integration
+              <p className="text-xs text-muted-foreground">
+                A friendly name to identify this connection
               </p>
             </div>
 
@@ -146,10 +143,10 @@ export function AddIntegrationDialog({
                     value={(config[field.name] as string) || (field.default as string) || ''}
                     onValueChange={(value) => updateConfig(field.name, value)}
                   >
-                    <SelectTrigger className="border-zinc-700 bg-zinc-800">
+                    <SelectTrigger>
                       <SelectValue placeholder={`Select ${field.label.toLowerCase()}`} />
                     </SelectTrigger>
-                    <SelectContent className="border-zinc-700 bg-zinc-800">
+                    <SelectContent>
                       {field.options.map((opt) => (
                         <SelectItem key={opt.value} value={opt.value}>
                           {opt.label}
@@ -170,7 +167,6 @@ export function AddIntegrationDialog({
                     }
                     placeholder={field.placeholder}
                     required={field.required}
-                    className="border-zinc-700 bg-zinc-800"
                   />
                 )}
               </div>
@@ -179,8 +175,8 @@ export function AddIntegrationDialog({
             {/* Credential fields */}
             {typeDef.credentialSchema.length > 0 && (
               <>
-                <div className="mt-2 border-t border-zinc-800 pt-4">
-                  <p className="mb-3 text-sm font-medium text-zinc-300">
+                <div className="mt-2 border-t pt-4">
+                  <p className="mb-3 text-sm font-medium">
                     Credentials
                   </p>
                 </div>
@@ -197,7 +193,6 @@ export function AddIntegrationDialog({
                       onChange={(e) => updateCredentials(field.name, e.target.value)}
                       placeholder={field.placeholder}
                       required={field.required}
-                      className="border-zinc-700 bg-zinc-800"
                     />
                   </div>
                 ))}
@@ -206,10 +201,10 @@ export function AddIntegrationDialog({
 
             {/* OAuth notice */}
             {typeDef.authMethod === 'oauth2' && (
-              <Alert className="border-zinc-700 bg-zinc-800">
-                <AlertDescription className="text-zinc-400">
-                  This integration uses OAuth 2.0. After saving, you&apos;ll be
-                  redirected to authorize access.
+              <Alert>
+                <AlertDescription>
+                  This connection uses OAuth 2.0. After saving, you&apos;ll be redirected to
+                  authorize access.
                 </AlertDescription>
               </Alert>
             )}
@@ -225,7 +220,7 @@ export function AddIntegrationDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={submitting}>
-              {submitting ? 'Creating...' : 'Create Integration'}
+              {submitting ? 'Creating...' : 'Create Connection'}
             </Button>
           </DialogFooter>
         </form>

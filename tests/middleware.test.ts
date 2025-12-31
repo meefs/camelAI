@@ -108,14 +108,14 @@ describe('Auth Middleware', () => {
       expect(redirectCall.searchParams.get('redirect')).toBe('/chat/123');
     });
 
-    it('should redirect /settings/integrations to login without session', () => {
-      const request = createMockRequest('/settings/integrations');
+    it('should redirect /connections to login without session', () => {
+      const request = createMockRequest('/connections');
       middleware(request);
 
       expect(NextResponse.redirect).toHaveBeenCalled();
       const redirectCall = vi.mocked(NextResponse.redirect).mock.calls[0][0] as URL;
       expect(redirectCall.pathname).toBe('/login');
-      expect(redirectCall.searchParams.get('redirect')).toBe('/settings/integrations');
+      expect(redirectCall.searchParams.get('redirect')).toBe('/connections');
     });
 
     it('should redirect /history to login without session', () => {
@@ -146,8 +146,8 @@ describe('Auth Middleware', () => {
       expect(NextResponse.redirect).not.toHaveBeenCalled();
     });
 
-    it('should allow access to /settings/integrations with session', () => {
-      const request = createMockRequest('/settings/integrations', { hasSession: true });
+    it('should allow access to /connections with session', () => {
+      const request = createMockRequest('/connections', { hasSession: true });
       middleware(request);
 
       expect(NextResponse.next).toHaveBeenCalled();
