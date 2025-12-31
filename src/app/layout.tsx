@@ -44,13 +44,15 @@ export default async function RootLayout({
         authDO.getUserOrgs(user.id),
       ]);
       if (currentOrg) {
-        initialAuth = {
+        const plainAuth = {
           user,
           currentOrg,
           orgs,
           loading: false,
           error: null,
         };
+        // Ensure data passed to the client is a plain object (no class instances/prototypes).
+        initialAuth = JSON.parse(JSON.stringify(plainAuth)) as AuthState;
       }
     }
   }
