@@ -189,12 +189,43 @@ export default function Chat({ threadId }: ChatProps) {
   const reconnectAttempts = useRef(0);
   const currentMessageUuidRef = useRef<string | null>(null); // Track SDK uuid for stable deduplication
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const lastEventIdRef = useRef(0);
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
   const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
   // Queue message to send when connection becomes ready
   const pendingMessageRef = useRef<string | null>(null);
+  const sessionStorageKey = useCallback((id: string) => `ws_session_${id}`, []);
+
+  const loadSessionState = useCallback((id: string) => {
+    try {
+      const stored = sessionStorage.getItem(sessionStorageKey(id));
+      if (stored) {
+        const parsed = JSON.parse(stored) as { sessionId?: string; lastEventId?: number };
+        sessionIdRef.current = typeof parsed.sessionId === 'string' ? parsed.sessionId : null;
+        lastEventIdRef.current = typeof parsed.lastEventId === 'number' ? parsed.lastEventId : 0;
+        return;
+      }
+    } catch (e) {
+      console.warn('Failed to load session state:', e);
+    }
+    sessionIdRef.current = null;
+    lastEventIdRef.current = 0;
+  }, [sessionStorageKey]);
+
+  const persistSessionState = useCallback((id: string) => {
+    try {
+      const payload = {
+        sessionId: sessionIdRef.current,
+        lastEventId: lastEventIdRef.current,
+      };
+      sessionStorage.setItem(sessionStorageKey(id), JSON.stringify(payload));
+    } catch (e) {
+      console.warn('Failed to persist session state:', e);
+    }
+  }, [sessionStorageKey]);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -202,6 +233,15 @@ export default function Chat({ threadId }: ChatProps) {
       router.push('/login');
     }
   }, [authLoading, user, router]);
+
+  useEffect(() => {
+    if (!threadId) {
+      sessionIdRef.current = null;
+      lastEventIdRef.current = 0;
+      return;
+    }
+    loadSessionState(threadId);
+  }, [threadId, loadSessionState]);
 
   const fetchThreads = useCallback(async () => {
     const res = await fetch('/api/threads');
@@ -290,6 +330,8 @@ export default function Chat({ threadId }: ChatProps) {
         type: 'init',
         threadId: id,
         org: currentOrg?.id || 'default',
+        sessionId: sessionIdRef.current,
+        lastEventId: lastEventIdRef.current,
       }));
     };
 
@@ -300,6 +342,13 @@ export default function Chat({ threadId }: ChatProps) {
       }
 
       const data = JSON.parse(event.data);
+
+      if (typeof data?.eventId === 'number') {
+        lastEventIdRef.current = Math.max(lastEventIdRef.current, data.eventId);
+        if (threadId) {
+          persistSessionState(threadId);
+        }
+      }
 
       if (data.type === 'ready') {
         // Container is ready to receive messages
@@ -326,9 +375,18 @@ export default function Chat({ threadId }: ChatProps) {
           ws.send(JSON.stringify({
             type: 'message',
             content: storedMessage,
+            sessionId: sessionIdRef.current,
           }));
           isFirstMessage.current = false;
           setTimeout(fetchThreads, 500);
+        }
+      } else if (data.type === 'session' && typeof data.sessionId === 'string') {
+        if (sessionIdRef.current && sessionIdRef.current !== data.sessionId) {
+          lastEventIdRef.current = 0;
+        }
+        sessionIdRef.current = data.sessionId;
+        if (threadId) {
+          persistSessionState(threadId);
         }
       } else if (data.type === 'sdk_event') {
         // Handle SDK events for streaming
@@ -758,6 +816,7 @@ export default function Chat({ threadId }: ChatProps) {
       wsRef.current.send(JSON.stringify({
         type: 'message',
         content: userMessage,
+        sessionId: sessionIdRef.current,
       }));
 
       if (isFirstMessage.current) {

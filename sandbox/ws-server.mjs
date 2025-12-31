@@ -11,15 +11,42 @@ if (!ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-// State
-let sessionId = process.env.RESUME_SESSION_ID || null;
-let activeQuery = null;
-let messageResolver = null;
-let queryIterator = null;
-let messageQueue = []; // Queue for messages arriving before resolver is ready
+// Session state
+const sessions = new Map();
+const MAX_EVENT_BUFFER = 500;
+let lastSessionId = null;
 
-if (sessionId) {
-  console.error('[ws-server] Will resume Claude session:', sessionId);
+function createSession(id) {
+  const session = {
+    id,
+    claudeSessionId: null,
+    activeQuery: null,
+    queryIterator: null,
+    eventLoopRunning: false,
+    messageResolver: null,
+    messageQueue: [],
+    attachedWs: null,
+    eventBuffer: [],
+    nextEventId: 1,
+  };
+  sessions.set(id, session);
+  lastSessionId = id;
+  return session;
+}
+
+function getOrCreateSession(id) {
+  if (id && sessions.has(id)) return sessions.get(id);
+  if (id && !sessions.has(id)) return createSession(id);
+  if (lastSessionId && sessions.has(lastSessionId)) return sessions.get(lastSessionId);
+  const newId = crypto.randomUUID();
+  return createSession(newId);
+}
+
+function resolveSessionFromMessage(ws, data) {
+  if (data?.sessionId) return getOrCreateSession(data.sessionId);
+  const wsSessionId = ws?.data?.sessionId;
+  if (wsSessionId && sessions.has(wsSessionId)) return sessions.get(wsSessionId);
+  return getOrCreateSession(null);
 }
 
 // Log for DO persistence (NDJSON format)
@@ -58,7 +85,7 @@ function syncWorkspace() {
 }
 
 // Query options for Claude SDK
-function getQueryOptions() {
+function getQueryOptions(session) {
   const options = {
     includePartialMessages: true,
     permissionMode: 'bypassPermissions',
@@ -67,24 +94,24 @@ function getQueryOptions() {
     settingSources: ['project', 'user'],
   };
 
-  if (sessionId) {
-    options.resume = sessionId;
+  if (session.claudeSessionId) {
+    options.resume = session.claudeSessionId;
   }
 
   return options;
 }
 
 // Async generator that yields user messages on demand
-async function* createMessageStream() {
+async function* createMessageStream(session) {
   while (true) {
     // Check queue first for any buffered messages
     let message;
-    if (messageQueue.length > 0) {
-      message = messageQueue.shift();
+    if (session.messageQueue.length > 0) {
+      message = session.messageQueue.shift();
     } else {
       // Wait for next message
       message = await new Promise((resolve) => {
-        messageResolver = resolve;
+        session.messageResolver = resolve;
       });
     }
 
@@ -96,7 +123,7 @@ async function* createMessageStream() {
     // Yield the user message
     yield {
       type: 'user',
-      session_id: sessionId || '',
+      session_id: session.claudeSessionId || '',
       message: {
         role: 'user',
         content: [{ type: 'text', text: message }],
@@ -106,44 +133,89 @@ async function* createMessageStream() {
   }
 }
 
+function bufferEvent(session, payload) {
+  const eventId = session.nextEventId++;
+  const envelope = { ...payload, eventId, sessionId: session.id };
+  session.eventBuffer.push(envelope);
+  if (session.eventBuffer.length > MAX_EVENT_BUFFER) {
+    session.eventBuffer.shift();
+  }
+  if (session.attachedWs) {
+    try {
+      session.attachedWs.send(JSON.stringify(envelope));
+    } catch (e) {
+      console.error('[ws-server] Failed to send event:', e);
+      session.attachedWs = null;
+    }
+  }
+  return envelope;
+}
+
+function replayBufferedEvents(session, ws, lastEventId) {
+  const fromId = Number.isFinite(lastEventId) ? lastEventId : 0;
+  for (const envelope of session.eventBuffer) {
+    if (envelope.eventId > fromId) {
+      try {
+        ws.send(JSON.stringify(envelope));
+      } catch (e) {
+        console.error('[ws-server] Failed to replay event:', e);
+        break;
+      }
+    }
+  }
+}
+
+function attachSession(ws, session, lastEventId) {
+  if (session.attachedWs && session.attachedWs !== ws) {
+    try {
+      session.attachedWs.close(1000, 'replaced');
+    } catch {
+      // ignore
+    }
+  }
+  session.attachedWs = ws;
+  ws.data = { sessionId: session.id };
+  ws.send(JSON.stringify({ type: 'session', sessionId: session.id }));
+  ws.send(JSON.stringify({ type: 'ready' }));
+  replayBufferedEvents(session, ws, lastEventId);
+}
+
 // Initialize the stateful query session
-let eventLoopRunning = false;
+function initSession(session) {
+  if (session.activeQuery) return;
 
-function initSession() {
-  if (activeQuery) return;
+  console.error('[ws-server] Initializing stateful session', session.id);
+  const options = getQueryOptions(session);
+  const messageStream = createMessageStream(session);
 
-  console.error('[ws-server] Initializing stateful session');
-  const options = getQueryOptions();
-  const messageStream = createMessageStream();
-
-  activeQuery = query({ prompt: messageStream, options });
-  queryIterator = activeQuery[Symbol.asyncIterator]();
+  session.activeQuery = query({ prompt: messageStream, options });
+  session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
 }
 
 // Start continuous event loop - runs until query ends or error
-function startEventLoop(ws) {
-  if (eventLoopRunning || !queryIterator) return;
-  eventLoopRunning = true;
+function startEventLoop(session) {
+  if (session.eventLoopRunning || !session.queryIterator) return;
+  session.eventLoopRunning = true;
 
   (async () => {
     try {
       while (true) {
-        const { value: event, done } = await queryIterator.next();
+        const { value: event, done } = await session.queryIterator.next();
 
         if (done) {
           console.error('[ws-server] Query completed');
           break;
         }
 
-        // Send event to client via WebSocket
-        ws.send(JSON.stringify({ type: 'sdk_event', event }));
+        // Send event to client via WebSocket (or buffer if detached)
+        bufferEvent(session, { type: 'sdk_event', event });
 
         // Capture session ID from init event
         if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-          if (!sessionId) {
-            sessionId = event.session_id;
+          if (!session.claudeSessionId) {
+            session.claudeSessionId = event.session_id;
             logForPersistence({ type: 'session_id', sessionId: event.session_id });
-            console.error('[ws-server] Got session ID:', sessionId);
+            console.error('[ws-server] Got session ID:', session.claudeSessionId);
           }
         }
 
@@ -183,41 +255,45 @@ function startEventLoop(ws) {
     } catch (e) {
       const errorMsg = String(e);
       console.error('[ws-server] Query error:', errorMsg);
-      ws.send(JSON.stringify({ type: 'error', error: errorMsg }));
+      bufferEvent(session, { type: 'error', error: errorMsg });
       logForPersistence({ type: 'error', error: errorMsg });
     } finally {
-      activeQuery = null;
-      queryIterator = null;
-      eventLoopRunning = false;
+      session.activeQuery = null;
+      session.queryIterator = null;
+      session.eventLoopRunning = false;
     }
   })();
 }
 
 // Handle a user message
-function handleUserMessage(ws, content) {
+function handleUserMessage(session, content) {
   // Log user message for DB persistence with timestamp-based ID
   const msgId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   logForPersistence({ type: 'user_message', id: msgId, content });
 
   // Initialize session if needed
-  initSession();
+  initSession(session);
 
   // Start event loop if not running (it runs continuously)
-  startEventLoop(ws);
+  startEventLoop(session);
 
   // Feed message to the generator
-  if (messageResolver) {
-    const resolver = messageResolver;
-    messageResolver = null;
+  if (session.messageResolver) {
+    const resolver = session.messageResolver;
+    session.messageResolver = null;
     resolver(content);
   } else {
     // Queue message - will be picked up when generator pulls
-    messageQueue.push(content);
+    session.messageQueue.push(content);
   }
 }
 
-// Track active WebSocket connection
-let activeWs = null;
+// Resume default session if provided by env (single-session compatibility)
+if (process.env.RESUME_SESSION_ID) {
+  const resumed = createSession(crypto.randomUUID());
+  resumed.claudeSessionId = process.env.RESUME_SESSION_ID;
+  console.error('[ws-server] Will resume Claude session:', resumed.claudeSessionId);
+}
 
 // Bun WebSocket server with HTTP health endpoint
 Bun.serve({
@@ -231,12 +307,18 @@ Bun.serve({
       return new Response('ok', { status: 200 });
     }
 
-    // Broadcast endpoint - receives messages from DO to forward to connected client
+    // Broadcast endpoint - receives messages from DO to forward to connected client(s)
     if (url.pathname === '/broadcast' && req.method === 'POST') {
       try {
         const data = await req.json();
-        if (activeWs) {
-          activeWs.send(JSON.stringify(data));
+        let sent = false;
+        for (const session of sessions.values()) {
+          if (session.attachedWs) {
+            session.attachedWs.send(JSON.stringify(data));
+            sent = true;
+          }
+        }
+        if (sent) {
           return new Response('ok', { status: 200 });
         }
         return new Response('No active WebSocket connection', { status: 503 });
@@ -260,7 +342,6 @@ Bun.serve({
   websocket: {
     open(ws) {
       console.error('[ws-server] WebSocket connection opened');
-      activeWs = ws;
     },
 
     async message(ws, message) {
@@ -269,20 +350,18 @@ Bun.serve({
         const data = JSON.parse(message);
 
         if (data.type === 'init') {
-          // Resume session if provided
-          if (data.sessionId) {
-            sessionId = data.sessionId;
-          }
-          ws.send(JSON.stringify({ type: 'ready' }));
+          const session = resolveSessionFromMessage(ws, data);
+          attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {
-          handleUserMessage(ws, data.content);
+          const session = resolveSessionFromMessage(ws, data);
+          handleUserMessage(session, data.content);
 
         } else if (data.type === 'stop') {
-          // Interrupt the query if running
-          if (activeQuery) {
+          const session = resolveSessionFromMessage(ws, data);
+          if (session.activeQuery) {
             try {
-              await activeQuery.interrupt();
+              await session.activeQuery.interrupt();
             } catch (e) {
               console.error('[ws-server] Interrupt error:', e);
             }
@@ -296,20 +375,13 @@ Bun.serve({
 
     close(ws) {
       console.error('[ws-server] WebSocket closed');
-      activeWs = null;
-
-      // Signal message stream to stop
-      if (messageResolver) {
-        messageResolver(null);
-        messageResolver = null;
+      const sessionId = ws?.data?.sessionId;
+      if (sessionId && sessions.has(sessionId)) {
+        const session = sessions.get(sessionId);
+        if (session.attachedWs === ws) {
+          session.attachedWs = null;
+        }
       }
-
-      // Clear message queue
-      messageQueue = [];
-
-      // Clean up query
-      activeQuery = null;
-      queryIterator = null;
     },
 
     error(ws, error) {
