@@ -397,8 +397,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private getSandboxIdForOrg(org: string | null): string {
-    const rawOrg = org || this.currentOrg || 'default';
-    const safeOrg = rawOrg.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const rawOrg = org || this.currentOrg;
+    if (!rawOrg) {
+      throw new Error('Missing org for sandbox');
+    }
+    const safeOrg = rawOrg.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
     return `org-${safeOrg}`.slice(0, 63);
   }
 
@@ -525,7 +528,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // WebSocket handling - proxies directly to container via wsConnect
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const org = url.searchParams.get('org') || 'default';
+    const org = url.searchParams.get('org');
+    if (!org) {
+      return new Response('Missing org', { status: 400 });
+    }
     const pathParts = url.pathname.split('/').filter(Boolean);
     const threadId = pathParts[pathParts.length - 1] || null;
     if (threadId && !this.threadId) {
@@ -552,7 +558,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       // Get sandbox reference
       this.sandboxId = this.getSandboxIdForOrg(org);
-      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId);
+      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId, { normalizeId: true });
 
       // Check if WS server is already running (survives DO hibernation)
       // Always check health endpoint - processId may be null after hibernation
@@ -927,9 +933,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // Ensure we have a sandbox reference
     if (!this.sandbox) {
-      const org = this.currentOrg || 'default';
-      this.sandboxId = this.getSandboxIdForOrg(org);
-      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId);
+      if (!this.currentOrg) {
+        console.error('[DO] Cannot broadcast deploy success without org');
+        return;
+      }
+      this.sandboxId = this.getSandboxIdForOrg(this.currentOrg);
+      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId, { normalizeId: true });
     }
 
     // Use exec + curl because sandbox.fetch() routes through control plane, not to port 8080

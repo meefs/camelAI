@@ -1,5 +1,8 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'child_process';
+import { promises as fs } from 'fs';
+import path from 'path';
+import { z } from 'zod';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -15,6 +18,7 @@ if (!ANTHROPIC_API_KEY) {
 const sessions = new Map();
 const MAX_EVENT_BUFFER = 500;
 let lastSessionId = null;
+const previewServers = new Map();
 
 function createSession(id) {
   const session = {
@@ -36,6 +40,135 @@ function createSession(id) {
   lastSessionId = id;
   return session;
 }
+
+async function ensurePreviewExposed(port, threadId) {
+  const baseUrl = process.env.CHIRIDION_BASE_URL;
+  const sessionId = process.env.CHIRIDION_SESSION_ID;
+  if (!baseUrl || !sessionId) {
+    throw new Error('Missing CHIRIDION_BASE_URL or CHIRIDION_SESSION_ID');
+  }
+  if (!threadId) {
+    throw new Error('Missing threadId for preview exposure');
+  }
+
+  const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/sandbox/preview`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Chiridion-Session-Id': sessionId,
+    },
+    body: JSON.stringify({ threadId, port }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Preview exposure failed: ${res.status} ${text}`);
+  }
+
+  const data = await res.json();
+  if (!data?.url) {
+    throw new Error('Preview exposure response missing URL');
+  }
+  return data as { url: string; port: number };
+}
+
+const previewTool = tool(
+  'preview_local_server',
+  'Start a local web server in the given directory and expose it for preview.',
+  {
+    port: z.number().int().min(1).max(65535).describe('Port number for the server.'),
+    cwd: z.string().describe('Absolute path to the directory to run the command in.'),
+    command: z.string().describe('Shell command to start the server.'),
+    threadId: z.string().optional().describe('Thread identifier (filled automatically).'),
+  },
+  async (args, extra) => {
+    const port = args.port;
+    const cwd = args.cwd;
+    const command = args.command;
+    const extraSessionId = typeof extra?.sessionId === 'string' ? extra.sessionId : null;
+    const extraSession = extraSessionId && sessions.has(extraSessionId) ? sessions.get(extraSessionId) : null;
+    const fallbackSession = extraSession ?? (lastSessionId ? sessions.get(lastSessionId) : null);
+    const threadId = args.threadId || fallbackSession?.threadId || null;
+
+    if (!path.isAbsolute(cwd)) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: 'cwd must be an absolute path.' }],
+      };
+    }
+
+    try {
+      const stats = await fs.stat(cwd);
+      if (!stats.isDirectory()) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: 'cwd must be a directory.' }],
+        };
+      }
+    } catch {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: 'cwd does not exist.' }],
+      };
+    }
+
+    const existing = previewServers.get(port);
+    if (existing) {
+      if (existing.command !== command || existing.cwd !== cwd) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Port ${port} is already in use by another server.` }],
+        };
+      }
+
+      return {
+        content: [{ type: 'text', text: `Preview already running at ${existing.url}` }],
+        structuredContent: { url: existing.url, port },
+      };
+    }
+
+    let url;
+    try {
+      const exposure = await ensurePreviewExposed(port, threadId);
+      url = exposure.url;
+    } catch (error) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: String(error) }],
+      };
+    }
+
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      env: { ...process.env, PORT: String(port) },
+      stdio: 'ignore',
+    });
+
+    previewServers.set(port, { process: child, cwd, command, url });
+
+    child.on('exit', (code, signal) => {
+      previewServers.delete(port);
+      console.error('[ws-server] Preview server exited', { port, code, signal });
+    });
+
+    child.on('error', (err) => {
+      previewServers.delete(port);
+      console.error('[ws-server] Failed to start preview server', { port, error: err.message });
+    });
+
+    return {
+      content: [{ type: 'text', text: `Preview available at ${url}` }],
+      structuredContent: { url, port },
+    };
+  }
+);
+
+const previewMcpServer = createSdkMcpServer({
+  name: 'chiridion-preview',
+  version: '1.0.0',
+  tools: [previewTool],
+});
 
 function getOrCreateSession(id) {
   if (id && sessions.has(id)) return sessions.get(id);
@@ -123,6 +256,9 @@ function getQueryOptions(session) {
     allowUnsandboxedCommands: true,
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     settingSources: ['project', 'user'],
+    mcpServers: {
+      preview: previewMcpServer,
+    },
   };
 
   if (session.claudeSessionId) {

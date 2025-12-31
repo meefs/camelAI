@@ -313,8 +313,12 @@ export default function Chat({ threadId }: ChatProps) {
     // WebSocket is handled by the worker at /ws/{threadId} on the same origin as the page.
     const wsHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const org = currentOrg?.id || 'default';
-    const wsUrl = `${protocol}//${wsHost}/ws/${id}?org=${org}`;
+    const orgId = currentOrg?.id;
+    if (!orgId) {
+      setError('No organization selected');
+      return;
+    }
+    const wsUrl = `${protocol}//${wsHost}/ws/${id}?org=${orgId}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -329,7 +333,7 @@ export default function Chat({ threadId }: ChatProps) {
       ws.send(JSON.stringify({
         type: 'init',
         threadId: id,
-        org: currentOrg?.id || 'default',
+        org: orgId,
         sessionId: sessionIdRef.current,
         lastEventId: lastEventIdRef.current,
       }));
@@ -627,8 +631,8 @@ export default function Chat({ threadId }: ChatProps) {
 
   // Connect when threadId changes
   useEffect(() => {
-    if (!threadId) {
-      // No threadId - cleanup any existing connection
+    if (!threadId || !currentOrg?.id) {
+      // No threadId or org - cleanup any existing connection
       if (connectedThreadIdRef.current) {
         connectionIdRef.current++;
         connectedThreadIdRef.current = null;
@@ -647,7 +651,7 @@ export default function Chat({ threadId }: ChatProps) {
       return;
     }
 
-    const nextOrgId = currentOrg?.id || 'default';
+    const nextOrgId = currentOrg.id;
     const threadChanged = connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId;
     const orgChanged = connectedOrgIdRef.current && connectedOrgIdRef.current !== nextOrgId;
 
@@ -685,7 +689,7 @@ export default function Chat({ threadId }: ChatProps) {
   // Reconnect on visibility change (tab becomes visible)
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && threadId) {
+      if (document.visibilityState === 'visible' && threadId && currentOrg?.id) {
         // Check if WebSocket is dead
         const needsReconnect = !wsRef.current ||
           wsRef.current.readyState === WebSocket.CLOSED ||
@@ -706,7 +710,7 @@ export default function Chat({ threadId }: ChatProps) {
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [threadId]);
+  }, [threadId, currentOrg?.id]);
 
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {
@@ -792,7 +796,12 @@ export default function Chat({ threadId }: ChatProps) {
   }
 
   function sendMessage() {
-    if (!input.trim() || !threadId || loading) return;
+    if (!input.trim() || !threadId || loading || !currentOrg?.id) {
+      if (!currentOrg?.id) {
+        setError('No organization selected');
+      }
+      return;
+    }
 
     const userMessage = input.trim();
     setInput('');
