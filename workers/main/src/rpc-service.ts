@@ -188,41 +188,63 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   // Admin functions
   async getAdminOverview(): Promise<AdminOverview> {
-    const users: AdminUserSummary[] = [];
     const orgIds = new Set<string>();
     const seenUserIds = new Set<string>();
-    let totalMemberships = 0;
+    const allKeys: string[] = [];
     let cursor: string | undefined;
 
+    // Step 1: Collect all email keys
     while (true) {
       const list = await this.env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
       for (const key of list.keys) {
-        const userId = await this.env.EMAIL_TO_USER.get(key.name);
-        if (!userId || seenUserIds.has(userId)) continue;
-        seenUserIds.add(userId);
-
-        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
-        const profile = await userStub.getProfile();
-        if (!profile) continue;
-
-        const orgs = await userStub.getOrgs();
-        for (const org of orgs) {
-          orgIds.add(org.org_id);
-        }
-        totalMemberships += orgs.length;
-
-        users.push({
-          id: profile.id,
-          email: profile.email,
-          name: profile.name,
-          created_at: profile.created_at,
-          is_superuser: profile.is_superuser,
-          org_count: orgs.length,
-        });
+        allKeys.push(key.name);
       }
-
       if (list.list_complete || !list.cursor) break;
       cursor = list.cursor;
+    }
+
+    // Step 2: Batch fetch all user IDs in parallel
+    const userIdResults = await Promise.all(
+      allKeys.map((key) => this.env.EMAIL_TO_USER.get(key))
+    );
+    const userIds = userIdResults.filter((id): id is string => {
+      if (!id || seenUserIds.has(id)) return false;
+      seenUserIds.add(id);
+      return true;
+    });
+
+    // Step 3: Batch fetch all profiles and orgs in parallel
+    const userDataResults = await Promise.all(
+      userIds.map(async (userId) => {
+        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+        const [profile, orgs] = await Promise.all([
+          userStub.getProfile(),
+          userStub.getOrgs(),
+        ]);
+        return { profile, orgs };
+      })
+    );
+
+    // Step 4: Process results
+    const users: AdminUserSummary[] = [];
+    let totalMemberships = 0;
+
+    for (const { profile, orgs } of userDataResults) {
+      if (!profile) continue;
+
+      for (const org of orgs) {
+        orgIds.add(org.org_id);
+      }
+      totalMemberships += orgs.length;
+
+      users.push({
+        id: profile.id,
+        email: profile.email,
+        name: profile.name,
+        created_at: profile.created_at,
+        is_superuser: profile.is_superuser,
+        org_count: orgs.length,
+      });
     }
 
     users.sort((a, b) => b.created_at - a.created_at);
@@ -256,118 +278,66 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   // Admin: Get all organizations with details
   async adminGetAllOrgs(): Promise<Array<Organization & { member_count: number }>> {
-    const orgIds = new Set<string>();
-    let cursor: string | undefined;
+    const orgIds = await this.collectAllOrgIds();
 
-    // Collect all org IDs from user memberships
-    while (true) {
-      const list = await this.env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
-      for (const key of list.keys) {
-        const userId = await this.env.EMAIL_TO_USER.get(key.name);
-        if (!userId) continue;
-
-        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
-        const orgs = await userStub.getOrgs();
-        for (const org of orgs) {
-          orgIds.add(org.org_id);
-        }
-      }
-
-      if (list.list_complete || !list.cursor) break;
-      cursor = list.cursor;
-    }
-
-    // Fetch org details
-    const orgs: Array<Organization & { member_count: number }> = [];
-    for (const orgId of orgIds) {
-      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-      const info = await orgStub.getInfo();
-      if (info) {
-        const memberCount = await orgStub.getMemberCount();
-        orgs.push({
+    // Fetch org details in parallel
+    const orgResults = await Promise.all(
+      Array.from(orgIds).map(async (orgId) => {
+        const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+        const [info, memberCount] = await Promise.all([
+          orgStub.getInfo(),
+          orgStub.getMemberCount(),
+        ]);
+        if (!info) return null;
+        return {
           id: info.id,
           name: info.name,
           created_at: info.created_at,
           created_by: info.created_by,
           member_count: memberCount,
-        });
-      }
-    }
+        };
+      })
+    );
 
+    const orgs = orgResults.filter(
+      (org): org is Organization & { member_count: number } => org !== null
+    );
     orgs.sort((a, b) => b.created_at - a.created_at);
     return orgs;
   }
 
   // Admin: Get all threads across all orgs
   async adminGetAllThreads(): Promise<Array<Thread & { org_id: string }>> {
-    const orgIds = new Set<string>();
-    let cursor: string | undefined;
+    const orgIds = await this.collectAllOrgIds();
 
-    // Collect all org IDs
-    while (true) {
-      const list = await this.env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
-      for (const key of list.keys) {
-        const userId = await this.env.EMAIL_TO_USER.get(key.name);
-        if (!userId) continue;
+    // Fetch threads from all orgs in parallel
+    const threadResults = await Promise.all(
+      Array.from(orgIds).map(async (orgId) => {
+        const indexStub = getIndexStub(this.env, orgId);
+        const threads = await indexStub.getThreads();
+        return threads.map((thread) => ({ ...thread, org_id: orgId }));
+      })
+    );
 
-        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
-        const orgs = await userStub.getOrgs();
-        for (const org of orgs) {
-          orgIds.add(org.org_id);
-        }
-      }
-
-      if (list.list_complete || !list.cursor) break;
-      cursor = list.cursor;
-    }
-
-    // Fetch threads from each org
-    const allThreads: Array<Thread & { org_id: string }> = [];
-    for (const orgId of orgIds) {
-      const indexStub = getIndexStub(this.env, orgId);
-      const threads = await indexStub.getThreads();
-      for (const thread of threads) {
-        allThreads.push({ ...thread, org_id: orgId });
-      }
-    }
-
+    const allThreads = threadResults.flat();
     allThreads.sort((a, b) => b.updated_at - a.updated_at);
     return allThreads;
   }
 
   // Admin: Get all projects across all orgs
   async adminGetAllProjects(): Promise<Array<Project & { org_id: string }>> {
-    const orgIds = new Set<string>();
-    let cursor: string | undefined;
+    const orgIds = await this.collectAllOrgIds();
 
-    // Collect all org IDs
-    while (true) {
-      const list = await this.env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
-      for (const key of list.keys) {
-        const userId = await this.env.EMAIL_TO_USER.get(key.name);
-        if (!userId) continue;
+    // Fetch projects from all orgs in parallel
+    const projectResults = await Promise.all(
+      Array.from(orgIds).map(async (orgId) => {
+        const indexStub = getIndexStub(this.env, orgId);
+        const projects = await indexStub.getProjects();
+        return projects.map((project) => ({ ...project, org_id: orgId }));
+      })
+    );
 
-        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
-        const orgs = await userStub.getOrgs();
-        for (const org of orgs) {
-          orgIds.add(org.org_id);
-        }
-      }
-
-      if (list.list_complete || !list.cursor) break;
-      cursor = list.cursor;
-    }
-
-    // Fetch projects from each org
-    const allProjects: Array<Project & { org_id: string }> = [];
-    for (const orgId of orgIds) {
-      const indexStub = getIndexStub(this.env, orgId);
-      const projects = await indexStub.getProjects();
-      for (const project of projects) {
-        allProjects.push({ ...project, org_id: orgId });
-      }
-    }
-
+    const allProjects = projectResults.flat();
     allProjects.sort((a, b) => b.updated_at - a.updated_at);
     return allProjects;
   }
@@ -376,38 +346,23 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async adminGetThreadWithMessages(
     threadId: string
   ): Promise<{ thread: Thread; messages: Message[]; org_id: string } | null> {
-    // Find which org this thread belongs to
-    const orgIds = new Set<string>();
-    let cursor: string | undefined;
+    const orgIds = await this.collectAllOrgIds();
 
-    while (true) {
-      const list = await this.env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
-      for (const key of list.keys) {
-        const userId = await this.env.EMAIL_TO_USER.get(key.name);
-        if (!userId) continue;
-
-        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
-        const orgs = await userStub.getOrgs();
-        for (const org of orgs) {
-          orgIds.add(org.org_id);
+    // Search for thread in all orgs in parallel
+    const results = await Promise.all(
+      Array.from(orgIds).map(async (orgId) => {
+        const indexStub = getIndexStub(this.env, orgId);
+        const thread = await indexStub.getThread(threadId);
+        if (thread) {
+          const threadStub = getThreadStub(this.env, threadId);
+          const messages = await threadStub.getMessages();
+          return { thread, messages, org_id: orgId };
         }
-      }
+        return null;
+      })
+    );
 
-      if (list.list_complete || !list.cursor) break;
-      cursor = list.cursor;
-    }
-
-    for (const orgId of orgIds) {
-      const indexStub = getIndexStub(this.env, orgId);
-      const thread = await indexStub.getThread(threadId);
-      if (thread) {
-        const threadStub = getThreadStub(this.env, threadId);
-        const messages = await threadStub.getMessages();
-        return { thread, messages, org_id: orgId };
-      }
-    }
-
-    return null;
+    return results.find((r) => r !== null) || null;
   }
 
   // Admin: Update thread
@@ -415,36 +370,21 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     threadId: string,
     updates: { title?: string }
   ): Promise<Thread | null> {
-    // Find which org this thread belongs to
-    const orgIds = new Set<string>();
-    let cursor: string | undefined;
+    const orgIds = await this.collectAllOrgIds();
 
-    while (true) {
-      const list = await this.env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
-      for (const key of list.keys) {
-        const userId = await this.env.EMAIL_TO_USER.get(key.name);
-        if (!userId) continue;
-
-        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
-        const orgs = await userStub.getOrgs();
-        for (const org of orgs) {
-          orgIds.add(org.org_id);
+    // Search for thread in all orgs in parallel
+    const results = await Promise.all(
+      Array.from(orgIds).map(async (orgId) => {
+        const indexStub = getIndexStub(this.env, orgId);
+        const thread = await indexStub.getThread(threadId);
+        if (thread && updates.title !== undefined) {
+          return indexStub.updateThread(threadId, updates.title);
         }
-      }
+        return null;
+      })
+    );
 
-      if (list.list_complete || !list.cursor) break;
-      cursor = list.cursor;
-    }
-
-    for (const orgId of orgIds) {
-      const indexStub = getIndexStub(this.env, orgId);
-      const thread = await indexStub.getThread(threadId);
-      if (thread && updates.title !== undefined) {
-        return indexStub.updateThread(threadId, updates.title);
-      }
-    }
-
-    return null;
+    return results.find((r) => r !== null) || null;
   }
 
   // Admin: Update project
@@ -452,58 +392,57 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     projectId: string,
     updates: { name?: string }
   ): Promise<Project | null> {
-    // Find which org this project belongs to
-    const orgIds = new Set<string>();
-    let cursor: string | undefined;
+    const orgIds = await this.collectAllOrgIds();
 
-    while (true) {
-      const list = await this.env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
-      for (const key of list.keys) {
-        const userId = await this.env.EMAIL_TO_USER.get(key.name);
-        if (!userId) continue;
-
-        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
-        const orgs = await userStub.getOrgs();
-        for (const org of orgs) {
-          orgIds.add(org.org_id);
+    // Search for project in all orgs in parallel
+    const results = await Promise.all(
+      Array.from(orgIds).map(async (orgId) => {
+        const indexStub = getIndexStub(this.env, orgId);
+        const project = await indexStub.getProject(projectId);
+        if (project && updates.name !== undefined) {
+          return indexStub.updateProject(projectId, updates.name);
         }
-      }
+        return null;
+      })
+    );
 
-      if (list.list_complete || !list.cursor) break;
-      cursor = list.cursor;
-    }
-
-    for (const orgId of orgIds) {
-      const indexStub = getIndexStub(this.env, orgId);
-      const project = await indexStub.getProject(projectId);
-      if (project && updates.name !== undefined) {
-        return indexStub.updateProject(projectId, updates.name);
-      }
-    }
-
-    return null;
+    return results.find((r) => r !== null) || null;
   }
 
-  // Helper: Collect all org IDs from user memberships
+  // Helper: Collect all org IDs from user memberships (parallelized)
   private async collectAllOrgIds(): Promise<Set<string>> {
-    const orgIds = new Set<string>();
+    const allKeys: string[] = [];
     let cursor: string | undefined;
 
+    // Step 1: Collect all email keys
     while (true) {
       const list = await this.env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
       for (const key of list.keys) {
-        const userId = await this.env.EMAIL_TO_USER.get(key.name);
-        if (!userId) continue;
-
-        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
-        const orgs = await userStub.getOrgs();
-        for (const org of orgs) {
-          orgIds.add(org.org_id);
-        }
+        allKeys.push(key.name);
       }
-
       if (list.list_complete || !list.cursor) break;
       cursor = list.cursor;
+    }
+
+    // Step 2: Batch fetch all user IDs in parallel
+    const userIds = (
+      await Promise.all(allKeys.map((key) => this.env.EMAIL_TO_USER.get(key)))
+    ).filter((id): id is string => id !== null);
+
+    // Step 3: Batch fetch all orgs in parallel
+    const orgsResults = await Promise.all(
+      userIds.map((userId) => {
+        const userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+        return userStub.getOrgs();
+      })
+    );
+
+    // Step 4: Collect unique org IDs
+    const orgIds = new Set<string>();
+    for (const orgs of orgsResults) {
+      for (const org of orgs) {
+        orgIds.add(org.org_id);
+      }
     }
 
     return orgIds;
