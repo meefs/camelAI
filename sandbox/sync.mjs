@@ -63,6 +63,26 @@ function getS3Client(config) {
   });
 }
 
+const SAFE_RM_ERRORS = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM']);
+
+async function rmRecursiveSafe(targetPath, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await fs.rm(targetPath, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (!SAFE_RM_ERRORS.has(err.code)) {
+        throw err;
+      }
+      if (i === attempts - 1) {
+        console.error(`[sync] Warning: failed to remove ${targetPath}: ${err.message}`);
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 50 * (i + 1)));
+    }
+  }
+}
+
 async function clearDirectory(targetDir) {
   const resolved = path.resolve(targetDir);
   if (!resolved || resolved === '/') {
@@ -72,7 +92,7 @@ async function clearDirectory(targetDir) {
   await fs.mkdir(resolved, { recursive: true });
   const entries = await fs.readdir(resolved);
   for (const entry of entries) {
-    await fs.rm(path.join(resolved, entry), { recursive: true, force: true });
+    await rmRecursiveSafe(path.join(resolved, entry));
   }
 }
 
@@ -117,7 +137,12 @@ async function download(targetDir) {
   await Promise.all([
     pipeline(response.Body, zstd.stdin),
     new Promise((resolve, reject) => {
-      tar.on('close', (code) => code === 0 ? resolve() : reject(new Error(`tar exited with ${code}`)));
+      tar.on('close', (code) => {
+        if (code === 0 || code === 1) {
+          return resolve();
+        }
+        return reject(new Error(`tar exited with ${code}`));
+      });
       tar.on('error', reject);
     }),
     new Promise((resolve, reject) => {
@@ -157,7 +182,7 @@ async function upload(sourceDir) {
   const startTime = Date.now();
 
   // Pipe: tar c -> zstd -> multipart upload
-  const tar = spawn('tar', ['cf', '-', '-C', sourceDir, '.'], { stdio: ['inherit', 'pipe', 'pipe'] });
+  const tar = spawn('tar', ['--warning=no-file-changed', '--warning=no-file-removed', '--ignore-failed-read', 'cf', '-', '-C', sourceDir, '.'], { stdio: ['inherit', 'pipe', 'pipe'] });
   const zstd = spawn('zstd', ['-1', '-T0'], { stdio: ['pipe', 'pipe', 'pipe'] });
 
   tar.stdout.pipe(zstd.stdin);
@@ -234,7 +259,12 @@ async function upload(sourceDir) {
     await Promise.all([
       new Promise((resolve, reject) => {
         if (tarExited) return resolve();
-        tar.on('close', (code) => code === 0 ? resolve() : reject(new Error(`tar exited with ${code}`)));
+        tar.on('close', (code) => {
+          if (code === 0 || code === 1) {
+            return resolve();
+          }
+          return reject(new Error(`tar exited with ${code}`));
+        });
         tar.on('error', reject);
       }),
       new Promise((resolve, reject) => {
