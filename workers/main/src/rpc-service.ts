@@ -675,12 +675,12 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   // Chat functions
-  async getThreads(org = 'default'): Promise<Thread[]> {
+  async getThreads(org: string): Promise<Thread[]> {
     return getIndexStub(this.env, org).getThreads();
   }
 
   async createThread(
-    org = 'default',
+    org: string,
     title: string | undefined,
     projectId: string,
     createdBy?: string
@@ -688,15 +688,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return getIndexStub(this.env, org).createThread(title, projectId, createdBy);
   }
 
-  async getThread(id: string, org = 'default'): Promise<Thread | null> {
+  async getThread(id: string, org: string): Promise<Thread | null> {
     return getIndexStub(this.env, org).getThread(id);
   }
 
-  async updateThread(id: string, title: string, org = 'default'): Promise<Thread | null> {
+  async updateThread(id: string, title: string, org: string): Promise<Thread | null> {
     return getIndexStub(this.env, org).updateThread(id, title);
   }
 
-  async deleteThread(id: string, org = 'default'): Promise<void> {
+  async deleteThread(id: string, org: string): Promise<void> {
     await getThreadStub(this.env, id).deleteAllMessages();
     await getIndexStub(this.env, org).deleteThread(id);
   }
@@ -705,33 +705,33 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return getThreadStub(this.env, threadId).getMessages();
   }
 
-  async addMessage(threadId: string, role: string, content: string, org = 'default'): Promise<Message> {
+  async addMessage(threadId: string, role: string, content: string, org: string): Promise<Message> {
     const msg = await getThreadStub(this.env, threadId).addMessage(role, content);
     await getIndexStub(this.env, org).touchThread(threadId);
     return msg;
   }
 
-  async getProjects(org = 'default'): Promise<Project[]> {
+  async getProjects(org: string): Promise<Project[]> {
     return getIndexStub(this.env, org).getProjects();
   }
 
-  async getProjectsByUser(org = 'default', userId: string): Promise<Project[]> {
+  async getProjectsByUser(org: string, userId: string): Promise<Project[]> {
     return getIndexStub(this.env, org).getProjectsByUser(userId);
   }
 
-  async createProject(org = 'default', name?: string, createdBy?: string): Promise<Project> {
+  async createProject(org: string, name?: string, createdBy?: string): Promise<Project> {
     return getIndexStub(this.env, org).createProject(name, createdBy);
   }
 
-  async getProject(id: string, org = 'default'): Promise<Project | null> {
+  async getProject(id: string, org: string): Promise<Project | null> {
     return getIndexStub(this.env, org).getProject(id);
   }
 
-  async updateProject(id: string, name: string, org = 'default'): Promise<Project | null> {
+  async updateProject(id: string, name: string, org: string): Promise<Project | null> {
     return getIndexStub(this.env, org).updateProject(id, name);
   }
 
-  async deleteProject(id: string, org = 'default'): Promise<void> {
+  async deleteProject(id: string, org: string): Promise<void> {
     await getIndexStub(this.env, org).deleteProject(id);
   }
 

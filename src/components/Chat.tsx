@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils';
 
 interface ChatProps {
   threadId?: string;
+  orgId: string;
 }
 
 // Format timestamp to readable time (e.g., "12:25 PM")
@@ -164,7 +165,7 @@ interface StreamingState {
   isStreaming: boolean;
 }
 
-export default function Chat({ threadId }: ChatProps) {
+export default function Chat({ threadId, orgId }: ChatProps) {
   const router = useRouter();
   const { user, currentOrg, orgs, loading: authLoading, logout, switchOrg } = useAuth();
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -226,6 +227,8 @@ export default function Chat({ threadId }: ChatProps) {
       console.warn('Failed to persist session state:', e);
     }
   }, [sessionStorageKey]);
+
+  const resolvedOrgId = currentOrg?.id ?? orgId;
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -313,12 +316,8 @@ export default function Chat({ threadId }: ChatProps) {
     // WebSocket is handled by the worker at /ws/{threadId} on the same origin as the page.
     const wsHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const orgId = currentOrg?.id;
-    if (!orgId) {
-      setError('No organization selected');
-      return;
-    }
-    const wsUrl = `${protocol}//${wsHost}/ws/${id}?org=${orgId}`;
+    const orgIdForConnection = resolvedOrgId;
+    const wsUrl = `${protocol}//${wsHost}/ws/${id}?org=${orgIdForConnection}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -333,7 +332,7 @@ export default function Chat({ threadId }: ChatProps) {
       ws.send(JSON.stringify({
         type: 'init',
         threadId: id,
-        org: orgId,
+        org: orgIdForConnection,
         sessionId: sessionIdRef.current,
         lastEventId: lastEventIdRef.current,
       }));
@@ -631,7 +630,7 @@ export default function Chat({ threadId }: ChatProps) {
 
   // Connect when threadId changes
   useEffect(() => {
-    if (!threadId || !currentOrg?.id) {
+    if (!threadId || !resolvedOrgId) {
       // No threadId or org - cleanup any existing connection
       if (connectedThreadIdRef.current) {
         connectionIdRef.current++;
@@ -651,7 +650,7 @@ export default function Chat({ threadId }: ChatProps) {
       return;
     }
 
-    const nextOrgId = currentOrg.id;
+    const nextOrgId = resolvedOrgId;
     const threadChanged = connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId;
     const orgChanged = connectedOrgIdRef.current && connectedOrgIdRef.current !== nextOrgId;
 
@@ -684,12 +683,12 @@ export default function Chat({ threadId }: ChatProps) {
     // This prevents StrictMode from closing connections on remount
     // Browser closes WebSocket automatically on navigation
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, currentOrg?.id]);
+  }, [threadId, resolvedOrgId]);
 
   // Reconnect on visibility change (tab becomes visible)
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && threadId && currentOrg?.id) {
+      if (document.visibilityState === 'visible' && threadId && resolvedOrgId) {
         // Check if WebSocket is dead
         const needsReconnect = !wsRef.current ||
           wsRef.current.readyState === WebSocket.CLOSED ||
@@ -710,7 +709,7 @@ export default function Chat({ threadId }: ChatProps) {
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [threadId, currentOrg?.id]);
+  }, [threadId, resolvedOrgId]);
 
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {
@@ -796,10 +795,7 @@ export default function Chat({ threadId }: ChatProps) {
   }
 
   function sendMessage() {
-    if (!input.trim() || !threadId || loading || !currentOrg?.id) {
-      if (!currentOrg?.id) {
-        setError('No organization selected');
-      }
+    if (!input.trim() || !threadId || loading || !resolvedOrgId) {
       return;
     }
 
