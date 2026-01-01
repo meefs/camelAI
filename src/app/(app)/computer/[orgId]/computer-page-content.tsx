@@ -53,6 +53,7 @@ import {
   InputGroupInput,
 } from '@/components/ui/input-group';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import {
   ContextMenu,
@@ -275,6 +276,8 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchIndexLoaded, setSearchIndexLoaded] = useState(false);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [dialogState, setDialogState] = useState<DialogState>(null);
   const [dialogName, setDialogName] = useState('');
@@ -409,6 +412,77 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     });
   }, []);
 
+  const applyRecursiveListing = useCallback((listing: WorkspaceListResponse) => {
+    setNodesByPath((prev) => {
+      const next = { ...prev };
+      const childrenByParent = new Map<string, Set<string>>();
+      const directories = new Set<string>();
+
+      const ensureDirNode = (path: string) => {
+        if (!next[path]) {
+          next[path] = {
+            path,
+            name: getBasename(path),
+            kind: 'dir',
+            children: [],
+            isLoaded: false,
+          };
+        }
+      };
+
+      ensureDirNode(ROOT_PATH);
+
+      listing.entries.forEach((entry) => {
+        const entryPath = normalizePath(entry.path);
+        const kind = entry.type === 'directory' ? 'dir' : 'file';
+        const existing = next[entryPath];
+        next[entryPath] = {
+          path: entryPath,
+          name: entry.name,
+          kind,
+          children: existing?.children ?? [],
+          isLoaded: kind === 'dir' ? true : existing?.isLoaded ?? false,
+          size: entry.size,
+          modifiedAt: entry.modifiedAt,
+        };
+        if (kind === 'dir') {
+          directories.add(entryPath);
+        }
+
+        const parentPath = getParentPath(entryPath);
+        ensureDirNode(parentPath);
+        const children = childrenByParent.get(parentPath) ?? new Set<string>();
+        children.add(entryPath);
+        childrenByParent.set(parentPath, children);
+      });
+
+      const ensureChildren = (parentPath: string, children?: Set<string>) => {
+        const node = next[parentPath] ?? {
+          path: parentPath,
+          name: getBasename(parentPath),
+          kind: 'dir',
+          children: [],
+          isLoaded: false,
+        };
+        node.children = children ? Array.from(children) : [];
+        node.isLoaded = true;
+        next[parentPath] = node;
+      };
+
+      childrenByParent.forEach((children, parentPath) => {
+        ensureChildren(parentPath, children);
+      });
+
+      directories.forEach((dirPath) => {
+        if (!childrenByParent.has(dirPath)) {
+          ensureChildren(dirPath);
+        }
+      });
+
+      return next;
+    });
+  }, []);
+
   const loadDirectory = useCallback(
     async (path: string, options: { recursive?: boolean } = {}) => {
       const targetPath = normalizePath(path);
@@ -431,7 +505,11 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
           throw new Error(payload?.error || 'Failed to load workspace files');
         }
         const data = (await res.json()) as WorkspaceListResponse;
-        applyListing(data);
+        if (options.recursive) {
+          applyRecursiveListing(data);
+        } else {
+          applyListing(data);
+        }
         setTreeError(null);
       } catch (error) {
         setTreeError(
@@ -447,7 +525,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
         });
       }
     },
-    [apiBase, applyListing]
+    [apiBase, applyListing, applyRecursiveListing]
   );
 
   useEffect(() => {
@@ -455,6 +533,17 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       loadDirectory(ROOT_PATH);
     }
   }, [authLoading, user, loadDirectory]);
+
+  useEffect(() => {
+    if (authLoading || !user) return;
+    if (!searchTerm.trim()) return;
+    if (searchIndexLoaded || searchLoading) return;
+    setSearchLoading(true);
+    void loadDirectory(ROOT_PATH, { recursive: true }).finally(() => {
+      setSearchLoading(false);
+      setSearchIndexLoaded(true);
+    });
+  }, [authLoading, loadDirectory, searchIndexLoaded, searchLoading, searchTerm, user]);
 
 
   const updateTab = useCallback((path: string, updater: (tab: OpenTab) => OpenTab) => {
@@ -1115,6 +1204,8 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
 
   const isSavingActive = activePath ? savingPaths.has(activePath) : false;
   const isTreeLoading = loadingPaths.has(ROOT_PATH);
+  const hasSearchTerm = searchTerm.trim().length > 0;
+  const showSearchLoading = hasSearchTerm && (searchLoading || !searchIndexLoaded);
 
   return (
     <div className="flex h-full w-full flex-1 min-h-0 min-w-0 overflow-hidden">
@@ -1184,14 +1275,28 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                       {treeError}
                     </div>
                   )}
-                  {treeRows.length === 0 && !treeError && (
-                    <div className="px-3 py-6 text-xs text-muted-foreground">
-                      {isTreeLoading
-                        ? 'Loading workspace...'
-                        : 'No files found yet.'}
+                  {showSearchLoading && (
+                    <div className="px-3 py-3 space-y-2">
+                      {Array.from({ length: 6 }).map((_, index) => (
+                        <div key={`search-skeleton-${index}`} className="flex items-center gap-2">
+                          <Skeleton className="h-3 w-3 rounded-sm" />
+                          <Skeleton className="h-3 w-3 rounded-sm" />
+                          <Skeleton className="h-3 flex-1" />
+                        </div>
+                      ))}
                     </div>
                   )}
-                  {treeRows.map(({ node, depth, isMatch }) => {
+                  {treeRows.length === 0 && !treeError && !showSearchLoading && (
+                    <div className="px-3 py-6 text-xs text-muted-foreground">
+                      {hasSearchTerm
+                        ? 'No matches found.'
+                        : isTreeLoading
+                          ? 'Loading workspace...'
+                          : 'No files found yet.'}
+                    </div>
+                  )}
+                  {!showSearchLoading &&
+                    treeRows.map(({ node, depth, isMatch }) => {
                     const isExpanded = expandedPaths.has(node.path);
                     const isActive = activePath === node.path;
                     const isDirectory = node.kind === 'dir';
