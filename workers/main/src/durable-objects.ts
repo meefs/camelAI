@@ -862,28 +862,42 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
             // Check for persistence events
             if (line.startsWith(PERSIST_PREFIX)) {
+              console.log('[DO] Got PERSIST line:', line.substring(0, 200));
               try {
                 const jsonStr = line.slice(PERSIST_PREFIX.length);
-                const event = JSON.parse(jsonStr);
-                const eventThreadId = (event as { threadId?: string }).threadId;
-                if (!eventThreadId || !this.threadId || eventThreadId !== this.threadId) {
+                const event = JSON.parse(jsonStr) as { type: string; id?: string; threadId?: string; content?: string; sessionId?: string };
+                console.log('[DO] Parsed event:', { type: event.type, id: event.id, eventThreadId: event.threadId, doThreadId: this.threadId });
+
+                if (!event.threadId || !this.threadId || event.threadId !== this.threadId) {
+                  console.log('[DO] Skipping event - threadId mismatch:', { eventThreadId: event.threadId, doThreadId: this.threadId });
                   continue;
                 }
 
-                // Persist user messages (use ID from log event for dedup)
+                // Persist user messages
                 if (event.type === 'user_message' && event.id) {
-                  this.addMessageWithId(event.id, 'user', event.content);
-                  console.log('[DO] Persisted user message:', event.id);
+                  console.log('[DO] Attempting to persist user message:', event.id, 'content length:', event.content?.length);
+                  try {
+                    const result = this.addMessageWithId(event.id, 'user', event.content || '');
+                    console.log('[DO] User message result:', event.id, result ? 'SAVED' : 'SKIPPED');
+                  } catch (e) {
+                    console.error('[DO] Failed to persist user message:', event.id, e);
+                  }
                 }
 
-                // Persist assistant messages (use ID from log event for dedup)
+                // Persist assistant messages
                 if (event.type === 'assistant_message' && event.id) {
-                  this.addMessageWithId(event.id, 'assistant', event.content);
-                  console.log('[DO] Persisted assistant message:', event.id);
+                  console.log('[DO] Attempting to persist assistant message:', event.id, 'content length:', event.content?.length);
+                  try {
+                    const result = this.addMessageWithId(event.id, 'assistant', event.content || '');
+                    console.log('[DO] Assistant message result:', event.id, result ? 'SAVED/UPDATED' : 'UNCHANGED');
+                  } catch (e) {
+                    console.error('[DO] Failed to persist assistant message:', event.id, e);
+                  }
                 }
 
                 // Store session ID
-                if (event.type === 'session_id') {
+                if (event.type === 'session_id' && event.sessionId) {
+                  console.log('[DO] Storing session ID:', event.sessionId);
                   this.claudeSessionId = event.sessionId;
                   this.sql.exec(
                     'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
@@ -892,8 +906,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
                   );
                   console.log('[DO] Stored Claude session ID:', event.sessionId);
                 }
-              } catch {
-                // Skip malformed lines
+              } catch (e) {
+                console.error('[DO] Failed to parse PERSIST line:', line.substring(0, 100), e);
               }
             } else {
               // Regular stderr logging
@@ -991,19 +1005,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
    */
   addMessageWithId(id: string, role: string, content: string): Message | null {
     const threadId = this.ctx.id.toString();
+    console.log('[DO][addMessageWithId] Called:', { id, role, contentLength: content?.length, threadId });
 
     // Check if this exact ID already exists (dedup log replays)
     const existing = this.sql.exec<{ id: string }>(
       'SELECT id FROM messages WHERE id = ?',
       id
     ).toArray();
+    console.log('[DO][addMessageWithId] Existing check:', { id, found: existing.length > 0 });
 
     if (existing.length > 0) {
+      console.log('[DO][addMessageWithId] SKIPPED (already exists):', id);
       return null; // Already persisted, skip silently
     }
 
     const now = Date.now();
+    console.log('[DO][addMessageWithId] INSERTING:', id);
     this.sql.exec('INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', id, role, content, now);
+    console.log('[DO][addMessageWithId] INSERTED:', id);
     return { id, thread_id: threadId, role: role as 'user' | 'assistant', content, created_at: now };
   }
 

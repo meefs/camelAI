@@ -254,6 +254,19 @@ function startEventLoop(session) {
         };
         session.lastEventAt = Date.now();
 
+        // Log ALL events for debugging
+        console.error('[ws-server] SDK event:', JSON.stringify({
+          type: event.type,
+          subtype: event.subtype,
+          session_id: event.session_id,
+          message_id: event.message?.id,
+          message_role: event.message?.role,
+          content_length: event.message?.content ? JSON.stringify(event.message.content).length : 0,
+          content_types: event.message?.content?.map(c => c.type),
+          stream_event_type: event.event?.type,
+          stream_delta: event.event?.delta ? Object.keys(event.event.delta) : null,
+        }));
+
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
 
@@ -278,12 +291,21 @@ function startEventLoop(session) {
         if (event.type === 'assistant' && event.message) {
           const messageId = event.message.id;
           const content = event.message.content;
+          console.error('[ws-server] Got assistant event:', {
+            messageId,
+            hasContent: !!content,
+            contentLength: content?.length,
+            contentTypes: content?.map(c => c.type),
+            threadId: session.threadId,
+          });
 
           // Persist if we have content (content is always an array of blocks)
           if (messageId && Array.isArray(content) && content.length > 0) {
             const contentJson = JSON.stringify(content);
+            console.error('[ws-server] Logging for persistence:', { type: 'assistant_message', id: messageId, threadId: session.threadId, contentLen: contentJson.length });
             logForPersistence({ type: 'assistant_message', id: messageId, threadId: session.threadId, content: contentJson });
-            console.error('[ws-server] Persisted assistant message:', messageId);
+          } else {
+            console.error('[ws-server] Skipping assistant persistence:', { messageId, hasContent: !!content, contentLength: content?.length });
           }
         }
 
@@ -323,7 +345,9 @@ function startEventLoop(session) {
 function handleUserMessage(session, content) {
   // Log user message for DB persistence with timestamp-based ID
   const msgId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  console.error('[ws-server] handleUserMessage:', { msgId, threadId: session.threadId, contentLen: content?.length });
   logForPersistence({ type: 'user_message', id: msgId, threadId: session.threadId, content });
+  console.error('[ws-server] Logged user message for persistence');
 
   // Initialize session if needed
   initSession(session);
