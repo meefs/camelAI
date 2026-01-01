@@ -102,6 +102,22 @@ function resolveWorkspacePath(workspaceRoot: string, workspacePath: string): str
   return `${root}${normalized}`;
 }
 
+const WORKSPACE_SYNC_DEBOUNCE_MS = 5000;
+
+type WorkspaceSyncState = {
+  nextSyncAt: number;
+  sequence: number;
+  running: boolean;
+  promise: Promise<void> | null;
+};
+
+const workspaceSyncState = new Map<string, WorkspaceSyncState>();
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
 export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   private hasR2Config(): boolean {
     return Boolean(
@@ -110,6 +126,12 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       this.env.R2_API_TOKEN &&
       this.env.R2_PARENT_ACCESS_KEY_ID
     );
+  }
+
+  private isR2ReadOnly(): boolean {
+    const value = this.env.R2_MOUNT_READONLY;
+    if (!value) return false;
+    return ['1', 'true'].includes(String(value).toLowerCase());
   }
 
   private getWorkspaceRoot(): string {
@@ -161,6 +183,81 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       throw new Error(`Workspace sync failed: ${syncResult.stderr || 'unknown error'}`);
     }
     await sandbox.exec('touch /tmp/.r2-synced', { env: envVars, timeout: 5000 });
+  }
+
+  private async uploadWorkspaceSnapshot(orgId: string): Promise<void> {
+    if (!this.hasR2Config() || this.isR2ReadOnly()) return;
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const envVars = await this.buildSandboxEnv(orgId);
+    const syncResult = await sandbox.exec(`node /app/sync.mjs upload ${workspaceRoot}`, {
+      env: envVars,
+      timeout: 120000,
+    });
+    if (!syncResult.success) {
+      console.error(
+        `[workspace-sync] Upload failed for ${orgId}: ${syncResult.stderr || syncResult.stdout || 'unknown error'}`
+      );
+    }
+  }
+
+  private async runWorkspaceSyncLoop(
+    orgId: string,
+    state: WorkspaceSyncState
+  ): Promise<void> {
+    try {
+      while (true) {
+        const waitMs = Math.max(0, state.nextSyncAt - Date.now());
+        if (waitMs > 0) {
+          await sleep(waitMs);
+          continue;
+        }
+
+        const sequenceAtStart = state.sequence;
+        await this.uploadWorkspaceSnapshot(orgId);
+
+        if (state.sequence !== sequenceAtStart) {
+          continue;
+        }
+        break;
+      }
+    } catch (error) {
+      console.error('[workspace-sync] Unexpected sync error', error);
+    } finally {
+      state.running = false;
+      state.promise = null;
+      workspaceSyncState.delete(orgId);
+    }
+  }
+
+  private scheduleWorkspaceUpload(orgId: string): void {
+    if (!this.hasR2Config() || this.isR2ReadOnly()) return;
+    const now = Date.now();
+    let state = workspaceSyncState.get(orgId);
+    if (!state) {
+      state = {
+        nextSyncAt: now + WORKSPACE_SYNC_DEBOUNCE_MS,
+        sequence: 0,
+        running: false,
+        promise: null,
+      };
+      workspaceSyncState.set(orgId, state);
+    }
+
+    state.sequence += 1;
+    state.nextSyncAt = now + WORKSPACE_SYNC_DEBOUNCE_MS;
+
+    if (!state.running) {
+      state.running = true;
+      state.promise = this.runWorkspaceSyncLoop(orgId, state);
+    }
+
+    if (state.promise) {
+      this.ctx.waitUntil(state.promise);
+    }
   }
 
   // Session functions
@@ -935,6 +1032,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!result.success) {
       throw new Error(`Failed to write ${workspacePath}`);
     }
+    this.scheduleWorkspaceUpload(orgId);
     return { workspacePath, result };
   }
 
@@ -950,6 +1048,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!result.success) {
       throw new Error(`Failed to create directory ${workspacePath}`);
     }
+    this.scheduleWorkspaceUpload(orgId);
     return { workspacePath, result };
   }
 
@@ -971,6 +1070,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!result.success) {
       throw new Error(`Failed to move ${fromPath} to ${toPath}`);
     }
+    this.scheduleWorkspaceUpload(orgId);
     return { fromPath, toPath, result };
   }
 
@@ -989,6 +1089,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!result.success) {
       throw new Error(`Failed to delete ${workspacePath}`);
     }
+    this.scheduleWorkspaceUpload(orgId);
     return { workspacePath, result };
   }
 
