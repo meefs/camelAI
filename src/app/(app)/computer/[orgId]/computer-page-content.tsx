@@ -1,7 +1,15 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+} from 'react';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import type { Monaco } from '@monaco-editor/react';
@@ -598,6 +606,23 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     versionsRef.current.delete(path);
   }, []);
 
+  const removeMissingTab = useCallback(
+    (path: string) => {
+      setOpenTabs((prev) => {
+        const index = prev.findIndex((tab) => tab.path === path);
+        if (index === -1) return prev;
+        const nextTabs = prev.filter((tab) => tab.path !== path);
+        if (activePathRef.current === path) {
+          const nextActive = nextTabs[index] ?? nextTabs[index - 1] ?? null;
+          setActivePath(nextActive?.path ?? null);
+        }
+        return nextTabs;
+      });
+      disposeModel(path);
+    },
+    [disposeModel]
+  );
+
   const syncDirtyState = useCallback(
     (path: string) => {
       const model = modelsRef.current.get(path);
@@ -686,6 +711,10 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
           `${apiBase}/read?path=${encodeURIComponent(normalizedPath)}`
         );
         if (!res.ok) {
+          if (res.status === 404) {
+            removeMissingTab(normalizedPath);
+            return;
+          }
           const payload = (await res
             .json()
             .catch(() => null)) as { error?: string } | null;
@@ -713,7 +742,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
         console.error('Failed to open file', error);
       }
     },
-    [apiBase, ensureModel, nodesByPath, openTabs, updateTab]
+    [apiBase, ensureModel, nodesByPath, openTabs, removeMissingTab, updateTab]
   );
 
   useEffect(() => {
@@ -1490,18 +1519,20 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                     </BreadcrumbLink>
                   </BreadcrumbItem>
                   {breadcrumbItems.map((item) => (
-                    <BreadcrumbItem key={item.path}>
+                    <Fragment key={item.path}>
                       <BreadcrumbSeparator />
-                      <BreadcrumbLink asChild>
-                        <button
-                          type="button"
-                          className="text-xs"
-                          onClick={() => handleBreadcrumbClick(item.path)}
-                        >
-                          {item.label}
-                        </button>
-                      </BreadcrumbLink>
-                    </BreadcrumbItem>
+                      <BreadcrumbItem>
+                        <BreadcrumbLink asChild>
+                          <button
+                            type="button"
+                            className="text-xs"
+                            onClick={() => handleBreadcrumbClick(item.path)}
+                          >
+                            {item.label}
+                          </button>
+                        </BreadcrumbLink>
+                      </BreadcrumbItem>
+                    </Fragment>
                   ))}
                 </BreadcrumbList>
               </Breadcrumb>
