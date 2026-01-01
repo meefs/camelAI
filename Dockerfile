@@ -1,6 +1,6 @@
 FROM docker.io/cloudflare/sandbox:0.6.6-python
 
-# Version: 2026-01-01-v8 - run as root, ws-server drops to claude
+# Version: 2026-01-01-v9 - run as root, su to claude for ws-server
 # Must match the @cloudflare/sandbox npm package version.
 
 # Optional: app ports you plan to expose via the Sandbox API (control plane uses 3000)

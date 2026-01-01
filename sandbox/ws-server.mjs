@@ -3,20 +3,7 @@ import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-01-sandbox-v3';
-
-// Drop privileges to claude user
-// Order matters: initgroups and setgid before setuid (can't change groups after dropping root)
-if (process.getuid && process.getuid() === 0) {
-  try {
-    process.initgroups('claude', 'claude'); // Set supplementary groups
-    process.setgid('claude');                // Set primary group
-    process.setuid('claude');                // Drop to user (must be last)
-  } catch (e) {
-    console.error('[ws-server] Failed to drop privileges:', e.message);
-    process.exit(1);
-  }
-}
+const VERSION = '2026-01-01-sandbox-v4';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;

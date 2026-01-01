@@ -52,7 +52,5 @@ fi
 
 cd "$TARGET_DIR"
 
-echo "[sandbox] Starting ws-server..." >&2
-
-# Run ws-server as main process
-exec bun /app/ws-server.mjs
+# Run ws-server as claude user (drop privileges from root)
+exec su -s /bin/sh claude -c 'exec bun /app/ws-server.mjs'
