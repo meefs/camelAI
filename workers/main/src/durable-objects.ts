@@ -263,7 +263,8 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
   }
 }
 
-// One DO per thread - handles WebSocket + messages
+// One DO per thread - handles WebSocket + container lifecycle
+// Messages are read directly from container's Claude conversation JSONL files
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private sql: SqlStorage;
   private initialized = false;
@@ -277,18 +278,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private currentProcessId: string | null = null;
   private currentOrg: string | null = null;
   private sandbox: ReturnType<typeof getSandbox> | null = null;
-  private chiridionBaseUrl: string | null = null;
-  private chiridionSessionId: string | null = null;
-  // Track sandbox warming to prevent duplicate warm-ups from React StrictMode double-mount
-  // These are intentionally transient - we re-warm after hibernation
-  private warmingPromise: Promise<void> | null = null;
-  private warmedForOrg: string | null = null;
+  private sandboxId: string | null = null;
   // Track if log streaming is active to prevent duplicate streams
   private isStreamingLogs = false;
-  // Custom waitForLog implementation - resolves when we see the target log line
+  // Resolves when server is ready (detected via log stream)
   private serverReadyResolver: ((value: void) => void) | null = null;
-  private serverReadyPromise: Promise<void> | null = null;
-  private sandboxId: string | null = null;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -336,17 +330,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const version = rows[0]?.version ?? 0;
 
     if (version < 1) {
-      // V1: Fresh start - drop old tables and create new schema
+      // V1: Initial schema - just metadata table
+      // Messages are read directly from container's Claude JSONL files
       this.sql.exec('DROP TABLE IF EXISTS messages');
       this.sql.exec('DROP TABLE IF EXISTS metadata');
-      this.sql.exec(`
-        CREATE TABLE messages (
-          id TEXT PRIMARY KEY,
-          role TEXT NOT NULL,
-          content TEXT NOT NULL,
-          created_at INTEGER NOT NULL
-        )
-      `);
       this.sql.exec(`
         CREATE TABLE metadata (
           key TEXT PRIMARY KEY,
@@ -354,6 +341,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         )
       `);
       this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
+    }
+
+    if (version < 2) {
+      // V2: Remove messages table - messages now read from container JSONL
+      this.sql.exec('DROP TABLE IF EXISTS messages');
+      this.sql.exec('UPDATE _schema_version SET version = 2');
     }
   }
 
@@ -539,13 +532,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         currentOrg: this.currentOrg,
       });
 
-      this.chiridionBaseUrl =
-        getExternalOriginFromHeaders(request, url);
-
-      this.chiridionSessionId =
-        request.headers.get(CHIRIDION_SESSION_HEADER) ??
-        getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
-
       await this.ensureDeployToken();
 
       // Get sandbox reference
@@ -653,9 +639,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (this.env.R2_MOUNT_DIR) processEnv.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
       if (this.env.R2_MOUNT_READONLY) processEnv.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
 
-      if (this.chiridionBaseUrl) processEnv.CHIRIDION_BASE_URL = this.chiridionBaseUrl;
-      if (this.chiridionBaseUrl) processEnv.CLOUDFLARE_API_BASE_URL = `${this.chiridionBaseUrl.replace(/\/+$/, '')}/client/v4`;
-      if (this.chiridionSessionId) processEnv.CHIRIDION_SESSION_ID = this.chiridionSessionId;
       if (this.threadId) processEnv.THREAD_ID = this.threadId;
       if (org) processEnv.ORG_ID = org;
 
@@ -812,7 +795,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   // Create a promise that resolves when the server is ready (via log streaming)
   private createServerReadyPromise(timeoutMs: number): Promise<void> {
-    this.serverReadyPromise = new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       this.serverReadyResolver = resolve;
       // Set timeout for server startup
       setTimeout(() => {
@@ -822,14 +805,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }
       }, timeoutMs);
     });
-    return this.serverReadyPromise;
   }
 
 
-  // Stream container logs in background for:
-  // 1. Custom waitForLog - resolve ready promise when server starts
-  // 2. Message persistence - parse [PERSIST] prefixed JSON lines for DB storage
-  // 3. Session ID capture - store Claude session ID for resumption
+  // Stream container logs for:
+  // 1. Server ready detection - resolve ready promise when server starts
+  // 2. Session ID capture - store Claude session ID for resumption
+  // Messages are NOT persisted here - they're read directly from container JSONL files
   private async streamLogsForPersistence(processId: string): Promise<void> {
     if (this.isStreamingLogs) {
       return;
@@ -839,12 +821,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     try {
       console.log('[DO] Starting sandbox log stream', { processId, threadId: this.threadId });
       const logStream = await this.sandbox!.streamProcessLogs(processId);
-      let outputBuffer = '';
       let stderrBuffer = '';
       const PERSIST_PREFIX = '[PERSIST]';
 
       for await (const logEvent of parseSSEStream<LogEvent>(logStream)) {
-        // Parse persistence events from stderr (prefixed with [PERSIST])
+        // Parse logs from stderr
         if (logEvent.type === 'stderr' && logEvent.data) {
           stderrBuffer += logEvent.data;
           const lines = stderrBuffer.split('\n');
@@ -853,105 +834,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           for (const line of lines) {
             if (!line.trim()) continue;
 
-            // Check for server ready log (for custom waitForLog)
+            // Check for server ready log
             if (line.includes('[ws-server] Listening') && this.serverReadyResolver) {
               console.log('[DO] Server ready detected via log stream');
               this.serverReadyResolver();
               this.serverReadyResolver = null;
             }
 
-            // Check for persistence events
+            // Check for session_id event (only persistence event we care about)
             if (line.startsWith(PERSIST_PREFIX)) {
-              console.log('[DO] Got PERSIST line:', line.substring(0, 200));
               try {
                 const jsonStr = line.slice(PERSIST_PREFIX.length);
-                const event = JSON.parse(jsonStr) as { type: string; id?: string; threadId?: string; content?: string; sessionId?: string };
-                console.log('[DO] Parsed event:', { type: event.type, id: event.id, eventThreadId: event.threadId, doThreadId: this.threadId });
+                const event = JSON.parse(jsonStr) as { type: string; sessionId?: string; threadId?: string };
 
-                if (!event.threadId || !this.threadId || event.threadId !== this.threadId) {
-                  console.log('[DO] Skipping event - threadId mismatch:', { eventThreadId: event.threadId, doThreadId: this.threadId });
-                  continue;
-                }
-
-                // Persist user messages
-                if (event.type === 'user_message' && event.id) {
-                  console.log('[DO] Attempting to persist user message:', event.id, 'content length:', event.content?.length);
-                  try {
-                    const result = this.addMessageWithId(event.id, 'user', event.content || '');
-                    console.log('[DO] User message result:', event.id, result ? 'SAVED' : 'SKIPPED');
-                  } catch (e) {
-                    console.error('[DO] Failed to persist user message:', event.id, e);
-                  }
-                }
-
-                // Persist assistant messages
-                if (event.type === 'assistant_message' && event.id) {
-                  console.log('[DO] Attempting to persist assistant message:', event.id, 'content length:', event.content?.length);
-                  try {
-                    const result = this.addMessageWithId(event.id, 'assistant', event.content || '');
-                    console.log('[DO] Assistant message result:', event.id, result ? 'SAVED/UPDATED' : 'UNCHANGED');
-                  } catch (e) {
-                    console.error('[DO] Failed to persist assistant message:', event.id, e);
-                  }
-                }
-
-                // Store session ID
+                // Only capture session_id events for the matching thread
                 if (event.type === 'session_id' && event.sessionId) {
-                  console.log('[DO] Storing session ID:', event.sessionId);
-                  this.claudeSessionId = event.sessionId;
-                  this.sql.exec(
-                    'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
-                    'claude_session_id',
-                    event.sessionId
-                  );
-                  console.log('[DO] Stored Claude session ID:', event.sessionId);
+                  if (!event.threadId || event.threadId === this.threadId) {
+                    console.log('[DO] Storing session ID:', event.sessionId);
+                    this.claudeSessionId = event.sessionId;
+                    this.sql.exec(
+                      'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+                      'claude_session_id',
+                      event.sessionId
+                    );
+                  }
                 }
-              } catch (e) {
-                console.error('[DO] Failed to parse PERSIST line:', line.substring(0, 100), e);
+              } catch {
+                // Skip malformed PERSIST lines
               }
             } else {
               // Regular stderr logging
               console.log('[Container]', line.trim());
-            }
-          }
-        }
-
-        // Also check stdout for backwards compatibility
-        if (logEvent.type === 'stdout' && logEvent.data) {
-          outputBuffer += logEvent.data;
-          const lines = outputBuffer.split('\n');
-          outputBuffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const event = JSON.parse(line);
-              const eventThreadId = (event as { threadId?: string }).threadId;
-              if (!eventThreadId || !this.threadId || eventThreadId !== this.threadId) {
-                continue;
-              }
-
-              // Persist user messages (use ID from log event for dedup)
-              if (event.type === 'user_message' && event.id) {
-                this.addMessageWithId(event.id, 'user', event.content);
-              }
-
-              // Persist assistant messages (use ID from log event for dedup)
-              if (event.type === 'assistant_message' && event.id) {
-                this.addMessageWithId(event.id, 'assistant', event.content);
-              }
-
-              // Store session ID
-              if (event.type === 'session_id') {
-                this.claudeSessionId = event.sessionId;
-                this.sql.exec(
-                  'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
-                  'claude_session_id',
-                  event.sessionId
-                );
-              }
-            } catch {
-              // Skip malformed lines
             }
           }
         }
@@ -994,52 +907,89 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   // RPC methods for non-WebSocket access
-  getMessages(): Message[] {
-    const threadId = this.ctx.id.toString();
-    return this.sql.exec('SELECT id, ? as thread_id, role, content, created_at FROM messages ORDER BY created_at ASC', threadId).toArray() as unknown as Message[];
-  }
 
   /**
-   * Add a message with a specific ID (used by log streaming for dedup).
-   * Returns null if the ID already exists (log replay).
+   * Get messages by reading from the container's Claude conversation JSONL file.
+   * The file is at ~/.claude/projects/-home-claude/<claude_session_id>.jsonl
    */
-  addMessageWithId(id: string, role: string, content: string): Message | null {
+  async getMessages(): Promise<Message[]> {
     const threadId = this.ctx.id.toString();
-    console.log('[DO][addMessageWithId] Called:', { id, role, contentLength: content?.length, threadId });
 
-    // Check if this exact ID already exists (dedup log replays)
-    const existing = this.sql.exec<{ id: string }>(
-      'SELECT id FROM messages WHERE id = ?',
-      id
-    ).toArray();
-    console.log('[DO][addMessageWithId] Existing check:', { id, found: existing.length > 0 });
-
-    if (existing.length > 0) {
-      console.log('[DO][addMessageWithId] SKIPPED (already exists):', id);
-      return null; // Already persisted, skip silently
+    // Need claudeSessionId to know which JSONL file to read
+    if (!this.claudeSessionId) {
+      console.log('[DO] No claudeSessionId, returning empty messages');
+      return [];
     }
 
-    const now = Date.now();
-    console.log('[DO][addMessageWithId] INSERTING:', id);
-    this.sql.exec('INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', id, role, content, now);
-    console.log('[DO][addMessageWithId] INSERTED:', id);
-    return { id, thread_id: threadId, role: role as 'user' | 'assistant', content, created_at: now };
-  }
+    // Ensure we have a sandbox reference
+    if (!this.sandbox) {
+      const org = this.currentOrg || 'default';
+      this.sandboxId = this.getSandboxIdForOrg(org);
+      this.sandbox = getSandbox(this.env.SANDBOX, this.sandboxId, { normalizeId: true });
+    }
 
-  /**
-   * Add a message with auto-generated ID (used by RPC for external callers).
-   */
-  addMessage(role: string, content: string): Message {
-    const threadId = this.ctx.id.toString();
-    const id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const now = Date.now();
-    this.sql.exec('INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)', id, role, content, now);
-    return { id, thread_id: threadId, role: role as 'user' | 'assistant', content, created_at: now };
-  }
+    try {
+      // Read the JSONL file from the container
+      // Claude stores conversations in ~/.claude/projects/<path>/<session-id>.jsonl
+      // where path is the working directory with slashes replaced by dashes
+      const jsonlPath = `/home/claude/.claude/projects/-home-claude/${this.claudeSessionId}.jsonl`;
+      const result = await this.sandbox.exec(`cat ${jsonlPath} 2>/dev/null || echo ""`, { timeout: 5000 });
 
-  deleteAllMessages(): boolean {
-    this.sql.exec('DELETE FROM messages');
-    return true;
+      if (result.exitCode !== 0 || !result.stdout?.trim()) {
+        console.log('[DO] No JSONL file found or empty:', jsonlPath);
+        return [];
+      }
+
+      const messages: Message[] = [];
+      const lines = result.stdout.split('\n').filter(line => line.trim());
+
+      for (const line of lines) {
+        try {
+          const event = JSON.parse(line) as {
+            type: string;
+            uuid?: string;
+            timestamp?: string;
+            message?: {
+              role?: string;
+              content?: string | Array<{ type: string; text?: string; thinking?: string; name?: string; input?: unknown }>;
+            };
+          };
+
+          // Only process user and assistant messages
+          if ((event.type === 'user' || event.type === 'assistant') && event.message) {
+            const role = event.message.role as 'user' | 'assistant';
+            let content: string;
+
+            // Handle content - can be string or array of blocks
+            if (typeof event.message.content === 'string') {
+              content = event.message.content;
+            } else if (Array.isArray(event.message.content)) {
+              // Serialize the content blocks as JSON for now
+              // The frontend can parse and render them appropriately
+              content = JSON.stringify(event.message.content);
+            } else {
+              continue;
+            }
+
+            messages.push({
+              id: event.uuid || `msg_${messages.length}`,
+              thread_id: threadId,
+              role,
+              content,
+              created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
+            });
+          }
+        } catch {
+          // Skip malformed lines
+        }
+      }
+
+      console.log('[DO] Loaded messages from JSONL:', messages.length);
+      return messages;
+    } catch (e) {
+      console.error('[DO] Failed to read messages from container:', e);
+      return [];
+    }
   }
 
   /**

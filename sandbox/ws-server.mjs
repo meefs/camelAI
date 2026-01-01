@@ -254,23 +254,11 @@ function startEventLoop(session) {
         };
         session.lastEventAt = Date.now();
 
-        // Log ALL events for debugging
-        console.error('[ws-server] SDK event:', JSON.stringify({
-          type: event.type,
-          subtype: event.subtype,
-          session_id: event.session_id,
-          message_id: event.message?.id,
-          message_role: event.message?.role,
-          content_length: event.message?.content ? JSON.stringify(event.message.content).length : 0,
-          content_types: event.message?.content?.map(c => c.type),
-          stream_event_type: event.event?.type,
-          stream_delta: event.event?.delta ? Object.keys(event.event.delta) : null,
-        }));
-
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
 
-        // Capture session ID from init event
+        // Capture session ID from init event - this is the only thing we persist
+        // Messages are stored by Claude in ~/.claude/projects/.../session.jsonl
         if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
           if (!session.claudeSessionId) {
             session.claudeSessionId = event.session_id;
@@ -285,33 +273,6 @@ function startEventLoop(session) {
           if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
             syncWorkspace();
           }
-        }
-
-        // Persist assistant messages (following SDK demo pattern - no stop_reason check)
-        if (event.type === 'assistant' && event.message) {
-          const messageId = event.message.id;
-          const content = event.message.content;
-          console.error('[ws-server] Got assistant event:', {
-            messageId,
-            hasContent: !!content,
-            contentLength: content?.length,
-            contentTypes: content?.map(c => c.type),
-            threadId: session.threadId,
-          });
-
-          // Persist if we have content (content is always an array of blocks)
-          if (messageId && Array.isArray(content) && content.length > 0) {
-            const contentJson = JSON.stringify(content);
-            console.error('[ws-server] Logging for persistence:', { type: 'assistant_message', id: messageId, threadId: session.threadId, contentLen: contentJson.length });
-            logForPersistence({ type: 'assistant_message', id: messageId, threadId: session.threadId, content: contentJson });
-          } else {
-            console.error('[ws-server] Skipping assistant persistence:', { messageId, hasContent: !!content, contentLength: content?.length });
-          }
-        }
-
-        // Persist tool results (these come from SDK as user messages)
-        if (event.type === 'user' && event.message?.content) {
-          // Tool results don't need separate persistence - they're part of the SDK state
         }
 
         // Result means query is complete (end of session)
@@ -343,11 +304,7 @@ function startEventLoop(session) {
 
 // Handle a user message
 function handleUserMessage(session, content) {
-  // Log user message for DB persistence with timestamp-based ID
-  const msgId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  console.error('[ws-server] handleUserMessage:', { msgId, threadId: session.threadId, contentLen: content?.length });
-  logForPersistence({ type: 'user_message', id: msgId, threadId: session.threadId, content });
-  console.error('[ws-server] Logged user message for persistence');
+  console.error('[ws-server] handleUserMessage:', { threadId: session.threadId, contentLen: content?.length });
 
   // Initialize session if needed
   initSession(session);
@@ -356,6 +313,7 @@ function handleUserMessage(session, content) {
   startEventLoop(session);
 
   // Feed message to the generator
+  // Messages are persisted by Claude SDK in ~/.claude/projects/.../session.jsonl
   if (session.messageResolver) {
     const resolver = session.messageResolver;
     session.messageResolver = null;

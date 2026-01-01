@@ -808,18 +808,14 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async deleteThread(id: string, org: string): Promise<void> {
-    await getThreadStub(this.env, id).deleteAllMessages();
+    // Messages are stored in container JSONL, not in the DO
+    // Just delete from the index
     await getIndexStub(this.env, org).deleteThread(id);
   }
 
   async getMessages(threadId: string): Promise<Message[]> {
+    // Messages are read from container's Claude JSONL file
     return getThreadStub(this.env, threadId).getMessages();
-  }
-
-  async addMessage(threadId: string, role: string, content: string, org: string): Promise<Message> {
-    const msg = await getThreadStub(this.env, threadId).addMessage(role, content);
-    await getIndexStub(this.env, org).touchThread(threadId);
-    return msg;
   }
 
   async getProjects(org: string): Promise<Project[]> {

@@ -43,12 +43,8 @@ export async function deleteThread(id: string, org: string): Promise<void> {
 
 export async function getMessages(threadId: string): Promise<Message[]> {
   const rpc = await getRpc();
+  // Messages are read from container's Claude JSONL file
   return rpc.getMessages(threadId);
-}
-
-export async function addMessage(threadId: string, role: string, content: string, org: string): Promise<Message> {
-  const rpc = await getRpc();
-  return rpc.addMessage(threadId, role, content, org);
 }
 
 export async function getProjects(org: string): Promise<Project[]> {
