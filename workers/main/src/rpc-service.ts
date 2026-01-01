@@ -18,7 +18,7 @@ import type {
   PaginatedResult,
   PaginationParams,
 } from '../../../src/types';
-import { getIntegrationDefinition, isProxyable, type ProxyConfig } from '../../../src/lib/integration-registry';
+import { getIntegrationDefinition } from '../../../src/lib/integration-registry';
 import { encryptCredentials, decryptCredentials } from '../../../src/lib/integration-crypto';
 import {
   createApiToken,
@@ -28,14 +28,125 @@ import {
 } from './api-tokens';
 
 /**
- * Configuration returned to callers for making proxied requests.
- * Contains everything needed to build and authenticate the upstream request.
+ * Maps integration type + credential fields to standard ENV var names.
+ * Returns a Record where keys are ENV var names and values are the credential values.
  */
-export interface IntegrationProxyConfig {
-  baseUrl: string;
-  authHeader: { name: string; value: string } | null;
-  defaultHeaders: Record<string, string>;
-  authType: ProxyConfig['authType'];
+function mapCredentialsToEnvVars(
+  integrationType: string,
+  credentials: Record<string, unknown>,
+  config: Record<string, unknown>
+): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  // Helper to safely get string value
+  const str = (val: unknown): string | null => {
+    if (val === undefined || val === null || val === '') return null;
+    return String(val);
+  };
+
+  switch (integrationType) {
+    case 'stripe':
+      if (str(credentials.api_key)) env.STRIPE_API_KEY = str(credentials.api_key)!;
+      if (str(credentials.api_key)) env.STRIPE_SECRET_KEY = str(credentials.api_key)!;
+      break;
+
+    case 'openai':
+      if (str(credentials.api_key)) env.OPENAI_API_KEY = str(credentials.api_key)!;
+      break;
+
+    case 'anthropic':
+      if (str(credentials.api_key)) env.ANTHROPIC_API_KEY = str(credentials.api_key)!;
+      break;
+
+    case 'github':
+      if (str(credentials.api_key)) env.GITHUB_TOKEN = str(credentials.api_key)!;
+      break;
+
+    case 'notion':
+      if (str(credentials.api_key)) env.NOTION_API_KEY = str(credentials.api_key)!;
+      break;
+
+    case 'slack':
+      if (str(credentials.api_key)) env.SLACK_BOT_TOKEN = str(credentials.api_key)!;
+      break;
+
+    case 'linear':
+      if (str(credentials.api_key)) env.LINEAR_API_KEY = str(credentials.api_key)!;
+      break;
+
+    case 'sendgrid':
+      if (str(credentials.api_key)) env.SENDGRID_API_KEY = str(credentials.api_key)!;
+      break;
+
+    case 'twilio':
+      if (str(credentials.account_sid)) env.TWILIO_ACCOUNT_SID = str(credentials.account_sid)!;
+      if (str(credentials.auth_token)) env.TWILIO_AUTH_TOKEN = str(credentials.auth_token)!;
+      break;
+
+    case 'salesforce':
+      if (str(credentials.access_token)) env.SALESFORCE_ACCESS_TOKEN = str(credentials.access_token)!;
+      if (str(config.instance_url)) env.SALESFORCE_INSTANCE_URL = str(config.instance_url)!;
+      break;
+
+    case 'airtable':
+      if (str(credentials.api_key)) env.AIRTABLE_API_KEY = str(credentials.api_key)!;
+      break;
+
+    case 'hubspot':
+      if (str(credentials.api_key)) env.HUBSPOT_API_KEY = str(credentials.api_key)!;
+      break;
+
+    case 'aws':
+      if (str(credentials.access_key_id)) env.AWS_ACCESS_KEY_ID = str(credentials.access_key_id)!;
+      if (str(credentials.secret_access_key)) env.AWS_SECRET_ACCESS_KEY = str(credentials.secret_access_key)!;
+      if (str(config.region)) env.AWS_REGION = str(config.region)!;
+      break;
+
+    case 'postgres': {
+      // Build DATABASE_URL from config + credentials
+      const host = str(config.host);
+      const port = str(config.port) || '5432';
+      const database = str(config.database);
+      const user = str(credentials.username);
+      const password = str(credentials.password);
+      const sslMode = str(config.ssl_mode) || 'require';
+      if (host && database && user && password) {
+        env.DATABASE_URL = `postgresql://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}?sslmode=${sslMode}`;
+        env.POSTGRES_URL = env.DATABASE_URL;
+      }
+      break;
+    }
+
+    case 'mysql': {
+      // Build MYSQL_URL from config + credentials
+      const host = str(config.host);
+      const port = str(config.port) || '3306';
+      const database = str(config.database);
+      const user = str(credentials.username);
+      const password = str(credentials.password);
+      if (host && database && user && password) {
+        env.MYSQL_URL = `mysql://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
+        env.DATABASE_URL = env.MYSQL_URL;
+      }
+      break;
+    }
+
+    case 'bigquery':
+      // BigQuery uses service account JSON
+      if (str(credentials.service_account_json)) {
+        env.GOOGLE_APPLICATION_CREDENTIALS_JSON = str(credentials.service_account_json)!;
+      }
+      if (str(config.project_id)) env.BIGQUERY_PROJECT_ID = str(config.project_id)!;
+      break;
+
+    default:
+      // Generic fallback: use integration type as prefix
+      const prefix = integrationType.toUpperCase().replace(/-/g, '_');
+      if (str(credentials.api_key)) env[`${prefix}_API_KEY`] = str(credentials.api_key)!;
+      break;
+  }
+
+  return env;
 }
 
 interface DoRpcEnv extends AuthEnv, ChatEnv {
@@ -841,17 +952,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     await stub.deleteIntegration(integrationId);
   }
 
-  async getOrgIntegrationCredentials(
-    orgId: string,
-    integrationId: string
-  ): Promise<Record<string, unknown> | null> {
-    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-    const record = await stub.getIntegration(integrationId);
-    if (!record || !record.credentials_encrypted) return null;
-
-    return decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
-  }
-
   // API Token functions (direct KV access)
   async createOrgApiToken(
     orgId: string,
@@ -882,122 +982,39 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   /**
-   * Get proxy configuration for an integration.
-   * Returns everything needed to make an authenticated request to the upstream API.
-   * Called by outbound workers via service binding (no additional auth needed).
+   * Get all enabled integration credentials as ENV vars for an org.
+   * Called when spawning a container to pass integration secrets.
    */
-  async getIntegrationProxyConfig(
-    orgId: string,
-    integrationId: string
-  ): Promise<{ config: IntegrationProxyConfig } | { error: string; status: number }> {
-    // Get integration
+  async getOrgIntegrationEnvVars(orgId: string): Promise<Record<string, string>> {
     const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-    const record = await stub.getIntegration(integrationId);
+    const records = await stub.getIntegrations();
 
-    if (!record) {
-      return { error: 'Integration not found', status: 404 };
-    }
+    const envVars: Record<string, string> = {};
 
-    if (record.enabled !== 1) {
-      return { error: 'Integration is disabled', status: 400 };
-    }
+    for (const record of records) {
+      // Skip disabled integrations
+      if (record.enabled !== 1) continue;
 
-    // Check if proxyable
-    if (!isProxyable(record.integration_type)) {
-      return {
-        error: `Integration type '${record.integration_type}' does not support HTTP proxy`,
-        status: 400,
-      };
-    }
+      // Skip integrations without credentials
+      if (!record.credentials_encrypted) continue;
 
-    const definition = getIntegrationDefinition(record.integration_type);
-    if (!definition?.proxyConfig) {
-      return { error: 'Proxy configuration not found', status: 500 };
-    }
+      try {
+        const credentials = await decryptCredentials(
+          record.credentials_encrypted,
+          this.env.INTEGRATION_SECRET_KEY
+        );
+        const config = JSON.parse(record.config) as Record<string, unknown>;
 
-    // Get credentials
-    if (!record.credentials_encrypted) {
-      return { error: 'No credentials configured for integration', status: 500 };
-    }
+        // Map credentials to standard ENV var names
+        const mapped = mapCredentialsToEnvVars(record.integration_type, credentials, config);
 
-    const credentials = await decryptCredentials(
-      record.credentials_encrypted,
-      this.env.INTEGRATION_SECRET_KEY
-    );
-
-    const integrationConfig = JSON.parse(record.config) as Record<string, unknown>;
-
-    // Build base URL
-    let baseUrl = definition.proxyConfig.baseUrl;
-    if (!baseUrl && integrationConfig.instance_url) {
-      baseUrl = String(integrationConfig.instance_url);
-    }
-
-    // Build auth header
-    const authHeader = this.buildAuthHeader(definition.proxyConfig, credentials);
-
-    // Build default headers
-    const defaultHeaders: Record<string, string> = {
-      ...(definition.proxyConfig.defaultHeaders || {}),
-    };
-
-    // Add config-based headers
-    if (definition.proxyConfig.configHeaders) {
-      for (const [headerName, configField] of Object.entries(definition.proxyConfig.configHeaders)) {
-        const value = integrationConfig[configField];
-        if (value !== undefined && value !== null && value !== '') {
-          defaultHeaders[headerName] = String(value);
-        }
+        // Merge into result (later integrations override earlier ones if same key)
+        Object.assign(envVars, mapped);
+      } catch (e) {
+        console.error(`Failed to decrypt credentials for integration ${record.id}:`, e);
       }
     }
 
-    return {
-      config: {
-        baseUrl,
-        authHeader,
-        defaultHeaders,
-        authType: definition.proxyConfig.authType,
-      },
-    };
-  }
-
-  /**
-   * Build authorization header based on auth type
-   */
-  private buildAuthHeader(
-    proxyConfig: ProxyConfig,
-    credentials: Record<string, unknown>
-  ): { name: string; value: string } | null {
-    const apiKey = (credentials.api_key || credentials.access_token) as string | undefined;
-
-    const headerName =
-      proxyConfig.authType === 'header' && proxyConfig.authHeader
-        ? proxyConfig.authHeader
-        : 'Authorization';
-
-    switch (proxyConfig.authType) {
-      case 'bearer':
-        return apiKey ? { name: headerName, value: `Bearer ${apiKey}` } : null;
-
-      case 'basic': {
-        const key = credentials.api_key as string | undefined;
-        const secret = credentials.api_secret as string | undefined;
-        if (key && secret) {
-          const encoded = btoa(`${key}:${secret}`);
-          return { name: headerName, value: `Basic ${encoded}` };
-        }
-        return null;
-      }
-
-      case 'header':
-        return apiKey ? { name: headerName, value: apiKey } : null;
-
-      case 'query':
-        // Query params are handled differently - return the key for the caller to use
-        return apiKey ? { name: '_query_api_key', value: apiKey } : null;
-
-      default:
-        return apiKey ? { name: headerName, value: `Bearer ${apiKey}` } : null;
-    }
+    return envVars;
   }
 }

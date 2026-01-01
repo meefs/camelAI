@@ -1,8 +1,8 @@
 import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, parseSSEStream, type Sandbox, type LogEvent, type Process } from '@cloudflare/sandbox';
-import { getTempR2Credentials, type TempCredentials } from './r2-credentials';
-import { createApiToken, deleteApiToken } from './api-tokens';
+import { getTempR2Credentials } from './r2-credentials';
 import type { OrgDO, SessionDO } from './auth';
+import type { DoRpcService } from './rpc-service';
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
@@ -72,6 +72,7 @@ export interface ChatEnv {
   SANDBOX: DurableObjectNamespace<Sandbox>;
   ORG: DurableObjectNamespace<OrgDO>;
   SESSION: DurableObjectNamespace<SessionDO>;
+  DO_RPC: Service<DoRpcService>;
   API_TOKENS: KVNamespace;
   R2_BUCKET: R2Bucket;
   ANTHROPIC_API_KEY: string;
@@ -274,7 +275,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private threadId: string | null = null;
   // Transient state (lost on hibernation, restored from storage or recreated)
   private currentProcessId: string | null = null;
-  private currentProxyToken: string | null = null;
   private currentOrg: string | null = null;
   private sandbox: ReturnType<typeof getSandbox> | null = null;
   private chiridionBaseUrl: string | null = null;
@@ -370,20 +370,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     // Transient state for hibernation recovery
     this.currentOrg = metadata.get('current_org') ?? null;
     this.currentProcessId = metadata.get('current_process_id') ?? null;
-    this.currentProxyToken = metadata.get('current_proxy_token') ?? null;
   }
 
   private async cleanupOrphanedState() {
-    // Clean up orphaned proxy tokens - they expire anyway but good hygiene
-    if (this.currentProxyToken) {
-      try {
-        await deleteApiToken(this.env.API_TOKENS, this.currentProxyToken);
-      } catch {
-        // Token may have already expired
-      }
-      this.currentProxyToken = null;
-      this.sql.exec('DELETE FROM metadata WHERE key = ?', 'current_proxy_token');
-    }
     // NOTE: Don't clear currentProcessId here - the ws-server process may still be running
     // We'll verify it via health check when a WebSocket connection comes in
   }
@@ -396,13 +385,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (this.currentProcessId) {
       this.sql.exec('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)', 'current_process_id', this.currentProcessId);
     }
-    if (this.currentProxyToken) {
-      this.sql.exec('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)', 'current_proxy_token', this.currentProxyToken);
-    }
   }
 
   private clearTransientState() {
-    this.sql.exec('DELETE FROM metadata WHERE key IN (?, ?, ?)', 'current_org', 'current_process_id', 'current_proxy_token');
+    this.sql.exec('DELETE FROM metadata WHERE key IN (?, ?)', 'current_org', 'current_process_id');
   }
 
   private getSandboxIdForOrg(org: string | null): string {
@@ -495,46 +481,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (this.currentOrg) {
       await tokenKv.put(`script_to_org:${this.deployScriptName}`, this.currentOrg);
       console.log('[DO] Stored script->org mapping:', this.deployScriptName, '->', this.currentOrg);
-    }
-  }
-
-  /**
-   * Mint a short-lived API token for integration proxy access.
-   * This token is passed to the container so it can make authenticated
-   * requests to external APIs via our proxy.
-   */
-  private async mintIntegrationProxyToken(
-    orgId: string,
-    integrationId: string | null
-  ): Promise<string | null> {
-    try {
-      const result = await createApiToken(this.env.API_TOKENS, {
-        orgId,
-        userId: 'sandbox', // system user for sandbox tokens
-        name: 'sandbox-proxy-token',
-        scopes: ['proxy'],
-        integrationId,
-        expiresAt: Date.now() + 60 * 60 * 1000, // 1 hour TTL
-      });
-      return result.tokenId;
-    } catch (e) {
-      console.error('[DO] Failed to mint integration proxy token:', e);
-      return null;
-    }
-  }
-
-  /**
-   * Expire the current proxy token immediately.
-   * Called when the sandbox process exits.
-   */
-  private async expireProxyToken(): Promise<void> {
-    if (!this.currentProxyToken) return;
-    try {
-      await deleteApiToken(this.env.API_TOKENS, this.currentProxyToken);
-      console.log('[DO] Expired proxy token:', this.currentProxyToken.slice(0, 12) + '...');
-      this.currentProxyToken = null;
-    } catch (e) {
-      console.error('[DO] Failed to expire proxy token:', e);
     }
   }
 
@@ -744,13 +690,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         }
       }
 
-      // Mint integration proxy token
-      const proxyToken = await this.mintIntegrationProxyToken(org, null);
-      if (proxyToken && this.chiridionBaseUrl) {
-        this.currentProxyToken = proxyToken;
-        processEnv.CHIRIDION_PROXY_TOKEN = proxyToken;
-        processEnv.CHIRIDION_PROXY_BASE_URL = this.chiridionBaseUrl;
-        processEnv.CHIRIDION_ORG_ID = org;
+      // Fetch integration credentials and pass as ENV vars
+      try {
+        const integrationEnvVars = await this.env.DO_RPC.getOrgIntegrationEnvVars(org);
+        Object.assign(processEnv, integrationEnvVars);
+        console.log('[DO] Loaded integration env vars:', Object.keys(integrationEnvVars).length);
+      } catch (e) {
+        console.error('[DO] Failed to load integration env vars:', e);
       }
 
       // Start the WS server process
@@ -945,7 +891,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             logEvent,
           });
           // Clean up
-          await this.expireProxyToken();
           this.currentProcessId = null;
           this.isStreamingLogs = false;
           this.clearTransientState();
