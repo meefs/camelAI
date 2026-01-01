@@ -55,6 +55,7 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -1264,11 +1265,16 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
               </div>
               <div className="flex items-center gap-1">
                 <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button size="icon" variant="ghost" className="h-7 w-7">
-                      <Plus className="size-3.5" />
-                    </Button>
-                  </DropdownMenuTrigger>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <DropdownMenuTrigger asChild>
+                        <Button size="icon" variant="ghost" className="h-7 w-7">
+                          <Plus className="size-3.5" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">New file or folder</TooltipContent>
+                  </Tooltip>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
                       onSelect={() => openDialog({ type: 'new-file', parentPath: ROOT_PATH })}
@@ -1282,14 +1288,21 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={() => loadDirectory(ROOT_PATH)}
-                >
-                  <RefreshCw className={cn('size-3.5', isTreeLoading && 'animate-spin')} />
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={() => loadDirectory(ROOT_PATH)}
+                    >
+                      <RefreshCw
+                        className={cn('size-3.5', isTreeLoading && 'animate-spin')}
+                      />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Refresh files</TooltipContent>
+                </Tooltip>
               </div>
             </div>
             <Separator />
@@ -1382,9 +1395,9 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                           </div>
                         </ContextMenuTrigger>
                       <ContextMenuContent>
-                        {isDirectory && (
-                          <>
-                            <ContextMenuItem
+                          {isDirectory && (
+                            <>
+                              <ContextMenuItem
                                 onSelect={() =>
                                   openDialog({ type: 'new-file', parentPath: node.path })
                                 }
@@ -1401,23 +1414,35 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                               <ContextMenuSeparator />
                             </>
                           )}
+                          {!editingEnabled && (
+                            <>
+                              <ContextMenuItem onSelect={handleEnableEditing}>
+                                Enable editing...
+                              </ContextMenuItem>
+                              <ContextMenuSeparator />
+                            </>
+                          )}
                           {node.path !== ROOT_PATH && (
                             <>
                               <ContextMenuItem
-                                onSelect={() =>
-                                  openDialog({ type: 'rename', path: node.path })
-                                }
+                                disabled={!editingEnabled}
+                                onSelect={() => {
+                                  if (!editingEnabled) return;
+                                  openDialog({ type: 'rename', path: node.path });
+                                }}
                               >
                                 Rename
                               </ContextMenuItem>
                               <ContextMenuItem
-                                onSelect={() =>
+                                disabled={!editingEnabled}
+                                onSelect={() => {
+                                  if (!editingEnabled) return;
                                   openDialog({
                                     type: 'delete',
                                     path: node.path,
                                     kind: node.kind,
-                                  })
-                                }
+                                  });
+                                }}
                                 variant="destructive"
                               >
                                 Delete
