@@ -1,5 +1,6 @@
 FROM docker.io/cloudflare/sandbox:0.6.6-python
 
+# Version: 2026-01-01-v4 - Simplified session state, removed /messages endpoint
 # Must match the @cloudflare/sandbox npm package version.
 
 # Optional: app ports you plan to expose via the Sandbox API (control plane uses 3000)

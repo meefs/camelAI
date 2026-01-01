@@ -20,10 +20,11 @@ export async function createThread(
   org: string,
   title: string | undefined,
   projectId: string,
-  createdBy?: string
+  createdBy?: string,
+  sessionId?: string
 ): Promise<Thread> {
   const rpc = await getRpc();
-  return rpc.createThread(org, title, projectId, createdBy);
+  return rpc.createThread(org, title, projectId, createdBy, sessionId);
 }
 
 export async function getThread(id: string, org: string): Promise<Thread | null> {
@@ -41,10 +42,10 @@ export async function deleteThread(id: string, org: string): Promise<void> {
   await rpc.deleteThread(id, org);
 }
 
-export async function getMessages(threadId: string): Promise<Message[]> {
+export async function getMessages(threadId: string, org: string): Promise<Message[]> {
   const rpc = await getRpc();
   // Messages are read from container's Claude JSONL file
-  return rpc.getMessages(threadId);
+  return rpc.getMessages(threadId, org);
 }
 
 export async function getProjects(org: string): Promise<Project[]> {

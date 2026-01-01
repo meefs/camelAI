@@ -22,7 +22,7 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
     }
 
     // Messages are read directly from the container's Claude conversation JSONL file
-    const messages = await chatDO.getMessages(id);
+    const messages = await chatDO.getMessages(id, session.org_id);
     return NextResponse.json(messages);
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });

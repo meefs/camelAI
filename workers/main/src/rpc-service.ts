@@ -1,6 +1,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { AuthEnv, SessionData, UserProfile, OrgIntegrationRecord } from './auth';
 import type { ChatEnv } from './durable-objects';
+import { getOrgSandbox } from './container';
 import type {
   Message,
   Organization,
@@ -155,10 +156,6 @@ interface DoRpcEnv extends AuthEnv, ChatEnv {
 
 function getIndexStub(env: DoRpcEnv, org: string) {
   return env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(org));
-}
-
-function getThreadStub(env: DoRpcEnv, threadId: string) {
-  return env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
 }
 
 export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
@@ -465,8 +462,8 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         const indexStub = getIndexStub(this.env, orgId);
         const thread = await indexStub.getThread(threadId);
         if (thread) {
-          const threadStub = getThreadStub(this.env, threadId);
-          const messages = await threadStub.getMessages();
+          // Read messages from container
+          const messages = await this.getMessages(threadId, orgId);
           return { thread, messages, org_id: orgId };
         }
         return null;
@@ -794,9 +791,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     org: string,
     title: string | undefined,
     projectId: string,
-    createdBy?: string
+    createdBy?: string,
+    sessionId?: string
   ): Promise<Thread> {
-    return getIndexStub(this.env, org).createThread(title, projectId, createdBy);
+    return getIndexStub(this.env, org).createThread(title, projectId, createdBy, sessionId);
   }
 
   async getThread(id: string, org: string): Promise<Thread | null> {
@@ -813,9 +811,79 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     await getIndexStub(this.env, org).deleteThread(id);
   }
 
-  async getMessages(threadId: string): Promise<Message[]> {
+  async getMessages(threadId: string, org: string): Promise<Message[]> {
     // Messages are read from container's Claude JSONL file
-    return getThreadStub(this.env, threadId).getMessages();
+    // threadId is the Claude session_id
+    try {
+      const sandbox = getOrgSandbox(this.env, org);
+
+      // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
+      const jsonlPath = `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`;
+
+      // Check if file exists
+      const exists = await sandbox.exists(jsonlPath);
+      if (!exists.exists) {
+        return [];
+      }
+
+      // Read the JSONL file
+      const file = await sandbox.readFile(jsonlPath);
+      if (!file.content?.trim()) {
+        return [];
+      }
+
+      const lines = file.content.split('\n').filter((line: string) => line.trim());
+      const messages: Message[] = [];
+
+      for (const line of lines) {
+        try {
+          const event = JSON.parse(line);
+
+          // Extract user messages (text only, not tool results)
+          if (event.type === 'user' && event.message?.content) {
+            const firstContent = event.message.content[0];
+            if (firstContent?.type === 'tool_result') {
+              // Tool results render as assistant messages
+              messages.push({
+                id: event.uuid || `tool_result_${messages.length}`,
+                thread_id: threadId,
+                role: 'assistant',
+                content: event.message.content,
+                created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
+              });
+            } else {
+              // Regular user text messages
+              messages.push({
+                id: event.uuid || `user_${messages.length}`,
+                thread_id: threadId,
+                role: 'user',
+                content: event.message.content,
+                created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
+              });
+            }
+          }
+
+          // Extract assistant messages (text and tool_use)
+          if (event.type === 'assistant' && event.message?.content?.length > 0) {
+            messages.push({
+              id: event.uuid || event.message?.id || `assistant_${messages.length}`,
+              thread_id: threadId,
+              role: 'assistant',
+              content: event.message.content,
+              created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
+            });
+          }
+        } catch {
+          // Skip malformed lines
+        }
+      }
+
+      return messages;
+    } catch (e) {
+      // Container may not be running - return empty
+      console.error('[RPC] Error reading messages from container:', e);
+      return [];
+    }
   }
 
   async getProjects(org: string): Promise<Project[]> {
@@ -1015,34 +1083,14 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   /**
-   * Restart all active containers for an org.
+   * Restart the container for an org.
    * Called when integrations are created/updated/deleted to pick up new credentials.
+   * TODO: Implement container restart - currently containers restart on next connection
    */
-  async restartOrgContainers(orgId: string): Promise<{ restarted: number; failed: number }> {
-    // Get all thread IDs for this org
-    const chatIndexStub = this.env.CHAT_INDEX.get(this.env.CHAT_INDEX.idFromName(orgId));
-    const threads = await chatIndexStub.getThreads();
-
-    let restarted = 0;
-    let failed = 0;
-
-    // Iterate through all threads and attempt to restart their containers
-    for (const thread of threads) {
-      try {
-        const threadStub = this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(thread.id));
-        const result = await threadStub.restartContainer();
-        if (result.restarted) {
-          restarted++;
-          console.log(`[RPC] Restarted container for thread ${thread.id}`);
-        }
-        // Not counting "no active container" as failed - that's expected
-      } catch (e) {
-        failed++;
-        console.error(`[RPC] Failed to restart container for thread ${thread.id}:`, e);
-      }
-    }
-
-    console.log(`[RPC] Org ${orgId} container restart complete: ${restarted} restarted, ${failed} failed`);
-    return { restarted, failed };
+  async restartOrgContainers(_orgId: string): Promise<{ restarted: number; failed: number }> {
+    // With one container per org, we'd need to kill the sandbox process
+    // For now, the container will pick up new env vars on next WebSocket connection
+    console.log('[RPC] restartOrgContainers not yet implemented for new architecture');
+    return { restarted: 0, failed: 0 };
   }
 }

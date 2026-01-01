@@ -24,9 +24,10 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 2. **Workers** (`workers/`)
    - `main/` - Main Chiridion app worker
      - Cloudflare Workers with Durable Objects
-     - **Chat DOs:** `ChatThreadDO`, `ChatIndexDO`
+     - **Chat DOs:** `ChatIndexDO` (thread/project metadata per org)
      - **Auth DOs:** `SessionDO`, `UserDO`, `OrgDO`
      - `ThreadSandbox` - Executes Claude SDK in containers
+     - WebSocket routing at worker level (one container per org)
    - `dispatcher/` - Routes `*.chiridion.ai` to user workers (WfP)
    - `outbound/` - Intercepts user worker outbound requests for integration proxy
 
@@ -45,7 +46,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `src/app/signup/page.tsx` | Signup page |
 | `src/lib/auth.ts` | Cookie handling, validation helpers |
 | `src/lib/auth-do.ts` | Functions to interact with auth DOs |
-| `workers/main/src/durable-objects.ts` | WebSocket handler, container orchestration |
+| `workers/main/src/durable-objects.ts` | ChatIndexDO for thread/project metadata |
+| `workers/main/src/container.ts` | Container lifecycle and WebSocket routing |
 | `workers/main/src/auth.ts` | SessionDO, UserDO, OrgDO implementations |
 | `workers/main/src/password.ts` | PBKDF2 password hashing |
 | `workers/main/src/index.ts` | Worker entry point |
@@ -91,11 +93,11 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 
 ### Message Sending
 1. User types message in `Chat.tsx`
-2. Message sent via WebSocket to `ChatThreadDO`
-3. DO spawns container with `sandbox/driver.mjs`
-4. Driver calls `query({ prompt, options: { sessionId, includePartialMessages: true } })`
-5. SDK streams events as NDJSON to stdout
-6. Container output parsed by DO and forwarded via WebSocket
+2. WebSocket connects to `/ws/{org}` - Worker routes directly to container
+3. Container runs ws-server which proxies to Claude SDK
+4. Claude SDK stores messages in JSONL files (`~/.claude/projects/.../session.jsonl`)
+5. Streaming responses sent back through WebSocket
+6. Thread ID = Claude session_id (received on first message)
 7. Frontend updates React state with streaming content
 
 ### Projects
@@ -149,7 +151,7 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 | `/api/projects` | GET, POST | List/create projects |
 | `/api/projects/[id]` | GET, PUT, DELETE | Get/update/delete project |
 | `/api/chat` | POST | Send message (REST fallback) |
-| `/ws/[threadId]` | WebSocket | Real-time chat |
+| `/ws/{org}` | WebSocket | Real-time chat (one connection per org) |
 
 ## Development
 

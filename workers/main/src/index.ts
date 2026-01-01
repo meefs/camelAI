@@ -1,15 +1,28 @@
 // Custom worker that wraps OpenNext and handles WebSocket + Durable Objects
 // @ts-ignore - .open-next/worker.js is generated at build time
 import openNextHandler from "../../../.open-next/worker.js";
-import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
+import { ChatIndexDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
 import { Sandbox } from '@cloudflare/sandbox';
+import { handleWebSocketUpgrade, type ContainerEnv } from './container.js';
 export { DoRpcService } from './rpc-service.js';
 
 // Export Sandbox as ThreadSandbox to match wrangler.jsonc class_name
 export { Sandbox as ThreadSandbox };
 
-interface Env extends ChatEnv, AuthEnv {
+const SESSION_COOKIE_NAME = 'chiridion_session';
+const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
+
+function getCookieValue(cookieHeader: string | null, name: string): string | null {
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const [k, ...rest] = part.trim().split('=');
+    if (k === name) return rest.join('=') || '';
+  }
+  return null;
+}
+
+interface Env extends ChatEnv, AuthEnv, ContainerEnv {
   ASSETS: Fetcher;
   NEXTJS_ENV?: string;
   CF_API_TOKEN?: string;
@@ -316,20 +329,8 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       path: pathname,
       scriptName: scriptNameForToken,
     });
-
-    // Look up threadId from deploy token and notify the DO
-    const threadId = await tokenKv.get(`deploy_token_thread:${proxyToken}`);
-    if (threadId) {
-      try {
-        const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-        await threadStub.notifyDeploySuccess(scriptNameForToken);
-        console.log('[cf-api-proxy] notified thread of deploy success:', threadId);
-      } catch (e) {
-        console.error('[cf-api-proxy] failed to notify thread:', e);
-      }
-    } else {
-      console.warn('[cf-api-proxy] no threadId found for deploy token');
-    }
+    // TODO: Notify connected WebSocket clients of deploy success
+    // This could be done via a broadcast to the container's /broadcast endpoint
   }
 
   return new Response(respBody, { status: resp.status, headers: resp.headers });
@@ -348,13 +349,36 @@ export default {
       }
     }
 
-    // Handle WebSocket upgrade requests at /ws/{threadId}
+    // Handle WebSocket upgrade requests at /ws/{org}
+    // The org is used to route to the correct container (one per org)
+    // Thread/session management happens in the WebSocket protocol
     const wsMatch = url.pathname.match(/^\/ws\/([^\/]+)$/);
     if (wsMatch && request.headers.get('Upgrade') === 'websocket') {
-      const threadId = wsMatch[1];
-      const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-      // Forward the upgrade request directly. The DO reads the external origin from forwarded headers.
-      return threadStub.fetch(request);
+      const orgFromPath = wsMatch[1];
+
+      // Authenticate the request
+      const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
+      const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
+      const sessionId = headerSessionId || cookieSessionId;
+
+      if (!sessionId) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
+      const session = await sessionStub.getData();
+      if (!session) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      // Use the org from session (ignore path org for security)
+      const org = session.org_id;
+      if (!org) {
+        return new Response('No organization selected', { status: 400 });
+      }
+
+      // Handle WebSocket upgrade with container management
+      return handleWebSocketUpgrade(request, env, org);
     }
 
     // Pass all other requests to OpenNext/Next.js if dev env var is not set
@@ -366,5 +390,5 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 // Export Durable Object classes
-export { ChatIndexDO, ChatThreadDO };
+export { ChatIndexDO };
 export { SessionDO, UserDO, OrgDO };

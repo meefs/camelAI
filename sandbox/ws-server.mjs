@@ -1,5 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'child_process';
+import { existsSync } from 'fs';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -11,45 +12,34 @@ if (!ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-// Session state
+// Session state - keyed by threadId
 const sessions = new Map();
 const MAX_EVENT_BUFFER = 500;
-let lastSessionId = null;
 
-function createSession(id) {
+function createSession(threadId) {
   const session = {
-    id,
-    claudeSessionId: null,
+    threadId,
     activeQuery: null,
     queryIterator: null,
     eventLoopRunning: false,
     messageResolver: null,
     messageQueue: [],
-    threadId: null,
     attachedWs: null,
     eventBuffer: [],
     nextEventId: 1,
-    lastEventSummary: null,
-    lastEventAt: null,
   };
-  sessions.set(id, session);
-  lastSessionId = id;
+  sessions.set(threadId, session);
   return session;
 }
 
-function getOrCreateSession(id) {
-  if (id && sessions.has(id)) return sessions.get(id);
-  if (id && !sessions.has(id)) return createSession(id);
-  if (lastSessionId && sessions.has(lastSessionId)) return sessions.get(lastSessionId);
-  const newId = crypto.randomUUID();
-  return createSession(newId);
-}
-
-function resolveSessionFromMessage(ws, data) {
-  if (data?.sessionId) return getOrCreateSession(data.sessionId);
-  const wsSessionId = ws?.data?.sessionId;
-  if (wsSessionId && sessions.has(wsSessionId)) return sessions.get(wsSessionId);
-  return getOrCreateSession(null);
+function getOrCreateSession(threadId) {
+  if (!threadId) {
+    threadId = crypto.randomUUID();
+  }
+  if (sessions.has(threadId)) {
+    return sessions.get(threadId);
+  }
+  return createSession(threadId);
 }
 
 // Log for DO persistence (NDJSON format)
@@ -115,6 +105,14 @@ function syncWorkspace() {
   });
 }
 
+// Check if a session JSONL file exists
+function sessionFileExists(sessionId) {
+  if (!sessionId) return false;
+  const projectPath = '-home-claude';
+  const jsonlPath = `${SYNC_DIR}/.claude/projects/${projectPath}/${sessionId}.jsonl`;
+  return existsSync(jsonlPath);
+}
+
 // Query options for Claude SDK
 function getQueryOptions(session) {
   const options = {
@@ -125,8 +123,17 @@ function getQueryOptions(session) {
     settingSources: ['project', 'user'],
   };
 
-  if (session.claudeSessionId) {
-    options.resume = session.claudeSessionId;
+  if (session.threadId) {
+    // Check if session file exists to determine resume vs new
+    if (sessionFileExists(session.threadId)) {
+      // Existing session - resume it
+      options.resume = session.threadId;
+      console.error('[ws-server] Resuming existing session:', session.threadId);
+    } else {
+      // New session - pass session-id as extraArg so Claude uses our ID
+      options.extraArgs = { 'session-id': session.threadId };
+      console.error('[ws-server] Starting new session with ID:', session.threadId);
+    }
   }
 
   return options;
@@ -154,7 +161,7 @@ async function* createMessageStream(session) {
     // Yield the user message
     yield {
       type: 'user',
-      session_id: session.claudeSessionId || '',
+      session_id: session.threadId || '',
       message: {
         role: 'user',
         content: [{ type: 'text', text: message }],
@@ -166,7 +173,7 @@ async function* createMessageStream(session) {
 
 function bufferEvent(session, payload) {
   const eventId = session.nextEventId++;
-  const envelope = { ...payload, eventId, sessionId: session.id };
+  const envelope = { ...payload, eventId, sessionId: session.threadId };
   session.eventBuffer.push(envelope);
   if (session.eventBuffer.length > MAX_EVENT_BUFFER) {
     session.eventBuffer.shift();
@@ -205,8 +212,13 @@ function attachSession(ws, session, lastEventId) {
     }
   }
   session.attachedWs = ws;
-  ws.data = { sessionId: session.id };
-  ws.send(JSON.stringify({ type: 'session', sessionId: session.id }));
+  ws.data = { threadId: session.threadId };
+
+  // Send the threadId to the client - they may have provided it or we generated it
+  if (session.threadId) {
+    ws.send(JSON.stringify({ type: 'session', sessionId: session.threadId }));
+  }
+
   ws.send(JSON.stringify({ type: 'ready' }));
   replayBufferedEvents(session, ws, lastEventId);
 }
@@ -215,7 +227,7 @@ function attachSession(ws, session, lastEventId) {
 function initSession(session) {
   if (session.activeQuery) return;
 
-  console.error('[ws-server] Initializing stateful session', session.id);
+  console.error('[ws-server] Initializing stateful session', session.threadId);
   try {
     const options = getQueryOptions(session);
     const messageStream = createMessageStream(session);
@@ -224,8 +236,7 @@ function initSession(session) {
     session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
   } catch (error) {
     console.error('[ws-server] Failed to initialize session', {
-      sessionId: session.id,
-      claudeSessionId: session.claudeSessionId,
+      threadId: session.threadId,
       error: summarizeError(error),
     });
     bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
@@ -247,23 +258,17 @@ function startEventLoop(session) {
           break;
         }
 
-        session.lastEventSummary = {
-          type: event.type,
-          subtype: event.subtype,
-          streamType: event.event?.type,
-        };
-        session.lastEventAt = Date.now();
-
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
 
-        // Capture session ID from init event - this is the only thing we persist
-        // Messages are stored by Claude in ~/.claude/projects/.../session.jsonl
+        // Log session ID from init event for verification
+        // We provide our own session-id via extraArgs, so Claude should use it
         if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-          if (!session.claudeSessionId) {
-            session.claudeSessionId = event.session_id;
-            logForPersistence({ type: 'session_id', threadId: session.threadId, sessionId: event.session_id });
-            console.error('[ws-server] Got session ID:', session.claudeSessionId);
+          console.error('[ws-server] Claude session ID:', event.session_id, 'expected:', session.threadId);
+
+          // Verify Claude used our session ID
+          if (event.session_id !== session.threadId) {
+            console.error('[ws-server] WARNING: Claude session ID does not match our threadId!');
           }
         }
 
@@ -285,10 +290,7 @@ function startEventLoop(session) {
     } catch (e) {
       const errorMsg = String(e);
       console.error('[ws-server] Query error:', {
-        sessionId: session.id,
-        claudeSessionId: session.claudeSessionId,
-        lastEvent: session.lastEventSummary,
-        lastEventAt: session.lastEventAt,
+        threadId: session.threadId,
         error: summarizeError(e),
       });
       bufferEvent(session, { type: 'error', error: errorMsg });
@@ -322,13 +324,6 @@ function handleUserMessage(session, content) {
     // Queue message - will be picked up when generator pulls
     session.messageQueue.push(content);
   }
-}
-
-// Resume default session if provided by env (single-session compatibility)
-if (process.env.RESUME_SESSION_ID) {
-  const resumed = createSession(crypto.randomUUID());
-  resumed.claudeSessionId = process.env.RESUME_SESSION_ID;
-  console.error('[ws-server] Will resume Claude session:', resumed.claudeSessionId);
 }
 
 // Bun WebSocket server with HTTP health endpoint
@@ -386,26 +381,35 @@ Bun.serve({
         const data = JSON.parse(message);
 
         if (data.type === 'init') {
-          const session = resolveSessionFromMessage(ws, data);
-          if (typeof data.threadId === 'string' && data.threadId) {
-            session.threadId = data.threadId;
-          }
+          // Get or generate threadId
+          const threadId = (typeof data.threadId === 'string' && data.threadId && data.threadId !== 'new')
+            ? data.threadId
+            : crypto.randomUUID();
+
+          const session = getOrCreateSession(threadId);
+          console.error('[ws-server] Init with threadId:', threadId);
           attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {
-          const session = resolveSessionFromMessage(ws, data);
-          if (!session.threadId && typeof data.threadId === 'string' && data.threadId) {
-            session.threadId = data.threadId;
+          // Get session from ws.data (set during init)
+          const threadId = ws.data?.threadId || data.threadId;
+          if (!threadId || !sessions.has(threadId)) {
+            ws.send(JSON.stringify({ type: 'error', error: 'No session - send init first' }));
+            return;
           }
+          const session = sessions.get(threadId);
           handleUserMessage(session, data.content);
 
         } else if (data.type === 'stop') {
-          const session = resolveSessionFromMessage(ws, data);
-          if (session.activeQuery) {
-            try {
-              await session.activeQuery.interrupt();
-            } catch (e) {
-              console.error('[ws-server] Interrupt error:', e);
+          const threadId = ws.data?.threadId;
+          if (threadId && sessions.has(threadId)) {
+            const session = sessions.get(threadId);
+            if (session.activeQuery) {
+              try {
+                await session.activeQuery.interrupt();
+              } catch (e) {
+                console.error('[ws-server] Interrupt error:', e);
+              }
             }
           }
         }
@@ -417,9 +421,9 @@ Bun.serve({
 
     close(ws) {
       console.error('[ws-server] WebSocket closed');
-      const sessionId = ws?.data?.sessionId;
-      if (sessionId && sessions.has(sessionId)) {
-        const session = sessions.get(sessionId);
+      const threadId = ws?.data?.threadId;
+      if (threadId && sessions.has(threadId)) {
+        const session = sessions.get(threadId);
         if (session.attachedWs === ws) {
           session.attachedWs = null;
         }
