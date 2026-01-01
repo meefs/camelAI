@@ -693,8 +693,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // Fetch integration credentials and pass as ENV vars
       try {
         const integrationEnvVars = await this.env.DO_RPC.getOrgIntegrationEnvVars(org);
+        // Debug: log env var names and value lengths (not the actual values)
+        console.log('[DO] Integration env vars:', Object.entries(integrationEnvVars).map(
+          ([k, v]) => `${k}=${v.length} chars`
+        ));
         Object.assign(processEnv, integrationEnvVars);
-        console.log('[DO] Loaded integration env vars:', Object.keys(integrationEnvVars).length);
       } catch (e) {
         console.error('[DO] Failed to load integration env vars:', e);
       }
@@ -722,6 +725,61 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         error: String(e),
       });
       return null;
+    }
+  }
+
+  /**
+   * Restart the container process with fresh environment variables.
+   * Called when integrations are updated to pick up new credentials.
+   */
+  async restartContainer(): Promise<{ restarted: boolean; error?: string }> {
+    // Only restart if we have an active process
+    if (!this.currentProcessId || !this.sandbox || !this.currentOrg) {
+      return { restarted: false, error: 'No active container to restart' };
+    }
+
+    console.log('[DO] Restarting container for integration update', {
+      threadId: this.threadId,
+      org: this.currentOrg,
+      processId: this.currentProcessId,
+    });
+
+    try {
+      // Kill the current process
+      await this.sandbox.killProcess(this.currentProcessId, 'SIGTERM');
+      this.currentProcessId = null;
+      this.isStreamingLogs = false;
+
+      // Wait a moment for the process to terminate
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      // Start a new process with fresh env vars (including updated integrations)
+      const process = await this.startWsServerProcess(this.currentOrg);
+      if (!process) {
+        return { restarted: false, error: 'Failed to start new process' };
+      }
+
+      // Wait for the server to be ready
+      const readyPromise = this.createServerReadyPromise(30000);
+      this.ctx.waitUntil(this.streamLogsForPersistence(process.id));
+
+      try {
+        await readyPromise;
+      } catch (e) {
+        console.error('[DO] Restarted container failed to become ready:', e);
+        return { restarted: false, error: 'Container failed to become ready' };
+      }
+
+      console.log('[DO] Container restarted successfully', {
+        threadId: this.threadId,
+        org: this.currentOrg,
+        processId: process.id,
+      });
+
+      return { restarted: true };
+    } catch (e) {
+      console.error('[DO] Failed to restart container:', e);
+      return { restarted: false, error: String(e) };
     }
   }
 

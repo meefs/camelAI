@@ -1017,4 +1017,36 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
     return envVars;
   }
+
+  /**
+   * Restart all active containers for an org.
+   * Called when integrations are created/updated/deleted to pick up new credentials.
+   */
+  async restartOrgContainers(orgId: string): Promise<{ restarted: number; failed: number }> {
+    // Get all thread IDs for this org
+    const chatIndexStub = this.env.CHAT_INDEX.get(this.env.CHAT_INDEX.idFromName(orgId));
+    const threads = await chatIndexStub.getThreads();
+
+    let restarted = 0;
+    let failed = 0;
+
+    // Iterate through all threads and attempt to restart their containers
+    for (const thread of threads) {
+      try {
+        const threadStub = this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(thread.id));
+        const result = await threadStub.restartContainer();
+        if (result.restarted) {
+          restarted++;
+          console.log(`[RPC] Restarted container for thread ${thread.id}`);
+        }
+        // Not counting "no active container" as failed - that's expected
+      } catch (e) {
+        failed++;
+        console.error(`[RPC] Failed to restart container for thread ${thread.id}:`, e);
+      }
+    }
+
+    console.log(`[RPC] Org ${orgId} container restart complete: ${restarted} restarted, ${failed} failed`);
+    return { restarted, failed };
+  }
 }
