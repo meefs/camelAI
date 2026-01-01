@@ -47,6 +47,14 @@ export function AppSidebar(props: AppSidebarProps) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
+              <SidebarMenuButton asChild tooltip="Computer" isActive={isComputer}>
+                <Link href={computerHref}>
+                  <AppWindowMac />
+                  <span>Computer</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="Chat History" isActive={isHistory}>
                 <Link href="/history">
                   <MessagesSquare />
@@ -59,14 +67,6 @@ export function AppSidebar(props: AppSidebarProps) {
                 <Link href="/connections">
                   <Cable />
                   <span>Connections</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild tooltip="Computer" isActive={isComputer}>
-                <Link href={computerHref}>
-                  <AppWindowMac />
-                  <span>Computer</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
