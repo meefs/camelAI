@@ -22,7 +22,6 @@ import {
   FileVideo,
   Folder,
   FolderOpen,
-  MoreHorizontal,
   Plus,
   RefreshCw,
   Save,
@@ -1428,26 +1427,6 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                   </button>
                 ))}
               </div>
-              {openTabs.length > 0 && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button size="icon" variant="ghost" className="h-7 w-7">
-                      <MoreHorizontal className="size-3.5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    {openTabs.map((tab) => (
-                      <DropdownMenuItem
-                        key={tab.path}
-                        onSelect={() => setActivePath(tab.path)}
-                      >
-                        {tab.title}
-                        {tab.isDirty && <Circle className="ml-2 size-2" />}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
             </div>
             <div className="flex-1 min-h-0">
               {!activeTab && (
