@@ -198,27 +198,11 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef(0);
-  const suppressEmptyFetchRef = useRef(false);
-  const messagesRef = useRef<Message[]>(parsedInitialMessages);
-  const streamingRef = useRef<StreamingState>({ content: [], isStreaming: false });
-  const loadingRef = useRef(false);
   const initialMessagesRef = useRef<{ threadId?: string; messages: Message[] } | null>(
     initialMessages ? { threadId, messages: parsedInitialMessages } : null
   );
   const initialThreadsRef = useRef<Thread[] | null>(initialThreads ?? null);
   const initialThreadsOrgRef = useRef<string | null>(initialThreads ? orgId : null);
-
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
-  useEffect(() => {
-    streamingRef.current = streaming;
-  }, [streaming]);
-
-  useEffect(() => {
-    loadingRef.current = loading;
-  }, [loading]);
 
   useEffect(() => {
     if (initialMessages) {
@@ -239,48 +223,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   // Queue message to send when connection becomes ready
   const pendingMessageRef = useRef<string | null>(null);
   const sessionStorageKey = useCallback((id: string) => `ws_session_${id}`, []);
-  const pendingThreadStateKey = useCallback((id: string) => `pending_thread_state_${id}`, []);
-
-  const persistPendingThreadState = useCallback((id: string) => {
-    try {
-      const payload = {
-        messages: messagesRef.current,
-        streaming: streamingRef.current,
-        loading: loadingRef.current,
-      };
-      sessionStorage.setItem(pendingThreadStateKey(id), JSON.stringify(payload));
-    } catch (e) {
-      console.warn('Failed to persist pending thread state:', e);
-    }
-  }, [pendingThreadStateKey]);
-
-  const hydratePendingThreadState = useCallback((id: string) => {
-    try {
-      const stored = sessionStorage.getItem(pendingThreadStateKey(id));
-      if (!stored) return false;
-      sessionStorage.removeItem(pendingThreadStateKey(id));
-      const parsed = JSON.parse(stored) as {
-        messages?: Message[];
-        streaming?: StreamingState;
-        loading?: boolean;
-      };
-      if (Array.isArray(parsed.messages)) {
-        setMessages(parsed.messages);
-        isFirstMessage.current = parsed.messages.length === 0;
-      }
-      if (parsed.streaming && Array.isArray(parsed.streaming.content)) {
-        setStreaming(parsed.streaming);
-      }
-      if (typeof parsed.loading === 'boolean') {
-        setLoading(parsed.loading);
-      }
-      suppressEmptyFetchRef.current = true;
-      return true;
-    } catch (e) {
-      console.warn('Failed to hydrate pending thread state:', e);
-    }
-    return false;
-  }, [pendingThreadStateKey]);
 
   const loadSessionState = useCallback((id: string) => {
     try {
@@ -328,11 +270,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     loadSessionState(threadId);
   }, [threadId, loadSessionState]);
 
-  useEffect(() => {
-    if (!threadId || threadId === 'new') return;
-    hydratePendingThreadState(threadId);
-  }, [threadId, hydratePendingThreadState]);
-
   const fetchThreads = useCallback(async () => {
     const res = await fetch('/api/threads');
     const data = await res.json() as unknown;
@@ -369,14 +306,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
           content: parseMessageContent(msg.content),
         }));
 
-        if (suppressEmptyFetchRef.current && parsedMsgs.length === 0) {
-          suppressEmptyFetchRef.current = false;
-          return;
-        }
-        if (suppressEmptyFetchRef.current) {
-          suppressEmptyFetchRef.current = false;
-        }
-
         // Always replace with server state - local-only messages (local_*, turn_*)
         // that weren't persisted are stale. Pending messages will be re-added
         // when the ready event fires.
@@ -393,6 +322,9 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
+    if (!id) {
+      return;
+    }
     // Clear any pending reconnect
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -415,8 +347,20 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       reconnectAttempts.current = 0;
     }
 
-    // Fetch existing messages from REST API (skip for new chats)
-    if (id !== 'new') {
+    // Fetch existing messages from REST API unless we have a pending first message for this thread
+    let shouldFetchMessages = true;
+    const pendingPayload = sessionStorage.getItem('pendingMessage');
+    if (pendingPayload) {
+      try {
+        const parsed = JSON.parse(pendingPayload) as { threadId?: string };
+        if (parsed.threadId === id) {
+          shouldFetchMessages = false;
+        }
+      } catch {
+        // Ignore malformed pending payload and continue to fetch
+      }
+    }
+    if (shouldFetchMessages) {
       fetchMessages(id, isReconnect);
     }
 
@@ -438,10 +382,10 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       // Send init message to container
       ws.send(JSON.stringify({
         type: 'init',
-        threadId: id === 'new' ? null : id,
+        threadId: id,
         org: orgIdForConnection,
-        sessionId: id === 'new' ? null : sessionIdRef.current,
-        lastEventId: id === 'new' ? 0 : lastEventIdRef.current,
+        sessionId: sessionIdRef.current,
+        lastEventId: lastEventIdRef.current,
       }));
     };
 
@@ -468,10 +412,10 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         let storedMessage = pendingMessageRef.current;
         const storedPayload = sessionStorage.getItem('pendingMessage');
         if (storedPayload) {
-          sessionStorage.removeItem('pendingMessage');
           try {
-            const parsed = JSON.parse(storedPayload) as { message?: string; orgId?: string };
-            if (parsed.orgId === resolvedOrgId && typeof parsed.message === 'string') {
+            const parsed = JSON.parse(storedPayload) as { message?: string; orgId?: string; threadId?: string };
+            if (parsed.orgId === resolvedOrgId && parsed.threadId === id && typeof parsed.message === 'string') {
+              sessionStorage.removeItem('pendingMessage');
               storedMessage = parsed.message;
             }
           } catch (e) {
@@ -508,27 +452,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
           lastEventIdRef.current = 0;
         }
         sessionIdRef.current = newSessionId;
-
-        // If we don't have a thread yet (new chat), create one with session_id as thread ID
-        if (isNewChat && newSessionId) {
-          // Create thread with session_id
-          fetch('/api/threads', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: newSessionId }),
-          })
-            .then(res => res.json() as Promise<Thread>)
-            .then((thread) => {
-              persistSessionState(thread.id);
-              persistPendingThreadState(thread.id);
-              // Update refs to track the new thread ID and prevent reconnection
-              connectedThreadIdRef.current = thread.id;
-              // Update URL to reflect new thread ID without navigation
-              router.replace(`/chat/${thread.id}`, { scroll: false });
-              fetchThreads();
-            })
-            .catch(err => console.error('Failed to create thread:', err));
-        } else if (threadId && !isNewChat) {
+        if (threadId) {
           persistSessionState(threadId);
         }
       } else if (data.type === 'sdk_event') {
@@ -767,9 +691,8 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     };
   }, []);
 
-  // Check if we should show the chat UI (either real thread or "new" chat)
-  const isNewChat = threadId === 'new';
-  const shouldShowChat = threadId && threadId !== '';
+  // Check if we should show the chat UI
+  const shouldShowChat = Boolean(threadId);
 
   // Connect when threadId changes
   useEffect(() => {
@@ -817,7 +740,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       }
     }
 
-    // Connect to the new thread/org (for "new" chat, pass 'new' as the ID)
+    // Connect to the new thread/org
     connectedThreadIdRef.current = threadId;
     connectedOrgIdRef.current = nextOrgId;
     connectWebSocketRef.current?.(threadId);
@@ -907,12 +830,28 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
     setIsCreatingThread(true);
     const msg = welcomeInput.trim();
+    const newThreadId = crypto.randomUUID();
     // Store in sessionStorage to survive component remount during navigation
-    sessionStorage.setItem('pendingMessage', JSON.stringify({ message: msg, orgId: resolvedOrgId }));
+    sessionStorage.setItem('pendingMessage', JSON.stringify({ message: msg, orgId: resolvedOrgId, threadId: newThreadId }));
     setWelcomeInput('');
 
-    // Navigate to /chat/new - thread will be created after we get session_id from Claude
-    router.push('/chat/new');
+    try {
+      const res = await fetch('/api/threads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: newThreadId }),
+      });
+      if (!res.ok) {
+        throw new Error(`Failed to create thread (${res.status})`);
+      }
+      const thread = await res.json() as Thread;
+      router.push(`/chat/${thread?.id || newThreadId}`);
+    } catch (err) {
+      sessionStorage.removeItem('pendingMessage');
+      setIsCreatingThread(false);
+      setError('Failed to start a new chat');
+      console.error('Failed to create thread:', err);
+    }
   }
 
   async function deleteThread(id: string, e: React.MouseEvent) {
@@ -939,7 +878,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     // Add user message to local state immediately
     const userMsg: Message = {
       id: `local_${Date.now()}`,
-      thread_id: threadId || 'new',
+      thread_id: threadId || '',
       role: 'user',
       content: userMessage,
       created_at: Date.now(),
@@ -953,8 +892,8 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       wsRef.current.send(JSON.stringify({
         type: 'message',
         content: userMessage,
-        sessionId: isNewChat ? null : sessionIdRef.current,
-        threadId: isNewChat ? null : threadId,
+        sessionId: sessionIdRef.current,
+        threadId,
       }));
 
       if (isFirstMessage.current) {
@@ -968,7 +907,9 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
       // If not connected at all, trigger reconnect
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        connectWebSocketRef.current?.(threadId || 'new', true);
+        if (threadId) {
+          connectWebSocketRef.current?.(threadId, true);
+        }
       }
       // If connected but not ready, the message will be sent when ready event arrives
     }
@@ -977,7 +918,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   return (
     <TooltipProvider>
       <>
-        <PageHeader breadcrumbs={[{ label: isNewChat ? 'New Chat' : (shouldShowChat ? 'Chat' : 'Home') }]} />
+        <PageHeader breadcrumbs={[{ label: shouldShowChat ? 'Chat' : 'Home' }]} />
 
         {shouldShowChat ? (
           <div className="flex-1 flex min-h-0">

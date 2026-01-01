@@ -382,9 +382,12 @@ Bun.serve({
 
         if (data.type === 'init') {
           // Get or generate threadId
-          const threadId = (typeof data.threadId === 'string' && data.threadId && data.threadId !== 'new')
-            ? data.threadId
-            : crypto.randomUUID();
+          const threadId = typeof data.threadId === 'string' ? data.threadId.trim() : '';
+          if (!threadId) {
+            ws.send(JSON.stringify({ type: 'error', error: 'Missing threadId - init requires a valid threadId' }));
+            ws.close(1008, 'missing threadId');
+            return;
+          }
 
           const session = getOrCreateSession(threadId);
           console.error('[ws-server] Init with threadId:', threadId);
