@@ -256,6 +256,14 @@ function hashString(value: string): string {
   return (hash >>> 0).toString(16);
 }
 
+function canDropInto(targetPath: string, sourcePath: string): boolean {
+  const normalizedTarget = normalizePath(targetPath);
+  const normalizedSource = normalizePath(sourcePath);
+  if (normalizedTarget === normalizedSource) return false;
+  if (normalizedTarget.startsWith(`${normalizedSource}/`)) return false;
+  return true;
+}
+
 function getLanguageForPath(path: string): string {
   const ext = getExtension(path);
   return LANGUAGE_BY_EXTENSION[ext] ?? 'plaintext';
@@ -292,6 +300,9 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchIndexLoaded, setSearchIndexLoaded] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragOverPath, setDragOverPath] = useState<string | null>(null);
+  const [dragBlockedPath, setDragBlockedPath] = useState<string | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [dialogState, setDialogState] = useState<DialogState>(null);
   const [dialogName, setDialogName] = useState('');
@@ -314,6 +325,11 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     new Map()
   );
   const activePathRef = useRef<string | null>(null);
+  const dragSourcePathRef = useRef<string | null>(null);
+  const dragOverPathRef = useRef<string | null>(null);
+  const dragExpandPathRef = useRef<string | null>(null);
+  const dragExpandTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dragBlockedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveFileRef = useRef<(path: string, force?: boolean) => Promise<void>>(
     async () => {}
   );
@@ -367,6 +383,10 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   }, [activePath]);
 
   useEffect(() => {
+    dragOverPathRef.current = dragOverPath;
+  }, [dragOverPath]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     const stored = localStorage.getItem(storageKey);
     if (stored) {
@@ -398,6 +418,30 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     }
     setHydrated(true);
   }, [storageKey]);
+
+  const clearDragState = useCallback(() => {
+    setIsDragging(false);
+    setDragOverPath(null);
+    dragSourcePathRef.current = null;
+    dragOverPathRef.current = null;
+    dragExpandPathRef.current = null;
+    if (dragExpandTimeoutRef.current) {
+      clearTimeout(dragExpandTimeoutRef.current);
+      dragExpandTimeoutRef.current = null;
+    }
+  }, []);
+
+  const triggerDragBlocked = useCallback((path: string) => {
+    setDragBlockedPath(path);
+    if (dragBlockedTimeoutRef.current) {
+      clearTimeout(dragBlockedTimeoutRef.current);
+    }
+    dragBlockedTimeoutRef.current = setTimeout(() => {
+      setDragBlockedPath(null);
+      dragBlockedTimeoutRef.current = null;
+    }, 1400);
+  }, []);
+
 
   const applyListing = useCallback((listing: WorkspaceListResponse) => {
     setNodesByPath((prev) => {
@@ -560,6 +604,30 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       }
     },
     [apiBase, applyListing, applyRecursiveListing]
+  );
+
+  const scheduleAutoExpand = useCallback(
+    (path: string) => {
+      if (expandedPaths.has(path)) return;
+      if (dragExpandPathRef.current === path && dragExpandTimeoutRef.current) {
+        return;
+      }
+      if (dragExpandTimeoutRef.current) {
+        clearTimeout(dragExpandTimeoutRef.current);
+        dragExpandTimeoutRef.current = null;
+      }
+      dragExpandPathRef.current = path;
+      dragExpandTimeoutRef.current = setTimeout(async () => {
+        if (dragOverPathRef.current !== path) return;
+        await loadDirectory(path);
+        setExpandedPaths((prev) => {
+          const next = new Set(prev);
+          next.add(path);
+          return next;
+        });
+      }, 900);
+    },
+    [expandedPaths, loadDirectory]
   );
 
   useEffect(() => {
@@ -1037,8 +1105,14 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     async (targetPath: string, sourcePath: string) => {
       const normalizedTarget = normalizePath(targetPath);
       const normalizedSource = normalizePath(sourcePath);
-      if (normalizedTarget === normalizedSource) return;
-      if (normalizedTarget.startsWith(`${normalizedSource}/`)) return;
+      if (normalizedTarget === normalizedSource) {
+        clearDragState();
+        return;
+      }
+      if (normalizedTarget.startsWith(`${normalizedSource}/`)) {
+        clearDragState();
+        return;
+      }
 
       const destination = joinPath(normalizedTarget, getBasename(normalizedSource));
       try {
@@ -1057,9 +1131,11 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
         await loadDirectory(normalizedTarget);
       } catch (error) {
         console.error('Move failed', error);
+      } finally {
+        clearDragState();
       }
     },
-    [apiBase, loadDirectory, remapOpenResources]
+    [apiBase, clearDragState, loadDirectory, remapOpenResources]
   );
 
   const openDialog = useCallback((state: DialogState) => {
@@ -1262,6 +1338,11 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   const isTreeLoading = loadingPaths.has(ROOT_PATH);
   const hasSearchTerm = searchTerm.trim().length > 0;
   const showSearchLoading = hasSearchTerm && (searchLoading || !searchIndexLoaded);
+  const dragSource = dragSourcePathRef.current;
+  const dragEnabled = editingEnabled;
+  const canDropToRoot =
+    dragEnabled && isDragging && Boolean(dragSource) && canDropInto(ROOT_PATH, dragSource);
+  const isRootDragOver = dragOverPath === ROOT_PATH;
 
   return (
     <div className="flex h-full w-full flex-1 min-h-0 min-w-0 overflow-hidden">
@@ -1337,7 +1418,76 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
             <Separator />
             <div className="flex-1 min-h-0">
               <ScrollArea className="h-full">
-                <div ref={treeContainerRef} className="py-2">
+                <div
+                  ref={treeContainerRef}
+                  className="py-2"
+                  onDragLeave={(event) => {
+                    const related = event.relatedTarget as Node | null;
+                    if (
+                      related &&
+                      (event.currentTarget as HTMLElement).contains(related)
+                    ) {
+                      return;
+                    }
+                    clearDragState();
+                  }}
+                  onDrop={clearDragState}
+                >
+                  {canDropToRoot && (
+                    <div className="sticky top-0 z-10 px-2 pb-2">
+                      <div
+                        className={cn(
+                          'relative flex items-center gap-2 rounded-md border border-dashed px-2 py-1 text-xs transition',
+                          isRootDragOver
+                            ? 'border-primary/60 bg-primary/10 text-foreground'
+                            : 'border-muted-foreground/30 bg-muted/30 text-muted-foreground'
+                        )}
+                        onDragOver={(event) => {
+                          event.preventDefault();
+                          if (!dragSourcePathRef.current) return;
+                          const canDrop = canDropInto(
+                            ROOT_PATH,
+                            dragSourcePathRef.current
+                          );
+                          event.dataTransfer.dropEffect = canDrop ? 'move' : 'none';
+                          if (!canDrop) return;
+                          if (dragOverPathRef.current !== ROOT_PATH) {
+                            setDragOverPath(ROOT_PATH);
+                            dragOverPathRef.current = ROOT_PATH;
+                          }
+                        }}
+                        onDragLeave={(event) => {
+                          if (dragOverPathRef.current !== ROOT_PATH) return;
+                          const related = event.relatedTarget as Node | null;
+                          if (
+                            related &&
+                            (event.currentTarget as HTMLElement).contains(related)
+                          ) {
+                            return;
+                          }
+                          setDragOverPath(null);
+                          dragOverPathRef.current = null;
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const sourcePath = event.dataTransfer.getData('text/plain');
+                          if (sourcePath) {
+                            void handleDrop(ROOT_PATH, sourcePath);
+                          } else {
+                            clearDragState();
+                          }
+                        }}
+                      >
+                        <span className="font-semibold uppercase tracking-wide">
+                          Workspace
+                        </span>
+                        <span>Drop to move to root</span>
+                        {isRootDragOver && (
+                          <span className="pointer-events-none absolute inset-x-2 bottom-0 h-px bg-primary/60" />
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {treeError && (
                     <div className="px-3 py-2 text-xs text-destructive">
                       {treeError}
@@ -1365,65 +1515,136 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                   )}
                   {!showSearchLoading &&
                     treeRows.map(({ node, depth, isMatch }) => {
-                    const isExpanded = expandedPaths.has(node.path);
-                    const isActive = activePath === node.path;
-                    const isDirectory = node.kind === 'dir';
-                    const Icon = isDirectory ? (isExpanded ? FolderOpen : Folder) : getFileIcon(node.path);
-                    const isLoading = loadingPaths.has(node.path);
-                    return (
-                      <ContextMenu key={node.path}>
-                        <ContextMenuTrigger asChild>
-                          <div
-                            data-path={node.path}
-                            draggable={node.path !== ROOT_PATH}
-                            onDragStart={(event) => {
-                              event.dataTransfer.setData('text/plain', node.path);
-                              event.dataTransfer.effectAllowed = 'move';
-                            }}
-                            onDragOver={(event) => {
-                              if (isDirectory) {
+                      const isExpanded = expandedPaths.has(node.path);
+                      const isActive = activePath === node.path;
+                      const isDirectory = node.kind === 'dir';
+                      const isDropAllowed =
+                        dragEnabled &&
+                        isDragging &&
+                        Boolean(dragSource) &&
+                        isDirectory &&
+                        canDropInto(node.path, dragSource);
+                      const isDragOver = dragOverPath === node.path && isDropAllowed;
+                      const Icon =
+                        isDirectory ? (isExpanded ? FolderOpen : Folder) : getFileIcon(node.path);
+                      const isLoading = loadingPaths.has(node.path);
+                      return (
+                        <ContextMenu key={node.path}>
+                          <ContextMenuTrigger asChild>
+                            <div
+                              data-path={node.path}
+                              draggable={node.path !== ROOT_PATH}
+                              onDragStart={(event) => {
+                                if (!dragEnabled) {
+                                  event.preventDefault();
+                                  event.dataTransfer.dropEffect = 'none';
+                                  triggerDragBlocked(node.path);
+                                  return;
+                                }
+                                event.dataTransfer.setData('text/plain', node.path);
+                                event.dataTransfer.effectAllowed = 'move';
+                                dragSourcePathRef.current = node.path;
+                                dragOverPathRef.current = null;
+                                if (!isDragging) {
+                                  requestAnimationFrame(() => {
+                                    setIsDragging(true);
+                                  });
+                                }
+                              }}
+                              onDragEnd={clearDragState}
+                              onDragOver={(event) => {
+                                if (!dragEnabled) {
+                                  event.dataTransfer.dropEffect = 'none';
+                                  return;
+                                }
+                                if (!isDirectory) {
+                                  event.dataTransfer.dropEffect = 'none';
+                                  return;
+                                }
                                 event.preventDefault();
+                                if (!dragSourcePathRef.current) {
+                                  event.dataTransfer.dropEffect = 'none';
+                                  return;
+                                }
+                                const canDrop = canDropInto(
+                                  node.path,
+                                  dragSourcePathRef.current
+                                );
+                                event.dataTransfer.dropEffect = canDrop ? 'move' : 'none';
+                                if (!canDrop) return;
+                                if (dragOverPathRef.current !== node.path) {
+                                  setDragOverPath(node.path);
+                                  dragOverPathRef.current = node.path;
+                                }
+                                scheduleAutoExpand(node.path);
+                              }}
+                              onDragLeave={(event) => {
+                                if (dragOverPathRef.current !== node.path) return;
+                                const related = event.relatedTarget as Node | null;
+                                if (
+                                  related &&
+                                  (event.currentTarget as HTMLElement).contains(related)
+                                ) {
+                                  return;
+                                }
+                                setDragOverPath(null);
+                                dragOverPathRef.current = null;
+                              }}
+                              onDrop={(event) => {
+                                if (!dragEnabled) {
+                                  clearDragState();
+                                  return;
+                                }
+                                if (!isDirectory) return;
+                                event.preventDefault();
+                                const sourcePath = event.dataTransfer.getData('text/plain');
+                                if (sourcePath) {
+                                  void handleDrop(node.path, sourcePath);
+                                } else {
+                                  clearDragState();
+                                }
+                              }}
+                              className={cn(
+                                'group relative flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                                isActive && 'bg-muted text-foreground',
+                                isMatch && 'text-foreground',
+                                isDragOver &&
+                                  'bg-primary/10 text-foreground ring-1 ring-primary/30'
+                              )}
+                              style={{ paddingLeft: `${depth * 12 + 8}px` }}
+                              onClick={() =>
+                                isDirectory ? toggleDirectory(node.path) : openFile(node.path)
                               }
-                            }}
-                            onDrop={(event) => {
-                              if (!isDirectory) return;
-                              event.preventDefault();
-                              const sourcePath = event.dataTransfer.getData('text/plain');
-                              if (sourcePath) {
-                                void handleDrop(node.path, sourcePath);
-                              }
-                            }}
-                            className={cn(
-                              'group flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground',
-                              isActive && 'bg-muted text-foreground',
-                              isMatch && 'text-foreground'
-                            )}
-                            style={{ paddingLeft: `${depth * 12 + 8}px` }}
-                            onClick={() =>
-                              isDirectory ? toggleDirectory(node.path) : openFile(node.path)
-                            }
-                          >
-                            {isDirectory ? (
-                              <span className="mr-1 flex size-4 items-center justify-center">
-                                {isExpanded ? (
-                                  <ChevronDown className="size-3.5" />
-                                ) : (
-                                  <ChevronRight className="size-3.5" />
-                                )}
+                            >
+                              {!dragEnabled && dragBlockedPath === node.path && (
+                                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-md border border-border bg-background/90 px-2 py-0.5 text-[10px] font-medium text-foreground">
+                                  Enable editing to move
+                                </span>
+                              )}
+                              {isDragOver && (
+                                <span className="pointer-events-none absolute inset-x-2 bottom-0 h-px bg-primary/60" />
+                              )}
+                              {isDirectory ? (
+                                <span className="mr-1 flex size-4 items-center justify-center">
+                                  {isExpanded ? (
+                                    <ChevronDown className="size-3.5" />
+                                  ) : (
+                                    <ChevronRight className="size-3.5" />
+                                  )}
+                                </span>
+                              ) : (
+                                <span className="mr-1 flex size-4 items-center justify-center" />
+                              )}
+                              <Icon className="size-3.5" />
+                              <span className="min-w-0 flex-1 truncate">
+                                {node.name}
                               </span>
-                            ) : (
-                              <span className="mr-1 flex size-4 items-center justify-center" />
-                            )}
-                            <Icon className="size-3.5" />
-                            <span className="min-w-0 flex-1 truncate">
-                              {node.name}
-                            </span>
-                            {isLoading && (
-                              <RefreshCw className="size-3 animate-spin" />
-                            )}
-                          </div>
-                        </ContextMenuTrigger>
-                      <ContextMenuContent>
+                              {isLoading && (
+                                <RefreshCw className="size-3 animate-spin" />
+                              )}
+                            </div>
+                          </ContextMenuTrigger>
+                        <ContextMenuContent>
                           {isDirectory && (
                             <>
                               <ContextMenuItem
