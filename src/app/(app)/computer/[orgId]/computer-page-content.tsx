@@ -11,7 +11,6 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
-  Circle,
   File,
   FileArchive,
   FileAudio,
@@ -55,7 +54,6 @@ import {
 } from '@/components/ui/input-group';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -1063,7 +1061,8 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     const matches = new Set<string>();
     if (term) {
       Object.values(nodesByPath).forEach((node) => {
-        if (node.name.toLowerCase().includes(term)) {
+        const label = `${node.name} ${node.path}`.toLowerCase();
+        if (label.includes(term)) {
           let current = node.path;
           while (current && current !== ROOT_PATH) {
             matches.add(current);
@@ -1131,13 +1130,21 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
         >
           <div className="flex h-full min-h-0 min-w-0 flex-col border-r bg-muted/20">
             <div className="flex items-center justify-between gap-2 px-3 py-2">
-              <Tabs value="files" className="w-full">
-                <TabsList className="h-7 w-full justify-start">
-                  <TabsTrigger value="files" className="text-xs">
-                    Files
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <span className="text-xs font-semibold text-muted-foreground">
+                  Files
+                </span>
+                <InputGroup className="min-w-[160px] flex-1">
+                  <InputGroupAddon>
+                    <Search className="size-3.5" />
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    placeholder="Filter files"
+                  />
+                </InputGroup>
+              </div>
               <div className="flex items-center gap-1">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -1167,18 +1174,6 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                   <RefreshCw className={cn('size-3.5', isTreeLoading && 'animate-spin')} />
                 </Button>
               </div>
-            </div>
-            <div className="px-3 pb-2">
-              <InputGroup>
-                <InputGroupAddon>
-                  <Search className="size-3.5" />
-                </InputGroupAddon>
-                <InputGroupInput
-                  value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
-                  placeholder="Filter files"
-                />
-              </InputGroup>
             </div>
             <Separator />
             <div className="flex-1 min-h-0">
@@ -1502,10 +1497,9 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       <Dialog open={confirmEditOpen} onOpenChange={setConfirmEditOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Enable editing?</DialogTitle>
+            <DialogTitle>Edit Claude's files directly?</DialogTitle>
             <DialogDescription>
-              Editing is off by default to prevent accidental changes. You can
-              still browse and open files safely.
+              Claude keeps track of what's where in this workspace. If you move, rename, or delete files without Claude knowing, things will get confusing fast. Unless you know exactly what you're doing, ask Claude to make changes instead.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
