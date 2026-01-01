@@ -233,6 +233,11 @@ function getExtension(path: string): string {
   return name.slice(index + 1).toLowerCase();
 }
 
+function getRelativePath(path: string): string {
+  if (path === ROOT_PATH) return '.';
+  return path.replace(/^\/+/, '');
+}
+
 function hashString(value: string): string {
   let hash = 2166136261;
   for (let i = 0; i < value.length; i += 1) {
@@ -305,6 +310,26 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   );
   const restoredTabsRef = useRef(false);
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const copyToClipboard = useCallback(async (value: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'fixed';
+      textarea.style.top = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    } catch (error) {
+      console.warn('Failed to copy to clipboard', error);
+    }
+  }, []);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -1116,6 +1141,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       lightbulb: { enabled: false },
       codeLens: false,
       inlayHints: { enabled: 'off' },
+      contextmenu: false,
     }),
     [editingEnabled]
   );
@@ -1355,10 +1381,10 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                             )}
                           </div>
                         </ContextMenuTrigger>
-                        <ContextMenuContent>
-                          {isDirectory && (
-                            <>
-                              <ContextMenuItem
+                      <ContextMenuContent>
+                        {isDirectory && (
+                          <>
+                            <ContextMenuItem
                                 onSelect={() =>
                                   openDialog({ type: 'new-file', parentPath: node.path })
                                 }
@@ -1398,6 +1424,17 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                               </ContextMenuItem>
                             </>
                           )}
+                          <ContextMenuSeparator />
+                          <ContextMenuItem
+                            onSelect={() => void copyToClipboard(node.path)}
+                          >
+                            Copy path
+                          </ContextMenuItem>
+                          <ContextMenuItem
+                            onSelect={() => void copyToClipboard(getRelativePath(node.path))}
+                          >
+                            Copy relative path
+                          </ContextMenuItem>
                         </ContextMenuContent>
                       </ContextMenu>
                     );
@@ -1696,9 +1733,10 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
           {dialogState?.type === 'delete' && (
             <>
               <DialogHeader>
-                <DialogTitle>Delete {dialogState.kind}</DialogTitle>
+                <DialogTitle>Delete {dialogState.kind}?</DialogTitle>
                 <DialogDescription>
-                  This will permanently remove {dialogState.path}.
+                  {dialogState.path} will be permanently removed with no way to recover it. <br></br><br></br>
+                  Claude may reference this elsewhere. Unless you are certain, ask Claude to handle the deletion in chat.
                 </DialogDescription>
               </DialogHeader>
             </>
