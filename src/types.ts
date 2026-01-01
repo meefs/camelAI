@@ -66,6 +66,45 @@ export interface SandboxFileListing {
   timestamp: string;
 }
 
+export interface WorkspaceFileEntry {
+  path: string;
+  name: string;
+  type: SandboxFileInfo['type'];
+  size: number;
+  modifiedAt: string;
+}
+
+export interface WorkspaceListResponse {
+  path: string;
+  entries: WorkspaceFileEntry[];
+  count: number;
+  timestamp: string;
+  recursive: boolean;
+}
+
+export interface WorkspaceFileRead {
+  path: string;
+  content: string;
+  version: string;
+  size: number | null;
+  mtime: string | null;
+  isBinary: boolean;
+  encoding: 'utf-8' | 'base64';
+  mimeType?: string | null;
+}
+
+export interface WorkspaceFileWrite {
+  path: string;
+  newVersion: string;
+  size: number | null;
+  mtime: string | null;
+}
+
+export interface WorkspaceOperationResult {
+  path: string;
+  timestamp: string;
+}
+
 // Auth types
 export interface User {
   id: string;

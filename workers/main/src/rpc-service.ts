@@ -8,6 +8,8 @@ import type {
   OrgMembership,
   Project,
   SandboxFileListing,
+  WorkspaceFileEntry,
+  WorkspaceListResponse,
   Thread,
   User,
   UserProject,
@@ -58,6 +60,48 @@ function getSandboxIdForOrg(orgId: string): string {
   return `org-${safeOrg}`.slice(0, 63);
 }
 
+interface WorkspaceListOptions {
+  path?: string;
+  recursive?: boolean;
+  includeHidden?: boolean;
+}
+
+function normalizeWorkspacePath(input?: string): string {
+  if (!input) return '/';
+  let raw = input.trim();
+  if (!raw.startsWith('/')) raw = `/${raw}`;
+
+  const segments: string[] = [];
+  for (const part of raw.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (segments.length === 0) {
+        throw new Error('Path escapes workspace root');
+      }
+      segments.pop();
+      continue;
+    }
+    segments.push(part);
+  }
+  return `/${segments.join('/')}`;
+}
+
+function joinWorkspacePath(base: string, child: string): string {
+  const basePath = normalizeWorkspacePath(base);
+  if (!child || child === '.' || child === './') {
+    return basePath;
+  }
+  const childPath = child.startsWith('/') ? child : `/${child}`;
+  return normalizeWorkspacePath(`${basePath}${childPath}`);
+}
+
+function resolveWorkspacePath(workspaceRoot: string, workspacePath: string): string {
+  const normalized = normalizeWorkspacePath(workspacePath);
+  const root = workspaceRoot.replace(/\/$/, '');
+  if (normalized === '/') return root || '/';
+  return `${root}${normalized}`;
+}
+
 export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   private hasR2Config(): boolean {
     return Boolean(
@@ -97,6 +141,26 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     }
 
     return envVars;
+  }
+
+  private async ensureWorkspaceSynced(
+    orgId: string,
+    sandbox: ReturnType<typeof getSandbox>,
+    workspaceRoot: string
+  ): Promise<void> {
+    if (!this.hasR2Config()) return;
+    const marker = await sandbox.exists('/tmp/.r2-synced');
+    if (marker.exists) return;
+
+    const envVars = await this.buildSandboxEnv(orgId);
+    const syncResult = await sandbox.exec(`node /app/sync.mjs download ${workspaceRoot}`, {
+      env: envVars,
+      timeout: 120000,
+    });
+    if (!syncResult.success) {
+      throw new Error(`Workspace sync failed: ${syncResult.stderr || 'unknown error'}`);
+    }
+    await sandbox.exec('touch /tmp/.r2-synced', { env: envVars, timeout: 5000 });
   }
 
   // Session functions
@@ -787,21 +851,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     const sandboxId = getSandboxIdForOrg(orgId);
     const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
     const workspaceRoot = this.getWorkspaceRoot();
-
-    if (this.hasR2Config()) {
-      const marker = await sandbox.exists('/tmp/.r2-synced');
-      if (!marker.exists) {
-        const envVars = await this.buildSandboxEnv(orgId);
-        const syncResult = await sandbox.exec(
-          `node /app/sync.mjs download ${workspaceRoot}`,
-          { env: envVars, timeout: 120000 }
-        );
-        if (!syncResult.success) {
-          throw new Error(`Workspace sync failed: ${syncResult.stderr || 'unknown error'}`);
-        }
-        await sandbox.exec('touch /tmp/.r2-synced', { env: envVars, timeout: 5000 });
-      }
-    }
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
 
     const listing = await sandbox.listFiles(workspaceRoot, {
       recursive: true,
@@ -814,6 +864,132 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       count: listing.count,
       timestamp: listing.timestamp,
     };
+  }
+
+  async listWorkspaceEntries(
+    orgId: string,
+    options: WorkspaceListOptions = {}
+  ): Promise<WorkspaceListResponse> {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(options.path);
+    const listPath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const recursive = options.recursive ?? false;
+    const includeHidden = options.includeHidden ?? true;
+
+    const listing = await sandbox.listFiles(listPath, { recursive, includeHidden });
+    const entries: WorkspaceFileEntry[] = [];
+
+    for (const file of listing.files) {
+      if (!file.relativePath || file.relativePath === '.') continue;
+      entries.push({
+        path: joinWorkspacePath(workspacePath, file.relativePath),
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        modifiedAt: file.modifiedAt,
+      });
+    }
+
+    entries.sort((a, b) => a.path.localeCompare(b.path));
+
+    return {
+      path: workspacePath,
+      entries,
+      count: entries.length,
+      timestamp: listing.timestamp,
+      recursive,
+    };
+  }
+
+  async readWorkspaceFile(orgId: string, path: string) {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(path);
+    const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const exists = await sandbox.exists(absolutePath);
+    if (!exists.exists) return null;
+
+    const result = await sandbox.readFile(absolutePath);
+    if (!result.success) {
+      throw new Error(`Failed to read ${workspacePath}`);
+    }
+    return { workspacePath, result };
+  }
+
+  async writeWorkspaceFile(orgId: string, path: string, content: string) {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(path);
+    const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const result = await sandbox.writeFile(absolutePath, content);
+    if (!result.success) {
+      throw new Error(`Failed to write ${workspacePath}`);
+    }
+    return { workspacePath, result };
+  }
+
+  async mkdirWorkspacePath(orgId: string, path: string) {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(path);
+    const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const result = await sandbox.mkdir(absolutePath, { recursive: true });
+    if (!result.success) {
+      throw new Error(`Failed to create directory ${workspacePath}`);
+    }
+    return { workspacePath, result };
+  }
+
+  async createWorkspaceFile(orgId: string, path: string, content = '') {
+    return this.writeWorkspaceFile(orgId, path, content);
+  }
+
+  async moveWorkspacePath(orgId: string, from: string, to: string) {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const fromPath = normalizeWorkspacePath(from);
+    const toPath = normalizeWorkspacePath(to);
+    const sourcePath = resolveWorkspacePath(workspaceRoot, fromPath);
+    const destinationPath = resolveWorkspacePath(workspaceRoot, toPath);
+    const result = await sandbox.moveFile(sourcePath, destinationPath);
+    if (!result.success) {
+      throw new Error(`Failed to move ${fromPath} to ${toPath}`);
+    }
+    return { fromPath, toPath, result };
+  }
+
+  async deleteWorkspacePath(orgId: string, path: string) {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(path);
+    if (workspacePath === '/') {
+      throw new Error('Refusing to delete workspace root');
+    }
+    const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const result = await sandbox.deleteFile(absolutePath);
+    if (!result.success) {
+      throw new Error(`Failed to delete ${workspacePath}`);
+    }
+    return { workspacePath, result };
   }
 
   // Integration functions
