@@ -1,6 +1,7 @@
-import { Suspense } from 'react';
-import { ChatLoading } from '@/components/chat-loading';
-import ChatPageContent from './chat-page-content';
+import { redirect } from 'next/navigation';
+import Chat from '@/components/Chat';
+import { getSessionId } from '@/lib/auth';
+import * as authDO from '@/lib/auth-do';
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -8,9 +9,13 @@ interface PageProps {
 
 export default async function ChatPage({ params }: PageProps) {
   const { id } = await params;
-  return (
-    <Suspense fallback={<ChatLoading />}>
-      <ChatPageContent threadId={id} />
-    </Suspense>
-  );
+  const sessionId = await getSessionId();
+  if (!sessionId) {
+    redirect('/login');
+  }
+  const session = await authDO.getSession(sessionId);
+  if (!session) {
+    redirect('/login');
+  }
+  return <Chat threadId={id} orgId={session.org_id} />;
 }
