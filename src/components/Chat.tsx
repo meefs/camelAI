@@ -741,9 +741,11 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     }
 
     // Connect to the new thread/org
-    connectedThreadIdRef.current = threadId;
+    connectedThreadIdRef.current = threadId ?? null;
     connectedOrgIdRef.current = nextOrgId;
-    connectWebSocketRef.current?.(threadId);
+    if (threadId) {
+      connectWebSocketRef.current?.(threadId);
+    }
 
     // No cleanup function - we handle cleanup explicitly when threadId changes
     // This prevents StrictMode from closing connections on remount
