@@ -2,6 +2,22 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 
+// Version for verifying container has latest code
+const VERSION = '2026-01-01-sandbox-v3';
+
+// Drop privileges to claude user
+// Order matters: initgroups and setgid before setuid (can't change groups after dropping root)
+if (process.getuid && process.getuid() === 0) {
+  try {
+    process.initgroups('claude', 'claude'); // Set supplementary groups
+    process.setgid('claude');                // Set primary group
+    process.setuid('claude');                // Drop to user (must be last)
+  } catch (e) {
+    console.error('[ws-server] Failed to drop privileges:', e.message);
+    process.exit(1);
+  }
+}
+
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const PORT = 8080;
@@ -71,37 +87,26 @@ process.on('unhandledRejection', (error) => {
   console.error('[ws-server] Unhandled rejection:', summarizeError(error));
 });
 
-process.on('exit', (code) => {
-  console.error('[ws-server] Process exit:', code);
-});
-
-process.on('SIGTERM', () => {
-  console.error('[ws-server] Received SIGTERM');
-});
+process.on('exit', () => {});
+process.on('SIGTERM', () => {});
 
 // Sync workspace to R2 after each turn (async, non-blocking)
 let syncInProgress = false;
 function syncWorkspace() {
-  if (syncInProgress) {
-    console.error('[ws-server] Sync already in progress, skipping');
-    return;
-  }
+  if (syncInProgress) return;
   syncInProgress = true;
-  console.error('[ws-server] Starting workspace sync...');
   const proc = spawn('node', ['/app/sync.mjs', 'upload', SYNC_DIR], {
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   proc.on('close', (code) => {
     syncInProgress = false;
-    if (code === 0) {
-      console.error('[ws-server] Workspace sync complete');
-    } else {
-      console.error(`[ws-server] Workspace sync failed with code ${code}`);
+    if (code !== 0) {
+      console.error('[ws-server] Sync failed:', code);
     }
   });
   proc.on('error', (err) => {
     syncInProgress = false;
-    console.error('[ws-server] Workspace sync error:', err.message);
+    console.error('[ws-server] Sync error:', err.message);
   });
 }
 
@@ -126,13 +131,9 @@ function getQueryOptions(session) {
   if (session.threadId) {
     // Check if session file exists to determine resume vs new
     if (sessionFileExists(session.threadId)) {
-      // Existing session - resume it
       options.resume = session.threadId;
-      console.error('[ws-server] Resuming existing session:', session.threadId);
     } else {
-      // New session - pass session-id as extraArg so Claude uses our ID
       options.extraArgs = { 'session-id': session.threadId };
-      console.error('[ws-server] Starting new session with ID:', session.threadId);
     }
   }
 
@@ -227,7 +228,6 @@ function attachSession(ws, session, lastEventId) {
 function initSession(session) {
   if (session.activeQuery) return;
 
-  console.error('[ws-server] Initializing stateful session', session.threadId);
   try {
     const options = getQueryOptions(session);
     const messageStream = createMessageStream(session);
@@ -235,10 +235,7 @@ function initSession(session) {
     session.activeQuery = query({ prompt: messageStream, options });
     session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
   } catch (error) {
-    console.error('[ws-server] Failed to initialize session', {
-      threadId: session.threadId,
-      error: summarizeError(error),
-    });
+    console.error('[ws-server] Failed to init:', summarizeError(error));
     bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
   }
 }
@@ -254,47 +251,26 @@ function startEventLoop(session) {
         const { value: event, done } = await session.queryIterator.next();
 
         if (done) {
-          console.error('[ws-server] Query completed');
           break;
         }
 
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
 
-        // Log session ID from init event for verification
-        // We provide our own session-id via extraArgs, so Claude should use it
-        if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-          console.error('[ws-server] Claude session ID:', event.session_id, 'expected:', session.threadId);
-
-          // Verify Claude used our session ID
-          if (event.session_id !== session.threadId) {
-            console.error('[ws-server] WARNING: Claude session ID does not match our threadId!');
-          }
-        }
-
-        // Handle stream_event wrapper - sync workspace when turn completes
-        if (event.type === 'stream_event' && event.event) {
-          const streamEvent = event.event;
-          if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
-            syncWorkspace();
-          }
-        }
-
-        // Result means query is complete (end of session)
-        if (event.type === 'result') {
-          // Final result - sync and exit
+        // Sync workspace when turn completes (message_delta with stop_reason)
+        if (event.type === 'stream_event' && event.event?.type === 'message_delta' && event.event.delta?.stop_reason) {
           syncWorkspace();
+        }
+
+        // Result means query is complete (this turn/message is done)
+        if (event.type === 'result') {
           break;
         }
       }
     } catch (e) {
-      const errorMsg = String(e);
-      console.error('[ws-server] Query error:', {
-        threadId: session.threadId,
-        error: summarizeError(e),
-      });
-      bufferEvent(session, { type: 'error', error: errorMsg });
-      logForPersistence({ type: 'error', error: errorMsg });
+      console.error('[ws-server] Query error:', summarizeError(e));
+      bufferEvent(session, { type: 'error', error: String(e) });
+      logForPersistence({ type: 'error', error: String(e) });
       syncWorkspace();
     } finally {
       session.activeQuery = null;
@@ -306,8 +282,6 @@ function startEventLoop(session) {
 
 // Handle a user message
 function handleUserMessage(session, content) {
-  console.error('[ws-server] handleUserMessage:', { threadId: session.threadId, contentLen: content?.length });
-
   // Initialize session if needed
   initSession(session);
 
@@ -335,7 +309,9 @@ Bun.serve({
 
     // Health check endpoint
     if (url.pathname === '/health') {
-      return new Response('ok', { status: 200 });
+      return new Response(JSON.stringify({ status: 'ok', version: VERSION }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     // Broadcast endpoint - receives messages from DO to forward to connected client(s)
@@ -371,12 +347,9 @@ Bun.serve({
   },
 
   websocket: {
-    open(ws) {
-      console.error('[ws-server] WebSocket connection opened');
-    },
+    open(ws) {},
 
     async message(ws, message) {
-      console.error('[ws-server] Received message:', String(message).substring(0, 100));
       try {
         const data = JSON.parse(message);
 
@@ -390,7 +363,6 @@ Bun.serve({
           }
 
           const session = getOrCreateSession(threadId);
-          console.error('[ws-server] Init with threadId:', threadId);
           attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {
@@ -423,7 +395,6 @@ Bun.serve({
     },
 
     close(ws) {
-      console.error('[ws-server] WebSocket closed');
       const threadId = ws?.data?.threadId;
       if (threadId && sessions.has(threadId)) {
         const session = sessions.get(threadId);
@@ -438,5 +409,3 @@ Bun.serve({
     },
   },
 });
-
-console.error(`[ws-server] Listening on port ${PORT}`);

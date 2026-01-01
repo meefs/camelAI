@@ -1,6 +1,6 @@
 /**
  * Container management utilities for WebSocket routing.
- * Handles sandbox lifecycle without a Durable Object.
+ * Handles sandbox lifecycle with startProcess.
  */
 import { getSandbox, type Sandbox, type Process } from '@cloudflare/sandbox';
 import { getTempR2Credentials } from './r2-credentials';
@@ -172,6 +172,8 @@ export async function handleWebSocketUpgrade(
       return new Response('Container WS server failed to start', { status: 500 });
     }
   }
+
+  console.log('[container] Proxying WebSocket to container', { org });
 
   // Proxy WebSocket directly to container port 8080
   return sandbox.wsConnect(request, 8080);
