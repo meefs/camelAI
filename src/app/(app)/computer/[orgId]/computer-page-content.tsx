@@ -320,13 +320,12 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   useEffect(() => {
     if (!hydrated) return;
     const data = {
-      expandedPaths: Array.from(expandedPaths),
       openTabs: openTabs.map((tab) => tab.path),
       activePath,
       editingEnabled,
     };
     localStorage.setItem(storageKey, JSON.stringify(data));
-  }, [expandedPaths, openTabs, activePath, editingEnabled, hydrated, storageKey]);
+  }, [openTabs, activePath, editingEnabled, hydrated, storageKey]);
 
   useEffect(() => {
     activePathRef.current = activePath;
@@ -343,9 +342,6 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
           activePath?: string;
           editingEnabled?: boolean;
         };
-        if (Array.isArray(parsed.expandedPaths)) {
-          setExpandedPaths(new Set([ROOT_PATH, ...parsed.expandedPaths]));
-        }
         if (Array.isArray(parsed.openTabs)) {
           setOpenTabs(
             parsed.openTabs.map((path) => ({
@@ -461,6 +457,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       loadDirectory(ROOT_PATH);
     }
   }, [authLoading, user, loadDirectory]);
+
 
   const updateTab = useCallback((path: string, updater: (tab: OpenTab) => OpenTab) => {
     setOpenTabs((prev) => {
