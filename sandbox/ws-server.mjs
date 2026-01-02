@@ -3,10 +3,11 @@ import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-01-sandbox-v4';
+const VERSION = '2026-01-01-sandbox-v7';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const WORKER_BASE_URL = process.env.WORKER_BASE_URL;
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 
@@ -113,6 +114,12 @@ function getQueryOptions(session) {
     allowUnsandboxedCommands: true,
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     settingSources: ['project', 'user'],
+    // Pass thread ID to subprocess env (used by wrangler wrapper for auto-preview)
+    // WORKER_BASE_URL is already in process.env from container startup
+    env: {
+      ...process.env,
+      THREAD_ID: session.threadId || '',
+    },
   };
 
   if (session.threadId) {

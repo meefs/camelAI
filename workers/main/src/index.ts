@@ -1,10 +1,10 @@
 // Custom worker that wraps OpenNext and handles WebSocket + Durable Objects
 // @ts-ignore - .open-next/worker.js is generated at build time
 import openNextHandler from "../../../.open-next/worker.js";
-import { ChatIndexDO, type ChatEnv } from "./durable-objects.js";
+import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
 import { Sandbox } from '@cloudflare/sandbox';
-import { handleWebSocketUpgrade, type ContainerEnv } from './container.js';
+import { handleWebSocketUpgrade, getSandboxIdForOrg, type ContainerEnv } from './container.js';
 export { DoRpcService } from './rpc-service.js';
 
 // Export Sandbox as ThreadSandbox to match wrangler.jsonc class_name
@@ -43,23 +43,40 @@ function json(data: unknown, init?: ResponseInit): Response {
   });
 }
 
+/**
+ * Return a Cloudflare API-formatted error response.
+ * Wrangler expects this format to parse errors correctly.
+ */
+function cfApiError(code: number, message: string, status: number): Response {
+  return json({
+    success: false,
+    errors: [{ code, message }],
+    messages: [],
+    result: null,
+  }, { status });
+}
+
 const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
 const ASSETS_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
 
 function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
   const m = method.toUpperCase();
-  const scriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/scripts\/[^/]+\/settings$/;
-  const assetsUploadSession = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
+  // All paths are rewritten to WFP dispatch namespace format
+  // Base pattern: /client/v4/accounts/{account}/workers/dispatch/namespaces/{ns}/scripts/{script}
+  const dispatchScript = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
+  const dispatchScriptDeployments = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/deployments$/;
+  const dispatchScriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
+  const dispatchAssetsUploadSession = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
 
   switch (m) {
     case 'GET':
-      return DISPATCH_SCRIPT_UPLOAD.test(pathname) || scriptSettings.test(pathname);
+      return dispatchScript.test(pathname) || dispatchScriptDeployments.test(pathname) || dispatchScriptSettings.test(pathname);
     case 'PUT':
-      return DISPATCH_SCRIPT_UPLOAD.test(pathname);
+      return dispatchScript.test(pathname);
     case 'PATCH':
-      return scriptSettings.test(pathname);
+      return dispatchScriptSettings.test(pathname);
     case 'POST':
-      return assetsUploadSession.test(pathname) || ASSETS_UPLOAD.test(pathname);
+      return dispatchAssetsUploadSession.test(pathname) || ASSETS_UPLOAD.test(pathname);
     default:
       return false;
   }
@@ -151,7 +168,7 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
 
   const upstreamApiToken = env.CF_API_TOKEN?.trim();
   if (!upstreamApiToken) {
-    return json({ error: 'Missing CF_API_TOKEN for Cloudflare API proxy' }, { status: 500 });
+    return cfApiError(10000, 'Missing CF_API_TOKEN for Cloudflare API proxy', 500);
   }
 
   console.log('[cf-api-proxy] request', {
@@ -175,26 +192,32 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       hasAuthorizationHeader: !!request.headers.get('Authorization'),
       hasDeployTokenHeader: !!request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER),
     });
-    return json({ error: 'Missing deploy token' }, { status: 401 });
+    return cfApiError(10001, 'Authentication error: Missing deploy token', 401);
   }
 
-  // Token -> script name mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
+  // Token -> org prefix mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
   // to EMAIL_TO_USER for the proof-of-concept (prefix-isolated).
   const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-  const scriptNameForToken = await tokenKv.get(`platform_script_token:${proxyToken}`);
-  if (!scriptNameForToken) {
+  const orgPrefix = await tokenKv.get(`platform_script_token:${proxyToken}`);
+  if (!orgPrefix) {
     console.warn('[cf-api-proxy] invalid deploy token', {
       method: request.method,
       path: url.pathname,
       tokenPrefix: proxyToken.slice(0, 8),
     });
-    return json({ error: 'Invalid deploy token' }, { status: 401 });
+    return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
   }
 
   const accountId = env.CF_ACCOUNT_ID?.trim();
   const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
 
   let pathname = url.pathname;
+
+  // Helper to prefix script name with org ID (e.g., "my-worker" -> "abc123-my-worker")
+  const prefixScriptName = (name: string) => {
+    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `${orgPrefix}-${safeName}`.slice(0, 63);
+  };
 
   // Rewrite WFP dispatch namespace (and optionally account id) on the fly.
   // /client/v4/accounts/:account_id/workers/dispatch/namespaces/:dispatch_namespace/...
@@ -205,30 +228,43 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     const rewrittenNs = dispatchNamespace ?? dispatchMatch[2]!;
     pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/${rest}`;
 
-    // If token has a mapped script name, override it in the URL.
-    if (scriptNameForToken) {
-      const restUrl = `/${rest}`;
-      const scriptsMatch = restUrl.match(/^\/scripts\/([^\/]+)(\/.*)?$/);
-      if (scriptsMatch) {
-        const tail = scriptsMatch[2] ?? '';
-        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
-      }
+    // Prefix the script name with org ID
+    const restUrl = `/${rest}`;
+    const scriptsMatch = restUrl.match(/^\/scripts\/([^\/]+)(\/.*)?$/);
+    if (scriptsMatch) {
+      const userScriptName = scriptsMatch[1]!;
+      const prefixedName = prefixScriptName(userScriptName);
+      const tail = scriptsMatch[2] ?? '';
+      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
     }
   }
   // Convert regular worker script calls to WFP dispatch namespace format when configured.
   // This allows wrangler in the container to use standard deploy commands while we route to WFP.
-  if (!dispatchMatch && scriptNameForToken) {
+  if (!dispatchMatch) {
     const scriptsMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/scripts\/([^\/]+)(\/.*)?$/);
     if (scriptsMatch) {
       const rewrittenAccount = accountId ?? scriptsMatch[1]!;
+      const userScriptName = scriptsMatch[2]!;
+      const prefixedName = prefixScriptName(userScriptName);
       const tail = scriptsMatch[3] ?? '';
       if (dispatchNamespace) {
-        // Rewrite to WFP dispatch namespace format
-        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
+        // Rewrite to WFP dispatch namespace format with prefixed name
+        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
       } else {
-        // Just override the script name
-        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
+        // Just prefix the script name
+        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/scripts/${encodeURIComponent(prefixedName)}${tail}`;
       }
+    }
+
+    // Rewrite /workers/services/{name} to WFP dispatch namespace format
+    // Wrangler uses this to check if a worker exists before deploying
+    const servicesMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/services\/([^\/]+)(\/.*)?$/);
+    if (servicesMatch && dispatchNamespace) {
+      const rewrittenAccount = accountId ?? servicesMatch[1]!;
+      const userScriptName = servicesMatch[2]!;
+      const prefixedName = prefixScriptName(userScriptName);
+      const tail = servicesMatch[3] ?? '';
+      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
     }
   }
 
@@ -248,7 +284,7 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       search: url.search,
       hasToken: true,
     });
-    return json({ error: 'Blocked by API proxy allowlist' }, { status: 403 });
+    return cfApiError(10003, 'Forbidden: Request blocked by API proxy allowlist', 403);
   }
 
   const upstreamUrl = new URL(`https://api.cloudflare.com${pathname}${url.search}`);
@@ -320,6 +356,7 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       contentType: ct,
       bodyPreview: preview,
     });
+    return new Response(respBody, { status: resp.status, headers: resp.headers });
   }
 
   return new Response(respBody, { status: resp.status, headers: resp.headers });
@@ -334,8 +371,40 @@ export default {
       try {
         return await proxyCloudflareApi(request, env);
       } catch (e) {
-        return json({ error: `Cloudflare API proxy failed: ${String(e)}` }, { status: 502 });
+        return cfApiError(10004, `Cloudflare API proxy failed: ${String(e)}`, 502);
       }
+    }
+
+    // Handle WebSocket upgrade for thread preview state at /ws/thread/{threadId}
+    const threadWsMatch = url.pathname.match(/^\/ws\/thread\/([^\/]+)$/);
+    if (threadWsMatch && request.headers.get('Upgrade') === 'websocket') {
+      const threadId = threadWsMatch[1];
+
+      // Authenticate the request
+      const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
+      const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
+      const sessionId = headerSessionId || cookieSessionId;
+
+      if (!sessionId) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
+      const session = await sessionStub.getData();
+      if (!session) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      // Verify thread belongs to user's org (prevents cross-tenant leak)
+      const indexStub = env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(session.org_id));
+      const thread = await indexStub.getThread(threadId);
+      if (!thread) {
+        return new Response('Thread not found', { status: 404 });
+      }
+
+      // Route to thread DO for preview state updates
+      const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+      return threadStub.fetch(request);
     }
 
     // Handle WebSocket upgrade requests at /ws/{org}
@@ -370,6 +439,79 @@ export default {
       return handleWebSocketUpgrade(request, env, org);
     }
 
+    // Reset sandbox endpoint (destroys container to pick up new secrets/code)
+    const resetMatch = url.pathname.match(/^\/api\/sandbox\/([^\/]+)\/reset$/);
+    if (resetMatch && request.method === 'POST') {
+      const orgId = resetMatch[1];
+      try {
+        const sandboxId = getSandboxIdForOrg(orgId);
+        const stub = env.SANDBOX.get(env.SANDBOX.idFromName(sandboxId));
+        // Call destroy on the DO - this will terminate the container
+        await stub.fetch(new Request('http://internal/destroy', { method: 'POST' }));
+        return new Response(JSON.stringify({ success: true, sandboxId }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: String(e) }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // Handle preview API with deploy token auth (called from container wrangler wrapper)
+    const previewMatch = url.pathname.match(/^\/api\/threads\/([^\/]+)\/preview$/);
+    if (previewMatch && request.method === 'POST') {
+      const threadId = previewMatch[1];
+
+      // Validate deploy token
+      const authHeader = request.headers.get('Authorization');
+      if (!authHeader?.startsWith('Bearer ')) {
+        return new Response(JSON.stringify({ error: 'Missing authorization' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const token = authHeader.slice(7);
+      const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
+      const orgPrefix = await tokenKv.get(`platform_script_token:${token}`);
+      if (!orgPrefix) {
+        return new Response(JSON.stringify({ error: 'Invalid token' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Parse body and set preview
+      try {
+        const body = await request.json() as { workers?: string[] };
+        if (!body.workers || !Array.isArray(body.workers)) {
+          return new Response(JSON.stringify({ error: 'Missing workers array' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+        const response = await threadStub.fetch(new Request('http://internal/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workers: body.workers }),
+        }));
+
+        return new Response(response.body, {
+          status: response.status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: String(e) }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
     // Pass all other requests to OpenNext/Next.js if dev env var is not set
 	if (env.NEXTJS_ENV == 'development') {
 	  return new Response('Not Found', { status: 404 });
@@ -379,5 +521,5 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 // Export Durable Object classes
-export { ChatIndexDO };
+export { ChatIndexDO, ChatThreadDO };
 export { SessionDO, UserDO, OrgDO };

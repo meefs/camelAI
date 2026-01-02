@@ -3,6 +3,11 @@ import { type Sandbox } from '@cloudflare/sandbox';
 import type { OrgDO, SessionDO } from './auth';
 import type { DoRpcService } from './rpc-service';
 
+// Preview state for a thread
+export interface PreviewState {
+  workers: string[]; // Worker script names to preview
+}
+
 export interface Thread {
   id: string;
   title: string;
@@ -30,6 +35,7 @@ export interface Message {
 
 export interface ChatEnv {
   CHAT_INDEX: DurableObjectNamespace<ChatIndexDO>;
+  CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   SANDBOX: DurableObjectNamespace<Sandbox>;
   ORG: DurableObjectNamespace<OrgDO>;
   SESSION: DurableObjectNamespace<SessionDO>;
@@ -232,5 +238,124 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
   touchThread(id: string): void {
     const now = Date.now();
     this.sql.exec('UPDATE threads SET updated_at = ? WHERE id = ?', now, id);
+  }
+}
+
+/**
+ * ChatThreadDO - One per thread, holds out-of-band state like preview workers.
+ * Accepts WebSocket connections for live updates.
+ */
+export class ChatThreadDO extends DurableObject<ChatEnv> {
+  private connections: Set<WebSocket> = new Set();
+  private previewWorkers: string[] = [];
+
+  constructor(ctx: DurableObjectState, env: ChatEnv) {
+    super(ctx, env);
+
+    // Restore state from storage
+    ctx.blockConcurrencyWhile(async () => {
+      const stored = await ctx.storage.get<string[]>('previewWorkers');
+      if (stored) {
+        this.previewWorkers = stored;
+      }
+    });
+  }
+
+  // Handle WebSocket upgrade
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    // WebSocket upgrade
+    if (request.headers.get('Upgrade') === 'websocket') {
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+
+      this.ctx.acceptWebSocket(server);
+      this.connections.add(server);
+
+      // Send current state immediately
+      server.send(JSON.stringify({
+        type: 'preview_state',
+        workers: this.previewWorkers,
+      }));
+
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    // HTTP API for setting preview state
+    if (url.pathname === '/preview' && request.method === 'POST') {
+      const body = await request.json() as { workers?: string[] };
+      if (body.workers) {
+        await this.setPreviewWorkers(body.workers);
+      }
+      return new Response(JSON.stringify({ workers: this.previewWorkers }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (url.pathname === '/preview' && request.method === 'GET') {
+      return new Response(JSON.stringify({ workers: this.previewWorkers }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    return new Response('Not found', { status: 404 });
+  }
+
+  // Set preview workers and broadcast to all connected clients
+  async setPreviewWorkers(workers: string[]): Promise<void> {
+    this.previewWorkers = workers;
+    await this.ctx.storage.put('previewWorkers', workers);
+    this.broadcast({
+      type: 'preview_state',
+      workers: this.previewWorkers,
+    });
+  }
+
+  // Add a worker to preview list
+  async addPreviewWorker(worker: string): Promise<void> {
+    if (!this.previewWorkers.includes(worker)) {
+      this.previewWorkers.push(worker);
+      await this.ctx.storage.put('previewWorkers', this.previewWorkers);
+      this.broadcast({
+        type: 'preview_state',
+        workers: this.previewWorkers,
+      });
+    }
+  }
+
+  // Remove a worker from preview list
+  async removePreviewWorker(worker: string): Promise<void> {
+    const index = this.previewWorkers.indexOf(worker);
+    if (index !== -1) {
+      this.previewWorkers.splice(index, 1);
+      await this.ctx.storage.put('previewWorkers', this.previewWorkers);
+      this.broadcast({
+        type: 'preview_state',
+        workers: this.previewWorkers,
+      });
+    }
+  }
+
+  // Broadcast message to all connected WebSocket clients
+  private broadcast(message: object): void {
+    const json = JSON.stringify(message);
+    for (const ws of this.connections) {
+      try {
+        ws.send(json);
+      } catch {
+        this.connections.delete(ws);
+      }
+    }
+  }
+
+  // Handle WebSocket close
+  webSocketClose(ws: WebSocket): void {
+    this.connections.delete(ws);
+  }
+
+  // Handle WebSocket error
+  webSocketError(ws: WebSocket): void {
+    this.connections.delete(ws);
   }
 }
