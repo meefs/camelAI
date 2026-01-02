@@ -2,7 +2,7 @@
  * OrgContainer - Container class for per-org sandbox containers.
  * Uses @cloudflare/containers to manage container lifecycle with env vars at startup.
  */
-import { Container, switchPort } from '@cloudflare/containers';
+import { Container } from '@cloudflare/containers';
 import { getTempR2Credentials } from './r2-credentials';
 import type { DoRpcService } from './rpc-service';
 
