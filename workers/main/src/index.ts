@@ -333,6 +333,22 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       contentType: ct,
       bodyPreview: preview,
     });
+    return new Response(respBody, { status: resp.status, headers: resp.headers });
+  }
+
+  // For successful script uploads, add deployed URL as a custom header
+  // (safer than modifying response body which could break wrangler)
+  const isScriptUpload = method === 'PUT' && DISPATCH_SCRIPT_UPLOAD.test(pathname);
+  if (isScriptUpload && scriptNameForToken) {
+    const deployedUrl = `https://${scriptNameForToken}.chiridion.ai`;
+    console.log('[cf-api-proxy] deploy success', {
+      scriptName: scriptNameForToken,
+      deployedUrl,
+    });
+    const newHeaders = new Headers(resp.headers);
+    newHeaders.set('X-Deployed-Url', deployedUrl);
+    newHeaders.set('X-Script-Name', scriptNameForToken);
+    return new Response(respBody, { status: resp.status, headers: newHeaders });
   }
 
   return new Response(respBody, { status: resp.status, headers: resp.headers });
