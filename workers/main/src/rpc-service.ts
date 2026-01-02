@@ -266,6 +266,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     const container = getOrgContainer(this.env, orgId);
     const workspaceRoot = this.getWorkspaceRoot();
 
+    // Ensure container is running before exec
+    await container.startForOrg(orgId);
+
     // Container entrypoint already synced R2 on startup, just trigger upload
     const syncResult = await container.exec(`node /app/sync.mjs upload ${workspaceRoot}`, {
       timeout: 120000,

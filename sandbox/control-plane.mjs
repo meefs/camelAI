@@ -1,8 +1,9 @@
 /**
  * Control Plane Server - HTTP API for exec and filesystem operations.
  * Runs as root on port 9000, providing privileged operations for the container.
+ * All endpoints except /health require Bearer token authentication.
  *
- * Version: 2026-01-02-v1
+ * Version: 2026-01-02-v2
  */
 import http from 'node:http';
 import { exec as execCallback } from 'node:child_process';
@@ -12,7 +13,25 @@ import path from 'node:path';
 
 const exec = promisify(execCallback);
 const PORT = parseInt(process.env.CONTROL_PLANE_PORT || '9000', 10);
-const VERSION = '2026-01-02-v1';
+const VERSION = '2026-01-02-v2';
+const AUTH_TOKEN = process.env.CONTROL_PLANE_TOKEN;
+
+/**
+ * Validate authorization header
+ */
+function validateAuth(req) {
+  if (!AUTH_TOKEN) {
+    // No token configured - allow all (for dev/testing only)
+    console.warn('[control-plane] WARNING: No CONTROL_PLANE_TOKEN configured - auth disabled');
+    return true;
+  }
+
+  const authHeader = req.headers.authorization || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  const token = match?.[1];
+
+  return token === AUTH_TOKEN;
+}
 
 /**
  * Parse JSON body from request
@@ -332,6 +351,16 @@ async function handleFsDelete(res, body) {
 async function handleRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
+  // Health check doesn't require auth
+  if (url.pathname === '/health') {
+    return handleHealth(res);
+  }
+
+  // All other endpoints require auth
+  if (!validateAuth(req)) {
+    return json(res, { success: false, error: 'Unauthorized' }, 401);
+  }
+
   // Parse body for POST requests
   let body = {};
   if (req.method === 'POST') {
@@ -344,9 +373,6 @@ async function handleRequest(req, res) {
 
   try {
     switch (url.pathname) {
-      case '/health':
-        return handleHealth(res);
-
       case '/exec':
         return await handleExec(res, body);
 
