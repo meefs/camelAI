@@ -192,6 +192,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const iframeRetryRef = useRef<NodeJS.Timeout | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const previewWsRef = useRef<WebSocket | null>(null);
   const isFirstMessage = useRef(true);
   const reconnectAttempts = useRef(0);
   const currentMessageUuidRef = useRef<string | null>(null); // Track SDK uuid for stable deduplication
@@ -612,6 +613,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         setError(data.error || 'An unknown error occurred');
         setStreaming({ content: [], isStreaming: false });
         setLoading(false);
+      }
     };
 
     ws.onclose = () => {
@@ -665,6 +667,11 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         wsRef.current = null;
       }
 
+      if (previewWsRef.current) {
+        previewWsRef.current.close();
+        previewWsRef.current = null;
+      }
+
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
@@ -676,6 +683,61 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       }
     };
   }, []);
+
+  // Preview WebSocket - connects to /ws/thread/{threadId} for live preview state updates
+  useEffect(() => {
+    if (!threadId) {
+      // No thread - cleanup preview WebSocket
+      if (previewWsRef.current) {
+        previewWsRef.current.close();
+        previewWsRef.current = null;
+      }
+      setDeployedApp(null);
+      return;
+    }
+
+    // Connect to preview WebSocket
+    const wsHost = window.location.host;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${wsHost}/ws/thread/${threadId}`;
+    const ws = new WebSocket(wsUrl);
+    previewWsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      if (previewWsRef.current !== ws) return; // Ignore stale connections
+
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'preview_state' && Array.isArray(data.workers)) {
+          // Use the first worker for the preview iframe
+          const firstWorker = data.workers[0] || null;
+          setDeployedApp(firstWorker);
+          if (firstWorker) {
+            setIframeLoading(true);
+          }
+        }
+      } catch (e) {
+        console.error('Preview WebSocket message parse error:', e);
+      }
+    };
+
+    ws.onclose = () => {
+      if (previewWsRef.current === ws) {
+        previewWsRef.current = null;
+      }
+    };
+
+    ws.onerror = (err) => {
+      console.error('Preview WebSocket error:', err);
+    };
+
+    return () => {
+      ws.close();
+      if (previewWsRef.current === ws) {
+        previewWsRef.current = null;
+      }
+    };
+  }, [threadId]);
 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
