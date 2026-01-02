@@ -38,7 +38,7 @@ function generateContainerToken(): string {
 
 /**
  * Get or create a deploy token for an org's container.
- * Stores the token → scriptName mapping in KV for the API proxy.
+ * Stores the token → org prefix mapping in KV for the API proxy.
  */
 async function getOrCreateContainerToken(
   kv: KVNamespace,
@@ -54,11 +54,11 @@ async function getOrCreateContainerToken(
   // Generate new token
   const token = generateContainerToken();
 
-  // Script name is org-scoped (e.g., "org-abc123")
-  const scriptName = `org-${org}`.slice(0, 63).replace(/[^a-zA-Z0-9_-]/g, '_');
+  // Org prefix for script names (e.g., "abc123" → scripts become "abc123-myworker")
+  const orgPrefix = org.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
 
-  // Store token → scriptName mapping (used by API proxy to rewrite requests)
-  await kv.put(`platform_script_token:${token}`, scriptName);
+  // Store token → org prefix mapping (used by API proxy to prefix script names)
+  await kv.put(`platform_script_token:${token}`, orgPrefix);
 
   // Store org → token mapping (to retrieve token on container restart)
   await kv.put(existingTokenKey, token);

@@ -195,11 +195,11 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     return cfApiError(10001, 'Authentication error: Missing deploy token', 401);
   }
 
-  // Token -> script name mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
+  // Token -> org prefix mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
   // to EMAIL_TO_USER for the proof-of-concept (prefix-isolated).
   const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-  const scriptNameForToken = await tokenKv.get(`platform_script_token:${proxyToken}`);
-  if (!scriptNameForToken) {
+  const orgPrefix = await tokenKv.get(`platform_script_token:${proxyToken}`);
+  if (!orgPrefix) {
     console.warn('[cf-api-proxy] invalid deploy token', {
       method: request.method,
       path: url.pathname,
@@ -213,6 +213,12 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
 
   let pathname = url.pathname;
 
+  // Helper to prefix script name with org ID (e.g., "my-worker" -> "abc123-my-worker")
+  const prefixScriptName = (name: string) => {
+    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `${orgPrefix}-${safeName}`.slice(0, 63);
+  };
+
   // Rewrite WFP dispatch namespace (and optionally account id) on the fly.
   // /client/v4/accounts/:account_id/workers/dispatch/namespaces/:dispatch_namespace/...
   const dispatchMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/dispatch\/namespaces\/([^\/]+)\/(.*)$/);
@@ -222,29 +228,31 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     const rewrittenNs = dispatchNamespace ?? dispatchMatch[2]!;
     pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/${rest}`;
 
-    // If token has a mapped script name, override it in the URL.
-    if (scriptNameForToken) {
-      const restUrl = `/${rest}`;
-      const scriptsMatch = restUrl.match(/^\/scripts\/([^\/]+)(\/.*)?$/);
-      if (scriptsMatch) {
-        const tail = scriptsMatch[2] ?? '';
-        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
-      }
+    // Prefix the script name with org ID
+    const restUrl = `/${rest}`;
+    const scriptsMatch = restUrl.match(/^\/scripts\/([^\/]+)(\/.*)?$/);
+    if (scriptsMatch) {
+      const userScriptName = scriptsMatch[1]!;
+      const prefixedName = prefixScriptName(userScriptName);
+      const tail = scriptsMatch[2] ?? '';
+      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
     }
   }
   // Convert regular worker script calls to WFP dispatch namespace format when configured.
   // This allows wrangler in the container to use standard deploy commands while we route to WFP.
-  if (!dispatchMatch && scriptNameForToken) {
+  if (!dispatchMatch) {
     const scriptsMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/scripts\/([^\/]+)(\/.*)?$/);
     if (scriptsMatch) {
       const rewrittenAccount = accountId ?? scriptsMatch[1]!;
+      const userScriptName = scriptsMatch[2]!;
+      const prefixedName = prefixScriptName(userScriptName);
       const tail = scriptsMatch[3] ?? '';
       if (dispatchNamespace) {
-        // Rewrite to WFP dispatch namespace format
-        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
+        // Rewrite to WFP dispatch namespace format with prefixed name
+        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
       } else {
-        // Just override the script name
-        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
+        // Just prefix the script name
+        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/scripts/${encodeURIComponent(prefixedName)}${tail}`;
       }
     }
 
@@ -253,8 +261,10 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     const servicesMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/services\/([^\/]+)(\/.*)?$/);
     if (servicesMatch && dispatchNamespace) {
       const rewrittenAccount = accountId ?? servicesMatch[1]!;
+      const userScriptName = servicesMatch[2]!;
+      const prefixedName = prefixScriptName(userScriptName);
       const tail = servicesMatch[3] ?? '';
-      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
+      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
     }
   }
 
