@@ -278,49 +278,6 @@ export class OrgContainer extends Container<OrgContainerEnv> {
   }
 
   /**
-   * Proxy WebSocket connection to ws-server (port 8080).
-   * Uses defaultPort which is already set to 8080.
-   */
-  async proxyWebSocket(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    console.log('[OrgContainer] proxyWebSocket called', {
-      orgId: this.orgId,
-      url: url.toString(),
-      method: request.method,
-      upgrade: request.headers.get('Upgrade'),
-      connection: request.headers.get('Connection'),
-      defaultPort: this.defaultPort,
-    });
-
-    try {
-      // Get current state before proxying
-      const state = await this.getState();
-      console.log('[OrgContainer] Container state before proxy', {
-        orgId: this.orgId,
-        status: state.status,
-        lastChange: state.lastChange,
-      });
-
-      // Use fetch() for WebSocket proxying - containerFetch doesn't support WebSocket
-      const response = await this.fetch(request);
-      console.log('[OrgContainer] fetch response', {
-        orgId: this.orgId,
-        status: response.status,
-        webSocket: !!response.webSocket,
-        headers: Object.fromEntries(response.headers.entries()),
-      });
-      return response;
-    } catch (error) {
-      console.error('[OrgContainer] proxyWebSocket error', {
-        orgId: this.orgId,
-        error: String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-      throw error;
-    }
-  }
-
-  /**
    * Call control plane API endpoint.
    */
   private async controlPlane<T>(path: string, body?: unknown): Promise<T> {
@@ -468,12 +425,15 @@ export async function handleWebSocketUpgrade(
       // Start container if not running (startForOrg is smart about checking state)
       await container.startForOrg(org);
 
-      console.log('[handleWebSocketUpgrade] Container started, proxying WebSocket', { org, attempt });
+      console.log('[handleWebSocketUpgrade] Container started, proxying WebSocket via fetch()', { org, attempt });
 
-      // Proxy WebSocket to container port 8080
-      const response = await container.proxyWebSocket(request);
+      // IMPORTANT: Use container.fetch() directly, NOT a custom method.
+      // The Container class's fetch() handles WebSocket forwarding specially.
+      // Calling a custom method like proxyWebSocket() creates an RPC boundary
+      // that can't serialize WebSocket objects.
+      const response = await container.fetch(request);
 
-      console.log('[handleWebSocketUpgrade] Proxy response', {
+      console.log('[handleWebSocketUpgrade] fetch() response', {
         org,
         attempt,
         status: response.status,
