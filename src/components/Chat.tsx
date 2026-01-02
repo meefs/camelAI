@@ -43,6 +43,45 @@ function formatMessageTime(timestamp: number): string {
   });
 }
 
+function safeJsonStringify(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function isContentBlock(value: unknown): value is ContentBlock {
+  if (!value || typeof value !== 'object' || !('type' in value)) return false;
+  const type = (value as { type?: string }).type;
+  return type === 'text' || type === 'tool_use' || type === 'tool_result' || type === 'thinking';
+}
+
+function coerceContentBlocks(value: unknown): ContentBlock[] | null {
+  if (Array.isArray(value) && value.every(isContentBlock)) return value;
+  if (isContentBlock(value)) return [value];
+  return null;
+}
+
+function normalizeToolResultContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  const blocks = coerceContentBlocks(content);
+  if (blocks) {
+    return blocks
+      .map(block => {
+        if (block.type === 'text') return block.text;
+        if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+        if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${safeJsonStringify(block.input)}`;
+        if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
+        return safeJsonStringify(block);
+      })
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  return safeJsonStringify(content);
+}
+
 // Convert content to string for copy functionality
 function contentToString(content: string | ContentBlock[]): string {
   if (typeof content === 'string') return content;
@@ -50,7 +89,7 @@ function contentToString(content: string | ContentBlock[]): string {
     .map(block => {
       if (block.type === 'text') return block.text;
       if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
-      if (block.type === 'tool_result') return `[Result]\n${block.content}`;
+      if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
       if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
       return '';
     })
@@ -59,20 +98,21 @@ function contentToString(content: string | ContentBlock[]): string {
 
 // Parse message content - handles both plain string and JSON-encoded ContentBlock[]
 function parseMessageContent(content: string | ContentBlock[]): string | ContentBlock[] {
-  // Already an array - return as-is
-  if (Array.isArray(content)) return content;
+  const directBlocks = coerceContentBlocks(content);
+  if (directBlocks) return directBlocks;
 
-  // Not a string - return as-is
-  if (typeof content !== 'string') return content;
+  if (typeof content !== 'string') return safeJsonStringify(content);
 
   // Try to parse as JSON array of content blocks
   const trimmed = content.trim();
-  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+  if (
+    (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+    (trimmed.startsWith('{') && trimmed.endsWith('}'))
+  ) {
     try {
       const parsed = JSON.parse(trimmed);
-      if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].type) {
-        return parsed as ContentBlock[];
-      }
+      const parsedBlocks = coerceContentBlocks(parsed);
+      if (parsedBlocks) return parsedBlocks;
     } catch {
       // Not valid JSON - fall through to return as string
     }
@@ -130,7 +170,9 @@ function ContentBlockRenderer({ content, isStreaming = false }: { content: strin
                 </svg>
                 <span className="font-medium">Result</span>
               </div>
-              <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">{block.content}</pre>
+              <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">
+                {normalizeToolResultContent(block.content)}
+              </pre>
             </div>
           )}
         </div>
@@ -1231,7 +1273,9 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                                 </svg>
                                 <span className="font-medium">Result</span>
                               </div>
-                              <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">{block.content}</pre>
+                              <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">
+                                {normalizeToolResultContent(block.content)}
+                              </pre>
                             </div>
                           )}
                         </div>
