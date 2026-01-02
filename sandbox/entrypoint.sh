@@ -89,5 +89,22 @@ fi
 echo "[entrypoint] Starting ws-server as claude user on port 8080..." >&2
 cd "$TARGET_DIR"
 
-# Export all env vars to the claude user's environment
-exec su -s /bin/sh claude -c 'exec bun /app/ws-server.mjs'
+# Pass all current env vars to the claude user's shell
+# su -m preserves environment, but we also export explicitly for safety
+exec su -m -s /bin/sh claude -c "
+  export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'
+  export ORG_ID='${ORG_ID:-}'
+  export R2_BUCKET_NAME='${R2_BUCKET_NAME:-}'
+  export R2_ACCOUNT_ID='${R2_ACCOUNT_ID:-}'
+  export R2_MOUNT_DIR='${R2_MOUNT_DIR:-}'
+  export R2_PREFIX='${R2_PREFIX:-}'
+  export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID:-}'
+  export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY:-}'
+  export AWS_SESSION_TOKEN='${AWS_SESSION_TOKEN:-}'
+  export CLOUDFLARE_ACCOUNT_ID='${CLOUDFLARE_ACCOUNT_ID:-}'
+  export CLOUDFLARE_API_TOKEN='${CLOUDFLARE_API_TOKEN:-}'
+  export CLOUDFLARE_API_BASE_URL='${CLOUDFLARE_API_BASE_URL:-}'
+  export CF_DISPATCH_NAMESPACE='${CF_DISPATCH_NAMESPACE:-}'
+  export WORKER_BASE_URL='${WORKER_BASE_URL:-}'
+  exec bun /app/ws-server.mjs
+"
