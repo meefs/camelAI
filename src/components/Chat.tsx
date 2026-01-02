@@ -198,6 +198,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const [deployedApp, setDeployedApp] = useState<string | null>(null);
   const [iframeKey, setIframeKey] = useState(0);
   const [iframeLoading, setIframeLoading] = useState(true);
+  const previewVersionRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const iframeRetryRef = useRef<NodeJS.Timeout | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -789,9 +790,19 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         if (data.type === 'preview_state' && Array.isArray(data.workers)) {
           // Use the first worker for the preview iframe
           const firstWorker = data.workers[0] || null;
+          const newVersion = data.version || 0;
+
+          // Check if this is a new deploy (version changed)
+          const isNewDeploy = newVersion > previewVersionRef.current && previewVersionRef.current > 0;
+          previewVersionRef.current = newVersion;
+
           setDeployedApp(firstWorker);
           if (firstWorker) {
             setIframeLoading(true);
+            // Force iframe refresh on new deploy by changing key
+            if (isNewDeploy) {
+              setIframeKey(prev => prev + 1);
+            }
           }
         }
       } catch (e) {

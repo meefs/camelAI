@@ -248,6 +248,7 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private connections: Set<WebSocket> = new Set();
   private previewWorkers: string[] = [];
+  private previewVersion: number = 0;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -257,6 +258,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const stored = await ctx.storage.get<string[]>('previewWorkers');
       if (stored) {
         this.previewWorkers = stored;
+      }
+      const version = await ctx.storage.get<number>('previewVersion');
+      if (version) {
+        this.previewVersion = version;
       }
     });
   }
@@ -277,6 +282,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       server.send(JSON.stringify({
         type: 'preview_state',
         workers: this.previewWorkers,
+        version: this.previewVersion,
       }));
 
       return new Response(null, { status: 101, webSocket: client });
@@ -305,10 +311,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // Set preview workers and broadcast to all connected clients
   async setPreviewWorkers(workers: string[]): Promise<void> {
     this.previewWorkers = workers;
+    this.previewVersion++;
     await this.ctx.storage.put('previewWorkers', workers);
+    await this.ctx.storage.put('previewVersion', this.previewVersion);
     this.broadcast({
       type: 'preview_state',
       workers: this.previewWorkers,
+      version: this.previewVersion,
     });
   }
 
