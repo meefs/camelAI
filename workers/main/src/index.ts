@@ -43,6 +43,19 @@ function json(data: unknown, init?: ResponseInit): Response {
   });
 }
 
+/**
+ * Return a Cloudflare API-formatted error response.
+ * Wrangler expects this format to parse errors correctly.
+ */
+function cfApiError(code: number, message: string, status: number): Response {
+  return json({
+    success: false,
+    errors: [{ code, message }],
+    messages: [],
+    result: null,
+  }, { status });
+}
+
 const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
 const ASSETS_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
 
@@ -151,7 +164,7 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
 
   const upstreamApiToken = env.CF_API_TOKEN?.trim();
   if (!upstreamApiToken) {
-    return json({ error: 'Missing CF_API_TOKEN for Cloudflare API proxy' }, { status: 500 });
+    return cfApiError(10000, 'Missing CF_API_TOKEN for Cloudflare API proxy', 500);
   }
 
   console.log('[cf-api-proxy] request', {
@@ -175,7 +188,7 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       hasAuthorizationHeader: !!request.headers.get('Authorization'),
       hasDeployTokenHeader: !!request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER),
     });
-    return json({ error: 'Missing deploy token' }, { status: 401 });
+    return cfApiError(10001, 'Authentication error: Missing deploy token', 401);
   }
 
   // Token -> script name mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
@@ -188,7 +201,7 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       path: url.pathname,
       tokenPrefix: proxyToken.slice(0, 8),
     });
-    return json({ error: 'Invalid deploy token' }, { status: 401 });
+    return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
   }
 
   const accountId = env.CF_ACCOUNT_ID?.trim();
@@ -248,7 +261,7 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       search: url.search,
       hasToken: true,
     });
-    return json({ error: 'Blocked by API proxy allowlist' }, { status: 403 });
+    return cfApiError(10003, 'Forbidden: Request blocked by API proxy allowlist', 403);
   }
 
   const upstreamUrl = new URL(`https://api.cloudflare.com${pathname}${url.search}`);
@@ -334,7 +347,7 @@ export default {
       try {
         return await proxyCloudflareApi(request, env);
       } catch (e) {
-        return json({ error: `Cloudflare API proxy failed: ${String(e)}` }, { status: 502 });
+        return cfApiError(10004, `Cloudflare API proxy failed: ${String(e)}`, 502);
       }
     }
 
