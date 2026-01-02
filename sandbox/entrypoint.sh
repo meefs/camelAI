@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as root
 #
-# Version: 2026-01-02-v1
+# Version: 2026-01-02-v2
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -16,19 +16,32 @@ echo "[entrypoint] R2_BUCKET_NAME=${R2_BUCKET_NAME:-unset}" >&2
 TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
 FIRST_RUN_MARKER="/tmp/.r2-synced"
 
+# Track PIDs for cleanup
+WS_PID=""
+CONTROL_PID=""
+
 # Check if R2 is configured
 has_r2_config() {
   [ -n "${R2_BUCKET_NAME:-}" ] && [ -n "${R2_ACCOUNT_ID:-}" ] && \
   [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]
 }
 
-# EXIT trap for R2 sync on shutdown
+# Cleanup function for shutdown
 cleanup() {
   echo "[entrypoint] Shutting down..." >&2
 
-  # Kill background processes
-  if [ -n "${CONTROL_PID:-}" ]; then
+  # Kill ws-server if running
+  if [ -n "${WS_PID:-}" ] && kill -0 "$WS_PID" 2>/dev/null; then
+    echo "[entrypoint] Stopping ws-server (PID: $WS_PID)..." >&2
+    kill "$WS_PID" 2>/dev/null || true
+    wait "$WS_PID" 2>/dev/null || true
+  fi
+
+  # Kill control-plane if running
+  if [ -n "${CONTROL_PID:-}" ] && kill -0 "$CONTROL_PID" 2>/dev/null; then
+    echo "[entrypoint] Stopping control-plane (PID: $CONTROL_PID)..." >&2
     kill "$CONTROL_PID" 2>/dev/null || true
+    wait "$CONTROL_PID" 2>/dev/null || true
   fi
 
   # Upload workspace to R2
@@ -40,7 +53,9 @@ cleanup() {
 
   echo "[entrypoint] Shutdown complete." >&2
 }
-trap cleanup EXIT
+
+# Trap signals for graceful shutdown
+trap cleanup EXIT TERM INT
 
 # R2 download on first run (if configured)
 if has_r2_config; then
@@ -85,10 +100,6 @@ if ! kill -0 "$CONTROL_PID" 2>/dev/null; then
   exit 1
 fi
 
-# Start ws-server as claude user (runs on port 8080)
-echo "[entrypoint] Starting ws-server as claude user on port 8080..." >&2
-cd "$TARGET_DIR"
-
 # Write env vars to a file that claude user can source
 cat > /tmp/ws-env.sh << ENVEOF
 export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'
@@ -108,5 +119,18 @@ export WORKER_BASE_URL='${WORKER_BASE_URL:-}'
 ENVEOF
 chmod 644 /tmp/ws-env.sh
 
-# Run ws-server as claude user, sourcing the env file
-exec su -s /bin/sh claude -c '. /tmp/ws-env.sh && exec bun /app/ws-server.mjs'
+# Start ws-server as claude user (runs on port 8080)
+# Run in foreground (no exec) so the shell stays alive for the trap
+echo "[entrypoint] Starting ws-server as claude user on port 8080..." >&2
+cd "$TARGET_DIR"
+su -s /bin/sh claude -c '. /tmp/ws-env.sh && bun /app/ws-server.mjs' &
+WS_PID=$!
+echo "[entrypoint] ws-server PID: $WS_PID" >&2
+
+# Wait for ws-server - when it exits, the cleanup trap will run
+wait "$WS_PID"
+WS_EXIT=$?
+echo "[entrypoint] ws-server exited with code: $WS_EXIT" >&2
+
+# Exit with ws-server's exit code (cleanup runs via EXIT trap)
+exit $WS_EXIT

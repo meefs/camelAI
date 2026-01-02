@@ -157,9 +157,6 @@ export class OrgContainer extends Container<OrgContainerEnv> {
   // Track the org ID for this container
   private orgId: string | null = null;
 
-  // Control plane auth token (generated per container start)
-  private controlPlaneToken: string | null = null;
-
   // Lifecycle hooks
   override onStart(): void {
     console.log(`[OrgContainer] Container started for org: ${this.orgId || 'unknown'}`);
@@ -180,13 +177,9 @@ export class OrgContainer extends Container<OrgContainerEnv> {
   async buildEnvVars(orgId: string): Promise<Record<string, string>> {
     this.orgId = orgId;
 
-    // Generate a unique token for control-plane auth
-    this.controlPlaneToken = generateContainerToken();
-
     const envVars: Record<string, string> = {
       ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
       ORG_ID: orgId,
-      CONTROL_PLANE_TOKEN: this.controlPlaneToken,
     };
 
     // R2 config
@@ -279,14 +272,11 @@ export class OrgContainer extends Container<OrgContainerEnv> {
 
   /**
    * Call control plane API endpoint.
+   * No auth required - control plane is only accessible from within the container
+   * or via containerFetch from this DO. Container isolation is the security boundary.
    */
   private async controlPlane<T>(path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = {};
-
-    // Add auth header if token is available
-    if (this.controlPlaneToken) {
-      headers['Authorization'] = `Bearer ${this.controlPlaneToken}`;
-    }
 
     if (body) {
       headers['Content-Type'] = 'application/json';
