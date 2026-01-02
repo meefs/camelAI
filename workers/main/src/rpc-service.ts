@@ -993,23 +993,30 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Messages are read from container's Claude JSONL file
     // threadId is the Claude session_id
     try {
+      console.log('[getMessages] Starting', { threadId, org });
       const container = getOrgContainer(this.env, org);
 
       // Ensure container is running (R2 sync happens in entrypoint)
       await container.startForOrg(org);
+      console.log('[getMessages] Container started');
 
       // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
       const jsonlPath = `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`;
+      console.log('[getMessages] Checking path:', jsonlPath);
 
       // Check if file exists
       const exists = await container.exists(jsonlPath);
+      console.log('[getMessages] Exists check:', exists);
       if (!exists.exists) {
+        console.log('[getMessages] File does not exist, returning []');
         return [];
       }
 
       // Read the JSONL file
       const file = await container.readFile(jsonlPath);
+      console.log('[getMessages] Read file result:', { success: file.success, contentLength: file.content?.length });
       if (!file.success || !file.content?.trim()) {
+        console.log('[getMessages] File empty or read failed, returning []');
         return [];
       }
 
@@ -1059,10 +1066,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         }
       }
 
+      console.log('[getMessages] Parsed messages:', messages.length);
       return messages;
     } catch (e) {
       // Container may not be running - return empty
-      console.error('[RPC] Error reading messages from container:', e);
+      console.error('[getMessages] Error reading messages from container:', e);
       return [];
     }
   }
