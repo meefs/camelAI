@@ -279,9 +279,11 @@ export class OrgContainer extends Container<OrgContainerEnv> {
 
   /**
    * Proxy WebSocket connection to ws-server (port 8080).
+   * Uses defaultPort which is already set to 8080.
    */
   async proxyWebSocket(request: Request): Promise<Response> {
-    return this.fetch(switchPort(request, WS_SERVER_PORT));
+    // Just use fetch() - defaultPort is already 8080
+    return this.fetch(request);
   }
 
   /**
