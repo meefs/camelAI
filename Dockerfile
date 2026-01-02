@@ -1,13 +1,12 @@
 FROM docker.io/cloudflare/sandbox:0.6.7-python
 
-# Version: 2026-01-02-v1 - update sandbox to 0.6.7
-# Must match the @cloudflare/sandbox npm package version.
+# Version: 2026-01-02-v2 - migrate to @cloudflare/containers API
+# Using sandbox base image for tooling (Bun, Node, etc.)
 
-# Expose Sandbox control plane + app ports
-# 3000: Sandbox control plane (required for Sandbox SDK)
-# 8080: WS server for Claude SDK
-# 8081: Integration proxy for external APIs
-EXPOSE 3000 8080 8081
+# Expose container ports
+# 8080: WS server for Claude SDK (runs as claude user)
+# 9000: Control plane for exec/fs operations (runs as root)
+EXPOSE 8080 9000
 
 # R2 sync support (tar+zstd for fast snapshot-based sync)
 ENV DEBIAN_FRONTEND=noninteractive
@@ -26,12 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
 RUN chmod a+rx /usr/local/bin/wrangler
 
-# Copy and install Claude SDK driver + integration proxy + WS server
-COPY sandbox/package.json sandbox/driver.mjs sandbox/proxy.mjs sandbox/ws-server.mjs sandbox/sync.mjs sandbox/run-driver.sh sandbox/run-ws-server.sh /app/
+# Copy and install Claude SDK + control plane + WS server
+COPY sandbox/package.json sandbox/driver.mjs sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/entrypoint.sh sandbox/run-driver.sh /app/
 COPY sandbox/starter-worker /app/starter-worker
 WORKDIR /app
 RUN bun install
-RUN chmod +x /app/run-driver.sh /app/run-ws-server.sh && chmod -R a+rX /app
+RUN chmod +x /app/entrypoint.sh /app/run-driver.sh && chmod -R a+rX /app
 
 # Create non-root user for Claude agent (ws-server drops privileges to this user)
 RUN if ! id -u claude >/dev/null 2>&1; then useradd -m -s /bin/bash -u 1000 claude; fi && \

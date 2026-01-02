@@ -3,12 +3,11 @@
 import openNextHandler from "../../../.open-next/worker.js";
 import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
-import { Sandbox } from '@cloudflare/sandbox';
-import { handleWebSocketUpgrade, getSandboxIdForOrg, type ContainerEnv } from './container.js';
+import { OrgContainer, handleWebSocketUpgrade, getContainerIdForOrg, type OrgContainerEnv } from './org-container.js';
 export { DoRpcService } from './rpc-service.js';
 
-// Export Sandbox as ThreadSandbox to match wrangler.jsonc class_name
-export { Sandbox as ThreadSandbox };
+// Export OrgContainer as ThreadSandbox to match wrangler.jsonc class_name
+export { OrgContainer as ThreadSandbox };
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
@@ -22,7 +21,7 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
   return null;
 }
 
-interface Env extends ChatEnv, AuthEnv, ContainerEnv {
+interface Env extends ChatEnv, AuthEnv, OrgContainerEnv {
   ASSETS: Fetcher;
   NEXTJS_ENV?: string;
   CF_API_TOKEN?: string;
@@ -444,11 +443,11 @@ export default {
     if (resetMatch && request.method === 'POST') {
       const orgId = resetMatch[1];
       try {
-        const sandboxId = getSandboxIdForOrg(orgId);
-        const stub = env.SANDBOX.get(env.SANDBOX.idFromName(sandboxId));
-        // Call destroy on the DO - this will terminate the container
-        await stub.fetch(new Request('http://internal/destroy', { method: 'POST' }));
-        return new Response(JSON.stringify({ success: true, sandboxId }), {
+        const containerId = getContainerIdForOrg(orgId);
+        const stub = env.SANDBOX.get(env.SANDBOX.idFromName(containerId));
+        // Call destroy on the Container DO - this will terminate the container
+        await stub.destroy();
+        return new Response(JSON.stringify({ success: true, containerId }), {
           headers: { 'Content-Type': 'application/json' },
         });
       } catch (e) {

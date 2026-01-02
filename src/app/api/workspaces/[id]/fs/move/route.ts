@@ -38,7 +38,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const result = await computerDO.moveWorkspacePath(id, fromPath, toPath);
     const response: WorkspaceOperationResult = {
       path: toPath,
-      timestamp: result.result.timestamp,
+      timestamp: result.result.timestamp ?? new Date().toISOString(),
     };
     return jsonResponse(response);
   } catch (error) {

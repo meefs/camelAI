@@ -1,0 +1,93 @@
+#!/bin/sh
+# Container entrypoint - handles R2 sync and starts services.
+# Environment variables are passed at container start time via @cloudflare/containers.
+#
+# Ports:
+#   8080 - ws-server (Claude SDK) - runs as claude user
+#   9000 - control-plane (exec/fs) - runs as root
+#
+# Version: 2026-01-02-v1
+set -eu
+
+echo "[entrypoint] Starting container initialization..." >&2
+echo "[entrypoint] ORG_ID=${ORG_ID:-unset}" >&2
+echo "[entrypoint] R2_BUCKET_NAME=${R2_BUCKET_NAME:-unset}" >&2
+
+TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
+FIRST_RUN_MARKER="/tmp/.r2-synced"
+
+# Check if R2 is configured
+has_r2_config() {
+  [ -n "${R2_BUCKET_NAME:-}" ] && [ -n "${R2_ACCOUNT_ID:-}" ] && \
+  [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]
+}
+
+# EXIT trap for R2 sync on shutdown
+cleanup() {
+  echo "[entrypoint] Shutting down..." >&2
+
+  # Kill background processes
+  if [ -n "${CONTROL_PID:-}" ]; then
+    kill "$CONTROL_PID" 2>/dev/null || true
+  fi
+
+  # Upload workspace to R2
+  if has_r2_config && [ "${R2_MOUNT_READONLY:-}" != "1" ] && [ "${R2_MOUNT_READONLY:-}" != "true" ]; then
+    echo "[entrypoint] Uploading snapshot to R2..." >&2
+    node /app/sync.mjs upload "$TARGET_DIR" || true
+    echo "[entrypoint] Upload complete." >&2
+  fi
+
+  echo "[entrypoint] Shutdown complete." >&2
+}
+trap cleanup EXIT
+
+# R2 download on first run (if configured)
+if has_r2_config; then
+  echo "[entrypoint] R2 configured, checking for snapshot..." >&2
+
+  if [ ! -f "$FIRST_RUN_MARKER" ]; then
+    echo "[entrypoint] Downloading R2 snapshot..." >&2
+    if node /app/sync.mjs download "$TARGET_DIR"; then
+      touch "$FIRST_RUN_MARKER"
+      echo "[entrypoint] R2 download complete." >&2
+    else
+      echo "[entrypoint] R2 download failed, continuing with empty workspace." >&2
+      touch "$FIRST_RUN_MARKER"
+    fi
+  else
+    echo "[entrypoint] R2 snapshot already downloaded (marker exists)." >&2
+  fi
+
+  # Seed starter project if workspace is empty
+  if [ ! -f "$TARGET_DIR/package.json" ] && [ -z "$(ls -A "$TARGET_DIR" 2>/dev/null || true)" ]; then
+    echo "[entrypoint] Seeding starter worker project..." >&2
+    cp -a /app/starter-worker/. "$TARGET_DIR/"
+  fi
+else
+  echo "[entrypoint] No R2 credentials, running without sync." >&2
+fi
+
+# Ensure workspace directory exists and is owned by claude
+mkdir -p "$TARGET_DIR"
+chown -R claude:claude "$TARGET_DIR"
+
+# Start control-plane server (runs as root on port 9000)
+echo "[entrypoint] Starting control-plane server on port 9000..." >&2
+node /app/control-plane.mjs &
+CONTROL_PID=$!
+echo "[entrypoint] Control-plane PID: $CONTROL_PID" >&2
+
+# Wait for control-plane to be ready
+sleep 0.5
+if ! kill -0 "$CONTROL_PID" 2>/dev/null; then
+  echo "[entrypoint] ERROR: Control-plane failed to start!" >&2
+  exit 1
+fi
+
+# Start ws-server as claude user (runs on port 8080)
+echo "[entrypoint] Starting ws-server as claude user on port 8080..." >&2
+cd "$TARGET_DIR"
+
+# Export all env vars to the claude user's environment
+exec su -s /bin/sh claude -c 'exec bun /app/ws-server.mjs'

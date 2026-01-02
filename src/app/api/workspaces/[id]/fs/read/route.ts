@@ -20,7 +20,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return errorResponse('File not found', 404);
     }
 
-    const version = await hashContent(readResult.result.content);
+    const content = readResult.result.content ?? '';
+    const version = await hashContent(content);
 
     const parentPath =
       path === '/' ? '/' : path.split('/').slice(0, -1).join('/') || '/';
@@ -36,14 +37,15 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       console.warn('Unable to resolve mtime for file', listingError);
     }
 
+    const encoding = readResult.result.encoding ?? 'utf-8';
     const response: WorkspaceFileRead = {
       path,
-      content: readResult.result.content,
+      content,
       version,
       size: readResult.result.size ?? entry?.size ?? null,
       mtime: entry?.modifiedAt ?? null,
       isBinary: Boolean(readResult.result.isBinary),
-      encoding: readResult.result.encoding ?? 'utf-8',
+      encoding: encoding as 'utf-8' | 'base64',
       mimeType: readResult.result.mimeType ?? null,
     };
 
