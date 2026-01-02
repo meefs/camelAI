@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { getSandbox } from '@cloudflare/sandbox';
 import type { AuthEnv, SessionData, UserProfile, OrgIntegrationRecord } from './auth';
 import type { ChatEnv } from './durable-objects';
 import { getOrgSandbox } from './container';
@@ -7,6 +8,9 @@ import type {
   Organization,
   OrgMembership,
   Project,
+  SandboxFileListing,
+  WorkspaceFileEntry,
+  WorkspaceListResponse,
   Thread,
   User,
   UserProject,
@@ -27,6 +31,7 @@ import {
   deleteApiToken,
   type ApiTokenData,
 } from './api-tokens';
+import { getTempR2Credentials } from './r2-credentials';
 
 /**
  * Maps integration type + credential fields to ENV var names.
@@ -166,7 +171,215 @@ function getIndexStub(env: DoRpcEnv, org: string) {
   return env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(org));
 }
 
+function getThreadStub(env: DoRpcEnv, threadId: string) {
+  return env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+}
+
+function getSandboxIdForOrg(orgId: string): string {
+  const safeOrg = orgId.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+  return `org-${safeOrg}`.slice(0, 63);
+}
+
+interface WorkspaceListOptions {
+  path?: string;
+  recursive?: boolean;
+  includeHidden?: boolean;
+}
+
+function normalizeWorkspacePath(input?: string): string {
+  if (!input) return '/';
+  let raw = input.trim();
+  if (!raw.startsWith('/')) raw = `/${raw}`;
+
+  const segments: string[] = [];
+  for (const part of raw.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (segments.length === 0) {
+        throw new Error('Path escapes workspace root');
+      }
+      segments.pop();
+      continue;
+    }
+    segments.push(part);
+  }
+  return `/${segments.join('/')}`;
+}
+
+function joinWorkspacePath(base: string, child: string): string {
+  const basePath = normalizeWorkspacePath(base);
+  if (!child || child === '.' || child === './') {
+    return basePath;
+  }
+  const childPath = child.startsWith('/') ? child : `/${child}`;
+  return normalizeWorkspacePath(`${basePath}${childPath}`);
+}
+
+function resolveWorkspacePath(workspaceRoot: string, workspacePath: string): string {
+  const normalized = normalizeWorkspacePath(workspacePath);
+  const root = workspaceRoot.replace(/\/$/, '');
+  if (normalized === '/') return root || '/';
+  return `${root}${normalized}`;
+}
+
+const WORKSPACE_SYNC_DEBOUNCE_MS = 5000;
+
+type WorkspaceSyncState = {
+  nextSyncAt: number;
+  sequence: number;
+  running: boolean;
+  promise: Promise<void> | null;
+};
+
+const workspaceSyncState = new Map<string, WorkspaceSyncState>();
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
 export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
+  private hasR2Config(): boolean {
+    return Boolean(
+      this.env.R2_BUCKET_NAME &&
+      this.env.R2_ACCOUNT_ID &&
+      this.env.R2_API_TOKEN &&
+      this.env.R2_PARENT_ACCESS_KEY_ID
+    );
+  }
+
+  private isR2ReadOnly(): boolean {
+    const value = this.env.R2_MOUNT_READONLY;
+    if (!value) return false;
+    return ['1', 'true'].includes(String(value).toLowerCase());
+  }
+
+  private getWorkspaceRoot(): string {
+    return this.env.R2_MOUNT_DIR || '/home/claude';
+  }
+
+  private async buildSandboxEnv(orgId: string): Promise<Record<string, string>> {
+    const envVars: Record<string, string> = {
+      R2_PREFIX: `${orgId}/`,
+    };
+
+    if (this.env.R2_BUCKET_NAME) envVars.R2_BUCKET_NAME = this.env.R2_BUCKET_NAME;
+    if (this.env.R2_ACCOUNT_ID) envVars.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
+    if (this.env.R2_MOUNT_DIR) envVars.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
+    if (this.env.R2_MOUNT_READONLY) envVars.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
+
+    if (this.hasR2Config()) {
+      const tempCreds = await getTempR2Credentials(
+        this.env.R2_ACCOUNT_ID!,
+        this.env.R2_BUCKET_NAME!,
+        this.env.R2_PARENT_ACCESS_KEY_ID!,
+        this.env.R2_API_TOKEN!,
+        `${orgId}/`,
+        86400
+      );
+      envVars.AWS_ACCESS_KEY_ID = tempCreds.accessKeyId;
+      envVars.AWS_SECRET_ACCESS_KEY = tempCreds.secretAccessKey;
+      envVars.AWS_SESSION_TOKEN = tempCreds.sessionToken;
+    }
+
+    return envVars;
+  }
+
+  private async ensureWorkspaceSynced(
+    orgId: string,
+    sandbox: ReturnType<typeof getSandbox>,
+    workspaceRoot: string
+  ): Promise<void> {
+    if (!this.hasR2Config()) return;
+    const marker = await sandbox.exists('/tmp/.r2-synced');
+    if (marker.exists) return;
+
+    const envVars = await this.buildSandboxEnv(orgId);
+    const syncResult = await sandbox.exec(`node /app/sync.mjs download ${workspaceRoot}`, {
+      env: envVars,
+      timeout: 120000,
+    });
+    if (!syncResult.success) {
+      throw new Error(`Workspace sync failed: ${syncResult.stderr || 'unknown error'}`);
+    }
+    await sandbox.exec('touch /tmp/.r2-synced', { env: envVars, timeout: 5000 });
+  }
+
+  private async uploadWorkspaceSnapshot(orgId: string): Promise<void> {
+    if (!this.hasR2Config() || this.isR2ReadOnly()) return;
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const envVars = await this.buildSandboxEnv(orgId);
+    const syncResult = await sandbox.exec(`node /app/sync.mjs upload ${workspaceRoot}`, {
+      env: envVars,
+      timeout: 120000,
+    });
+    if (!syncResult.success) {
+      console.error(
+        `[workspace-sync] Upload failed for ${orgId}: ${syncResult.stderr || syncResult.stdout || 'unknown error'}`
+      );
+    }
+  }
+
+  private async runWorkspaceSyncLoop(
+    orgId: string,
+    state: WorkspaceSyncState
+  ): Promise<void> {
+    try {
+      while (true) {
+        const waitMs = Math.max(0, state.nextSyncAt - Date.now());
+        if (waitMs > 0) {
+          await sleep(waitMs);
+          continue;
+        }
+
+        const sequenceAtStart = state.sequence;
+        await this.uploadWorkspaceSnapshot(orgId);
+
+        if (state.sequence !== sequenceAtStart) {
+          continue;
+        }
+        break;
+      }
+    } catch (error) {
+      console.error('[workspace-sync] Unexpected sync error', error);
+    } finally {
+      state.running = false;
+      state.promise = null;
+      workspaceSyncState.delete(orgId);
+    }
+  }
+
+  private scheduleWorkspaceUpload(orgId: string): void {
+    if (!this.hasR2Config() || this.isR2ReadOnly()) return;
+    const now = Date.now();
+    let state = workspaceSyncState.get(orgId);
+    if (!state) {
+      state = {
+        nextSyncAt: now + WORKSPACE_SYNC_DEBOUNCE_MS,
+        sequence: 0,
+        running: false,
+        promise: null,
+      };
+      workspaceSyncState.set(orgId, state);
+    }
+
+    state.sequence += 1;
+    state.nextSyncAt = now + WORKSPACE_SYNC_DEBOUNCE_MS;
+
+    if (!state.running) {
+      state.running = true;
+      state.promise = this.runWorkspaceSyncLoop(orgId, state);
+    }
+
+    if (state.promise) {
+      this.ctx.waitUntil(state.promise);
+    }
+  }
+
   // Session functions
   async getSession(sessionId: string): Promise<SessionData | null> {
     const stub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
@@ -916,6 +1129,172 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   async deleteProject(id: string, org: string): Promise<void> {
     await getIndexStub(this.env, org).deleteProject(id);
+  }
+
+  async listWorkspaceFiles(orgId: string): Promise<SandboxFileListing> {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const listing = await sandbox.listFiles(workspaceRoot, {
+      recursive: true,
+      includeHidden: true,
+    });
+    const files = [...listing.files].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    return {
+      path: listing.path,
+      files,
+      count: listing.count,
+      timestamp: listing.timestamp,
+    };
+  }
+
+  async listWorkspaceEntries(
+    orgId: string,
+    options: WorkspaceListOptions = {}
+  ): Promise<WorkspaceListResponse> {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(options.path);
+    const listPath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const recursive = options.recursive ?? false;
+    const includeHidden = options.includeHidden ?? true;
+
+    const listing = await sandbox.listFiles(listPath, { recursive, includeHidden });
+    const entries: WorkspaceFileEntry[] = [];
+
+    for (const file of listing.files) {
+      if (!file.relativePath || file.relativePath === '.') continue;
+      entries.push({
+        path: joinWorkspacePath(workspacePath, file.relativePath),
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        modifiedAt: file.modifiedAt,
+      });
+    }
+
+    entries.sort((a, b) => a.path.localeCompare(b.path));
+
+    return {
+      path: workspacePath,
+      entries,
+      count: entries.length,
+      timestamp: listing.timestamp,
+      recursive,
+    };
+  }
+
+  async readWorkspaceFile(orgId: string, path: string) {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(path);
+    const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const exists = await sandbox.exists(absolutePath);
+    if (!exists.exists) return null;
+
+    const result = await sandbox.readFile(absolutePath);
+    if (!result.success) {
+      throw new Error(`Failed to read ${workspacePath}`);
+    }
+    return { workspacePath, result };
+  }
+
+  async writeWorkspaceFile(orgId: string, path: string, content: string) {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(path);
+    const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const result = await sandbox.writeFile(absolutePath, content);
+    if (!result.success) {
+      throw new Error(`Failed to write ${workspacePath}`);
+    }
+    this.scheduleWorkspaceUpload(orgId);
+    return { workspacePath, result };
+  }
+
+  async mkdirWorkspacePath(orgId: string, path: string) {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(path);
+    const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const result = await sandbox.mkdir(absolutePath, { recursive: true });
+    if (!result.success) {
+      throw new Error(`Failed to create directory ${workspacePath}`);
+    }
+    this.scheduleWorkspaceUpload(orgId);
+    return { workspacePath, result };
+  }
+
+  async createWorkspaceFile(orgId: string, path: string, content = '') {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(path);
+    const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const exists = await sandbox.exists(absolutePath);
+    if (exists.exists) {
+      throw new Error('Workspace path already exists');
+    }
+
+    const result = await sandbox.writeFile(absolutePath, content);
+    if (!result.success) {
+      throw new Error(`Failed to write ${workspacePath}`);
+    }
+    this.scheduleWorkspaceUpload(orgId);
+    return { workspacePath, result };
+  }
+
+  async moveWorkspacePath(orgId: string, from: string, to: string) {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const fromPath = normalizeWorkspacePath(from);
+    const toPath = normalizeWorkspacePath(to);
+    const sourcePath = resolveWorkspacePath(workspaceRoot, fromPath);
+    const destinationPath = resolveWorkspacePath(workspaceRoot, toPath);
+    const result = await sandbox.moveFile(sourcePath, destinationPath);
+    if (!result.success) {
+      throw new Error(`Failed to move ${fromPath} to ${toPath}`);
+    }
+    this.scheduleWorkspaceUpload(orgId);
+    return { fromPath, toPath, result };
+  }
+
+  async deleteWorkspacePath(orgId: string, path: string) {
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(path);
+    if (workspacePath === '/') {
+      throw new Error('Refusing to delete workspace root');
+    }
+    const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const result = await sandbox.deleteFile(absolutePath);
+    if (!result.success) {
+      throw new Error(`Failed to delete ${workspacePath}`);
+    }
+    this.scheduleWorkspaceUpload(orgId);
+    return { workspacePath, result };
   }
 
   // Integration functions
