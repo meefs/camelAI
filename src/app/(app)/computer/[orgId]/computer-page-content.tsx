@@ -1446,7 +1446,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   const dragSource = dragSourcePathRef.current;
   const dragEnabled = editingEnabled;
   const canDropToRoot =
-    dragEnabled && isDragging && Boolean(dragSource) && canDropInto(ROOT_PATH, dragSource);
+    dragEnabled && isDragging && dragSource !== null && canDropInto(ROOT_PATH, dragSource);
   const isRootDragOver = dragOverPath === ROOT_PATH;
 
   return (
@@ -1626,7 +1626,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                       const isDropAllowed =
                         dragEnabled &&
                         isDragging &&
-                        Boolean(dragSource) &&
+                        dragSource !== null &&
                         isDirectory &&
                         canDropInto(node.path, dragSource);
                       const isDragOver = dragOverPath === node.path && isDropAllowed;
