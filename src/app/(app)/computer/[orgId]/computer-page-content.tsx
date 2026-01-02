@@ -306,6 +306,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   const [treeError, setTreeError] = useState<string | null>(null);
   const [dialogState, setDialogState] = useState<DialogState>(null);
   const [dialogName, setDialogName] = useState('');
+  const [dialogSubmitting, setDialogSubmitting] = useState(false);
   const [confirmEditOpen, setConfirmEditOpen] = useState(false);
   const [editingEnabled, setEditingEnabled] = useState(false);
   const [savingPaths, setSavingPaths] = useState<Set<string>>(new Set());
@@ -370,8 +371,9 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
 
   useEffect(() => {
     if (!hydrated) return;
+    const uniqueTabs = Array.from(new Set(openTabs.map((tab) => tab.path)));
     const data = {
-      openTabs: openTabs.map((tab) => tab.path),
+      openTabs: uniqueTabs,
       activePath,
       editingEnabled,
     };
@@ -398,8 +400,11 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
           editingEnabled?: boolean;
         };
         if (Array.isArray(parsed.openTabs)) {
+          const uniquePaths = Array.from(
+            new Set(parsed.openTabs.filter((path): path is string => typeof path === 'string'))
+          );
           setOpenTabs(
-            parsed.openTabs.map((path) => ({
+            uniquePaths.map((path) => ({
               path,
               title: getBasename(path),
               isDirty: false,
@@ -739,17 +744,19 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       const node = nodesByPath[normalizedPath];
       if (node?.kind === 'dir') return;
 
-      const existingTab = openTabs.find((tab) => tab.path === normalizedPath);
-      if (!existingTab) {
-        setOpenTabs((prev) => [
+      setOpenTabs((prev) => {
+        if (prev.some((tab) => tab.path === normalizedPath)) {
+          return prev;
+        }
+        return [
           ...prev,
           {
             path: normalizedPath,
             title: getBasename(normalizedPath),
             isDirty: false,
           },
-        ]);
-      }
+        ];
+      });
 
       if (options.focus !== false) {
         setActivePath(normalizedPath);
@@ -810,7 +817,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
         console.error('Failed to open file', error);
       }
     },
-    [apiBase, ensureModel, nodesByPath, openTabs, removeMissingTab, updateTab]
+    [apiBase, ensureModel, nodesByPath, removeMissingTab, updateTab]
   );
 
   useEffect(() => {
@@ -1138,7 +1145,14 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     [apiBase, clearDragState, loadDirectory, remapOpenResources]
   );
 
+  const closeDialog = useCallback(() => {
+    setDialogState(null);
+    setDialogName('');
+    setDialogSubmitting(false);
+  }, []);
+
   const openDialog = useCallback((state: DialogState) => {
+    setDialogSubmitting(false);
     setDialogState(state);
     if (state?.type === 'rename') {
       setDialogName(getBasename(state.path));
@@ -1148,78 +1162,95 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   }, []);
 
   const handleConfirmDialog = useCallback(async () => {
-    if (!dialogState) return;
+    if (!dialogState || dialogSubmitting) return;
+    const requiresName =
+      dialogState.type === 'new-file' ||
+      dialogState.type === 'new-folder' ||
+      dialogState.type === 'rename';
+    if (requiresName && !dialogName.trim()) return;
 
-    if (dialogState.type === 'new-file' || dialogState.type === 'new-folder') {
-      const name = dialogName.trim();
-      if (!name) return;
-      const parentPath = dialogState.parentPath;
-      const targetPath = joinPath(parentPath, name);
-      const endpoint = dialogState.type === 'new-file' ? 'create' : 'mkdir';
-      const body =
-        dialogState.type === 'new-file'
-          ? { path: targetPath, content: '' }
-          : { path: targetPath };
+    setDialogSubmitting(true);
 
-      const res = await fetch(`${apiBase}/${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (res.ok) {
-        await loadDirectory(parentPath);
-        if (dialogState.type === 'new-file') {
-          openFile(targetPath);
-        }
-      }
-    }
+    try {
+      if (dialogState.type === 'new-file' || dialogState.type === 'new-folder') {
+        const name = dialogName.trim();
+        const parentPath = dialogState.parentPath;
+        const targetPath = joinPath(parentPath, name);
+        const endpoint = dialogState.type === 'new-file' ? 'create' : 'mkdir';
+        const body =
+          dialogState.type === 'new-file'
+            ? { path: targetPath, content: '' }
+            : { path: targetPath };
 
-    if (dialogState.type === 'rename') {
-      const name = dialogName.trim();
-      if (!name) return;
-      const fromPath = dialogState.path;
-      const toPath = joinPath(getParentPath(fromPath), name);
-      if (fromPath !== toPath) {
-        const res = await fetch(`${apiBase}/move`, {
+        const res = await fetch(`${apiBase}/${endpoint}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ from: fromPath, to: toPath }),
+          body: JSON.stringify(body),
         });
         if (res.ok) {
-          remapOpenResources(fromPath, toPath);
-          await loadDirectory(getParentPath(fromPath));
+          closeDialog();
+          await loadDirectory(parentPath);
+          if (dialogState.type === 'new-file') {
+            openFile(targetPath);
+          }
+        }
+        return;
+      }
+
+      if (dialogState.type === 'rename') {
+        const name = dialogName.trim();
+        const fromPath = dialogState.path;
+        const toPath = joinPath(getParentPath(fromPath), name);
+        if (fromPath !== toPath) {
+          const res = await fetch(`${apiBase}/move`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from: fromPath, to: toPath }),
+          });
+          if (res.ok) {
+            closeDialog();
+            remapOpenResources(fromPath, toPath);
+            await loadDirectory(getParentPath(fromPath));
+          }
+          return;
+        }
+        closeDialog();
+        return;
+      }
+
+      if (dialogState.type === 'delete') {
+        const targetPath = dialogState.path;
+        const res = await fetch(`${apiBase}/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: targetPath }),
+        });
+        if (res.ok) {
+          closeDialog();
+          removeTabsUnderPath(targetPath);
+          setExpandedPaths((prev) => {
+            const next = new Set(
+              Array.from(prev).filter(
+                (path) => !(path === targetPath || path.startsWith(`${targetPath}/`))
+              )
+            );
+            next.add(ROOT_PATH);
+            return next;
+          });
+          await loadDirectory(getParentPath(targetPath));
         }
       }
+    } catch (error) {
+      console.error('Failed to apply dialog action', error);
+    } finally {
+      setDialogSubmitting(false);
     }
-
-    if (dialogState.type === 'delete') {
-      const targetPath = dialogState.path;
-      const res = await fetch(`${apiBase}/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: targetPath }),
-      });
-      if (res.ok) {
-        removeTabsUnderPath(targetPath);
-        setExpandedPaths((prev) => {
-          const next = new Set(
-            Array.from(prev).filter(
-              (path) => !(path === targetPath || path.startsWith(`${targetPath}/`))
-            )
-          );
-          next.add(ROOT_PATH);
-          return next;
-        });
-        await loadDirectory(getParentPath(targetPath));
-      }
-    }
-
-    setDialogState(null);
-    setDialogName('');
   }, [
     apiBase,
     dialogName,
     dialogState,
+    dialogSubmitting,
+    closeDialog,
     loadDirectory,
     openFile,
     remapOpenResources,
@@ -1941,8 +1972,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
         open={dialogState !== null}
         onOpenChange={(open) => {
           if (!open) {
-            setDialogState(null);
-            setDialogName('');
+            closeDialog();
           }
         }}
       >
@@ -2019,20 +2049,25 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
             </>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogState(null)}>
+            <Button variant="outline" onClick={closeDialog}>
               Cancel
             </Button>
             <Button
               variant={dialogState?.type === 'delete' ? 'destructive' : 'default'}
               onClick={handleConfirmDialog}
               disabled={
-                (dialogState?.type === 'new-file' ||
+                dialogSubmitting ||
+                ((dialogState?.type === 'new-file' ||
                   dialogState?.type === 'new-folder' ||
                   dialogState?.type === 'rename') &&
-                !dialogName.trim()
+                  !dialogName.trim())
               }
             >
-              {dialogState?.type === 'delete' ? 'Delete' : 'Confirm'}
+              {dialogSubmitting
+                ? 'Working...'
+                : dialogState?.type === 'delete'
+                  ? 'Delete'
+                  : 'Confirm'}
             </Button>
           </DialogFooter>
         </DialogContent>
