@@ -1,6 +1,16 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+
+// Debug logging for message state changes
+const DEBUG_MESSAGES = true;
+const debugLog = (context: string, data: Record<string, unknown>) => {
+  if (!DEBUG_MESSAGES) return;
+  console.log(`[Chat:${context}]`, JSON.stringify({
+    timestamp: new Date().toISOString(),
+    ...data,
+  }, null, 2));
+};
 import { useRouter } from 'next/navigation';
 import { ArrowDown, Copy, Check, RefreshCw, ExternalLink, X } from 'lucide-react';
 import type { Thread, Message, ContentBlock } from '@/types';
@@ -291,7 +301,14 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
   // Fetch messages from REST API
   const fetchMessages = useCallback(async (threadId: string, isReconnect = false) => {
+    debugLog('fetchMessages:start', { threadId, isReconnect });
+
     if (!isReconnect && initialMessagesRef.current?.threadId === threadId) {
+      debugLog('fetchMessages:useInitial', {
+        threadId,
+        messageCount: initialMessagesRef.current.messages.length,
+        messageIds: initialMessagesRef.current.messages.map(m => m.id),
+      });
       setMessages(initialMessagesRef.current.messages);
       isFirstMessage.current = initialMessagesRef.current.messages.length === 0;
       initialMessagesRef.current = null;
@@ -309,6 +326,14 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
           content: parseMessageContent(msg.content),
         }));
 
+        debugLog('fetchMessages:setMessages', {
+          threadId,
+          isReconnect,
+          fetchedCount: fetchedMsgs.length,
+          parsedCount: parsedMsgs.length,
+          messageIds: parsedMsgs.map(m => m.id),
+        });
+
         // Always replace with server state - local-only messages (local_*, turn_*)
         // that weren't persisted are stale. Pending messages will be re-added
         // when the ready event fires.
@@ -317,15 +342,21 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         if (!isReconnect) {
           isFirstMessage.current = parsedMsgs.length === 0;
         }
+      } else {
+        debugLog('fetchMessages:error', { threadId, status: res.status });
       }
     } catch (e) {
+      debugLog('fetchMessages:exception', { threadId, error: String(e) });
       console.error('Failed to fetch messages:', e);
     }
   }, []);
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
+    debugLog('connectWebSocket:start', { threadId: id, isReconnect });
+
     if (!id) {
+      debugLog('connectWebSocket:noId', {});
       return;
     }
     // Clear any pending reconnect
@@ -336,10 +367,12 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
     // Increment connection ID to invalidate any pending callbacks from old connections
     const thisConnectionId = ++connectionIdRef.current;
+    debugLog('connectWebSocket:newConnectionId', { connectionId: thisConnectionId, isReconnect });
 
     // Close existing connection regardless of state
     // This prevents orphaned WebSockets from React StrictMode double-mounting
     if (wsRef.current) {
+      debugLog('connectWebSocket:closingExisting', { connectionId: thisConnectionId });
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -412,6 +445,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
       if (data.type === 'ready') {
         // Container is ready to receive messages
+        debugLog('ws:ready', { threadId: id });
         setReady(true);
 
         // Send pending message if exists (from welcome screen or queued while disconnected)
@@ -439,7 +473,11 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
             content: storedMessage,
             created_at: Date.now(),
           };
-          setMessages(prev => [...prev, userMsg]);
+          debugLog('ws:addUserMessage', { messageId: userMsg.id, threadId: id });
+          setMessages(prev => {
+            debugLog('ws:addUserMessage:prev', { prevCount: prev.length, prevIds: prev.map(m => m.id) });
+            return [...prev, userMsg];
+          });
 
           setLoading(true);
           setStreaming({ content: [], isStreaming: false });
@@ -556,6 +594,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
           // Use full assistant message content when complete
           if (sdkEvent.message!.stop_reason) {
             const msgId = currentMessageUuidRef.current;
+            debugLog('ws:assistantComplete', { msgId, stopReason: sdkEvent.message!.stop_reason });
             if (!msgId) {
               console.error('No stable message ID available');
               return;
@@ -568,7 +607,14 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
               if (content.length > 0) {
                 setMessages(msgs => {
                   // Check for duplicate using stable SDK ID
-                  if (msgs.some(m => m.id === msgId)) return msgs;
+                  const isDupe = msgs.some(m => m.id === msgId);
+                  debugLog('ws:addAssistantMessage', {
+                    msgId,
+                    isDupe,
+                    prevCount: msgs.length,
+                    prevIds: msgs.map(m => m.id),
+                  });
+                  if (isDupe) return msgs;
                   return [...msgs, {
                     id: msgId,
                     thread_id: threadId || '',
@@ -592,12 +638,21 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
           // Query complete - add any remaining streaming content as fallback
           // (in case 'assistant' handler didn't fire or stop_reason wasn't set)
           const fallbackMsgId = currentMessageUuidRef.current;
+          debugLog('ws:result', { fallbackMsgId });
           setStreaming(prev => {
             if (prev.content.length > 0 && fallbackMsgId) {
               // There's still content - assistant handler didn't add it
+              debugLog('ws:resultFallback', { fallbackMsgId, contentLength: prev.content.length });
               setMessages(msgs => {
                 // Use the tracked SDK uuid for deduplication
-                if (msgs.some(m => m.id === fallbackMsgId)) return msgs;
+                const isDupe = msgs.some(m => m.id === fallbackMsgId);
+                debugLog('ws:addFallbackMessage', {
+                  fallbackMsgId,
+                  isDupe,
+                  prevCount: msgs.length,
+                  prevIds: msgs.map(m => m.id),
+                });
+                if (isDupe) return msgs;
                 return [...msgs, {
                   id: fallbackMsgId,
                   thread_id: threadId || '',
@@ -624,9 +679,11 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     ws.onclose = () => {
       // Ignore if this connection was superseded by a new one
       if (connectionIdRef.current !== thisConnectionId) {
+        debugLog('ws:close:superseded', { connectionId: thisConnectionId, currentId: connectionIdRef.current });
         return;
       }
 
+      debugLog('ws:close', { connectionId: thisConnectionId, attempt: reconnectAttempts.current });
       setReady(false);
       wsRef.current = null;
 
@@ -635,6 +692,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       if (reconnectAttempts.current < maxAttempts) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
         reconnectAttempts.current++;
+        debugLog('ws:reconnectScheduled', { attempt: reconnectAttempts.current, delay });
         reconnectTimeoutRef.current = setTimeout(() => {
           // Check again that we haven't been superseded
           if (connectionIdRef.current === thisConnectionId) {
@@ -998,7 +1056,11 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       content: userMessage,
       created_at: Date.now(),
     };
-    setMessages(prev => [...prev, userMsg]);
+    debugLog('sendMessage:addUserMessage', { messageId: userMsg.id, threadId });
+    setMessages(prev => {
+      debugLog('sendMessage:prev', { prevCount: prev.length, prevIds: prev.map(m => m.id) });
+      return [...prev, userMsg];
+    });
 
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
