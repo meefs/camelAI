@@ -395,6 +395,13 @@ export default {
         return new Response('Unauthorized', { status: 401 });
       }
 
+      // Verify thread belongs to user's org (prevents cross-tenant leak)
+      const indexStub = env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(session.org_id));
+      const thread = await indexStub.getThread(threadId);
+      if (!thread) {
+        return new Response('Thread not found', { status: 404 });
+      }
+
       // Route to thread DO for preview state updates
       const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
       return threadStub.fetch(request);
