@@ -612,20 +612,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         setError(data.error || 'An unknown error occurred');
         setStreaming({ content: [], isStreaming: false });
         setLoading(false);
-      } else if (data.type === 'deploy_success') {
-        // Wrangler deploy completed - show the deployed app in iframe
-        setDeployedApp(data.scriptName);
-        setIframeLoading(true);
-        setIframeKey(prev => prev + 1);
-
-        // Auto-reload after 3 seconds to handle worker propagation delay
-        if (iframeRetryRef.current) {
-          clearTimeout(iframeRetryRef.current);
-        }
-        iframeRetryRef.current = setTimeout(() => {
-          setIframeKey(prev => prev + 1);
-        }, 3000);
-      }
     };
 
     ws.onclose = () => {

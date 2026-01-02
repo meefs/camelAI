@@ -322,17 +322,6 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     });
   }
 
-  // Detect successful deploy (PUT to dispatch script upload endpoint)
-  if (resp.ok && method === 'PUT' && DISPATCH_SCRIPT_UPLOAD.test(pathname)) {
-    console.log('[cf-api-proxy] deploy success detected', {
-      method,
-      path: pathname,
-      scriptName: scriptNameForToken,
-    });
-    // TODO: Notify connected WebSocket clients of deploy success
-    // This could be done via a broadcast to the container's /broadcast endpoint
-  }
-
   return new Response(respBody, { status: resp.status, headers: resp.headers });
 }
 
