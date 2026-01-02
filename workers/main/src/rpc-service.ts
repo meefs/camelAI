@@ -29,7 +29,8 @@ import {
 } from './api-tokens';
 
 /**
- * Maps integration type + credential fields to standard ENV var names.
+ * Maps integration type + credential fields to ENV var names.
+ * All vars are prefixed with INT_ to avoid overriding platform keys (e.g., ANTHROPIC_API_KEY).
  * Returns a Record where keys are ENV var names and values are the credential values.
  */
 function mapCredentialsToEnvVars(
@@ -45,62 +46,67 @@ function mapCredentialsToEnvVars(
     return String(val);
   };
 
+  // Helper to set env var with INT_ prefix
+  const set = (name: string, value: string) => {
+    env[`INT_${name}`] = value;
+  };
+
   switch (integrationType) {
     case 'stripe':
-      if (str(credentials.api_key)) env.STRIPE_API_KEY = str(credentials.api_key)!;
-      if (str(credentials.api_key)) env.STRIPE_SECRET_KEY = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set('STRIPE_API_KEY', str(credentials.api_key)!);
+      if (str(credentials.api_key)) set('STRIPE_SECRET_KEY', str(credentials.api_key)!);
       break;
 
     case 'openai':
-      if (str(credentials.api_key)) env.OPENAI_API_KEY = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set('OPENAI_API_KEY', str(credentials.api_key)!);
       break;
 
     case 'anthropic':
-      if (str(credentials.api_key)) env.ANTHROPIC_API_KEY = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set('ANTHROPIC_API_KEY', str(credentials.api_key)!);
       break;
 
     case 'github':
-      if (str(credentials.api_key)) env.GITHUB_TOKEN = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set('GITHUB_TOKEN', str(credentials.api_key)!);
       break;
 
     case 'notion':
-      if (str(credentials.api_key)) env.NOTION_API_KEY = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set('NOTION_API_KEY', str(credentials.api_key)!);
       break;
 
     case 'slack':
-      if (str(credentials.api_key)) env.SLACK_BOT_TOKEN = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set('SLACK_BOT_TOKEN', str(credentials.api_key)!);
       break;
 
     case 'linear':
-      if (str(credentials.api_key)) env.LINEAR_API_KEY = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set('LINEAR_API_KEY', str(credentials.api_key)!);
       break;
 
     case 'sendgrid':
-      if (str(credentials.api_key)) env.SENDGRID_API_KEY = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set('SENDGRID_API_KEY', str(credentials.api_key)!);
       break;
 
     case 'twilio':
-      if (str(credentials.account_sid)) env.TWILIO_ACCOUNT_SID = str(credentials.account_sid)!;
-      if (str(credentials.auth_token)) env.TWILIO_AUTH_TOKEN = str(credentials.auth_token)!;
+      if (str(credentials.account_sid)) set('TWILIO_ACCOUNT_SID', str(credentials.account_sid)!);
+      if (str(credentials.auth_token)) set('TWILIO_AUTH_TOKEN', str(credentials.auth_token)!);
       break;
 
     case 'salesforce':
-      if (str(credentials.access_token)) env.SALESFORCE_ACCESS_TOKEN = str(credentials.access_token)!;
-      if (str(config.instance_url)) env.SALESFORCE_INSTANCE_URL = str(config.instance_url)!;
+      if (str(credentials.access_token)) set('SALESFORCE_ACCESS_TOKEN', str(credentials.access_token)!);
+      if (str(config.instance_url)) set('SALESFORCE_INSTANCE_URL', str(config.instance_url)!);
       break;
 
     case 'airtable':
-      if (str(credentials.api_key)) env.AIRTABLE_API_KEY = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set('AIRTABLE_API_KEY', str(credentials.api_key)!);
       break;
 
     case 'hubspot':
-      if (str(credentials.api_key)) env.HUBSPOT_API_KEY = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set('HUBSPOT_API_KEY', str(credentials.api_key)!);
       break;
 
     case 'aws':
-      if (str(credentials.access_key_id)) env.AWS_ACCESS_KEY_ID = str(credentials.access_key_id)!;
-      if (str(credentials.secret_access_key)) env.AWS_SECRET_ACCESS_KEY = str(credentials.secret_access_key)!;
-      if (str(config.region)) env.AWS_REGION = str(config.region)!;
+      if (str(credentials.access_key_id)) set('AWS_ACCESS_KEY_ID', str(credentials.access_key_id)!);
+      if (str(credentials.secret_access_key)) set('AWS_SECRET_ACCESS_KEY', str(credentials.secret_access_key)!);
+      if (str(config.region)) set('AWS_REGION', str(config.region)!);
       break;
 
     case 'postgres': {
@@ -112,8 +118,9 @@ function mapCredentialsToEnvVars(
       const password = str(credentials.password);
       const sslMode = str(config.ssl_mode) || 'require';
       if (host && database && user && password) {
-        env.DATABASE_URL = `postgresql://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}?sslmode=${sslMode}`;
-        env.POSTGRES_URL = env.DATABASE_URL;
+        const url = `postgresql://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}?sslmode=${sslMode}`;
+        set('DATABASE_URL', url);
+        set('POSTGRES_URL', url);
       }
       break;
     }
@@ -126,8 +133,9 @@ function mapCredentialsToEnvVars(
       const user = str(credentials.username);
       const password = str(credentials.password);
       if (host && database && user && password) {
-        env.MYSQL_URL = `mysql://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
-        env.DATABASE_URL = env.MYSQL_URL;
+        const url = `mysql://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
+        set('MYSQL_URL', url);
+        set('DATABASE_URL', url);
       }
       break;
     }
@@ -135,15 +143,15 @@ function mapCredentialsToEnvVars(
     case 'bigquery':
       // BigQuery uses service account JSON
       if (str(credentials.service_account_json)) {
-        env.GOOGLE_APPLICATION_CREDENTIALS_JSON = str(credentials.service_account_json)!;
+        set('GOOGLE_APPLICATION_CREDENTIALS_JSON', str(credentials.service_account_json)!);
       }
-      if (str(config.project_id)) env.BIGQUERY_PROJECT_ID = str(config.project_id)!;
+      if (str(config.project_id)) set('BIGQUERY_PROJECT_ID', str(config.project_id)!);
       break;
 
     default:
       // Generic fallback: use integration type as prefix
       const prefix = integrationType.toUpperCase().replace(/-/g, '_');
-      if (str(credentials.api_key)) env[`${prefix}_API_KEY`] = str(credentials.api_key)!;
+      if (str(credentials.api_key)) set(`${prefix}_API_KEY`, str(credentials.api_key)!);
       break;
   }
 
