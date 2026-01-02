@@ -291,6 +291,16 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     workspaceRoot: string
   ): Promise<void> {
     if (!this.hasR2Config()) return;
+
+    // Ensure container is running before any sandbox operations
+    // This handles the case where container died (version rollout, crash, etc.)
+    try {
+      await sandbox.start();
+    } catch (e) {
+      console.error('[rpc] Failed to ensure container running:', String(e));
+      throw e;
+    }
+
     const marker = await sandbox.exists('/tmp/.r2-synced');
     if (marker.exists) return;
 
