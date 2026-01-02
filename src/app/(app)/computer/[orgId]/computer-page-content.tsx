@@ -39,6 +39,7 @@ import {
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 import type { WorkspaceFileRead, WorkspaceListResponse } from '@/types';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -313,6 +314,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   const [conflictState, setConflictState] = useState<ConflictState | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [monacoReady, setMonacoReady] = useState(false);
+  const [readOnlyHintOpen, setReadOnlyHintOpen] = useState(false);
 
   const monacoRef = useRef<Monaco | null>(null);
   const editorRef = useRef<monacoEditor.editor.IStandaloneCodeEditor | null>(null);
@@ -336,6 +338,8 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   );
   const restoredTabsRef = useRef(false);
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
+  const readOnlyHintTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editingEnabledRef = useRef(editingEnabled);
 
   const copyToClipboard = useCallback(async (value: string) => {
     try {
@@ -355,6 +359,17 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     } catch (error) {
       console.warn('Failed to copy to clipboard', error);
     }
+  }, []);
+
+  const showReadOnlyHint = useCallback(() => {
+    if (editingEnabledRef.current) return;
+    setReadOnlyHintOpen(true);
+    if (readOnlyHintTimeoutRef.current) {
+      clearTimeout(readOnlyHintTimeoutRef.current);
+    }
+    readOnlyHintTimeoutRef.current = setTimeout(() => {
+      setReadOnlyHintOpen(false);
+    }, 2000);
   }, []);
 
   useEffect(() => {
@@ -383,6 +398,21 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   useEffect(() => {
     activePathRef.current = activePath;
   }, [activePath]);
+
+  useEffect(() => {
+    editingEnabledRef.current = editingEnabled;
+    if (editingEnabled) {
+      setReadOnlyHintOpen(false);
+    }
+  }, [editingEnabled]);
+
+  useEffect(() => {
+    return () => {
+      if (readOnlyHintTimeoutRef.current) {
+        clearTimeout(readOnlyHintTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     dragOverPathRef.current = dragOverPath;
@@ -733,6 +763,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
 
       if (editorRef.current && activePathRef.current === path) {
         editorRef.current.setModel(model);
+        editorRef.current.focus();
       }
     },
     [syncDirtyState]
@@ -1264,10 +1295,11 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   const editorOptions = useMemo<monacoEditor.editor.IStandaloneEditorConstructionOptions>(
     () => ({
       readOnly: !editingEnabled,
+      readOnlyMessage: { value: '' },
       minimap: { enabled: false },
       fontSize: 13,
       lineNumbers: 'on',
-      wordWrap: 'off',
+      wordWrap: 'on',
       scrollBeyondLastLine: false,
       smoothScrolling: true,
       quickSuggestions: false,
@@ -1291,8 +1323,11 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   useEffect(() => {
     if (!activeTab || !editorRef.current) return;
     const model = modelsRef.current.get(activeTab.path);
-    if (model && editorRef.current.getModel() !== model) {
-      editorRef.current.setModel(model);
+    if (model) {
+      if (editorRef.current.getModel() !== model) {
+        editorRef.current.setModel(model);
+      }
+      editorRef.current.focus();
     }
   }, [activeTab]);
 
@@ -1913,31 +1948,50 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                 </div>
               )}
               {activeTab && !activeTab.isTooLarge && !activeTab.isBinary && (
-                <MonacoEditor
-                  theme={resolvedTheme === 'dark' ? 'vs-dark' : 'vs'}
-                  language={getLanguageForPath(activeTab.path)}
-                  options={editorOptions}
-                  height="100%"
-                  onMount={(editor, monaco) => {
+                <div className="relative h-full">
+                  {readOnlyHintOpen && !editingEnabled && (
+                    <div className="pointer-events-none absolute right-4 top-4 z-10">
+                      <Alert className="w-[240px] border-border/60 bg-background/95 shadow-lg">
+                        <AlertTitle>Read-only</AlertTitle>
+                        <AlertDescription>
+                          Enable editing to modify files.
+                        </AlertDescription>
+                      </Alert>
+                    </div>
+                  )}
+                  <MonacoEditor
+                    theme={resolvedTheme === 'dark' ? 'vs-dark' : 'vs'}
+                    language={getLanguageForPath(activeTab.path)}
+                    options={editorOptions}
+                    height="100%"
+                    onMount={(editor, monaco) => {
                     editorRef.current = editor;
                     monacoRef.current = monaco;
                     setMonacoReady(true);
-                    editor.addCommand(
-                      monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-                      () => {
-                        const path = activePathRef.current;
-                        if (path) {
-                          void saveFileRef.current(path);
+                    const readOnlyContribution = editor.getContribution(
+                      'editor.contrib.readOnlyMessageController'
+                    ) as { dispose?: () => void } | null;
+                    readOnlyContribution?.dispose?.();
+                    editor.onDidAttemptReadOnlyEdit(() => {
+                      showReadOnlyHint();
+                    });
+                      editor.addCommand(
+                        monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+                        () => {
+                          const path = activePathRef.current;
+                          if (path) {
+                            void saveFileRef.current(path);
+                          }
                         }
+                      );
+                      const model = modelsRef.current.get(activeTab.path);
+                      if (model) {
+                        editor.setModel(model);
                       }
-                    );
-                    const model = modelsRef.current.get(activeTab.path);
-                    if (model) {
-                      editor.setModel(model);
-                    }
-                  }}
-                  className="h-full w-full"
-                />
+                    }}
+                    className="h-full w-full"
+                  />
+                </div>
               )}
             </div>
           </div>
