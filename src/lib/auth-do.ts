@@ -338,6 +338,13 @@ export async function deleteOrgIntegration(orgId: string, integrationId: string)
   await rpc.deleteOrgIntegration(orgId, integrationId);
 }
 
+export async function restartOrgContainers(
+  orgId: string
+): Promise<{ restarted: number; failed: number }> {
+  const rpc = await getRpc();
+  return rpc.restartOrgContainers(orgId);
+}
+
 // API Token functions
 export async function createOrgApiToken(
   orgId: string,

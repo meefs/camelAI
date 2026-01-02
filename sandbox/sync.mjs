@@ -22,18 +22,15 @@ const MAX_CONCURRENT_UPLOADS = 4; // Parallel part uploads
 
 const SNAPSHOT_KEY = 'workspace.tar.zst';
 
-// Check if required binaries are available
+// Check if tar with zstd support is available
 function checkBinaries() {
-  const binaries = ['tar', 'zstd'];
-  for (const bin of binaries) {
-    try {
-      execSync(`which ${bin}`, { stdio: 'pipe' });
-    } catch {
-      console.error(`[sync] Missing required binary: ${bin}`);
-      return false;
-    }
+  try {
+    execSync('tar --zstd -cf /dev/null --files-from /dev/null 2>/dev/null', { stdio: 'pipe' });
+    return true;
+  } catch {
+    console.error('[sync] tar with --zstd support not available');
+    return false;
   }
-  return true;
 }
 
 function getConfig() {
@@ -98,7 +95,7 @@ async function clearDirectory(targetDir) {
 
 async function download(targetDir) {
   if (!checkBinaries()) {
-    throw new Error('Required binaries (tar, zstd) not available');
+    throw new Error('tar with --zstd support not available');
   }
 
   const config = getConfig();
@@ -128,14 +125,11 @@ async function download(targetDir) {
 
   const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
 
-  // Pipe: S3 stream -> zstd -d -> tar x
-  const zstd = spawn('zstd', ['-d'], { stdio: ['pipe', 'pipe', 'inherit'] });
-  const tar = spawn('tar', ['xf', '-', '-C', targetDir], { stdio: ['pipe', 'inherit', 'inherit'] });
-
-  zstd.stdout.pipe(tar.stdin);
+  // Pipe: S3 stream -> tar --zstd -x
+  const tar = spawn('tar', ['--zstd', '-xf', '-', '-C', targetDir], { stdio: ['pipe', 'inherit', 'inherit'] });
 
   await Promise.all([
-    pipeline(response.Body, zstd.stdin),
+    pipeline(response.Body, tar.stdin),
     new Promise((resolve, reject) => {
       tar.on('close', (code) => {
         if (code === 0 || code === 1) {
@@ -144,10 +138,6 @@ async function download(targetDir) {
         return reject(new Error(`tar exited with ${code}`));
       });
       tar.on('error', reject);
-    }),
-    new Promise((resolve, reject) => {
-      zstd.on('close', (code) => code === 0 ? resolve() : reject(new Error(`zstd exited with ${code}`)));
-      zstd.on('error', reject);
     }),
   ]);
 
@@ -158,7 +148,7 @@ async function download(targetDir) {
 
 async function upload(sourceDir) {
   if (!checkBinaries()) {
-    throw new Error('Required binaries (tar, zstd) not available');
+    throw new Error('tar with --zstd support not available');
   }
 
   // Check source directory exists
@@ -181,11 +171,16 @@ async function upload(sourceDir) {
 
   const startTime = Date.now();
 
-  // Pipe: tar c -> zstd -> multipart upload
-  const tar = spawn('tar', ['--warning=no-file-changed', '--warning=no-file-removed', '--ignore-failed-read', 'cf', '-', '-C', sourceDir, '.'], { stdio: ['inherit', 'pipe', 'pipe'] });
-  const zstd = spawn('zstd', ['-1', '-T0'], { stdio: ['pipe', 'pipe', 'pipe'] });
-
-  tar.stdout.pipe(zstd.stdin);
+  // Pipe: tar --zstd -> multipart upload
+  const tar = spawn('tar', [
+    '--zstd',
+    '--warning=no-file-changed',
+    '--warning=no-file-removed',
+    '--ignore-failed-read',
+    '-cf', '-',
+    '-C', sourceDir,
+    '.'
+  ], { stdio: ['inherit', 'pipe', 'pipe'] });
 
   const client = getS3Client(config);
   const key = `${config.prefix}${SNAPSHOT_KEY}`;
@@ -206,11 +201,9 @@ async function upload(sourceDir) {
   let totalBytes = 0;
   let activeUploads = 0;
 
-  // Track exits from tar/zstd
+  // Track exit from tar
   let tarExited = false;
-  let zstdExited = false;
   tar.on('exit', () => { tarExited = true; });
-  zstd.on('exit', () => { zstdExited = true; });
 
   // Upload a part with concurrency limiting
   const uploadPart = async (partNum, data) => {
@@ -236,7 +229,7 @@ async function upload(sourceDir) {
   try {
     // Stream chunks and upload as parts when we hit 5MB
     // R2 requires all non-trailing parts to be EXACTLY the same size
-    for await (const chunk of zstd.stdout) {
+    for await (const chunk of tar.stdout) {
       currentBuffer.push(chunk);
       currentSize += chunk.length;
       totalBytes += chunk.length;
@@ -255,24 +248,17 @@ async function upload(sourceDir) {
       }
     }
 
-    // Wait for processes to finish
-    await Promise.all([
-      new Promise((resolve, reject) => {
-        if (tarExited) return resolve();
-        tar.on('close', (code) => {
-          if (code === 0 || code === 1) {
-            return resolve();
-          }
-          return reject(new Error(`tar exited with ${code}`));
-        });
-        tar.on('error', reject);
-      }),
-      new Promise((resolve, reject) => {
-        if (zstdExited) return resolve();
-        zstd.on('close', (code) => code === 0 ? resolve() : reject(new Error(`zstd exited with ${code}`)));
-        zstd.on('error', reject);
-      }),
-    ]);
+    // Wait for tar to finish
+    await new Promise((resolve, reject) => {
+      if (tarExited) return resolve();
+      tar.on('close', (code) => {
+        if (code === 0 || code === 1) {
+          return resolve();
+        }
+        return reject(new Error(`tar exited with ${code}`));
+      });
+      tar.on('error', reject);
+    });
 
     // Wait for all in-flight uploads to complete
     await Promise.all(uploadPromises);
@@ -331,7 +317,6 @@ async function upload(sourceDir) {
       UploadId: uploadId,
     })).catch(() => {});
     tar.kill('SIGTERM');
-    zstd.kill('SIGTERM');
     throw err;
   }
 }

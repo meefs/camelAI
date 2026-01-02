@@ -1,8 +1,8 @@
 /**
  * Integration Execution Library
  *
- * HTTP-based integrations use the transparent proxy route:
- *   /api/orgs/[orgId]/integrations/[integrationId]/proxy/[...path]
+ * Integration credentials are passed directly to containers as environment
+ * variables (e.g., STRIPE_API_KEY, OPENAI_API_KEY, DATABASE_URL).
  *
  * Special handlers exist for:
  * - AWS (requires SigV4 signing)

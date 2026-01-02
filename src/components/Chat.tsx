@@ -186,7 +186,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [deployedApp, setDeployedApp] = useState<string | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [iframeKey, setIframeKey] = useState(0);
   const [iframeLoading, setIframeLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -323,6 +322,9 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
+    if (!id) {
+      return;
+    }
     // Clear any pending reconnect
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -345,14 +347,28 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       reconnectAttempts.current = 0;
     }
 
-    // Fetch existing messages from REST API (merge on reconnect to preserve local messages)
-    fetchMessages(id, isReconnect);
+    // Fetch existing messages from REST API unless we have a pending first message for this thread
+    let shouldFetchMessages = true;
+    const pendingPayload = sessionStorage.getItem('pendingMessage');
+    if (pendingPayload) {
+      try {
+        const parsed = JSON.parse(pendingPayload) as { threadId?: string };
+        if (parsed.threadId === id) {
+          shouldFetchMessages = false;
+        }
+      } catch {
+        // Ignore malformed pending payload and continue to fetch
+      }
+    }
+    if (shouldFetchMessages) {
+      fetchMessages(id, isReconnect);
+    }
 
-    // WebSocket is handled by the worker at /ws/{threadId} on the same origin as the page.
+    // WebSocket connects at /ws/{org} - one container per org handles all threads
     const wsHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const orgIdForConnection = resolvedOrgId;
-    const wsUrl = `${protocol}//${wsHost}/ws/${id}?org=${orgIdForConnection}`;
+    const wsUrl = `${protocol}//${wsHost}/ws/${orgIdForConnection}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -396,10 +412,10 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         let storedMessage = pendingMessageRef.current;
         const storedPayload = sessionStorage.getItem('pendingMessage');
         if (storedPayload) {
-          sessionStorage.removeItem('pendingMessage');
           try {
-            const parsed = JSON.parse(storedPayload) as { message?: string; orgId?: string };
-            if (parsed.orgId === resolvedOrgId && typeof parsed.message === 'string') {
+            const parsed = JSON.parse(storedPayload) as { message?: string; orgId?: string; threadId?: string };
+            if (parsed.orgId === resolvedOrgId && parsed.threadId === id && typeof parsed.message === 'string') {
+              sessionStorage.removeItem('pendingMessage');
               storedMessage = parsed.message;
             }
           } catch (e) {
@@ -431,10 +447,11 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
           setTimeout(fetchThreads, 500);
         }
       } else if (data.type === 'session' && typeof data.sessionId === 'string') {
-        if (sessionIdRef.current && sessionIdRef.current !== data.sessionId) {
+        const newSessionId = data.sessionId;
+        if (sessionIdRef.current && sessionIdRef.current !== newSessionId) {
           lastEventIdRef.current = 0;
         }
-        sessionIdRef.current = data.sessionId;
+        sessionIdRef.current = newSessionId;
         if (threadId) {
           persistSessionState(threadId);
         }
@@ -595,34 +612,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         setError(data.error || 'An unknown error occurred');
         setStreaming({ content: [], isStreaming: false });
         setLoading(false);
-      } else if (data.type === 'deploy_success') {
-        // Wrangler deploy completed - show the deployed app in iframe
-        setDeployedApp(data.scriptName);
-        setPreviewUrl(null);
-        setIframeLoading(true);
-        setIframeKey(prev => prev + 1);
-
-        // Auto-reload after 3 seconds to handle worker propagation delay
-        if (iframeRetryRef.current) {
-          clearTimeout(iframeRetryRef.current);
-        }
-        iframeRetryRef.current = setTimeout(() => {
-          setIframeKey(prev => prev + 1);
-        }, 3000);
-      } else if (data.type === 'preview_ready' && typeof data.url === 'string') {
-        // Local preview exposed - show it in iframe
-        setPreviewUrl(data.url);
-        setDeployedApp(null);
-        setIframeLoading(true);
-        setIframeKey(prev => prev + 1);
-
-        if (iframeRetryRef.current) {
-          clearTimeout(iframeRetryRef.current);
-        }
-        iframeRetryRef.current = setTimeout(() => {
-          setIframeKey(prev => prev + 1);
-        }, 3000);
-      }
     };
 
     ws.onclose = () => {
@@ -688,9 +677,12 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     };
   }, []);
 
+  // Check if we should show the chat UI
+  const shouldShowChat = Boolean(threadId);
+
   // Connect when threadId changes
   useEffect(() => {
-    if (!threadId || !resolvedOrgId) {
+    if (!shouldShowChat || !resolvedOrgId) {
       // No threadId or org - cleanup any existing connection
       if (connectedThreadIdRef.current) {
         connectionIdRef.current++;
@@ -735,26 +727,28 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     }
 
     // Connect to the new thread/org
-    connectedThreadIdRef.current = threadId;
+    connectedThreadIdRef.current = threadId ?? null;
     connectedOrgIdRef.current = nextOrgId;
-    connectWebSocketRef.current?.(threadId);
+    if (threadId) {
+      connectWebSocketRef.current?.(threadId);
+    }
 
     // No cleanup function - we handle cleanup explicitly when threadId changes
     // This prevents StrictMode from closing connections on remount
     // Browser closes WebSocket automatically on navigation
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, resolvedOrgId]);
+  }, [threadId, shouldShowChat, resolvedOrgId]);
 
   // Reconnect on visibility change (tab becomes visible)
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && threadId && resolvedOrgId) {
+      if (document.visibilityState === 'visible' && shouldShowChat && resolvedOrgId) {
         // Check if WebSocket is dead
         const needsReconnect = !wsRef.current ||
           wsRef.current.readyState === WebSocket.CLOSED ||
           wsRef.current.readyState === WebSocket.CLOSING;
 
-        if (needsReconnect) {
+        if (needsReconnect && threadId) {
           // Clear any stale reconnect timeout from before tab suspension
           // (Safari suspends JS in background tabs, so pending timeouts are stale)
           if (reconnectTimeoutRef.current) {
@@ -769,7 +763,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [threadId, resolvedOrgId]);
+  }, [threadId, shouldShowChat, resolvedOrgId]);
 
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {
@@ -824,23 +818,27 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
     setIsCreatingThread(true);
     const msg = welcomeInput.trim();
+    const newThreadId = crypto.randomUUID();
     // Store in sessionStorage to survive component remount during navigation
-    sessionStorage.setItem('pendingMessage', JSON.stringify({ message: msg, orgId: resolvedOrgId }));
+    sessionStorage.setItem('pendingMessage', JSON.stringify({ message: msg, orgId: resolvedOrgId, threadId: newThreadId }));
     setWelcomeInput('');
 
     try {
-      const res = await fetch(`/api/threads`, {
+      const res = await fetch('/api/threads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+        body: JSON.stringify({ session_id: newThreadId }),
       });
+      if (!res.ok) {
+        throw new Error(`Failed to create thread (${res.status})`);
+      }
       const thread = await res.json() as Thread;
-      setThreads([thread, ...threads]);
-      router.push(`/chat/${thread.id}`);
-    } catch (error) {
-      console.error('Failed to create thread:', error);
+      router.push(`/chat/${thread?.id || newThreadId}`);
+    } catch (err) {
       sessionStorage.removeItem('pendingMessage');
       setIsCreatingThread(false);
+      setError('Failed to start a new chat');
+      console.error('Failed to create thread:', err);
     }
   }
 
@@ -855,7 +853,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   }
 
   function sendMessage() {
-    if (!input.trim() || !threadId || loading || !resolvedOrgId) {
+    if (!input.trim() || !shouldShowChat || loading || !resolvedOrgId) {
       return;
     }
 
@@ -868,7 +866,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     // Add user message to local state immediately
     const userMsg: Message = {
       id: `local_${Date.now()}`,
-      thread_id: threadId,
+      thread_id: threadId || '',
       role: 'user',
       content: userMessage,
       created_at: Date.now(),
@@ -897,7 +895,9 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
       // If not connected at all, trigger reconnect
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        connectWebSocketRef.current?.(threadId, true);
+        if (threadId) {
+          connectWebSocketRef.current?.(threadId, true);
+        }
       }
       // If connected but not ready, the message will be sent when ready event arrives
     }
@@ -906,12 +906,12 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   return (
     <TooltipProvider>
       <>
-        <PageHeader breadcrumbs={[{ label: threadId ? 'Chat' : 'New Chat' }]} />
+        <PageHeader breadcrumbs={[{ label: shouldShowChat ? 'Chat' : 'Home' }]} />
 
-        {threadId ? (
+        {shouldShowChat ? (
           <div className="flex-1 flex min-h-0">
             {/* Chat Panel */}
-            <div className={cn("flex flex-col min-h-0", (previewUrl || deployedApp) ? "w-1/2" : "flex-1")}>
+            <div className={cn("flex flex-col min-h-0", deployedApp ? "w-1/2" : "flex-1")}>
             {/* Chat Body - Single Scroll Container */}
             <div
               ref={scrollContainerRef}
@@ -1119,7 +1119,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
             </div>
 
             {/* Deployed App Preview */}
-            {(previewUrl || deployedApp) && (
+            {deployedApp && (
               <div className="w-1/2 border-l border-border flex flex-col bg-background">
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border">
                   <div className="flex items-center gap-2">
@@ -1128,15 +1128,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                     ) : (
                       <div className="w-2 h-2 bg-green-500 rounded-full" />
                     )}
-                    <span className="text-sm font-medium">
-                      {previewUrl ? (() => {
-                        try {
-                          return new URL(previewUrl).host;
-                        } catch {
-                          return previewUrl;
-                        }
-                      })() : `${deployedApp}.chiridion.ai`}
-                    </span>
+                    <span className="text-sm font-medium">{deployedApp}.chiridion.ai</span>
                     {iframeLoading && <span className="text-xs text-muted-foreground">Loading...</span>}
                   </div>
                   <div className="flex items-center gap-1">
@@ -1163,7 +1155,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                           asChild
                         >
                           <a
-                            href={previewUrl || `https://${deployedApp}.chiridion.ai`}
+                            href={`https://${deployedApp}.chiridion.ai`}
                             target="_blank"
                             rel="noopener noreferrer"
                           >
@@ -1184,7 +1176,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                               iframeRetryRef.current = null;
                             }
                             setDeployedApp(null);
-                            setPreviewUrl(null);
                             setIframeLoading(true);
                           }}
                         >
@@ -1210,7 +1201,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                   )}
                   <iframe
                     key={iframeKey}
-                    src={previewUrl || `https://${deployedApp}.chiridion.ai`}
+                    src={`https://${deployedApp}.chiridion.ai`}
                     className="w-full h-full bg-white"
                     title="Deployed App Preview"
                     onLoad={() => setIframeLoading(false)}

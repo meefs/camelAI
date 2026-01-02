@@ -1,38 +1,17 @@
 // Custom worker that wraps OpenNext and handles WebSocket + Durable Objects
 // @ts-ignore - .open-next/worker.js is generated at build time
 import openNextHandler from "../../../.open-next/worker.js";
-import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
+import { ChatIndexDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
-import { validateApiToken } from './api-tokens.js';
-import { Sandbox, proxyToSandbox, getSandbox } from '@cloudflare/sandbox';
+import { Sandbox } from '@cloudflare/sandbox';
+import { handleWebSocketUpgrade, type ContainerEnv } from './container.js';
 export { DoRpcService } from './rpc-service.js';
 
 // Export Sandbox as ThreadSandbox to match wrangler.jsonc class_name
 export { Sandbox as ThreadSandbox };
 
-interface Env extends ChatEnv, AuthEnv {
-  ASSETS: Fetcher;
-  NEXTJS_ENV?: string;
-  CF_API_TOKEN?: string;
-  CF_ACCOUNT_ID?: string;
-  CF_DISPATCH_NAMESPACE?: string;
-  PLATFORM_SCRIPT_TOKENS?: KVNamespace;
-}
-
-const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
-const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
-const CHIRIDION_PREVIEW_TOKEN_HEADER = 'X-Chiridion-Preview-Token';
 const SESSION_COOKIE_NAME = 'chiridion_session';
-
-function json(data: unknown, init?: ResponseInit): Response {
-  return new Response(JSON.stringify(data), {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-}
+const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
 
 function getCookieValue(cookieHeader: string | null, name: string): string | null {
   if (!cookieHeader) return null;
@@ -43,80 +22,25 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
   return null;
 }
 
-function getSandboxIdForOrg(orgId: string): string {
-  const safeOrg = orgId.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
-  return `org-${safeOrg}`.slice(0, 63);
+interface Env extends ChatEnv, AuthEnv, ContainerEnv {
+  ASSETS: Fetcher;
+  NEXTJS_ENV?: string;
+  CF_API_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
+  PLATFORM_SCRIPT_TOKENS?: KVNamespace;
 }
 
-async function handleSandboxPreview(request: Request, env: Env): Promise<Response> {
-  if (request.method !== 'POST') {
-    return json({ error: 'Method Not Allowed' }, { status: 405 });
-  }
+const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
 
-  const previewToken = request.headers.get(CHIRIDION_PREVIEW_TOKEN_HEADER);
-  const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
-  const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
-  const sessionId = headerSessionId || cookieSessionId;
-
-  let orgId: string | null = null;
-
-  if (previewToken) {
-    const tokenData = await validateApiToken(env.API_TOKENS, previewToken);
-    if (!tokenData || !tokenData.scopes.includes('preview')) {
-      return json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    orgId = tokenData.org_id;
-  } else if (sessionId) {
-    const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
-    const session = await sessionStub.getData();
-    if (!session) {
-      return json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    orgId = session.org_id;
-  } else {
-    return json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  let body: { threadId?: string; port?: number };
-  try {
-    body = await request.json() as { threadId?: string; port?: number };
-  } catch {
-    return json({ error: 'Invalid JSON body' }, { status: 400 });
-  }
-
-  const threadId = body.threadId;
-  const port = body.port;
-  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
-    return json({ error: 'Invalid port' }, { status: 400 });
-  }
-  if (threadId) {
-    const indexStub = env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(orgId));
-    const thread = await indexStub.getThread(threadId);
-    if (!thread) {
-      return json({ error: 'Thread not found' }, { status: 404 });
-    }
-  } else if (!previewToken) {
-    return json({ error: 'Missing threadId' }, { status: 400 });
-  }
-
-  const sandboxId = getSandboxIdForOrg(orgId);
-  const sandbox = getSandbox(env.SANDBOX, sandboxId, { normalizeId: true });
-  const sandboxDoId = env.SANDBOX.idFromName(sandboxId).toString();
-  const hostname = new URL(request.url).hostname;
-
-  try {
-    console.log('[sandbox-preview] resolved sandbox', { orgId, sandboxId, sandboxDoId, hostname });
-    const existing = await sandbox.getExposedPorts(hostname);
-    const active = existing.find((entry) => entry.port === port && entry.status === 'active');
-    if (active) {
-      return json({ url: active.url, port: active.port });
-    }
-
-    const exposure = await sandbox.exposePort(port, { hostname });
-    return json({ url: exposure.url, port: exposure.port });
-  } catch (err) {
-    return json({ error: String(err) }, { status: 500 });
-  }
+function json(data: unknown, init?: ResponseInit): Response {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  });
 }
 
 const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
@@ -398,44 +322,12 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     });
   }
 
-  // Detect successful deploy (PUT to dispatch script upload endpoint)
-  if (resp.ok && method === 'PUT' && DISPATCH_SCRIPT_UPLOAD.test(pathname)) {
-    console.log('[cf-api-proxy] deploy success detected', {
-      method,
-      path: pathname,
-      scriptName: scriptNameForToken,
-    });
-
-    // Look up threadId from deploy token and notify the DO
-    const threadId = await tokenKv.get(`deploy_token_thread:${proxyToken}`);
-    if (threadId) {
-      try {
-        const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-        await threadStub.notifyDeploySuccess(scriptNameForToken);
-        console.log('[cf-api-proxy] notified thread of deploy success:', threadId);
-      } catch (e) {
-        console.error('[cf-api-proxy] failed to notify thread:', e);
-      }
-    } else {
-      console.warn('[cf-api-proxy] no threadId found for deploy token');
-    }
-  }
-
   return new Response(respBody, { status: resp.status, headers: resp.headers });
 }
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-
-    const sandboxProxy = await proxyToSandbox(request, { Sandbox: env.SANDBOX });
-    if (sandboxProxy) {
-      return sandboxProxy;
-    }
-
-    if (url.pathname === '/api/sandbox/preview') {
-      return handleSandboxPreview(request, env);
-    }
 
     // Cloudflare API proxy for Wrangler: set `CLOUDFLARE_API_BASE_URL` to `${origin}/client/v4`.
     if (url.pathname.startsWith('/client/v4/')) {
@@ -446,13 +338,36 @@ export default {
       }
     }
 
-    // Handle WebSocket upgrade requests at /ws/{threadId}
+    // Handle WebSocket upgrade requests at /ws/{org}
+    // The org is used to route to the correct container (one per org)
+    // Thread/session management happens in the WebSocket protocol
     const wsMatch = url.pathname.match(/^\/ws\/([^\/]+)$/);
     if (wsMatch && request.headers.get('Upgrade') === 'websocket') {
-      const threadId = wsMatch[1];
-      const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-      // Forward the upgrade request directly. The DO reads the external origin from forwarded headers.
-      return threadStub.fetch(request);
+      const orgFromPath = wsMatch[1];
+
+      // Authenticate the request
+      const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
+      const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
+      const sessionId = headerSessionId || cookieSessionId;
+
+      if (!sessionId) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
+      const session = await sessionStub.getData();
+      if (!session) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      // Use the org from session (ignore path org for security)
+      const org = session.org_id;
+      if (!org) {
+        return new Response('No organization selected', { status: 400 });
+      }
+
+      // Handle WebSocket upgrade with container management
+      return handleWebSocketUpgrade(request, env, org);
     }
 
     // Pass all other requests to OpenNext/Next.js if dev env var is not set
@@ -464,5 +379,5 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 // Export Durable Object classes
-export { ChatIndexDO, ChatThreadDO };
+export { ChatIndexDO };
 export { SessionDO, UserDO, OrgDO };

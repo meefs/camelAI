@@ -1,5 +1,6 @@
 FROM docker.io/cloudflare/sandbox:0.6.6-python
 
+# Version: 2026-01-01-v9 - run as root, su to claude for ws-server
 # Must match the @cloudflare/sandbox npm package version.
 
 # Expose Sandbox control plane + app ports
@@ -27,9 +28,8 @@ WORKDIR /app
 RUN bun install
 RUN chmod +x /app/run-driver.sh /app/run-ws-server.sh && chmod -R a+rX /app
 
-# Create non-root user for running the Claude agent
+# Create non-root user for Claude agent (ws-server drops privileges to this user)
 RUN if ! id -u claude >/dev/null 2>&1; then useradd -m -s /bin/bash -u 1000 claude; fi && \
     chown -R claude:claude /home/claude
 
-USER claude
 WORKDIR /home/claude

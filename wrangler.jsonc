@@ -63,7 +63,6 @@
 	],
 	"durable_objects": {
 		"bindings": [
-			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 			{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
 			{ "name": "SESSION", "class_name": "SessionDO" },
@@ -76,7 +75,8 @@
 		{ "tag": "v2", "deleted_classes": ["ChatDurableObject"] },
 		{ "tag": "v3", "new_sqlite_classes": ["ChatThreadDO", "ChatIndexDO"] },
 		{ "tag": "v4", "new_sqlite_classes": ["ThreadSandbox"] },
-		{ "tag": "v5", "new_sqlite_classes": ["SessionDO", "UserDO", "OrgDO"] }
+		{ "tag": "v5", "new_sqlite_classes": ["SessionDO", "UserDO", "OrgDO"] },
+		{ "tag": "v6", "deleted_classes": ["ChatThreadDO"] }
 	],
 	"env": {
 		"prod": {
@@ -173,7 +173,6 @@
 			],
 			"durable_objects": {
 				"bindings": [
-					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
 					{ "name": "SESSION", "class_name": "SessionDO" },
@@ -239,7 +238,6 @@
 			],
 			"durable_objects": {
 				"bindings": [
-					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
 					{ "name": "SESSION", "class_name": "SessionDO" },
@@ -305,7 +303,6 @@
 			],
 			"durable_objects": {
 				"bindings": [
-					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
 					{ "name": "SESSION", "class_name": "SessionDO" },

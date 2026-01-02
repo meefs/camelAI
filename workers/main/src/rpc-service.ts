@@ -2,6 +2,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { getSandbox } from '@cloudflare/sandbox';
 import type { AuthEnv, SessionData, UserProfile, OrgIntegrationRecord } from './auth';
 import type { ChatEnv } from './durable-objects';
+import { getOrgSandbox } from './container';
 import type {
   Message,
   Organization,
@@ -22,7 +23,7 @@ import type {
   PaginatedResult,
   PaginationParams,
 } from '../../../src/types';
-import { getIntegrationDefinition, isProxyable, type ProxyConfig } from '../../../src/lib/integration-registry';
+import { getIntegrationDefinition } from '../../../src/lib/integration-registry';
 import { encryptCredentials, decryptCredentials } from '../../../src/lib/integration-crypto';
 import {
   createApiToken,
@@ -33,14 +34,133 @@ import {
 import { getTempR2Credentials } from './r2-credentials';
 
 /**
- * Configuration returned to callers for making proxied requests.
- * Contains everything needed to build and authenticate the upstream request.
+ * Maps integration type + credential fields to ENV var names.
+ * All vars are prefixed with INT_ to avoid overriding platform keys (e.g., ANTHROPIC_API_KEY).
+ * Returns a Record where keys are ENV var names and values are the credential values.
  */
-export interface IntegrationProxyConfig {
-  baseUrl: string;
-  authHeader: { name: string; value: string } | null;
-  defaultHeaders: Record<string, string>;
-  authType: ProxyConfig['authType'];
+function mapCredentialsToEnvVars(
+  integrationType: string,
+  credentials: Record<string, unknown>,
+  config: Record<string, unknown>
+): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  // Helper to safely get string value
+  const str = (val: unknown): string | null => {
+    if (val === undefined || val === null || val === '') return null;
+    return String(val);
+  };
+
+  // Helper to set env var with INT_ prefix
+  const set = (name: string, value: string) => {
+    env[`INT_${name}`] = value;
+  };
+
+  switch (integrationType) {
+    case 'stripe':
+      if (str(credentials.api_key)) set('STRIPE_API_KEY', str(credentials.api_key)!);
+      if (str(credentials.api_key)) set('STRIPE_SECRET_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'openai':
+      if (str(credentials.api_key)) set('OPENAI_API_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'anthropic':
+      if (str(credentials.api_key)) set('ANTHROPIC_API_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'github':
+      if (str(credentials.api_key)) set('GITHUB_TOKEN', str(credentials.api_key)!);
+      break;
+
+    case 'notion':
+      if (str(credentials.api_key)) set('NOTION_API_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'slack':
+      if (str(credentials.api_key)) set('SLACK_BOT_TOKEN', str(credentials.api_key)!);
+      break;
+
+    case 'linear':
+      if (str(credentials.api_key)) set('LINEAR_API_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'sendgrid':
+      if (str(credentials.api_key)) set('SENDGRID_API_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'twilio':
+      if (str(credentials.account_sid)) set('TWILIO_ACCOUNT_SID', str(credentials.account_sid)!);
+      if (str(credentials.auth_token)) set('TWILIO_AUTH_TOKEN', str(credentials.auth_token)!);
+      break;
+
+    case 'salesforce':
+      if (str(credentials.access_token)) set('SALESFORCE_ACCESS_TOKEN', str(credentials.access_token)!);
+      if (str(config.instance_url)) set('SALESFORCE_INSTANCE_URL', str(config.instance_url)!);
+      break;
+
+    case 'airtable':
+      if (str(credentials.api_key)) set('AIRTABLE_API_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'hubspot':
+      if (str(credentials.api_key)) set('HUBSPOT_API_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'aws':
+      if (str(credentials.access_key_id)) set('AWS_ACCESS_KEY_ID', str(credentials.access_key_id)!);
+      if (str(credentials.secret_access_key)) set('AWS_SECRET_ACCESS_KEY', str(credentials.secret_access_key)!);
+      if (str(config.region)) set('AWS_REGION', str(config.region)!);
+      break;
+
+    case 'postgres': {
+      // Build DATABASE_URL from config + credentials
+      const host = str(config.host);
+      const port = str(config.port) || '5432';
+      const database = str(config.database);
+      const user = str(credentials.username);
+      const password = str(credentials.password);
+      const sslMode = str(config.ssl_mode) || 'require';
+      if (host && database && user && password) {
+        const url = `postgresql://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}?sslmode=${sslMode}`;
+        set('DATABASE_URL', url);
+        set('POSTGRES_URL', url);
+      }
+      break;
+    }
+
+    case 'mysql': {
+      // Build MYSQL_URL from config + credentials
+      const host = str(config.host);
+      const port = str(config.port) || '3306';
+      const database = str(config.database);
+      const user = str(credentials.username);
+      const password = str(credentials.password);
+      if (host && database && user && password) {
+        const url = `mysql://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
+        set('MYSQL_URL', url);
+        set('DATABASE_URL', url);
+      }
+      break;
+    }
+
+    case 'bigquery':
+      // BigQuery uses service account JSON
+      if (str(credentials.service_account_json)) {
+        set('GOOGLE_APPLICATION_CREDENTIALS_JSON', str(credentials.service_account_json)!);
+      }
+      if (str(config.project_id)) set('BIGQUERY_PROJECT_ID', str(config.project_id)!);
+      break;
+
+    default:
+      // Generic fallback: use integration type as prefix
+      const prefix = integrationType.toUpperCase().replace(/-/g, '_');
+      if (str(credentials.api_key)) set(`${prefix}_API_KEY`, str(credentials.api_key)!);
+      break;
+  }
+
+  return env;
 }
 
 interface DoRpcEnv extends AuthEnv, ChatEnv {
@@ -563,8 +683,8 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         const indexStub = getIndexStub(this.env, orgId);
         const thread = await indexStub.getThread(threadId);
         if (thread) {
-          const threadStub = getThreadStub(this.env, threadId);
-          const messages = await threadStub.getMessages();
+          // Read messages from container
+          const messages = await this.getMessages(threadId, orgId);
           return { thread, messages, org_id: orgId };
         }
         return null;
@@ -892,9 +1012,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     org: string,
     title: string | undefined,
     projectId: string,
-    createdBy?: string
+    createdBy?: string,
+    sessionId?: string
   ): Promise<Thread> {
-    return getIndexStub(this.env, org).createThread(title, projectId, createdBy);
+    return getIndexStub(this.env, org).createThread(title, projectId, createdBy, sessionId);
   }
 
   async getThread(id: string, org: string): Promise<Thread | null> {
@@ -906,18 +1027,84 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async deleteThread(id: string, org: string): Promise<void> {
-    await getThreadStub(this.env, id).deleteAllMessages();
+    // Messages are stored in container JSONL, not in the DO
+    // Just delete from the index
     await getIndexStub(this.env, org).deleteThread(id);
   }
 
-  async getMessages(threadId: string): Promise<Message[]> {
-    return getThreadStub(this.env, threadId).getMessages();
-  }
+  async getMessages(threadId: string, org: string): Promise<Message[]> {
+    // Messages are read from container's Claude JSONL file
+    // threadId is the Claude session_id
+    try {
+      const sandbox = getOrgSandbox(this.env, org);
 
-  async addMessage(threadId: string, role: string, content: string, org: string): Promise<Message> {
-    const msg = await getThreadStub(this.env, threadId).addMessage(role, content);
-    await getIndexStub(this.env, org).touchThread(threadId);
-    return msg;
+      // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
+      const jsonlPath = `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`;
+
+      // Check if file exists
+      const exists = await sandbox.exists(jsonlPath);
+      if (!exists.exists) {
+        return [];
+      }
+
+      // Read the JSONL file
+      const file = await sandbox.readFile(jsonlPath);
+      if (!file.content?.trim()) {
+        return [];
+      }
+
+      const lines = file.content.split('\n').filter((line: string) => line.trim());
+      const messages: Message[] = [];
+
+      for (const line of lines) {
+        try {
+          const event = JSON.parse(line);
+
+          // Extract user messages (text only, not tool results)
+          if (event.type === 'user' && event.message?.content) {
+            const firstContent = event.message.content[0];
+            if (firstContent?.type === 'tool_result') {
+              // Tool results render as assistant messages
+              messages.push({
+                id: event.uuid || `tool_result_${messages.length}`,
+                thread_id: threadId,
+                role: 'assistant',
+                content: event.message.content,
+                created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
+              });
+            } else {
+              // Regular user text messages
+              messages.push({
+                id: event.uuid || `user_${messages.length}`,
+                thread_id: threadId,
+                role: 'user',
+                content: event.message.content,
+                created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
+              });
+            }
+          }
+
+          // Extract assistant messages (text and tool_use)
+          if (event.type === 'assistant' && event.message?.content?.length > 0) {
+            messages.push({
+              id: event.uuid || event.message?.id || `assistant_${messages.length}`,
+              thread_id: threadId,
+              role: 'assistant',
+              content: event.message.content,
+              created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
+            });
+          }
+        } catch {
+          // Skip malformed lines
+        }
+      }
+
+      return messages;
+    } catch (e) {
+      // Container may not be running - return empty
+      console.error('[RPC] Error reading messages from container:', e);
+      return [];
+    }
   }
 
   async getProjects(org: string): Promise<Project[]> {
@@ -1216,17 +1403,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     await stub.deleteIntegration(integrationId);
   }
 
-  async getOrgIntegrationCredentials(
-    orgId: string,
-    integrationId: string
-  ): Promise<Record<string, unknown> | null> {
-    const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-    const record = await stub.getIntegration(integrationId);
-    if (!record || !record.credentials_encrypted) return null;
-
-    return decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
-  }
-
   // API Token functions (direct KV access)
   async createOrgApiToken(
     orgId: string,
@@ -1257,122 +1433,51 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   /**
-   * Get proxy configuration for an integration.
-   * Returns everything needed to make an authenticated request to the upstream API.
-   * Called by outbound workers via service binding (no additional auth needed).
+   * Get all enabled integration credentials as ENV vars for an org.
+   * Called when spawning a container to pass integration secrets.
    */
-  async getIntegrationProxyConfig(
-    orgId: string,
-    integrationId: string
-  ): Promise<{ config: IntegrationProxyConfig } | { error: string; status: number }> {
-    // Get integration
+  async getOrgIntegrationEnvVars(orgId: string): Promise<Record<string, string>> {
     const stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-    const record = await stub.getIntegration(integrationId);
+    const records = await stub.getIntegrations();
 
-    if (!record) {
-      return { error: 'Integration not found', status: 404 };
-    }
+    const envVars: Record<string, string> = {};
 
-    if (record.enabled !== 1) {
-      return { error: 'Integration is disabled', status: 400 };
-    }
+    for (const record of records) {
+      // Skip disabled integrations
+      if (record.enabled !== 1) continue;
 
-    // Check if proxyable
-    if (!isProxyable(record.integration_type)) {
-      return {
-        error: `Integration type '${record.integration_type}' does not support HTTP proxy`,
-        status: 400,
-      };
-    }
+      // Skip integrations without credentials
+      if (!record.credentials_encrypted) continue;
 
-    const definition = getIntegrationDefinition(record.integration_type);
-    if (!definition?.proxyConfig) {
-      return { error: 'Proxy configuration not found', status: 500 };
-    }
+      try {
+        const credentials = await decryptCredentials(
+          record.credentials_encrypted,
+          this.env.INTEGRATION_SECRET_KEY
+        );
+        const config = JSON.parse(record.config) as Record<string, unknown>;
 
-    // Get credentials
-    if (!record.credentials_encrypted) {
-      return { error: 'No credentials configured for integration', status: 500 };
-    }
+        // Map credentials to standard ENV var names
+        const mapped = mapCredentialsToEnvVars(record.integration_type, credentials, config);
 
-    const credentials = await decryptCredentials(
-      record.credentials_encrypted,
-      this.env.INTEGRATION_SECRET_KEY
-    );
-
-    const integrationConfig = JSON.parse(record.config) as Record<string, unknown>;
-
-    // Build base URL
-    let baseUrl = definition.proxyConfig.baseUrl;
-    if (!baseUrl && integrationConfig.instance_url) {
-      baseUrl = String(integrationConfig.instance_url);
-    }
-
-    // Build auth header
-    const authHeader = this.buildAuthHeader(definition.proxyConfig, credentials);
-
-    // Build default headers
-    const defaultHeaders: Record<string, string> = {
-      ...(definition.proxyConfig.defaultHeaders || {}),
-    };
-
-    // Add config-based headers
-    if (definition.proxyConfig.configHeaders) {
-      for (const [headerName, configField] of Object.entries(definition.proxyConfig.configHeaders)) {
-        const value = integrationConfig[configField];
-        if (value !== undefined && value !== null && value !== '') {
-          defaultHeaders[headerName] = String(value);
-        }
+        // Merge into result (later integrations override earlier ones if same key)
+        Object.assign(envVars, mapped);
+      } catch (e) {
+        console.error(`Failed to decrypt credentials for integration ${record.id}:`, e);
       }
     }
 
-    return {
-      config: {
-        baseUrl,
-        authHeader,
-        defaultHeaders,
-        authType: definition.proxyConfig.authType,
-      },
-    };
+    return envVars;
   }
 
   /**
-   * Build authorization header based on auth type
+   * Restart the container for an org.
+   * Called when integrations are created/updated/deleted to pick up new credentials.
+   * TODO: Implement container restart - currently containers restart on next connection
    */
-  private buildAuthHeader(
-    proxyConfig: ProxyConfig,
-    credentials: Record<string, unknown>
-  ): { name: string; value: string } | null {
-    const apiKey = (credentials.api_key || credentials.access_token) as string | undefined;
-
-    const headerName =
-      proxyConfig.authType === 'header' && proxyConfig.authHeader
-        ? proxyConfig.authHeader
-        : 'Authorization';
-
-    switch (proxyConfig.authType) {
-      case 'bearer':
-        return apiKey ? { name: headerName, value: `Bearer ${apiKey}` } : null;
-
-      case 'basic': {
-        const key = credentials.api_key as string | undefined;
-        const secret = credentials.api_secret as string | undefined;
-        if (key && secret) {
-          const encoded = btoa(`${key}:${secret}`);
-          return { name: headerName, value: `Basic ${encoded}` };
-        }
-        return null;
-      }
-
-      case 'header':
-        return apiKey ? { name: headerName, value: apiKey } : null;
-
-      case 'query':
-        // Query params are handled differently - return the key for the caller to use
-        return apiKey ? { name: '_query_api_key', value: apiKey } : null;
-
-      default:
-        return apiKey ? { name: headerName, value: `Bearer ${apiKey}` } : null;
-    }
+  async restartOrgContainers(_orgId: string): Promise<{ restarted: number; failed: number }> {
+    // With one container per org, we'd need to kill the sandbox process
+    // For now, the container will pick up new env vars on next WebSocket connection
+    console.log('[RPC] restartOrgContainers not yet implemented for new architecture');
+    return { restarted: 0, failed: 0 };
   }
 }
