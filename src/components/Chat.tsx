@@ -193,6 +193,8 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const previewWsRef = useRef<WebSocket | null>(null);
+  const previewReconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const previewReconnectAttempts = useRef(0);
   const isFirstMessage = useRef(true);
   const reconnectAttempts = useRef(0);
   const currentMessageUuidRef = useRef<string | null>(null); // Track SDK uuid for stable deduplication
@@ -343,6 +345,9 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     }
 
     setReady(false);
+    // Clear streaming state on any connection to prevent stale content
+    setStreaming({ content: [], isStreaming: false });
+    currentMessageUuidRef.current = null;
     if (!isReconnect) {
       isFirstMessage.current = true;
       reconnectAttempts.current = 0;
@@ -677,6 +682,11 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         reconnectTimeoutRef.current = null;
       }
 
+      if (previewReconnectTimeoutRef.current) {
+        clearTimeout(previewReconnectTimeoutRef.current);
+        previewReconnectTimeoutRef.current = null;
+      }
+
       if (iframeRetryRef.current) {
         clearTimeout(iframeRetryRef.current);
         iframeRetryRef.current = null;
@@ -685,23 +695,33 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   }, []);
 
   // Preview WebSocket - connects to /ws/thread/{threadId} for live preview state updates
-  useEffect(() => {
-    if (!threadId) {
-      // No thread - cleanup preview WebSocket
-      if (previewWsRef.current) {
-        previewWsRef.current.close();
-        previewWsRef.current = null;
-      }
-      setDeployedApp(null);
-      return;
+  // Uses a stable connect function to handle reconnection
+  const connectPreviewWebSocket = useCallback((id: string, isReconnect = false) => {
+    // Clear any pending reconnect
+    if (previewReconnectTimeoutRef.current) {
+      clearTimeout(previewReconnectTimeoutRef.current);
+      previewReconnectTimeoutRef.current = null;
     }
 
-    // Connect to preview WebSocket
+    // Close existing connection
+    if (previewWsRef.current) {
+      previewWsRef.current.close();
+      previewWsRef.current = null;
+    }
+
+    if (!isReconnect) {
+      previewReconnectAttempts.current = 0;
+    }
+
     const wsHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${wsHost}/ws/thread/${threadId}`;
+    const wsUrl = `${protocol}//${wsHost}/ws/thread/${id}`;
     const ws = new WebSocket(wsUrl);
     previewWsRef.current = ws;
+
+    ws.onopen = () => {
+      previewReconnectAttempts.current = 0;
+    };
 
     ws.onmessage = (event) => {
       if (previewWsRef.current !== ws) return; // Ignore stale connections
@@ -722,22 +742,53 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     };
 
     ws.onclose = () => {
-      if (previewWsRef.current === ws) {
-        previewWsRef.current = null;
+      if (previewWsRef.current !== ws) return; // Ignore stale connections
+      previewWsRef.current = null;
+
+      // Auto-reconnect with exponential backoff
+      const maxAttempts = 5;
+      if (previewReconnectAttempts.current < maxAttempts) {
+        const delay = Math.min(1000 * Math.pow(2, previewReconnectAttempts.current), 30000);
+        previewReconnectAttempts.current++;
+        previewReconnectTimeoutRef.current = setTimeout(() => {
+          connectPreviewWebSocket(id, true);
+        }, delay);
       }
     };
 
-    ws.onerror = (err) => {
-      console.error('Preview WebSocket error:', err);
+    ws.onerror = () => {
+      // Error will trigger close, which handles reconnection
     };
+  }, []);
+
+  useEffect(() => {
+    if (!threadId) {
+      // No thread - cleanup preview WebSocket
+      if (previewReconnectTimeoutRef.current) {
+        clearTimeout(previewReconnectTimeoutRef.current);
+        previewReconnectTimeoutRef.current = null;
+      }
+      if (previewWsRef.current) {
+        previewWsRef.current.close();
+        previewWsRef.current = null;
+      }
+      setDeployedApp(null);
+      return;
+    }
+
+    connectPreviewWebSocket(threadId);
 
     return () => {
-      ws.close();
-      if (previewWsRef.current === ws) {
+      if (previewReconnectTimeoutRef.current) {
+        clearTimeout(previewReconnectTimeoutRef.current);
+        previewReconnectTimeoutRef.current = null;
+      }
+      if (previewWsRef.current) {
+        previewWsRef.current.close();
         previewWsRef.current = null;
       }
     };
-  }, [threadId]);
+  }, [threadId, connectPreviewWebSocket]);
 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
@@ -805,7 +856,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && shouldShowChat && resolvedOrgId) {
-        // Check if WebSocket is dead
+        // Check if main WebSocket is dead
         const needsReconnect = !wsRef.current ||
           wsRef.current.readyState === WebSocket.CLOSED ||
           wsRef.current.readyState === WebSocket.CLOSING;
@@ -820,12 +871,26 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
           reconnectAttempts.current = 0; // Fresh start when user returns to tab
           connectWebSocketRef.current?.(threadId, true);
         }
+
+        // Check if preview WebSocket is dead
+        const previewNeedsReconnect = !previewWsRef.current ||
+          previewWsRef.current.readyState === WebSocket.CLOSED ||
+          previewWsRef.current.readyState === WebSocket.CLOSING;
+
+        if (previewNeedsReconnect && threadId) {
+          if (previewReconnectTimeoutRef.current) {
+            clearTimeout(previewReconnectTimeoutRef.current);
+            previewReconnectTimeoutRef.current = null;
+          }
+          previewReconnectAttempts.current = 0;
+          connectPreviewWebSocket(threadId, true);
+        }
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [threadId, shouldShowChat, resolvedOrgId]);
+  }, [threadId, shouldShowChat, resolvedOrgId, connectPreviewWebSocket]);
 
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {

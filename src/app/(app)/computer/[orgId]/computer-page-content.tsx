@@ -1347,7 +1347,6 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       wordBasedSuggestions: 'off',
       parameterHints: { enabled: false },
       hover: { enabled: false },
-      lightbulb: { enabled: false },
       codeLens: false,
       inlayHints: { enabled: 'off' },
       contextmenu: false,
@@ -1447,7 +1446,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   const dragSource = dragSourcePathRef.current;
   const dragEnabled = editingEnabled;
   const canDropToRoot =
-    dragEnabled && isDragging && Boolean(dragSource) && canDropInto(ROOT_PATH, dragSource);
+    dragEnabled && isDragging && dragSource !== null && canDropInto(ROOT_PATH, dragSource);
   const isRootDragOver = dragOverPath === ROOT_PATH;
 
   return (
@@ -1627,7 +1626,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                       const isDropAllowed =
                         dragEnabled &&
                         isDragging &&
-                        Boolean(dragSource) &&
+                        dragSource !== null &&
                         isDirectory &&
                         canDropInto(node.path, dragSource);
                       const isDragOver = dragOverPath === node.path && isDropAllowed;
@@ -2041,9 +2040,9 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       <Dialog open={confirmEditOpen} onOpenChange={setConfirmEditOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Claude's files directly?</DialogTitle>
+            <DialogTitle>{`Edit Claude's files directly?`}</DialogTitle>
             <DialogDescription>
-              Claude keeps track of what's where in this workspace. If you move, rename, or delete files without Claude knowing, things will get confusing fast. Unless you know exactly what you're doing, ask Claude to make changes instead.
+              {`Claude keeps track of what's where in this workspace. If you move, rename, or delete files without Claude knowing, things will get confusing fast. Unless you know exactly what you're doing, ask Claude to make changes instead.`}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
