@@ -13,6 +13,7 @@ export interface ContainerEnv {
   EMAIL_TO_USER: KVNamespace;
   ANTHROPIC_API_KEY: string;
   CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
   R2_BUCKET_NAME?: string;
   R2_ACCOUNT_ID?: string;
   R2_MOUNT_DIR?: string;
@@ -121,6 +122,7 @@ export async function startWsServerProcess(
 
     // Wrangler config (for deploys from container)
     if (env.CF_ACCOUNT_ID) processEnv.CLOUDFLARE_ACCOUNT_ID = env.CF_ACCOUNT_ID;
+    if (env.CF_DISPATCH_NAMESPACE) processEnv.CF_DISPATCH_NAMESPACE = env.CF_DISPATCH_NAMESPACE;
     processEnv.WRANGLER_SEND_METRICS = 'false';
     processEnv.CI = '1';
 

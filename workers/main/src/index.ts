@@ -61,18 +61,22 @@ const ASSETS_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/
 
 function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
   const m = method.toUpperCase();
-  const scriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/scripts\/[^/]+\/settings$/;
-  const assetsUploadSession = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
+  // All paths are rewritten to WFP dispatch namespace format
+  // Base pattern: /client/v4/accounts/{account}/workers/dispatch/namespaces/{ns}/scripts/{script}
+  const dispatchScript = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
+  const dispatchScriptDeployments = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/deployments$/;
+  const dispatchScriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
+  const dispatchAssetsUploadSession = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
 
   switch (m) {
     case 'GET':
-      return DISPATCH_SCRIPT_UPLOAD.test(pathname) || scriptSettings.test(pathname);
+      return dispatchScript.test(pathname) || dispatchScriptDeployments.test(pathname) || dispatchScriptSettings.test(pathname);
     case 'PUT':
-      return DISPATCH_SCRIPT_UPLOAD.test(pathname);
+      return dispatchScript.test(pathname);
     case 'PATCH':
-      return scriptSettings.test(pathname);
+      return dispatchScriptSettings.test(pathname);
     case 'POST':
-      return assetsUploadSession.test(pathname) || ASSETS_UPLOAD.test(pathname);
+      return dispatchAssetsUploadSession.test(pathname) || ASSETS_UPLOAD.test(pathname);
     default:
       return false;
   }
@@ -243,6 +247,15 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
         pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
       }
     }
+
+    // Rewrite /workers/services/{name} to WFP dispatch namespace format
+    // Wrangler uses this to check if a worker exists before deploying
+    const servicesMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/services\/([^\/]+)(\/.*)?$/);
+    if (servicesMatch && dispatchNamespace) {
+      const rewrittenAccount = accountId ?? servicesMatch[1]!;
+      const tail = servicesMatch[3] ?? '';
+      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(scriptNameForToken)}${tail}`;
+    }
   }
 
   // Opportunistically rewrite account id for any /accounts/:id/... calls.
@@ -334,21 +347,6 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
       bodyPreview: preview,
     });
     return new Response(respBody, { status: resp.status, headers: resp.headers });
-  }
-
-  // For successful script uploads, add deployed URL as a custom header
-  // (safer than modifying response body which could break wrangler)
-  const isScriptUpload = method === 'PUT' && DISPATCH_SCRIPT_UPLOAD.test(pathname);
-  if (isScriptUpload && scriptNameForToken) {
-    const deployedUrl = `https://${scriptNameForToken}.chiridion.ai`;
-    console.log('[cf-api-proxy] deploy success', {
-      scriptName: scriptNameForToken,
-      deployedUrl,
-    });
-    const newHeaders = new Headers(resp.headers);
-    newHeaders.set('X-Deployed-Url', deployedUrl);
-    newHeaders.set('X-Script-Name', scriptNameForToken);
-    return new Response(respBody, { status: resp.status, headers: newHeaders });
   }
 
   return new Response(respBody, { status: resp.status, headers: resp.headers });
