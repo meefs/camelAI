@@ -2041,9 +2041,9 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       <Dialog open={confirmEditOpen} onOpenChange={setConfirmEditOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Claude&apos;s files directly?</DialogTitle>
+            <DialogTitle>Edit Claude's files directly?</DialogTitle>
             <DialogDescription>
-              Claude keeps track of what&apos;s where in this workspace. If you move, rename, or delete files without Claude knowing, things will get confusing fast. Unless you know exactly what you&apos;re doing, ask Claude to make changes instead.
+              Claude keeps track of what's where in this workspace. If you move, rename, or delete files without Claude knowing, things will get confusing fast. Unless you know exactly what you're doing, ask Claude to make changes instead.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
