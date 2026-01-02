@@ -282,8 +282,42 @@ export class OrgContainer extends Container<OrgContainerEnv> {
    * Uses defaultPort which is already set to 8080.
    */
   async proxyWebSocket(request: Request): Promise<Response> {
-    // Just use fetch() - defaultPort is already 8080
-    return this.fetch(request);
+    const url = new URL(request.url);
+    console.log('[OrgContainer] proxyWebSocket called', {
+      orgId: this.orgId,
+      url: url.toString(),
+      method: request.method,
+      upgrade: request.headers.get('Upgrade'),
+      connection: request.headers.get('Connection'),
+      defaultPort: this.defaultPort,
+    });
+
+    try {
+      // Get current state before proxying
+      const state = await this.getState();
+      console.log('[OrgContainer] Container state before proxy', {
+        orgId: this.orgId,
+        status: state.status,
+        lastChange: state.lastChange,
+      });
+
+      // Use fetch() for WebSocket proxying - containerFetch doesn't support WebSocket
+      const response = await this.fetch(request);
+      console.log('[OrgContainer] fetch response', {
+        orgId: this.orgId,
+        status: response.status,
+        webSocket: !!response.webSocket,
+        headers: Object.fromEntries(response.headers.entries()),
+      });
+      return response;
+    } catch (error) {
+      console.error('[OrgContainer] proxyWebSocket error', {
+        orgId: this.orgId,
+        error: String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      throw error;
+    }
   }
 
   /**
@@ -415,22 +449,47 @@ export async function handleWebSocketUpgrade(
   env: OrgContainerEnv,
   org: string
 ): Promise<Response> {
+  const url = new URL(request.url);
+  console.log('[handleWebSocketUpgrade] Starting', {
+    org,
+    url: url.toString(),
+    method: request.method,
+    upgrade: request.headers.get('Upgrade'),
+    connection: request.headers.get('Connection'),
+  });
+
   const container = getOrgContainer(env, org);
   const maxRetries = 2;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      console.log('[handleWebSocketUpgrade] Starting container', { org, attempt });
+
       // Start container if not running (startForOrg is smart about checking state)
       await container.startForOrg(org);
 
-      console.log('[container] Proxying WebSocket to container', { org });
+      console.log('[handleWebSocketUpgrade] Container started, proxying WebSocket', { org, attempt });
 
       // Proxy WebSocket to container port 8080
-      return container.proxyWebSocket(request);
+      const response = await container.proxyWebSocket(request);
+
+      console.log('[handleWebSocketUpgrade] Proxy response', {
+        org,
+        attempt,
+        status: response.status,
+        webSocket: !!response.webSocket,
+      });
+
+      return response;
     } catch (e) {
-      console.error('[container] Error in WebSocket upgrade:', { org, attempt, error: String(e) });
+      console.error('[handleWebSocketUpgrade] Error:', {
+        org,
+        attempt,
+        error: String(e),
+        stack: e instanceof Error ? e.stack : undefined,
+      });
       if (attempt < maxRetries) {
-        console.log('[container] Retrying after error...', { org, attempt });
+        console.log('[handleWebSocketUpgrade] Retrying after error...', { org, attempt });
         await new Promise(resolve => setTimeout(resolve, 1000));
         continue;
       }

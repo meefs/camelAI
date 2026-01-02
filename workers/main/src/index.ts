@@ -413,26 +413,44 @@ export default {
     if (wsMatch && request.headers.get('Upgrade') === 'websocket') {
       const orgFromPath = wsMatch[1];
 
+      console.log('[ws] WebSocket upgrade request received', {
+        path: url.pathname,
+        orgFromPath,
+        upgrade: request.headers.get('Upgrade'),
+        connection: request.headers.get('Connection'),
+        secWebSocketKey: request.headers.get('Sec-WebSocket-Key') ? 'present' : 'missing',
+        secWebSocketVersion: request.headers.get('Sec-WebSocket-Version'),
+      });
+
       // Authenticate the request
       const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
       const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
       const sessionId = headerSessionId || cookieSessionId;
 
       if (!sessionId) {
+        console.log('[ws] No session ID found, returning 401');
         return new Response('Unauthorized', { status: 401 });
       }
 
       const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
       const session = await sessionStub.getData();
       if (!session) {
+        console.log('[ws] Invalid session, returning 401', { sessionId });
         return new Response('Unauthorized', { status: 401 });
       }
 
       // Use the org from session (ignore path org for security)
       const org = session.org_id;
       if (!org) {
+        console.log('[ws] No org in session, returning 400', { sessionId });
         return new Response('No organization selected', { status: 400 });
       }
+
+      console.log('[ws] Authenticated, forwarding to container', {
+        sessionId,
+        org,
+        userId: session.user_id,
+      });
 
       // Handle WebSocket upgrade with container management
       return handleWebSocketUpgrade(request, env, org);
