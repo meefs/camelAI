@@ -1036,7 +1036,12 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Messages are read from container's Claude JSONL file
     // threadId is the Claude session_id
     try {
-      const sandbox = getOrgSandbox(this.env, org);
+      const sandboxId = getSandboxIdForOrg(org);
+      const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+      const workspaceRoot = this.getWorkspaceRoot();
+
+      // Ensure R2 data is synced to container (handles cold boot)
+      await this.ensureWorkspaceSynced(org, sandbox, workspaceRoot);
 
       // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
       const jsonlPath = `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`;
