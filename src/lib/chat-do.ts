@@ -77,3 +77,13 @@ export async function deleteProject(id: string, org: string): Promise<void> {
   const rpc = await getRpc();
   await rpc.deleteProject(id, org);
 }
+
+export async function setThreadPreview(threadId: string, workers: string[]): Promise<string[]> {
+  const rpc = await getRpc();
+  return rpc.setThreadPreview(threadId, workers);
+}
+
+export async function getThreadPreview(threadId: string): Promise<string[]> {
+  const rpc = await getRpc();
+  return rpc.getThreadPreview(threadId);
+}

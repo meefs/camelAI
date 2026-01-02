@@ -128,6 +128,7 @@ export async function startWsServerProcess(
 
     // Cloudflare API proxy config - wrangler uses these to deploy via our proxy
     if (env.WORKER_BASE_URL) {
+      processEnv.WORKER_BASE_URL = env.WORKER_BASE_URL;
       processEnv.CLOUDFLARE_API_BASE_URL = `${env.WORKER_BASE_URL}/client/v4`;
 
       // Get or create a deploy token for this org

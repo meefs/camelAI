@@ -1297,6 +1297,27 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return { workspacePath, result };
   }
 
+  // Preview functions (ChatThreadDO)
+  async setThreadPreview(threadId: string, workers: string[]): Promise<string[]> {
+    const stub = this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId));
+    const response = await stub.fetch(new Request('http://internal/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workers }),
+    }));
+    const data = await response.json() as { workers: string[] };
+    return data.workers;
+  }
+
+  async getThreadPreview(threadId: string): Promise<string[]> {
+    const stub = this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId));
+    const response = await stub.fetch(new Request('http://internal/preview', {
+      method: 'GET',
+    }));
+    const data = await response.json() as { workers: string[] };
+    return data.workers;
+  }
+
   // Integration functions
   private recordToIntegration(record: OrgIntegrationRecord): Integration {
     return {
