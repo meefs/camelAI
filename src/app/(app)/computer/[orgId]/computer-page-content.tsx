@@ -1347,7 +1347,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       wordBasedSuggestions: 'off',
       parameterHints: { enabled: false },
       hover: { enabled: false },
-      lightbulb: { enabled: false },
+      lightbulb: { enabled: 'off' },
       codeLens: false,
       inlayHints: { enabled: 'off' },
       contextmenu: false,
