@@ -39,7 +39,7 @@ if [[ "$1" == "deploy" || "$1" == "publish" ]]; then
     EXIT_CODE=$?
   fi
 
-  # If deploy succeeded, output the worker URL
+  # If deploy succeeded, output the worker URL and auto-set preview
   if [[ $EXIT_CODE -eq 0 ]] && [[ -n "$ORG_ID" ]]; then
     # Get the script name and construct the prefixed URL
     USER_SCRIPT_NAME=$(get_script_name "$@")
@@ -52,6 +52,20 @@ if [[ "$1" == "deploy" || "$1" == "publish" ]]; then
     echo ""
     echo "=== Chiridion Deploy Complete ==="
     echo "Worker URL: ${WORKER_URL}"
+
+    # Auto-set preview if THREAD_ID and WORKER_BASE_URL are available
+    if [[ -n "$THREAD_ID" ]] && [[ -n "$WORKER_BASE_URL" ]]; then
+      PREVIEW_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        "${WORKER_BASE_URL}/api/threads/${THREAD_ID}/preview" \
+        -H "Content-Type: application/json" \
+        -d "{\"workers\": [\"${WORKER_URL}\"]}" 2>/dev/null)
+
+      if [[ "$PREVIEW_RESULT" == "200" ]]; then
+        echo "Preview: Updated automatically"
+      else
+        echo "Preview: Failed to update (HTTP ${PREVIEW_RESULT})"
+      fi
+    fi
     echo "================================="
     echo ""
   fi

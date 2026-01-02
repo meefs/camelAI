@@ -1,10 +1,9 @@
-import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
-import { z } from 'zod';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-01-sandbox-v5';
+const VERSION = '2026-01-01-sandbox-v7';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -15,52 +14,6 @@ const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 if (!ANTHROPIC_API_KEY) {
   console.error('ANTHROPIC_API_KEY env var required');
   process.exit(1);
-}
-
-// Create MCP server with Chiridion tools (threadId baked into closure)
-function createChiridionServer(threadId) {
-  if (!WORKER_BASE_URL) {
-    console.warn('[ws-server] WORKER_BASE_URL not set, preview tool disabled');
-    return null;
-  }
-
-  return createSdkMcpServer({
-    name: 'chiridion',
-    version: '1.0.0',
-    tools: [
-      tool(
-        'set_preview',
-        'Set the preview URL for the current chat thread. Call this after successfully deploying a worker to show it in the preview panel.',
-        {
-          url: z.string().url().describe('The deployed worker URL (e.g., https://org-xxx.chiridion.ai)'),
-        },
-        async (args) => {
-          try {
-            const response = await fetch(`${WORKER_BASE_URL}/api/threads/${threadId}/preview`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ workers: [args.url] }),
-            });
-
-            if (!response.ok) {
-              const text = await response.text();
-              return {
-                content: [{ type: 'text', text: `Failed to set preview: ${response.status} ${text}` }],
-              };
-            }
-
-            return {
-              content: [{ type: 'text', text: `Preview set to ${args.url}` }],
-            };
-          } catch (error) {
-            return {
-              content: [{ type: 'text', text: `Error setting preview: ${error.message}` }],
-            };
-          }
-        }
-      ),
-    ],
-  });
 }
 
 // Session state - keyed by threadId
@@ -161,13 +114,13 @@ function getQueryOptions(session) {
     allowUnsandboxedCommands: true,
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     settingSources: ['project', 'user'],
+    // Pass thread ID and worker URL to subprocess env (used by wrangler wrapper for auto-preview)
+    env: {
+      ...process.env,
+      THREAD_ID: session.threadId || '',
+      WORKER_BASE_URL: WORKER_BASE_URL || '',
+    },
   };
-
-  // Add Chiridion MCP server with preview tool
-  const chiridionServer = createChiridionServer(session.threadId);
-  if (chiridionServer) {
-    options.mcpServers = { chiridion: chiridionServer };
-  }
 
   if (session.threadId) {
     // Check if session file exists to determine resume vs new
