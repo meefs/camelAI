@@ -77,7 +77,8 @@
 		{ "tag": "v3", "new_sqlite_classes": ["ChatThreadDO", "ChatIndexDO"] },
 		{ "tag": "v4", "new_sqlite_classes": ["ThreadSandbox"] },
 		{ "tag": "v5", "new_sqlite_classes": ["SessionDO", "UserDO", "OrgDO"] },
-		{ "tag": "v6", "deleted_classes": ["ChatThreadDO"] }
+		{ "tag": "v6", "deleted_classes": ["ChatThreadDO"] },
+		{ "tag": "v7", "new_classes": ["ChatThreadDO"] }
 	],
 	"env": {
 		"prod": {
