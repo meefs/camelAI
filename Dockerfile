@@ -1,6 +1,6 @@
 FROM docker.io/cloudflare/sandbox:0.6.6-python
 
-# Version: 2026-01-01-v9 - run as root, su to claude for ws-server
+# Version: 2026-01-01-v10 - fix wrangler wrapper permissions
 # Must match the @cloudflare/sandbox npm package version.
 
 # Expose Sandbox control plane + app ports
@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Wrangler wrapper to ensure WFP dispatch namespace is used
 COPY sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
-RUN chmod +x /usr/local/bin/wrangler
+RUN chmod a+rx /usr/local/bin/wrangler
 
 # Copy and install Claude SDK driver + integration proxy + WS server
 COPY sandbox/package.json sandbox/driver.mjs sandbox/proxy.mjs sandbox/ws-server.mjs sandbox/sync.mjs sandbox/run-driver.sh sandbox/run-ws-server.sh /app/
