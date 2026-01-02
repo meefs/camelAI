@@ -1,7 +1,7 @@
 // Custom worker that wraps OpenNext and handles WebSocket + Durable Objects
 // @ts-ignore - .open-next/worker.js is generated at build time
 import openNextHandler from "../../../.open-next/worker.js";
-import { ChatIndexDO, type ChatEnv } from "./durable-objects.js";
+import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
 import { Sandbox } from '@cloudflare/sandbox';
 import { handleWebSocketUpgrade, type ContainerEnv } from './container.js';
@@ -338,6 +338,31 @@ export default {
       }
     }
 
+    // Handle WebSocket upgrade for thread preview state at /ws/thread/{threadId}
+    const threadWsMatch = url.pathname.match(/^\/ws\/thread\/([^\/]+)$/);
+    if (threadWsMatch && request.headers.get('Upgrade') === 'websocket') {
+      const threadId = threadWsMatch[1];
+
+      // Authenticate the request
+      const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
+      const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
+      const sessionId = headerSessionId || cookieSessionId;
+
+      if (!sessionId) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
+      const session = await sessionStub.getData();
+      if (!session) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      // Route to thread DO for preview state updates
+      const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+      return threadStub.fetch(request);
+    }
+
     // Handle WebSocket upgrade requests at /ws/{org}
     // The org is used to route to the correct container (one per org)
     // Thread/session management happens in the WebSocket protocol
@@ -379,5 +404,5 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 // Export Durable Object classes
-export { ChatIndexDO };
+export { ChatIndexDO, ChatThreadDO };
 export { SessionDO, UserDO, OrgDO };
