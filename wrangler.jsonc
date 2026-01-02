@@ -15,7 +15,8 @@
 		"R2_MOUNT_DIR": "/home/claude",
 		"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-		"CF_DISPATCH_NAMESPACE": "chiridion-platform"
+		"CF_DISPATCH_NAMESPACE": "chiridion-platform",
+		"WORKER_BASE_URL": "http://localhost:8787"
 	},
 	"assets": {
 		"binding": "ASSETS",
@@ -87,6 +88,9 @@
 				{ "pattern": "chiridion.ai/*", "zone_name": "chiridion.ai" },
 				{ "pattern": "www.chiridion.ai/*", "zone_name": "chiridion.ai" }
 			],
+			"vars": {
+				"WORKER_BASE_URL": "https://chiridion.ai"
+			},
 			// Prod KV namespaces
 			"kv_namespaces": [
 				{
@@ -129,7 +133,8 @@
 				"R2_MOUNT_DIR": "/home/claude",
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-				"CF_DISPATCH_NAMESPACE": "chiridion-platform"
+				"CF_DISPATCH_NAMESPACE": "chiridion-platform",
+				"WORKER_BASE_URL": "https://staging.chiridion.ai"
 			},
 			"assets": {
 				"binding": "ASSETS",
@@ -195,7 +200,8 @@
 				"R2_MOUNT_DIR": "/home/claude",
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-				"CF_DISPATCH_NAMESPACE": "chiridion-platform"
+				"CF_DISPATCH_NAMESPACE": "chiridion-platform",
+				"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai"
 			},
 			"assets": {
 				"binding": "ASSETS",
@@ -261,7 +267,8 @@
 				"R2_MOUNT_DIR": "/home/claude",
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-				"CF_DISPATCH_NAMESPACE": "chiridion-platform"
+				"CF_DISPATCH_NAMESPACE": "chiridion-platform",
+				"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai"
 			},
 			"assets": {
 				"binding": "ASSETS",

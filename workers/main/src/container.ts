@@ -10,6 +10,7 @@ export interface ContainerEnv {
   SANDBOX: DurableObjectNamespace<Sandbox>;
   DO_RPC: Service<DoRpcService>;
   R2_BUCKET: R2Bucket;
+  EMAIL_TO_USER: KVNamespace;
   ANTHROPIC_API_KEY: string;
   CF_ACCOUNT_ID?: string;
   R2_BUCKET_NAME?: string;
@@ -18,6 +19,50 @@ export interface ContainerEnv {
   R2_MOUNT_READONLY?: string;
   R2_API_TOKEN?: string;
   R2_PARENT_ACCESS_KEY_ID?: string;
+  WORKER_BASE_URL?: string;
+}
+
+/**
+ * Generate a secure token for container API access.
+ */
+function generateContainerToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const base64 = btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+  return `ctok_${base64}`;
+}
+
+/**
+ * Get or create a deploy token for an org's container.
+ * Stores the token → scriptName mapping in KV for the API proxy.
+ */
+async function getOrCreateContainerToken(
+  kv: KVNamespace,
+  org: string
+): Promise<string> {
+  // Check if we already have a token for this org
+  const existingTokenKey = `container_token:${org}`;
+  const existingToken = await kv.get(existingTokenKey);
+  if (existingToken) {
+    return existingToken;
+  }
+
+  // Generate new token
+  const token = generateContainerToken();
+
+  // Script name is org-scoped (e.g., "org-abc123")
+  const scriptName = `org-${org}`.slice(0, 63).replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  // Store token → scriptName mapping (used by API proxy to rewrite requests)
+  await kv.put(`platform_script_token:${token}`, scriptName);
+
+  // Store org → token mapping (to retrieve token on container restart)
+  await kv.put(existingTokenKey, token);
+
+  return token;
 }
 
 /**
@@ -78,6 +123,15 @@ export async function startWsServerProcess(
     if (env.CF_ACCOUNT_ID) processEnv.CLOUDFLARE_ACCOUNT_ID = env.CF_ACCOUNT_ID;
     processEnv.WRANGLER_SEND_METRICS = 'false';
     processEnv.CI = '1';
+
+    // Cloudflare API proxy config - wrangler uses these to deploy via our proxy
+    if (env.WORKER_BASE_URL) {
+      processEnv.CLOUDFLARE_API_BASE_URL = `${env.WORKER_BASE_URL}/client/v4`;
+
+      // Get or create a deploy token for this org
+      const containerToken = await getOrCreateContainerToken(env.EMAIL_TO_USER, org);
+      processEnv.CLOUDFLARE_API_TOKEN = containerToken;
+    }
 
     // Generate org-scoped temp R2 credentials
     const prefix = `${org}/`;

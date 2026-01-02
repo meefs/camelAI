@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "deploy": "sh -lc 'if [ -z \"${CLOUDFLARE_API_BASE_URL:-}\" ]; then ORIGIN=\"${CHIRIDION_BASE_URL:-}\"; test -n \"$ORIGIN\" || (echo \"CHIRIDION_BASE_URL (or CLOUDFLARE_API_BASE_URL) is required\" >&2; exit 1); export CLOUDFLARE_API_BASE_URL=\"${ORIGIN%/}/client/v4\"; fi; wrangler deploy --dispatch-namespace ignored --name ignored'"
+    "deploy": "wrangler deploy --dispatch-namespace ignored --name ignored"
   }
 }
