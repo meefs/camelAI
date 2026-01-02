@@ -114,11 +114,11 @@ function getQueryOptions(session) {
     allowUnsandboxedCommands: true,
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     settingSources: ['project', 'user'],
-    // Pass thread ID and worker URL to subprocess env (used by wrangler wrapper for auto-preview)
+    // Pass thread ID to subprocess env (used by wrangler wrapper for auto-preview)
+    // WORKER_BASE_URL is already in process.env from container startup
     env: {
       ...process.env,
       THREAD_ID: session.threadId || '',
-      WORKER_BASE_URL: WORKER_BASE_URL || '',
     },
   };
 
