@@ -32,7 +32,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     const content = typeof payload.content === 'string' ? payload.content : '';
-    await computerDO.createWorkspaceFile(id, path, content);
+    try {
+      await computerDO.createWorkspaceFile(id, path, content);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Workspace path already exists')) {
+        return errorResponse('File already exists', 409);
+      }
+      throw error;
+    }
     const newVersion = await hashContent(content);
 
     const parentPath =

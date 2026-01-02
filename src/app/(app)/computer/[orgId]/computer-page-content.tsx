@@ -308,6 +308,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   const [dialogState, setDialogState] = useState<DialogState>(null);
   const [dialogName, setDialogName] = useState('');
   const [dialogSubmitting, setDialogSubmitting] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
   const [confirmEditOpen, setConfirmEditOpen] = useState(false);
   const [editingEnabled, setEditingEnabled] = useState(false);
   const [savingPaths, setSavingPaths] = useState<Set<string>>(new Set());
@@ -1180,10 +1181,12 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     setDialogState(null);
     setDialogName('');
     setDialogSubmitting(false);
+    setDialogError(null);
   }, []);
 
   const openDialog = useCallback((state: DialogState) => {
     setDialogSubmitting(false);
+    setDialogError(null);
     setDialogState(state);
     if (state?.type === 'rename') {
       setDialogName(getBasename(state.path));
@@ -1199,6 +1202,28 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
       dialogState.type === 'new-folder' ||
       dialogState.type === 'rename';
     if (requiresName && !dialogName.trim()) return;
+
+    setDialogError(null);
+
+    if (dialogState.type === 'new-file' || dialogState.type === 'new-folder') {
+      const name = dialogName.trim();
+      const parentPath = dialogState.parentPath;
+      const targetPath = joinPath(parentPath, name);
+      if (nodesByPath[targetPath]) {
+        setDialogError(`"${getBasename(targetPath)}" already exists in this folder.`);
+        return;
+      }
+    }
+
+    if (dialogState.type === 'rename') {
+      const name = dialogName.trim();
+      const fromPath = dialogState.path;
+      const toPath = joinPath(getParentPath(fromPath), name);
+      if (fromPath !== toPath && nodesByPath[toPath]) {
+        setDialogError(`"${getBasename(toPath)}" already exists in this folder.`);
+        return;
+      }
+    }
 
     setDialogSubmitting(true);
 
@@ -1218,6 +1243,13 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
+        if (res.status === 409) {
+          const payload = (await res
+            .json()
+            .catch(() => null)) as { error?: string } | null;
+          setDialogError(payload?.error || 'An item with this name already exists.');
+          return;
+        }
         if (res.ok) {
           closeDialog();
           await loadDirectory(parentPath);
@@ -1238,6 +1270,13 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ from: fromPath, to: toPath }),
           });
+          if (res.status === 409) {
+            const payload = (await res
+              .json()
+              .catch(() => null)) as { error?: string } | null;
+            setDialogError(payload?.error || 'An item with this name already exists.');
+            return;
+          }
           if (res.ok) {
             closeDialog();
             remapOpenResources(fromPath, toPath);
@@ -1283,6 +1322,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     dialogSubmitting,
     closeDialog,
     loadDirectory,
+    nodesByPath,
     openFile,
     remapOpenResources,
     removeTabsUnderPath,
@@ -2039,13 +2079,22 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                   Create a new file in {dialogState.parentPath}.
                 </DialogDescription>
               </DialogHeader>
+              {dialogError && (
+                <Alert variant="destructive">
+                  <AlertTitle>Name already exists</AlertTitle>
+                  <AlertDescription>{dialogError}</AlertDescription>
+                </Alert>
+              )}
               <InputGroup>
                 <InputGroupAddon>
                   <FileText className="size-3.5" />
                 </InputGroupAddon>
                 <InputGroupInput
                   value={dialogName}
-                  onChange={(event) => setDialogName(event.target.value)}
+                  onChange={(event) => {
+                    setDialogName(event.target.value);
+                    setDialogError(null);
+                  }}
                   placeholder="Filename"
                 />
               </InputGroup>
@@ -2059,13 +2108,22 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                   Create a new folder in {dialogState.parentPath}.
                 </DialogDescription>
               </DialogHeader>
+              {dialogError && (
+                <Alert variant="destructive">
+                  <AlertTitle>Name already exists</AlertTitle>
+                  <AlertDescription>{dialogError}</AlertDescription>
+                </Alert>
+              )}
               <InputGroup>
                 <InputGroupAddon>
                   <Folder className="size-3.5" />
                 </InputGroupAddon>
                 <InputGroupInput
                   value={dialogName}
-                  onChange={(event) => setDialogName(event.target.value)}
+                  onChange={(event) => {
+                    setDialogName(event.target.value);
+                    setDialogError(null);
+                  }}
                   placeholder="Folder name"
                 />
               </InputGroup>
@@ -2079,13 +2137,22 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                   Rename {dialogState.path}.
                 </DialogDescription>
               </DialogHeader>
+              {dialogError && (
+                <Alert variant="destructive">
+                  <AlertTitle>Name already exists</AlertTitle>
+                  <AlertDescription>{dialogError}</AlertDescription>
+                </Alert>
+              )}
               <InputGroup>
                 <InputGroupAddon>
                   <File className="size-3.5" />
                 </InputGroupAddon>
                 <InputGroupInput
                   value={dialogName}
-                  onChange={(event) => setDialogName(event.target.value)}
+                  onChange={(event) => {
+                    setDialogName(event.target.value);
+                    setDialogError(null);
+                  }}
                   placeholder="New name"
                 />
               </InputGroup>

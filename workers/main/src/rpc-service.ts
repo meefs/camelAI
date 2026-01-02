@@ -1053,7 +1053,24 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async createWorkspaceFile(orgId: string, path: string, content = '') {
-    return this.writeWorkspaceFile(orgId, path, content);
+    const sandboxId = getSandboxIdForOrg(orgId);
+    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const workspaceRoot = this.getWorkspaceRoot();
+    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+
+    const workspacePath = normalizeWorkspacePath(path);
+    const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
+    const exists = await sandbox.exists(absolutePath);
+    if (exists.exists) {
+      throw new Error('Workspace path already exists');
+    }
+
+    const result = await sandbox.writeFile(absolutePath, content);
+    if (!result.success) {
+      throw new Error(`Failed to write ${workspacePath}`);
+    }
+    this.scheduleWorkspaceUpload(orgId);
+    return { workspacePath, result };
   }
 
   async moveWorkspacePath(orgId: string, from: string, to: string) {
