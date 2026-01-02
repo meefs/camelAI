@@ -83,10 +83,27 @@ export function getOrgSandbox(env: ContainerEnv, org: string): ReturnType<typeof
 }
 
 /**
+ * Ensure the container is running. Call this before any sandbox operations.
+ * This handles the case where the container has died (version rollout, crash, etc.)
+ */
+export async function ensureContainerRunning(sandbox: ReturnType<typeof getSandbox>): Promise<void> {
+  try {
+    // start() is idempotent - if container is already running, this is a no-op
+    await sandbox.start();
+  } catch (e) {
+    console.error('[container] Failed to ensure container running:', String(e));
+    throw e;
+  }
+}
+
+/**
  * Check if ws-server is already running in the container.
  */
 export async function checkWsServerReady(sandbox: ReturnType<typeof getSandbox>): Promise<boolean> {
   try {
+    // Ensure container is running before health check
+    await ensureContainerRunning(sandbox);
+
     const result = await sandbox.exec(
       'curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health',
       { timeout: 2000 }
@@ -107,6 +124,9 @@ export async function startWsServerProcess(
 ): Promise<Process | null> {
   try {
     console.log('[container] Starting WS server process', { org });
+
+    // Ensure container is running before starting process
+    await ensureContainerRunning(sandbox);
 
     const processEnv: Record<string, string> = {
       ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
@@ -203,6 +223,7 @@ export async function waitForWsServerReady(
 
 /**
  * Ensure container is ready and proxy WebSocket connection.
+ * Includes retry logic for transient failures (version rollouts, etc.)
  */
 export async function handleWebSocketUpgrade(
   request: Request,
@@ -210,28 +231,52 @@ export async function handleWebSocketUpgrade(
   org: string
 ): Promise<Response> {
   const sandbox = getOrgSandbox(env, org);
+  const maxRetries = 2;
 
-  // Check if ws-server is already running
-  const isReady = await checkWsServerReady(sandbox);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      // Check if ws-server is already running
+      const isReady = await checkWsServerReady(sandbox);
 
-  if (!isReady) {
-    console.log('[container] WS server not ready, starting...', { org });
+      if (!isReady) {
+        console.log('[container] WS server not ready, starting...', { org, attempt });
 
-    const process = await startWsServerProcess(sandbox, env, org);
-    if (!process) {
-      return new Response('Failed to start container', { status: 500 });
-    }
+        const process = await startWsServerProcess(sandbox, env, org);
+        if (!process) {
+          if (attempt < maxRetries) {
+            console.log('[container] Retrying after startProcess failure...', { org, attempt });
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            continue;
+          }
+          return new Response('Failed to start container', { status: 500 });
+        }
 
-    // Wait for server to become ready
-    const ready = await waitForWsServerReady(sandbox, 30000);
-    if (!ready) {
-      console.error('[container] WS server failed to start in time', { org });
-      return new Response('Container WS server failed to start', { status: 500 });
+        // Wait for server to become ready
+        const ready = await waitForWsServerReady(sandbox, 30000);
+        if (!ready) {
+          if (attempt < maxRetries) {
+            console.log('[container] Retrying after server not ready...', { org, attempt });
+            continue;
+          }
+          console.error('[container] WS server failed to start in time', { org });
+          return new Response('Container WS server failed to start', { status: 500 });
+        }
+      }
+
+      console.log('[container] Proxying WebSocket to container', { org });
+
+      // Proxy WebSocket directly to container port 8080
+      return sandbox.wsConnect(request, 8080);
+    } catch (e) {
+      console.error('[container] Error in WebSocket upgrade:', { org, attempt, error: String(e) });
+      if (attempt < maxRetries) {
+        console.log('[container] Retrying after error...', { org, attempt });
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      return new Response(`Container error: ${String(e)}`, { status: 500 });
     }
   }
 
-  console.log('[container] Proxying WebSocket to container', { org });
-
-  // Proxy WebSocket directly to container port 8080
-  return sandbox.wsConnect(request, 8080);
+  return new Response('Failed to connect to container after retries', { status: 500 });
 }

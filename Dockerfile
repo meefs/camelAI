@@ -1,6 +1,6 @@
-FROM docker.io/cloudflare/sandbox:0.6.6-python
+FROM docker.io/cloudflare/sandbox:0.6.7-python
 
-# Version: 2026-01-01-v10 - fix wrangler wrapper permissions
+# Version: 2026-01-02-v1 - update sandbox to 0.6.7
 # Must match the @cloudflare/sandbox npm package version.
 
 # Expose Sandbox control plane + app ports
