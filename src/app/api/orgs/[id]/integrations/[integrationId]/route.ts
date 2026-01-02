@@ -117,6 +117,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return errorResponse('Failed to update integration', 500);
     }
 
+    // TODO: Re-enable container restart when integrations change
+    // authDO.restartOrgContainers(orgId).catch((e) => {
+    //   console.error('Failed to restart containers after integration update:', e);
+    // });
+
     return jsonResponse(updated);
   } catch (error) {
     console.error('Error updating integration:', error);
@@ -151,6 +156,12 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
     }
 
     await authDO.deleteOrgIntegration(orgId, integrationId);
+
+    // TODO: Re-enable container restart when integrations change
+    // authDO.restartOrgContainers(orgId).catch((e) => {
+    //   console.error('Failed to restart containers after integration delete:', e);
+    // });
+
     return jsonResponse({ success: true });
   } catch (error) {
     console.error('Error deleting integration:', error);

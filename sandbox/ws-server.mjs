@@ -1,8 +1,9 @@
-import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'child_process';
-import { promises as fs } from 'fs';
-import path from 'path';
-import { z } from 'zod';
+import { existsSync } from 'fs';
+
+// Version for verifying container has latest code
+const VERSION = '2026-01-01-sandbox-v4';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -14,178 +15,34 @@ if (!ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-// Session state
+// Session state - keyed by threadId
 const sessions = new Map();
-const claudeSessionToSession = new Map();
 const MAX_EVENT_BUFFER = 500;
-const previewServers = new Map();
 
-function createSession(id) {
+function createSession(threadId) {
   const session = {
-    id,
-    claudeSessionId: null,
+    threadId,
     activeQuery: null,
     queryIterator: null,
     eventLoopRunning: false,
     messageResolver: null,
     messageQueue: [],
-    threadId: null,
     attachedWs: null,
     eventBuffer: [],
     nextEventId: 1,
-    lastEventSummary: null,
-    lastEventAt: null,
   };
-  sessions.set(id, session);
+  sessions.set(threadId, session);
   return session;
 }
 
-async function ensurePreviewExposed(port, threadId) {
-  const baseUrl = process.env.CHIRIDION_PREVIEW_BASE_URL || process.env.CHIRIDION_BASE_URL;
-  const previewToken = process.env.CHIRIDION_PREVIEW_TOKEN;
-  if (!baseUrl || !previewToken) {
-    throw new Error('Missing CHIRIDION_PREVIEW_BASE_URL or CHIRIDION_PREVIEW_TOKEN');
+function getOrCreateSession(threadId) {
+  if (!threadId) {
+    threadId = crypto.randomUUID();
   }
-
-  const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/sandbox/preview`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Chiridion-Preview-Token': previewToken,
-    },
-    body: JSON.stringify(threadId ? { threadId, port } : { port }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Preview exposure failed: ${res.status} ${text}`);
+  if (sessions.has(threadId)) {
+    return sessions.get(threadId);
   }
-
-  const data = await res.json();
-  if (!data?.url) {
-    throw new Error('Preview exposure response missing URL');
-  }
-  return data;
-}
-
-const previewTool = tool(
-  'preview_local_server',
-  'Start a local web server in the given directory and expose it for preview.',
-  {
-    port: z.number().int().min(1).max(65535).describe('Port number for the server.'),
-    cwd: z.string().describe('Absolute path to the directory to run the command in.'),
-    command: z.string().describe('Shell command to start the server.'),
-    threadId: z.string().optional().describe('Thread identifier (filled automatically).'),
-  },
-  async (args, extra) => {
-    const port = args.port;
-    const cwd = args.cwd;
-    const command = args.command;
-    const extraSessionId = typeof extra?.sessionId === 'string' ? extra.sessionId : null;
-    const extraSession = extraSessionId && sessions.has(extraSessionId) ? sessions.get(extraSessionId) : null;
-    const claudeSession = extraSessionId && claudeSessionToSession.has(extraSessionId)
-      ? claudeSessionToSession.get(extraSessionId)
-      : null;
-    const activeSession = extraSession || claudeSession || null;
-    const threadId = args.threadId || activeSession?.threadId || null;
-
-    if (!path.isAbsolute(cwd)) {
-      return {
-        isError: true,
-        content: [{ type: 'text', text: 'cwd must be an absolute path.' }],
-      };
-    }
-
-    try {
-      const stats = await fs.stat(cwd);
-      if (!stats.isDirectory()) {
-        return {
-          isError: true,
-          content: [{ type: 'text', text: 'cwd must be a directory.' }],
-        };
-      }
-    } catch {
-      return {
-        isError: true,
-        content: [{ type: 'text', text: 'cwd does not exist.' }],
-      };
-    }
-
-    const existing = previewServers.get(port);
-    if (existing) {
-      if (existing.command !== command || existing.cwd !== cwd) {
-        return {
-          isError: true,
-          content: [{ type: 'text', text: `Port ${port} is already in use by another server.` }],
-        };
-      }
-
-      return {
-        content: [{ type: 'text', text: `Preview already running at ${existing.url}` }],
-        structuredContent: { url: existing.url, port },
-      };
-    }
-
-    let url;
-    try {
-      const exposure = await ensurePreviewExposed(port, threadId);
-      url = exposure.url;
-    } catch (error) {
-      return {
-        isError: true,
-        content: [{ type: 'text', text: String(error) }],
-      };
-    }
-
-    const child = spawn(command, {
-      cwd,
-      shell: true,
-      env: { ...process.env, PORT: String(port) },
-      stdio: 'ignore',
-    });
-
-    previewServers.set(port, { process: child, cwd, command, url });
-
-    const sessionForEvent = activeSession || (threadId && sessions.get(threadId)) || null;
-    if (sessionForEvent) {
-      bufferEvent(sessionForEvent, { type: 'preview_ready', url, port });
-    }
-
-    child.on('exit', (code, signal) => {
-      previewServers.delete(port);
-      console.error('[ws-server] Preview server exited', { port, code, signal });
-    });
-
-    child.on('error', (err) => {
-      previewServers.delete(port);
-      console.error('[ws-server] Failed to start preview server', { port, error: err.message });
-    });
-
-    return {
-      content: [{ type: 'text', text: `Preview available at ${url}` }],
-      structuredContent: { url, port },
-    };
-  }
-);
-
-const previewMcpServer = createSdkMcpServer({
-  name: 'chiridion-preview',
-  version: '1.0.0',
-  tools: [previewTool],
-});
-
-function getOrCreateSession(id) {
-  if (id && sessions.has(id)) return sessions.get(id);
-  if (id && !sessions.has(id)) return createSession(id);
-  return createSession(crypto.randomUUID());
-}
-
-function resolveSessionFromMessage(ws, data) {
-  if (data?.threadId) return getOrCreateSession(data.threadId);
-  if (data?.sessionId) return getOrCreateSession(data.sessionId);
-  const wsSessionId = ws?.data?.sessionId;
-  if (wsSessionId && sessions.has(wsSessionId)) return sessions.get(wsSessionId);
-  return getOrCreateSession(null);
+  return createSession(threadId);
 }
 
 // Log for DO persistence (NDJSON format)
@@ -217,38 +74,35 @@ process.on('unhandledRejection', (error) => {
   console.error('[ws-server] Unhandled rejection:', summarizeError(error));
 });
 
-process.on('exit', (code) => {
-  console.error('[ws-server] Process exit:', code);
-});
-
-process.on('SIGTERM', () => {
-  console.error('[ws-server] Received SIGTERM');
-});
+process.on('exit', () => {});
+process.on('SIGTERM', () => {});
 
 // Sync workspace to R2 after each turn (async, non-blocking)
 let syncInProgress = false;
 function syncWorkspace() {
-  if (syncInProgress) {
-    console.error('[ws-server] Sync already in progress, skipping');
-    return;
-  }
+  if (syncInProgress) return;
   syncInProgress = true;
-  console.error('[ws-server] Starting workspace sync...');
   const proc = spawn('node', ['/app/sync.mjs', 'upload', SYNC_DIR], {
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   proc.on('close', (code) => {
     syncInProgress = false;
-    if (code === 0) {
-      console.error('[ws-server] Workspace sync complete');
-    } else {
-      console.error(`[ws-server] Workspace sync failed with code ${code}`);
+    if (code !== 0) {
+      console.error('[ws-server] Sync failed:', code);
     }
   });
   proc.on('error', (err) => {
     syncInProgress = false;
-    console.error('[ws-server] Workspace sync error:', err.message);
+    console.error('[ws-server] Sync error:', err.message);
   });
+}
+
+// Check if a session JSONL file exists
+function sessionFileExists(sessionId) {
+  if (!sessionId) return false;
+  const projectPath = '-home-claude';
+  const jsonlPath = `${SYNC_DIR}/.claude/projects/${projectPath}/${sessionId}.jsonl`;
+  return existsSync(jsonlPath);
 }
 
 // Query options for Claude SDK
@@ -259,13 +113,15 @@ function getQueryOptions(session) {
     allowUnsandboxedCommands: true,
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     settingSources: ['project', 'user'],
-    mcpServers: {
-      preview: previewMcpServer,
-    },
   };
 
-  if (session.claudeSessionId) {
-    options.resume = session.claudeSessionId;
+  if (session.threadId) {
+    // Check if session file exists to determine resume vs new
+    if (sessionFileExists(session.threadId)) {
+      options.resume = session.threadId;
+    } else {
+      options.extraArgs = { 'session-id': session.threadId };
+    }
   }
 
   return options;
@@ -293,7 +149,7 @@ async function* createMessageStream(session) {
     // Yield the user message
     yield {
       type: 'user',
-      session_id: session.claudeSessionId || '',
+      session_id: session.threadId || '',
       message: {
         role: 'user',
         content: [{ type: 'text', text: message }],
@@ -305,7 +161,7 @@ async function* createMessageStream(session) {
 
 function bufferEvent(session, payload) {
   const eventId = session.nextEventId++;
-  const envelope = { ...payload, eventId, sessionId: session.id };
+  const envelope = { ...payload, eventId, sessionId: session.threadId };
   session.eventBuffer.push(envelope);
   if (session.eventBuffer.length > MAX_EVENT_BUFFER) {
     session.eventBuffer.shift();
@@ -344,8 +200,13 @@ function attachSession(ws, session, lastEventId) {
     }
   }
   session.attachedWs = ws;
-  ws.data = { sessionId: session.id };
-  ws.send(JSON.stringify({ type: 'session', sessionId: session.id }));
+  ws.data = { threadId: session.threadId };
+
+  // Send the threadId to the client - they may have provided it or we generated it
+  if (session.threadId) {
+    ws.send(JSON.stringify({ type: 'session', sessionId: session.threadId }));
+  }
+
   ws.send(JSON.stringify({ type: 'ready' }));
   replayBufferedEvents(session, ws, lastEventId);
 }
@@ -354,7 +215,6 @@ function attachSession(ws, session, lastEventId) {
 function initSession(session) {
   if (session.activeQuery) return;
 
-  console.error('[ws-server] Initializing stateful session', session.id);
   try {
     const options = getQueryOptions(session);
     const messageStream = createMessageStream(session);
@@ -362,11 +222,7 @@ function initSession(session) {
     session.activeQuery = query({ prompt: messageStream, options });
     session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
   } catch (error) {
-    console.error('[ws-server] Failed to initialize session', {
-      sessionId: session.id,
-      claudeSessionId: session.claudeSessionId,
-      error: summarizeError(error),
-    });
+    console.error('[ws-server] Failed to init:', summarizeError(error));
     bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
   }
 }
@@ -382,74 +238,26 @@ function startEventLoop(session) {
         const { value: event, done } = await session.queryIterator.next();
 
         if (done) {
-          console.error('[ws-server] Query completed');
           break;
         }
-
-        session.lastEventSummary = {
-          type: event.type,
-          subtype: event.subtype,
-          streamType: event.event?.type,
-        };
-        session.lastEventAt = Date.now();
 
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
 
-        // Capture session ID from init event
-        if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-          if (!session.claudeSessionId) {
-            session.claudeSessionId = event.session_id;
-            claudeSessionToSession.set(event.session_id, session);
-            logForPersistence({ type: 'session_id', threadId: session.threadId, sessionId: event.session_id });
-            console.error('[ws-server] Got session ID:', session.claudeSessionId);
-          }
-        }
-
-        // Handle stream_event wrapper - sync workspace when turn completes
-        if (event.type === 'stream_event' && event.event) {
-          const streamEvent = event.event;
-          if (streamEvent.type === 'message_delta' && streamEvent.delta?.stop_reason) {
-            syncWorkspace();
-          }
-        }
-
-        // Persist assistant messages (following SDK demo pattern - no stop_reason check)
-        if (event.type === 'assistant' && event.message) {
-          const messageId = event.message.id;
-          const content = event.message.content;
-
-          // Persist if we have content (content is always an array of blocks)
-          if (messageId && Array.isArray(content) && content.length > 0) {
-            const contentJson = JSON.stringify(content);
-            logForPersistence({ type: 'assistant_message', id: messageId, threadId: session.threadId, content: contentJson });
-            console.error('[ws-server] Persisted assistant message:', messageId);
-          }
-        }
-
-        // Persist tool results (these come from SDK as user messages)
-        if (event.type === 'user' && event.message?.content) {
-          // Tool results don't need separate persistence - they're part of the SDK state
-        }
-
-        // Result means query is complete (end of session)
-        if (event.type === 'result') {
-          // Final result - sync and exit
+        // Sync workspace when turn completes (message_delta with stop_reason)
+        if (event.type === 'stream_event' && event.event?.type === 'message_delta' && event.event.delta?.stop_reason) {
           syncWorkspace();
+        }
+
+        // Result means query is complete (this turn/message is done)
+        if (event.type === 'result') {
           break;
         }
       }
     } catch (e) {
-      const errorMsg = String(e);
-      console.error('[ws-server] Query error:', {
-        sessionId: session.id,
-        claudeSessionId: session.claudeSessionId,
-        lastEvent: session.lastEventSummary,
-        lastEventAt: session.lastEventAt,
-        error: summarizeError(e),
-      });
-      bufferEvent(session, { type: 'error', error: errorMsg });
-      logForPersistence({ type: 'error', error: errorMsg });
+      console.error('[ws-server] Query error:', summarizeError(e));
+      bufferEvent(session, { type: 'error', error: String(e) });
+      logForPersistence({ type: 'error', error: String(e) });
       syncWorkspace();
     } finally {
       session.activeQuery = null;
@@ -461,10 +269,6 @@ function startEventLoop(session) {
 
 // Handle a user message
 function handleUserMessage(session, content) {
-  // Log user message for DB persistence with timestamp-based ID
-  const msgId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  logForPersistence({ type: 'user_message', id: msgId, threadId: session.threadId, content });
-
   // Initialize session if needed
   initSession(session);
 
@@ -472,6 +276,7 @@ function handleUserMessage(session, content) {
   startEventLoop(session);
 
   // Feed message to the generator
+  // Messages are persisted by Claude SDK in ~/.claude/projects/.../session.jsonl
   if (session.messageResolver) {
     const resolver = session.messageResolver;
     session.messageResolver = null;
@@ -480,13 +285,6 @@ function handleUserMessage(session, content) {
     // Queue message - will be picked up when generator pulls
     session.messageQueue.push(content);
   }
-}
-
-// Resume default session if provided by env (single-session compatibility)
-if (process.env.RESUME_SESSION_ID) {
-  const resumed = createSession(crypto.randomUUID());
-  resumed.claudeSessionId = process.env.RESUME_SESSION_ID;
-  console.error('[ws-server] Will resume Claude session:', resumed.claudeSessionId);
 }
 
 // Bun WebSocket server with HTTP health endpoint
@@ -498,7 +296,9 @@ Bun.serve({
 
     // Health check endpoint
     if (url.pathname === '/health') {
-      return new Response('ok', { status: 200 });
+      return new Response(JSON.stringify({ status: 'ok', version: VERSION }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     // Broadcast endpoint - receives messages from DO to forward to connected client(s)
@@ -534,36 +334,44 @@ Bun.serve({
   },
 
   websocket: {
-    open(ws) {
-      console.error('[ws-server] WebSocket connection opened');
-    },
+    open(ws) {},
 
     async message(ws, message) {
-      console.error('[ws-server] Received message:', String(message).substring(0, 100));
       try {
         const data = JSON.parse(message);
 
         if (data.type === 'init') {
-          const session = resolveSessionFromMessage(ws, data);
-          if (typeof data.threadId === 'string' && data.threadId) {
-            session.threadId = data.threadId;
+          // Get or generate threadId
+          const threadId = typeof data.threadId === 'string' ? data.threadId.trim() : '';
+          if (!threadId) {
+            ws.send(JSON.stringify({ type: 'error', error: 'Missing threadId - init requires a valid threadId' }));
+            ws.close(1008, 'missing threadId');
+            return;
           }
+
+          const session = getOrCreateSession(threadId);
           attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {
-          const session = resolveSessionFromMessage(ws, data);
-          if (!session.threadId && typeof data.threadId === 'string' && data.threadId) {
-            session.threadId = data.threadId;
+          // Get session from ws.data (set during init)
+          const threadId = ws.data?.threadId || data.threadId;
+          if (!threadId || !sessions.has(threadId)) {
+            ws.send(JSON.stringify({ type: 'error', error: 'No session - send init first' }));
+            return;
           }
+          const session = sessions.get(threadId);
           handleUserMessage(session, data.content);
 
         } else if (data.type === 'stop') {
-          const session = resolveSessionFromMessage(ws, data);
-          if (session.activeQuery) {
-            try {
-              await session.activeQuery.interrupt();
-            } catch (e) {
-              console.error('[ws-server] Interrupt error:', e);
+          const threadId = ws.data?.threadId;
+          if (threadId && sessions.has(threadId)) {
+            const session = sessions.get(threadId);
+            if (session.activeQuery) {
+              try {
+                await session.activeQuery.interrupt();
+              } catch (e) {
+                console.error('[ws-server] Interrupt error:', e);
+              }
             }
           }
         }
@@ -574,10 +382,9 @@ Bun.serve({
     },
 
     close(ws) {
-      console.error('[ws-server] WebSocket closed');
-      const sessionId = ws?.data?.sessionId;
-      if (sessionId && sessions.has(sessionId)) {
-        const session = sessions.get(sessionId);
+      const threadId = ws?.data?.threadId;
+      if (threadId && sessions.has(threadId)) {
+        const session = sessions.get(threadId);
         if (session.attachedWs === ws) {
           session.attachedWs = null;
         }
@@ -589,5 +396,3 @@ Bun.serve({
     },
   },
 });
-
-console.error(`[ws-server] Listening on port ${PORT}`);

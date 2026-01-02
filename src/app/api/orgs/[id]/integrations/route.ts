@@ -108,6 +108,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       credentials: credentials || {},
     });
 
+    // TODO: Re-enable container restart when integrations change
+    // authDO.restartOrgContainers(orgId).catch((e) => {
+    //   console.error('Failed to restart containers after integration create:', e);
+    // });
+
     return jsonResponse(integration, 201);
   } catch (error) {
     console.error('Error creating integration:', error);

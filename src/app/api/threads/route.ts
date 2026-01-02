@@ -52,7 +52,12 @@ export async function POST(request: NextRequest) {
       return unauthorizedResponse();
     }
 
-    const body = await request.json() as { title?: string; projectId?: string; projectName?: string };
+    const body = await request.json() as {
+      title?: string;
+      projectId?: string;
+      projectName?: string;
+      session_id?: string;  // Claude session_id becomes thread ID
+    };
     let projectId = body.projectId?.trim();
     if (!projectId) {
       const projectName = body.projectName?.trim() || body.title?.trim() || 'New Project';
@@ -60,7 +65,13 @@ export async function POST(request: NextRequest) {
       await authDO.addUserProject(session.user_id, session.org_id, project.id);
       projectId = project.id;
     }
-    const thread = await chatDO.createThread(session.org_id, body.title, projectId, session.user_id);
+    const thread = await chatDO.createThread(
+      session.org_id,
+      body.title,
+      projectId,
+      session.user_id,
+      body.session_id  // Use Claude session_id as thread ID if provided
+    );
     return NextResponse.json(thread);
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
