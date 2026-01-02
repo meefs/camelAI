@@ -53,12 +53,13 @@ if [[ "$1" == "deploy" || "$1" == "publish" ]]; then
     echo "=== Chiridion Deploy Complete ==="
     echo "Worker URL: ${WORKER_URL}"
 
-    # Auto-set preview if THREAD_ID and WORKER_BASE_URL are available
-    if [[ -n "$THREAD_ID" ]] && [[ -n "$WORKER_BASE_URL" ]]; then
+    # Auto-set preview if THREAD_ID, WORKER_BASE_URL, and deploy token are available
+    if [[ -n "$THREAD_ID" ]] && [[ -n "$WORKER_BASE_URL" ]] && [[ -n "$CLOUDFLARE_API_TOKEN" ]]; then
       PREVIEW_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
         "${WORKER_BASE_URL}/api/threads/${THREAD_ID}/preview" \
         -H "Content-Type: application/json" \
-        -d "{\"workers\": [\"${WORKER_URL}\"]}" 2>/dev/null)
+        -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+        -d "{\"workers\": [\"${SCRIPT_NAME}\"]}" 2>/dev/null)
 
       if [[ "$PREVIEW_RESULT" == "200" ]]; then
         echo "Preview: Updated automatically"

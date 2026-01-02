@@ -432,6 +432,59 @@ export default {
       return handleWebSocketUpgrade(request, env, org);
     }
 
+    // Handle preview API with deploy token auth (called from container wrangler wrapper)
+    const previewMatch = url.pathname.match(/^\/api\/threads\/([^\/]+)\/preview$/);
+    if (previewMatch && request.method === 'POST') {
+      const threadId = previewMatch[1];
+
+      // Validate deploy token
+      const authHeader = request.headers.get('Authorization');
+      if (!authHeader?.startsWith('Bearer ')) {
+        return new Response(JSON.stringify({ error: 'Missing authorization' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const token = authHeader.slice(7);
+      const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
+      const orgPrefix = await tokenKv.get(`platform_script_token:${token}`);
+      if (!orgPrefix) {
+        return new Response(JSON.stringify({ error: 'Invalid token' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Parse body and set preview
+      try {
+        const body = await request.json() as { workers?: string[] };
+        if (!body.workers || !Array.isArray(body.workers)) {
+          return new Response(JSON.stringify({ error: 'Missing workers array' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+        const response = await threadStub.fetch(new Request('http://internal/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workers: body.workers }),
+        }));
+
+        return new Response(response.body, {
+          status: response.status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: String(e) }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
     // Pass all other requests to OpenNext/Next.js if dev env var is not set
 	if (env.NEXTJS_ENV == 'development') {
 	  return new Response('Not Found', { status: 404 });

@@ -5,7 +5,9 @@ interface RouteContext {
   params: Promise<{ id: string }>;
 }
 
-// GET /api/threads/[id]/preview - Get current preview workers
+// GET /api/threads/[id]/preview - Get current preview workers (script names)
+// Returns array of script names like ["orgprefix-myworker"]
+// Frontend constructs full URL: https://{scriptName}.chiridion.ai
 export async function GET(_request: NextRequest, { params }: RouteContext) {
   const { id } = await params;
   try {
@@ -16,19 +18,5 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
   }
 }
 
-// POST /api/threads/[id]/preview - Set preview workers
-// Called from Claude SDK tool in container after successful deploy
-export async function POST(request: NextRequest, { params }: RouteContext) {
-  const { id } = await params;
-  try {
-    const body = await request.json() as { workers?: string[] };
-    if (!body.workers || !Array.isArray(body.workers)) {
-      return NextResponse.json({ error: 'Missing workers array' }, { status: 400 });
-    }
-
-    const workers = await chatDO.setThreadPreview(id, body.workers);
-    return NextResponse.json({ workers });
-  } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
-  }
-}
+// POST is handled by the worker with deploy token auth (see workers/main/src/index.ts)
+// This prevents unauthenticated access to setting previews
