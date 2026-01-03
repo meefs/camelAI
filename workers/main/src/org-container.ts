@@ -265,7 +265,7 @@ export class OrgContainer extends Container<OrgContainerEnv> {
     await this.startAndWaitForPorts({
       startOptions: {
         envVars,
-        entrypoint: ['/bin/sh', '/app/entrypoint.sh'],
+        // Entrypoint is defined in Dockerfile - no runtime override needed
       },
       ports: [WS_SERVER_PORT, CONTROL_PLANE_PORT],
       cancellationOptions: {
