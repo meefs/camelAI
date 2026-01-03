@@ -1023,9 +1023,16 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       const lines = file.content.split('\n').filter((line: string) => line.trim());
       const messages: Message[] = [];
 
+      console.log('[getMessages] JSONL lines count:', lines.length);
+      // Log first few lines to see the format
+      for (let i = 0; i < Math.min(3, lines.length); i++) {
+        console.log(`[getMessages] Line ${i}:`, lines[i].substring(0, 200));
+      }
+
       for (const line of lines) {
         try {
           const event = JSON.parse(line);
+          console.log('[getMessages] Event type:', event.type, 'has message:', !!event.message);
 
           // Extract user messages (text only, not tool results)
           if (event.type === 'user' && event.message?.content) {
