@@ -249,8 +249,15 @@ export class OrgContainer extends Container<OrgContainerEnv> {
 
   /**
    * Start container with org-specific environment variables.
+   * If container is already running, returns immediately without rebuilding env vars.
    */
   async startForOrg(orgId: string): Promise<void> {
+    // Check if container is already running - skip expensive env var building
+    const state = await this.getState();
+    if (state.status === 'running' || state.status === 'healthy') {
+      return;
+    }
+
     console.log('[OrgContainer] Starting container for org:', orgId);
 
     const envVars = await this.buildEnvVars(orgId);
