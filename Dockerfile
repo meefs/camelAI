@@ -1,6 +1,6 @@
 FROM docker.io/cloudflare/sandbox:0.6.7-python
 
-# Version: 2026-01-02-v2 - migrate to @cloudflare/containers API
+# Version: 2026-01-03-v2
 # Using sandbox base image for tooling (Bun, Node, etc.)
 
 # Expose container ports

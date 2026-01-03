@@ -13,7 +13,7 @@ import path from 'node:path';
 
 const exec = promisify(execCallback);
 const PORT = parseInt(process.env.CONTROL_PLANE_PORT || '9000', 10);
-const VERSION = '2026-01-02-v3';
+const VERSION = '2026-01-03-v2';
 
 // No auth required - control plane is only accessible from within the container
 // or via containerFetch from the OrgContainer DO. Container isolation is the security boundary.
@@ -117,6 +117,8 @@ const MIME_TYPES = {
   '.ts': 'application/typescript',
   '.tsx': 'application/typescript',
   '.json': 'application/json',
+  '.jsonl': 'application/x-ndjson',
+  '.ndjson': 'application/x-ndjson',
   '.html': 'text/html',
   '.css': 'text/css',
   '.md': 'text/markdown',
@@ -149,6 +151,7 @@ function isBinaryMime(mimeType) {
   if (!mimeType) return false;
   if (mimeType.startsWith('text/')) return false;
   if (mimeType === 'application/json') return false;
+  if (mimeType === 'application/x-ndjson') return false;
   if (mimeType === 'application/javascript') return false;
   if (mimeType === 'application/typescript') return false;
   if (mimeType === 'image/svg+xml') return false;
