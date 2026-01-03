@@ -274,9 +274,6 @@ export class OrgContainer extends Container<OrgContainerEnv> {
     console.log('[OrgContainer] Starting container for org:', orgId);
 
     await this.startAndWaitForPorts({
-      startOptions: {
-        envVars: (this as any).envVars,
-      },
       ports: [WS_SERVER_PORT, CONTROL_PLANE_PORT],
       cancellationOptions: {
         instanceGetTimeoutMS: 30000,
