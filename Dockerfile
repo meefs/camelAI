@@ -1,14 +1,18 @@
 FROM node:22-slim
 
-# Version: 2026-01-03-v7
+# Version: 2026-01-03-v8
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
-
 ENV DEBIAN_FRONTEND=noninteractive
-ENV HOME=/home/claude
 
-# Layer 1: System deps + Bun + Wrangler (changes rarely)
+# Layer 1: Create claude user first (rename node user which has UID 1000)
+RUN usermod -l claude -d /home/claude node \
+  && groupmod -n claude node \
+  && mv /home/node /home/claude \
+  && chown -R claude:claude /home/claude
+
+# Layer 2: System deps + Bun + Wrangler (changes rarely)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -23,14 +27,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && npm install -g wrangler@4.55.0 \
   && mv /usr/local/bin/wrangler /usr/local/bin/wrangler-real
 
-# Layer 2: Create non-root user (changes rarely)
-# node:22-slim has 'node' user at UID 1000, rename to 'claude'
-RUN rm -rf /home/node /home/claude \
-  && usermod -l claude -d /home/claude node \
-  && groupmod -n claude node \
-  && mkdir -p /home/claude \
-  && chown claude:claude /home/claude
-
 # Layer 3: Wrangler wrapper (changes rarely)
 COPY --chmod=755 sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
 
@@ -43,9 +39,7 @@ RUN bun install
 COPY --chmod=755 sandbox/entrypoint.sh sandbox/run-driver.sh ./
 COPY sandbox/driver.mjs sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
 COPY sandbox/starter-worker ./starter-worker
-
-# Ensure app is readable
-RUN chmod -R a+rX /app && chown -R claude:claude /home/claude
+RUN chmod -R a+rX /app
 
 WORKDIR /home/claude
 ENTRYPOINT ["/app/entrypoint.sh"]
