@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { type Sandbox } from '@cloudflare/sandbox';
+import type { OrgContainer } from './org-container';
 import type { OrgDO, SessionDO } from './auth';
 import type { DoRpcService } from './rpc-service';
 
@@ -36,7 +36,7 @@ export interface Message {
 export interface ChatEnv {
   CHAT_INDEX: DurableObjectNamespace<ChatIndexDO>;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
-  SANDBOX: DurableObjectNamespace<Sandbox>;
+  SANDBOX: DurableObjectNamespace<OrgContainer>;
   ORG: DurableObjectNamespace<OrgDO>;
   SESSION: DurableObjectNamespace<SessionDO>;
   DO_RPC: Service<DoRpcService>;

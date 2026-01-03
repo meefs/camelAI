@@ -36,7 +36,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       payload.baseVersion === undefined ? undefined : payload.baseVersion;
 
     const existing = await computerDO.readWorkspaceFile(id, path);
-    const currentVersion = existing
+    const currentVersion = existing?.result.content
       ? await hashContent(existing.result.content)
       : null;
 

@@ -26,7 +26,7 @@
 	"dependencies": {
 		"@anthropic-ai/claude-agent-sdk": "^0.1.76",
 		"@monaco-editor/react": "^4.7.0",
-		"@cloudflare/sandbox": "^0.6.7",
+		"@cloudflare/containers": "^0.0.31",
 		"@opennextjs/cloudflare": "^1.14.4",
 		"@shikijs/rehype": "^3.20.0",
 		"class-variance-authority": "^0.7.1",

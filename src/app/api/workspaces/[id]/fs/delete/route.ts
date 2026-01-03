@@ -31,7 +31,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const result = await computerDO.deleteWorkspacePath(id, path);
     const response: WorkspaceOperationResult = {
       path,
-      timestamp: result.result.timestamp,
+      timestamp: result.result.timestamp ?? new Date().toISOString(),
     };
     return jsonResponse(response);
   } catch (error) {

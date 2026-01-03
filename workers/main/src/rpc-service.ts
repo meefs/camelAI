@@ -1,8 +1,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { getSandbox } from '@cloudflare/sandbox';
 import type { AuthEnv, SessionData, UserProfile, OrgIntegrationRecord } from './auth';
 import type { ChatEnv } from './durable-objects';
-import { getOrgSandbox } from './container';
+import { getOrgContainer, getContainerIdForOrg, type OrgContainerEnv } from './org-container';
 import type {
   Message,
   Organization,
@@ -31,7 +30,6 @@ import {
   deleteApiToken,
   type ApiTokenData,
 } from './api-tokens';
-import { getTempR2Credentials } from './r2-credentials';
 
 /**
  * Maps integration type + credential fields to ENV var names.
@@ -163,7 +161,7 @@ function mapCredentialsToEnvVars(
   return env;
 }
 
-interface DoRpcEnv extends AuthEnv, ChatEnv {
+interface DoRpcEnv extends AuthEnv, ChatEnv, OrgContainerEnv {
   INTEGRATION_SECRET_KEY: string;
 }
 
@@ -173,11 +171,6 @@ function getIndexStub(env: DoRpcEnv, org: string) {
 
 function getThreadStub(env: DoRpcEnv, threadId: string) {
   return env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-}
-
-function getSandboxIdForOrg(orgId: string): string {
-  const safeOrg = orgId.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
-  return `org-${safeOrg}`.slice(0, 63);
 }
 
 interface WorkspaceListOptions {
@@ -258,75 +251,29 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return this.env.R2_MOUNT_DIR || '/home/claude';
   }
 
-  private async buildSandboxEnv(orgId: string): Promise<Record<string, string>> {
-    const envVars: Record<string, string> = {
-      R2_PREFIX: `${orgId}/`,
-    };
-
-    if (this.env.R2_BUCKET_NAME) envVars.R2_BUCKET_NAME = this.env.R2_BUCKET_NAME;
-    if (this.env.R2_ACCOUNT_ID) envVars.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
-    if (this.env.R2_MOUNT_DIR) envVars.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
-    if (this.env.R2_MOUNT_READONLY) envVars.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
-
-    if (this.hasR2Config()) {
-      const tempCreds = await getTempR2Credentials(
-        this.env.R2_ACCOUNT_ID!,
-        this.env.R2_BUCKET_NAME!,
-        this.env.R2_PARENT_ACCESS_KEY_ID!,
-        this.env.R2_API_TOKEN!,
-        `${orgId}/`,
-        86400
-      );
-      envVars.AWS_ACCESS_KEY_ID = tempCreds.accessKeyId;
-      envVars.AWS_SECRET_ACCESS_KEY = tempCreds.secretAccessKey;
-      envVars.AWS_SESSION_TOKEN = tempCreds.sessionToken;
-    }
-
-    return envVars;
-  }
-
-  private async ensureWorkspaceSynced(
-    orgId: string,
-    sandbox: ReturnType<typeof getSandbox>,
-    workspaceRoot: string
-  ): Promise<void> {
-    if (!this.hasR2Config()) return;
-
-    // Ensure container is running before any sandbox operations
-    // This handles the case where container died (version rollout, crash, etc.)
-    try {
-      await sandbox.start();
-    } catch (e) {
-      console.error('[rpc] Failed to ensure container running:', String(e));
-      throw e;
-    }
-
-    const marker = await sandbox.exists('/tmp/.r2-synced');
-    if (marker.exists) return;
-
-    const envVars = await this.buildSandboxEnv(orgId);
-    const syncResult = await sandbox.exec(`node /app/sync.mjs download ${workspaceRoot}`, {
-      env: envVars,
-      timeout: 120000,
-    });
-    if (!syncResult.success) {
-      throw new Error(`Workspace sync failed: ${syncResult.stderr || 'unknown error'}`);
-    }
-    await sandbox.exec('touch /tmp/.r2-synced', { env: envVars, timeout: 5000 });
+  /**
+   * Ensure container is running for an org.
+   * R2 sync happens automatically in the container entrypoint.
+   */
+  private async ensureContainerRunning(orgId: string): Promise<void> {
+    const container = getOrgContainer(this.env, orgId);
+    await container.startForOrg(orgId);
   }
 
   private async uploadWorkspaceSnapshot(orgId: string): Promise<void> {
     if (!this.hasR2Config() || this.isR2ReadOnly()) return;
-    const sandboxId = getSandboxIdForOrg(orgId);
-    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
-    const workspaceRoot = this.getWorkspaceRoot();
-    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
 
-    const envVars = await this.buildSandboxEnv(orgId);
-    const syncResult = await sandbox.exec(`node /app/sync.mjs upload ${workspaceRoot}`, {
-      env: envVars,
+    const container = getOrgContainer(this.env, orgId);
+    const workspaceRoot = this.getWorkspaceRoot();
+
+    // Ensure container is running before exec
+    await container.startForOrg(orgId);
+
+    // Container entrypoint already synced R2 on startup, just trigger upload
+    const syncResult = await container.exec(`node /app/sync.mjs upload ${workspaceRoot}`, {
       timeout: 120000,
     });
+
     if (!syncResult.success) {
       console.error(
         `[workspace-sync] Upload failed for ${orgId}: ${syncResult.stderr || syncResult.stdout || 'unknown error'}`
@@ -1046,34 +993,46 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Messages are read from container's Claude JSONL file
     // threadId is the Claude session_id
     try {
-      const sandboxId = getSandboxIdForOrg(org);
-      const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
-      const workspaceRoot = this.getWorkspaceRoot();
+      console.log('[getMessages] Starting', { threadId, org });
+      const container = getOrgContainer(this.env, org);
 
-      // Ensure R2 data is synced to container (handles cold boot)
-      await this.ensureWorkspaceSynced(org, sandbox, workspaceRoot);
+      // Ensure container is running (R2 sync happens in entrypoint)
+      await container.startForOrg(org);
+      console.log('[getMessages] Container started');
 
       // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
       const jsonlPath = `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`;
+      console.log('[getMessages] Checking path:', jsonlPath);
 
       // Check if file exists
-      const exists = await sandbox.exists(jsonlPath);
+      const exists = await container.exists(jsonlPath);
+      console.log('[getMessages] Exists check:', exists);
       if (!exists.exists) {
+        console.log('[getMessages] File does not exist, returning []');
         return [];
       }
 
       // Read the JSONL file
-      const file = await sandbox.readFile(jsonlPath);
-      if (!file.content?.trim()) {
+      const file = await container.readFile(jsonlPath);
+      console.log('[getMessages] Read file result:', { success: file.success, contentLength: file.content?.length });
+      if (!file.success || !file.content?.trim()) {
+        console.log('[getMessages] File empty or read failed, returning []');
         return [];
       }
 
       const lines = file.content.split('\n').filter((line: string) => line.trim());
       const messages: Message[] = [];
 
+      console.log('[getMessages] JSONL lines count:', lines.length);
+      // Log first few lines to see the format
+      for (let i = 0; i < Math.min(3, lines.length); i++) {
+        console.log(`[getMessages] Line ${i}:`, lines[i].substring(0, 200));
+      }
+
       for (const line of lines) {
         try {
           const event = JSON.parse(line);
+          console.log('[getMessages] Event type:', event.type, 'has message:', !!event.message);
 
           // Extract user messages (text only, not tool results)
           if (event.type === 'user' && event.message?.content) {
@@ -1114,10 +1073,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         }
       }
 
+      console.log('[getMessages] Parsed messages:', messages.length);
       return messages;
     } catch (e) {
       // Container may not be running - return empty
-      console.error('[RPC] Error reading messages from container:', e);
+      console.error('[getMessages] Error reading messages from container:', e);
       return [];
     }
   }
@@ -1147,12 +1107,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async listWorkspaceFiles(orgId: string): Promise<SandboxFileListing> {
-    const sandboxId = getSandboxIdForOrg(orgId);
-    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const container = getOrgContainer(this.env, orgId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+    await container.startForOrg(orgId);
 
-    const listing = await sandbox.listFiles(workspaceRoot, {
+    const listing = await container.listFiles(workspaceRoot, {
       recursive: true,
       includeHidden: true,
     });
@@ -1161,7 +1120,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       path: listing.path,
       files,
       count: listing.count,
-      timestamp: listing.timestamp,
+      timestamp: listing.timestamp || new Date().toISOString(),
     };
   }
 
@@ -1169,17 +1128,16 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     orgId: string,
     options: WorkspaceListOptions = {}
   ): Promise<WorkspaceListResponse> {
-    const sandboxId = getSandboxIdForOrg(orgId);
-    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const container = getOrgContainer(this.env, orgId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+    await container.startForOrg(orgId);
 
     const workspacePath = normalizeWorkspacePath(options.path);
     const listPath = resolveWorkspacePath(workspaceRoot, workspacePath);
     const recursive = options.recursive ?? false;
     const includeHidden = options.includeHidden ?? true;
 
-    const listing = await sandbox.listFiles(listPath, { recursive, includeHidden });
+    const listing = await container.listFiles(listPath, { recursive, includeHidden });
     const entries: WorkspaceFileEntry[] = [];
 
     for (const file of listing.files) {
@@ -1199,23 +1157,22 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       path: workspacePath,
       entries,
       count: entries.length,
-      timestamp: listing.timestamp,
+      timestamp: listing.timestamp || new Date().toISOString(),
       recursive,
     };
   }
 
   async readWorkspaceFile(orgId: string, path: string) {
-    const sandboxId = getSandboxIdForOrg(orgId);
-    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const container = getOrgContainer(this.env, orgId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+    await container.startForOrg(orgId);
 
     const workspacePath = normalizeWorkspacePath(path);
     const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
-    const exists = await sandbox.exists(absolutePath);
+    const exists = await container.exists(absolutePath);
     if (!exists.exists) return null;
 
-    const result = await sandbox.readFile(absolutePath);
+    const result = await container.readFile(absolutePath);
     if (!result.success) {
       throw new Error(`Failed to read ${workspacePath}`);
     }
@@ -1223,14 +1180,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async writeWorkspaceFile(orgId: string, path: string, content: string) {
-    const sandboxId = getSandboxIdForOrg(orgId);
-    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const container = getOrgContainer(this.env, orgId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+    await container.startForOrg(orgId);
 
     const workspacePath = normalizeWorkspacePath(path);
     const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
-    const result = await sandbox.writeFile(absolutePath, content);
+    const result = await container.writeFile(absolutePath, content);
     if (!result.success) {
       throw new Error(`Failed to write ${workspacePath}`);
     }
@@ -1239,14 +1195,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async mkdirWorkspacePath(orgId: string, path: string) {
-    const sandboxId = getSandboxIdForOrg(orgId);
-    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const container = getOrgContainer(this.env, orgId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+    await container.startForOrg(orgId);
 
     const workspacePath = normalizeWorkspacePath(path);
     const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
-    const result = await sandbox.mkdir(absolutePath, { recursive: true });
+    const result = await container.mkdir(absolutePath, { recursive: true });
     if (!result.success) {
       throw new Error(`Failed to create directory ${workspacePath}`);
     }
@@ -1255,19 +1210,18 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async createWorkspaceFile(orgId: string, path: string, content = '') {
-    const sandboxId = getSandboxIdForOrg(orgId);
-    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const container = getOrgContainer(this.env, orgId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+    await container.startForOrg(orgId);
 
     const workspacePath = normalizeWorkspacePath(path);
     const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
-    const exists = await sandbox.exists(absolutePath);
+    const exists = await container.exists(absolutePath);
     if (exists.exists) {
       throw new Error('Workspace path already exists');
     }
 
-    const result = await sandbox.writeFile(absolutePath, content);
+    const result = await container.writeFile(absolutePath, content);
     if (!result.success) {
       throw new Error(`Failed to write ${workspacePath}`);
     }
@@ -1276,16 +1230,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async moveWorkspacePath(orgId: string, from: string, to: string) {
-    const sandboxId = getSandboxIdForOrg(orgId);
-    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const container = getOrgContainer(this.env, orgId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+    await container.startForOrg(orgId);
 
     const fromPath = normalizeWorkspacePath(from);
     const toPath = normalizeWorkspacePath(to);
     const sourcePath = resolveWorkspacePath(workspaceRoot, fromPath);
     const destinationPath = resolveWorkspacePath(workspaceRoot, toPath);
-    const result = await sandbox.moveFile(sourcePath, destinationPath);
+    const result = await container.moveFile(sourcePath, destinationPath);
     if (!result.success) {
       throw new Error(`Failed to move ${fromPath} to ${toPath}`);
     }
@@ -1294,17 +1247,16 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async deleteWorkspacePath(orgId: string, path: string) {
-    const sandboxId = getSandboxIdForOrg(orgId);
-    const sandbox = getSandbox(this.env.SANDBOX, sandboxId, { normalizeId: true });
+    const container = getOrgContainer(this.env, orgId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await this.ensureWorkspaceSynced(orgId, sandbox, workspaceRoot);
+    await container.startForOrg(orgId);
 
     const workspacePath = normalizeWorkspacePath(path);
     if (workspacePath === '/') {
       throw new Error('Refusing to delete workspace root');
     }
     const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
-    const result = await sandbox.deleteFile(absolutePath);
+    const result = await container.deleteFile(absolutePath);
     if (!result.success) {
       throw new Error(`Failed to delete ${workspacePath}`);
     }

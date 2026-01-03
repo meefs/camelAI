@@ -3,12 +3,11 @@
 import openNextHandler from "../../../.open-next/worker.js";
 import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
-import { Sandbox } from '@cloudflare/sandbox';
-import { handleWebSocketUpgrade, getSandboxIdForOrg, type ContainerEnv } from './container.js';
+import { OrgContainer, handleWebSocketUpgrade, getContainerIdForOrg, type OrgContainerEnv } from './org-container.js';
 export { DoRpcService } from './rpc-service.js';
 
-// Export Sandbox as ThreadSandbox to match wrangler.jsonc class_name
-export { Sandbox as ThreadSandbox };
+// Export OrgContainer as ThreadSandbox to match wrangler.jsonc class_name
+export { OrgContainer as ThreadSandbox };
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
@@ -22,7 +21,7 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
   return null;
 }
 
-interface Env extends ChatEnv, AuthEnv, ContainerEnv {
+interface Env extends ChatEnv, AuthEnv, OrgContainerEnv {
   ASSETS: Fetcher;
   NEXTJS_ENV?: string;
   CF_API_TOKEN?: string;
@@ -414,26 +413,44 @@ export default {
     if (wsMatch && request.headers.get('Upgrade') === 'websocket') {
       const orgFromPath = wsMatch[1];
 
+      console.log('[ws] WebSocket upgrade request received', {
+        path: url.pathname,
+        orgFromPath,
+        upgrade: request.headers.get('Upgrade'),
+        connection: request.headers.get('Connection'),
+        secWebSocketKey: request.headers.get('Sec-WebSocket-Key') ? 'present' : 'missing',
+        secWebSocketVersion: request.headers.get('Sec-WebSocket-Version'),
+      });
+
       // Authenticate the request
       const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
       const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
       const sessionId = headerSessionId || cookieSessionId;
 
       if (!sessionId) {
+        console.log('[ws] No session ID found, returning 401');
         return new Response('Unauthorized', { status: 401 });
       }
 
       const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
       const session = await sessionStub.getData();
       if (!session) {
+        console.log('[ws] Invalid session, returning 401', { sessionId });
         return new Response('Unauthorized', { status: 401 });
       }
 
       // Use the org from session (ignore path org for security)
       const org = session.org_id;
       if (!org) {
+        console.log('[ws] No org in session, returning 400', { sessionId });
         return new Response('No organization selected', { status: 400 });
       }
+
+      console.log('[ws] Authenticated, forwarding to container', {
+        sessionId,
+        org,
+        userId: session.user_id,
+      });
 
       // Handle WebSocket upgrade with container management
       return handleWebSocketUpgrade(request, env, org);
@@ -444,11 +461,11 @@ export default {
     if (resetMatch && request.method === 'POST') {
       const orgId = resetMatch[1];
       try {
-        const sandboxId = getSandboxIdForOrg(orgId);
-        const stub = env.SANDBOX.get(env.SANDBOX.idFromName(sandboxId));
-        // Call destroy on the DO - this will terminate the container
-        await stub.fetch(new Request('http://internal/destroy', { method: 'POST' }));
-        return new Response(JSON.stringify({ success: true, sandboxId }), {
+        const containerId = getContainerIdForOrg(orgId);
+        const stub = env.SANDBOX.get(env.SANDBOX.idFromName(containerId));
+        // Call destroy on the Container DO - this will terminate the container
+        await stub.destroy();
+        return new Response(JSON.stringify({ success: true, containerId }), {
           headers: { 'Content-Type': 'application/json' },
         });
       } catch (e) {
