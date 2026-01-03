@@ -56,6 +56,7 @@ function cfApiError(code: number, message: string, status: number): Response {
 }
 
 const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
+const DISPATCH_SCRIPT_BASE = /^\/client\/v4\/accounts\/([^/]+)\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)$/;
 const ASSETS_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
 
 function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
@@ -66,16 +67,24 @@ function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): b
   const dispatchScriptDeployments = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/deployments$/;
   const dispatchScriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
   const dispatchAssetsUploadSession = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
+  const dispatchScriptSecrets = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/secrets$/;
+  const dispatchScriptSecretBinding = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/secrets\/[^/]+$/;
 
   switch (m) {
     case 'GET':
-      return dispatchScript.test(pathname) || dispatchScriptDeployments.test(pathname) || dispatchScriptSettings.test(pathname);
+      return dispatchScript.test(pathname) ||
+        dispatchScriptDeployments.test(pathname) ||
+        dispatchScriptSettings.test(pathname) ||
+        dispatchScriptSecrets.test(pathname) ||
+        dispatchScriptSecretBinding.test(pathname);
     case 'PUT':
-      return dispatchScript.test(pathname);
+      return dispatchScript.test(pathname) || dispatchScriptSecrets.test(pathname);
     case 'PATCH':
       return dispatchScriptSettings.test(pathname);
     case 'POST':
       return dispatchAssetsUploadSession.test(pathname) || ASSETS_UPLOAD.test(pathname);
+    case 'DELETE':
+      return dispatchScriptSecretBinding.test(pathname);
     default:
       return false;
   }
@@ -162,7 +171,161 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
   return { files, wranglerConfigs, formParts };
 }
 
-async function proxyCloudflareApi(request: Request, env: Env): Promise<Response> {
+function deriveOrgPrefix(orgId: string): string {
+  return orgId.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+async function resolveOrgContext(tokenKv: KVNamespace, tokenValue: string): Promise<{ orgPrefix: string; orgId: string | null }> {
+  let orgPrefix = tokenValue;
+  let orgId: string | null = null;
+
+  if (tokenValue.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(tokenValue) as { orgId?: string; orgPrefix?: string };
+      if (parsed.orgId) {
+        orgId = parsed.orgId;
+        orgPrefix = parsed.orgPrefix ?? deriveOrgPrefix(parsed.orgId);
+      } else if (parsed.orgPrefix) {
+        orgPrefix = parsed.orgPrefix;
+      }
+    } catch {
+      // fall back to treating token value as prefix
+      orgPrefix = tokenValue;
+    }
+  }
+
+  if (!orgId) {
+    const mappedOrgId = await tokenKv.get(`platform_script_prefix:${orgPrefix}`);
+    if (mappedOrgId) {
+      orgId = mappedOrgId;
+    }
+  }
+
+  if (!orgId && orgPrefix.length <= 32) {
+    orgId = orgPrefix;
+  }
+
+  return { orgPrefix, orgId };
+}
+
+async function callCloudflareApi<T>(
+  url: string,
+  init: RequestInit,
+  context: string
+): Promise<T | null> {
+  const resp = await fetch(url, init);
+  if (!resp.ok) {
+    const bodyText = await resp.text();
+    console.warn(`[cf-api] ${context} failed`, {
+      status: resp.status,
+      statusText: resp.statusText,
+      bodyPreview: bodyText.slice(0, 512),
+    });
+    return null;
+  }
+  const data = await resp.json() as { success?: boolean; result?: T; errors?: unknown[] };
+  if (data.success === false) {
+    console.warn(`[cf-api] ${context} returned error`, { errors: data.errors });
+    return null;
+  }
+  return data.result ?? null;
+}
+
+async function listDispatchScriptSecrets(
+  accountId: string,
+  dispatchNamespace: string,
+  scriptName: string,
+  apiToken: string
+): Promise<Array<{ name: string }>> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+    `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
+    `/scripts/${encodeURIComponent(scriptName)}/secrets`;
+  const headers = { Authorization: `Bearer ${apiToken}` };
+  return (await callCloudflareApi<Array<{ name: string }>>(url, { method: 'GET', headers }, 'list script secrets')) ?? [];
+}
+
+async function upsertDispatchScriptSecret(
+  accountId: string,
+  dispatchNamespace: string,
+  scriptName: string,
+  apiToken: string,
+  name: string,
+  text: string
+): Promise<void> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+    `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
+    `/scripts/${encodeURIComponent(scriptName)}/secrets`;
+  const headers = {
+    Authorization: `Bearer ${apiToken}`,
+    'Content-Type': 'application/json',
+  };
+  await callCloudflareApi(
+    url,
+    {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ name, text, type: 'secret_text' }),
+    },
+    `upsert script secret ${name}`
+  );
+}
+
+async function deleteDispatchScriptSecret(
+  accountId: string,
+  dispatchNamespace: string,
+  scriptName: string,
+  apiToken: string,
+  name: string
+): Promise<void> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+    `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
+    `/scripts/${encodeURIComponent(scriptName)}/secrets/${encodeURIComponent(name)}`;
+  const headers = { Authorization: `Bearer ${apiToken}` };
+  await callCloudflareApi(
+    url,
+    { method: 'DELETE', headers },
+    `delete script secret ${name}`
+  );
+}
+
+async function syncDispatchScriptSecrets(
+  env: Env,
+  orgId: string,
+  accountId: string,
+  dispatchNamespace: string,
+  scriptName: string,
+  apiToken: string
+): Promise<void> {
+  const integrationEnvVars = await env.DO_RPC.getOrgIntegrationEnvVars(orgId);
+  const secretEntries = Object.entries(integrationEnvVars);
+
+  if (secretEntries.length === 0) {
+    const existing = await listDispatchScriptSecrets(accountId, dispatchNamespace, scriptName, apiToken);
+    const managed = existing.filter(secret => secret.name.startsWith('INT_'));
+    if (managed.length) {
+      await Promise.all(managed.map(secret =>
+        deleteDispatchScriptSecret(accountId, dispatchNamespace, scriptName, apiToken, secret.name)
+      ));
+    }
+    return;
+  }
+
+  const existingSecrets = await listDispatchScriptSecrets(accountId, dispatchNamespace, scriptName, apiToken);
+  const desiredNames = new Set(secretEntries.map(([name]) => name));
+  const stale = existingSecrets.filter(secret => secret.name.startsWith('INT_') && !desiredNames.has(secret.name));
+
+  await Promise.all(secretEntries.map(([name, value]) =>
+    upsertDispatchScriptSecret(accountId, dispatchNamespace, scriptName, apiToken, name, value)
+  ));
+
+  if (stale.length) {
+    await Promise.all(stale.map(secret =>
+      deleteDispatchScriptSecret(accountId, dispatchNamespace, scriptName, apiToken, secret.name)
+    ));
+  }
+}
+
+async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
 
   const upstreamApiToken = env.CF_API_TOKEN?.trim();
@@ -197,8 +360,8 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
   // Token -> org prefix mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
   // to EMAIL_TO_USER for the proof-of-concept (prefix-isolated).
   const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-  const orgPrefix = await tokenKv.get(`platform_script_token:${proxyToken}`);
-  if (!orgPrefix) {
+  const tokenValue = await tokenKv.get(`platform_script_token:${proxyToken}`);
+  if (!tokenValue) {
     console.warn('[cf-api-proxy] invalid deploy token', {
       method: request.method,
       path: url.pathname,
@@ -206,6 +369,7 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     });
     return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
   }
+  const { orgPrefix, orgId } = await resolveOrgContext(tokenKv, tokenValue);
 
   const accountId = env.CF_ACCOUNT_ID?.trim();
   const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
@@ -358,6 +522,36 @@ async function proxyCloudflareApi(request: Request, env: Env): Promise<Response>
     return new Response(respBody, { status: resp.status, headers: resp.headers });
   }
 
+  if (method === 'PUT') {
+    const scriptMatch = pathname.match(DISPATCH_SCRIPT_BASE);
+    if (scriptMatch) {
+      const account = decodeURIComponent(scriptMatch[1]!);
+      const dispatchNs = decodeURIComponent(scriptMatch[2]!);
+      const scriptName = decodeURIComponent(scriptMatch[3]!);
+      if (!orgId) {
+        console.warn('[cf-api-proxy] unable to resolve org for script secrets sync', {
+          account,
+          dispatchNamespace: dispatchNs,
+          scriptName,
+          orgPrefix,
+        });
+      } else {
+        ctx.waitUntil(
+          syncDispatchScriptSecrets(env, orgId, account, dispatchNs, scriptName, upstreamApiToken)
+            .catch(err => {
+              console.error('[cf-api-proxy] failed to sync script secrets', {
+                account,
+                dispatchNamespace: dispatchNs,
+                scriptName,
+                orgId,
+                error: String(err),
+              });
+            })
+        );
+      }
+    }
+  }
+
   return new Response(respBody, { status: resp.status, headers: resp.headers });
 }
 
@@ -368,7 +562,7 @@ export default {
     // Cloudflare API proxy for Wrangler: set `CLOUDFLARE_API_BASE_URL` to `${origin}/client/v4`.
     if (url.pathname.startsWith('/client/v4/')) {
       try {
-        return await proxyCloudflareApi(request, env);
+        return await proxyCloudflareApi(request, env, ctx);
       } catch (e) {
         return cfApiError(10004, `Cloudflare API proxy failed: ${String(e)}`, 502);
       }

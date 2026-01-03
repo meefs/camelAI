@@ -125,16 +125,19 @@ async function getOrCreateContainerToken(
   kv: KVNamespace,
   org: string
 ): Promise<string> {
+  const orgPrefix = org.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const prefixKey = `platform_script_prefix:${orgPrefix}`;
   const existingTokenKey = `container_token:${org}`;
   const existingToken = await kv.get(existingTokenKey);
   if (existingToken) {
+    await kv.put(prefixKey, org);
     return existingToken;
   }
 
   const token = generateContainerToken();
-  const orgPrefix = org.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
 
   await kv.put(`platform_script_token:${token}`, orgPrefix);
+  await kv.put(prefixKey, org);
   await kv.put(existingTokenKey, token);
 
   return token;
