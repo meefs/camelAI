@@ -251,9 +251,11 @@ export class OrgContainer extends Container<OrgContainerEnv> {
    * Start container with org-specific environment variables.
    */
   async startForOrg(orgId: string): Promise<void> {
+    const startTime = Date.now();
     console.log('[OrgContainer] Starting container for org:', orgId);
 
     const envVars = await this.buildEnvVars(orgId);
+    console.log('[OrgContainer] Built env vars in', Date.now() - startTime, 'ms');
 
     await this.startAndWaitForPorts({
       startOptions: {
@@ -267,7 +269,7 @@ export class OrgContainer extends Container<OrgContainerEnv> {
       },
     });
 
-    console.log('[OrgContainer] Container started and ports ready for org:', orgId);
+    console.log('[OrgContainer] Container started and ports ready for org:', orgId, 'in', Date.now() - startTime, 'ms');
   }
 
   /**
