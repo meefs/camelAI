@@ -993,46 +993,32 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Messages are read from container's Claude JSONL file
     // threadId is the Claude session_id
     try {
-      console.log('[getMessages] Starting', { threadId, org });
       const container = getOrgContainer(this.env, org);
 
       // Ensure container is running (R2 sync happens in entrypoint)
       await container.startForOrg(org);
-      console.log('[getMessages] Container started');
 
       // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
       const jsonlPath = `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`;
-      console.log('[getMessages] Checking path:', jsonlPath);
 
       // Check if file exists
       const exists = await container.exists(jsonlPath);
-      console.log('[getMessages] Exists check:', exists);
       if (!exists.exists) {
-        console.log('[getMessages] File does not exist, returning []');
         return [];
       }
 
       // Read the JSONL file
       const file = await container.readFile(jsonlPath);
-      console.log('[getMessages] Read file result:', { success: file.success, contentLength: file.content?.length });
       if (!file.success || !file.content?.trim()) {
-        console.log('[getMessages] File empty or read failed, returning []');
         return [];
       }
 
       const lines = file.content.split('\n').filter((line: string) => line.trim());
       const messages: Message[] = [];
 
-      console.log('[getMessages] JSONL lines count:', lines.length);
-      // Log first few lines to see the format
-      for (let i = 0; i < Math.min(3, lines.length); i++) {
-        console.log(`[getMessages] Line ${i}:`, lines[i].substring(0, 200));
-      }
-
       for (const line of lines) {
         try {
           const event = JSON.parse(line);
-          console.log('[getMessages] Event type:', event.type, 'has message:', !!event.message);
 
           // Extract user messages (text only, not tool results)
           if (event.type === 'user' && event.message?.content) {
@@ -1073,11 +1059,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         }
       }
 
-      console.log('[getMessages] Parsed messages:', messages.length);
       return messages;
     } catch (e) {
       // Container may not be running - return empty
-      console.error('[getMessages] Error reading messages from container:', e);
+      console.error('[getMessages] Error:', e);
       return [];
     }
   }

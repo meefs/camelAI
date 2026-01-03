@@ -409,14 +409,10 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const orgIdForConnection = resolvedOrgId;
     const wsUrl = `${protocol}//${wsHost}/ws/${orgIdForConnection}`;
-    const wsStartTime = performance.now();
-    debugLog('ws:connecting', { url: wsUrl, connectionId: thisConnectionId });
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      const openElapsed = performance.now() - wsStartTime;
-      debugLog('ws:onopen', { elapsed: `${openElapsed.toFixed(0)}ms`, connectionId: thisConnectionId });
       // Ignore if this connection was superseded
       if (connectionIdRef.current !== thisConnectionId) {
         return;
@@ -431,7 +427,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         sessionId: sessionIdRef.current,
         lastEventId: lastEventIdRef.current,
       }));
-      debugLog('ws:init:sent', { threadId: id, elapsed: `${(performance.now() - wsStartTime).toFixed(0)}ms` });
     };
 
     ws.onmessage = (event) => {
@@ -451,8 +446,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
       if (data.type === 'ready') {
         // Container is ready to receive messages
-        const readyElapsed = performance.now() - wsStartTime;
-        debugLog('ws:ready', { threadId: id, elapsed: `${readyElapsed.toFixed(0)}ms` });
+        debugLog('ws:ready', { threadId: id });
         setReady(true);
 
         // Send pending message if exists (from welcome screen or queued while disconnected)
@@ -683,15 +677,14 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       }
     };
 
-    ws.onclose = (event) => {
-      const closeElapsed = performance.now() - wsStartTime;
+    ws.onclose = () => {
       // Ignore if this connection was superseded by a new one
       if (connectionIdRef.current !== thisConnectionId) {
-        debugLog('ws:close:superseded', { connectionId: thisConnectionId, currentId: connectionIdRef.current, elapsed: `${closeElapsed.toFixed(0)}ms` });
+        debugLog('ws:close:superseded', { connectionId: thisConnectionId, currentId: connectionIdRef.current });
         return;
       }
 
-      debugLog('ws:close', { connectionId: thisConnectionId, attempt: reconnectAttempts.current, code: event.code, reason: event.reason, elapsed: `${closeElapsed.toFixed(0)}ms` });
+      debugLog('ws:close', { connectionId: thisConnectionId, attempt: reconnectAttempts.current });
       setReady(false);
       wsRef.current = null;
 
@@ -710,9 +703,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       }
     };
 
-    ws.onerror = (event) => {
-      const errorElapsed = performance.now() - wsStartTime;
-      debugLog('ws:error', { connectionId: thisConnectionId, elapsed: `${errorElapsed.toFixed(0)}ms`, event: String(event) });
+    ws.onerror = () => {
       // Ignore errors from superseded connections
       if (connectionIdRef.current !== thisConnectionId) {
         return;
