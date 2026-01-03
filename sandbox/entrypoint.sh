@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-03-v2
+# Version: 2026-01-03-v3
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -108,7 +108,7 @@ chmod 644 /tmp/ws-env.sh
 
 # Start control-plane server as claude user (runs on port 9000)
 echo "[entrypoint] Starting control-plane server on port 9000..." >&2
-su -s /bin/sh claude -c '. /tmp/ws-env.sh && cd "$TARGET_DIR" && node /app/control-plane.mjs' &
+su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && node /app/control-plane.mjs" &
 CONTROL_PID=$!
 echo "[entrypoint] Control-plane PID: $CONTROL_PID" >&2
 
@@ -122,8 +122,7 @@ fi
 # Start ws-server as claude user (runs on port 8080)
 # Run in foreground (no exec) so the shell stays alive for the trap
 echo "[entrypoint] Starting ws-server as claude user on port 8080..." >&2
-cd "$TARGET_DIR"
-su -s /bin/sh claude -c '. /tmp/ws-env.sh && bun /app/ws-server.mjs' &
+su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && bun /app/ws-server.mjs" &
 WS_PID=$!
 echo "[entrypoint] ws-server PID: $WS_PID" >&2
 
