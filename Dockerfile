@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-03-v6
+# Version: 2026-01-03-v7
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -25,7 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Layer 2: Create non-root user (changes rarely)
 # node:22-slim has 'node' user at UID 1000, rename to 'claude'
-RUN usermod -l claude -d /home/claude -m node && groupmod -n claude node
+RUN rm -rf /home/node /home/claude \
+  && usermod -l claude -d /home/claude node \
+  && groupmod -n claude node \
+  && mkdir -p /home/claude \
+  && chown claude:claude /home/claude
 
 # Layer 3: Wrangler wrapper (changes rarely)
 COPY --chmod=755 sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
