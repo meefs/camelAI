@@ -1,16 +1,13 @@
 FROM node:22-slim
 
-# Version: 2026-01-03-v8
+# Version: 2026-01-03-v9
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Layer 1: Create claude user first (rename node user which has UID 1000)
-RUN usermod -l claude -d /home/claude node \
-  && groupmod -n claude node \
-  && mv /home/node /home/claude \
-  && chown -R claude:claude /home/claude
+# Layer 1: Create claude user (separate from node user)
+RUN useradd -m -s /bin/bash claude
 
 # Layer 2: System deps + Bun + Wrangler (changes rarely)
 RUN apt-get update && apt-get install -y --no-install-recommends \
