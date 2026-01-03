@@ -254,13 +254,24 @@ export class OrgContainer extends Container<OrgContainerEnv> {
   async startForOrg(orgId: string): Promise<void> {
     // Check if container is already running - skip expensive env var building
     const state = await this.getState();
+    console.log('[OrgContainer] startForOrg state', { orgId, status: state.status });
     if (state.status === 'running' || state.status === 'healthy') {
+      console.log('[OrgContainer] startForOrg skipping start; container already running', {
+        orgId,
+        status: state.status,
+      });
       return;
     }
 
     console.log('[OrgContainer] Starting container for org:', orgId);
 
     const envVars = await this.buildEnvVars(orgId);
+
+    console.log('[OrgContainer] startForOrg startAndWaitForPorts', {
+      orgId,
+      entrypoint: ['/bin/sh', '/app/entrypoint.sh'],
+      ports: [WS_SERVER_PORT, CONTROL_PLANE_PORT],
+    });
 
     await this.startAndWaitForPorts({
       startOptions: {
