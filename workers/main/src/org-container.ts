@@ -252,7 +252,16 @@ export class OrgContainer extends Container<OrgContainerEnv> {
    * If container is already running, returns immediately without rebuilding env vars.
    */
   async startForOrg(orgId: string): Promise<void> {
-    // Check if container is already running - skip expensive env var building
+    this.orgId = orgId;
+
+    // Build and set envVars once per container instance - set as class property
+    // so Container class uses them for any start path (including auto-restarts)
+    if (!(this as any).envVars || Object.keys((this as any).envVars).length === 0) {
+      console.log('[OrgContainer] Building env vars for org:', orgId);
+      const envVars = await this.buildEnvVars(orgId);
+      (this as any).envVars = envVars;
+    }
+
     const state = await this.getState();
     console.log('[OrgContainer] startForOrg state', { orgId, status: state.status });
     if (state.status === 'running' || state.status === 'healthy') {
@@ -265,18 +274,14 @@ export class OrgContainer extends Container<OrgContainerEnv> {
 
     console.log('[OrgContainer] Starting container for org:', orgId);
 
-    const envVars = await this.buildEnvVars(orgId);
-
     console.log('[OrgContainer] startForOrg startAndWaitForPorts', {
       orgId,
-      entrypoint: ['/bin/sh', '/app/entrypoint.sh'],
       ports: [WS_SERVER_PORT, CONTROL_PLANE_PORT],
     });
 
     await this.startAndWaitForPorts({
       startOptions: {
-        envVars,
-        // Entrypoint is defined in Dockerfile - no runtime override needed
+        envVars: (this as any).envVars,
       },
       ports: [WS_SERVER_PORT, CONTROL_PLANE_PORT],
       cancellationOptions: {
