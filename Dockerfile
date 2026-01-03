@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-03-v4
+# Version: 2026-01-03-v5
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -19,8 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
   && rm -rf /var/lib/apt/lists/* \
-  && curl -fsSL https://bun.sh/install | bash \
-  && mv /root/.bun/bin/bun /usr/local/bin/ \
+  && BUN_INSTALL=/usr/local curl -fsSL https://bun.sh/install | bash \
   && npm install -g wrangler@4.55.0 \
   && mv /usr/local/bin/wrangler /usr/local/bin/wrangler-real
 
