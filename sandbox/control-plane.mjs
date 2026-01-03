@@ -1,9 +1,9 @@
 /**
  * Control Plane Server - HTTP API for exec and filesystem operations.
- * Runs as root on port 9000, providing privileged operations for the container.
- * All endpoints except /health require Bearer token authentication.
+ * Runs as claude user on port 9000, providing exec/fs operations for the container.
+ * No auth required - container isolation is the security boundary.
  *
- * Version: 2026-01-02-v2
+ * Version: 2026-01-03-v2
  */
 import http from 'node:http';
 import { exec as execCallback } from 'node:child_process';

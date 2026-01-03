@@ -4,9 +4,9 @@
 #
 # Ports:
 #   8080 - ws-server (Claude SDK) - runs as claude user
-#   9000 - control-plane (exec/fs) - runs as root
+#   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-02-v2
+# Version: 2026-01-03-v2
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -87,19 +87,6 @@ fi
 mkdir -p "$TARGET_DIR"
 chown -R claude:claude "$TARGET_DIR"
 
-# Start control-plane server (runs as root on port 9000)
-echo "[entrypoint] Starting control-plane server on port 9000..." >&2
-node /app/control-plane.mjs &
-CONTROL_PID=$!
-echo "[entrypoint] Control-plane PID: $CONTROL_PID" >&2
-
-# Wait for control-plane to be ready
-sleep 0.5
-if ! kill -0 "$CONTROL_PID" 2>/dev/null; then
-  echo "[entrypoint] ERROR: Control-plane failed to start!" >&2
-  exit 1
-fi
-
 # Write env vars to a file that claude user can source
 cat > /tmp/ws-env.sh << ENVEOF
 export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'
@@ -118,6 +105,19 @@ export CF_DISPATCH_NAMESPACE='${CF_DISPATCH_NAMESPACE:-}'
 export WORKER_BASE_URL='${WORKER_BASE_URL:-}'
 ENVEOF
 chmod 644 /tmp/ws-env.sh
+
+# Start control-plane server as claude user (runs on port 9000)
+echo "[entrypoint] Starting control-plane server on port 9000..." >&2
+su -s /bin/sh claude -c '. /tmp/ws-env.sh && cd "$TARGET_DIR" && node /app/control-plane.mjs' &
+CONTROL_PID=$!
+echo "[entrypoint] Control-plane PID: $CONTROL_PID" >&2
+
+# Wait for control-plane to be ready
+sleep 0.5
+if ! kill -0 "$CONTROL_PID" 2>/dev/null; then
+  echo "[entrypoint] ERROR: Control-plane failed to start!" >&2
+  exit 1
+fi
 
 # Start ws-server as claude user (runs on port 8080)
 # Run in foreground (no exec) so the shell stays alive for the trap
