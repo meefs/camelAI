@@ -1,39 +1,47 @@
-FROM docker.io/cloudflare/sandbox:0.6.7-python
+FROM node:22-slim
 
-# Version: 2026-01-03-v2
-# Using sandbox base image for tooling (Bun, Node, etc.)
+# Version: 2026-01-03-v4
+# Slim container with Node, Bun, Python for Claude SDK sandbox
 
-# Expose container ports
-# 8080: WS server for Claude SDK (runs as claude user)
-# 9000: Control plane for exec/fs operations (runs as root)
 EXPOSE 8080 9000
 
-# R2 sync support (tar+zstd for fast snapshot-based sync)
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/claude
+
+# Layer 1: System deps + Bun + Wrangler (changes rarely)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    -o Dpkg::Options::="--force-confnew" \
     ca-certificates \
     curl \
     tar \
     zstd \
+    unzip \
+    git \
+    python3 \
+    python3-pip \
   && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL https://bun.sh/install | bash \
+  && mv /root/.bun/bin/bun /usr/local/bin/ \
   && npm install -g wrangler@4.55.0 \
   && mv /usr/local/bin/wrangler /usr/local/bin/wrangler-real
 
-# Wrangler wrapper to ensure WFP dispatch namespace is used
-COPY sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
-RUN chmod a+rx /usr/local/bin/wrangler
+# Layer 2: Create non-root user (changes rarely)
+RUN useradd -m -s /bin/bash -u 1000 claude
 
-# Copy and install Claude SDK + control plane + WS server
-COPY sandbox/package.json sandbox/driver.mjs sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/entrypoint.sh sandbox/run-driver.sh /app/
-COPY sandbox/starter-worker /app/starter-worker
+# Layer 3: Wrangler wrapper (changes rarely)
+COPY --chmod=755 sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
+
+# Layer 4: Dependencies only - cached unless package.json changes
 WORKDIR /app
+COPY sandbox/package.json ./
 RUN bun install
-RUN chmod +x /app/entrypoint.sh /app/run-driver.sh && chmod -R a+rX /app
 
-# Create non-root user for Claude agent (ws-server drops privileges to this user)
-RUN if ! id -u claude >/dev/null 2>&1; then useradd -m -s /bin/bash -u 1000 claude; fi && \
-    chown -R claude:claude /home/claude
+# Layer 5: App code (changes frequently) - copied after install for better caching
+COPY --chmod=755 sandbox/entrypoint.sh sandbox/run-driver.sh ./
+COPY sandbox/driver.mjs sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
+COPY sandbox/starter-worker ./starter-worker
+
+# Ensure app is readable
+RUN chmod -R a+rX /app && chown -R claude:claude /home/claude
 
 WORKDIR /home/claude
+ENTRYPOINT ["/app/entrypoint.sh"]

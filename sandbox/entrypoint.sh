@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-03-v3
+# Version: 2026-01-03-v4
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
