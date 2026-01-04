@@ -87,7 +87,7 @@ export function ChatsList({
 }: ChatsListProps) {
   if (loading) {
     return (
-      <ScrollArea className="flex-1 sm:-ml-6 sm:w-[calc(100%+1.5rem)]">
+      <ScrollArea className="flex-1 min-h-0 sm:-ml-6 sm:w-[calc(100%+1.5rem)]">
         <div className="sm:pl-6">
           <LoadingSkeleton />
         </div>
@@ -101,7 +101,7 @@ export function ChatsList({
 
   return (
     <ScrollArea
-      className="flex-1 sm:-ml-6 sm:w-[calc(100%+1.5rem)]"
+      className="flex-1 min-h-0 sm:-ml-6 sm:w-[calc(100%+1.5rem)]"
       viewportRef={scrollViewportRef}
     >
       <div className="py-2 sm:pl-6">
