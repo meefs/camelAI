@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 
 // Debug logging for message state changes
 const DEBUG_MESSAGES = true;
@@ -250,6 +250,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const iframeRetryRef = useRef<NodeJS.Timeout | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const initialScrollDoneRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const previewWsRef = useRef<WebSocket | null>(null);
   const previewReconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -278,6 +279,10 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       initialThreadsOrgRef.current = orgId;
     }
   }, [initialThreads, orgId]);
+
+  useEffect(() => {
+    initialScrollDoneRef.current = false;
+  }, [threadId]);
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
@@ -1003,6 +1008,25 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [threadId, shouldShowChat, resolvedOrgId, connectPreviewWebSocket]);
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const container = scrollContainerRef.current;
+    if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior });
+      return;
+    }
+    messagesEndRef.current?.scrollIntoView({ behavior });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!shouldShowChat || !threadId) return;
+    if (initialScrollDoneRef.current) return;
+    if (messages.length === 0 && streaming.content.length === 0) return;
+
+    scrollToBottom('auto');
+    setShowScrollButton(false);
+    initialScrollDoneRef.current = true;
+  }, [shouldShowChat, threadId, messages.length, streaming.content.length, scrollToBottom]);
+
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -1017,7 +1041,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      scrollToBottom();
       return;
     }
 
@@ -1026,13 +1050,9 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
     // Only auto-scroll if user is near bottom (within 150px)
     if (distanceFromBottom < 150) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      scrollToBottom();
     }
-  }, [messages, streaming.content]);
-
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
+  }, [messages, streaming.content, scrollToBottom]);
 
   const copyMessage = useCallback(async (messageId: string, content: string) => {
     try {
@@ -1149,6 +1169,9 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
             <div
               ref={scrollContainerRef}
               onScroll={handleScroll}
+              tabIndex={0}
+              role="region"
+              aria-label="Chat messages"
               className="flex-1 overflow-y-auto overflow-x-hidden"
             >
               {/* Centered message column */}
@@ -1347,6 +1370,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                     onSubmit={sendMessage}
                     placeholder="Type a message..."
                     isLoading={loading}
+                    autoFocus
                   />
                 </div>
               </div>
@@ -1461,6 +1485,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                 placeholder="Ask anything..."
                 isLoading={isCreatingThread}
                 minHeight="80px"
+                autoFocus
               />
             </div>
           </div>

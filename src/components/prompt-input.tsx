@@ -17,6 +17,7 @@ interface PromptInputProps {
   isLoading?: boolean;
   minHeight?: string;
   className?: string;
+  autoFocus?: boolean;
 }
 
 export function PromptInput({
@@ -28,6 +29,7 @@ export function PromptInput({
   isLoading = false,
   minHeight = '44px',
   className,
+  autoFocus = false,
 }: PromptInputProps) {
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -56,6 +58,7 @@ export function PromptInput({
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           disabled={disabled}
+          autoFocus={autoFocus}
           className="text-base p-3.5 max-h-96 overflow-y-auto"
           style={{ minHeight }}
         />
