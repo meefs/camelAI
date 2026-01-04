@@ -259,6 +259,8 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef(0);
+  const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
+  const previewConnectionStartedAtRef = useRef<number | null>(null);
   const initialMessagesRef = useRef<{ threadId?: string; messages: Message[] } | null>(
     initialMessages ? { threadId, messages: parsedInitialMessages } : null
   );
@@ -414,6 +416,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     // Increment connection ID to invalidate any pending callbacks from old connections
     const thisConnectionId = ++connectionIdRef.current;
     debugLog('connectWebSocket:newConnectionId', { connectionId: thisConnectionId, isReconnect });
+    connectionStartedAtRef.current.set(thisConnectionId, Date.now());
 
     // Close existing connection regardless of state
     // This prevents orphaned WebSockets from React StrictMode double-mounting
@@ -463,6 +466,12 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         return;
       }
       reconnectAttempts.current = 0;
+      debugLog('ws:open', {
+        connectionId: thisConnectionId,
+        threadId: id,
+        sessionId: sessionIdRef.current,
+        lastEventId: lastEventIdRef.current,
+      });
 
       // Send init message to container
       ws.send(JSON.stringify({
@@ -616,14 +625,24 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       // Ignore if this connection was superseded by a new one
       if (connectionIdRef.current !== thisConnectionId) {
         debugLog('ws:close:superseded', { connectionId: thisConnectionId, currentId: connectionIdRef.current });
         return;
       }
 
-      debugLog('ws:close', { connectionId: thisConnectionId, attempt: reconnectAttempts.current });
+      const startedAt = connectionStartedAtRef.current.get(thisConnectionId);
+      debugLog('ws:close', {
+        connectionId: thisConnectionId,
+        attempt: reconnectAttempts.current,
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean,
+        durationMs: startedAt ? Date.now() - startedAt : null,
+        readyState: ws.readyState,
+      });
+      connectionStartedAtRef.current.delete(thisConnectionId);
       setReady(false);
       wsRef.current = null;
 
@@ -716,9 +735,11 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     const wsUrl = `${protocol}//${wsHost}/ws/thread/${id}`;
     const ws = new WebSocket(wsUrl);
     previewWsRef.current = ws;
+    previewConnectionStartedAtRef.current = Date.now();
 
     ws.onopen = () => {
       previewReconnectAttempts.current = 0;
+      debugLog('preview:ws:open', { threadId: id });
     };
 
     ws.onmessage = (event) => {
@@ -749,9 +770,17 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (previewWsRef.current !== ws) return; // Ignore stale connections
+      debugLog('preview:ws:close', {
+        threadId: id,
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean,
+        durationMs: previewConnectionStartedAtRef.current ? Date.now() - previewConnectionStartedAtRef.current : null,
+      });
       previewWsRef.current = null;
+      previewConnectionStartedAtRef.current = null;
 
       // Auto-reconnect with exponential backoff
       const maxAttempts = 5;

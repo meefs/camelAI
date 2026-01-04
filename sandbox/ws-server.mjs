@@ -60,7 +60,7 @@ function createSession(threadId) {
     eventLoopRunning: false,
     messageResolver: null,
     messageQueue: [],
-    attachedWs: null,
+    attachedSockets: new Set(),
     eventBuffer: [],
     nextEventId: 1,
   };
@@ -199,6 +199,9 @@ async function* createMessageStream(session) {
 }
 
 function bufferEvent(session, payload) {
+  if (!session.attachedSockets) {
+    session.attachedSockets = new Set();
+  }
   const eventId = session.nextEventId++;
   const envelope = { ...payload, eventId, sessionId: session.threadId };
   session.eventBuffer.push(envelope);
@@ -206,12 +209,14 @@ function bufferEvent(session, payload) {
   if (session.eventBuffer.length > MAX_EVENT_BUFFER) {
     session.eventBuffer.shift();
   }
-  if (session.attachedWs) {
-    try {
-      session.attachedWs.send(JSON.stringify(envelope));
-    } catch (e) {
-      console.error('[ws-server] Failed to send event:', e);
-      session.attachedWs = null;
+  if (session.attachedSockets.size > 0) {
+    for (const socket of session.attachedSockets) {
+      try {
+        socket.send(JSON.stringify(envelope));
+      } catch (e) {
+        console.error('[ws-server] Failed to send event:', e);
+        session.attachedSockets.delete(socket);
+      }
     }
   }
   return envelope;
@@ -237,14 +242,10 @@ function replayBufferedEvents(session, ws, lastEventId) {
 }
 
 function attachSession(ws, session, lastEventId) {
-  if (session.attachedWs && session.attachedWs !== ws) {
-    try {
-      session.attachedWs.close(1000, 'replaced');
-    } catch {
-      // ignore
-    }
+  if (!session.attachedSockets) {
+    session.attachedSockets = new Set();
   }
-  session.attachedWs = ws;
+  session.attachedSockets.add(ws);
   ws.data = { threadId: session.threadId };
 
   // Send the threadId to the client - they may have provided it or we generated it
@@ -354,8 +355,9 @@ Bun.serve({
         const data = await req.json();
         let sent = false;
         for (const session of sessions.values()) {
-          if (session.attachedWs) {
-            session.attachedWs.send(JSON.stringify(data));
+          if (!session.attachedSockets) continue;
+          for (const socket of session.attachedSockets) {
+            socket.send(JSON.stringify(data));
             sent = true;
           }
         }
@@ -430,12 +432,17 @@ Bun.serve({
       }
     },
 
-    close(ws) {
+    close(ws, code, reason) {
       const threadId = ws?.data?.threadId;
+      console.log('[ws-server] WebSocket closed', {
+        threadId,
+        code,
+        reason: typeof reason === 'string' ? reason : reason?.toString?.(),
+      });
       if (threadId && sessions.has(threadId)) {
         const session = sessions.get(threadId);
-        if (session.attachedWs === ws) {
-          session.attachedWs = null;
+        if (session.attachedSockets) {
+          session.attachedSockets.delete(ws);
         }
       }
     },
