@@ -215,8 +215,10 @@ function resolveWorkspacePath(workspaceRoot: string, workspacePath: string): str
   return `${root}${normalized}`;
 }
 
-function asDisposable<T extends object>(value: T): T & Disposable {
-  return value as T & Disposable;
+type RpcDisposable<T> = T & { [Symbol.dispose](): void };
+
+function asDisposable<T>(value: T): RpcDisposable<T> {
+  return value as RpcDisposable<T>;
 }
 
 const WORKSPACE_SYNC_DEBOUNCE_MS = 5000;
