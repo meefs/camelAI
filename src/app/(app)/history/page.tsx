@@ -1,9 +1,11 @@
 import { redirect } from 'next/navigation';
 import HistoryClient from './history-client';
 import { getAuthContext } from '@/lib/auth-context';
-import { getThreads } from '@/lib/server-actions/thread';
+import { getThreadsPage } from '@/lib/server-actions/thread';
 
 export const dynamic = 'force-dynamic';
+
+const PAGE_SIZE = 50;
 
 export default async function HistoryPage() {
   const authContext = await getAuthContext();
@@ -11,11 +13,14 @@ export default async function HistoryPage() {
     redirect('/login');
   }
 
-  const threads = await getThreads();
+  const page = await getThreadsPage({ offset: 0, limit: PAGE_SIZE });
 
   return (
     <HistoryClient
-      initialThreads={threads}
+      initialThreads={page.items}
+      initialTotal={page.total}
+      initialOffset={page.offset}
+      initialLimit={page.limit}
       initialOrgId={authContext.currentOrg.id}
     />
   );

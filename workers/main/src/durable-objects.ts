@@ -174,6 +174,27 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
     return this.sql.exec('SELECT * FROM threads ORDER BY updated_at DESC').toArray() as unknown as Thread[];
   }
 
+  getThreadsPaginated(offset = 0, limit = 50): { items: Thread[]; total: number; offset: number; limit: number } {
+    const resolvedOffset = Math.max(0, Math.floor(offset));
+    const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const items = this.sql
+      .exec(
+        'SELECT * FROM threads ORDER BY updated_at DESC LIMIT ? OFFSET ?',
+        resolvedLimit,
+        resolvedOffset
+      )
+      .toArray() as unknown as Thread[];
+    const totalRows = this.sql.exec('SELECT COUNT(*) as count FROM threads').toArray() as Array<{ count: number }>;
+    const total = Number(totalRows[0]?.count ?? 0);
+
+    return {
+      items,
+      total,
+      offset: resolvedOffset,
+      limit: resolvedLimit,
+    };
+  }
+
   /**
    * Create a thread. If sessionId is provided, use it as the thread ID (Claude session_id).
    * If the thread already exists, return the existing thread.

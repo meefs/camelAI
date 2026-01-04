@@ -1,19 +1,59 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare';
-import type { Thread, Message, Project } from '@/types';
+import type { Thread, Message, Project, PaginatedResult, PaginationParams } from '@/types';
 import type { DoRpcService } from '../../workers/main/src/rpc-service';
 
 interface Env {
   DO_RPC: DoRpcService;
 }
 
+function wrapRpc(rpc: DoRpcService): DoRpcService {
+  const disposable = rpc as unknown as { dispose?: () => void };
+  let disposed = false;
+
+  const disposeOnce = () => {
+    if (disposed) return;
+    disposed = true;
+    disposable.dispose?.();
+  };
+
+  return new Proxy(rpc as object, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]) => {
+        let result: unknown;
+        try {
+          result = (value as (...methodArgs: unknown[]) => unknown).apply(target, args);
+        } catch (error) {
+          disposeOnce();
+          throw error;
+        }
+        if (result && typeof (result as Promise<unknown>).finally === 'function') {
+          return (result as Promise<unknown>).finally(() => disposeOnce());
+        }
+        disposeOnce();
+        return result;
+      };
+    },
+  }) as DoRpcService;
+}
+
 async function getRpc(): Promise<DoRpcService> {
   const { env } = getCloudflareContext() as unknown as { env: Env };
-  return env.DO_RPC;
+  return wrapRpc(env.DO_RPC);
 }
 
 export async function getThreads(org: string): Promise<Thread[]> {
   const rpc = await getRpc();
   return rpc.getThreads(org);
+}
+
+export async function getThreadsPaginated(
+  org: string,
+  params: PaginationParams = {}
+): Promise<PaginatedResult<Thread>> {
+  const rpc = await getRpc();
+  return rpc.getThreadsPaginated(org, params);
 }
 
 export async function createThread(

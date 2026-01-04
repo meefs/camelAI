@@ -1,35 +1,52 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Thread } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { PageHeader } from '@/components/page-header';
 import { ChatsToolbar } from '@/components/history/chats-toolbar';
 import { ChatsList } from '@/components/history/chats-list';
-import { deleteThread, getThreads, updateThreadTitle } from '@/lib/server-actions/thread';
+import { deleteThread, getThreadsPage, updateThreadTitle } from '@/lib/server-actions/thread';
 
 interface HistoryClientProps {
   initialThreads: Thread[];
   initialOrgId: string;
+  initialTotal: number;
+  initialOffset: number;
+  initialLimit: number;
 }
 
-export default function HistoryClient({ initialThreads, initialOrgId }: HistoryClientProps) {
+export default function HistoryClient({
+  initialThreads,
+  initialOrgId,
+  initialTotal,
+  initialOffset,
+  initialLimit,
+}: HistoryClientProps) {
   const router = useRouter();
   const { currentOrg, loading: authLoading, user } = useAuth();
   const [threads, setThreads] = useState<Thread[]>(initialThreads);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectMode, setSelectMode] = useState<'off' | 'manual' | 'implicit'>('off');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeOrgId, setActiveOrgId] = useState(initialOrgId);
+  const [total, setTotal] = useState(initialTotal);
+  const [offset, setOffset] = useState(initialOffset);
+  const [limit, setLimit] = useState(initialLimit);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const isSelecting = selectMode !== 'off';
+  const hasMore = threads.length < total;
 
   useEffect(() => {
     if (!authLoading && !user) {
       setThreads([]);
       setSelectedIds(new Set());
       setSelectMode('off');
+      setTotal(0);
+      setOffset(0);
       router.replace('/login');
     }
   }, [authLoading, user, router]);
@@ -37,8 +54,11 @@ export default function HistoryClient({ initialThreads, initialOrgId }: HistoryC
   const refreshThreads = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await getThreads();
-      setThreads(Array.isArray(data) ? (data as Thread[]) : []);
+      const page = await getThreadsPage({ offset: 0, limit });
+      setThreads(Array.isArray(page.items) ? (page.items as Thread[]) : []);
+      setTotal(page.total);
+      setOffset(page.offset);
+      setLimit(page.limit);
     } catch (error) {
       console.error('Failed to fetch threads:', error);
     } finally {
@@ -52,6 +72,40 @@ export default function HistoryClient({ initialThreads, initialOrgId }: HistoryC
       refreshThreads();
     }
   }, [currentOrg?.id, activeOrgId, refreshThreads]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    try {
+      setLoadingMore(true);
+      const nextOffset = offset + limit;
+      const page = await getThreadsPage({ offset: nextOffset, limit });
+      setThreads((prev) => [...prev, ...(page.items as Thread[])]);
+      setTotal(page.total);
+      setOffset(page.offset);
+      setLimit(page.limit);
+    } catch (error) {
+      console.error('Failed to load more threads:', error);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, limit, loadingMore, offset]);
+
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || !hasMore || loadingMore || loading) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          loadMore();
+        }
+      },
+      { rootMargin: '200px' }
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasMore, loadMore, loading, loadingMore]);
 
   // Filter threads by search query
   const filteredThreads = threads.filter(thread =>
@@ -166,6 +220,9 @@ export default function HistoryClient({ initialThreads, initialOrgId }: HistoryC
             onRenameThread={handleRenameThread}
             onDeleteThread={handleDeleteThread}
             onEnterSelectMode={handleEnterSelectMode}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            loadMoreRef={loadMoreRef}
           />
         </div>
       </div>

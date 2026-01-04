@@ -1,5 +1,6 @@
 'use client';
 
+import type { RefObject } from 'react';
 import type { Thread } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -10,6 +11,9 @@ import { MessagesSquare } from 'lucide-react';
 interface ChatsListProps {
   threads: Thread[];
   loading: boolean;
+  loadingMore?: boolean;
+  hasMore?: boolean;
+  loadMoreRef?: RefObject<HTMLDivElement | null>;
   isSelecting: boolean;
   selectedIds: Set<string>;
   onToggleSelect: (id: string) => void;
@@ -68,6 +72,9 @@ function NoResults() {
 export function ChatsList({
   threads,
   loading,
+  loadingMore = false,
+  hasMore = false,
+  loadMoreRef,
   isSelecting,
   selectedIds,
   onToggleSelect,
@@ -110,6 +117,18 @@ export function ChatsList({
             )}
           </div>
         ))}
+        {hasMore && (
+          <div ref={loadMoreRef} className="py-6 flex items-center justify-center">
+            {loadingMore ? (
+              <div className="w-full max-w-xs space-y-2">
+                <Skeleton className="h-4 w-3/4 mx-auto" />
+                <Skeleton className="h-3 w-1/2 mx-auto" />
+              </div>
+            ) : (
+              <span className="text-xs text-muted-foreground">Loading more chats…</span>
+            )}
+          </div>
+        )}
       </div>
     </ScrollArea>
   );

@@ -3,6 +3,7 @@
 import * as authDO from '@/lib/auth-do';
 import * as chatDO from '@/lib/chat-do';
 import { requireSession } from '@/lib/server-guards';
+import type { Thread } from '@/types';
 
 function toSerializable<T>(value: T): T {
   if (value === null || value === undefined) return value;
@@ -17,6 +18,27 @@ function toSerializable<T>(value: T): T {
     return plain as T;
   }
   return value;
+}
+
+async function hydrateThreads(threads: Thread[]) {
+  const creatorIds = Array.from(
+    new Set(
+      threads
+        .map((thread) => thread.created_by)
+        .filter((id) => Boolean(id))
+    )
+  ) as string[];
+  const creatorEntries = await Promise.all(
+    creatorIds.map(async (id) => [id, await authDO.getUserById(id)] as const)
+  );
+  const creatorMap = new Map<string, NonNullable<Awaited<ReturnType<typeof authDO.getUserById>>>>();
+  for (const [id, user] of creatorEntries) {
+    if (user) creatorMap.set(id, user);
+  }
+  return threads.map((thread) => ({
+    ...thread,
+    creator: creatorMap.get(thread.created_by),
+  }));
 }
 
 export async function createThread(input: {
@@ -48,25 +70,18 @@ export async function createThread(input: {
 export async function getThreads() {
   const session = await requireSession();
   const threads = await chatDO.getThreads(session.org_id);
-  const creatorIds = Array.from(
-    new Set(
-      threads
-        .map((thread) => thread.created_by)
-        .filter((id) => Boolean(id))
-    )
-  ) as string[];
-  const creatorEntries = await Promise.all(
-    creatorIds.map(async (id) => [id, await authDO.getUserById(id)] as const)
-  );
-  const creatorMap = new Map<string, NonNullable<Awaited<ReturnType<typeof authDO.getUserById>>>>();
-  for (const [id, user] of creatorEntries) {
-    if (user) creatorMap.set(id, user);
-  }
-  const hydrated = threads.map((thread) => ({
-    ...thread,
-    creator: creatorMap.get(thread.created_by),
-  }));
+  const hydrated = await hydrateThreads(threads);
   return toSerializable(hydrated);
+}
+
+export async function getThreadsPage(params: { offset?: number; limit?: number } = {}) {
+  const session = await requireSession();
+  const page = await chatDO.getThreadsPaginated(session.org_id, params);
+  const hydratedItems = await hydrateThreads(page.items);
+  return toSerializable({
+    ...page,
+    items: hydratedItems,
+  });
 }
 
 export async function getThreadMessages(threadId: string) {

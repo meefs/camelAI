@@ -965,6 +965,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return getIndexStub(this.env, org).getThreads();
   }
 
+  async getThreadsPaginated(
+    org: string,
+    params: PaginationParams = {}
+  ): Promise<PaginatedResult<Thread>> {
+    const offset = params.offset ?? 0;
+    const limit = params.limit ?? 50;
+    return getIndexStub(this.env, org).getThreadsPaginated(offset, limit);
+  }
+
   async createThread(
     org: string,
     title: string | undefined,
