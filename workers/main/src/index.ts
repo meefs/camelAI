@@ -201,10 +201,6 @@ async function resolveOrgContext(tokenKv: KVNamespace, tokenValue: string): Prom
     }
   }
 
-  if (!orgId && orgPrefix.length <= 32) {
-    orgId = orgPrefix;
-  }
-
   return { orgPrefix, orgId };
 }
 
