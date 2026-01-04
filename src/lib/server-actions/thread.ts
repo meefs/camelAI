@@ -29,6 +29,34 @@ export async function createThread(input: {
   );
 }
 
+export async function getThreads() {
+  const session = await requireSession();
+  const threads = await chatDO.getThreads(session.org_id);
+  const creatorIds = Array.from(
+    new Set(
+      threads
+        .map((thread) => thread.created_by)
+        .filter((id) => Boolean(id))
+    )
+  ) as string[];
+  const creatorEntries = await Promise.all(
+    creatorIds.map(async (id) => [id, await authDO.getUserById(id)] as const)
+  );
+  const creatorMap = new Map<string, NonNullable<Awaited<ReturnType<typeof authDO.getUserById>>>>();
+  for (const [id, user] of creatorEntries) {
+    if (user) creatorMap.set(id, user);
+  }
+  return threads.map((thread) => ({
+    ...thread,
+    creator: creatorMap.get(thread.created_by),
+  }));
+}
+
+export async function getThreadMessages(threadId: string) {
+  const session = await requireSession();
+  return chatDO.getMessages(threadId, session.org_id);
+}
+
 export async function updateThreadTitle(threadId: string, title: string) {
   const session = await requireSession();
   const thread = await chatDO.updateThread(threadId, title, session.org_id);

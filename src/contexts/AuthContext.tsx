@@ -1,7 +1,8 @@
 'use client';
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import type { User, Organization, OrgMembership, AuthState } from '@/types';
+import type { AuthState } from '@/types';
+import { getAuthState, login as loginAction, logout as logoutAction, signup as signupAction, switchOrg as switchOrgAction } from '@/lib/server-actions/auth';
 
 interface AuthContextValue extends AuthState {
   login: (email: string, password: string) => Promise<void>;
@@ -43,13 +44,8 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
 
   const refreshAuth = useCallback(async () => {
     try {
-      const res = await fetch('/api/auth/me');
-      if (res.ok) {
-        const data = await res.json() as {
-          user: User;
-          currentOrg: Organization;
-          orgs: OrgMembership[];
-        };
+      const data = await getAuthState();
+      if (data) {
         setState({
           user: data.user,
           currentOrg: data.currentOrg,
@@ -87,22 +83,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-
-      const data = await res.json() as {
-        error?: string;
-        user: User;
-        currentOrg: Organization;
-        orgs: OrgMembership[];
-      };
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Login failed');
-      }
+      const data = await loginAction(email, password);
 
       setState({
         user: data.user,
@@ -125,22 +106,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const res = await fetch('/api/auth/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name }),
-      });
-
-      const data = await res.json() as {
-        error?: string;
-        user: User;
-        currentOrg: Organization;
-        orgs: OrgMembership[];
-      };
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Signup failed');
-      }
+      const data = await signupAction(email, password, name);
 
       setState({
         user: data.user,
@@ -161,7 +127,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
 
   const logout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      await logoutAction();
     } finally {
       setState({
         user: null,
@@ -177,24 +143,11 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const res = await fetch('/api/auth/switch-org', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId }),
-      });
-
-      const data = await res.json() as {
-        error?: string;
-        currentOrg: Organization;
-      };
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to switch organization');
-      }
+      const currentOrg = await switchOrgAction(orgId);
 
       setState((prev) => ({
         ...prev,
-        currentOrg: data.currentOrg,
+        currentOrg,
         loading: false,
         error: null,
       }));
