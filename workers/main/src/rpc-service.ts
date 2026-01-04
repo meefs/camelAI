@@ -406,6 +406,25 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return stub.getProfile();
   }
 
+  async getUsersByIds(userIds: string[]): Promise<UserProfile[]> {
+    const uniqueIds = Array.from(
+      new Set(
+        userIds
+          .map((id) => id?.trim())
+          .filter((id): id is string => Boolean(id))
+      )
+    );
+    if (uniqueIds.length === 0) return [];
+
+    const users = await Promise.all(
+      uniqueIds.map(async (id) => {
+        const stub = this.env.USER.get(this.env.USER.idFromName(id));
+        return stub.getProfile();
+      })
+    );
+    return users.filter((user): user is UserProfile => Boolean(user));
+  }
+
   async createUser(
     email: string,
     password: string,

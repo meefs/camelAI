@@ -10,8 +10,15 @@ export type SessionContext = {
   session: Session;
 };
 
-export type AuthContext = SessionContext & {
+export type UserContext = SessionContext & {
   user: User;
+};
+
+export type AuthContextLite = UserContext & {
+  currentOrg: Organization;
+};
+
+export type AuthContext = AuthContextLite & {
   currentOrg: Organization;
   orgs: OrgMembership[];
 };
@@ -26,22 +33,40 @@ export const getSessionContext = cache(async (): Promise<SessionContext | null> 
   return { sessionId, session };
 });
 
-export const getAuthContext = cache(async (): Promise<AuthContext | null> => {
+export const getUserContext = cache(async (): Promise<UserContext | null> => {
   const sessionContext = await getSessionContext();
   if (!sessionContext) return null;
 
   const user = await authDO.getUserById(sessionContext.session.user_id);
   if (!user) return null;
 
-  const currentOrg = await authDO.getOrg(sessionContext.session.org_id);
-  if (!currentOrg) return null;
-
-  const orgs = await authDO.getUserOrgs(sessionContext.session.user_id);
-
   return {
     ...sessionContext,
     user,
+  };
+});
+
+export const getAuthContextLite = cache(async (): Promise<AuthContextLite | null> => {
+  const userContext = await getUserContext();
+  if (!userContext) return null;
+
+  const currentOrg = await authDO.getOrg(userContext.session.org_id);
+  if (!currentOrg) return null;
+
+  return {
+    ...userContext,
     currentOrg,
+  };
+});
+
+export const getAuthContext = cache(async (): Promise<AuthContext | null> => {
+  const authContext = await getAuthContextLite();
+  if (!authContext) return null;
+
+  const orgs = await authDO.getUserOrgs(authContext.session.user_id);
+
+  return {
+    ...authContext,
     orgs,
   };
 });

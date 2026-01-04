@@ -28,12 +28,10 @@ async function hydrateThreads(threads: Thread[]) {
         .filter((id) => Boolean(id))
     )
   ) as string[];
-  const creatorEntries = await Promise.all(
-    creatorIds.map(async (id) => [id, await authDO.getUserById(id)] as const)
-  );
-  const creatorMap = new Map<string, NonNullable<Awaited<ReturnType<typeof authDO.getUserById>>>>();
-  for (const [id, user] of creatorEntries) {
-    if (user) creatorMap.set(id, user);
+  const creators = await authDO.getUsersByIds(creatorIds);
+  const creatorMap = new Map<string, (typeof creators)[number]>();
+  for (const user of creators) {
+    creatorMap.set(user.id, user);
   }
   return threads.map((thread) => ({
     ...thread,

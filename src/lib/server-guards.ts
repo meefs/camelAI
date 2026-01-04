@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import * as authDO from '@/lib/auth-do';
-import { getSessionContext } from '@/lib/auth-context';
+import { getSessionContext, getUserContext } from '@/lib/auth-context';
 
 type Session = NonNullable<Awaited<ReturnType<typeof authDO.getSession>>>;
 
@@ -14,12 +14,11 @@ export async function requireSession(): Promise<Session> {
 }
 
 export async function requireUser() {
-  const session = await requireSession();
-  const user = await authDO.getUserById(session.user_id);
-  if (!user) {
+  const userContext = await getUserContext();
+  if (!userContext) {
     redirect('/login');
   }
-  return { session, user };
+  return { session: userContext.session, user: userContext.user };
 }
 
 export async function requireSuperuser(message = 'Forbidden') {

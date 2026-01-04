@@ -1,13 +1,13 @@
 import { redirect } from 'next/navigation';
 import ConnectionsClient from './connections-client';
-import { getAuthContext } from '@/lib/auth-context';
+import { getAuthContextLite } from '@/lib/auth-context';
 import { getIntegrationTypes } from '@/lib/server-actions/integrations';
 import { getOrgIntegrations } from '@/lib/server-actions/org';
 
 export const dynamic = 'force-dynamic';
 
 export default async function ConnectionsPage() {
-  const authContext = await getAuthContext();
+  const authContext = await getAuthContextLite();
   if (!authContext) {
     redirect('/login');
   }
