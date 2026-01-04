@@ -125,16 +125,19 @@ async function getOrCreateContainerToken(
   kv: KVNamespace,
   org: string
 ): Promise<string> {
+  const orgPrefix = org.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const prefixKey = `platform_script_prefix:${orgPrefix}`;
   const existingTokenKey = `container_token:${org}`;
   const existingToken = await kv.get(existingTokenKey);
   if (existingToken) {
+    await kv.put(prefixKey, org);
     return existingToken;
   }
 
   const token = generateContainerToken();
-  const orgPrefix = org.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
 
   await kv.put(`platform_script_token:${token}`, orgPrefix);
+  await kv.put(prefixKey, org);
   await kv.put(existingTokenKey, token);
 
   return token;
@@ -254,7 +257,7 @@ export class OrgContainer extends Container<OrgContainerEnv> {
   async startForOrg(orgId: string): Promise<void> {
     this.orgId = orgId;
 
-    // Build and set envVars once per container instance - set as class property
+    // Only build env vars once per container instance - they're set as class property
     // so Container class uses them for any start path (including auto-restarts)
     if (!(this as any).envVars || Object.keys((this as any).envVars).length === 0) {
       console.log('[OrgContainer] Building env vars for org:', orgId);
@@ -263,7 +266,7 @@ export class OrgContainer extends Container<OrgContainerEnv> {
     }
 
     const state = await this.getState();
-    console.log('[OrgContainer] startForOrg state', { orgId, status: state.status });
+    console.log('[OrgContainer] Container state:', state.status, 'for org:', orgId);
     if (state.status === 'running' || state.status === 'healthy') {
       console.log('[OrgContainer] startForOrg skipping start; container already running', {
         orgId,
@@ -274,15 +277,7 @@ export class OrgContainer extends Container<OrgContainerEnv> {
 
     console.log('[OrgContainer] Starting container for org:', orgId);
 
-    console.log('[OrgContainer] startForOrg startAndWaitForPorts', {
-      orgId,
-      ports: [WS_SERVER_PORT, CONTROL_PLANE_PORT],
-    });
-
     await this.startAndWaitForPorts({
-      startOptions: {
-        envVars: (this as any).envVars,
-      },
       ports: [WS_SERVER_PORT, CONTROL_PLANE_PORT],
       cancellationOptions: {
         instanceGetTimeoutMS: 30000,
