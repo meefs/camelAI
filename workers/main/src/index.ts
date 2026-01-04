@@ -292,7 +292,13 @@ async function syncDispatchScriptSecrets(
   scriptName: string,
   apiToken: string
 ): Promise<void> {
-  const integrationEnvVars = await env.DO_RPC.getOrgIntegrationEnvVars(orgId);
+  const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
+  let integrationEnvVars: Record<string, string>;
+  try {
+    integrationEnvVars = await rpc.getOrgIntegrationEnvVars(orgId);
+  } finally {
+    rpc[Symbol.dispose]?.();
+  }
   const secretEntries = Object.entries(integrationEnvVars);
 
   if (secretEntries.length === 0) {

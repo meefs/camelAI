@@ -422,7 +422,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         return stub.getProfile();
       })
     );
-    return users.filter((user): user is UserProfile => Boolean(user));
+    return users.filter(Boolean) as UserProfile[];
   }
 
   async createUser(

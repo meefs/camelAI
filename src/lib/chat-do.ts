@@ -1,4 +1,5 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare';
+import { withDoRpc } from '@/lib/do-rpc';
 import type { Thread, Message, Project, PaginatedResult, PaginationParams } from '@/types';
 import type { DoRpcService } from '../../workers/main/src/rpc-service';
 
@@ -6,54 +7,20 @@ interface Env {
   DO_RPC: DoRpcService;
 }
 
-function wrapRpc(rpc: DoRpcService): DoRpcService {
-  const disposable = rpc as unknown as { dispose?: () => void };
-  let disposed = false;
-
-  const disposeOnce = () => {
-    if (disposed) return;
-    disposed = true;
-    disposable.dispose?.();
-  };
-
-  return new Proxy(rpc as object, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (typeof value !== 'function') return value;
-      return (...args: unknown[]) => {
-        let result: unknown;
-        try {
-          result = (value as (...methodArgs: unknown[]) => unknown).apply(target, args);
-        } catch (error) {
-          disposeOnce();
-          throw error;
-        }
-        if (result && typeof (result as Promise<unknown>).finally === 'function') {
-          return (result as Promise<unknown>).finally(() => disposeOnce());
-        }
-        disposeOnce();
-        return result;
-      };
-    },
-  }) as DoRpcService;
-}
-
-async function getRpc(): Promise<DoRpcService> {
+async function withRpc<T>(fn: (rpc: DoRpcService) => Promise<T>): Promise<T> {
   const { env } = getCloudflareContext() as unknown as { env: Env };
-  return wrapRpc(env.DO_RPC);
+  return withDoRpc(env.DO_RPC, fn);
 }
 
 export async function getThreads(org: string): Promise<Thread[]> {
-  const rpc = await getRpc();
-  return rpc.getThreads(org);
+  return withRpc((rpc) => rpc.getThreads(org));
 }
 
 export async function getThreadsPaginated(
   org: string,
   params: PaginationParams = {}
 ): Promise<PaginatedResult<Thread>> {
-  const rpc = await getRpc();
-  return rpc.getThreadsPaginated(org, params);
+  return withRpc((rpc) => rpc.getThreadsPaginated(org, params));
 }
 
 export async function createThread(
@@ -63,67 +30,54 @@ export async function createThread(
   createdBy?: string,
   sessionId?: string
 ): Promise<Thread> {
-  const rpc = await getRpc();
-  return rpc.createThread(org, title, projectId, createdBy, sessionId);
+  return withRpc((rpc) => rpc.createThread(org, title, projectId, createdBy, sessionId));
 }
 
 export async function getThread(id: string, org: string): Promise<Thread | null> {
-  const rpc = await getRpc();
-  return rpc.getThread(id, org);
+  return withRpc((rpc) => rpc.getThread(id, org));
 }
 
 export async function updateThread(id: string, title: string, org: string): Promise<Thread | null> {
-  const rpc = await getRpc();
-  return rpc.updateThread(id, title, org);
+  return withRpc((rpc) => rpc.updateThread(id, title, org));
 }
 
 export async function deleteThread(id: string, org: string): Promise<void> {
-  const rpc = await getRpc();
-  await rpc.deleteThread(id, org);
+  return withRpc((rpc) => rpc.deleteThread(id, org));
 }
 
 export async function getMessages(threadId: string, org: string): Promise<Message[]> {
-  const rpc = await getRpc();
   // Messages are read from container's Claude JSONL file
-  return rpc.getMessages(threadId, org);
+  return withRpc((rpc) => rpc.getMessages(threadId, org));
 }
 
 export async function getProjects(org: string): Promise<Project[]> {
-  const rpc = await getRpc();
-  return rpc.getProjects(org);
+  return withRpc((rpc) => rpc.getProjects(org));
 }
 
 export async function getProjectsByUser(org: string, userId: string): Promise<Project[]> {
-  const rpc = await getRpc();
-  return rpc.getProjectsByUser(org, userId);
+  return withRpc((rpc) => rpc.getProjectsByUser(org, userId));
 }
 
 export async function createProject(org: string, name?: string, createdBy?: string): Promise<Project> {
-  const rpc = await getRpc();
-  return rpc.createProject(org, name, createdBy);
+  return withRpc((rpc) => rpc.createProject(org, name, createdBy));
 }
 
 export async function getProject(id: string, org: string): Promise<Project | null> {
-  const rpc = await getRpc();
-  return rpc.getProject(id, org);
+  return withRpc((rpc) => rpc.getProject(id, org));
 }
 
 export async function updateProject(id: string, name: string, org: string): Promise<Project | null> {
-  const rpc = await getRpc();
-  return rpc.updateProject(id, name, org);
+  return withRpc((rpc) => rpc.updateProject(id, name, org));
 }
 
 export async function deleteProject(id: string, org: string): Promise<void> {
-  const rpc = await getRpc();
-  await rpc.deleteProject(id, org);
+  return withRpc((rpc) => rpc.deleteProject(id, org));
 }
 
 export async function setThreadPreview(threadId: string, workers: string[]): Promise<string[]> {
-  const rpc = await getRpc();
-  return rpc.setThreadPreview(threadId, workers);
+  return withRpc((rpc) => rpc.setThreadPreview(threadId, workers));
 }
 
 export async function getThreadPreview(threadId: string): Promise<string[]> {
-  const rpc = await getRpc();
-  return rpc.getThreadPreview(threadId);
+  return withRpc((rpc) => rpc.getThreadPreview(threadId));
 }

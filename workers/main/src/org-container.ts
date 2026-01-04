@@ -238,7 +238,13 @@ export class OrgContainer extends Container<OrgContainerEnv> {
 
     // Fetch integration credentials and pass as ENV vars
     try {
-      const integrationEnvVars = await this.env.DO_RPC.getOrgIntegrationEnvVars(orgId);
+      const rpc = this.env.DO_RPC as typeof this.env.DO_RPC & { [Symbol.dispose]?: () => void };
+      let integrationEnvVars: Record<string, string>;
+      try {
+        integrationEnvVars = await rpc.getOrgIntegrationEnvVars(orgId);
+      } finally {
+        rpc[Symbol.dispose]?.();
+      }
       console.log('[OrgContainer] Integration env vars:', Object.entries(integrationEnvVars).map(
         ([k, v]) => `${k}=${v.length} chars`
       ));
