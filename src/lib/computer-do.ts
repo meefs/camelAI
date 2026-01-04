@@ -56,3 +56,8 @@ export async function deleteWorkspacePath(orgId: string, path: string) {
   const rpc = await getRpc();
   return rpc.deleteWorkspacePath(orgId, path);
 }
+
+export async function resetSandboxContainer(orgId: string) {
+  const rpc = await getRpc();
+  return rpc.resetOrgContainer(orgId);
+}

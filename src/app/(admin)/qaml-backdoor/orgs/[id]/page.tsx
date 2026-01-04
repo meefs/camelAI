@@ -1,9 +1,12 @@
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
+import * as computerDO from '@/lib/computer-do';
+import { getSessionId } from '@/lib/auth';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { OrgEditForm } from '@/components/admin/org-edit-form';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export const dynamic = 'force-dynamic';
@@ -27,6 +30,27 @@ export default async function AdminOrgDetailPage({ params }: Props) {
   const org = await authDO.getOrg(id);
   if (!org) {
     notFound();
+  }
+
+  async function resetSandboxContainer() {
+    'use server';
+
+    const sessionId = await getSessionId();
+    if (!sessionId) {
+      redirect('/login');
+    }
+
+    const session = await authDO.getSession(sessionId);
+    if (!session) {
+      redirect('/login');
+    }
+
+    const user = await authDO.getUserById(session.user_id);
+    if (!user?.is_superuser) {
+      throw new Error('Forbidden');
+    }
+
+    await computerDO.resetSandboxContainer(id);
   }
 
   const members = await authDO.getOrgMembers(id);
@@ -95,6 +119,22 @@ export default async function AdminOrgDetailPage({ params }: Props) {
               </CardHeader>
               <CardContent>
                 <OrgEditForm org={safeOrg} />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Sandbox Container</CardTitle>
+                <CardDescription>
+                  Terminate the org container to pick up new secrets or code.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form action={resetSandboxContainer}>
+                  <Button variant="destructive" type="submit">
+                    Reset Sandbox Container
+                  </Button>
+                </form>
               </CardContent>
             </Card>
 

@@ -3,7 +3,7 @@
 import openNextHandler from "../../../.open-next/worker.js";
 import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
-import { OrgContainer, handleWebSocketUpgrade, getContainerIdForOrg, type OrgContainerEnv } from './org-container.js';
+import { OrgContainer, handleWebSocketUpgrade, type OrgContainerEnv } from './org-container.js';
 export { DoRpcService } from './rpc-service.js';
 
 // Export OrgContainer as ThreadSandbox to match wrangler.jsonc class_name
@@ -644,26 +644,6 @@ export default {
 
       // Handle WebSocket upgrade with container management
       return handleWebSocketUpgrade(request, env, org);
-    }
-
-    // Reset sandbox endpoint (destroys container to pick up new secrets/code)
-    const resetMatch = url.pathname.match(/^\/api\/sandbox\/([^\/]+)\/reset$/);
-    if (resetMatch && request.method === 'POST') {
-      const orgId = resetMatch[1];
-      try {
-        const containerId = getContainerIdForOrg(orgId);
-        const stub = env.SANDBOX.get(env.SANDBOX.idFromName(containerId));
-        // Call destroy on the Container DO - this will terminate the container
-        await stub.destroy();
-        return new Response(JSON.stringify({ success: true, containerId }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      } catch (e) {
-        return new Response(JSON.stringify({ error: String(e) }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
     }
 
     // Handle preview API with deploy token auth (called from container wrangler wrapper)

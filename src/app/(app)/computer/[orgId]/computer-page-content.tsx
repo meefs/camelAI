@@ -85,6 +85,7 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Separator } from '@/components/ui/separator';
+import { resetSandboxContainerAction } from './actions';
 
 loader.config({ paths: { vs: '/monaco/vs' } });
 
@@ -1886,6 +1887,22 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                     }}
                   />
                 </div>
+                <form
+                  action={resetSandboxContainerAction.bind(null, orgId)}
+                  onSubmit={(event) => {
+                    if (
+                      !confirm(
+                        'Reset the sandbox container? Active sessions will disconnect and the container will restart on next use.'
+                      )
+                    ) {
+                      event.preventDefault();
+                    }
+                  }}
+                >
+                  <Button size="sm" variant="destructive" className="h-8">
+                    Reset Container
+                  </Button>
+                </form>
                 <Button
                   size="sm"
                   variant="outline"
