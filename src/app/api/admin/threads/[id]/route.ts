@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 import { requireSuperuser } from '@/lib/admin-auth';
 import * as authDO from '@/lib/auth-do';
 
