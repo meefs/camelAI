@@ -32,7 +32,7 @@ describe('Stream playback - streaming reducer', () => {
       },
     ];
 
-    let state = { content: [] as ContentBlock[], isStreaming: false };
+    let state = { content: [] as ContentBlock[], isStreaming: false, blockOffset: 0 };
     for (const event of events) {
       state = applySdkEventToStreamingState(state, event);
     }
@@ -64,7 +64,7 @@ describe('Stream playback - streaming reducer', () => {
       },
     ];
 
-    let state = { content: [] as ContentBlock[], isStreaming: false };
+    let state = { content: [] as ContentBlock[], isStreaming: false, blockOffset: 0 };
     for (const event of events) {
       state = applySdkEventToStreamingState(state, event);
     }
@@ -92,12 +92,60 @@ describe('Stream playback - streaming reducer', () => {
       },
     ];
 
-    let state = { content: [] as ContentBlock[], isStreaming: false };
+    let state = { content: [] as ContentBlock[], isStreaming: false, blockOffset: 0 };
     for (const event of events) {
       state = applySdkEventToStreamingState(state, event);
     }
 
     expect(state.isStreaming).toBe(false);
     expect(state.content).toEqual([{ type: 'text', text: 'Done' }]);
+  });
+
+  it('appends blocks across multiple message_start segments', () => {
+    const events = [
+      { type: 'system', subtype: 'init' },
+      {
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      },
+      {
+        type: 'stream_event',
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      },
+      {
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'First message' } },
+      },
+      {
+        type: 'stream_event',
+        event: { type: 'message_stop' },
+      },
+      {
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      },
+      {
+        type: 'stream_event',
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      },
+      {
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Second message' } },
+      },
+      {
+        type: 'stream_event',
+        event: { type: 'message_stop' },
+      },
+    ];
+
+    let state = { content: [] as ContentBlock[], isStreaming: false, blockOffset: 0 };
+    for (const event of events) {
+      state = applySdkEventToStreamingState(state, event);
+    }
+
+    expect(state.content).toEqual([
+      { type: 'text', text: 'First message' },
+      { type: 'text', text: 'Second message' },
+    ]);
   });
 });

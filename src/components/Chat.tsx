@@ -235,7 +235,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false); // Container is ready to receive messages
-  const [streaming, setStreaming] = useState<StreamingState>({ content: [], isStreaming: false });
+  const [streaming, setStreaming] = useState<StreamingState>({ content: [], isStreaming: false, blockOffset: 0 });
   const [error, setError] = useState<string | null>(null);
   const [welcomeInput, setWelcomeInput] = useState('');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
@@ -425,7 +425,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
     setReady(false);
     // Clear streaming state on any connection to prevent stale content
-    setStreaming({ content: [], isStreaming: false });
+    setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
     currentMessageUuidRef.current = null;
     if (!isReconnect) {
       isFirstMessage.current = true;
@@ -526,7 +526,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
           });
 
           setLoading(true);
-          setStreaming({ content: [], isStreaming: false });
+          setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
           currentMessageUuidRef.current = null;
           ws.send(JSON.stringify({
             type: 'message',
@@ -603,7 +603,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                 }];
               });
             }
-            return { content: [], isStreaming: false };
+            return { content: [], isStreaming: false, blockOffset: 0 };
           });
           currentMessageUuidRef.current = null;
           setLoading(false);
@@ -611,7 +611,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
         setError(data.error || 'An unknown error occurred');
-        setStreaming({ content: [], isStreaming: false });
+        setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
         setLoading(false);
       }
     };
@@ -1021,7 +1021,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
-      setStreaming({ content: [], isStreaming: false });
+      setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
       currentMessageUuidRef.current = null;
       wsRef.current.send(JSON.stringify({
         type: 'message',

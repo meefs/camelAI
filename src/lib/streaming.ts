@@ -31,11 +31,12 @@ export interface SDKEvent {
 export interface StreamingState {
   content: ContentBlock[];
   isStreaming: boolean;
+  blockOffset: number;
 }
 
 export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SDKEvent): StreamingState {
   if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-    return { content: [], isStreaming: true };
+    return { content: [], isStreaming: true, blockOffset: 0 };
   }
 
   if (sdkEvent.type !== 'stream_event') {
@@ -44,12 +45,13 @@ export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SD
 
   const evt = sdkEvent.event;
   if (evt?.type === 'message_start') {
-    return { ...prev, isStreaming: true };
+    return { ...prev, isStreaming: true, blockOffset: prev.content.length };
   }
 
   if (evt?.type === 'content_block_start') {
     const block = evt.content_block;
-    const index = typeof evt.index === 'number' ? evt.index : prev.content.length;
+    const baseOffset = Number.isFinite(prev.blockOffset) ? prev.blockOffset : 0;
+    const index = typeof evt.index === 'number' ? baseOffset + evt.index : prev.content.length;
     const newContent = [...prev.content];
     if (block?.type === 'tool_use') {
       newContent[index] = {
@@ -74,7 +76,8 @@ export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SD
   if (evt?.type === 'content_block_delta') {
     if (evt.delta?.type === 'text_delta' && evt.delta.text) {
       const newContent = [...prev.content];
-      const index = typeof evt.index === 'number' ? evt.index : newContent.length - 1;
+      const baseOffset = Number.isFinite(prev.blockOffset) ? prev.blockOffset : 0;
+      const index = typeof evt.index === 'number' ? baseOffset + evt.index : newContent.length - 1;
       const target = newContent[index];
       if (target?.type === 'text') {
         newContent[index] = {
@@ -89,7 +92,8 @@ export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SD
 
     if (evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
       const newContent = [...prev.content];
-      const index = typeof evt.index === 'number' ? evt.index : newContent.length - 1;
+      const baseOffset = Number.isFinite(prev.blockOffset) ? prev.blockOffset : 0;
+      const index = typeof evt.index === 'number' ? baseOffset + evt.index : newContent.length - 1;
       const target = newContent[index];
       if (target && target.type === 'tool_use') {
         const currentInput = (target as ContentBlock & { _inputJson?: string })._inputJson || '';
