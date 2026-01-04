@@ -1062,9 +1062,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       }
 
       const lines = file.content.split('\n').filter((line: string) => line.trim());
-      const messagesById = new Map<string, Message>();
-      const orderedIds: string[] = [];
-      let lastAssistantId: string | null = null;
+      const messages: Message[] = [];
 
       const hasTextBlocks = (content: unknown) =>
         Array.isArray(content) && content.some(block => block?.type === 'text' && block.text);
@@ -1074,7 +1072,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
         const incomingHasText = hasTextBlocks(incoming);
         if (!incomingHasText) {
-          // Preserve existing text blocks when incoming only carries tool_use updates.
           const merged = [...existing];
           const existingKeys = new Map<string, number>();
           existing.forEach((block, index) => {
@@ -1097,103 +1094,97 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
           return merged;
         }
 
-        // Incoming has text (likely final) - prefer incoming but keep tool_result blocks.
         const toolResults = existing.filter(block => block?.type === 'tool_result');
         if (toolResults.length === 0) return incoming;
         return [...toolResults, ...incoming];
       };
 
-      const upsertMessage = (message: Message) => {
-        const existing = messagesById.get(message.id);
-        if (existing) {
-          if (existing.role !== message.role) {
-            const roleSpecificId = `${message.id}_${message.role}`;
-            if (!messagesById.has(roleSpecificId)) {
-              messagesById.set(roleSpecificId, { ...message, id: roleSpecificId });
-              orderedIds.push(roleSpecificId);
-            } else {
-              messagesById.set(roleSpecificId, { ...message, id: roleSpecificId });
-            }
-            if (message.role === 'assistant') {
-              lastAssistantId = roleSpecificId;
-            }
-            return;
-          }
-          existing.content = mergeContentBlocks(existing.content, message.content) as Message['content'];
-          if (message.role === 'assistant') {
-            lastAssistantId = message.id;
-          }
-          return;
-        }
-        messagesById.set(message.id, message);
-        orderedIds.push(message.id);
-        if (message.role === 'assistant') {
-          lastAssistantId = message.id;
-        }
+      let assistantSegments: Array<{ id: string; content: Message['content']; createdAt: number }> = [];
+      let assistantGroupId: string | null = null;
+      let assistantGroupCreatedAt: number | null = null;
+
+      const flushAssistantGroup = () => {
+        if (assistantSegments.length === 0) return;
+        const content = assistantSegments.flatMap(segment =>
+          Array.isArray(segment.content) ? segment.content : []
+        );
+        const id = assistantGroupId || assistantSegments[0]?.id || `assistant_${messages.length}`;
+        const createdAt = assistantGroupCreatedAt || assistantSegments[0]?.createdAt || Date.now();
+        messages.push({
+          id,
+          thread_id: threadId,
+          role: 'assistant',
+          content,
+          created_at: createdAt,
+        });
+        assistantSegments = [];
+        assistantGroupId = null;
+        assistantGroupCreatedAt = null;
       };
 
-      const appendToolResultToAssistant = (assistantId: string, content: unknown) => {
-        const existing = messagesById.get(assistantId);
-        if (!existing) return false;
-        const existingBlocks = Array.isArray(existing.content) ? existing.content : [];
-        existing.content = mergeContentBlocks(existingBlocks, content) as Message['content'];
-        return true;
+      const upsertAssistantSegment = (id: string, content: Message['content'], createdAt: number) => {
+        if (!assistantGroupId) {
+          assistantGroupId = id;
+          assistantGroupCreatedAt = createdAt;
+        }
+        const lastSegment = assistantSegments[assistantSegments.length - 1];
+        if (lastSegment && lastSegment.id === id) {
+          lastSegment.content = mergeContentBlocks(lastSegment.content, content) as Message['content'];
+          return;
+        }
+        assistantSegments.push({ id, content, createdAt });
+      };
+
+      const appendToolResult = (content: Message['content'], createdAt: number) => {
+        if (assistantSegments.length === 0) {
+          const id = `tool_result_${messages.length}`;
+          upsertAssistantSegment(id, content, createdAt);
+          return;
+        }
+        const lastSegment = assistantSegments[assistantSegments.length - 1];
+        const existingBlocks = Array.isArray(lastSegment.content) ? lastSegment.content : [];
+        const incomingBlocks = Array.isArray(content) ? content : [];
+        lastSegment.content = [...existingBlocks, ...incomingBlocks];
       };
 
       for (const line of lines) {
         try {
           const event = JSON.parse(line);
 
-          // Extract user messages (text only, not tool results)
           if (event.type === 'user' && event.message?.content) {
             const firstContent = event.message.content[0];
             if (firstContent?.type === 'tool_result') {
               const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
-              if (lastAssistantId && appendToolResultToAssistant(lastAssistantId, event.message.content)) {
-                // Tool result merged into last assistant message.
-              } else {
-                const id = event.uuid || `tool_result_${messagesById.size}`;
-                upsertMessage({
-                  id,
-                  thread_id: threadId,
-                  role: 'assistant',
-                  content: event.message.content,
-                  created_at: createdAt,
-                });
-              }
+              appendToolResult(event.message.content, createdAt);
             } else {
-              // Regular user text messages
-              const id = event.uuid || `user_${messagesById.size}`;
-              upsertMessage({
+              flushAssistantGroup();
+              const id = event.uuid || `user_${messages.length}`;
+              messages.push({
                 id,
                 thread_id: threadId,
                 role: 'user',
                 content: event.message.content,
                 created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
               });
-              lastAssistantId = null;
             }
+            continue;
           }
 
-          // Extract assistant messages (text and tool_use)
           if (event.type === 'assistant' && event.message?.content?.length > 0) {
-            const id = event.message?.id || event.uuid || `assistant_${messagesById.size}`;
-            upsertMessage({
+            const id = event.message?.id || event.uuid || `assistant_${messages.length}`;
+            upsertAssistantSegment(
               id,
-              thread_id: threadId,
-              role: 'assistant',
-              content: event.message.content,
-              created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
-            });
+              event.message.content,
+              event.timestamp ? new Date(event.timestamp).getTime() : Date.now()
+            );
           }
         } catch {
           // Skip malformed lines
         }
       }
 
-      return orderedIds
-        .map((id) => messagesById.get(id))
-        .filter((message): message is Message => Boolean(message));
+      flushAssistantGroup();
+      return messages;
     } catch (e) {
       // Container may not be running - return empty
       console.error('[getMessages] Error:', e);
