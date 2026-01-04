@@ -215,6 +215,10 @@ function resolveWorkspacePath(workspaceRoot: string, workspacePath: string): str
   return `${root}${normalized}`;
 }
 
+function asDisposable<T extends object>(value: T): T & Disposable {
+  return value as T & Disposable;
+}
+
 const WORKSPACE_SYNC_DEBOUNCE_MS = 5000;
 
 type WorkspaceSyncState = {
@@ -339,18 +343,18 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   // Session functions
   async getSession(sessionId: string): Promise<SessionData | null> {
-    using stub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
+    using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
     return stub.getData();
   }
 
   async getSessionWithUser(
     sessionId: string
   ): Promise<{ session: SessionData; user: UserProfile } | null> {
-    using sessionStub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
+    using sessionStub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
     const session = await sessionStub.getData();
     if (!session) return null;
 
-    using userStub = this.env.USER.get(this.env.USER.idFromName(session.user_id));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(session.user_id)));
     const user = await userStub.getProfile();
     if (!user) return null;
 
@@ -373,19 +377,19 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       expires_at: expiresAt,
     };
 
-    using stub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
+    using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
     await stub.setData(sessionData);
 
     return { sessionId, sessionData };
   }
 
   async destroySession(sessionId: string): Promise<void> {
-    using stub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
+    using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
     await stub.destroy();
   }
 
   async switchSessionOrg(sessionId: string, orgId: string): Promise<void> {
-    using stub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
+    using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
     await stub.switchOrg(orgId);
   }
 
@@ -394,7 +398,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     const userId = await this.env.EMAIL_TO_USER.get(`email:${email.toLowerCase()}`);
     if (!userId) return null;
 
-    using stub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     const user = await stub.getProfile();
     if (!user) return null;
 
@@ -402,7 +406,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async getUserById(userId: string): Promise<UserProfile | null> {
-    using stub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     return stub.getProfile();
   }
 
@@ -418,7 +422,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
     const users = await Promise.all(
       uniqueIds.map(async (id) => {
-        using stub = this.env.USER.get(this.env.USER.idFromName(id));
+        using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(id)));
         return stub.getProfile();
       })
     );
@@ -432,7 +436,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   ): Promise<{ userId: string; user: UserProfile }> {
     const userId = crypto.randomUUID();
 
-    using stub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     const user = await stub.createUser(userId, email.toLowerCase(), password, name);
 
     await this.env.EMAIL_TO_USER.put(`email:${email.toLowerCase()}`, userId);
@@ -441,17 +445,17 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async verifyUserPassword(userId: string, password: string): Promise<boolean> {
-    using stub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     return stub.verifyPassword(password);
   }
 
   async getUserOrgs(userId: string): Promise<OrgMembership[]> {
-    using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     const userOrgs = await userStub.getOrgs();
 
     const memberships: OrgMembership[] = [];
     for (const uo of userOrgs) {
-      using orgStub = this.env.ORG.get(this.env.ORG.idFromName(uo.org_id));
+      using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(uo.org_id)));
       const orgInfo = await orgStub.getInfo();
       if (orgInfo) {
         memberships.push({
@@ -467,27 +471,27 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async addUserToOrg(userId: string, orgId: string, role: 'admin' | 'member'): Promise<void> {
-    using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     await userStub.addOrg(orgId, role);
   }
 
   async removeUserFromOrg(userId: string, orgId: string): Promise<void> {
-    using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     await userStub.removeOrg(orgId);
   }
 
   async getUserProjects(userId: string): Promise<UserProject[]> {
-    using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     return userStub.getProjects();
   }
 
   async addUserProject(userId: string, orgId: string, projectId: string): Promise<void> {
-    using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     await userStub.addProject(orgId, projectId);
   }
 
   async removeUserProject(userId: string, orgId: string, projectId: string): Promise<void> {
-    using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     await userStub.removeProject(orgId, projectId);
   }
 
@@ -521,7 +525,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Step 3: Batch fetch all profiles and orgs in parallel
     const userDataResults = await Promise.all(
       userIds.map(async (userId) => {
-        using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+        using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
         const [profile, orgs] = await Promise.all([
           userStub.getProfile(),
           userStub.getOrgs(),
@@ -567,7 +571,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     userId: string,
     updates: { name?: string; is_superuser?: boolean }
   ): Promise<UserProfile | null> {
-    using stub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     const profile = await stub.getProfile();
     if (!profile) return null;
 
@@ -588,7 +592,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Fetch org details in parallel
     const orgResults = await Promise.all(
       Array.from(orgIds).map(async (orgId) => {
-        using orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+        using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
         const [info, memberCount] = await Promise.all([
           orgStub.getInfo(),
           orgStub.getMemberCount(),
@@ -618,7 +622,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Fetch threads from all orgs in parallel
     const threadResults = await Promise.all(
       Array.from(orgIds).map(async (orgId) => {
-        using indexStub = getIndexStub(this.env, orgId);
+        using indexStub = asDisposable(getIndexStub(this.env, orgId));
         const threads = await indexStub.getThreads();
         return threads.map((thread) => ({ ...thread, org_id: orgId }));
       })
@@ -636,7 +640,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Fetch projects from all orgs in parallel
     const projectResults = await Promise.all(
       Array.from(orgIds).map(async (orgId) => {
-        using indexStub = getIndexStub(this.env, orgId);
+        using indexStub = asDisposable(getIndexStub(this.env, orgId));
         const projects = await indexStub.getProjects();
         return projects.map((project) => ({ ...project, org_id: orgId }));
       })
@@ -656,7 +660,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Search for thread in all orgs in parallel
     const results = await Promise.all(
       Array.from(orgIds).map(async (orgId) => {
-        using indexStub = getIndexStub(this.env, orgId);
+        using indexStub = asDisposable(getIndexStub(this.env, orgId));
         const thread = await indexStub.getThread(threadId);
         if (thread) {
           // Read messages from container
@@ -680,7 +684,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Search for thread in all orgs in parallel
     const results = await Promise.all(
       Array.from(orgIds).map(async (orgId) => {
-        using indexStub = getIndexStub(this.env, orgId);
+        using indexStub = asDisposable(getIndexStub(this.env, orgId));
         const thread = await indexStub.getThread(threadId);
         if (thread && updates.title !== undefined) {
           return indexStub.updateThread(threadId, updates.title);
@@ -702,7 +706,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Search for project in all orgs in parallel
     const results = await Promise.all(
       Array.from(orgIds).map(async (orgId) => {
-        using indexStub = getIndexStub(this.env, orgId);
+        using indexStub = asDisposable(getIndexStub(this.env, orgId));
         const project = await indexStub.getProject(projectId);
         if (project && updates.name !== undefined) {
           return indexStub.updateProject(projectId, updates.name);
@@ -737,7 +741,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Step 3: Batch fetch all orgs in parallel
     const orgsResults = await Promise.all(
       userIds.map((userId) => {
-        using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+        using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
         return userStub.getOrgs();
       })
     );
@@ -819,7 +823,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   // Organization functions
   async getOrg(orgId: string): Promise<Organization | null> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const info = await stub.getInfo();
     if (!info) return null;
 
@@ -834,10 +838,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async createOrg(name: string, createdBy: string): Promise<Organization> {
     const orgId = crypto.randomUUID();
 
-    using orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const orgInfo = await orgStub.createOrg(orgId, name, createdBy);
 
-    using userStub = this.env.USER.get(this.env.USER.idFromName(createdBy));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(createdBy)));
     await userStub.addOrg(orgId, 'admin');
 
     return {
@@ -849,14 +853,14 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async updateOrgName(orgId: string, name: string): Promise<void> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     await stub.updateName(name);
   }
 
   async getOrgMembers(
     orgId: string
   ): Promise<Array<{ user: User; role: 'admin' | 'member'; joined_at: number }>> {
-    using orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const members = await orgStub.getMembers();
 
     const result: Array<{ user: User; role: 'admin' | 'member'; joined_at: number }> = [];
@@ -881,28 +885,28 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async isOrgMember(userId: string, orgId: string): Promise<boolean> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     return stub.isMember(userId);
   }
 
   async isOrgAdmin(userId: string, orgId: string): Promise<boolean> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     return stub.isAdmin(userId);
   }
 
   async removeOrgMember(orgId: string, userId: string): Promise<void> {
-    using orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     await orgStub.removeMember(userId);
 
-    using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     await userStub.removeOrg(orgId);
   }
 
   async updateOrgMemberRole(orgId: string, userId: string, role: 'admin' | 'member'): Promise<void> {
-    using orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     await orgStub.updateMemberRole(userId, role);
 
-    using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     await userStub.updateOrgRole(orgId, role);
   }
 
@@ -913,7 +917,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     role: 'admin' | 'member',
     invitedBy: string
   ): Promise<{ id: string; expires_at: number }> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const invitation = await stub.createInvitation(email, role, invitedBy);
     return { id: invitation.id, expires_at: invitation.expires_at };
   }
@@ -922,7 +926,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     orgId: string,
     invitationId: string
   ): Promise<{ id: string; email: string; role: 'admin' | 'member'; org: Organization } | null> {
-    using orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const invitation = await orgStub.getInvitation(invitationId);
     if (!invitation) return null;
 
@@ -943,14 +947,14 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async acceptInvitation(orgId: string, invitationId: string, userId: string): Promise<boolean> {
-    using orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const invitation = await orgStub.getInvitation(invitationId);
     if (!invitation) return false;
 
     const accepted = await orgStub.acceptInvitation(invitationId, userId);
     if (!accepted) return false;
 
-    using userStub = this.env.USER.get(this.env.USER.idFromName(userId));
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     await userStub.addOrg(orgId, invitation.role);
 
     return true;
@@ -963,7 +967,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     created_at: number;
     expires_at: number;
   }>> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const invitations = await stub.getInvitations();
     return invitations.map((inv) => ({
       id: inv.id,
@@ -975,13 +979,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async deleteInvitation(orgId: string, invitationId: string): Promise<void> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     await stub.deleteInvitation(invitationId);
   }
 
   // Chat functions
   async getThreads(org: string): Promise<Thread[]> {
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     return indexStub.getThreads();
   }
 
@@ -991,7 +995,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   ): Promise<PaginatedResult<Thread>> {
     const offset = params.offset ?? 0;
     const limit = params.limit ?? 50;
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     return indexStub.getThreadsPaginated(offset, limit);
   }
 
@@ -1002,24 +1006,24 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     createdBy?: string,
     sessionId?: string
   ): Promise<Thread> {
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     return indexStub.createThread(title, projectId, createdBy, sessionId);
   }
 
   async getThread(id: string, org: string): Promise<Thread | null> {
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     return indexStub.getThread(id);
   }
 
   async updateThread(id: string, title: string, org: string): Promise<Thread | null> {
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     return indexStub.updateThread(id, title);
   }
 
   async deleteThread(id: string, org: string): Promise<void> {
     // Messages are stored in container JSONL, not in the DO
     // Just delete from the index
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     await indexStub.deleteThread(id);
   }
 
@@ -1048,7 +1052,65 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       }
 
       const lines = file.content.split('\n').filter((line: string) => line.trim());
-      const messages: Message[] = [];
+      const messagesById = new Map<string, Message>();
+      const orderedIds: string[] = [];
+
+      const hasTextBlocks = (content: unknown) =>
+        Array.isArray(content) && content.some(block => block?.type === 'text' && block.text);
+
+      const mergeContentBlocks = (existing: unknown, incoming: unknown): unknown => {
+        if (!Array.isArray(existing) || !Array.isArray(incoming)) return incoming;
+
+        const incomingHasText = hasTextBlocks(incoming);
+        if (!incomingHasText) {
+          // Preserve existing text blocks when incoming only carries tool_use updates.
+          const merged = [...existing];
+          const existingKeys = new Map<string, number>();
+          existing.forEach((block, index) => {
+            const key = block?.type === 'tool_use'
+              ? `tool_use:${block.id || block.name || index}`
+              : `${block?.type}:${index}`;
+            existingKeys.set(key, index);
+          });
+          incoming.forEach((block, index) => {
+            const key = block?.type === 'tool_use'
+              ? `tool_use:${block.id || block.name || index}`
+              : `${block?.type}:${index}`;
+            const existingIndex = existingKeys.get(key);
+            if (existingIndex === undefined) {
+              merged.push(block);
+            } else {
+              merged[existingIndex] = block;
+            }
+          });
+          return merged;
+        }
+
+        // Incoming has text (likely final) - prefer incoming but keep tool_result blocks.
+        const toolResults = existing.filter(block => block?.type === 'tool_result');
+        if (toolResults.length === 0) return incoming;
+        return [...toolResults, ...incoming];
+      };
+
+      const upsertMessage = (message: Message) => {
+        const existing = messagesById.get(message.id);
+        if (existing) {
+          if (existing.role !== message.role) {
+            const roleSpecificId = `${message.id}_${message.role}`;
+            if (!messagesById.has(roleSpecificId)) {
+              messagesById.set(roleSpecificId, { ...message, id: roleSpecificId });
+              orderedIds.push(roleSpecificId);
+            } else {
+              messagesById.set(roleSpecificId, { ...message, id: roleSpecificId });
+            }
+            return;
+          }
+          existing.content = mergeContentBlocks(existing.content, message.content) as Message['content'];
+          return;
+        }
+        messagesById.set(message.id, message);
+        orderedIds.push(message.id);
+      };
 
       for (const line of lines) {
         try {
@@ -1059,8 +1121,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
             const firstContent = event.message.content[0];
             if (firstContent?.type === 'tool_result') {
               // Tool results render as assistant messages
-              messages.push({
-                id: event.uuid || `tool_result_${messages.length}`,
+              const id = event.uuid || `tool_result_${messagesById.size}`;
+              upsertMessage({
+                id,
                 thread_id: threadId,
                 role: 'assistant',
                 content: event.message.content,
@@ -1068,8 +1131,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
               });
             } else {
               // Regular user text messages
-              messages.push({
-                id: event.uuid || `user_${messages.length}`,
+              const id = event.uuid || `user_${messagesById.size}`;
+              upsertMessage({
+                id,
                 thread_id: threadId,
                 role: 'user',
                 content: event.message.content,
@@ -1080,8 +1144,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
           // Extract assistant messages (text and tool_use)
           if (event.type === 'assistant' && event.message?.content?.length > 0) {
-            messages.push({
-              id: event.uuid || event.message?.id || `assistant_${messages.length}`,
+            const id = event.uuid || event.message?.id || `assistant_${messagesById.size}`;
+            upsertMessage({
+              id,
               thread_id: threadId,
               role: 'assistant',
               content: event.message.content,
@@ -1093,7 +1158,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         }
       }
 
-      return messages;
+      return orderedIds
+        .map((id) => messagesById.get(id))
+        .filter((message): message is Message => Boolean(message));
     } catch (e) {
       // Container may not be running - return empty
       console.error('[getMessages] Error:', e);
@@ -1102,32 +1169,32 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async getProjects(org: string): Promise<Project[]> {
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     return indexStub.getProjects();
   }
 
   async getProjectsByUser(org: string, userId: string): Promise<Project[]> {
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     return indexStub.getProjectsByUser(userId);
   }
 
   async createProject(org: string, name?: string, createdBy?: string): Promise<Project> {
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     return indexStub.createProject(name, createdBy);
   }
 
   async getProject(id: string, org: string): Promise<Project | null> {
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     return indexStub.getProject(id);
   }
 
   async updateProject(id: string, name: string, org: string): Promise<Project | null> {
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     return indexStub.updateProject(id, name);
   }
 
   async deleteProject(id: string, org: string): Promise<void> {
-    using indexStub = getIndexStub(this.env, org);
+    using indexStub = asDisposable(getIndexStub(this.env, org));
     await indexStub.deleteProject(id);
   }
 
@@ -1291,7 +1358,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   // Preview functions (ChatThreadDO)
   async setThreadPreview(threadId: string, workers: string[]): Promise<string[]> {
-    using stub = this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId));
+    using stub = asDisposable(this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId)));
     const response = await stub.fetch(new Request('http://internal/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1302,7 +1369,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async getThreadPreview(threadId: string): Promise<string[]> {
-    using stub = this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId));
+    using stub = asDisposable(this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId)));
     const response = await stub.fetch(new Request('http://internal/preview', {
       method: 'GET',
     }));
@@ -1328,13 +1395,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async getOrgIntegrations(orgId: string): Promise<Integration[]> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const records = await stub.getIntegrations();
     return records.map((r) => this.recordToIntegration(r));
   }
 
   async getOrgIntegration(orgId: string, integrationId: string): Promise<Integration | null> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const record = await stub.getIntegration(integrationId);
     if (!record) return null;
     return this.recordToIntegration(record);
@@ -1353,7 +1420,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     const id = crypto.randomUUID();
     const encryptedCreds = await encryptCredentials(input.credentials, this.env.INTEGRATION_SECRET_KEY);
 
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     await stub.createIntegration(
       id,
       input.integration_type,
@@ -1377,7 +1444,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     integrationId: string,
     input: UpdateIntegrationInput
   ): Promise<Integration | null> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const existing = await stub.getIntegration(integrationId);
     if (!existing) return null;
 
@@ -1412,7 +1479,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async deleteOrgIntegration(orgId: string, integrationId: string): Promise<void> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     await stub.deleteIntegration(integrationId);
   }
 
@@ -1447,7 +1514,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   async resetOrgContainer(orgId: string): Promise<{ success: boolean; containerId: string }> {
     const containerId = getContainerIdForOrg(orgId);
-    using stub = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(containerId));
+    using stub = asDisposable(this.env.SANDBOX.get(this.env.SANDBOX.idFromName(containerId)));
     await stub.destroy();
     return { success: true, containerId };
   }
@@ -1457,7 +1524,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
    * Called when spawning a container to pass integration secrets.
    */
   async getOrgIntegrationEnvVars(orgId: string): Promise<Record<string, string>> {
-    using stub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const records = await stub.getIntegrations();
 
     const envVars: Record<string, string> = {};
