@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
+import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
 const VERSION = '2026-01-01-sandbox-v7';
@@ -10,6 +11,9 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const WORKER_BASE_URL = process.env.WORKER_BASE_URL;
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
+const TRACE_EVENTS = process.env.CHIRIDION_TRACE_EVENTS !== '0';
+const TRACE_DIR = `${SYNC_DIR}/.chiridion/trace`;
+const TRACE_ALL_FILE = `${TRACE_DIR}/_all.ndjson`;
 
 if (!ANTHROPIC_API_KEY) {
   console.error('ANTHROPIC_API_KEY env var required');
@@ -19,6 +23,34 @@ if (!ANTHROPIC_API_KEY) {
 // Session state - keyed by threadId
 const sessions = new Map();
 const MAX_EVENT_BUFFER = 500;
+let traceDirPromise = null;
+
+function sanitizeFileSegment(value) {
+  return String(value || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+}
+
+function ensureTraceDir() {
+  if (!traceDirPromise) {
+    traceDirPromise = mkdir(TRACE_DIR, { recursive: true }).catch((err) => {
+      console.error('[ws-server] Failed to create trace dir:', err?.message || String(err));
+    });
+  }
+  return traceDirPromise;
+}
+
+async function writeTrace(threadId, entry) {
+  if (!TRACE_EVENTS) return;
+  try {
+    await ensureTraceDir();
+    const safeThread = sanitizeFileSegment(threadId);
+    const tracePath = `${TRACE_DIR}/${safeThread}.ndjson`;
+    const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
+    await appendFile(tracePath, line);
+    await appendFile(TRACE_ALL_FILE, line);
+  } catch (error) {
+    console.error('[ws-server] Trace write failed:', error?.message || String(error));
+  }
+}
 
 function createSession(threadId) {
   const session = {
@@ -170,6 +202,7 @@ function bufferEvent(session, payload) {
   const eventId = session.nextEventId++;
   const envelope = { ...payload, eventId, sessionId: session.threadId };
   session.eventBuffer.push(envelope);
+  void writeTrace(session.threadId, { direction: 'ws_out', payload: envelope });
   if (session.eventBuffer.length > MAX_EVENT_BUFFER) {
     session.eventBuffer.shift();
   }
@@ -186,15 +219,20 @@ function bufferEvent(session, payload) {
 
 function replayBufferedEvents(session, ws, lastEventId) {
   const fromId = Number.isFinite(lastEventId) ? lastEventId : 0;
+  let replayed = 0;
   for (const envelope of session.eventBuffer) {
     if (envelope.eventId > fromId) {
       try {
         ws.send(JSON.stringify(envelope));
+        replayed++;
       } catch (e) {
         console.error('[ws-server] Failed to replay event:', e);
         break;
       }
     }
+  }
+  if (replayed > 0) {
+    void writeTrace(session.threadId, { direction: 'ws_out_replay', count: replayed, fromEventId: fromId });
   }
 }
 
@@ -264,6 +302,7 @@ function startEventLoop(session) {
     } catch (e) {
       console.error('[ws-server] Query error:', summarizeError(e));
       bufferEvent(session, { type: 'error', error: String(e) });
+      void writeTrace(session.threadId, { direction: 'error', error: String(e) });
       logForPersistence({ type: 'error', error: String(e) });
       syncWorkspace();
     } finally {
@@ -276,6 +315,7 @@ function startEventLoop(session) {
 
 // Handle a user message
 function handleUserMessage(session, content) {
+  void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content });
   // Initialize session if needed
   initSession(session);
 
@@ -357,6 +397,7 @@ Bun.serve({
           }
 
           const session = getOrCreateSession(threadId);
+          void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId } });
           attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {
@@ -373,6 +414,7 @@ Bun.serve({
           const threadId = ws.data?.threadId;
           if (threadId && sessions.has(threadId)) {
             const session = sessions.get(threadId);
+            void writeTrace(session.threadId, { direction: 'ws_in', type: 'stop' });
             if (session.activeQuery) {
               try {
                 await session.activeQuery.interrupt();

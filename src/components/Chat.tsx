@@ -26,6 +26,7 @@ import { PromptInput } from '@/components/prompt-input';
 import { Button } from '@/components/ui/button';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { cn } from '@/lib/utils';
+import { applySdkEventToStreamingState, type StreamingState } from '@/lib/streaming';
 import {
   createThread as createThreadAction,
   deleteThread as deleteThreadAction,
@@ -204,6 +205,9 @@ interface SDKEvent {
   event?: {
     type: string;
     index?: number;
+    message?: {
+      id?: string;
+    };
     delta?: {
       type?: string;
       text?: string;
@@ -217,12 +221,6 @@ interface SDKEvent {
       name?: string;
     };
   };
-}
-
-// Streaming state for partial messages
-interface StreamingState {
-  content: ContentBlock[];
-  isStreaming: boolean;
 }
 
 export default function Chat({ threadId, orgId, initialThreads, initialMessages }: ChatProps) {
@@ -529,6 +527,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
           setLoading(true);
           setStreaming({ content: [], isStreaming: false });
+          currentMessageUuidRef.current = null;
           ws.send(JSON.stringify({
             type: 'message',
             content: storedMessage,
@@ -551,130 +550,27 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         // Handle SDK events for streaming
         const sdkEvent = data.event as SDKEvent;
 
-        if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-          // Session started - clear streaming state
-          setStreaming({ content: [], isStreaming: true });
-        } else if (sdkEvent.type === 'stream_event') {
-          // Handle streaming deltas
+        if (sdkEvent.type === 'stream_event') {
           const evt = sdkEvent.event;
-          if (evt?.type === 'content_block_start') {
-            const block = evt.content_block;
-            if (block?.type === 'tool_use') {
-              // Add tool_use block immediately
-              setStreaming(prev => ({
-                ...prev,
-                isStreaming: true,
-                content: [...prev.content, {
-                  type: 'tool_use' as const,
-                  id: block.id || '',
-                  name: block.name || '',
-                  input: {},
-                }],
-              }));
-            } else {
-              // For text blocks, just mark as streaming - delta will add content
-              setStreaming(prev => ({ ...prev, isStreaming: true }));
+          if (evt?.type === 'message_start') {
+            const msgId = evt.message?.id;
+            const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
+            if (msgId || sdkUuid) {
+              currentMessageUuidRef.current = msgId || sdkUuid || null;
             }
-          } else if (evt?.type === 'content_block_delta') {
-            if (evt.delta?.type === 'text_delta' && evt.delta.text) {
-              // Append text to current text block or create new one
-              setStreaming(prev => {
-                const newContent = [...prev.content];
-                const lastBlock = newContent[newContent.length - 1];
-                if (lastBlock?.type === 'text') {
-                  newContent[newContent.length - 1] = {
-                    ...lastBlock,
-                    text: lastBlock.text + evt.delta!.text,
-                  };
-                } else {
-                  newContent.push({ type: 'text', text: evt.delta!.text! });
-                }
-                return { ...prev, content: newContent };
-              });
-            } else if (evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
-              // Append to tool_use input (accumulate JSON string)
-              setStreaming(prev => {
-                const newContent = [...prev.content];
-                const lastToolUse = [...newContent].reverse().find(b => b.type === 'tool_use');
-                if (lastToolUse && lastToolUse.type === 'tool_use') {
-                  const idx = newContent.indexOf(lastToolUse);
-                  const currentInput = (lastToolUse as any)._inputJson || '';
-                  newContent[idx] = {
-                    ...lastToolUse,
-                    _inputJson: currentInput + evt.delta!.partial_json,
-                  } as any;
-                }
-                return { ...prev, content: newContent };
-              });
-            }
-          } else if (evt?.type === 'content_block_stop') {
-            // Finalize tool_use input JSON
-            setStreaming(prev => {
-              const newContent = prev.content.map(block => {
-                if (block.type === 'tool_use' && (block as any)._inputJson) {
-                  try {
-                    const input = JSON.parse((block as any)._inputJson);
-                    const { _inputJson, ...rest } = block as any;
-                    return { ...rest, input };
-                  } catch {
-                    return block;
-                  }
-                }
-                return block;
-              });
-              return { ...prev, content: newContent };
-            });
-          } else if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
-            // Message streaming complete - just mark as not streaming
-            // Keep content for the 'assistant' handler to merge tool_result blocks
-            // The actual message will be added by the 'assistant' event handler
-            // to avoid duplicate messages (race condition with timestamp-based IDs)
-            setStreaming(prev => ({ ...prev, isStreaming: false }));
           }
+          // Apply streaming deltas in a shared reducer for consistency/testing
+          setStreaming(prev => applySdkEventToStreamingState(prev, sdkEvent));
+        } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
+          setStreaming(prev => applySdkEventToStreamingState(prev, sdkEvent));
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
-          // Track the SDK uuid for this message (stable across partial updates)
-          const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
-          const sdkMsgId = (sdkEvent.message as { id?: string }).id;
-          if (sdkUuid || sdkMsgId) {
-            currentMessageUuidRef.current = sdkUuid || sdkMsgId || null;
-          }
-
-          // Use full assistant message content when complete
-          if (sdkEvent.message!.stop_reason) {
-            const msgId = currentMessageUuidRef.current;
-            debugLog('ws:assistantComplete', { msgId, stopReason: sdkEvent.message!.stop_reason });
-            if (!msgId) {
-              console.error('No stable message ID available');
-              return;
+          // Track message ID as fallback; content is handled via stream_event only.
+          if (!currentMessageUuidRef.current) {
+            const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
+            const sdkMsgId = (sdkEvent.message as { id?: string }).id;
+            if (sdkUuid || sdkMsgId) {
+              currentMessageUuidRef.current = sdkUuid || sdkMsgId || null;
             }
-            const finalContent = [...sdkEvent.message!.content];
-
-            setStreaming(prev => {
-              // Include any tool_result blocks from streaming
-              const content = [...prev.content.filter(b => b.type === 'tool_result'), ...finalContent];
-              if (content.length > 0) {
-                setMessages(msgs => {
-                  // Check for duplicate using stable SDK ID
-                  const isDupe = msgs.some(m => m.id === msgId);
-                  debugLog('ws:addAssistantMessage', {
-                    msgId,
-                    isDupe,
-                    prevCount: msgs.length,
-                    prevIds: msgs.map(m => m.id),
-                  });
-                  if (isDupe) return msgs;
-                  return [...msgs, {
-                    id: msgId,
-                    thread_id: threadId || '',
-                    role: 'assistant' as const,
-                    content,
-                    created_at: Date.now(),
-                  }];
-                });
-              }
-              return { content: [], isStreaming: false };
-            });
-            setLoading(false);
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
           // Append user content blocks (tool_result) to current content
@@ -683,18 +579,15 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
             content: [...prev.content, ...sdkEvent.message!.content],
           }));
         } else if (sdkEvent.type === 'result') {
-          // Query complete - add any remaining streaming content as fallback
-          // (in case 'assistant' handler didn't fire or stop_reason wasn't set)
-          const fallbackMsgId = currentMessageUuidRef.current;
+          // Query complete - commit accumulated streaming content as a single assistant message.
+          const fallbackMsgId = currentMessageUuidRef.current || (sdkEvent as { uuid?: string }).uuid || null;
           debugLog('ws:result', { fallbackMsgId });
           setStreaming(prev => {
             if (prev.content.length > 0 && fallbackMsgId) {
-              // There's still content - assistant handler didn't add it
-              debugLog('ws:resultFallback', { fallbackMsgId, contentLength: prev.content.length });
+              debugLog('ws:resultFinalize', { fallbackMsgId, contentLength: prev.content.length });
               setMessages(msgs => {
-                // Use the tracked SDK uuid for deduplication
                 const isDupe = msgs.some(m => m.id === fallbackMsgId);
-                debugLog('ws:addFallbackMessage', {
+                debugLog('ws:addAssistantMessage', {
                   fallbackMsgId,
                   isDupe,
                   prevCount: msgs.length,
@@ -712,7 +605,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
             }
             return { content: [], isStreaming: false };
           });
-          // Reset the uuid ref for next message
           currentMessageUuidRef.current = null;
           setLoading(false);
         }
@@ -1130,6 +1022,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
       setStreaming({ content: [], isStreaming: false });
+      currentMessageUuidRef.current = null;
       wsRef.current.send(JSON.stringify({
         type: 'message',
         content: userMessage,
@@ -1351,7 +1244,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                     "bg-background/80 backdrop-blur-sm border-border/50",
                     showScrollButton ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
                   )}
-                  onClick={scrollToBottom}
+                  onClick={() => scrollToBottom()}
                 >
                   <ArrowDown className="h-4 w-4" />
                 </Button>
