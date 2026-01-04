@@ -1405,6 +1405,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     await deleteApiToken(this.env.API_TOKENS, tokenId);
   }
 
+  async resetOrgContainer(orgId: string): Promise<{ success: boolean; containerId: string }> {
+    const containerId = getContainerIdForOrg(orgId);
+    const stub = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(containerId));
+    await stub.destroy();
+    return { success: true, containerId };
+  }
+
   /**
    * Get all enabled integration credentials as ENV vars for an org.
    * Called when spawning a container to pass integration secrets.
