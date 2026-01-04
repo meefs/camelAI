@@ -268,6 +268,10 @@ export class OrgContainer extends Container<OrgContainerEnv> {
     const state = await this.getState();
     console.log('[OrgContainer] Container state:', state.status, 'for org:', orgId);
     if (state.status === 'running' || state.status === 'healthy') {
+      console.log('[OrgContainer] startForOrg skipping start; container already running', {
+        orgId,
+        status: state.status,
+      });
       return;
     }
 
