@@ -73,28 +73,9 @@ export async function getThreads() {
 }
 
 export async function getThreadsPage(params: { offset?: number; limit?: number } = {}) {
-  const timingEnabled = process.env.CHIRIDION_TIMING === '1';
-  const start = timingEnabled ? Date.now() : 0;
   const session = await requireSession();
-  const pageStart = timingEnabled ? Date.now() : 0;
   const page = await chatDO.getThreadsPaginated(session.org_id, params);
-  if (timingEnabled) {
-    console.log(
-      `[timing] getThreadsPage fetch ${Date.now() - pageStart}ms (items=${page.items.length})`
-    );
-  }
-  const hydrateStart = timingEnabled ? Date.now() : 0;
   const hydratedItems = await hydrateThreads(page.items);
-  if (timingEnabled) {
-    console.log(
-      `[timing] getThreadsPage hydrate ${Date.now() - hydrateStart}ms (uniqueCreators=${
-        new Set(page.items.map((item) => item.created_by)).size
-      })`
-    );
-  }
-  if (timingEnabled) {
-    console.log(`[timing] getThreadsPage total ${Date.now() - start}ms`);
-  }
   return toSerializable({
     ...page,
     items: hydratedItems,
