@@ -14,6 +14,7 @@ interface ChatsListProps {
   loadingMore?: boolean;
   hasMore?: boolean;
   loadMoreRef?: RefObject<HTMLDivElement | null>;
+  scrollViewportRef?: RefObject<HTMLDivElement | null>;
   isSelecting: boolean;
   selectedIds: Set<string>;
   onToggleSelect: (id: string) => void;
@@ -75,6 +76,7 @@ export function ChatsList({
   loadingMore = false,
   hasMore = false,
   loadMoreRef,
+  scrollViewportRef,
   isSelecting,
   selectedIds,
   onToggleSelect,
@@ -98,7 +100,10 @@ export function ChatsList({
   }
 
   return (
-    <ScrollArea className="flex-1 sm:-ml-6 sm:w-[calc(100%+1.5rem)]">
+    <ScrollArea
+      className="flex-1 sm:-ml-6 sm:w-[calc(100%+1.5rem)]"
+      viewportRef={scrollViewportRef}
+    >
       <div className="py-2 sm:pl-6">
         {threads.map((thread, index) => (
           <div key={thread.id}>

@@ -33,11 +33,15 @@ export const getSessionContext = cache(async (): Promise<SessionContext | null> 
   return { sessionId, session };
 });
 
+export const getUserByIdCached = cache(async (userId: string) => {
+  return authDO.getUserById(userId);
+});
+
 export const getUserContext = cache(async (): Promise<UserContext | null> => {
   const sessionContext = await getSessionContext();
   if (!sessionContext) return null;
 
-  const user = await authDO.getUserById(sessionContext.session.user_id);
+  const user = await getUserByIdCached(sessionContext.session.user_id);
   if (!user) return null;
 
   return {

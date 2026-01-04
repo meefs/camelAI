@@ -1,28 +1,19 @@
 import { NextResponse } from 'next/server';
-import { getSessionId } from '@/lib/auth';
-import * as authDO from '@/lib/auth-do';
+import { getSessionContext, getUserByIdCached } from '@/lib/auth-context';
 
 export async function requireSuperuser(): Promise<
   | { authorized: true; userId: string }
   | { authorized: false; response: NextResponse }
 > {
-  const sessionId = await getSessionId();
-  if (!sessionId) {
+  const sessionContext = await getSessionContext();
+  if (!sessionContext) {
     return {
       authorized: false,
       response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
     };
   }
 
-  const session = await authDO.getSession(sessionId);
-  if (!session) {
-    return {
-      authorized: false,
-      response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
-    };
-  }
-
-  const user = await authDO.getUserById(session.user_id);
+  const user = await getUserByIdCached(sessionContext.session.user_id);
   if (!user) {
     return {
       authorized: false,

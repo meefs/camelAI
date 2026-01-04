@@ -37,6 +37,7 @@ export default function HistoryClient({
   const [offset, setOffset] = useState(initialOffset);
   const [limit, setLimit] = useState(initialLimit);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const isSelecting = selectMode !== 'off';
   const hasMore = threads.length < total;
 
@@ -100,7 +101,7 @@ export default function HistoryClient({
           loadMore();
         }
       },
-      { rootMargin: '200px' }
+      { root: scrollViewportRef.current, rootMargin: '200px' }
     );
 
     observer.observe(target);
@@ -223,6 +224,7 @@ export default function HistoryClient({
             hasMore={hasMore}
             loadingMore={loadingMore}
             loadMoreRef={loadMoreRef}
+            scrollViewportRef={scrollViewportRef}
           />
         </div>
       </div>
