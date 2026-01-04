@@ -29,6 +29,8 @@ import { cn } from '@/lib/utils';
 import {
   createThread as createThreadAction,
   deleteThread as deleteThreadAction,
+  getThreadMessages,
+  getThreads,
 } from '@/lib/server-actions/thread';
 
 interface ChatProps {
@@ -331,8 +333,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   }, [threadId, loadSessionState]);
 
   const fetchThreads = useCallback(async () => {
-    const res = await fetch('/api/threads');
-    const data = await res.json() as unknown;
+    const data = await getThreads();
     setThreads(Array.isArray(data) ? (data as Thread[]) : []);
   }, []);
 
@@ -362,35 +363,30 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       return;
     }
     try {
-      const res = await fetch(`/api/threads/${threadId}/messages`);
-      if (res.ok) {
-        const data = await res.json() as unknown;
-        const fetchedMsgs = Array.isArray(data) ? (data as Message[]) : [];
+      const data = await getThreadMessages(threadId);
+      const fetchedMsgs = Array.isArray(data) ? (data as Message[]) : [];
 
-        // Parse content for each message (handles JSON-encoded ContentBlock[])
-        const parsedMsgs = fetchedMsgs.map(msg => ({
-          ...msg,
-          content: parseMessageContent(msg.content),
-        }));
+      // Parse content for each message (handles JSON-encoded ContentBlock[])
+      const parsedMsgs = fetchedMsgs.map(msg => ({
+        ...msg,
+        content: parseMessageContent(msg.content),
+      }));
 
-        debugLog('fetchMessages:setMessages', {
-          threadId,
-          isReconnect,
-          fetchedCount: fetchedMsgs.length,
-          parsedCount: parsedMsgs.length,
-          messageIds: parsedMsgs.map(m => m.id),
-        });
+      debugLog('fetchMessages:setMessages', {
+        threadId,
+        isReconnect,
+        fetchedCount: fetchedMsgs.length,
+        parsedCount: parsedMsgs.length,
+        messageIds: parsedMsgs.map(m => m.id),
+      });
 
-        // Always replace with server state - local-only messages (local_*, turn_*)
-        // that weren't persisted are stale. Pending messages will be re-added
-        // when the ready event fires.
-        setMessages(parsedMsgs);
+      // Always replace with server state - local-only messages (local_*, turn_*)
+      // that weren't persisted are stale. Pending messages will be re-added
+      // when the ready event fires.
+      setMessages(parsedMsgs);
 
-        if (!isReconnect) {
-          isFirstMessage.current = parsedMsgs.length === 0;
-        }
-      } else {
-        debugLog('fetchMessages:error', { threadId, status: res.status });
+      if (!isReconnect) {
+        isFirstMessage.current = parsedMsgs.length === 0;
       }
     } catch (e) {
       debugLog('fetchMessages:exception', { threadId, error: String(e) });

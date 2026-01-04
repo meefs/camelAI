@@ -4,6 +4,21 @@ import * as authDO from '@/lib/auth-do';
 import * as chatDO from '@/lib/chat-do';
 import { requireSession } from '@/lib/server-guards';
 
+function toSerializable<T>(value: T): T {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => toSerializable(item)) as T;
+  }
+  if (typeof value === 'object') {
+    const plain: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      plain[key] = toSerializable(entry);
+    }
+    return plain as T;
+  }
+  return value;
+}
+
 export async function createThread(input: {
   title?: string;
   projectId?: string;
@@ -20,13 +35,44 @@ export async function createThread(input: {
     projectId = project.id;
   }
 
-  return chatDO.createThread(
+  const thread = await chatDO.createThread(
     session.org_id,
     input.title,
     projectId,
     session.user_id,
     input.session_id
   );
+  return toSerializable(thread);
+}
+
+export async function getThreads() {
+  const session = await requireSession();
+  const threads = await chatDO.getThreads(session.org_id);
+  const creatorIds = Array.from(
+    new Set(
+      threads
+        .map((thread) => thread.created_by)
+        .filter((id) => Boolean(id))
+    )
+  ) as string[];
+  const creatorEntries = await Promise.all(
+    creatorIds.map(async (id) => [id, await authDO.getUserById(id)] as const)
+  );
+  const creatorMap = new Map<string, NonNullable<Awaited<ReturnType<typeof authDO.getUserById>>>>();
+  for (const [id, user] of creatorEntries) {
+    if (user) creatorMap.set(id, user);
+  }
+  const hydrated = threads.map((thread) => ({
+    ...thread,
+    creator: creatorMap.get(thread.created_by),
+  }));
+  return toSerializable(hydrated);
+}
+
+export async function getThreadMessages(threadId: string) {
+  const session = await requireSession();
+  const messages = await chatDO.getMessages(threadId, session.org_id);
+  return toSerializable(messages);
 }
 
 export async function updateThreadTitle(threadId: string, title: string) {
@@ -35,7 +81,7 @@ export async function updateThreadTitle(threadId: string, title: string) {
   if (!thread) {
     throw new Error('Not found');
   }
-  return thread;
+  return toSerializable(thread);
 }
 
 export async function deleteThread(threadId: string) {
