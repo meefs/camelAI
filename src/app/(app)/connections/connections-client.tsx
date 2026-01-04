@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Integration } from '@/types';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
-import { IntegrationIcon } from '@/lib/integration-icons';
+import { IntegrationIcon, hasIntegrationIcon } from '@/lib/integration-icons';
 import { PageHeader } from '@/components/page-header';
 import { AddConnectionDialog } from './AddConnectionDialog';
 import { EditConnectionDialog } from './EditConnectionDialog';
@@ -247,13 +247,20 @@ export default function ConnectionsClient({
                         <div className="grid gap-4 md:grid-cols-2">
                           {filteredConnections.map((connection) => {
                             const typeDef = getTypeDefinition(connection.integration_type);
-                            const Icon = IntegrationIcon[connection.integration_type] ?? Settings;
+                            const hasIcon = hasIntegrationIcon(connection.integration_type);
                             return (
                               <Card key={connection.id}>
                                 <CardHeader className="flex flex-row items-start justify-between gap-4">
                                   <div className="flex items-start gap-3">
                                     <div className="flex size-10 items-center justify-center rounded-lg border">
-                                      <Icon className="size-5" />
+                                      {hasIcon ? (
+                                        <IntegrationIcon
+                                          type={connection.integration_type}
+                                          className="size-5"
+                                        />
+                                      ) : (
+                                        <Settings className="size-5" />
+                                      )}
                                     </div>
                                     <div>
                                       <CardTitle>{connection.name}</CardTitle>
@@ -325,7 +332,7 @@ export default function ConnectionsClient({
           </DialogHeader>
           <div className="grid gap-3 sm:grid-cols-2">
             {connectionTypes.map((type) => {
-              const Icon = IntegrationIcon[type.type] ?? Settings;
+              const hasIcon = hasIntegrationIcon(type.type);
               return (
                 <button
                   key={type.type}
@@ -334,7 +341,11 @@ export default function ConnectionsClient({
                   onClick={() => handleAddClick(type.type)}
                 >
                   <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
-                    <Icon className="size-5" />
+                    {hasIcon ? (
+                      <IntegrationIcon type={type.type} className="size-5" />
+                    ) : (
+                      <Settings className="size-5" />
+                    )}
                   </div>
                   <div>
                     <p className="text-sm font-medium">{type.displayName}</p>
