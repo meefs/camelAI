@@ -66,7 +66,7 @@ waitForWranglerReady()
     console.error('[dev-proxy] failed waiting for wrangler dev:', err);
   });
 
-const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true });
+const proxy = httpProxy.createProxyServer({ ws: true });
 
 proxy.on('error', (err, _req, resOrSocket) => {
   if (!resOrSocket) {
@@ -89,23 +89,45 @@ proxy.on('error', (err, _req, resOrSocket) => {
 const server = http.createServer((req, res) => {
   req.on('error', () => {});
   res.on('error', () => {});
-  const target =
-    req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'))
-      ? wranglerTarget
-      : nextTarget;
-  proxy.web(req, res, { target });
+  const isWrangler =
+    req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'));
+  const target = isWrangler ? wranglerTarget : nextTarget;
+  const forwardedProto = Array.isArray(req.headers['x-forwarded-proto'])
+    ? req.headers['x-forwarded-proto'][0]
+    : req.headers['x-forwarded-proto'];
+  proxy.web(req, res, {
+    target,
+    changeOrigin: isWrangler,
+    headers: isWrangler
+      ? undefined
+      : {
+          'x-forwarded-host': req.headers.host ?? `localhost:${proxyPort}`,
+          'x-forwarded-proto': forwardedProto ?? 'http',
+        },
+  });
 });
 
 server.on('upgrade', (req, socket, head) => {
   socket.on('error', (err) => {
     console.error('[dev-proxy] socket error:', err.message);
   });
-  const target =
-    req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'))
-      ? wranglerTarget
-      : nextTarget;
+  const isWrangler =
+    req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'));
+  const target = isWrangler ? wranglerTarget : nextTarget;
+  const forwardedProto = Array.isArray(req.headers['x-forwarded-proto'])
+    ? req.headers['x-forwarded-proto'][0]
+    : req.headers['x-forwarded-proto'];
   console.log('[dev-proxy] WebSocket upgrade:', req.url, '->', target);
-  proxy.ws(req, socket, head, { target });
+  proxy.ws(req, socket, head, {
+    target,
+    changeOrigin: isWrangler,
+    headers: isWrangler
+      ? undefined
+      : {
+          'x-forwarded-host': req.headers.host ?? `localhost:${proxyPort}`,
+          'x-forwarded-proto': forwardedProto ?? 'http',
+        },
+  });
 });
 
 server.on('clientError', (_err, socket) => {
