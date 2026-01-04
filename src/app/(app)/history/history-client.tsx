@@ -200,7 +200,7 @@ export default function HistoryClient({
           <ChatsToolbar
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
-            totalCount={filteredThreads.length}
+            totalCount={searchQuery ? filteredThreads.length : total}
             isSelecting={isSelecting}
             selectedCount={selectedIds.size}
             allSelected={selectedIds.size === filteredThreads.length && filteredThreads.length > 0}
