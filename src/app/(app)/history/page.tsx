@@ -7,6 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { PageHeader } from '@/components/page-header';
 import { ChatsToolbar } from '@/components/history/chats-toolbar';
 import { ChatsList } from '@/components/history/chats-list';
+import { deleteThread, updateThreadTitle } from '@/lib/server-actions/thread';
 
 export default function HistoryPage() {
   const router = useRouter();
@@ -95,11 +96,7 @@ export default function HistoryPage() {
   // Thread actions
   const handleRenameThread = async (id: string, newTitle: string) => {
     try {
-      await fetch(`/api/threads/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newTitle }),
-      });
+      await updateThreadTitle(id, newTitle);
       setThreads(prev => prev.map(t => t.id === id ? { ...t, title: newTitle } : t));
     } catch (error) {
       console.error('Failed to rename thread:', error);
@@ -108,7 +105,7 @@ export default function HistoryPage() {
 
   const handleDeleteThread = async (id: string) => {
     try {
-      await fetch(`/api/threads/${id}`, { method: 'DELETE' });
+      await deleteThread(id);
       setThreads(prev => prev.filter(t => t.id !== id));
       setSelectedIds(prev => {
         const next = new Set(prev);

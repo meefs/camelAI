@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { updateAdminUser } from '@/lib/server-actions/admin';
 
 interface UserEditFormProps {
   user: User;
@@ -28,19 +29,10 @@ export function UserEditForm({ user }: UserEditFormProps) {
     setSuccess(false);
 
     try {
-      const res = await fetch(`/api/admin/users/${user.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name || null,
-          is_superuser: isSuperuser,
-        }),
+      await updateAdminUser(user.id, {
+        name: name || null,
+        is_superuser: isSuperuser,
       });
-
-      if (!res.ok) {
-        const data = await res.json() as { error?: string };
-        throw new Error(data.error || 'Failed to update user');
-      }
 
       setSuccess(true);
       router.refresh();

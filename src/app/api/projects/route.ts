@@ -25,24 +25,3 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
-
-export async function POST(request: NextRequest) {
-  try {
-    const sessionId = await getSessionId();
-    if (!sessionId) {
-      return unauthorizedResponse();
-    }
-
-    const session = await authDO.getSession(sessionId);
-    if (!session) {
-      return unauthorizedResponse();
-    }
-
-    const body = await request.json() as { name?: string };
-    const project = await chatDO.createProject(session.org_id, body.name, session.user_id);
-    await authDO.addUserProject(session.user_id, session.org_id, project.id);
-    return NextResponse.json(project);
-  } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
-  }
-}

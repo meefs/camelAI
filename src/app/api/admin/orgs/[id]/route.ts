@@ -24,26 +24,3 @@ export async function GET(
 
   return NextResponse.json({ org, members, invitations, integrations });
 }
-
-// PUT /api/admin/orgs/[id] - Update org
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const auth = await requireSuperuser();
-  if (!auth.authorized) return auth.response;
-
-  const { id } = await params;
-  const body = await request.json() as { name?: string };
-
-  if (body.name !== undefined) {
-    await authDO.updateOrgName(id, body.name);
-  }
-
-  const org = await authDO.getOrg(id);
-  if (!org) {
-    return NextResponse.json({ error: 'Organization not found' }, { status: 404 });
-  }
-
-  return NextResponse.json({ org });
-}

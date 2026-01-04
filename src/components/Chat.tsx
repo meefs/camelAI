@@ -26,6 +26,10 @@ import { PromptInput } from '@/components/prompt-input';
 import { Button } from '@/components/ui/button';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { cn } from '@/lib/utils';
+import {
+  createThread as createThreadAction,
+  deleteThread as deleteThreadAction,
+} from '@/lib/server-actions/thread';
 
 interface ChatProps {
   threadId?: string;
@@ -1045,8 +1049,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   }, []);
 
   async function createThread() {
-    const res = await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-    const thread = await res.json() as Thread;
+    const thread = await createThreadAction({});
     setThreads([thread, ...threads]);
     router.push(`/chat/${thread.id}`);
   }
@@ -1062,15 +1065,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     setWelcomeInput('');
 
     try {
-      const res = await fetch('/api/threads', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: newThreadId }),
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to create thread (${res.status})`);
-      }
-      const thread = await res.json() as Thread;
+      const thread = await createThreadAction({ session_id: newThreadId });
       router.push(`/chat/${thread?.id || newThreadId}`);
     } catch (err) {
       sessionStorage.removeItem('pendingMessage');
@@ -1083,7 +1078,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   async function deleteThread(id: string, e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    await fetch(`/api/threads/${id}`, { method: 'DELETE' });
+    await deleteThreadAction(id);
     setThreads(threads.filter(t => t.id !== id));
     if (threadId === id) {
       router.push('/');

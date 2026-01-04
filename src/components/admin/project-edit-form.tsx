@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { updateAdminProject } from '@/lib/server-actions/admin';
 
 interface Project {
   id: string;
@@ -34,16 +35,7 @@ export function ProjectEditForm({ project }: ProjectEditFormProps) {
     setSuccess(false);
 
     try {
-      const res = await fetch(`/api/admin/projects/${project.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json() as { error?: string };
-        throw new Error(data.error || 'Failed to update project');
-      }
+      await updateAdminProject(project.id, { name });
 
       setSuccess(true);
       router.refresh();

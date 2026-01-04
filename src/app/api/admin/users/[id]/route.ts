@@ -22,30 +22,3 @@ export async function GET(
 
   return NextResponse.json({ user, orgs });
 }
-
-// PUT /api/admin/users/[id] - Update user
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const auth = await requireSuperuser();
-  if (!auth.authorized) return auth.response;
-
-  const { id } = await params;
-  const body = await request.json() as { name?: string; is_superuser?: boolean };
-
-  const updates: { name?: string; is_superuser?: boolean } = {};
-  if (body.name !== undefined) {
-    updates.name = body.name;
-  }
-  if (body.is_superuser !== undefined) {
-    updates.is_superuser = body.is_superuser;
-  }
-
-  const user = await authDO.adminUpdateUser(id, updates);
-  if (!user) {
-    return NextResponse.json({ error: 'User not found' }, { status: 404 });
-  }
-
-  return NextResponse.json({ user });
-}

@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle, Key } from 'lucide-react';
+import { updateIntegration } from '@/lib/server-actions/org';
 
 interface EditConnectionDialogProps {
   open: boolean;
@@ -65,25 +66,20 @@ export function EditConnectionDialog({
     setSubmitting(true);
 
     try {
-      const body: Record<string, unknown> = {
+      const payload: {
+        name?: string;
+        config?: Record<string, unknown>;
+        credentials?: Record<string, unknown>;
+      } = {
         name: name.trim(),
         config,
       };
 
       if (updateCredentials) {
-        body.credentials = credentials;
+        payload.credentials = credentials;
       }
 
-      const res = await fetch(`/api/orgs/${orgId}/integrations/${connection.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const data = (await res.json()) as { error?: string };
-        throw new Error(data.error || 'Failed to update connection');
-      }
+      await updateIntegration(orgId, connection.id, payload);
 
       onSuccess();
     } catch (err) {
