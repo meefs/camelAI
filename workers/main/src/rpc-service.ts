@@ -1054,6 +1054,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       const lines = file.content.split('\n').filter((line: string) => line.trim());
       const messagesById = new Map<string, Message>();
       const orderedIds: string[] = [];
+      let lastAssistantId: string | null = null;
 
       const hasTextBlocks = (content: unknown) =>
         Array.isArray(content) && content.some(block => block?.type === 'text' && block.text);
@@ -1103,13 +1104,30 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
             } else {
               messagesById.set(roleSpecificId, { ...message, id: roleSpecificId });
             }
+            if (message.role === 'assistant') {
+              lastAssistantId = roleSpecificId;
+            }
             return;
           }
           existing.content = mergeContentBlocks(existing.content, message.content) as Message['content'];
+          if (message.role === 'assistant') {
+            lastAssistantId = message.id;
+          }
           return;
         }
         messagesById.set(message.id, message);
         orderedIds.push(message.id);
+        if (message.role === 'assistant') {
+          lastAssistantId = message.id;
+        }
+      };
+
+      const appendToolResultToAssistant = (assistantId: string, content: unknown) => {
+        const existing = messagesById.get(assistantId);
+        if (!existing) return false;
+        const existingBlocks = Array.isArray(existing.content) ? existing.content : [];
+        existing.content = mergeContentBlocks(existingBlocks, content) as Message['content'];
+        return true;
       };
 
       for (const line of lines) {
@@ -1120,15 +1138,19 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
           if (event.type === 'user' && event.message?.content) {
             const firstContent = event.message.content[0];
             if (firstContent?.type === 'tool_result') {
-              // Tool results render as assistant messages
-              const id = event.uuid || `tool_result_${messagesById.size}`;
-              upsertMessage({
-                id,
-                thread_id: threadId,
-                role: 'assistant',
-                content: event.message.content,
-                created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
-              });
+              const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
+              if (lastAssistantId && appendToolResultToAssistant(lastAssistantId, event.message.content)) {
+                // Tool result merged into last assistant message.
+              } else {
+                const id = event.uuid || `tool_result_${messagesById.size}`;
+                upsertMessage({
+                  id,
+                  thread_id: threadId,
+                  role: 'assistant',
+                  content: event.message.content,
+                  created_at: createdAt,
+                });
+              }
             } else {
               // Regular user text messages
               const id = event.uuid || `user_${messagesById.size}`;
@@ -1139,12 +1161,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
                 content: event.message.content,
                 created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
               });
+              lastAssistantId = null;
             }
           }
 
           // Extract assistant messages (text and tool_use)
           if (event.type === 'assistant' && event.message?.content?.length > 0) {
-            const id = event.uuid || event.message?.id || `assistant_${messagesById.size}`;
+            const id = event.message?.id || event.uuid || `assistant_${messagesById.size}`;
             upsertMessage({
               id,
               thread_id: threadId,
