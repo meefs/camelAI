@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import { getSessionId } from '@/lib/auth';
 import * as authDO from '@/lib/auth-do';
 import type { Organization, OrgMembership, User } from '@/types';
@@ -15,7 +16,7 @@ export type AuthContext = SessionContext & {
   orgs: OrgMembership[];
 };
 
-export async function getSessionContext(): Promise<SessionContext | null> {
+export const getSessionContext = cache(async (): Promise<SessionContext | null> => {
   const sessionId = await getSessionId();
   if (!sessionId) return null;
 
@@ -23,9 +24,9 @@ export async function getSessionContext(): Promise<SessionContext | null> {
   if (!session) return null;
 
   return { sessionId, session };
-}
+});
 
-export async function getAuthContext(): Promise<AuthContext | null> {
+export const getAuthContext = cache(async (): Promise<AuthContext | null> => {
   const sessionContext = await getSessionContext();
   if (!sessionContext) return null;
 
@@ -43,4 +44,4 @@ export async function getAuthContext(): Promise<AuthContext | null> {
     currentOrg,
     orgs,
   };
-}
+});

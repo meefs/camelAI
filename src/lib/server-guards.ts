@@ -1,21 +1,16 @@
 import { redirect } from 'next/navigation';
-import { getSessionId } from '@/lib/auth';
 import * as authDO from '@/lib/auth-do';
+import { getSessionContext } from '@/lib/auth-context';
 
 type Session = NonNullable<Awaited<ReturnType<typeof authDO.getSession>>>;
 
 export async function requireSession(): Promise<Session> {
-  const sessionId = await getSessionId();
-  if (!sessionId) {
+  const sessionContext = await getSessionContext();
+  if (!sessionContext) {
     redirect('/login');
   }
 
-  const session = await authDO.getSession(sessionId);
-  if (!session) {
-    redirect('/login');
-  }
-
-  return session;
+  return sessionContext.session;
 }
 
 export async function requireUser() {
