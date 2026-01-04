@@ -25,6 +25,7 @@ import {
   Settings,
   Trash2,
 } from 'lucide-react';
+import { deleteIntegration, updateIntegration } from '@/lib/server-actions/org';
 
 const categoryLabels: Record<string, string> = {
   databases: 'Databases',
@@ -96,15 +97,9 @@ export default function ConnectionsPage() {
     if (!currentOrg?.id) return;
 
     try {
-      const res = await fetch(
-        `/api/orgs/${currentOrg.id}/integrations/${connection.id}`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: !connection.enabled }),
-        }
-      );
-      if (!res.ok) throw new Error('Failed to update connection');
+      await updateIntegration(currentOrg.id, connection.id, {
+        enabled: !connection.enabled,
+      });
       await fetchConnections();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update connection');
@@ -116,11 +111,7 @@ export default function ConnectionsPage() {
     if (!confirm(`Are you sure you want to delete "${connection.name}"?`)) return;
 
     try {
-      const res = await fetch(
-        `/api/orgs/${currentOrg.id}/integrations/${connection.id}`,
-        { method: 'DELETE' }
-      );
-      if (!res.ok) throw new Error('Failed to delete connection');
+      await deleteIntegration(currentOrg.id, connection.id);
       await fetchConnections();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection');

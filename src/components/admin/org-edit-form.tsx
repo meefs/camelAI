@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { updateAdminOrg } from '@/lib/server-actions/admin';
 
 interface OrgEditFormProps {
   org: Organization;
@@ -26,16 +27,7 @@ export function OrgEditForm({ org }: OrgEditFormProps) {
     setSuccess(false);
 
     try {
-      const res = await fetch(`/api/admin/orgs/${org.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json() as { error?: string };
-        throw new Error(data.error || 'Failed to update organization');
-      }
+      await updateAdminOrg(org.id, { name });
 
       setSuccess(true);
       router.refresh();

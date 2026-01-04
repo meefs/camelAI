@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { updateAdminThread } from '@/lib/server-actions/admin';
 
 interface Thread {
   id: string;
@@ -34,16 +35,7 @@ export function ThreadEditForm({ thread }: ThreadEditFormProps) {
     setSuccess(false);
 
     try {
-      const res = await fetch(`/api/admin/threads/${thread.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json() as { error?: string };
-        throw new Error(data.error || 'Failed to update thread');
-      }
+      await updateAdminThread(thread.id, { title });
 
       setSuccess(true);
       router.refresh();

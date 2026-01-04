@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle } from 'lucide-react';
+import { createIntegration } from '@/lib/server-actions/org';
 
 interface AddConnectionDialogProps {
   open: boolean;
@@ -54,21 +55,12 @@ export function AddConnectionDialog({
     setSubmitting(true);
 
     try {
-      const res = await fetch(`/api/orgs/${orgId}/integrations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          integration_type: connectionType,
-          name: name.trim() || typeDef?.displayName || connectionType,
-          config,
-          credentials,
-        }),
+      await createIntegration(orgId, {
+        integration_type: connectionType,
+        name: name.trim() || typeDef?.displayName || connectionType,
+        config,
+        credentials,
       });
-
-      if (!res.ok) {
-        const data = (await res.json()) as { error?: string };
-        throw new Error(data.error || 'Failed to create connection');
-      }
 
       // Reset form
       setName('');
