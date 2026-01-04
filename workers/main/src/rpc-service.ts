@@ -217,11 +217,15 @@ function resolveWorkspacePath(workspaceRoot: string, workspacePath: string): str
 
 type RpcDisposable<T> = T & { [Symbol.dispose](): void };
 
-function asDisposable<T extends { dispose?: () => void }>(value: T): RpcDisposable<T> {
+function asDisposable<T extends object>(value: T): RpcDisposable<T> {
   const withSymbols = value as T & { [Symbol.dispose]?: () => void };
-  if (typeof withSymbols[Symbol.dispose] !== 'function' && typeof value.dispose === 'function') {
+  const maybeDisposable = value as { dispose?: () => void };
+  if (
+    typeof withSymbols[Symbol.dispose] !== 'function' &&
+    typeof maybeDisposable.dispose === 'function'
+  ) {
     try {
-      withSymbols[Symbol.dispose] = () => value.dispose?.();
+      withSymbols[Symbol.dispose] = () => maybeDisposable.dispose?.();
     } catch {
       // If the stub is non-extensible, fall through and let the runtime throw.
     }
