@@ -16,7 +16,7 @@ interface HistoryClientProps {
 
 export default function HistoryClient({ initialThreads, initialOrgId }: HistoryClientProps) {
   const router = useRouter();
-  const { currentOrg, loading: authLoading } = useAuth();
+  const { currentOrg, loading: authLoading, user } = useAuth();
   const [threads, setThreads] = useState<Thread[]>(initialThreads);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -24,6 +24,15 @@ export default function HistoryClient({ initialThreads, initialOrgId }: HistoryC
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeOrgId, setActiveOrgId] = useState(initialOrgId);
   const isSelecting = selectMode !== 'off';
+
+  useEffect(() => {
+    if (!authLoading && !user) {
+      setThreads([]);
+      setSelectedIds(new Set());
+      setSelectMode('off');
+      router.replace('/login');
+    }
+  }, [authLoading, user, router]);
 
   const refreshThreads = useCallback(async () => {
     try {
