@@ -248,7 +248,13 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const iframeRetryRef = useRef<NodeJS.Timeout | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const messageColumnRef = useRef<HTMLDivElement>(null);
+  const lastUserMessageRef = useRef<HTMLDivElement>(null);
+  const assistantMeasureRef = useRef<HTMLDivElement>(null);
+  const assistantSpacerRef = useRef<HTMLDivElement>(null);
   const initialScrollDoneRef = useRef(false);
+  const pendingScrollMessageIdRef = useRef<string | null>(null);
+  const skipAutoScrollRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const previewWsRef = useRef<WebSocket | null>(null);
   const previewReconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -519,7 +525,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         }
         pendingMessageRef.current = null;
         if (storedMessage) {
-
           // Add user message to local state immediately
           const userMsg: Message = {
             id: `local_${Date.now()}`,
@@ -528,6 +533,8 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
             content: storedMessage,
             created_at: Date.now(),
           };
+          pendingScrollMessageIdRef.current = userMsg.id;
+          skipAutoScrollRef.current = true;
           debugLog('ws:addUserMessage', { messageId: userMsg.id, threadId: id });
           setMessages(prev => {
             debugLog('ws:addUserMessage:prev', { prevCount: prev.length, prevIds: prev.map(m => m.id) });
@@ -829,6 +836,17 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
+  const lastMessage = messages[messages.length - 1];
+  const showAssistantTail = loading || streaming.content.length > 0;
+  const isAwaitingAssistant = showAssistantTail && lastMessage?.role === 'user';
+  const lastUserMessage = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === 'user') return messages[i];
+    }
+    return null;
+  }, [messages]);
+  const shouldRenderSpacer = Boolean(lastUserMessage) && (isAwaitingAssistant || lastMessage?.role === 'assistant');
+  const shouldAnchorToLastMessage = isAwaitingAssistant || lastMessage?.role === 'assistant';
 
   // Connect when threadId changes
   useEffect(() => {
@@ -943,10 +961,114 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     if (initialScrollDoneRef.current) return;
     if (messages.length === 0 && streaming.content.length === 0) return;
 
-    scrollToBottom('auto');
+    if (shouldAnchorToLastMessage && lastMessage) {
+      const container = scrollContainerRef.current;
+      const target = container?.querySelector(`[data-message-id="${lastMessage.id}"]`) as HTMLElement | null;
+      if (target) {
+        target.scrollIntoView({ behavior: 'auto', block: 'end' });
+      } else {
+        scrollToBottom('auto');
+      }
+    } else {
+      scrollToBottom('auto');
+    }
     setShowScrollButton(false);
     initialScrollDoneRef.current = true;
-  }, [shouldShowChat, threadId, messages.length, streaming.content.length, scrollToBottom]);
+  }, [shouldShowChat, threadId, messages.length, streaming.content.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage?.id]);
+
+  useLayoutEffect(() => {
+    if (!shouldRenderSpacer) return;
+
+    const container = scrollContainerRef.current;
+    const spacer = assistantSpacerRef.current;
+    const userEl = lastUserMessageRef.current;
+    const assistantEl = assistantMeasureRef.current;
+    if (!container || !spacer) return;
+
+    let frameId: number | null = null;
+
+    const updateSpacer = () => {
+      const measureUser = lastUserMessageRef.current;
+      const measureAssistant = assistantMeasureRef.current;
+      if (!measureUser || !measureAssistant) {
+        spacer.style.height = '0px';
+        return;
+      }
+
+      const containerRect = container.getBoundingClientRect();
+      const userRect = measureUser.getBoundingClientRect();
+      const assistantRect = measureAssistant.getBoundingClientRect();
+      const userStyle = getComputedStyle(measureUser);
+      const assistantStyle = getComputedStyle(measureAssistant);
+      const userMarginTopValue = parseFloat(userStyle.marginTop || '0');
+      const assistantMarginBottomValue = parseFloat(assistantStyle.marginBottom || '0');
+      const userMarginTop = Number.isNaN(userMarginTopValue) ? 0 : userMarginTopValue;
+      const assistantMarginBottom = Number.isNaN(assistantMarginBottomValue) ? 0 : assistantMarginBottomValue;
+      const exchangeTop = userRect.top - userMarginTop;
+      const exchangeBottom = assistantRect.bottom + assistantMarginBottom;
+      const exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
+
+      const column = messageColumnRef.current;
+      const columnStyle = column ? getComputedStyle(column) : null;
+      const gapValue = columnStyle ? parseFloat(columnStyle.rowGap || '0') : 0;
+      const rowGap = Number.isNaN(gapValue) ? 0 : gapValue;
+      const paddingBottomValue = columnStyle ? parseFloat(columnStyle.paddingBottom || '0') : 0;
+      const paddingBottom = Number.isNaN(paddingBottomValue) ? 0 : paddingBottomValue;
+
+      const header = document.querySelector('header');
+      const headerRect = header ? header.getBoundingClientRect() : null;
+      const overlap = headerRect ? Math.max(0, headerRect.bottom - containerRect.top) : 0;
+      const availableHeight = container.clientHeight - overlap;
+
+      const height = Math.max(availableHeight - exchangeHeight - rowGap - paddingBottom, 0);
+      spacer.style.height = `${height}px`;
+    };
+
+    updateSpacer();
+
+    if (typeof ResizeObserver === 'undefined') return;
+
+    const observer = new ResizeObserver(() => {
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+      }
+      frameId = requestAnimationFrame(updateSpacer);
+    });
+
+    observer.observe(container);
+    if (messageColumnRef.current) {
+      observer.observe(messageColumnRef.current);
+    }
+    if (userEl) {
+      observer.observe(userEl);
+    }
+    if (assistantEl) {
+      observer.observe(assistantEl);
+    }
+
+    return () => {
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+      }
+      observer.disconnect();
+    };
+  }, [shouldRenderSpacer, isAwaitingAssistant, lastMessage?.id, lastUserMessage?.id, messages.length, streaming.content.length, loading]);
+
+  useEffect(() => {
+    const messageId = pendingScrollMessageIdRef.current;
+    if (!messageId) return;
+
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const target = container.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
+    if (!target) return;
+
+    pendingScrollMessageIdRef.current = null;
+    requestAnimationFrame(() => {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [messages.length]);
 
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {
@@ -960,6 +1082,11 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
 
   // Auto-scroll on new messages (only if near bottom)
   useEffect(() => {
+    if (skipAutoScrollRef.current) {
+      skipAutoScrollRef.current = false;
+      return;
+    }
+
     const container = scrollContainerRef.current;
     if (!container) {
       scrollToBottom();
@@ -1041,6 +1168,8 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       content: userMessage,
       created_at: Date.now(),
     };
+    pendingScrollMessageIdRef.current = userMsg.id;
+    skipAutoScrollRef.current = true;
     debugLog('sendMessage:addUserMessage', { messageId: userMsg.id, threadId });
     setMessages(prev => {
       debugLog('sendMessage:prev', { prevCount: prev.length, prevIds: prev.map(m => m.id) });
@@ -1094,12 +1223,23 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
               tabIndex={0}
               role="region"
               aria-label="Chat messages"
-              className="flex-1 overflow-y-auto overflow-x-hidden"
+              className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden"
             >
               {/* Centered message column */}
-              <div className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 space-y-6">
-                  {messages.map(msg => (
-                    <div key={msg.id} className={cn("group", msg.role === 'user' ? "mt-6 mb-1" : "")}>
+              <div ref={messageColumnRef} className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col">
+                  {messages.map(msg => {
+                    const isLastUserMessage = msg.id === lastUserMessage?.id;
+                    const isLastAssistantMessage = !isAwaitingAssistant && lastMessage?.role === 'assistant' && msg.id === lastMessage?.id;
+                    const messageRef = isLastUserMessage
+                      ? lastUserMessageRef
+                      : (isLastAssistantMessage ? assistantMeasureRef : undefined);
+                    return (
+                      <div
+                        key={msg.id}
+                        ref={messageRef}
+                        data-message-id={msg.id}
+                        className={cn("group", msg.role === 'user' ? "mt-6 mb-1" : "")}
+                      >
                       {msg.role === 'user' ? (
                         /* User message - right aligned with bubble and hover actions */
                         <div className="flex flex-col items-end gap-1">
@@ -1165,75 +1305,9 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                           </div>
                         </div>
                       )}
-                    </div>
-                  ))}
-
-                  {/* Streaming content */}
-                  {streaming.content.length > 0 && (
-                    <div className="space-y-4">
-                      {streaming.content.map((block, i) => (
-                        <div key={i}>
-                          {block.type === 'text' && (
-                            <div className="max-w-none">
-                              <MarkdownRenderer content={block.text} isStreaming={streaming.isStreaming} />
-                            </div>
-                          )}
-                          {block.type === 'thinking' && (
-                            <div className="bg-muted/50 border border-border px-4 py-3 rounded-xl">
-                              <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2">
-                                <svg className="w-4 h-4 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                                </svg>
-                                <span className="font-medium">Thinking...</span>
-                              </div>
-                              <p className="whitespace-pre-wrap text-muted-foreground text-sm">{block.thinking}</p>
-                            </div>
-                          )}
-                          {block.type === 'tool_use' && (
-                            <div className="bg-amber-500/10 border border-amber-500/20 px-4 py-3 rounded-xl">
-                              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm mb-2">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                                <span className="font-mono font-medium">{block.name}</span>
-                              </div>
-                              <pre className="text-xs text-muted-foreground overflow-x-auto">{JSON.stringify(block.input, null, 2)}</pre>
-                            </div>
-                          )}
-                          {block.type === 'tool_result' && (
-                            <div className="bg-green-500/10 border border-green-500/20 px-4 py-3 rounded-xl">
-                              <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm mb-2">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                </svg>
-                                <span className="font-medium">Result</span>
-                              </div>
-                              <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">
-                                {normalizeToolResultContent(block.content)}
-                              </pre>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      {streaming.isStreaming && (
-                        <div className="flex gap-1 py-2">
-                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Loading indicator (when no streaming content yet) */}
-                  {loading && streaming.content.length === 0 && (
-                    <div className="flex gap-1 py-2">
-                      <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </div>
-                  )}
+                      </div>
+                    );
+                  })}
 
                   {/* Error display */}
                   {error && (
@@ -1257,7 +1331,84 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
                       </div>
                     </div>
                   )}
-                  <div ref={messagesEndRef} />
+                  {isAwaitingAssistant && showAssistantTail && (
+                    <div ref={assistantMeasureRef} className="pt-6 pb-6 flex flex-col gap-6">
+                      {/* Streaming content */}
+                      {streaming.content.length > 0 && (
+                        <div className="space-y-4">
+                          {streaming.content.map((block, i) => (
+                            <div key={i}>
+                              {block.type === 'text' && (
+                                <div className="max-w-none">
+                                  <MarkdownRenderer content={block.text} isStreaming={streaming.isStreaming} />
+                                </div>
+                              )}
+                              {block.type === 'thinking' && (
+                                <div className="bg-muted/50 border border-border px-4 py-3 rounded-xl">
+                                  <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2">
+                                    <svg className="w-4 h-4 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                                    </svg>
+                                    <span className="font-medium">Thinking...</span>
+                                  </div>
+                                  <p className="whitespace-pre-wrap text-muted-foreground text-sm">{block.thinking}</p>
+                                </div>
+                              )}
+                              {block.type === 'tool_use' && (
+                                <div className="bg-amber-500/10 border border-amber-500/20 px-4 py-3 rounded-xl">
+                                  <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm mb-2">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                    <span className="font-mono font-medium">{block.name}</span>
+                                  </div>
+                                  <pre className="text-xs text-muted-foreground overflow-x-auto">{JSON.stringify(block.input, null, 2)}</pre>
+                                </div>
+                              )}
+                              {block.type === 'tool_result' && (
+                                <div className="bg-green-500/10 border border-green-500/20 px-4 py-3 rounded-xl">
+                                  <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm mb-2">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                    </svg>
+                                    <span className="font-medium">Result</span>
+                                  </div>
+                                  <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">
+                                    {normalizeToolResultContent(block.content)}
+                                  </pre>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                          {streaming.isStreaming && (
+                            <div className="flex gap-1 py-2">
+                              <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                              <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                              <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Loading indicator (when no streaming content yet) */}
+                      {loading && streaming.content.length === 0 && (
+                        <div className="flex gap-1 py-2">
+                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {shouldRenderSpacer ? (
+                    <div className="flex flex-col">
+                      <div ref={assistantSpacerRef} aria-hidden="true" className="pointer-events-none w-full shrink-0" />
+                      <div ref={messagesEndRef} />
+                    </div>
+                  ) : (
+                    <div ref={messagesEndRef} />
+                  )}
                 </div>
             </div>
 
