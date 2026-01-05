@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import * as authDO from '@/lib/auth-do';
-import { getSessionContext, getUserContext } from '@/lib/auth-context';
+import { getSessionContext, getUserContext, getAuthContextLite, type AuthContextLite } from '@/lib/auth-context';
 
 type Session = NonNullable<Awaited<ReturnType<typeof authDO.getSession>>>;
 
@@ -51,4 +51,12 @@ export async function requireOrgAdmin(
     throw new Error(message);
   }
   return session;
+}
+
+export async function requireAuthContextLite(): Promise<AuthContextLite> {
+  const authContext = await getAuthContextLite();
+  if (!authContext) {
+    redirect('/login');
+  }
+  return authContext;
 }
