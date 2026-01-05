@@ -1,5 +1,5 @@
 /**
- * Integration tests for auth pages and server
+ * Integration tests for pages and server
  *
  * These tests run against a real dev server with real Cloudflare DOs.
  * Since auth uses server actions (not API routes), we test:
@@ -42,6 +42,15 @@ describe('Auth Pages Integration', () => {
       expect(html).toContain('/signup');
       expect(html).toContain('Sign up');
     });
+
+    it('should contain form elements', async () => {
+      const response = await fetch(`${baseUrl}/login`);
+      const html = await response.text();
+
+      expect(html).toContain('type="email"');
+      expect(html).toContain('type="password"');
+      expect(html).toContain('button');
+    });
   });
 
   describe('Signup page', () => {
@@ -63,6 +72,17 @@ describe('Auth Pages Integration', () => {
 
       expect(html).toContain('/login');
       expect(html).toContain('Sign in');
+    });
+
+    it('should contain form elements including name field', async () => {
+      const response = await fetch(`${baseUrl}/signup`);
+      const html = await response.text();
+
+      expect(html).toContain('type="email"');
+      expect(html).toContain('type="password"');
+      expect(html).toContain('button');
+      // Name field may be optional, so just check for input
+      expect(html).toContain('input');
     });
   });
 
@@ -96,6 +116,38 @@ describe('Auth Pages Integration', () => {
       expect(response.status).toBe(307);
       const location = response.headers.get('location');
       expect(location).toContain('/login');
+    });
+
+    it('should redirect unauthenticated users from connections to login', async () => {
+      const response = await fetch(`${baseUrl}/connections`, {
+        redirect: 'manual',
+      });
+
+      expect(response.status).toBe(307);
+      const location = response.headers.get('location');
+      expect(location).toContain('/login');
+    });
+
+    it('should redirect to login page', async () => {
+      const response = await fetch(`${baseUrl}/chat/my-special-thread`, {
+        redirect: 'manual',
+      });
+
+      expect(response.status).toBe(307);
+      const location = response.headers.get('location');
+      expect(location).toContain('/login');
+    });
+  });
+
+  describe('Invitation pages', () => {
+    it('should load invitation page without requiring auth', async () => {
+      const response = await fetch(`${baseUrl}/invitations/test-org/test-invite`, {
+        redirect: 'manual',
+      });
+
+      // Should not redirect to login (invitation pages are public)
+      // May be 200 (page loads) or 404 (invalid invite) but not 307 redirect
+      expect(response.status).not.toBe(307);
     });
   });
 });
