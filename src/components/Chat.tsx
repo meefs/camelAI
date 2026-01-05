@@ -262,7 +262,7 @@ interface SDKEvent {
 
 export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
   const router = useRouter();
-  const { user, currentOrg, orgs, loading: authLoading, logout, switchOrg } = useAuth();
+  const { user, currentOrg, loading: authLoading } = useAuth();
   const parsedInitialMessages = useMemo(
     () => (initialMessages ?? []).map(msg => ({ ...msg, content: parseMessageContent(msg.content) })),
     [initialMessages]
@@ -899,7 +899,6 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
     // No cleanup function - we handle cleanup explicitly when threadId changes
     // This prevents StrictMode from closing connections on remount
     // Browser closes WebSocket automatically on navigation
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId, shouldShowChat, resolvedOrgId]);
 
   // Reconnect on visibility change (tab becomes visible)

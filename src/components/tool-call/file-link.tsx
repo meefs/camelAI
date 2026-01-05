@@ -10,7 +10,7 @@ const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
 function normalizeWorkspacePath(input: string): string {
   const trimmed = input?.trim?.() ?? '';
   if (!trimmed) return '';
-  let normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
   for (const prefix of WORKSPACE_ROOT_PREFIXES) {
     if (normalized === prefix) return '/';
     if (normalized.startsWith(`${prefix}/`)) {

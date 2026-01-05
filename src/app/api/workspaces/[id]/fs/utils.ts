@@ -48,7 +48,7 @@ export function getPathParam(request: NextRequest, key = 'path'): string {
 export async function parseJson<T>(request: NextRequest): Promise<T> {
   try {
     return (await request.json()) as T;
-  } catch (error) {
+  } catch {
     throw new Error('Invalid JSON body');
   }
 }

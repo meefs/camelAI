@@ -59,17 +59,6 @@ function EmptyState() {
   );
 }
 
-function NoResults() {
-  return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <h3 className="text-lg font-medium text-foreground mb-1">No results found</h3>
-      <p className="text-sm text-muted-foreground max-w-sm">
-        Try adjusting your search to find what you&apos;re looking for.
-      </p>
-    </div>
-  );
-}
-
 export function ChatsList({
   threads,
   loading,
