@@ -8,18 +8,7 @@
 	"dispatch_namespaces": [
 		{
 			"binding": "DISPATCHER",
-			"namespace": "chiridion-platform",
-			"outbound": {
-				"service": "chiridion-outbound",
-				"parameters": ["params"]
-			}
-		}
-	],
-	// Shared dev/staging KV namespace
-	"kv_namespaces": [
-		{
-			"binding": "SCRIPT_MAPPINGS",
-			"id": "ab267c4f44b847dda8bdca400a4e1884"
+			"namespace": "chiridion-platform"
 		}
 	],
 	"env": {
@@ -28,21 +17,10 @@
 			"routes": [
 				{ "pattern": "*.chiridion.ai/*", "zone_name": "chiridion.ai" }
 			],
-			// Prod KV namespace
-			"kv_namespaces": [
-				{
-					"binding": "SCRIPT_MAPPINGS",
-					"id": "45b452b3b19c42f6991408c140149a70"
-				}
-			],
 			"dispatch_namespaces": [
 				{
 					"binding": "DISPATCHER",
-					"namespace": "chiridion-platform",
-					"outbound": {
-						"service": "chiridion-outbound",
-						"parameters": ["params"]
-					}
+					"namespace": "chiridion-platform"
 				}
 			]
 		},
@@ -54,11 +32,7 @@
 			"dispatch_namespaces": [
 				{
 					"binding": "DISPATCHER",
-					"namespace": "chiridion-platform",
-					"outbound": {
-						"service": "chiridion-outbound-staging",
-						"parameters": ["params"]
-					}
+					"namespace": "chiridion-platform"
 				}
 			]
 		},
@@ -70,11 +44,7 @@
 			"dispatch_namespaces": [
 				{
 					"binding": "DISPATCHER",
-					"namespace": "chiridion-platform",
-					"outbound": {
-						"service": "chiridion-outbound-dev-miguel",
-						"parameters": ["params"]
-					}
+					"namespace": "chiridion-platform"
 				}
 			]
 		},
@@ -86,11 +56,7 @@
 			"dispatch_namespaces": [
 				{
 					"binding": "DISPATCHER",
-					"namespace": "chiridion-platform",
-					"outbound": {
-						"service": "chiridion-outbound-dev-illiana",
-						"parameters": ["params"]
-					}
+					"namespace": "chiridion-platform"
 				}
 			]
 		}
