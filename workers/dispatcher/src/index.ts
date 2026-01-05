@@ -9,25 +9,10 @@
 
 interface Env {
   DISPATCHER: {
-    get(
-      name: string,
-      args?: Record<string, unknown>,
-      options?: {
-        outbound?: {
-          params: OutboundParams;
-        };
-      }
-    ): {
+    get(name: string): {
       fetch(request: Request): Promise<Response>;
     };
   };
-  // KV namespace for script->org mapping lookup
-  SCRIPT_MAPPINGS: KVNamespace;
-}
-
-interface OutboundParams {
-  scriptName: string;
-  orgId: string | null;
 }
 
 export default {
@@ -43,29 +28,8 @@ export default {
 
       if (subdomain && subdomain !== 'www' && subdomain !== 'chiridion') {
         try {
-          // Look up orgId from script name mapping
-          const orgId = await env.SCRIPT_MAPPINGS.get(`script_to_org:${subdomain}`);
-
-          const outboundParams: OutboundParams = {
-            scriptName: subdomain,
-            orgId,
-          };
-
-          if (orgId) {
-            console.log(`[dispatcher] ${subdomain} -> org:${orgId}`);
-          } else {
-            console.log(`[dispatcher] ${subdomain} -> no org mapping found`);
-          }
-
-          const userWorker = env.DISPATCHER.get(
-            subdomain,
-            {},
-            {
-              outbound: {
-                params: outboundParams,
-              },
-            }
-          );
+          console.log(`[dispatcher] Routing to worker: ${subdomain}`);
+          const userWorker = env.DISPATCHER.get(subdomain);
           return await userWorker.fetch(request);
         } catch (e) {
           const error = e as Error;

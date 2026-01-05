@@ -29,7 +29,6 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
      - `ThreadSandbox` - Executes Claude SDK in containers
      - WebSocket routing at worker level (one container per org)
    - `dispatcher/` - Routes `*.chiridion.ai` to user workers (WfP)
-   - `outbound/` - Intercepts user worker outbound requests for integration proxy
 
 3. **Sandbox** (`sandbox/`)
    - `driver.mjs` - Runs inside Cloudflare Container
@@ -240,9 +239,7 @@ chiridion-app/
 │   │       ├── durable-objects.ts # Chat DOs
 │   │       ├── auth.ts          # Auth DOs
 │   │       └── password.ts      # Password hashing
-│   ├── dispatcher/          # WfP subdomain router
-│   │   └── src/
-│   └── outbound/            # WfP outbound proxy
+│   └── dispatcher/          # WfP subdomain router
 │       └── src/
 ├── sandbox/                 # Container driver code
 ├── scripts/                 # Dev scripts
