@@ -630,10 +630,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return allThreads;
   }
 
-  // Admin: Get thread with messages
+  // Admin: Get thread with messages and preview workers
   async adminGetThreadWithMessages(
     threadId: string
-  ): Promise<{ thread: Thread; messages: Message[]; org_id: string } | null> {
+  ): Promise<{ thread: Thread; messages: Message[]; org_id: string; preview_workers: string[] } | null> {
     const orgIds = await this.collectAllOrgIds();
 
     // Search for thread in all orgs in parallel
@@ -642,9 +642,12 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         using indexStub = asDisposable(getIndexStub(this.env, orgId));
         const thread = await indexStub.getThread(threadId);
         if (thread) {
-          // Read messages from container
-          const messages = await this.getMessages(threadId, orgId);
-          return { thread, messages, org_id: orgId };
+          // Read messages from container and preview workers in parallel
+          const [messages, preview_workers] = await Promise.all([
+            this.getMessages(threadId, orgId),
+            this.getThreadPreview(threadId),
+          ]);
+          return { thread, messages, org_id: orgId, preview_workers };
         }
         return null;
       })

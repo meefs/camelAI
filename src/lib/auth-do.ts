@@ -130,6 +130,7 @@ export async function adminGetThreadWithMessages(threadId: string): Promise<{
   thread: { id: string; title: string; created_by: string; created_at: number; updated_at: number };
   messages: Message[];
   org_id: string;
+  preview_workers: string[];
 } | null> {
   return withRpc((rpc) => rpc.adminGetThreadWithMessages(threadId));
 }
