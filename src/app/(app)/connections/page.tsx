@@ -3,8 +3,6 @@ import { requireAuthContextLite } from '@/lib/server-guards';
 import { getIntegrationTypes } from '@/lib/server-actions/integrations';
 import { getOrgIntegrations } from '@/lib/server-actions/org';
 
-export const dynamic = 'force-dynamic';
-
 export default async function ConnectionsPage() {
   const authContext = await requireAuthContextLite();
 

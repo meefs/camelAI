@@ -2,8 +2,6 @@ import HistoryClient from './history-client';
 import { requireAuthContextLite } from '@/lib/server-guards';
 import { getThreadsPage } from '@/lib/server-actions/thread';
 
-export const dynamic = 'force-dynamic';
-
 const PAGE_SIZE = 50;
 
 export default async function HistoryPage() {

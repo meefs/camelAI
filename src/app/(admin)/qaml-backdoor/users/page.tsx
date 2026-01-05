@@ -12,8 +12,6 @@ import {
   TableRow,
 } from '@/components/ui/table';
 
-export const dynamic = 'force-dynamic';
-
 const LIMIT = 50;
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {

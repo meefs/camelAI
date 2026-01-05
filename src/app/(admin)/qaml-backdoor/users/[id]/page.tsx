@@ -5,8 +5,6 @@ import { UserEditForm } from '@/components/admin/user-edit-form';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
-export const dynamic = 'force-dynamic';
-
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -23,12 +21,15 @@ interface Props {
 export default async function AdminUserDetailPage({ params }: Props) {
   const { id } = await params;
 
-  const user = await authDO.getUserById(id);
+  // Fetch user and orgs in parallel
+  const [user, orgs] = await Promise.all([
+    authDO.getUserById(id),
+    authDO.getUserOrgs(id),
+  ]);
+
   if (!user) {
     notFound();
   }
-
-  const orgs = await authDO.getUserOrgs(id);
 
   // Create plain object for Client Component
   const safeUser = {

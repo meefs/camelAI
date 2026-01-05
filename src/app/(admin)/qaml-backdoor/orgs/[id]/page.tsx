@@ -9,8 +9,6 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
-export const dynamic = 'force-dynamic';
-
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -27,6 +25,7 @@ interface Props {
 export default async function AdminOrgDetailPage({ params }: Props) {
   const { id } = await params;
 
+  // Fetch org first to check existence, then fetch related data in parallel
   const org = await authDO.getOrg(id);
   if (!org) {
     notFound();
@@ -53,9 +52,11 @@ export default async function AdminOrgDetailPage({ params }: Props) {
     await computerDO.resetSandboxContainer(id);
   }
 
-  const members = await authDO.getOrgMembers(id);
-  const invitations = await authDO.getOrgInvitations(id);
-  const integrations = await authDO.getOrgIntegrations(id);
+  const [members, invitations, integrations] = await Promise.all([
+    authDO.getOrgMembers(id),
+    authDO.getOrgInvitations(id),
+    authDO.getOrgIntegrations(id),
+  ]);
 
   // Create plain object for Client Component
   const safeOrg = {
