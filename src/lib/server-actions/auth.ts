@@ -26,6 +26,24 @@ function toSafeUser(user: User): User {
   };
 }
 
+function toSafeOrg(org: Organization): Organization {
+  return {
+    id: org.id,
+    name: org.name,
+    created_at: org.created_at,
+    created_by: org.created_by,
+  };
+}
+
+function toSafeOrgMembership(membership: OrgMembership): OrgMembership {
+  return {
+    org_id: membership.org_id,
+    org_name: membership.org_name,
+    role: membership.role,
+    joined_at: membership.joined_at,
+  };
+}
+
 export async function login(email: string, password: string): Promise<AuthPayload> {
   if (!email || !password) {
     throw new Error("Email and password are required");
@@ -67,8 +85,8 @@ export async function login(email: string, password: string): Promise<AuthPayloa
 
   return {
     user: toSafeUser(user),
-    currentOrg,
-    orgs,
+    currentOrg: toSafeOrg(currentOrg),
+    orgs: orgs.map(toSafeOrgMembership),
   };
 }
 
@@ -101,8 +119,8 @@ export async function signup(
 
   return {
     user: toSafeUser(user),
-    currentOrg: org,
-    orgs,
+    currentOrg: toSafeOrg(org),
+    orgs: orgs.map(toSafeOrgMembership),
   };
 }
 
@@ -134,7 +152,7 @@ export async function switchOrg(orgId: string): Promise<Organization> {
   if (!currentOrg) {
     throw new Error("Organization not found");
   }
-  return currentOrg;
+  return toSafeOrg(currentOrg);
 }
 
 export async function getAuthState(): Promise<AuthPayload | null> {
@@ -142,7 +160,7 @@ export async function getAuthState(): Promise<AuthPayload | null> {
   if (!authContext) return null;
   return {
     user: toSafeUser(authContext.user),
-    currentOrg: authContext.currentOrg,
-    orgs: authContext.orgs,
+    currentOrg: toSafeOrg(authContext.currentOrg),
+    orgs: authContext.orgs.map(toSafeOrgMembership),
   };
 }
