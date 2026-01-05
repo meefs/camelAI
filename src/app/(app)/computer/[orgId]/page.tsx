@@ -1,6 +1,5 @@
 import { redirect } from 'next/navigation';
-import { getSessionId } from '@/lib/auth';
-import * as authDO from '@/lib/auth-do';
+import { requireSession } from '@/lib/server-guards';
 import ComputerPageContent from './computer-page-content';
 
 interface PageProps {
@@ -9,15 +8,7 @@ interface PageProps {
 
 export default async function ComputerPage({ params }: PageProps) {
   const { orgId } = await params;
-  const sessionId = await getSessionId();
-  if (!sessionId) {
-    redirect('/login');
-  }
-
-  const session = await authDO.getSession(sessionId);
-  if (!session) {
-    redirect('/login');
-  }
+  const session = await requireSession();
 
   if (session.org_id !== orgId) {
     redirect(`/computer/${session.org_id}`);

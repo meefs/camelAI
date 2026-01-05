@@ -1,7 +1,5 @@
-import { redirect } from 'next/navigation';
 import Chat from '@/components/Chat';
-import { getSessionId } from '@/lib/auth';
-import * as authDO from '@/lib/auth-do';
+import { requireSession } from '@/lib/server-guards';
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -9,13 +7,6 @@ interface PageProps {
 
 export default async function ChatPage({ params }: PageProps) {
   const { id } = await params;
-  const sessionId = await getSessionId();
-  if (!sessionId) {
-    redirect('/login');
-  }
-  const session = await authDO.getSession(sessionId);
-  if (!session) {
-    redirect('/login');
-  }
+  const session = await requireSession();
   return <Chat threadId={id} orgId={session.org_id} />;
 }
