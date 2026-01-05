@@ -212,7 +212,6 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
  * Accepts WebSocket connections for live updates.
  */
 export class ChatThreadDO extends DurableObject<ChatEnv> {
-  private connections: Set<WebSocket> = new Set();
   private previewWorkers: string[] = [];
   private previewVersion: number = 0;
 
@@ -242,7 +241,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const [client, server] = Object.values(pair);
 
       this.ctx.acceptWebSocket(server);
-      this.connections.add(server);
 
       // Send current state immediately
       server.send(JSON.stringify({
@@ -313,24 +311,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   // Broadcast message to all connected WebSocket clients
+  // Uses ctx.getWebSockets() to get hibernated connections (in-memory Set won't survive hibernation)
   private broadcast(message: object): void {
     const json = JSON.stringify(message);
-    for (const ws of this.connections) {
+    for (const ws of this.ctx.getWebSockets()) {
       try {
         ws.send(json);
       } catch {
-        this.connections.delete(ws);
+        // WebSocket is already closed, ignore
       }
     }
-  }
-
-  // Handle WebSocket close
-  webSocketClose(ws: WebSocket): void {
-    this.connections.delete(ws);
-  }
-
-  // Handle WebSocket error
-  webSocketError(ws: WebSocket): void {
-    this.connections.delete(ws);
   }
 }

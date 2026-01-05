@@ -1,8 +1,6 @@
 import * as authDO from '@/lib/auth-do';
 import { AdminDashboard } from '@/components/admin/admin-dashboard';
 
-export const dynamic = 'force-dynamic';
-
 export default async function AdminPage() {
   const [overview, threads] = await Promise.all([
     authDO.getAdminOverview(),

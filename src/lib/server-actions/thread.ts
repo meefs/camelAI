@@ -31,7 +31,7 @@ async function hydrateThreads(threads: Thread[]) {
   const creatorEntries = await Promise.all(
     creatorIds.map(async (id) => [id, await getUserByIdCached(id)] as const)
   );
-  const creatorMap = new Map<string, NonNullable<Awaited<ReturnType<typeof authDO.getUserById>>>>();
+  const creatorMap = new Map<string, NonNullable<Awaited<ReturnType<typeof getUserByIdCached>>>>();
   for (const [id, user] of creatorEntries) {
     if (user) creatorMap.set(id, user);
   }

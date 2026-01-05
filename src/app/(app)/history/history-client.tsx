@@ -9,6 +9,8 @@ import { ChatsToolbar } from '@/components/history/chats-toolbar';
 import { ChatsList } from '@/components/history/chats-list';
 import { deleteThread, getThreadsPage, updateThreadTitle } from '@/lib/server-actions/thread';
 
+// Note: Auth is handled by the (app) layout - no need to check here
+
 interface HistoryClientProps {
   initialThreads: Thread[];
   initialOrgId: string;
@@ -25,7 +27,7 @@ export default function HistoryClient({
   initialLimit,
 }: HistoryClientProps) {
   const router = useRouter();
-  const { currentOrg, loading: authLoading, user } = useAuth();
+  const { currentOrg, loading: authLoading } = useAuth();
   const [threads, setThreads] = useState<Thread[]>(initialThreads);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -40,17 +42,6 @@ export default function HistoryClient({
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const isSelecting = selectMode !== 'off';
   const hasMore = threads.length < total;
-
-  useEffect(() => {
-    if (!authLoading && !user) {
-      setThreads([]);
-      setSelectedIds(new Set());
-      setSelectMode('off');
-      setTotal(0);
-      setOffset(0);
-      router.replace('/login');
-    }
-  }, [authLoading, user, router]);
 
   const refreshThreads = useCallback(async () => {
     try {

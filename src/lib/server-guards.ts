@@ -1,13 +1,25 @@
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import * as authDO from '@/lib/auth-do';
-import { getSessionContext, getUserContext } from '@/lib/auth-context';
+import { getSessionContext, getUserContext, getAuthContextLite, type AuthContextLite } from '@/lib/auth-context';
 
 type Session = NonNullable<Awaited<ReturnType<typeof authDO.getSession>>>;
+
+async function getLoginRedirectUrl(): Promise<string> {
+  // Try to get the current path from headers to preserve redirect
+  const headersList = await headers();
+  const pathname = headersList.get('x-invoke-path') || headersList.get('x-pathname');
+
+  if (pathname && pathname !== '/' && pathname !== '/login') {
+    return `/login?redirect=${encodeURIComponent(pathname)}`;
+  }
+  return '/login';
+}
 
 export async function requireSession(): Promise<Session> {
   const sessionContext = await getSessionContext();
   if (!sessionContext) {
-    redirect('/login');
+    redirect(await getLoginRedirectUrl());
   }
 
   return sessionContext.session;
@@ -16,7 +28,7 @@ export async function requireSession(): Promise<Session> {
 export async function requireUser() {
   const userContext = await getUserContext();
   if (!userContext) {
-    redirect('/login');
+    redirect(await getLoginRedirectUrl());
   }
   return { session: userContext.session, user: userContext.user };
 }
@@ -51,4 +63,12 @@ export async function requireOrgAdmin(
     throw new Error(message);
   }
   return session;
+}
+
+export async function requireAuthContextLite(): Promise<AuthContextLite> {
+  const authContext = await getAuthContextLite();
+  if (!authContext) {
+    redirect(await getLoginRedirectUrl());
+  }
+  return authContext;
 }

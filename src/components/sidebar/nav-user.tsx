@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { ChevronsUpDown, LogOut } from "lucide-react"
 
 import {
@@ -54,8 +55,14 @@ function NavUserSkeleton() {
 }
 
 export function NavUser() {
+  const router = useRouter()
   const { isMobile } = useSidebar()
   const { user, logout, loading } = useAuth()
+
+  const handleLogout = async () => {
+    await logout()
+    router.push('/login')
+  }
 
   if (loading && !user) {
     return <NavUserSkeleton />
@@ -107,7 +114,7 @@ export function NavUser() {
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => logout()}>
+            <DropdownMenuItem onClick={handleLogout}>
               <LogOut />
               Log out
             </DropdownMenuItem>
