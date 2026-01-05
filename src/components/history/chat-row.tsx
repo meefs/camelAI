@@ -82,6 +82,7 @@ export function ChatRow({
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(thread.title);
   const inputRef = useRef<HTMLInputElement>(null);
+  const editContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!isEditing) return;
@@ -155,6 +156,18 @@ export function ChatRow({
     e.stopPropagation();
   };
 
+  useEffect(() => {
+    if (!isEditing) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (editContainerRef.current?.contains(target)) return;
+      handleCancelRename();
+    };
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true);
+  }, [handleCancelRename, isEditing]);
+
   const creatorLabel = getCreatorLabel(thread.creator?.name, thread.creator?.email);
   const creatorInitials = creatorLabel ? getInitials(creatorLabel) : '?';
   const normalizedEditValue = normalizeTitleInput(editValue);
@@ -201,13 +214,12 @@ export function ChatRow({
       <div className="flex-1 min-w-0">
         {isEditing ? (
           <>
-            <div className="flex items-center gap-2">
+            <div ref={editContainerRef} className="flex items-center gap-2">
               <Input
                 ref={inputRef}
                 autoFocus
                 value={editValue}
                 onChange={(e) => setEditValue(normalizeTitleInput(e.target.value))}
-                onBlur={handleCancelRename}
                 onKeyDown={handleKeyDown}
                 onClick={(e) => e.stopPropagation()}
                 className="h-7 text-sm flex-1"

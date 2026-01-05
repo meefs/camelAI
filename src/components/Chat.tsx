@@ -37,6 +37,7 @@ interface ChatProps {
   threadId?: string;
   orgId: string;
   initialMessages?: Message[];
+  threadTitle?: string | null;
 }
 
 // Format timestamp to readable time (e.g., "12:25 PM")
@@ -260,7 +261,7 @@ interface SDKEvent {
   };
 }
 
-export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
+export default function Chat({ threadId, orgId, initialMessages, threadTitle }: ChatProps) {
   const router = useRouter();
   const { user, currentOrg, loading: authLoading } = useAuth();
   const parsedInitialMessages = useMemo(
@@ -1183,7 +1184,16 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
   return (
     <TooltipProvider>
       <>
-        <PageHeader breadcrumbs={[{ label: shouldShowChat ? 'Chat' : 'Home' }]} />
+        <PageHeader
+          breadcrumbs={
+            shouldShowChat
+              ? [
+                  { label: 'Chat' },
+                  { label: threadTitle?.trim() || 'Untitled Chat' },
+                ]
+              : [{ label: 'Home' }]
+          }
+        />
 
         {shouldShowChat ? (
           <div className="flex-1 flex min-h-0">
