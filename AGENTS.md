@@ -31,9 +31,9 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
    - `dispatcher/` - Routes `*.chiridion.ai` to user workers (WfP)
 
 3. **Sandbox** (`sandbox/`)
-   - `driver.mjs` - Runs inside Cloudflare Container
+   - `ws-server.mjs` - WebSocket server running inside Cloudflare Container
    - Calls Claude SDK `query()` with streaming enabled
-   - Outputs NDJSON events to stdout
+   - `control-plane.mjs` - Exec/filesystem API server for container management
 
 ## Key Files
 
@@ -51,7 +51,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/main/src/password.ts` | PBKDF2 password hashing |
 | `workers/main/src/index.ts` | Worker entry point |
 | `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
-| `sandbox/driver.mjs` | Claude SDK runner inside container |
+| `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
 | `src/lib/integration-crypto.ts` | Credential encryption utilities |
 
@@ -247,7 +247,7 @@ chiridion-app/
 │   │       └── password.ts      # Password hashing
 │   └── dispatcher/          # WfP subdomain router
 │       └── src/
-├── sandbox/                 # Container driver code
+├── sandbox/                 # Container sandbox code
 ├── scripts/                 # Dev scripts
 │   └── dev-proxy.mjs        # Wrangler + Next dev + proxy
 ├── e2e/                     # Playwright E2E tests
@@ -266,9 +266,9 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 ### Common Issues
 
 1. **Durable Objects not working locally**: Use `npm run dev` (wrangler-based dev) rather than `next dev`
-2. **Streaming not working**: Ensure `includePartialMessages: true` is set in driver.mjs
+2. **Streaming not working**: Ensure `includePartialMessages: true` is set in ws-server.mjs
 3. **API key not found**: Check `.dev.vars` has `ANTHROPIC_API_KEY` set
-4. **Docker cache stale**: Add version comment to `driver.mjs` to invalidate cache
+4. **Docker cache stale**: Add version comment to `ws-server.mjs` to invalidate cache
 5. **Session not persisting**: Ensure cookies are set with correct domain and the DO worker is running
 
 ## Testing Strategy

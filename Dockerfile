@@ -33,8 +33,8 @@ COPY sandbox/package.json ./
 RUN bun install
 
 # Layer 5: App code (changes frequently) - copied after install for better caching
-COPY --chmod=755 sandbox/entrypoint.sh sandbox/run-driver.sh ./
-COPY sandbox/driver.mjs sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
+COPY --chmod=755 sandbox/entrypoint.sh ./
+COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
 COPY sandbox/starter-worker ./starter-worker
 RUN chmod -R a+rX /app
 
