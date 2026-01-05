@@ -14,6 +14,13 @@
 			"id": "test-api-tokens"
 		}
 	],
+	"services": [
+		{
+			"binding": "DO_RPC",
+			"service": "chiridion-app-test",
+			"entrypoint": "DoRpcService"
+		}
+	],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
@@ -21,5 +28,8 @@
 			{ "name": "USER", "class_name": "UserDO" },
 			{ "name": "ORG", "class_name": "OrgDO" }
 		]
-	}
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["ChatIndexDO", "SessionDO", "UserDO", "OrgDO"] }
+	]
 }
