@@ -11,15 +11,6 @@ export interface PreviewState {
 export interface Thread {
   id: string;
   title: string;
-  project_id: string;
-  created_by: string;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface Project {
-  id: string;
-  name: string;
   created_by: string;
   created_at: number;
   updated_at: number;
@@ -111,63 +102,30 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
       this.sql.exec('CREATE INDEX threads_created_by ON threads(created_by)');
       this.sql.exec('UPDATE _schema_version SET version = 2');
     }
-  }
 
-  getProjects(): Project[] {
-    return this.sql.exec('SELECT * FROM projects ORDER BY updated_at DESC').toArray() as unknown as Project[];
-  }
-
-  getProjectsByUser(userId: string): Project[] {
-    const rows = this.sql.exec(
-      'SELECT * FROM projects WHERE created_by = ? ORDER BY updated_at DESC',
-      userId
-    ).toArray() as unknown as Project[];
-    return rows;
-  }
-
-  createProject(name?: string, createdBy?: string): Project {
-    const id = crypto.randomUUID();
-    const now = Date.now();
-    const projectName = name?.trim() || 'New Project';
-    const creator = createdBy?.trim() || 'system';
-    this.sql.exec(
-      'INSERT INTO projects (id, name, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-      id,
-      projectName,
-      creator,
-      now,
-      now
-    );
-    return {
-      id,
-      name: projectName,
-      created_by: creator,
-      created_at: now,
-      updated_at: now,
-    };
-  }
-
-  getProject(id: string): Project | null {
-    const rows = this.sql.exec('SELECT * FROM projects WHERE id = ?', id).toArray() as unknown as Project[];
-    return rows[0] || null;
-  }
-
-  updateProject(id: string, name: string): Project | null {
-    const now = Date.now();
-    this.sql.exec('UPDATE projects SET name = ?, updated_at = ? WHERE id = ?', name, now, id);
-    return this.getProject(id);
-  }
-
-  deleteProject(id: string): boolean {
-    const rows = this.sql.exec(
-      'SELECT COUNT(*) as count FROM threads WHERE project_id = ?',
-      id
-    ).toArray() as Array<{ count: number }>;
-    if ((rows[0]?.count ?? 0) > 0) {
-      throw new Error('Project has threads');
+    if (version < 3) {
+      // V3: Remove projects - drop project_id from threads and drop projects table
+      // SQLite doesn't support DROP COLUMN easily, so we recreate the table
+      this.sql.exec(`
+        CREATE TABLE threads_new (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          created_by TEXT NOT NULL DEFAULT "system",
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        INSERT INTO threads_new (id, title, created_by, created_at, updated_at)
+        SELECT id, title, created_by, created_at, updated_at FROM threads
+      `);
+      this.sql.exec('DROP TABLE threads');
+      this.sql.exec('ALTER TABLE threads_new RENAME TO threads');
+      this.sql.exec('CREATE INDEX threads_created_by ON threads(created_by)');
+      this.sql.exec('DROP TABLE IF EXISTS projects');
+      this.sql.exec('DROP INDEX IF EXISTS projects_created_by');
+      this.sql.exec('UPDATE _schema_version SET version = 3');
     }
-    this.sql.exec('DELETE FROM projects WHERE id = ?', id);
-    return true;
   }
 
   getThreads(): Thread[] {
@@ -199,13 +157,7 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
    * Create a thread. If sessionId is provided, use it as the thread ID (Claude session_id).
    * If the thread already exists, return the existing thread.
    */
-  createThread(title: string | undefined, projectId: string, createdBy?: string, sessionId?: string): Thread {
-    const resolvedProjectId = projectId.trim();
-    const project = resolvedProjectId ? this.getProject(resolvedProjectId) : null;
-    if (!project) {
-      throw new Error('Project not found');
-    }
-
+  createThread(title: string | undefined, createdBy?: string, sessionId?: string): Thread {
     // If sessionId provided, check if thread already exists
     const id = sessionId?.trim() || crypto.randomUUID();
     const existing = this.getThread(id);
@@ -215,12 +167,11 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
 
     const now = Date.now();
     const t = title || 'New Chat';
-    const creator = createdBy?.trim() || project.created_by || 'system';
+    const creator = createdBy?.trim() || 'system';
     this.sql.exec(
-      'INSERT INTO threads (id, title, project_id, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO threads (id, title, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
       id,
       t,
-      resolvedProjectId,
       creator,
       now,
       now
@@ -228,7 +179,6 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
     return {
       id,
       title: t,
-      project_id: resolvedProjectId,
       created_by: creator,
       created_at: now,
       updated_at: now,
@@ -243,11 +193,6 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
   updateThread(id: string, title: string): Thread | null {
     const now = Date.now();
     this.sql.exec('UPDATE threads SET title = ?, updated_at = ? WHERE id = ?', title, now, id);
-    return this.getThread(id);
-  }
-
-  setThreadProject(id: string, projectId: string): Thread | null {
-    this.sql.exec('UPDATE threads SET project_id = ? WHERE id = ?', projectId, id);
     return this.getThread(id);
   }
 

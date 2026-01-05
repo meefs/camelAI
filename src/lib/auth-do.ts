@@ -2,7 +2,6 @@ import type {
   User,
   Organization,
   OrgMembership,
-  UserProject,
   Integration,
   CreateIntegrationInput,
   UpdateIntegrationInput,
@@ -12,7 +11,6 @@ import type {
   PaginatedResult,
   PaginationParams,
   Thread,
-  Project,
   Message,
 } from '@/types';
 import { getCloudflareContext } from '@opennextjs/cloudflare';
@@ -93,18 +91,6 @@ export async function removeUserFromOrg(userId: string, orgId: string): Promise<
   return withRpc((rpc) => rpc.removeUserFromOrg(userId, orgId));
 }
 
-export async function getUserProjects(userId: string): Promise<UserProject[]> {
-  return withRpc((rpc) => rpc.getUserProjects(userId));
-}
-
-export async function addUserProject(userId: string, orgId: string, projectId: string): Promise<void> {
-  return withRpc((rpc) => rpc.addUserProject(userId, orgId, projectId));
-}
-
-export async function removeUserProject(userId: string, orgId: string, projectId: string): Promise<void> {
-  return withRpc((rpc) => rpc.removeUserProject(userId, orgId, projectId));
-}
-
 // Admin functions
 export async function getAdminOverview(): Promise<AdminOverview> {
   return withRpc((rpc) => rpc.getAdminOverview());
@@ -132,7 +118,6 @@ export async function adminGetAllOrgs(): Promise<Array<Organization & { member_c
 export async function adminGetAllThreads(): Promise<Array<{
   id: string;
   title: string;
-  project_id: string;
   created_by: string;
   created_at: number;
   updated_at: number;
@@ -141,19 +126,8 @@ export async function adminGetAllThreads(): Promise<Array<{
   return withRpc((rpc) => rpc.adminGetAllThreads());
 }
 
-export async function adminGetAllProjects(): Promise<Array<{
-  id: string;
-  name: string;
-  created_by: string;
-  created_at: number;
-  updated_at: number;
-  org_id: string;
-}>> {
-  return withRpc((rpc) => rpc.adminGetAllProjects());
-}
-
 export async function adminGetThreadWithMessages(threadId: string): Promise<{
-  thread: { id: string; title: string; project_id: string; created_by: string; created_at: number; updated_at: number };
+  thread: { id: string; title: string; created_by: string; created_at: number; updated_at: number };
   messages: Message[];
   org_id: string;
 } | null> {
@@ -163,15 +137,8 @@ export async function adminGetThreadWithMessages(threadId: string): Promise<{
 export async function adminUpdateThread(
   threadId: string,
   updates: { title?: string }
-): Promise<{ id: string; title: string; project_id: string; created_by: string; created_at: number; updated_at: number } | null> {
+): Promise<{ id: string; title: string; created_by: string; created_at: number; updated_at: number } | null> {
   return withRpc((rpc) => rpc.adminUpdateThread(threadId, updates));
-}
-
-export async function adminUpdateProject(
-  projectId: string,
-  updates: { name?: string }
-): Promise<{ id: string; name: string; created_by: string; created_at: number; updated_at: number } | null> {
-  return withRpc((rpc) => rpc.adminUpdateProject(projectId, updates));
 }
 
 // Paginated admin functions
@@ -191,12 +158,6 @@ export async function adminGetThreadsPaginated(
   params: PaginationParams = {}
 ): Promise<PaginatedResult<Thread & { org_id: string }>> {
   return withRpc((rpc) => rpc.adminGetThreadsPaginated(params));
-}
-
-export async function adminGetProjectsPaginated(
-  params: PaginationParams = {}
-): Promise<PaginatedResult<Project & { org_id: string }>> {
-  return withRpc((rpc) => rpc.adminGetProjectsPaginated(params));
 }
 
 // Organization functions
