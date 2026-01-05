@@ -13,7 +13,7 @@ const debugLog = (context: string, data: Record<string, unknown>) => {
 };
 import { useRouter } from 'next/navigation';
 import { ArrowDown, Copy, Check, RefreshCw, ExternalLink, X } from 'lucide-react';
-import type { Thread, Message, ContentBlock } from '@/types';
+import type { Message, ContentBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   Tooltip,
@@ -29,15 +29,12 @@ import { cn } from '@/lib/utils';
 import { applySdkEventToStreamingState, type StreamingState } from '@/lib/streaming';
 import {
   createThread as createThreadAction,
-  deleteThread as deleteThreadAction,
   getThreadMessages,
-  getThreads,
 } from '@/lib/server-actions/thread';
 
 interface ChatProps {
   threadId?: string;
   orgId: string;
-  initialThreads?: Thread[];
   initialMessages?: Message[];
 }
 
@@ -223,14 +220,13 @@ interface SDKEvent {
   };
 }
 
-export default function Chat({ threadId, orgId, initialThreads, initialMessages }: ChatProps) {
+export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
   const router = useRouter();
   const { user, currentOrg, orgs, loading: authLoading, logout, switchOrg } = useAuth();
   const parsedInitialMessages = useMemo(
     () => (initialMessages ?? []).map(msg => ({ ...msg, content: parseMessageContent(msg.content) })),
     [initialMessages]
   );
-  const [threads, setThreads] = useState<Thread[]>(initialThreads ?? []);
   const [messages, setMessages] = useState<Message[]>(parsedInitialMessages);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -270,21 +266,12 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
   const initialMessagesRef = useRef<{ threadId?: string; messages: Message[] } | null>(
     initialMessages ? { threadId, messages: parsedInitialMessages } : null
   );
-  const initialThreadsRef = useRef<Thread[] | null>(initialThreads ?? null);
-  const initialThreadsOrgRef = useRef<string | null>(initialThreads ? orgId : null);
 
   useEffect(() => {
     if (initialMessages) {
       initialMessagesRef.current = { threadId, messages: parsedInitialMessages };
     }
   }, [initialMessages, parsedInitialMessages, threadId]);
-
-  useEffect(() => {
-    if (initialThreads) {
-      initialThreadsRef.current = initialThreads;
-      initialThreadsOrgRef.current = orgId;
-    }
-  }, [initialThreads, orgId]);
 
   useEffect(() => {
     initialScrollDoneRef.current = false;
@@ -342,21 +329,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     }
     loadSessionState(threadId);
   }, [threadId, loadSessionState]);
-
-  const fetchThreads = useCallback(async () => {
-    const data = await getThreads();
-    setThreads(Array.isArray(data) ? (data as Thread[]) : []);
-  }, []);
-
-  useEffect(() => {
-    if (user && resolvedOrgId) {
-      if (initialThreadsRef.current && initialThreadsOrgRef.current === resolvedOrgId) {
-        initialThreadsRef.current = null;
-        return;
-      }
-      fetchThreads();
-    }
-  }, [user, resolvedOrgId, fetchThreads]);
 
   // Fetch messages from REST API
   const fetchMessages = useCallback(async (threadId: string, isReconnect = false) => {
@@ -549,7 +521,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
             threadId: id,
           }));
           isFirstMessage.current = false;
-          setTimeout(fetchThreads, 500);
         }
       } else if (data.type === 'session' && typeof data.sessionId === 'string') {
         const newSessionId = data.sessionId;
@@ -673,7 +644,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       }
     };
 
-  }, [currentOrg, fetchMessages, fetchThreads]);
+  }, [currentOrg, fetchMessages]);
 
   // Keep the ref updated with the latest function
   connectWebSocketRef.current = connectWebSocket;
@@ -1110,12 +1081,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     }
   }, []);
 
-  async function createThread() {
-    const thread = await createThreadAction({});
-    setThreads([thread, ...threads]);
-    router.push(`/chat/${thread.id}`);
-  }
-
   async function startNewChat() {
     if (!welcomeInput.trim() || isCreatingThread || !resolvedOrgId) return;
 
@@ -1134,16 +1099,6 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
       setIsCreatingThread(false);
       setError('Failed to start a new chat');
       console.error('Failed to create thread:', err);
-    }
-  }
-
-  async function deleteThread(id: string, e: React.MouseEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    await deleteThreadAction(id);
-    setThreads(threads.filter(t => t.id !== id));
-    if (threadId === id) {
-      router.push('/');
     }
   }
 
@@ -1185,11 +1140,7 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         sessionId: sessionIdRef.current,
         threadId,
       }));
-
-      if (isFirstMessage.current) {
-        isFirstMessage.current = false;
-        setTimeout(fetchThreads, 500);
-      }
+      isFirstMessage.current = false;
     } else {
       // Queue the message and trigger reconnect
       pendingMessageRef.current = userMessage;
