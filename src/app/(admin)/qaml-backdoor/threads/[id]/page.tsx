@@ -38,7 +38,7 @@ export default async function AdminThreadDetailPage({ params }: Props) {
     notFound();
   }
 
-  const { thread, messages, org_id } = result;
+  const { thread, messages, org_id, preview_workers } = result;
 
   // Create plain object for Client Component
   const safeThread = {
@@ -97,6 +97,36 @@ export default async function AdminThreadDetailPage({ params }: Props) {
                     <dd className="text-sm">{formatTimestamp(thread.updated_at)}</dd>
                   </div>
                 </dl>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Preview Workers</CardTitle>
+                <CardDescription>
+                  {preview_workers.length} {preview_workers.length === 1 ? 'worker' : 'workers'}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {preview_workers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No preview workers</p>
+                ) : (
+                  <div className="space-y-2">
+                    {preview_workers.map((worker) => (
+                      <div key={worker} className="flex items-center justify-between p-2 rounded-md bg-muted">
+                        <code className="text-sm">{worker}</code>
+                        <a
+                          href={`https://${worker}.chiridion.ai`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm text-primary hover:underline"
+                        >
+                          https://{worker}.chiridion.ai
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
 
