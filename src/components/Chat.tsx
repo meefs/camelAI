@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, type ReactNode } from 'react';
 
 // Debug logging for message state changes
 const DEBUG_MESSAGES = true;
@@ -13,7 +13,7 @@ const debugLog = (context: string, data: Record<string, unknown>) => {
 };
 import { useRouter } from 'next/navigation';
 import { ArrowDown, Copy, Check, RefreshCw, ExternalLink, X } from 'lucide-react';
-import type { Message, ContentBlock } from '@/types';
+import type { Message, ContentBlock, ToolResultBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   Tooltip,
@@ -25,6 +25,7 @@ import { PageHeader } from '@/components/page-header';
 import { PromptInput } from '@/components/prompt-input';
 import { Button } from '@/components/ui/button';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
+import { ThinkingBlock, ToolCall } from '@/components/tool-call';
 import { cn } from '@/lib/utils';
 import { applySdkEventToStreamingState, type StreamingState } from '@/lib/streaming';
 import {
@@ -133,56 +134,95 @@ function ContentBlockRenderer({ content, isStreaming = false }: { content: strin
     return <MarkdownRenderer content={content} isStreaming={isStreaming} />;
   }
 
-  // Array of content blocks - render each with proper styling
-  return (
-    <div className="space-y-4">
-      {content.map((block, i) => (
-        <div key={i}>
-          {block.type === 'text' && (
-            <div className="max-w-none">
-              <MarkdownRenderer content={block.text} isStreaming={isStreaming} />
-            </div>
-          )}
-          {block.type === 'thinking' && (
-            <div className="bg-muted/50 border border-border px-4 py-3 rounded-xl">
-              <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                </svg>
-                <span className="font-medium">Thinking</span>
-              </div>
-              <p className="whitespace-pre-wrap text-muted-foreground text-sm">{block.thinking}</p>
-            </div>
-          )}
-          {block.type === 'tool_use' && (
-            <div className="bg-amber-500/10 border border-amber-500/20 px-4 py-3 rounded-xl">
-              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm mb-2">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                <span className="font-mono font-medium">{block.name}</span>
-              </div>
-              <pre className="text-xs text-muted-foreground overflow-x-auto">{JSON.stringify(block.input, null, 2)}</pre>
-            </div>
-          )}
-          {block.type === 'tool_result' && (
-            <div className="bg-green-500/10 border border-green-500/20 px-4 py-3 rounded-xl">
-              <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm mb-2">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-                <span className="font-medium">Result</span>
-              </div>
-              <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">
-                {normalizeToolResultContent(block.content)}
-              </pre>
-            </div>
-          )}
+  const toolResultsById = new Map<string, ToolResultBlock>();
+  const toolUseIds = new Set<string>();
+  content.forEach(block => {
+    if (block.type === 'tool_result') {
+      toolResultsById.set(block.tool_use_id, block);
+    }
+    if (block.type === 'tool_use') {
+      toolUseIds.add(block.id);
+    }
+  });
+  const items: Array<{ kind: 'tool' | 'other'; node: ReactNode; key: string }> = [];
+
+  content.forEach((block, index) => {
+    if (block.type === 'text') {
+      items.push({
+        kind: 'other',
+        key: `text-${index}`,
+        node: (
+          <div className="max-w-none">
+            <MarkdownRenderer content={block.text} isStreaming={isStreaming} />
+          </div>
+        ),
+      });
+      return;
+    }
+
+    if (block.type === 'thinking') {
+      items.push({
+        kind: 'other',
+        key: `thinking-${index}`,
+        node: <ThinkingBlock thinking={block.thinking} />,
+      });
+      return;
+    }
+
+    if (block.type === 'tool_use') {
+      const result = toolResultsById.get(block.id);
+      items.push({
+        kind: 'tool',
+        key: `tool-${block.id || index}`,
+        node: <ToolCall tool={block} result={result} isStreaming={isStreaming} />,
+      });
+      return;
+    }
+
+    if (block.type === 'tool_result') {
+      if (toolUseIds.has(block.tool_use_id)) return;
+      items.push({
+        kind: 'tool',
+        key: `result-${block.tool_use_id || index}`,
+        node: <ToolCall result={block} isStreaming={isStreaming} />,
+      });
+    }
+  });
+
+  const sections: ReactNode[] = [];
+  let toolGroup: ReactNode[] = [];
+  let toolGroupKey = '';
+
+  items.forEach((item, index) => {
+    if (item.kind === 'tool') {
+      if (!toolGroup.length) toolGroupKey = `tools-${item.key}-${index}`;
+      toolGroup.push(<div key={item.key}>{item.node}</div>);
+      return;
+    }
+
+    if (toolGroup.length) {
+      sections.push(
+        <div key={toolGroupKey} className="space-y-1">
+          {toolGroup}
         </div>
-      ))}
-    </div>
-  );
+      );
+      toolGroup = [];
+    }
+
+    sections.push(
+      <div key={item.key}>{item.node}</div>
+    );
+  });
+
+  if (toolGroup.length) {
+    sections.push(
+      <div key={toolGroupKey || 'tools-final'} className="space-y-1">
+        {toolGroup}
+      </div>
+    );
+  }
+
+  return <div className="space-y-4">{sections}</div>;
 }
 
 // SDK event types (ContentBlock imported from @/types)
@@ -1285,51 +1325,7 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
                       {/* Streaming content */}
                       {streaming.content.length > 0 && (
                         <div className="space-y-4">
-                          {streaming.content.map((block, i) => (
-                            <div key={i}>
-                              {block.type === 'text' && (
-                                <div className="max-w-none">
-                                  <MarkdownRenderer content={block.text} isStreaming={streaming.isStreaming} />
-                                </div>
-                              )}
-                              {block.type === 'thinking' && (
-                                <div className="bg-muted/50 border border-border px-4 py-3 rounded-xl">
-                                  <div className="flex items-center gap-2 text-muted-foreground text-sm mb-2">
-                                    <svg className="w-4 h-4 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                                    </svg>
-                                    <span className="font-medium">Thinking...</span>
-                                  </div>
-                                  <p className="whitespace-pre-wrap text-muted-foreground text-sm">{block.thinking}</p>
-                                </div>
-                              )}
-                              {block.type === 'tool_use' && (
-                                <div className="bg-amber-500/10 border border-amber-500/20 px-4 py-3 rounded-xl">
-                                  <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm mb-2">
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                    <span className="font-mono font-medium">{block.name}</span>
-                                  </div>
-                                  <pre className="text-xs text-muted-foreground overflow-x-auto">{JSON.stringify(block.input, null, 2)}</pre>
-                                </div>
-                              )}
-                              {block.type === 'tool_result' && (
-                                <div className="bg-green-500/10 border border-green-500/20 px-4 py-3 rounded-xl">
-                                  <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm mb-2">
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                    </svg>
-                                    <span className="font-medium">Result</span>
-                                  </div>
-                                  <pre className="text-xs text-muted-foreground overflow-x-auto max-h-40">
-                                    {normalizeToolResultContent(block.content)}
-                                  </pre>
-                                </div>
-                              )}
-                            </div>
-                          ))}
+                          <ContentBlockRenderer content={streaming.content} isStreaming={streaming.isStreaming} />
                           {streaming.isStreaming && (
                             <div className="flex gap-1 py-2">
                               <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
