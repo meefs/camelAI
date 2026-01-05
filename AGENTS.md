@@ -189,10 +189,16 @@ ANTHROPIC_API_KEY=your_key_here
 
 ### Testing
 ```bash
-# Run unit tests
+# Unit tests (Vitest + jsdom)
 npm run test
 
-# Run E2E tests (requires server running)
+# Integration tests (Vitest + real dev server)
+npm run test:integration
+
+# Workers runtime tests (Miniflare + Durable Objects)
+npm run test:workers
+
+# E2E tests (Playwright; configure BASE_URL or run npm run dev)
 npm run test:e2e
 ```
 
@@ -267,13 +273,30 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 
 ## Testing Strategy
 
-### Unit Tests (`tests/`)
-- `auth-validation.test.ts` - Email/password validation
-- `password.test.ts` - Password hashing/verification
-- `AuthContext.test.tsx` - Auth state management
-- React component tests with Vitest + Testing Library
+### Unit Tests (Vitest + jsdom) (`tests/`)
+- Config: `vitest.config.ts` with `jsdom`, `tests/setup.ts` (matchMedia), excludes `tests/integration/**`.
+- Auth/UI state: `AuthContext.test.tsx` (login/signup/logout/switch org flows, loading/error states).
+- Auth helpers: `auth-validation.test.ts`, `admin-auth.test.ts`, `auth-serialization.test.ts` (plain-object safety for DO responses).
+- Chat rendering logic: `Chat.test.tsx` (partial message replacement vs append), `content-parsing.test.ts` (JSON content blocks), `stream-playback.test.ts` (stream event reducer in `src/lib/streaming`).
+- Crypto: `password.test.ts` (PBKDF2 hash/verify, edge cases).
 
-### E2E Tests (`e2e/`)
-- `auth.spec.ts` - Login/signup flows
-- `chat.spec.ts` - Basic chat flow, streaming verification
-- `streaming.spec.ts` - Detailed streaming behavior
+### Integration Tests (Vitest + dev server) (`tests/integration/`)
+- Run with `npm run test:integration` using `vitest.integration.config.ts`.
+- `global-setup.ts` starts `npm run dev` (wrangler + next) on `INTEGRATION_TEST_PORT` (default `3100`), waits for readiness, writes `.server-url` for tests to read.
+- Tests focus on real HTTP behavior and auth gating (server actions own auth):
+  - `pages.test.ts` checks login/signup SSR, public invitation pages, and protected route redirects.
+  - `api-routes.test.ts` asserts auth required for chat, threads preview, workspace FS, and computer APIs; static asset behavior.
+- Runs sequentially (single fork) to avoid port conflicts.
+
+### Workers Runtime Tests (Cloudflare pool) (`workers/main/tests/`)
+- Run with `npm run test:workers` using `vitest.workers.config.ts` + `wrangler.test.jsonc`.
+- `auth-do.test.ts` exercises full auth flow through RPC -> Durable Objects (users, orgs, sessions, org switching).
+- `password.test.ts` validates hashing/verification in the Workers runtime.
+
+### E2E Tests (Playwright) (`e2e/`)
+- Config in `playwright.config.ts`; default `baseURL` is remote, override `BASE_URL` for local (`npm run dev`).
+- `auth.spec.ts` covers signup/login/logout and protected-route redirects.
+- `chat.spec.ts` validates chat creation, streaming deltas, and tool use UI.
+- `streaming.spec.ts` inspects WebSocket `sdk_event` flow and partial assistant events.
+- `persistence.spec.ts` + `persistence-api.spec.ts` verify message/tool block persistence across reload (UI + API-created threads).
+- `admin.spec.ts` covers admin access control; superuser tests require `SUPERUSER_TEST_EMAIL` and `SUPERUSER_TEST_PASSWORD`.
