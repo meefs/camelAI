@@ -46,7 +46,6 @@ export default async function AdminThreadDetailPage({ params }: Props) {
   const safeThread = {
     id: thread.id,
     title: thread.title,
-    project_id: thread.project_id,
     created_by: thread.created_by,
     created_at: thread.created_at,
     updated_at: thread.updated_at,
@@ -88,17 +87,6 @@ export default async function AdminThreadDetailPage({ params }: Props) {
                         className="text-sm font-mono hover:underline"
                       >
                         {org_id.slice(0, 8)}...
-                      </Link>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-sm font-medium text-muted-foreground">Project</dt>
-                    <dd>
-                      <Link
-                        href={`/qaml-backdoor/projects/${thread.project_id}`}
-                        className="text-sm font-mono hover:underline"
-                      >
-                        {thread.project_id.slice(0, 8)}...
                       </Link>
                     </dd>
                   </div>

@@ -34,7 +34,6 @@ export default function ThreadsLoading() {
                 <TableRow>
                   <TableHead>Thread</TableHead>
                   <TableHead>Organization</TableHead>
-                  <TableHead>Project</TableHead>
                   <TableHead>Updated</TableHead>
                 </TableRow>
               </TableHeader>
@@ -49,9 +48,6 @@ export default function ThreadsLoading() {
                     </TableCell>
                     <TableCell>
                       <Skeleton className="h-6 w-20" />
-                    </TableCell>
-                    <TableCell>
-                      <Skeleton className="h-4 w-20" />
                     </TableCell>
                     <TableCell>
                       <Skeleton className="h-4 w-28" />

@@ -6,13 +6,11 @@ import type {
   Message,
   Organization,
   OrgMembership,
-  Project,
   SandboxFileListing,
   WorkspaceFileEntry,
   WorkspaceListResponse,
   Thread,
   User,
-  UserProject,
   Integration,
   CreateIntegrationInput,
   UpdateIntegrationInput,
@@ -494,21 +492,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     await userStub.removeOrg(orgId);
   }
 
-  async getUserProjects(userId: string): Promise<UserProject[]> {
-    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
-    return userStub.getProjects();
-  }
-
-  async addUserProject(userId: string, orgId: string, projectId: string): Promise<void> {
-    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
-    await userStub.addProject(orgId, projectId);
-  }
-
-  async removeUserProject(userId: string, orgId: string, projectId: string): Promise<void> {
-    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
-    await userStub.removeProject(orgId, projectId);
-  }
-
   // Admin functions
   async getAdminOverview(): Promise<AdminOverview> {
     const orgIds = new Set<string>();
@@ -647,24 +630,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return allThreads;
   }
 
-  // Admin: Get all projects across all orgs
-  async adminGetAllProjects(): Promise<Array<Project & { org_id: string }>> {
-    const orgIds = await this.collectAllOrgIds();
-
-    // Fetch projects from all orgs in parallel
-    const projectResults = await Promise.all(
-      Array.from(orgIds).map(async (orgId) => {
-        using indexStub = asDisposable(getIndexStub(this.env, orgId));
-        const projects = await indexStub.getProjects();
-        return projects.map((project) => ({ ...project, org_id: orgId }));
-      })
-    );
-
-    const allProjects = projectResults.flat();
-    allProjects.sort((a, b) => b.updated_at - a.updated_at);
-    return allProjects;
-  }
-
   // Admin: Get thread with messages
   async adminGetThreadWithMessages(
     threadId: string
@@ -702,28 +667,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         const thread = await indexStub.getThread(threadId);
         if (thread && updates.title !== undefined) {
           return indexStub.updateThread(threadId, updates.title);
-        }
-        return null;
-      })
-    );
-
-    return results.find((r) => r !== null) || null;
-  }
-
-  // Admin: Update project
-  async adminUpdateProject(
-    projectId: string,
-    updates: { name?: string }
-  ): Promise<Project | null> {
-    const orgIds = await this.collectAllOrgIds();
-
-    // Search for project in all orgs in parallel
-    const results = await Promise.all(
-      Array.from(orgIds).map(async (orgId) => {
-        using indexStub = asDisposable(getIndexStub(this.env, orgId));
-        const project = await indexStub.getProject(projectId);
-        if (project && updates.name !== undefined) {
-          return indexStub.updateProject(projectId, updates.name);
         }
         return null;
       })
@@ -815,22 +758,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
     // Apply pagination
     const items = allThreads.slice(offset, offset + limit);
-
-    return { items, total, offset, limit };
-  }
-
-  // Admin: Get paginated projects
-  async adminGetProjectsPaginated(
-    params: PaginationParams = {}
-  ): Promise<PaginatedResult<Project & { org_id: string }>> {
-    const { offset = 0, limit = 50 } = params;
-
-    // Get all projects first
-    const allProjects = await this.adminGetAllProjects();
-    const total = allProjects.length;
-
-    // Apply pagination
-    const items = allProjects.slice(offset, offset + limit);
 
     return { items, total, offset, limit };
   }
@@ -1016,12 +943,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async createThread(
     org: string,
     title: string | undefined,
-    projectId: string,
     createdBy?: string,
     sessionId?: string
   ): Promise<Thread> {
     using indexStub = asDisposable(getIndexStub(this.env, org));
-    return indexStub.createThread(title, projectId, createdBy, sessionId);
+    return indexStub.createThread(title, createdBy, sessionId);
   }
 
   async getThread(id: string, org: string): Promise<Thread | null> {
@@ -1194,36 +1120,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       console.error('[getMessages] Error:', e);
       return [];
     }
-  }
-
-  async getProjects(org: string): Promise<Project[]> {
-    using indexStub = asDisposable(getIndexStub(this.env, org));
-    return indexStub.getProjects();
-  }
-
-  async getProjectsByUser(org: string, userId: string): Promise<Project[]> {
-    using indexStub = asDisposable(getIndexStub(this.env, org));
-    return indexStub.getProjectsByUser(userId);
-  }
-
-  async createProject(org: string, name?: string, createdBy?: string): Promise<Project> {
-    using indexStub = asDisposable(getIndexStub(this.env, org));
-    return indexStub.createProject(name, createdBy);
-  }
-
-  async getProject(id: string, org: string): Promise<Project | null> {
-    using indexStub = asDisposable(getIndexStub(this.env, org));
-    return indexStub.getProject(id);
-  }
-
-  async updateProject(id: string, name: string, org: string): Promise<Project | null> {
-    using indexStub = asDisposable(getIndexStub(this.env, org));
-    return indexStub.updateProject(id, name);
-  }
-
-  async deleteProject(id: string, org: string): Promise<void> {
-    using indexStub = asDisposable(getIndexStub(this.env, org));
-    await indexStub.deleteProject(id);
   }
 
   async listWorkspaceFiles(orgId: string): Promise<SandboxFileListing> {

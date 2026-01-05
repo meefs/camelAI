@@ -11,7 +11,6 @@ import { updateAdminThread } from '@/lib/server-actions/admin';
 interface Thread {
   id: string;
   title: string;
-  project_id: string;
   created_by: string;
   created_at: number;
   updated_at: number;

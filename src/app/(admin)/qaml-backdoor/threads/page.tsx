@@ -64,14 +64,13 @@ export default async function AdminThreadsPage({ searchParams }: Props) {
                 <TableRow>
                   <TableHead>Thread</TableHead>
                   <TableHead>Organization</TableHead>
-                  <TableHead>Project</TableHead>
                   <TableHead>Updated</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {threads.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={3} className="text-center text-muted-foreground py-8">
                       No threads found
                     </TableCell>
                   </TableRow>
@@ -97,14 +96,6 @@ export default async function AdminThreadsPage({ searchParams }: Props) {
                           <Badge variant="outline">
                             {thread.org_id.slice(0, 8)}...
                           </Badge>
-                        </Link>
-                      </TableCell>
-                      <TableCell>
-                        <Link
-                          href={`/qaml-backdoor/projects/${thread.project_id}`}
-                          className="text-xs text-muted-foreground font-mono hover:underline"
-                        >
-                          {thread.project_id.slice(0, 8)}...
                         </Link>
                       </TableCell>
                       <TableCell className="text-muted-foreground">

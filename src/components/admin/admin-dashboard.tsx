@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
-import { Building2, FolderKanban, MessageSquare, Users } from 'lucide-react';
+import { Building2, MessageSquare, Users } from 'lucide-react';
 import type { AdminOverview } from '@/types';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { Badge } from '@/components/ui/badge';
@@ -21,10 +21,9 @@ function formatTimestamp(value: number) {
 interface AdminDashboardProps {
   overview: AdminOverview;
   threadCount?: number;
-  projectCount?: number;
 }
 
-export function AdminDashboard({ overview, threadCount = 0, projectCount = 0 }: AdminDashboardProps) {
+export function AdminDashboard({ overview, threadCount = 0 }: AdminDashboardProps) {
   const [query, setQuery] = useState('');
   const normalizedQuery = query.trim().toLowerCase();
 
@@ -54,7 +53,7 @@ export function AdminDashboard({ overview, threadCount = 0, projectCount = 0 }: 
             </p>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <Link href="/qaml-backdoor/users">
               <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
                 <CardHeader>
@@ -77,18 +76,6 @@ export function AdminDashboard({ overview, threadCount = 0, projectCount = 0 }: 
                   <CardDescription>Teams and workspaces</CardDescription>
                 </CardHeader>
                 <CardContent className="text-2xl font-semibold">{overview.total_orgs}</CardContent>
-              </Card>
-            </Link>
-            <Link href="/qaml-backdoor/projects">
-              <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle>Projects</CardTitle>
-                    <FolderKanban className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                  <CardDescription>Code repositories</CardDescription>
-                </CardHeader>
-                <CardContent className="text-2xl font-semibold">{projectCount}</CardContent>
               </Card>
             </Link>
             <Link href="/qaml-backdoor/threads">

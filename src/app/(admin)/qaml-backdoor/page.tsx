@@ -4,10 +4,9 @@ import { AdminDashboard } from '@/components/admin/admin-dashboard';
 export const dynamic = 'force-dynamic';
 
 export default async function AdminPage() {
-  const [overview, threads, projects] = await Promise.all([
+  const [overview, threads] = await Promise.all([
     authDO.getAdminOverview(),
     authDO.adminGetAllThreads(),
-    authDO.adminGetAllProjects(),
   ]);
 
   const safeOverview = {
@@ -28,7 +27,6 @@ export default async function AdminPage() {
     <AdminDashboard
       overview={safeOverview}
       threadCount={threads.length}
-      projectCount={projects.length}
     />
   );
 }

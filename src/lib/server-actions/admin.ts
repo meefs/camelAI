@@ -30,15 +30,6 @@ export async function updateAdminOrg(orgId: string, updates: { name?: string }) 
   return org;
 }
 
-export async function updateAdminProject(projectId: string, updates: { name?: string }) {
-  await requireSuperuser('Forbidden');
-  const project = await authDO.adminUpdateProject(projectId, updates);
-  if (!project) {
-    throw new Error('Project not found');
-  }
-  return project;
-}
-
 export async function updateAdminThread(threadId: string, updates: { title?: string }) {
   await requireSuperuser('Forbidden');
   const thread = await authDO.adminUpdateThread(threadId, updates);
