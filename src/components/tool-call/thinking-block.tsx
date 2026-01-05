@@ -19,7 +19,7 @@ export function ThinkingBlock({ thinking, defaultExpanded = false }: ThinkingBlo
         <button
           type="button"
           className={cn(
-            "thinking-block group flex w-full items-center gap-2 text-sm text-muted-foreground/60 italic",
+            "thinking-block group/thinking flex w-full items-center gap-2 text-sm text-muted-foreground/60 italic",
             "hover:bg-muted/20 rounded px-2 -mx-2 cursor-pointer text-left",
             "transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/50"
           )}
@@ -28,7 +28,7 @@ export function ThinkingBlock({ thinking, defaultExpanded = false }: ThinkingBlo
           <ChevronRight
             className={cn(
               "ml-auto h-4 w-4 text-muted-foreground/40 opacity-0 transition-all duration-150",
-              "group-hover:opacity-100",
+              "group-hover/thinking:opacity-100",
               isExpanded && "opacity-100 rotate-90"
             )}
           />

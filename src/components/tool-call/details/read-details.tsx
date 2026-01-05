@@ -21,7 +21,7 @@ export function ReadDetails({ tool, result }: ReadDetailsProps) {
 
   return (
     <div className="space-y-1">
-      <DetailRow label="Path:" value={path} copyValue={path} mono />
+      <DetailRow label="Path:" value={path} copyValue={path} mono asFileLink />
       <DetailRow label="Lines:" value={lineCount ? String(lineCount) : '0'} />
       <OutputBlock value={preview} label="Preview" copyValue={resultText} />
     </div>

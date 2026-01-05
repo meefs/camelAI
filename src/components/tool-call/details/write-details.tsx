@@ -21,7 +21,7 @@ export function WriteDetails({ tool }: WriteDetailsProps) {
 
   return (
     <div className="space-y-1">
-      <DetailRow label="Path:" value={path} copyValue={path} mono />
+      <DetailRow label="Path:" value={path} copyValue={path} mono asFileLink />
       {size ? <DetailRow label="Size:" value={size} /> : null}
       <OutputBlock value={preview} label="Preview" copyValue={content} />
     </div>

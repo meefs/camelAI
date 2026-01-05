@@ -10,5 +10,5 @@ export function getToolStatus(
   if (isStreaming && !result) return 'running';
   if (result && (result as { is_error?: boolean }).is_error) return 'error';
   if (result) return 'complete';
-  return tool ? 'running' : 'running';
+  return 'running';
 }

@@ -57,7 +57,7 @@ export function EditDetails({ tool }: EditDetailsProps) {
 
   return (
     <div className="space-y-1">
-      <DetailRow label="Path:" value={path} copyValue={path} mono />
+      <DetailRow label="Path:" value={path} copyValue={path} mono asFileLink />
       <DetailRow label="Changes:" value={replacementCount ? `${replacementCount} replacements` : '0'} />
       {diffLines.length > 0 ? (
         <div className="mt-2 font-mono text-xs bg-muted/30 rounded p-2 max-h-32 overflow-auto">

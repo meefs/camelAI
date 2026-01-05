@@ -22,7 +22,7 @@ export function NotebookDetails({ tool }: NotebookDetailsProps) {
 
   return (
     <div className="space-y-1">
-      <DetailRow label="Notebook:" value={path} copyValue={path} mono />
+      <DetailRow label="Notebook:" value={path} copyValue={path} mono asFileLink />
       {cellId ? <DetailRow label="Cell:" value={cellId} copyValue={cellId} mono /> : null}
       <OutputBlock value={preview} label="Content" copyValue={contentValue} />
     </div>

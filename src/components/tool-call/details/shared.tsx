@@ -5,14 +5,16 @@ import { Check, Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { FileLink } from '../file-link';
 
 interface CopyButtonProps {
   value: string;
   label?: string;
   className?: string;
+  hoverClassName?: string;
 }
 
-export function CopyButton({ value, label = 'Copy', className }: CopyButtonProps) {
+export function CopyButton({ value, label = 'Copy', className, hoverClassName }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -53,7 +55,8 @@ export function CopyButton({ value, label = 'Copy', className }: CopyButtonProps
           variant="ghost"
           size="icon-xs"
           className={cn(
-            "h-5 w-5 text-muted-foreground/70 opacity-0 transition-opacity group-hover:opacity-100",
+            "h-5 w-5 text-muted-foreground/70 opacity-0 transition-opacity",
+            hoverClassName ?? "group-hover/row:opacity-100",
             className
           )}
           onClick={handleCopy}
@@ -73,6 +76,8 @@ interface DetailRowProps {
   mono?: boolean;
   className?: string;
   tooltipThreshold?: number;
+  asFileLink?: boolean;
+  filePath?: string;
 }
 
 export function DetailRow({
@@ -82,12 +87,37 @@ export function DetailRow({
   mono = false,
   className,
   tooltipThreshold = 48,
+  asFileLink = false,
+  filePath,
 }: DetailRowProps) {
   if (value === undefined || value === null || value === '') return null;
 
-  const renderValue =
-    typeof value === 'string' ? (
-      value.length > tooltipThreshold ? (
+  const renderValue = (() => {
+    if (typeof value !== 'string') return value;
+
+    if (asFileLink) {
+      const linkNode = (
+        <FileLink path={filePath ?? value} mono={mono} className="truncate block">
+          {value}
+        </FileLink>
+      );
+      if (value.length > tooltipThreshold) {
+        return (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {linkNode}
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-xs break-words">
+              {value}
+            </TooltipContent>
+          </Tooltip>
+        );
+      }
+      return linkNode;
+    }
+
+    if (value.length > tooltipThreshold) {
+      return (
         <Tooltip>
           <TooltipTrigger asChild>
             <span className={cn("truncate block", mono && "font-mono")}>{value}</span>
@@ -96,18 +126,17 @@ export function DetailRow({
             {value}
           </TooltipContent>
         </Tooltip>
-      ) : (
-        <span className={cn("truncate block", mono && "font-mono")}>{value}</span>
-      )
-    ) : (
-      value
-    );
+      );
+    }
+
+    return <span className={cn("truncate block", mono && "font-mono")}>{value}</span>;
+  })();
 
   return (
-    <div className={cn("flex items-start gap-2 group py-0.5", className)}>
+    <div className={cn("flex items-start gap-2 group/row py-0.5", className)}>
       <span className="shrink-0 text-muted-foreground/60">{label}</span>
       <div className="min-w-0 flex-1">{renderValue}</div>
-      {copyValue ? <CopyButton value={copyValue} /> : null}
+      {copyValue ? <CopyButton value={copyValue} hoverClassName="group-hover/row:opacity-100" /> : null}
     </div>
   );
 }
@@ -125,9 +154,15 @@ export function OutputBlock({ value, label, copyValue, className }: OutputBlockP
   return (
     <div className={cn("mt-2", className)}>
       {(label || copyValue) && (
-        <div className="flex items-center justify-between text-[0.7rem] text-muted-foreground/60 mb-1 group">
+        <div className="flex items-center justify-between text-[0.7rem] text-muted-foreground/60 mb-1 group/output">
           <span>{label}</span>
-          {copyValue ? <CopyButton value={copyValue} label="Copy output" /> : null}
+          {copyValue ? (
+            <CopyButton
+              value={copyValue}
+              label="Copy output"
+              hoverClassName="group-hover/output:opacity-100"
+            />
+          ) : null}
         </div>
       )}
       <div className="mt-2 font-mono text-xs bg-muted/30 rounded p-2 max-h-32 overflow-auto">

@@ -27,62 +27,105 @@ function parseCountFromResult(result?: ToolResultBlock): number | null {
   return Number.parseInt(match[1], 10);
 }
 
-export function getToolSummary(tool?: ToolUseBlock, result?: ToolResultBlock): string {
-  if (!tool) return result ? 'Result' : 'Tool call';
+export interface ToolSummaryParts {
+  action: string;
+  filename?: string;
+  path?: string;
+}
+
+export function getToolSummaryParts(tool?: ToolUseBlock, result?: ToolResultBlock): ToolSummaryParts {
+  if (!tool) return { action: result ? 'Result' : 'Tool call' };
 
   const { name, input } = tool;
   const inputRecord = input || {};
 
   switch (name) {
     case 'Read': {
-      const path = typeof inputRecord.file_path === 'string' ? inputRecord.file_path : '';
-      return `Read ${path ? getFilename(path) : 'file'}`;
+      const path =
+        typeof inputRecord.file_path === 'string'
+          ? inputRecord.file_path
+          : typeof inputRecord.path === 'string'
+            ? inputRecord.path
+            : '';
+      return {
+        action: 'Read',
+        filename: path ? getFilename(path) : undefined,
+        path: path || undefined,
+      };
     }
     case 'Write': {
-      const path = typeof inputRecord.file_path === 'string' ? inputRecord.file_path : '';
-      return `Created ${path ? getFilename(path) : 'file'}`;
+      const path =
+        typeof inputRecord.file_path === 'string'
+          ? inputRecord.file_path
+          : typeof inputRecord.path === 'string'
+            ? inputRecord.path
+            : '';
+      return {
+        action: 'Created',
+        filename: path ? getFilename(path) : undefined,
+        path: path || undefined,
+      };
     }
     case 'Edit': {
-      const path = typeof inputRecord.file_path === 'string' ? inputRecord.file_path : '';
-      return `Edited ${path ? getFilename(path) : 'file'}`;
+      const path =
+        typeof inputRecord.file_path === 'string'
+          ? inputRecord.file_path
+          : typeof inputRecord.path === 'string'
+            ? inputRecord.path
+            : '';
+      return {
+        action: 'Edited',
+        filename: path ? getFilename(path) : undefined,
+        path: path || undefined,
+      };
     }
     case 'Bash': {
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
       const command = typeof inputRecord.command === 'string' ? inputRecord.command : '';
-      return description
-        ? `Ran ${description}`
-        : `Ran ${truncate(command || 'command', 30)}`;
+      return {
+        action: description
+          ? `Ran ${description}`
+          : `Ran ${truncate(command || 'command', 30)}`,
+      };
     }
     case 'Glob': {
       const count = parseCountFromResult(result);
-      return count !== null ? `Found ${count} files` : 'Searching for files...';
+      return { action: count !== null ? `Found ${count} files` : 'Searching for files...' };
     }
     case 'Grep': {
       const count = parseCountFromResult(result);
-      if (count !== null) return `Found ${count} matches`;
+      if (count !== null) return { action: `Found ${count} matches` };
       const pattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
-      return `Searching for "${truncate(pattern || 'pattern', 20)}"...`;
+      return { action: `Searching for "${truncate(pattern || 'pattern', 20)}"...` };
     }
     case 'Task': {
-      if (result) return 'Agent completed task';
+      if (result) return { action: 'Agent completed task' };
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
-      return `Agent: ${description || 'working...'}`;
+      return { action: `Agent: ${description || 'working...'}` };
     }
     case 'WebFetch': {
       const url = typeof inputRecord.url === 'string' ? inputRecord.url : '';
-      return `Fetched ${url ? getHostname(url) : 'web page'}`;
+      return { action: `Fetched ${url ? getHostname(url) : 'web page'}` };
     }
     case 'WebSearch':
-      return 'Searched web';
+      return { action: 'Searched web' };
     case 'TodoWrite':
-      return 'Updated tasks';
+      return { action: 'Updated tasks' };
     case 'NotebookEdit':
-      return 'Edited notebook cell';
+      return { action: 'Edited notebook cell' };
     case 'KillShell':
-      return 'Stopped background task';
+      return { action: 'Stopped background task' };
     case 'TaskOutput':
-      return 'Retrieved task output';
+      return { action: 'Retrieved task output' };
     default:
-      return name;
+      return { action: name };
   }
+}
+
+export function getToolSummary(tool?: ToolUseBlock, result?: ToolResultBlock): string {
+  const parts = getToolSummaryParts(tool, result);
+  if (parts.filename) {
+    return `${parts.action} ${parts.filename}`;
+  }
+  return parts.action;
 }

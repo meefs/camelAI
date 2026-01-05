@@ -10,7 +10,7 @@ import {
   useState,
   type ComponentType,
 } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import type { Monaco } from '@monaco-editor/react';
 import { loader } from '@monaco-editor/react';
@@ -150,6 +150,7 @@ type ConflictState = {
 };
 
 const ROOT_PATH = '/';
+const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
 const MAX_EDITABLE_BYTES = 1024 * 1024;
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
@@ -218,6 +219,18 @@ function normalizePath(input?: string): string {
   return `/${segments.join('/')}` || ROOT_PATH;
 }
 
+function coerceWorkspacePath(input?: string): string {
+  if (!input) return ROOT_PATH;
+  const normalized = normalizePath(input);
+  for (const prefix of WORKSPACE_ROOT_PREFIXES) {
+    if (normalized === prefix) return ROOT_PATH;
+    if (normalized.startsWith(`${prefix}/`)) {
+      return normalizePath(normalized.slice(prefix.length));
+    }
+  }
+  return normalized;
+}
+
 function joinPath(base: string, child: string): string {
   if (!child) return normalizePath(base);
   const basePath = normalizePath(base);
@@ -278,6 +291,7 @@ function getFileIcon(path: string): React.ComponentType<{ className?: string }> 
 
 export default function ComputerPageContent({ orgId }: ComputerPageContentProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { resolvedTheme } = useTheme();
   const { user, currentOrg, loading: authLoading } = useAuth();
 
@@ -342,6 +356,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
   const readOnlyHintTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingEnabledRef = useRef(editingEnabled);
+  const initialFileHandledRef = useRef<string | null>(null);
 
   const copyToClipboard = useCallback(async (value: string) => {
     try {
@@ -455,6 +470,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     }
     setHydrated(true);
   }, [storageKey]);
+
 
   const clearDragState = useCallback(() => {
     setIsDragging(false);
@@ -1079,6 +1095,26 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
     },
     [ensurePathExpanded, nodesByPath, openFile, scrollToNode]
   );
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const initialFileParam = searchParams?.get('file');
+    if (!initialFileParam) return;
+    if (initialFileHandledRef.current === initialFileParam) return;
+
+    initialFileHandledRef.current = initialFileParam;
+    let decodedPath = initialFileParam;
+    try {
+      decodedPath = decodeURIComponent(initialFileParam);
+    } catch {
+      decodedPath = initialFileParam;
+    }
+    const normalizedPath = coerceWorkspacePath(decodedPath);
+    void ensurePathExpanded(normalizedPath).then(() => {
+      openFile(normalizedPath);
+      scrollToNode(normalizedPath);
+    });
+  }, [ensurePathExpanded, hydrated, openFile, scrollToNode, searchParams]);
 
   const remapOpenResources = useCallback(
     (fromPath: string, toPath: string) => {
