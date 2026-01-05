@@ -242,7 +242,6 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
   const [iframeLoading, setIframeLoading] = useState(true);
   const previewVersionRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const iframeRetryRef = useRef<NodeJS.Timeout | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messageColumnRef = useRef<HTMLDivElement>(null);
   const lastUserMessageRef = useRef<HTMLDivElement>(null);
@@ -255,7 +254,6 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
   const previewWsRef = useRef<WebSocket | null>(null);
   const previewReconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const previewReconnectAttempts = useRef(0);
-  const isFirstMessage = useRef(true);
   const reconnectAttempts = useRef(0);
   const currentMessageUuidRef = useRef<string | null>(null); // Track SDK uuid for stable deduplication
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -341,7 +339,6 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
         messageIds: initialMessagesRef.current.messages.map(m => m.id),
       });
       setMessages(initialMessagesRef.current.messages);
-      isFirstMessage.current = initialMessagesRef.current.messages.length === 0;
       initialMessagesRef.current = null;
       return;
     }
@@ -367,10 +364,6 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
       // that weren't persisted are stale. Pending messages will be re-added
       // when the ready event fires.
       setMessages(parsedMsgs);
-
-      if (!isReconnect) {
-        isFirstMessage.current = parsedMsgs.length === 0;
-      }
     } catch (e) {
       debugLog('fetchMessages:exception', { threadId, error: String(e) });
       console.error('Failed to fetch messages:', e);
@@ -409,7 +402,6 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
     setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
     currentMessageUuidRef.current = null;
     if (!isReconnect) {
-      isFirstMessage.current = true;
       reconnectAttempts.current = 0;
     }
 
@@ -520,7 +512,6 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
             sessionId: sessionIdRef.current,
             threadId: id,
           }));
-          isFirstMessage.current = false;
         }
       } else if (data.type === 'session' && typeof data.sessionId === 'string') {
         const newSessionId = data.sessionId;
@@ -678,11 +669,6 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
       if (previewReconnectTimeoutRef.current) {
         clearTimeout(previewReconnectTimeoutRef.current);
         previewReconnectTimeoutRef.current = null;
-      }
-
-      if (iframeRetryRef.current) {
-        clearTimeout(iframeRetryRef.current);
-        iframeRetryRef.current = null;
       }
     };
   }, []);
@@ -1140,7 +1126,6 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
         sessionId: sessionIdRef.current,
         threadId,
       }));
-      isFirstMessage.current = false;
     } else {
       // Queue the message and trigger reconnect
       pendingMessageRef.current = userMessage;
@@ -1452,10 +1437,6 @@ export default function Chat({ threadId, orgId, initialMessages }: ChatProps) {
                           variant="ghost"
                           size="icon-sm"
                           onClick={() => {
-                            if (iframeRetryRef.current) {
-                              clearTimeout(iframeRetryRef.current);
-                              iframeRetryRef.current = null;
-                            }
                             setDeployedApp(null);
                             setIframeLoading(true);
                           }}
