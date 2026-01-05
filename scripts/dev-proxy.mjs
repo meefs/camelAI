@@ -86,11 +86,24 @@ proxy.on('error', (err, _req, resOrSocket) => {
   console.error('[dev-proxy] proxy error:', err);
 });
 
+// Determine if a request should be routed to wrangler instead of Next.js
+function shouldRouteToWrangler(req) {
+  if (!req.url) return false;
+  // WebSocket and Cloudflare client API routes
+  if (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/')) {
+    return true;
+  }
+  // Preview API POST - handled by worker with deploy token auth
+  if (req.method === 'POST' && /^\/api\/threads\/[^/]+\/preview/.test(req.url)) {
+    return true;
+  }
+  return false;
+}
+
 const server = http.createServer((req, res) => {
   req.on('error', () => {});
   res.on('error', () => {});
-  const isWrangler =
-    req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'));
+  const isWrangler = shouldRouteToWrangler(req);
   const target = isWrangler ? wranglerTarget : nextTarget;
   const forwardedProto = Array.isArray(req.headers['x-forwarded-proto'])
     ? req.headers['x-forwarded-proto'][0]
@@ -111,8 +124,7 @@ server.on('upgrade', (req, socket, head) => {
   socket.on('error', (err) => {
     console.error('[dev-proxy] socket error:', err.message);
   });
-  const isWrangler =
-    req.url && (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/'));
+  const isWrangler = shouldRouteToWrangler(req);
   const target = isWrangler ? wranglerTarget : nextTarget;
   const forwardedProto = Array.isArray(req.headers['x-forwarded-proto'])
     ? req.headers['x-forwarded-proto'][0]
