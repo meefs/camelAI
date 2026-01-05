@@ -446,9 +446,21 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
     const pendingPayload = sessionStorage.getItem('pendingMessage');
     if (pendingPayload) {
       try {
-        const parsed = JSON.parse(pendingPayload) as { threadId?: string };
+        const parsed = JSON.parse(pendingPayload) as { message?: string; threadId?: string };
         if (parsed.threadId === id) {
           shouldFetchMessages = false;
+          // Optimistically show the pending message immediately (don't wait for WebSocket ready)
+          if (typeof parsed.message === 'string') {
+            const optimisticUserMsg: Message = {
+              id: `local_${Date.now()}`,
+              thread_id: id,
+              role: 'user',
+              content: parsed.message,
+              created_at: Date.now(),
+            };
+            setMessages([optimisticUserMsg]);
+            setLoading(true);
+          }
         }
       } catch {
         // Ignore malformed pending payload and continue to fetch
@@ -525,22 +537,8 @@ export default function Chat({ threadId, orgId, initialThreads, initialMessages 
         }
         pendingMessageRef.current = null;
         if (storedMessage) {
-          // Add user message to local state immediately
-          const userMsg: Message = {
-            id: `local_${Date.now()}`,
-            thread_id: id,
-            role: 'user',
-            content: storedMessage,
-            created_at: Date.now(),
-          };
-          pendingScrollMessageIdRef.current = userMsg.id;
-          skipAutoScrollRef.current = true;
-          debugLog('ws:addUserMessage', { messageId: userMsg.id, threadId: id });
-          setMessages(prev => {
-            debugLog('ws:addUserMessage:prev', { prevCount: prev.length, prevIds: prev.map(m => m.id) });
-            return [...prev, userMsg];
-          });
-
+          // Message was already added optimistically in connectWebSocket, just send it
+          debugLog('ws:sendPendingMessage', { threadId: id });
           setLoading(true);
           setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
           currentMessageUuidRef.current = null;

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
@@ -23,6 +23,18 @@ const inspirationalPrompts = [
 ];
 
 export default function SignupPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-svh items-center justify-center">
+        <div className="text-muted-foreground">Loading...</div>
+      </div>
+    }>
+      <SignupContent />
+    </Suspense>
+  );
+}
+
+function SignupContent() {
   const router = useRouter();
   const { user, loading, signup } = useAuth();
   const [name, setName] = useState('');
