@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+
+// Note: Auth is handled by the (app) layout - no need to check here
 import type { Integration } from '@/types';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
 import { IntegrationIcon, hasIntegrationIcon } from '@/lib/integration-icons';
@@ -47,8 +48,7 @@ export default function ConnectionsClient({
   categories,
   orgId,
 }: ConnectionsClientProps) {
-  const router = useRouter();
-  const { currentOrg, loading: authLoading, user } = useAuth();
+  const { currentOrg, loading: authLoading } = useAuth();
 
   const [connections, setConnections] = useState<Integration[]>(initialConnections);
   const [loading, setLoading] = useState(false);
@@ -59,15 +59,6 @@ export default function ConnectionsClient({
   const [selectedConnection, setSelectedConnection] = useState<Integration | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [activeOrgId, setActiveOrgId] = useState(orgId);
-
-  useEffect(() => {
-    if (!authLoading && !user) {
-      setConnections([]);
-      setError(null);
-      setActiveOrgId('');
-      router.replace('/login');
-    }
-  }, [authLoading, user, router]);
 
   const refreshConnections = useCallback(
     async (targetOrgId = activeOrgId) => {
