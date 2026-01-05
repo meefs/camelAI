@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from 'react';
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
 import { ReadDetails } from './details/read-details';
 import { WriteDetails } from './details/write-details';
@@ -20,7 +21,7 @@ interface ToolCallDetailsProps {
 export function ToolCallDetails({ tool, result }: ToolCallDetailsProps) {
   const name = tool?.name;
 
-  let content: JSX.Element;
+  let content: ReactNode;
   switch (name) {
     case 'Read':
       content = <ReadDetails tool={tool} result={result} />;
