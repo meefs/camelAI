@@ -265,15 +265,16 @@ export class OrgContainer extends Container<OrgContainerEnv> {
 
     const state = await this.getState();
     console.log('[OrgContainer] Container state:', state.status, 'for org:', orgId);
-    if (state.status === 'running' || state.status === 'healthy') {
-      console.log('[OrgContainer] startForOrg skipping start; container already running', {
-        orgId,
-        status: state.status,
-      });
+
+    // Only skip if container is fully healthy (ready to serve requests)
+    // 'running' means container is still booting - NOT ready yet
+    if (state.status === 'healthy') {
+      console.log('[OrgContainer] startForOrg skipping start; container healthy', { orgId });
       return;
     }
 
-    console.log('[OrgContainer] Starting container for org:', orgId);
+    // Container is stopped, stopping, or still 'running' (booting) - need to wait for ports
+    console.log('[OrgContainer] Starting/waiting for container', { orgId, status: state.status });
 
     await this.startAndWaitForPorts({
       ports: [WS_SERVER_PORT, CONTROL_PLANE_PORT],
