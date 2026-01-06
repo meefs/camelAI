@@ -383,7 +383,9 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   const fetchMessages = useCallback(async (threadId: string, isReconnect = false) => {
     debugLog('fetchMessages:start', { threadId, isReconnect });
 
-    if (!isReconnect && initialMessagesRef.current?.threadId === threadId) {
+    // Only use initial messages if we actually have some - empty initialMessages from
+    // ?newThread=1 param (stale URL in new tab) should trigger a fresh fetch
+    if (!isReconnect && initialMessagesRef.current?.threadId === threadId && initialMessagesRef.current.messages.length > 0) {
       debugLog('fetchMessages:useInitial', {
         threadId,
         messageCount: initialMessagesRef.current.messages.length,
