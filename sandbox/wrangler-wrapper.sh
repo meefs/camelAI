@@ -39,36 +39,41 @@ if [[ "$1" == "deploy" || "$1" == "publish" ]]; then
     EXIT_CODE=$?
   fi
 
-  # If deploy succeeded, output the worker URL and auto-set preview
-  if [[ $EXIT_CODE -eq 0 ]] && [[ -n "$ORG_ID" ]]; then
-    # Get the script name and construct the prefixed URL
+  # If deploy succeeded, set preview and output the worker URL
+  if [[ $EXIT_CODE -eq 0 ]]; then
     USER_SCRIPT_NAME=$(get_script_name "$@")
-    # Sanitize script name (same logic as proxy)
-    SAFE_NAME=$(echo "$USER_SCRIPT_NAME" | sed 's/[^a-zA-Z0-9_-]/_/g')
-    # Org prefix is first 32 chars of ORG_ID
-    ORG_PREFIX=$(echo "$ORG_ID" | cut -c1-32 | sed 's/[^a-zA-Z0-9_-]/_/g')
-    SCRIPT_NAME="${ORG_PREFIX}-${SAFE_NAME}"
-    WORKER_URL="https://${SCRIPT_NAME}.chiridion.ai"
-    echo ""
-    echo "=== Chiridion Deploy Complete ==="
-    echo "Worker URL: ${WORKER_URL}"
 
     # Auto-set preview if THREAD_ID, WORKER_BASE_URL, and deploy token are available
+    # The preview endpoint computes the prefixed name and returns the full URL
     if [[ -n "$THREAD_ID" ]] && [[ -n "$WORKER_BASE_URL" ]] && [[ -n "$CLOUDFLARE_API_TOKEN" ]]; then
-      PREVIEW_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+      PREVIEW_RESPONSE=$(curl -s -X POST \
         "${WORKER_BASE_URL}/api/threads/${THREAD_ID}/preview" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-        -d "{\"workers\": [\"${SCRIPT_NAME}\"]}" 2>/dev/null)
+        -d "{\"workers\": [\"${USER_SCRIPT_NAME}\"]}" 2>/dev/null)
 
-      if [[ "$PREVIEW_RESULT" == "200" ]]; then
+      # Extract URL from response (expects {"workers":[...],"urls":["https://..."]})
+      WORKER_URL=$(echo "$PREVIEW_RESPONSE" | jq -r '.urls[0] // empty')
+
+      echo ""
+      echo "=== Chiridion Deploy Complete ==="
+      if [[ -n "$WORKER_URL" ]]; then
+        echo "Worker URL: ${WORKER_URL}"
         echo "Preview: Updated automatically"
       else
-        echo "Preview: Failed to update (HTTP ${PREVIEW_RESULT})"
+        echo "Preview: Failed to update"
+        echo "Response: ${PREVIEW_RESPONSE}"
       fi
+      echo "================================="
+      echo ""
+    else
+      echo ""
+      echo "=== Chiridion Deploy Complete ==="
+      echo "Worker: ${USER_SCRIPT_NAME}"
+      echo "(Preview not set - missing THREAD_ID, WORKER_BASE_URL, or CLOUDFLARE_API_TOKEN)"
+      echo "================================="
+      echo ""
     fi
-    echo "================================="
-    echo ""
   fi
 
   exit $EXIT_CODE
