@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@/types';
+import type { ContentBlock, Message } from '@/types';
 
 export interface SDKEvent {
   type: string;
@@ -132,4 +132,135 @@ export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SD
   }
 
   return prev;
+}
+
+// Block offset tracking for message-based streaming
+const messageBlockOffsets = new Map<string, number>();
+
+export function getMessageBlockOffset(messageId: string): number {
+  return messageBlockOffsets.get(messageId) ?? 0;
+}
+
+export function setMessageBlockOffset(messageId: string, offset: number): void {
+  messageBlockOffsets.set(messageId, offset);
+}
+
+export function clearMessageBlockOffset(messageId: string): void {
+  messageBlockOffsets.delete(messageId);
+}
+
+/**
+ * Apply an SDK event to a message's content, returning the updated message.
+ * This is used when streaming is stored directly in the messages array.
+ */
+export function applyStreamingEventToMessage(
+  message: Message,
+  sdkEvent: SDKEvent
+): Message {
+  // Ensure content is an array
+  const content: ContentBlock[] = Array.isArray(message.content)
+    ? message.content
+    : [];
+
+  if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
+    setMessageBlockOffset(message.id, 0);
+    return { ...message, content: [], isStreaming: true };
+  }
+
+  if (sdkEvent.type !== 'stream_event') {
+    return message;
+  }
+
+  const evt = sdkEvent.event;
+  const blockOffset = getMessageBlockOffset(message.id);
+
+  if (evt?.type === 'message_start') {
+    setMessageBlockOffset(message.id, content.length);
+    return { ...message, isStreaming: true };
+  }
+
+  if (evt?.type === 'content_block_start') {
+    const block = evt.content_block;
+    const index = typeof evt.index === 'number' ? blockOffset + evt.index : content.length;
+    const newContent = [...content];
+
+    if (block?.type === 'tool_use') {
+      newContent[index] = {
+        type: 'tool_use' as const,
+        id: block.id || '',
+        name: block.name || '',
+        input: {},
+      };
+      return { ...message, content: newContent, isStreaming: true };
+    }
+    if (block?.type === 'text') {
+      newContent[index] = { type: 'text', text: block.text || '' };
+      return { ...message, content: newContent, isStreaming: true };
+    }
+    if (block?.type === 'thinking') {
+      newContent[index] = { type: 'thinking', thinking: (block as { thinking?: string }).thinking || '' };
+      return { ...message, content: newContent, isStreaming: true };
+    }
+    return { ...message, isStreaming: true };
+  }
+
+  if (evt?.type === 'content_block_delta') {
+    if (evt.delta?.type === 'text_delta' && evt.delta.text) {
+      const newContent = [...content];
+      const index = typeof evt.index === 'number' ? blockOffset + evt.index : newContent.length - 1;
+      const target = newContent[index];
+      if (target?.type === 'text') {
+        newContent[index] = {
+          ...target,
+          text: (target.text || '') + evt.delta.text,
+        };
+      } else {
+        newContent[index] = { type: 'text', text: evt.delta.text };
+      }
+      return { ...message, content: newContent };
+    }
+
+    if (evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
+      const newContent = [...content];
+      const index = typeof evt.index === 'number' ? blockOffset + evt.index : newContent.length - 1;
+      const target = newContent[index];
+      if (target && target.type === 'tool_use') {
+        const currentInput = (target as ContentBlock & { _inputJson?: string })._inputJson || '';
+        newContent[index] = {
+          ...target,
+          _inputJson: currentInput + evt.delta.partial_json,
+        } as ContentBlock & { _inputJson?: string };
+      }
+      return { ...message, content: newContent };
+    }
+  }
+
+  if (evt?.type === 'content_block_stop') {
+    const newContent = content.map(block => {
+      if (block.type === 'tool_use' && (block as ContentBlock & { _inputJson?: string })._inputJson) {
+        try {
+          const input = JSON.parse((block as ContentBlock & { _inputJson?: string })._inputJson || '');
+          const rest = { ...(block as ContentBlock & { _inputJson?: string }) };
+          delete (rest as { _inputJson?: string })._inputJson;
+          return { ...rest, input };
+        } catch {
+          return block;
+        }
+      }
+      return block;
+    });
+    return { ...message, content: newContent };
+  }
+
+  if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
+    clearMessageBlockOffset(message.id);
+    return { ...message, isStreaming: false };
+  }
+
+  if (evt?.type === 'message_stop') {
+    clearMessageBlockOffset(message.id);
+    return { ...message, isStreaming: false };
+  }
+
+  return message;
 }
