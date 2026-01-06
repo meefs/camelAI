@@ -319,6 +319,34 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     search: url.search,
   });
 
+  const accountId = env.CF_ACCOUNT_ID?.trim();
+  const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
+
+  // Asset uploads use Cloudflare-issued JWTs from assets-upload-session.
+  // Skip our deploy token validation and pass through - Cloudflare validates the JWT.
+  // Security: JWTs can only be obtained via assets-upload-session (which requires deploy token auth)
+  // and are tied to the org-prefixed script name.
+  if (ASSETS_UPLOAD.test(url.pathname) && request.method.toUpperCase() === 'POST') {
+    let pathname = url.pathname;
+    // Rewrite account ID if configured
+    if (accountId) {
+      const accountMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/(.*)$/);
+      if (accountMatch) {
+        pathname = `/client/v4/accounts/${encodeURIComponent(accountId)}/${accountMatch[2] ?? ''}`;
+      }
+    }
+
+    const upstreamUrl = new URL(`https://api.cloudflare.com${pathname}${url.search}`);
+    const headers = new Headers(request.headers);
+    // Keep the original Authorization header (Cloudflare JWT)
+    headers.delete('cookie');
+    headers.delete('host');
+
+    const body = await request.arrayBuffer();
+    const resp = await fetch(upstreamUrl, { method: 'POST', headers, body });
+    return new Response(resp.body, { status: resp.status, headers: resp.headers });
+  }
+
   const proxyToken =
     request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER)?.trim() ||
     (() => {
@@ -350,9 +378,6 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
   }
   const { orgPrefix, orgId } = resolveOrgContext(tokenValue);
-
-  const accountId = env.CF_ACCOUNT_ID?.trim();
-  const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
 
   let pathname = url.pathname;
 
