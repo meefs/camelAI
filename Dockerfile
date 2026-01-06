@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-03-v11
+# Version: 2026-01-05-v1
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -36,6 +36,7 @@ RUN bun install
 COPY --chmod=755 sandbox/entrypoint.sh ./
 COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
 COPY sandbox/starter-worker ./starter-worker
+COPY sandbox/skills ./skills
 RUN chmod -R a+rX /app
 
 WORKDIR /home/claude

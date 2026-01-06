@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-03-v4
+# Version: 2026-01-05-v1
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -86,6 +86,12 @@ fi
 # Ensure workspace directory exists and is owned by claude
 mkdir -p "$TARGET_DIR"
 chown -R claude:claude "$TARGET_DIR"
+
+# Install skills to claude's config directory
+echo "[entrypoint] Installing skills..." >&2
+mkdir -p "$TARGET_DIR/.claude/skills"
+cp -r /app/skills/. "$TARGET_DIR/.claude/skills/"
+chown -R claude:claude "$TARGET_DIR/.claude"
 
 # Write env vars to a file that claude user can source
 cat > /tmp/ws-env.sh << ENVEOF
