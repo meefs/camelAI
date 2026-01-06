@@ -148,10 +148,10 @@ server.on('clientError', (_err, socket) => {
   }
 });
 
-server.listen(proxyPort, () => {
+server.listen(proxyPort, '0.0.0.0', () => {
   console.log(`[dev-proxy] next dev -> ${nextTarget}`);
   console.log(`[dev-proxy] wrangler dev -> ${wranglerTarget}`);
-  console.log(`[dev-proxy] proxy listening on http://localhost:${proxyPort}`);
+  console.log(`[dev-proxy] proxy listening on http://0.0.0.0:${proxyPort}`);
 });
 
 function shutdown() {
