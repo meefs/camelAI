@@ -27,7 +27,25 @@ import { Button } from '@/components/ui/button';
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
 import { cn } from '@/lib/utils';
-import { applyStreamingEventToMessage, type SDKEvent } from '@/lib/streaming';
+import { type SDKEvent } from '@/lib/streaming';
+import {
+  useMessages,
+  useIsStreaming,
+  useLoading,
+  useIsThreadInitialized,
+  setMessages,
+  addMessage,
+  setLoading,
+  addPendingMessage,
+  hasPendingMessagesForThread,
+  clearPendingMessagesForThread,
+  setStreamingMessageId,
+  startStreamingMessage,
+  applyStreamingEvent,
+  finishStreaming,
+  getMessages,
+  getStreamingMessageId,
+} from '@/stores/chat-state';
 import {
   createThread as createThreadAction,
   getThreadMessages,
@@ -97,11 +115,28 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     () => (initialMessages ?? []).map(msg => ({ ...msg, content: parseMessageContent(msg.content) })),
     [initialMessages]
   );
-  const [messages, setMessages] = useState<Message[]>(parsedInitialMessages);
+
+  // Chat state (simple module-level state with React hooks)
+  const storeMessages = useMessages(threadId);
+  const isStreaming = useIsStreaming();
+  const loading = useLoading(threadId);
+  const isThreadInitialized = useIsThreadInitialized(threadId);
+
+  // Hydration-safe pattern: sync initial messages to store AFTER mount.
+  // During SSR/hydration, store is empty so we fall back to prop.
+  // After effect runs, store has messages and component re-renders.
+  // Use isThreadInitialized to distinguish "not loaded yet" from "loaded but empty".
+  useEffect(() => {
+    if (threadId && parsedInitialMessages.length > 0 && !isThreadInitialized) {
+      setMessages(threadId, parsedInitialMessages);
+    }
+  }, [threadId, parsedInitialMessages, isThreadInitialized]);
+
+  // Use store messages if thread is initialized, otherwise fall back to server-rendered prop
+  const messages = isThreadInitialized ? storeMessages : parsedInitialMessages;
+
   const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false); // Container is ready to receive messages
-  const [reconnecting, setReconnecting] = useState(false); // WebSocket is reconnecting
   const [error, setError] = useState<string | null>(null);
   const [welcomeInput, setWelcomeInput] = useState('');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
@@ -125,21 +160,11 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   const previewReconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const previewReconnectAttempts = useRef(0);
   const reconnectAttempts = useRef(0);
-  const currentMessageUuidRef = useRef<string | null>(null); // Track SDK uuid for stable deduplication
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef(0);
   const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
   const previewConnectionStartedAtRef = useRef<number | null>(null);
-  const initialMessagesRef = useRef<{ threadId?: string; messages: Message[] } | null>(
-    initialMessages ? { threadId, messages: parsedInitialMessages } : null
-  );
-
-  useEffect(() => {
-    if (initialMessages) {
-      initialMessagesRef.current = { threadId, messages: parsedInitialMessages };
-    }
-  }, [initialMessages, parsedInitialMessages, threadId]);
 
   useEffect(() => {
     initialScrollDoneRef.current = false;
@@ -148,8 +173,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
   const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
-  // Queue message to send when connection becomes ready
-  const pendingMessageRef = useRef<string | null>(null);
   const sessionStorageKey = useCallback((id: string) => `ws_session_${id}`, []);
 
   const loadSessionState = useCallback((id: string) => {
@@ -207,23 +230,10 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   }, [isNewThreadParam, threadId]);
 
   // Fetch messages from REST API
-  const fetchMessages = useCallback(async (threadId: string, isReconnect = false) => {
-    debugLog('fetchMessages:start', { threadId, isReconnect });
-
-    // Only use initial messages if we actually have some - empty initialMessages from
-    // ?newThread=1 param (stale URL in new tab) should trigger a fresh fetch
-    if (!isReconnect && initialMessagesRef.current?.threadId === threadId && initialMessagesRef.current.messages.length > 0) {
-      debugLog('fetchMessages:useInitial', {
-        threadId,
-        messageCount: initialMessagesRef.current.messages.length,
-        messageIds: initialMessagesRef.current.messages.map(m => m.id),
-      });
-      setMessages(initialMessagesRef.current.messages);
-      initialMessagesRef.current = null;
-      return;
-    }
+  const fetchMessages = useCallback(async (id: string) => {
+    debugLog('fetchMessages:start', { threadId: id });
     try {
-      const data = await getThreadMessages(threadId);
+      const data = await getThreadMessages(id);
       const fetchedMsgs = Array.isArray(data) ? (data as Message[]) : [];
 
       // Parse content for each message (handles JSON-encoded ContentBlock[])
@@ -233,19 +243,17 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       }));
 
       debugLog('fetchMessages:setMessages', {
-        threadId,
-        isReconnect,
+        threadId: id,
         fetchedCount: fetchedMsgs.length,
-        parsedCount: parsedMsgs.length,
         messageIds: parsedMsgs.map(m => m.id),
       });
 
       // Always replace with server state - local-only messages (local_*, turn_*)
       // that weren't persisted are stale. Pending messages will be re-added
       // when the ready event fires.
-      setMessages(parsedMsgs);
+      setMessages(id, parsedMsgs);
     } catch (e) {
-      debugLog('fetchMessages:exception', { threadId, error: String(e) });
+      debugLog('fetchMessages:exception', { threadId: id, error: String(e) });
       console.error('Failed to fetch messages:', e);
     }
   }, []);
@@ -279,38 +287,54 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
     setReady(false);
     // Clear any streaming message on reconnect
-    currentMessageUuidRef.current = null;
+    setStreamingMessageId(null);
     if (!isReconnect) {
       reconnectAttempts.current = 0;
     }
 
     // Fetch existing messages from REST API unless we have a pending first message for this thread
     let shouldFetchMessages = true;
+
+    // Check sessionStorage for welcome screen pending message (survives navigation)
     const pendingPayload = sessionStorage.getItem('pendingMessage');
     if (pendingPayload) {
       try {
         const parsed = JSON.parse(pendingPayload) as { message?: string; threadId?: string };
-        if (parsed.threadId === id) {
+        if (parsed.threadId === id && typeof parsed.message === 'string') {
           shouldFetchMessages = false;
-          // Optimistically show the pending message immediately (don't wait for WebSocket ready)
-          if (typeof parsed.message === 'string') {
-            const optimisticUserMsg: Message = {
-              id: `local_${Date.now()}`,
-              thread_id: id,
-              role: 'user',
-              content: parsed.message,
-              created_at: Date.now(),
-            };
-            setMessages([optimisticUserMsg]);
-            setLoading(true);
-          }
+          sessionStorage.removeItem('pendingMessage');
+          // Add to state (both messages and pending queue)
+          const optimisticUserMsg: Message = {
+            id: `local_${Date.now()}`,
+            thread_id: id,
+            role: 'user',
+            content: parsed.message,
+            created_at: Date.now(),
+          };
+          setMessages(id, [optimisticUserMsg]);
+          addPendingMessage(optimisticUserMsg);
+          setLoading(id, true);
         }
       } catch {
         // Ignore malformed pending payload and continue to fetch
       }
     }
+
+    // Skip fetch if store has pending messages for THIS thread (StrictMode-safe)
+    if (shouldFetchMessages && hasPendingMessagesForThread(id)) {
+      shouldFetchMessages = false;
+    }
+
+    // Skip fetch if store already has messages (from hydration or previous load)
     if (shouldFetchMessages) {
-      fetchMessages(id, isReconnect);
+      const existingMessages = getMessages(id);
+      if (existingMessages.length > 0) {
+        shouldFetchMessages = false;
+      }
+    }
+
+    if (shouldFetchMessages) {
+      fetchMessages(id);
     }
 
     // WebSocket connects at /ws/{org} - one container per org handles all threads
@@ -363,33 +387,32 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
         // Container is ready to receive messages
         debugLog('ws:ready', { threadId: id });
         setReady(true);
-        setReconnecting(false);
 
-        // Send pending message if exists (from welcome screen or queued while disconnected)
-        let storedMessage = pendingMessageRef.current;
-        const storedPayload = sessionStorage.getItem('pendingMessage');
-        if (storedPayload) {
-          try {
-            const parsed = JSON.parse(storedPayload) as { message?: string; orgId?: string; threadId?: string };
-            if (parsed.orgId === resolvedOrgId && parsed.threadId === id && typeof parsed.message === 'string') {
-              sessionStorage.removeItem('pendingMessage');
-              storedMessage = parsed.message;
-            }
-          } catch (e) {
-            console.warn('Failed to parse pending message:', e);
+        // Get queued messages for THIS thread only (prevents cross-thread message leakage)
+        const queuedMessages = clearPendingMessagesForThread(id);
+
+        if (queuedMessages.length > 0) {
+          debugLog('ws:sendPendingMessages', { threadId: id, count: queuedMessages.length });
+          setLoading(id, true);
+
+          // Restore to state if missing (fetchMessages may have cleared them during reconnect)
+          const currentMessages = getMessages(id);
+          const existingIds = new Set(currentMessages.map(m => m.id));
+          const missing = queuedMessages.filter(m => !existingIds.has(m.id));
+          if (missing.length > 0) {
+            setMessages(id, [...currentMessages, ...missing]);
           }
-        }
-        pendingMessageRef.current = null;
-        if (storedMessage) {
-          // Message was already added optimistically in connectWebSocket, just send it
-          debugLog('ws:sendPendingMessage', { threadId: id });
-          setLoading(true);
-          ws.send(JSON.stringify({
-            type: 'message',
-            content: storedMessage,
-            sessionId: sessionIdRef.current,
-            threadId: id,
-          }));
+
+          // Send all queued messages
+          for (const msg of queuedMessages) {
+            const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+            ws.send(JSON.stringify({
+              type: 'message',
+              content,
+              sessionId: sessionIdRef.current,
+              threadId: id,
+            }));
+          }
         }
       } else if (data.type === 'session' && typeof data.sessionId === 'string') {
         const newSessionId = data.sessionId;
@@ -401,63 +424,47 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
           persistSessionState(threadId);
         }
       } else if (data.type === 'sdk_event') {
-        // Handle SDK events for streaming - streaming is now stored directly in messages
+        // Handle SDK events for streaming
         const sdkEvent = data.event as SDKEvent;
+        const currentStreamingId = getStreamingMessageId();
 
         if (sdkEvent.type === 'stream_event') {
           const evt = sdkEvent.event;
           if (evt?.type === 'message_start') {
             // Add new assistant message with isStreaming: true
             const msgId = evt.message?.id || (sdkEvent as { uuid?: string }).uuid || `stream_${Date.now()}`;
-            currentMessageUuidRef.current = msgId;
             debugLog('ws:messageStart', { msgId });
-            setMessages(prev => {
-              // Check if message already exists (e.g., from reconnect replay)
-              if (prev.some(m => m.id === msgId)) return prev;
-              return [...prev, {
-                id: msgId,
-                thread_id: threadId || '',
-                role: 'assistant' as const,
-                content: [],
-                created_at: Date.now(),
-                isStreaming: true,
-              }];
-            });
-          } else if (currentMessageUuidRef.current) {
+            startStreamingMessage(id, msgId);
+          } else if (currentStreamingId) {
             // Apply streaming delta to the current message
-            const msgId = currentMessageUuidRef.current;
-            setMessages(prev => prev.map(msg =>
-              msg.id === msgId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
-            ));
+            applyStreamingEvent(id, sdkEvent);
           } else {
-            // No currentMessageUuidRef - try to restore from streaming message (reconnect scenario)
-            setMessages(prev => {
-              const streamingMsg = prev.find(m => m.isStreaming);
-              if (!streamingMsg) return prev;
-              // Restore the ref for future deltas
-              currentMessageUuidRef.current = streamingMsg.id;
-              return prev.map(msg =>
-                msg.id === streamingMsg.id ? applyStreamingEventToMessage(msg, sdkEvent) : msg
-              );
-            });
+            // No streamingMessageId - try to restore from streaming message (reconnect scenario)
+            const currentMessages = getMessages(id);
+            const streamingMsg = currentMessages.find(m => m.isStreaming);
+            if (streamingMsg) {
+              setStreamingMessageId(streamingMsg.id);
+              applyStreamingEvent(id, sdkEvent);
+            }
           }
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
           // System init - just reset the streaming message ID
-          currentMessageUuidRef.current = null;
+          setStreamingMessageId(null);
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
           // Track message ID as fallback
-          if (!currentMessageUuidRef.current) {
+          if (!currentStreamingId) {
             const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
             const sdkMsgId = (sdkEvent.message as { id?: string }).id;
             if (sdkUuid || sdkMsgId) {
-              currentMessageUuidRef.current = sdkUuid || sdkMsgId || null;
+              setStreamingMessageId(sdkUuid || sdkMsgId || null);
             }
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
           // Append user content blocks (tool_result) to current streaming message
-          const msgId = currentMessageUuidRef.current;
-          if (msgId) {
-            setMessages(prev => prev.map(msg => {
+          const msgId = getStreamingMessageId();
+          if (msgId && id) {
+            const currentMessages = getMessages(id);
+            setMessages(id, currentMessages.map(msg => {
               if (msg.id !== msgId) return msg;
               const content = Array.isArray(msg.content) ? msg.content : [];
               return { ...msg, content: [...content, ...sdkEvent.message!.content] };
@@ -465,28 +472,18 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
           }
         } else if (sdkEvent.type === 'result') {
           // Query complete - mark message as not streaming
-          const msgId = currentMessageUuidRef.current;
-          debugLog('ws:result', { msgId });
-          if (msgId) {
-            setMessages(prev => prev.map(msg =>
-              msg.id === msgId ? { ...msg, isStreaming: false } : msg
-            ));
+          debugLog('ws:result', { msgId: getStreamingMessageId() });
+          if (id) {
+            finishStreaming(id);
           }
-          currentMessageUuidRef.current = null;
-          setLoading(false);
         }
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
         setError(data.error || 'An unknown error occurred');
         // Mark any streaming message as not streaming
-        if (currentMessageUuidRef.current) {
-          const msgId = currentMessageUuidRef.current;
-          setMessages(prev => prev.map(msg =>
-            msg.id === msgId ? { ...msg, isStreaming: false } : msg
-          ));
-          currentMessageUuidRef.current = null;
+        if (id) {
+          finishStreaming(id);
         }
-        setLoading(false);
       }
     };
 
@@ -516,7 +513,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       if (reconnectAttempts.current < maxAttempts) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
         reconnectAttempts.current++;
-        setReconnecting(true);
         debugLog('ws:reconnectScheduled', { attempt: reconnectAttempts.current, delay });
         reconnectTimeoutRef.current = setTimeout(() => {
           // Check again that we haven't been superseded
@@ -534,7 +530,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       }
     };
 
-  }, [currentOrg, fetchMessages]);
+  }, [fetchMessages, resolvedOrgId, persistSessionState, threadId]);
 
   // Keep the ref updated with the latest function
   connectWebSocketRef.current = connectWebSocket;
@@ -691,7 +687,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
   const lastMessage = messages[messages.length - 1];
-  const isStreaming = messages.some(m => m.isStreaming);
   const showAssistantTail = loading || isStreaming;
   const isAwaitingAssistant = showAssistantTail && lastMessage?.role === 'user';
   const lastUserMessage = useMemo(() => {
@@ -719,7 +714,8 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
           clearTimeout(reconnectTimeoutRef.current);
           reconnectTimeoutRef.current = null;
         }
-        setMessages([]);
+        // Messages are stored by threadId - no need to clear here.
+        // useMessages(threadId) automatically returns [] when threadId is undefined.
         setReady(false);
       }
       return;
@@ -828,7 +824,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     }
     setShowScrollButton(false);
     initialScrollDoneRef.current = true;
-  }, [shouldShowChat, threadId, messages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage?.id]);
+  }, [shouldShowChat, threadId, messages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage]);
 
   useLayoutEffect(() => {
     if (!shouldRenderSpacer) return;
@@ -996,7 +992,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   }
 
   function sendMessage() {
-    if (!input.trim() || !shouldShowChat || !resolvedOrgId) {
+    if (!input.trim() || !shouldShowChat || !resolvedOrgId || !threadId) {
       return;
     }
 
@@ -1006,10 +1002,10 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     // Clear any previous error
     setError(null);
 
-    // Add user message to local state immediately
+    // Add user message to state immediately (optimistic)
     const userMsg: Message = {
       id: `local_${Date.now()}`,
-      thread_id: threadId || '',
+      thread_id: threadId,
       role: 'user',
       content: userMessage,
       created_at: Date.now(),
@@ -1018,12 +1014,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     skipAutoScrollRef.current = true;
     debugLog('sendMessage:addUserMessage', { messageId: userMsg.id, threadId });
 
-    // Add user message to messages - it naturally appears after any streaming message
-    setMessages(prev => [...prev, userMsg]);
+    // Add user message to store - it naturally appears after any streaming message
+    addMessage(threadId, userMsg);
 
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
-      setLoading(true);
+      setLoading(threadId, true);
       wsRef.current.send(JSON.stringify({
         type: 'message',
         content: userMessage,
@@ -1031,15 +1027,13 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
         threadId,
       }));
     } else {
-      // Queue the message and trigger reconnect
-      pendingMessageRef.current = userMessage;
-      setLoading(true);
+      // Queue the full message object for later delivery
+      addPendingMessage(userMsg);
+      setLoading(threadId, true);
 
       // If not connected at all, trigger reconnect
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        if (threadId) {
-          connectWebSocketRef.current?.(threadId, true);
-        }
+        connectWebSocketRef.current?.(threadId, true);
       }
       // If connected but not ready, the message will be sent when ready event arrives
     }
@@ -1164,9 +1158,8 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                     onChange={setInput}
                     onSubmit={sendMessage}
                     onStop={stopGeneration}
-                    placeholder={reconnecting ? "Reconnecting..." : "Type a message..."}
+                    placeholder="Type a message..."
                     isAssistantRunning={loading || isStreaming}
-                    disabled={reconnecting}
                     autoFocus
                   />
                 </div>
