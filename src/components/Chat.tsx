@@ -11,7 +11,7 @@ const debugLog = (context: string, data: Record<string, unknown>) => {
     ...data,
   }, null, 2));
 };
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowDown, Copy, Check, RefreshCw, ExternalLink, X } from 'lucide-react';
 import type { Message, ContentBlock, ToolResultBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -263,7 +263,9 @@ interface SDKEvent {
 
 export default function Chat({ threadId, orgId, initialMessages, threadTitle }: ChatProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, currentOrg, loading: authLoading } = useAuth();
+  const isNewThreadParam = searchParams?.get('newThread') === '1';
   const parsedInitialMessages = useMemo(
     () => (initialMessages ?? []).map(msg => ({ ...msg, content: parseMessageContent(msg.content) })),
     [initialMessages]
@@ -369,11 +371,21 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     loadSessionState(threadId);
   }, [threadId, loadSessionState]);
 
+  useEffect(() => {
+    if (!isNewThreadParam || !threadId) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('newThread') !== '1') return;
+    url.searchParams.delete('newThread');
+    window.history.replaceState(null, '', url.toString());
+  }, [isNewThreadParam, threadId]);
+
   // Fetch messages from REST API
   const fetchMessages = useCallback(async (threadId: string, isReconnect = false) => {
     debugLog('fetchMessages:start', { threadId, isReconnect });
 
-    if (!isReconnect && initialMessagesRef.current?.threadId === threadId) {
+    // Only use initial messages if we actually have some - empty initialMessages from
+    // ?newThread=1 param (stale URL in new tab) should trigger a fresh fetch
+    if (!isReconnect && initialMessagesRef.current?.threadId === threadId && initialMessagesRef.current.messages.length > 0) {
       debugLog('fetchMessages:useInitial', {
         threadId,
         messageCount: initialMessagesRef.current.messages.length,
@@ -1119,7 +1131,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
     try {
       const thread = await createThreadAction({ session_id: newThreadId });
-      router.push(`/chat/${thread?.id || newThreadId}`);
+      router.push(`/chat/${thread?.id || newThreadId}?newThread=1`);
     } catch (err) {
       sessionStorage.removeItem('pendingMessage');
       setIsCreatingThread(false);
