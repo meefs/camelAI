@@ -141,6 +141,8 @@ function sessionFileExists(sessionId) {
 // Query options for Claude SDK
 function getQueryOptions(session) {
   const options = {
+    model: 'opus',
+    fallbackModel: 'sonnet',
     includePartialMessages: true,
     permissionMode: 'bypassPermissions',
     allowUnsandboxedCommands: true,
