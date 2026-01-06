@@ -121,7 +121,8 @@ async function download(targetDir) {
   console.error('[sync] Downloading snapshot...');
   const startTime = Date.now();
 
-  await clearDirectory(targetDir);
+  // Ensure target directory exists (but don't clear it - preserve files not in backup)
+  await fs.mkdir(targetDir, { recursive: true });
 
   const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
 
