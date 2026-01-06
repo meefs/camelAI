@@ -101,6 +101,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false); // Container is ready to receive messages
+  const [reconnecting, setReconnecting] = useState(false); // WebSocket is reconnecting
   const [error, setError] = useState<string | null>(null);
   const [welcomeInput, setWelcomeInput] = useState('');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
@@ -362,6 +363,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
         // Container is ready to receive messages
         debugLog('ws:ready', { threadId: id });
         setReady(true);
+        setReconnecting(false);
 
         // Send pending message if exists (from welcome screen or queued while disconnected)
         let storedMessage = pendingMessageRef.current;
@@ -427,6 +429,17 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
             setMessages(prev => prev.map(msg =>
               msg.id === msgId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
             ));
+          } else {
+            // No currentMessageUuidRef - try to restore from streaming message (reconnect scenario)
+            setMessages(prev => {
+              const streamingMsg = prev.find(m => m.isStreaming);
+              if (!streamingMsg) return prev;
+              // Restore the ref for future deltas
+              currentMessageUuidRef.current = streamingMsg.id;
+              return prev.map(msg =>
+                msg.id === streamingMsg.id ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+              );
+            });
           }
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
           // System init - just reset the streaming message ID
@@ -503,6 +516,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       if (reconnectAttempts.current < maxAttempts) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
         reconnectAttempts.current++;
+        setReconnecting(true);
         debugLog('ws:reconnectScheduled', { attempt: reconnectAttempts.current, delay });
         reconnectTimeoutRef.current = setTimeout(() => {
           // Check again that we haven't been superseded
@@ -1150,8 +1164,9 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                     onChange={setInput}
                     onSubmit={sendMessage}
                     onStop={stopGeneration}
-                    placeholder="Type a message..."
+                    placeholder={reconnecting ? "Reconnecting..." : "Type a message..."}
                     isAssistantRunning={loading || isStreaming}
+                    disabled={reconnecting}
                     autoFocus
                   />
                 </div>
