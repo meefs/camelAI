@@ -271,6 +271,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     [initialMessages]
   );
   const [messages, setMessages] = useState<Message[]>(parsedInitialMessages);
+  const [pendingMessages, setPendingMessages] = useState<Message[]>([]); // Messages sent while streaming
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false); // Container is ready to receive messages
@@ -614,6 +615,14 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
           setStreaming(prev => {
             if (prev.content.length > 0 && fallbackMsgId) {
               debugLog('ws:resultFinalize', { fallbackMsgId, contentLength: prev.content.length });
+              const assistantMsg: Message = {
+                id: fallbackMsgId,
+                thread_id: threadId || '',
+                role: 'assistant' as const,
+                content: prev.content,
+                created_at: Date.now(),
+              };
+              // Merge assistant message and any pending messages into main messages
               setMessages(msgs => {
                 const isDupe = msgs.some(m => m.id === fallbackMsgId);
                 debugLog('ws:addAssistantMessage', {
@@ -623,15 +632,17 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                   prevIds: msgs.map(m => m.id),
                 });
                 if (isDupe) return msgs;
-                return [...msgs, {
-                  id: fallbackMsgId,
-                  thread_id: threadId || '',
-                  role: 'assistant' as const,
-                  content: prev.content,
-                  created_at: Date.now(),
-                }];
+                return [...msgs, assistantMsg];
               });
             }
+            // Merge any pending messages that were sent during streaming
+            setPendingMessages(pending => {
+              if (pending.length > 0) {
+                debugLog('ws:mergePendingMessages', { count: pending.length });
+                setMessages(msgs => [...msgs, ...pending]);
+              }
+              return [];
+            });
             return { content: [], isStreaming: false, blockOffset: 0 };
           });
           currentMessageUuidRef.current = null;
@@ -1140,8 +1151,16 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     }
   }
 
+  function stopGeneration() {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    debugLog('stopGeneration', { threadId });
+    wsRef.current.send(JSON.stringify({ type: 'stop' }));
+  }
+
   function sendMessage() {
-    if (!input.trim() || !shouldShowChat || loading || !resolvedOrgId) {
+    if (!input.trim() || !shouldShowChat || !resolvedOrgId) {
       return;
     }
 
@@ -1162,16 +1181,19 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     pendingScrollMessageIdRef.current = userMsg.id;
     skipAutoScrollRef.current = true;
     debugLog('sendMessage:addUserMessage', { messageId: userMsg.id, threadId });
-    setMessages(prev => {
-      debugLog('sendMessage:prev', { prevCount: prev.length, prevIds: prev.map(m => m.id) });
-      return [...prev, userMsg];
-    });
+
+    // If there's active streaming, add to pendingMessages so it renders after streaming content
+    // Otherwise add directly to messages
+    if (streaming.content.length > 0 || streaming.isStreaming) {
+      debugLog('sendMessage:addToPending', { messageId: userMsg.id });
+      setPendingMessages(prev => [...prev, userMsg]);
+    } else {
+      setMessages(prev => [...prev, userMsg]);
+    }
 
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
-      setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
-      currentMessageUuidRef.current = null;
       wsRef.current.send(JSON.stringify({
         type: 'message',
         content: userMessage,
@@ -1343,13 +1365,61 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                       )}
 
                       {/* Loading indicator (when no streaming content yet) */}
-                      {loading && streaming.content.length === 0 && (
+                      {loading && streaming.content.length === 0 && pendingMessages.length === 0 && (
                         <div className="flex gap-1 py-2">
                           <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
                           <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
                           <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {/* Pending messages (sent while streaming) - render after streaming content */}
+                  {pendingMessages.map(msg => (
+                    <div
+                      key={msg.id}
+                      data-message-id={msg.id}
+                      className="group mt-6 mb-1"
+                    >
+                      <div className="flex flex-col items-end gap-1">
+                        <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
+                          <ContentBlockRenderer content={msg.content} />
+                        </div>
+                        <div
+                          className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+                          role="group"
+                          aria-label="Message actions"
+                        >
+                          <span className="text-muted-foreground text-xs mr-1">
+                            {formatMessageTime(msg.created_at)}
+                          </span>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                className="text-muted-foreground"
+                                onClick={() => copyMessage(msg.id, contentToString(msg.content))}
+                              >
+                                {copiedMessageId === msg.id ? <Check /> : <Copy />}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom">
+                              {copiedMessageId === msg.id ? 'Copied!' : 'Copy message'}
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Loading indicator for pending messages (only if not already showing streaming dots) */}
+                  {loading && pendingMessages.length > 0 && !streaming.isStreaming && (
+                    <div className="flex gap-1 py-2">
+                      <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                     </div>
                   )}
                   {shouldRenderSpacer ? (
@@ -1392,8 +1462,9 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                     value={input}
                     onChange={setInput}
                     onSubmit={sendMessage}
+                    onStop={stopGeneration}
                     placeholder="Type a message..."
-                    isLoading={loading}
+                    isAssistantRunning={loading || streaming.isStreaming}
                     autoFocus
                   />
                 </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import { ArrowUp } from 'lucide-react';
+import { ArrowUp, Square } from 'lucide-react';
 import {
   InputGroup,
   InputGroupAddon,
@@ -12,9 +12,11 @@ interface PromptInputProps {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
+  onStop?: () => void;
   placeholder?: string;
   disabled?: boolean;
   isLoading?: boolean;
+  isAssistantRunning?: boolean;
   minHeight?: string;
   className?: string;
   autoFocus?: boolean;
@@ -24,17 +26,22 @@ export function PromptInput({
   value,
   onChange,
   onSubmit,
+  onStop,
   placeholder = 'Type a message...',
   disabled = false,
   isLoading = false,
+  isAssistantRunning = false,
   minHeight = '44px',
   className,
   autoFocus = false,
 }: PromptInputProps) {
+  // Show stop button when assistant is running and input is empty
+  const showStopButton = isAssistantRunning && !value.trim() && onStop;
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (value.trim() && !disabled && !isLoading) {
+      if (value.trim() && !disabled) {
         onSubmit();
       }
     }
@@ -42,12 +49,21 @@ export function PromptInput({
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (value.trim() && !disabled && !isLoading) {
+    if (showStopButton) {
+      onStop?.();
+    } else if (value.trim() && !disabled) {
       onSubmit();
     }
   }
 
-  const isSubmitDisabled = disabled || isLoading || !value.trim();
+  function handleButtonClick(e: React.MouseEvent) {
+    if (showStopButton) {
+      e.preventDefault();
+      onStop?.();
+    }
+  }
+
+  const isSubmitDisabled = disabled || isLoading || (!showStopButton && !value.trim());
 
   return (
     <form onSubmit={handleSubmit} className={className}>
@@ -64,13 +80,14 @@ export function PromptInput({
         />
         <InputGroupAddon align="block-end" className="justify-end pb-3 pr-3">
           <InputGroupButton
-            type="submit"
+            type={showStopButton ? 'button' : 'submit'}
             size="icon-sm"
-            variant="default"
+            variant={showStopButton ? 'destructive' : 'default'}
             disabled={isSubmitDisabled}
+            onClick={handleButtonClick}
             className="rounded-full"
           >
-            <ArrowUp className="size-4" />
+            {showStopButton ? <Square className="size-3" /> : <ArrowUp className="size-4" />}
           </InputGroupButton>
         </InputGroupAddon>
       </InputGroup>
