@@ -28,130 +28,9 @@ export interface SDKEvent {
   };
 }
 
-export interface StreamingState {
-  content: ContentBlock[];
-  isStreaming: boolean;
-  blockOffset: number;
-}
-
-export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SDKEvent): StreamingState {
-  if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-    return { content: [], isStreaming: true, blockOffset: 0 };
-  }
-
-  if (sdkEvent.type !== 'stream_event') {
-    return prev;
-  }
-
-  const evt = sdkEvent.event;
-  if (evt?.type === 'message_start') {
-    return { ...prev, isStreaming: true, blockOffset: prev.content.length };
-  }
-
-  if (evt?.type === 'content_block_start') {
-    const block = evt.content_block;
-    const baseOffset = Number.isFinite(prev.blockOffset) ? prev.blockOffset : 0;
-    const index = typeof evt.index === 'number' ? baseOffset + evt.index : prev.content.length;
-    const newContent = [...prev.content];
-    if (block?.type === 'tool_use') {
-      newContent[index] = {
-        type: 'tool_use' as const,
-        id: block.id || '',
-        name: block.name || '',
-        input: {},
-      };
-      return { ...prev, isStreaming: true, content: newContent };
-    }
-    if (block?.type === 'text') {
-      newContent[index] = { type: 'text', text: block.text || '' };
-      return { ...prev, isStreaming: true, content: newContent };
-    }
-    if (block?.type === 'thinking') {
-      newContent[index] = { type: 'thinking', thinking: (block as { thinking?: string }).thinking || '' };
-      return { ...prev, isStreaming: true, content: newContent };
-    }
-    return { ...prev, isStreaming: true };
-  }
-
-  if (evt?.type === 'content_block_delta') {
-    if (evt.delta?.type === 'text_delta' && evt.delta.text) {
-      const newContent = [...prev.content];
-      const baseOffset = Number.isFinite(prev.blockOffset) ? prev.blockOffset : 0;
-      const index = typeof evt.index === 'number' ? baseOffset + evt.index : newContent.length - 1;
-      const target = newContent[index];
-      if (target?.type === 'text') {
-        newContent[index] = {
-          ...target,
-          text: (target.text || '') + evt.delta.text,
-        };
-      } else {
-        newContent[index] = { type: 'text', text: evt.delta.text };
-      }
-      return { ...prev, content: newContent };
-    }
-
-    if (evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
-      const newContent = [...prev.content];
-      const baseOffset = Number.isFinite(prev.blockOffset) ? prev.blockOffset : 0;
-      const index = typeof evt.index === 'number' ? baseOffset + evt.index : newContent.length - 1;
-      const target = newContent[index];
-      if (target && target.type === 'tool_use') {
-        const currentInput = (target as ContentBlock & { _inputJson?: string })._inputJson || '';
-        newContent[index] = {
-          ...target,
-          _inputJson: currentInput + evt.delta.partial_json,
-        } as ContentBlock & { _inputJson?: string };
-      }
-      return { ...prev, content: newContent };
-    }
-  }
-
-  if (evt?.type === 'content_block_stop') {
-    const newContent = prev.content.map(block => {
-      if (block.type === 'tool_use' && (block as ContentBlock & { _inputJson?: string })._inputJson) {
-        try {
-          const input = JSON.parse((block as ContentBlock & { _inputJson?: string })._inputJson || '');
-          const rest = { ...(block as ContentBlock & { _inputJson?: string }) };
-          delete (rest as { _inputJson?: string })._inputJson;
-          return { ...rest, input };
-        } catch {
-          return block;
-        }
-      }
-      return block;
-    });
-    return { ...prev, content: newContent };
-  }
-
-  if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
-    return { ...prev, isStreaming: false };
-  }
-
-  if (evt?.type === 'message_stop') {
-    return { ...prev, isStreaming: false };
-  }
-
-  return prev;
-}
-
-// Block offset tracking for message-based streaming
-const messageBlockOffsets = new Map<string, number>();
-
-export function getMessageBlockOffset(messageId: string): number {
-  return messageBlockOffsets.get(messageId) ?? 0;
-}
-
-export function setMessageBlockOffset(messageId: string, offset: number): void {
-  messageBlockOffsets.set(messageId, offset);
-}
-
-export function clearMessageBlockOffset(messageId: string): void {
-  messageBlockOffsets.delete(messageId);
-}
-
 /**
  * Apply an SDK event to a message's content, returning the updated message.
- * This is used when streaming is stored directly in the messages array.
+ * Uses message._blockOffset to track content block indices across streaming turns.
  */
 export function applyStreamingEventToMessage(
   message: Message,
@@ -163,8 +42,7 @@ export function applyStreamingEventToMessage(
     : [];
 
   if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-    setMessageBlockOffset(message.id, 0);
-    return { ...message, content: [], isStreaming: true };
+    return { ...message, content: [], isStreaming: true, _blockOffset: 0 };
   }
 
   if (sdkEvent.type !== 'stream_event') {
@@ -172,11 +50,10 @@ export function applyStreamingEventToMessage(
   }
 
   const evt = sdkEvent.event;
-  const blockOffset = getMessageBlockOffset(message.id);
+  const blockOffset = message._blockOffset ?? 0;
 
   if (evt?.type === 'message_start') {
-    setMessageBlockOffset(message.id, content.length);
-    return { ...message, isStreaming: true };
+    return { ...message, isStreaming: true, _blockOffset: content.length };
   }
 
   if (evt?.type === 'content_block_start') {
@@ -253,13 +130,15 @@ export function applyStreamingEventToMessage(
   }
 
   if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
-    clearMessageBlockOffset(message.id);
-    return { ...message, isStreaming: false };
+    // Clear internal offset when streaming completes
+    const { _blockOffset: _, ...rest } = message;
+    return { ...rest, isStreaming: false };
   }
 
   if (evt?.type === 'message_stop') {
-    clearMessageBlockOffset(message.id);
-    return { ...message, isStreaming: false };
+    // Clear internal offset when streaming completes
+    const { _blockOffset: _, ...rest } = message;
+    return { ...rest, isStreaming: false };
   }
 
   return message;

@@ -1,7 +1,7 @@
 'use client';
 
 import { Copy, Check } from 'lucide-react';
-import type { Message, ContentBlock } from '@/types';
+import type { Message, ContentBlock, ToolResultBlock } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -78,7 +78,7 @@ function ContentBlockRenderer({ content, isStreaming = false }: ContentBlockRend
     return null;
   }
 
-  const toolResultsById = new Map<string, ContentBlock>();
+  const toolResultsById = new Map<string, ToolResultBlock>();
   const toolUseIds = new Set<string>();
   content.forEach(block => {
     if (block.type === 'tool_result') {

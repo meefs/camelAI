@@ -1,6 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { applySdkEventToStreamingState } from '@/lib/streaming';
-import type { ContentBlock } from '@/types';
+import { applyStreamingEventToMessage } from '@/lib/streaming';
+import type { ContentBlock, Message } from '@/types';
+
+function createMessage(overrides: Partial<Message> = {}): Message {
+  return {
+    id: 'test-msg',
+    thread_id: 'test-thread',
+    role: 'assistant',
+    content: [],
+    created_at: Date.now(),
+    isStreaming: false,
+    ...overrides,
+  };
+}
 
 describe('Stream playback - streaming reducer', () => {
   it('builds text and tool_use blocks from stream events', () => {
@@ -32,12 +44,12 @@ describe('Stream playback - streaming reducer', () => {
       },
     ];
 
-    let state = { content: [] as ContentBlock[], isStreaming: false, blockOffset: 0 };
+    let message = createMessage();
     for (const event of events) {
-      state = applySdkEventToStreamingState(state, event);
+      message = applyStreamingEventToMessage(message, event);
     }
 
-    expect(state.content).toEqual([
+    expect(message.content).toEqual([
       { type: 'text', text: 'Hello world' },
       { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
     ]);
@@ -64,12 +76,12 @@ describe('Stream playback - streaming reducer', () => {
       },
     ];
 
-    let state = { content: [] as ContentBlock[], isStreaming: false, blockOffset: 0 };
+    let message = createMessage();
     for (const event of events) {
-      state = applySdkEventToStreamingState(state, event);
+      message = applyStreamingEventToMessage(message, event);
     }
 
-    expect(state.content).toEqual([
+    expect(message.content).toEqual([
       { type: 'text', text: 'First' },
       { type: 'text', text: 'Second' },
     ]);
@@ -92,13 +104,13 @@ describe('Stream playback - streaming reducer', () => {
       },
     ];
 
-    let state = { content: [] as ContentBlock[], isStreaming: false, blockOffset: 0 };
+    let message = createMessage();
     for (const event of events) {
-      state = applySdkEventToStreamingState(state, event);
+      message = applyStreamingEventToMessage(message, event);
     }
 
-    expect(state.isStreaming).toBe(false);
-    expect(state.content).toEqual([{ type: 'text', text: 'Done' }]);
+    expect(message.isStreaming).toBe(false);
+    expect(message.content).toEqual([{ type: 'text', text: 'Done' }]);
   });
 
   it('appends blocks across multiple message_start segments', () => {
@@ -138,12 +150,12 @@ describe('Stream playback - streaming reducer', () => {
       },
     ];
 
-    let state = { content: [] as ContentBlock[], isStreaming: false, blockOffset: 0 };
+    let message = createMessage();
     for (const event of events) {
-      state = applySdkEventToStreamingState(state, event);
+      message = applyStreamingEventToMessage(message, event);
     }
 
-    expect(state.content).toEqual([
+    expect(message.content).toEqual([
       { type: 'text', text: 'First message' },
       { type: 'text', text: 'Second message' },
     ]);
