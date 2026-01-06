@@ -33,11 +33,16 @@ function getStatusClass(status: ToolStatus) {
 function ToolCallSummary({
   tool,
   result,
+  isStreaming,
 }: {
   tool?: ToolUseBlock;
   result?: ToolResultBlock;
+  isStreaming?: boolean;
 }) {
-  const parts = useMemo(() => getToolSummaryParts(tool, result), [tool, result]);
+  const parts = useMemo(
+    () => getToolSummaryParts(tool, result, isStreaming),
+    [tool, result, isStreaming]
+  );
 
   if (!parts.path || !parts.filename) {
     return (
@@ -80,7 +85,7 @@ export function ToolCall({ tool, result, isStreaming, defaultExpanded = false }:
           }}
         >
           <span className={cn("tool-call__dot w-1.5 h-1.5 rounded-full shrink-0", getStatusClass(status))} />
-          <ToolCallSummary tool={tool} result={result} />
+          <ToolCallSummary tool={tool} result={result} isStreaming={isStreaming} />
           <ChevronRight
             className={cn(
               "tool-call__chevron ml-auto h-4 w-4 text-muted-foreground/50 opacity-0 transition-all duration-150",

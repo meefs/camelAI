@@ -33,7 +33,11 @@ export interface ToolSummaryParts {
   path?: string;
 }
 
-export function getToolSummaryParts(tool?: ToolUseBlock, result?: ToolResultBlock): ToolSummaryParts {
+export function getToolSummaryParts(
+  tool?: ToolUseBlock,
+  result?: ToolResultBlock,
+  isStreaming?: boolean
+): ToolSummaryParts {
   if (!tool) return { action: result ? 'Result' : 'Tool call' };
 
   const { name, input } = tool;
@@ -47,6 +51,9 @@ export function getToolSummaryParts(tool?: ToolUseBlock, result?: ToolResultBloc
           : typeof inputRecord.path === 'string'
             ? inputRecord.path
             : '';
+      if (isStreaming && !path) {
+        return { action: 'Reading file...' };
+      }
       return {
         action: 'Read',
         filename: path ? getFilename(path) : undefined,
@@ -60,6 +67,9 @@ export function getToolSummaryParts(tool?: ToolUseBlock, result?: ToolResultBloc
           : typeof inputRecord.path === 'string'
             ? inputRecord.path
             : '';
+      if (isStreaming && !path) {
+        return { action: 'Creating file...' };
+      }
       return {
         action: 'Created',
         filename: path ? getFilename(path) : undefined,
@@ -73,6 +83,9 @@ export function getToolSummaryParts(tool?: ToolUseBlock, result?: ToolResultBloc
           : typeof inputRecord.path === 'string'
             ? inputRecord.path
             : '';
+      if (isStreaming && !path) {
+        return { action: 'Editing file...' };
+      }
       return {
         action: 'Edited',
         filename: path ? getFilename(path) : undefined,
@@ -82,6 +95,9 @@ export function getToolSummaryParts(tool?: ToolUseBlock, result?: ToolResultBloc
     case 'Bash': {
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
       const command = typeof inputRecord.command === 'string' ? inputRecord.command : '';
+      if (isStreaming && !description && !command) {
+        return { action: 'Running command...' };
+      }
       return {
         action: description
           ? `Ran ${description}`
@@ -96,6 +112,9 @@ export function getToolSummaryParts(tool?: ToolUseBlock, result?: ToolResultBloc
       const count = parseCountFromResult(result);
       if (count !== null) return { action: `Found ${count} matches` };
       const pattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
+      if (isStreaming && !pattern) {
+        return { action: 'Searching...' };
+      }
       return { action: `Searching for "${truncate(pattern || 'pattern', 20)}"...` };
     }
     case 'Task': {
@@ -105,6 +124,9 @@ export function getToolSummaryParts(tool?: ToolUseBlock, result?: ToolResultBloc
     }
     case 'WebFetch': {
       const url = typeof inputRecord.url === 'string' ? inputRecord.url : '';
+      if (isStreaming && !url) {
+        return { action: 'Fetching page...' };
+      }
       return { action: `Fetched ${url ? getHostname(url) : 'web page'}` };
     }
     case 'WebSearch':
@@ -122,8 +144,12 @@ export function getToolSummaryParts(tool?: ToolUseBlock, result?: ToolResultBloc
   }
 }
 
-export function getToolSummary(tool?: ToolUseBlock, result?: ToolResultBlock): string {
-  const parts = getToolSummaryParts(tool, result);
+export function getToolSummary(
+  tool?: ToolUseBlock,
+  result?: ToolResultBlock,
+  isStreaming?: boolean
+): string {
+  const parts = getToolSummaryParts(tool, result, isStreaming);
   if (parts.filename) {
     return `${parts.action} ${parts.filename}`;
   }
