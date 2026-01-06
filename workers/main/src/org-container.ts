@@ -118,28 +118,20 @@ function generateContainerToken(): string {
   return `ctok_${base64}`;
 }
 
+// TTL for deploy tokens (24 hours in seconds)
+const TOKEN_TTL_SECONDS = 86400;
+
 /**
- * Get or create a deploy token for an org's container.
+ * Create a deploy token for an org's container.
+ * Always generates a fresh token with TTL - no reuse of existing tokens.
+ * Stores token → orgId mapping; prefix is derived at deploy time.
  */
-async function getOrCreateContainerToken(
+async function createContainerToken(
   kv: KVNamespace,
-  org: string
+  orgId: string
 ): Promise<string> {
-  const orgPrefix = org.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
-  const prefixKey = `platform_script_prefix:${orgPrefix}`;
-  const existingTokenKey = `container_token:${org}`;
-  const existingToken = await kv.get(existingTokenKey);
-  if (existingToken) {
-    await kv.put(prefixKey, org);
-    return existingToken;
-  }
-
   const token = generateContainerToken();
-
-  await kv.put(`platform_script_token:${token}`, orgPrefix);
-  await kv.put(prefixKey, org);
-  await kv.put(existingTokenKey, token);
-
+  await kv.put(`platform_script_token:${token}`, orgId, { expirationTtl: TOKEN_TTL_SECONDS });
   return token;
 }
 
@@ -232,7 +224,7 @@ export class OrgContainer extends Container<OrgContainerEnv> {
       envVars.WORKER_BASE_URL = this.env.WORKER_BASE_URL;
       envVars.CLOUDFLARE_API_BASE_URL = `${this.env.WORKER_BASE_URL}/client/v4`;
 
-      const containerToken = await getOrCreateContainerToken(this.env.EMAIL_TO_USER, orgId);
+      const containerToken = await createContainerToken(this.env.EMAIL_TO_USER, orgId);
       envVars.CLOUDFLARE_API_TOKEN = containerToken;
     }
 

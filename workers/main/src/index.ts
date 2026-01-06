@@ -175,32 +175,10 @@ function deriveOrgPrefix(orgId: string): string {
   return orgId.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
-async function resolveOrgContext(tokenKv: KVNamespace, tokenValue: string): Promise<{ orgPrefix: string; orgId: string | null }> {
-  let orgPrefix = tokenValue;
-  let orgId: string | null = null;
-
-  if (tokenValue.trim().startsWith('{')) {
-    try {
-      const parsed = JSON.parse(tokenValue) as { orgId?: string; orgPrefix?: string };
-      if (parsed.orgId) {
-        orgId = parsed.orgId;
-        orgPrefix = parsed.orgPrefix ?? deriveOrgPrefix(parsed.orgId);
-      } else if (parsed.orgPrefix) {
-        orgPrefix = parsed.orgPrefix;
-      }
-    } catch {
-      // fall back to treating token value as prefix
-      orgPrefix = tokenValue;
-    }
-  }
-
-  if (!orgId) {
-    const mappedOrgId = await tokenKv.get(`platform_script_prefix:${orgPrefix}`);
-    if (mappedOrgId) {
-      orgId = mappedOrgId;
-    }
-  }
-
+function resolveOrgContext(tokenValue: string): { orgPrefix: string; orgId: string } {
+  // Token value is the orgId; derive prefix from it
+  const orgId = tokenValue;
+  const orgPrefix = deriveOrgPrefix(orgId);
   return { orgPrefix, orgId };
 }
 
@@ -371,7 +349,7 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     });
     return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
   }
-  const { orgPrefix, orgId } = await resolveOrgContext(tokenKv, tokenValue);
+  const { orgPrefix, orgId } = resolveOrgContext(tokenValue);
 
   const accountId = env.CF_ACCOUNT_ID?.trim();
   const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
@@ -530,27 +508,18 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
       const account = decodeURIComponent(scriptMatch[1]!);
       const dispatchNs = decodeURIComponent(scriptMatch[2]!);
       const scriptName = decodeURIComponent(scriptMatch[3]!);
-      if (!orgId) {
-        console.warn('[cf-api-proxy] unable to resolve org for script secrets sync', {
-          account,
-          dispatchNamespace: dispatchNs,
-          scriptName,
-          orgPrefix,
-        });
-      } else {
-        ctx.waitUntil(
-          syncDispatchScriptSecrets(env, orgId, account, dispatchNs, scriptName, upstreamApiToken)
-            .catch(err => {
-              console.error('[cf-api-proxy] failed to sync script secrets', {
-                account,
-                dispatchNamespace: dispatchNs,
-                scriptName,
-                orgId,
-                error: String(err),
-              });
-            })
-        );
-      }
+      ctx.waitUntil(
+        syncDispatchScriptSecrets(env, orgId, account, dispatchNs, scriptName, upstreamApiToken)
+          .catch(err => {
+            console.error('[cf-api-proxy] failed to sync script secrets', {
+              account,
+              dispatchNamespace: dispatchNs,
+              scriptName,
+              orgId,
+              error: String(err),
+            });
+          })
+      );
     }
   }
 
@@ -668,8 +637,8 @@ export default {
 
       const token = authHeader.slice(7);
       const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-      const orgPrefix = await tokenKv.get(`platform_script_token:${token}`);
-      if (!orgPrefix) {
+      const orgId = await tokenKv.get(`platform_script_token:${token}`);
+      if (!orgId) {
         return new Response(JSON.stringify({ error: 'Invalid token' }), {
           status: 401,
           headers: { 'Content-Type': 'application/json' },
@@ -686,15 +655,31 @@ export default {
           });
         }
 
+        // Prefix worker names with org prefix
+        const orgPrefix = deriveOrgPrefix(orgId);
+        const prefixedWorkers = body.workers.map(name => {
+          const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+          return `${orgPrefix}-${safeName}`.slice(0, 63);
+        });
+
         const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
         const response = await threadStub.fetch(new Request('http://internal/preview', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workers: body.workers }),
+          body: JSON.stringify({ workers: prefixedWorkers }),
         }));
 
-        return new Response(response.body, {
-          status: response.status,
+        if (!response.ok) {
+          return new Response(response.body, {
+            status: response.status,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Return full URLs for the deployed workers
+        const urls = prefixedWorkers.map(w => `https://${w}.chiridion.ai`);
+        return new Response(JSON.stringify({ workers: prefixedWorkers, urls }), {
+          status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       } catch (e) {
