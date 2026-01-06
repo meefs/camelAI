@@ -27,7 +27,7 @@ import { Button } from '@/components/ui/button';
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
 import { cn } from '@/lib/utils';
-import { applyStreamingEventToMessage } from '@/lib/streaming';
+import { applyStreamingEventToMessage, type SDKEvent } from '@/lib/streaming';
 import {
   createThread as createThreadAction,
   getThreadMessages,
@@ -87,40 +87,6 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
   return content;
 }
 
-// SDK event types
-interface SDKEvent {
-  type: string;
-  subtype?: string;
-  message?: {
-    content: ContentBlock[];
-    stop_reason?: string | null;
-  };
-  result?: string;
-  tool?: {
-    name: string;
-    input?: Record<string, unknown>;
-  };
-  // For stream_event types
-  event?: {
-    type: string;
-    index?: number;
-    message?: {
-      id?: string;
-    };
-    delta?: {
-      type?: string;
-      text?: string;
-      stop_reason?: string;
-      partial_json?: string;
-    };
-    content_block?: {
-      type: string;
-      text?: string;
-      id?: string;
-      name?: string;
-    };
-  };
-}
 
 export default function Chat({ threadId, orgId, initialMessages, threadTitle }: ChatProps) {
   const router = useRouter();
