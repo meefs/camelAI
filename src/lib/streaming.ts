@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@/types';
+import type { ContentBlock, Message } from '@/types';
 
 export interface SDKEvent {
   type: string;
@@ -28,31 +28,39 @@ export interface SDKEvent {
   };
 }
 
-export interface StreamingState {
-  content: ContentBlock[];
-  isStreaming: boolean;
-  blockOffset: number;
-}
+/**
+ * Apply an SDK event to a message's content, returning the updated message.
+ * Uses message._blockOffset to track content block indices across streaming turns.
+ */
+export function applyStreamingEventToMessage(
+  message: Message,
+  sdkEvent: SDKEvent
+): Message {
+  // Ensure content is an array
+  const content: ContentBlock[] = Array.isArray(message.content)
+    ? message.content
+    : [];
 
-export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SDKEvent): StreamingState {
   if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-    return { content: [], isStreaming: true, blockOffset: 0 };
+    return { ...message, content: [], isStreaming: true, _blockOffset: 0 };
   }
 
   if (sdkEvent.type !== 'stream_event') {
-    return prev;
+    return message;
   }
 
   const evt = sdkEvent.event;
+  const blockOffset = message._blockOffset ?? 0;
+
   if (evt?.type === 'message_start') {
-    return { ...prev, isStreaming: true, blockOffset: prev.content.length };
+    return { ...message, isStreaming: true, _blockOffset: content.length };
   }
 
   if (evt?.type === 'content_block_start') {
     const block = evt.content_block;
-    const baseOffset = Number.isFinite(prev.blockOffset) ? prev.blockOffset : 0;
-    const index = typeof evt.index === 'number' ? baseOffset + evt.index : prev.content.length;
-    const newContent = [...prev.content];
+    const index = typeof evt.index === 'number' ? blockOffset + evt.index : content.length;
+    const newContent = [...content];
+
     if (block?.type === 'tool_use') {
       newContent[index] = {
         type: 'tool_use' as const,
@@ -60,24 +68,23 @@ export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SD
         name: block.name || '',
         input: {},
       };
-      return { ...prev, isStreaming: true, content: newContent };
+      return { ...message, content: newContent, isStreaming: true };
     }
     if (block?.type === 'text') {
       newContent[index] = { type: 'text', text: block.text || '' };
-      return { ...prev, isStreaming: true, content: newContent };
+      return { ...message, content: newContent, isStreaming: true };
     }
     if (block?.type === 'thinking') {
       newContent[index] = { type: 'thinking', thinking: (block as { thinking?: string }).thinking || '' };
-      return { ...prev, isStreaming: true, content: newContent };
+      return { ...message, content: newContent, isStreaming: true };
     }
-    return { ...prev, isStreaming: true };
+    return { ...message, isStreaming: true };
   }
 
   if (evt?.type === 'content_block_delta') {
     if (evt.delta?.type === 'text_delta' && evt.delta.text) {
-      const newContent = [...prev.content];
-      const baseOffset = Number.isFinite(prev.blockOffset) ? prev.blockOffset : 0;
-      const index = typeof evt.index === 'number' ? baseOffset + evt.index : newContent.length - 1;
+      const newContent = [...content];
+      const index = typeof evt.index === 'number' ? blockOffset + evt.index : newContent.length - 1;
       const target = newContent[index];
       if (target?.type === 'text') {
         newContent[index] = {
@@ -87,13 +94,12 @@ export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SD
       } else {
         newContent[index] = { type: 'text', text: evt.delta.text };
       }
-      return { ...prev, content: newContent };
+      return { ...message, content: newContent };
     }
 
     if (evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
-      const newContent = [...prev.content];
-      const baseOffset = Number.isFinite(prev.blockOffset) ? prev.blockOffset : 0;
-      const index = typeof evt.index === 'number' ? baseOffset + evt.index : newContent.length - 1;
+      const newContent = [...content];
+      const index = typeof evt.index === 'number' ? blockOffset + evt.index : newContent.length - 1;
       const target = newContent[index];
       if (target && target.type === 'tool_use') {
         const currentInput = (target as ContentBlock & { _inputJson?: string })._inputJson || '';
@@ -102,12 +108,12 @@ export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SD
           _inputJson: currentInput + evt.delta.partial_json,
         } as ContentBlock & { _inputJson?: string };
       }
-      return { ...prev, content: newContent };
+      return { ...message, content: newContent };
     }
   }
 
   if (evt?.type === 'content_block_stop') {
-    const newContent = prev.content.map(block => {
+    const newContent = content.map(block => {
       if (block.type === 'tool_use' && (block as ContentBlock & { _inputJson?: string })._inputJson) {
         try {
           const input = JSON.parse((block as ContentBlock & { _inputJson?: string })._inputJson || '');
@@ -120,16 +126,20 @@ export function applySdkEventToStreamingState(prev: StreamingState, sdkEvent: SD
       }
       return block;
     });
-    return { ...prev, content: newContent };
+    return { ...message, content: newContent };
   }
 
   if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
-    return { ...prev, isStreaming: false };
+    // Clear internal offset when streaming completes
+    const { _blockOffset: _, ...rest } = message;
+    return { ...rest, isStreaming: false };
   }
 
   if (evt?.type === 'message_stop') {
-    return { ...prev, isStreaming: false };
+    // Clear internal offset when streaming completes
+    const { _blockOffset: _, ...rest } = message;
+    return { ...rest, isStreaming: false };
   }
 
-  return prev;
+  return message;
 }

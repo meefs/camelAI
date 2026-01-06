@@ -39,6 +39,9 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string | ContentBlock[];
   created_at: number;
+  isStreaming?: boolean;
+  /** @internal Block offset for streaming, cleared when done */
+  _blockOffset?: number;
 }
 
 export interface SandboxFileInfo {

@@ -297,9 +297,14 @@ function startEventLoop(session) {
           syncWorkspace();
         }
 
-        // Result means query is complete (this turn/message is done)
+        // Result means this turn is done - but keep loop alive if sockets connected or messages pending
         if (event.type === 'result') {
-          break;
+          const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
+          const hasPendingMessages = session.messageQueue.length > 0;
+          if (!hasConnections && !hasPendingMessages) {
+            break;
+          }
+          // Continue looping - generator will yield queued message or wait for new one
         }
       }
     } catch (e) {

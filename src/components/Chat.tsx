@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 
 // Debug logging for message state changes
 const DEBUG_MESSAGES = true;
@@ -12,8 +12,8 @@ const debugLog = (context: string, data: Record<string, unknown>) => {
   }, null, 2));
 };
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowDown, Copy, Check, RefreshCw, ExternalLink, X } from 'lucide-react';
-import type { Message, ContentBlock, ToolResultBlock } from '@/types';
+import { ArrowDown, RefreshCw, ExternalLink, X } from 'lucide-react';
+import type { Message, ContentBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   Tooltip,
@@ -24,10 +24,10 @@ import {
 import { PageHeader } from '@/components/page-header';
 import { PromptInput } from '@/components/prompt-input';
 import { Button } from '@/components/ui/button';
-import { MarkdownRenderer } from '@/components/markdown-renderer';
-import { ThinkingBlock, ToolCall } from '@/components/tool-call';
+import { MessageBubble } from '@/components/message-bubble';
+import { LoadingDots } from '@/components/loading-dots';
 import { cn } from '@/lib/utils';
-import { applySdkEventToStreamingState, type StreamingState } from '@/lib/streaming';
+import { applyStreamingEventToMessage, type SDKEvent } from '@/lib/streaming';
 import {
   createThread as createThreadAction,
   getThreadMessages,
@@ -38,15 +38,6 @@ interface ChatProps {
   orgId: string;
   initialMessages?: Message[];
   threadTitle?: string | null;
-}
-
-// Format timestamp to readable time (e.g., "12:25 PM")
-function formatMessageTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString([], {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  });
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -68,38 +59,6 @@ function coerceContentBlocks(value: unknown): ContentBlock[] | null {
   if (Array.isArray(value) && value.every(isContentBlock)) return value;
   if (isContentBlock(value)) return [value];
   return null;
-}
-
-function normalizeToolResultContent(content: unknown): string {
-  if (typeof content === 'string') return content;
-  const blocks = coerceContentBlocks(content);
-  if (blocks) {
-    return blocks
-      .map(block => {
-        if (block.type === 'text') return block.text;
-        if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
-        if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${safeJsonStringify(block.input)}`;
-        if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
-        return safeJsonStringify(block);
-      })
-      .filter(Boolean)
-      .join('\n\n');
-  }
-  return safeJsonStringify(content);
-}
-
-// Convert content to string for copy functionality
-function contentToString(content: string | ContentBlock[]): string {
-  if (typeof content === 'string') return content;
-  return content
-    .map(block => {
-      if (block.type === 'text') return block.text;
-      if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
-      if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
-      if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
-      return '';
-    })
-    .join('\n\n');
 }
 
 // Parse message content - handles both plain string and JSON-encoded ContentBlock[]
@@ -128,138 +87,6 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
   return content;
 }
 
-// Render content blocks with proper styling
-function ContentBlockRenderer({ content, isStreaming = false }: { content: string | ContentBlock[]; isStreaming?: boolean }) {
-  // String content - render as markdown
-  if (typeof content === 'string') {
-    return <MarkdownRenderer content={content} isStreaming={isStreaming} />;
-  }
-
-  const toolResultsById = new Map<string, ToolResultBlock>();
-  const toolUseIds = new Set<string>();
-  content.forEach(block => {
-    if (block.type === 'tool_result') {
-      toolResultsById.set(block.tool_use_id, block);
-    }
-    if (block.type === 'tool_use') {
-      toolUseIds.add(block.id);
-    }
-  });
-  const items: Array<{ kind: 'tool' | 'other'; node: ReactNode; key: string }> = [];
-
-  content.forEach((block, index) => {
-    if (block.type === 'text') {
-      items.push({
-        kind: 'other',
-        key: `text-${index}`,
-        node: (
-          <div className="max-w-none">
-            <MarkdownRenderer content={block.text} isStreaming={isStreaming} />
-          </div>
-        ),
-      });
-      return;
-    }
-
-    if (block.type === 'thinking') {
-      items.push({
-        kind: 'other',
-        key: `thinking-${index}`,
-        node: <ThinkingBlock thinking={block.thinking} />,
-      });
-      return;
-    }
-
-    if (block.type === 'tool_use') {
-      const result = toolResultsById.get(block.id);
-      items.push({
-        kind: 'tool',
-        key: `tool-${block.id || index}`,
-        node: <ToolCall tool={block} result={result} isStreaming={isStreaming} />,
-      });
-      return;
-    }
-
-    if (block.type === 'tool_result') {
-      if (toolUseIds.has(block.tool_use_id)) return;
-      items.push({
-        kind: 'tool',
-        key: `result-${block.tool_use_id || index}`,
-        node: <ToolCall result={block} isStreaming={isStreaming} />,
-      });
-    }
-  });
-
-  const sections: ReactNode[] = [];
-  let toolGroup: ReactNode[] = [];
-  let toolGroupKey = '';
-
-  items.forEach((item, index) => {
-    if (item.kind === 'tool') {
-      if (!toolGroup.length) toolGroupKey = `tools-${item.key}-${index}`;
-      toolGroup.push(<div key={item.key}>{item.node}</div>);
-      return;
-    }
-
-    if (toolGroup.length) {
-      sections.push(
-        <div key={toolGroupKey} className="space-y-1">
-          {toolGroup}
-        </div>
-      );
-      toolGroup = [];
-    }
-
-    sections.push(
-      <div key={item.key}>{item.node}</div>
-    );
-  });
-
-  if (toolGroup.length) {
-    sections.push(
-      <div key={toolGroupKey || 'tools-final'} className="space-y-1">
-        {toolGroup}
-      </div>
-    );
-  }
-
-  return <div className="space-y-4">{sections}</div>;
-}
-
-// SDK event types (ContentBlock imported from @/types)
-interface SDKEvent {
-  type: string;
-  subtype?: string;
-  message?: {
-    content: ContentBlock[];
-    stop_reason?: string | null;
-  };
-  result?: string;
-  tool?: {
-    name: string;
-    input?: Record<string, unknown>;
-  };
-  // For stream_event types
-  event?: {
-    type: string;
-    index?: number;
-    message?: {
-      id?: string;
-    };
-    delta?: {
-      type?: string;
-      text?: string;
-      stop_reason?: string;
-      partial_json?: string;
-    };
-    content_block?: {
-      type: string;
-      text?: string;
-      id?: string;
-      name?: string;
-    };
-  };
-}
 
 export default function Chat({ threadId, orgId, initialMessages, threadTitle }: ChatProps) {
   const router = useRouter();
@@ -274,7 +101,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false); // Container is ready to receive messages
-  const [streaming, setStreaming] = useState<StreamingState>({ content: [], isStreaming: false, blockOffset: 0 });
+  const [reconnecting, setReconnecting] = useState(false); // WebSocket is reconnecting
   const [error, setError] = useState<string | null>(null);
   const [welcomeInput, setWelcomeInput] = useState('');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
@@ -451,8 +278,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     }
 
     setReady(false);
-    // Clear streaming state on any connection to prevent stale content
-    setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
+    // Clear any streaming message on reconnect
     currentMessageUuidRef.current = null;
     if (!isReconnect) {
       reconnectAttempts.current = 0;
@@ -537,6 +363,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
         // Container is ready to receive messages
         debugLog('ws:ready', { threadId: id });
         setReady(true);
+        setReconnecting(false);
 
         // Send pending message if exists (from welcome screen or queued while disconnected)
         let storedMessage = pendingMessageRef.current;
@@ -557,8 +384,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
           // Message was already added optimistically in connectWebSocket, just send it
           debugLog('ws:sendPendingMessage', { threadId: id });
           setLoading(true);
-          setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
-          currentMessageUuidRef.current = null;
           ws.send(JSON.stringify({
             type: 'message',
             content: storedMessage,
@@ -576,24 +401,51 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
           persistSessionState(threadId);
         }
       } else if (data.type === 'sdk_event') {
-        // Handle SDK events for streaming
+        // Handle SDK events for streaming - streaming is now stored directly in messages
         const sdkEvent = data.event as SDKEvent;
 
         if (sdkEvent.type === 'stream_event') {
           const evt = sdkEvent.event;
           if (evt?.type === 'message_start') {
-            const msgId = evt.message?.id;
-            const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
-            if (msgId || sdkUuid) {
-              currentMessageUuidRef.current = msgId || sdkUuid || null;
-            }
+            // Add new assistant message with isStreaming: true
+            const msgId = evt.message?.id || (sdkEvent as { uuid?: string }).uuid || `stream_${Date.now()}`;
+            currentMessageUuidRef.current = msgId;
+            debugLog('ws:messageStart', { msgId });
+            setMessages(prev => {
+              // Check if message already exists (e.g., from reconnect replay)
+              if (prev.some(m => m.id === msgId)) return prev;
+              return [...prev, {
+                id: msgId,
+                thread_id: threadId || '',
+                role: 'assistant' as const,
+                content: [],
+                created_at: Date.now(),
+                isStreaming: true,
+              }];
+            });
+          } else if (currentMessageUuidRef.current) {
+            // Apply streaming delta to the current message
+            const msgId = currentMessageUuidRef.current;
+            setMessages(prev => prev.map(msg =>
+              msg.id === msgId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+            ));
+          } else {
+            // No currentMessageUuidRef - try to restore from streaming message (reconnect scenario)
+            setMessages(prev => {
+              const streamingMsg = prev.find(m => m.isStreaming);
+              if (!streamingMsg) return prev;
+              // Restore the ref for future deltas
+              currentMessageUuidRef.current = streamingMsg.id;
+              return prev.map(msg =>
+                msg.id === streamingMsg.id ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+              );
+            });
           }
-          // Apply streaming deltas in a shared reducer for consistency/testing
-          setStreaming(prev => applySdkEventToStreamingState(prev, sdkEvent));
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-          setStreaming(prev => applySdkEventToStreamingState(prev, sdkEvent));
+          // System init - just reset the streaming message ID
+          currentMessageUuidRef.current = null;
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
-          // Track message ID as fallback; content is handled via stream_event only.
+          // Track message ID as fallback
           if (!currentMessageUuidRef.current) {
             const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
             const sdkMsgId = (sdkEvent.message as { id?: string }).id;
@@ -602,45 +454,38 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
             }
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
-          // Append user content blocks (tool_result) to current content
-          setStreaming(prev => ({
-            ...prev,
-            content: [...prev.content, ...sdkEvent.message!.content],
-          }));
+          // Append user content blocks (tool_result) to current streaming message
+          const msgId = currentMessageUuidRef.current;
+          if (msgId) {
+            setMessages(prev => prev.map(msg => {
+              if (msg.id !== msgId) return msg;
+              const content = Array.isArray(msg.content) ? msg.content : [];
+              return { ...msg, content: [...content, ...sdkEvent.message!.content] };
+            }));
+          }
         } else if (sdkEvent.type === 'result') {
-          // Query complete - commit accumulated streaming content as a single assistant message.
-          const fallbackMsgId = currentMessageUuidRef.current || (sdkEvent as { uuid?: string }).uuid || null;
-          debugLog('ws:result', { fallbackMsgId });
-          setStreaming(prev => {
-            if (prev.content.length > 0 && fallbackMsgId) {
-              debugLog('ws:resultFinalize', { fallbackMsgId, contentLength: prev.content.length });
-              setMessages(msgs => {
-                const isDupe = msgs.some(m => m.id === fallbackMsgId);
-                debugLog('ws:addAssistantMessage', {
-                  fallbackMsgId,
-                  isDupe,
-                  prevCount: msgs.length,
-                  prevIds: msgs.map(m => m.id),
-                });
-                if (isDupe) return msgs;
-                return [...msgs, {
-                  id: fallbackMsgId,
-                  thread_id: threadId || '',
-                  role: 'assistant' as const,
-                  content: prev.content,
-                  created_at: Date.now(),
-                }];
-              });
-            }
-            return { content: [], isStreaming: false, blockOffset: 0 };
-          });
+          // Query complete - mark message as not streaming
+          const msgId = currentMessageUuidRef.current;
+          debugLog('ws:result', { msgId });
+          if (msgId) {
+            setMessages(prev => prev.map(msg =>
+              msg.id === msgId ? { ...msg, isStreaming: false } : msg
+            ));
+          }
           currentMessageUuidRef.current = null;
           setLoading(false);
         }
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
         setError(data.error || 'An unknown error occurred');
-        setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
+        // Mark any streaming message as not streaming
+        if (currentMessageUuidRef.current) {
+          const msgId = currentMessageUuidRef.current;
+          setMessages(prev => prev.map(msg =>
+            msg.id === msgId ? { ...msg, isStreaming: false } : msg
+          ));
+          currentMessageUuidRef.current = null;
+        }
         setLoading(false);
       }
     };
@@ -671,6 +516,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       if (reconnectAttempts.current < maxAttempts) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
         reconnectAttempts.current++;
+        setReconnecting(true);
         debugLog('ws:reconnectScheduled', { attempt: reconnectAttempts.current, delay });
         reconnectTimeoutRef.current = setTimeout(() => {
           // Check again that we haven't been superseded
@@ -845,7 +691,8 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
   const lastMessage = messages[messages.length - 1];
-  const showAssistantTail = loading || streaming.content.length > 0;
+  const isStreaming = messages.some(m => m.isStreaming);
+  const showAssistantTail = loading || isStreaming;
   const isAwaitingAssistant = showAssistantTail && lastMessage?.role === 'user';
   const lastUserMessage = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -966,7 +813,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   useLayoutEffect(() => {
     if (!shouldShowChat || !threadId) return;
     if (initialScrollDoneRef.current) return;
-    if (messages.length === 0 && streaming.content.length === 0) return;
+    if (messages.length === 0) return;
 
     if (shouldAnchorToLastMessage && lastMessage) {
       const container = scrollContainerRef.current;
@@ -981,7 +828,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     }
     setShowScrollButton(false);
     initialScrollDoneRef.current = true;
-  }, [shouldShowChat, threadId, messages.length, streaming.content.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage?.id]);
+  }, [shouldShowChat, threadId, messages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage?.id]);
 
   useLayoutEffect(() => {
     if (!shouldRenderSpacer) return;
@@ -1059,7 +906,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       }
       observer.disconnect();
     };
-  }, [shouldRenderSpacer, isAwaitingAssistant, lastMessage?.id, lastUserMessage?.id, messages.length, streaming.content.length, loading]);
+  }, [shouldRenderSpacer, isAwaitingAssistant, lastMessage?.id, lastUserMessage?.id, messages.length, isStreaming, loading]);
 
   useEffect(() => {
     const messageId = pendingScrollMessageIdRef.current;
@@ -1107,7 +954,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     if (distanceFromBottom < 150) {
       scrollToBottom();
     }
-  }, [messages, streaming.content, scrollToBottom]);
+  }, [messages, scrollToBottom]);
 
   const copyMessage = useCallback(async (messageId: string, content: string) => {
     try {
@@ -1140,8 +987,16 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     }
   }
 
+  function stopGeneration() {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    debugLog('stopGeneration', { threadId });
+    wsRef.current.send(JSON.stringify({ type: 'stop' }));
+  }
+
   function sendMessage() {
-    if (!input.trim() || !shouldShowChat || loading || !resolvedOrgId) {
+    if (!input.trim() || !shouldShowChat || !resolvedOrgId) {
       return;
     }
 
@@ -1162,16 +1017,13 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     pendingScrollMessageIdRef.current = userMsg.id;
     skipAutoScrollRef.current = true;
     debugLog('sendMessage:addUserMessage', { messageId: userMsg.id, threadId });
-    setMessages(prev => {
-      debugLog('sendMessage:prev', { prevCount: prev.length, prevIds: prev.map(m => m.id) });
-      return [...prev, userMsg];
-    });
+
+    // Add user message to messages - it naturally appears after any streaming message
+    setMessages(prev => [...prev, userMsg]);
 
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
       setLoading(true);
-      setStreaming({ content: [], isStreaming: false, blockOffset: 0 });
-      currentMessageUuidRef.current = null;
       wsRef.current.send(JSON.stringify({
         type: 'message',
         content: userMessage,
@@ -1235,71 +1087,11 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                         data-message-id={msg.id}
                         className={cn("group", msg.role === 'user' ? "mt-6 mb-1" : "")}
                       >
-                      {msg.role === 'user' ? (
-                        /* User message - right aligned with bubble and hover actions */
-                        <div className="flex flex-col items-end gap-1">
-                          <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
-                            <ContentBlockRenderer content={msg.content} />
-                          </div>
-                          {/* Hover action row */}
-                          <div
-                            className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
-                            role="group"
-                            aria-label="Message actions"
-                          >
-                            <span className="text-muted-foreground text-xs mr-1">
-                              {formatMessageTime(msg.created_at)}
-                            </span>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  className="text-muted-foreground"
-                                  onClick={() => copyMessage(msg.id, contentToString(msg.content))}
-                                >
-                                  {copiedMessageId === msg.id ? <Check /> : <Copy />}
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent side="bottom">
-                                {copiedMessageId === msg.id ? 'Copied!' : 'Copy message'}
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
-                        </div>
-                      ) : (
-                        /* Assistant message - full width, no bubble, with hover actions */
-                        <div className="flex flex-col gap-1">
-                          <div className="max-w-none">
-                            <ContentBlockRenderer content={msg.content} />
-                          </div>
-                          {/* Hover action row */}
-                          <div
-                            className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
-                            role="group"
-                            aria-label="Message actions"
-                          >
-                            <span className="text-muted-foreground text-xs mr-1">
-                              {formatMessageTime(msg.created_at)}
-                            </span>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  className="text-muted-foreground"
-                                  onClick={() => copyMessage(msg.id, contentToString(msg.content))}
-                                >
-                                  {copiedMessageId === msg.id ? <Check /> : <Copy />}
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent side="bottom">
-                                {copiedMessageId === msg.id ? 'Copied!' : 'Copy message'}
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
-                        </div>
-                      )}
+                        <MessageBubble
+                          message={msg}
+                          onCopy={copyMessage}
+                          copiedId={copiedMessageId}
+                        />
                       </div>
                     );
                   })}
@@ -1326,31 +1118,10 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                       </div>
                     </div>
                   )}
-                  {isAwaitingAssistant && showAssistantTail && (
-                    <div ref={assistantMeasureRef} className="pt-6 pb-6 flex flex-col gap-6">
-                      {/* Streaming content */}
-                      {streaming.content.length > 0 && (
-                        <div className="space-y-4">
-                          <ContentBlockRenderer content={streaming.content} isStreaming={streaming.isStreaming} />
-                          {streaming.isStreaming && (
-                            <div className="flex gap-1 py-2">
-                              <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                              <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                              <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                            </div>
-                          )}
-                        </div>
-                      )}
 
-                      {/* Loading indicator (when no streaming content yet) */}
-                      {loading && streaming.content.length === 0 && (
-                        <div className="flex gap-1 py-2">
-                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                        </div>
-                      )}
-                    </div>
+                  {/* Loading indicator when waiting for assistant response */}
+                  {loading && !isStreaming && (
+                    <LoadingDots />
                   )}
                   {shouldRenderSpacer ? (
                     <div className="flex flex-col">
@@ -1392,8 +1163,10 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                     value={input}
                     onChange={setInput}
                     onSubmit={sendMessage}
-                    placeholder="Type a message..."
-                    isLoading={loading}
+                    onStop={stopGeneration}
+                    placeholder={reconnecting ? "Reconnecting..." : "Type a message..."}
+                    isAssistantRunning={loading || isStreaming}
+                    disabled={reconnecting}
                     autoFocus
                   />
                 </div>
