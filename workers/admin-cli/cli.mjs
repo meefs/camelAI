@@ -17,9 +17,119 @@
 
 import { spawn } from 'child_process';
 import { createServer } from 'net';
+import { readFileSync, existsSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
+
+// Cloudflare constants (same as worker)
+const CF_ACCOUNT_ID = '85bbd288051330fb51ee1c86031a299b';
+const CF_DISPATCH_NAMESPACE = 'chiridion-platform';
 
 const ENVIRONMENTS = ['staging', 'prod', 'dev-illiana', 'dev-miguel'];
 const ENDPOINTS = ['overview', 'orgs', 'users', 'threads', 'kv-keys', 'r2/list', 'r2/backup', 'workers', 'container'];
+
+// Direct API endpoints that don't need wrangler/bindings
+const DIRECT_API_ENDPOINTS = ['workers'];
+
+// Get OAuth token from wrangler config
+function getWranglerToken() {
+	const configPath = join(homedir(), 'Library/Preferences/.wrangler/config/default.toml');
+	if (!existsSync(configPath)) {
+		throw new Error('Wrangler config not found. Run "npx wrangler login" first.');
+	}
+	const content = readFileSync(configPath, 'utf-8');
+	const match = content.match(/oauth_token\s*=\s*"([^"]+)"/);
+	if (!match) {
+		throw new Error('Could not extract oauth_token from wrangler config');
+	}
+	return match[1];
+}
+
+// List all scripts in dispatch namespace
+async function listDispatchScripts(token) {
+	const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/workers/dispatch/namespaces/${CF_DISPATCH_NAMESPACE}/scripts`;
+	const response = await fetch(url, {
+		headers: { 'Authorization': `Bearer ${token}` }
+	});
+	if (!response.ok) {
+		const text = await response.text();
+		throw new Error(`API request failed: ${response.status} - ${text}`);
+	}
+	const data = await response.json();
+	if (!data.success) {
+		throw new Error(`API error: ${JSON.stringify(data.errors)}`);
+	}
+	return data.result || [];
+}
+
+// Filter workers by org ID
+function filterWorkersByOrg(scripts, orgId) {
+	const orgPrefix = orgId.substring(0, 32);
+	return scripts.filter(s => s.id.startsWith(orgPrefix + '-'));
+}
+
+// Handle workers endpoint directly (no wrangler needed)
+async function handleWorkersDirectly(endpoint) {
+	const token = getWranglerToken();
+	const allScripts = await listDispatchScripts(token);
+
+	// Check if filtering by org
+	const orgMatch = endpoint.match(/^workers\/(.+)$/);
+	if (orgMatch) {
+		const orgId = orgMatch[1];
+		const orgPrefix = orgId.substring(0, 32);
+		const orgWorkers = filterWorkersByOrg(allScripts, orgId);
+
+		return {
+			org_id: orgId,
+			org_prefix: orgPrefix,
+			workers: orgWorkers.map(s => ({
+				script_name: s.id.replace(orgPrefix + '-', ''),
+				full_id: s.id,
+				created_on: s.created_on,
+				modified_on: s.modified_on
+			})),
+			total: orgWorkers.length
+		};
+	}
+
+	// List all workers
+	return {
+		workers: allScripts.map(s => ({
+			id: s.id,
+			created_on: s.created_on,
+			modified_on: s.modified_on
+		})),
+		total: allScripts.length
+	};
+}
+
+// Check if endpoint can be handled directly (without wrangler)
+function canHandleDirectly(endpoint) {
+	return endpoint === 'workers' || endpoint.startsWith('workers/');
+}
+
+// Apply jq filter to JSON string
+async function applyJqFilter(jsonStr, filter) {
+	return new Promise((resolve, reject) => {
+		const jq = spawn('jq', [filter], {
+			stdio: ['pipe', 'pipe', 'pipe'],
+		});
+
+		let jqOut = '';
+		let jqErr = '';
+		jq.stdout.on('data', d => jqOut += d);
+		jq.stderr.on('data', d => jqErr += d);
+
+		jq.stdin.write(jsonStr);
+		jq.stdin.end();
+
+		jq.on('close', code => {
+			if (code === 0) resolve(jqOut);
+			else reject(new Error(`jq failed: ${jqErr}`));
+		});
+	});
+}
 
 function usage() {
 	console.log(`
@@ -106,6 +216,25 @@ async function main() {
 		jqFilter = args.join(' ');
 	}
 
+	// Handle direct API endpoints (no wrangler needed)
+	if (canHandleDirectly(endpoint)) {
+		try {
+			const data = await handleWorkersDirectly(endpoint);
+			let result = JSON.stringify(data, null, 2);
+
+			// Apply jq filter if provided
+			if (jqFilter) {
+				result = await applyJqFilter(result, jqFilter);
+			}
+
+			console.log(result.trim());
+			return;
+		} catch (e) {
+			console.error(`Error: ${e.message}`);
+			process.exit(1);
+		}
+	}
+
 	// Find free port
 	const port = await findFreePort();
 
@@ -122,7 +251,7 @@ async function main() {
 	}
 
 	// Start wrangler in background
-	const wrangler = spawn('wrangler', wranglerArgs, {
+	const wrangler = spawn('npx', ['wrangler', ...wranglerArgs], {
 		cwd: process.cwd(),
 		stdio: ['ignore', 'pipe', 'pipe'],
 		detached: false,

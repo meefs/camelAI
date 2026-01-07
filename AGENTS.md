@@ -235,6 +235,8 @@ npm run admin -- staging orgs
 npm run admin -- prod users '.users[] | {name, email}'
 npm run admin -- dev-illiana orgs '.orgs[] | {org_id: .id, name: .name}'
 npm run admin -- dev-illiana threads
+npm run admin -- workers                    # Fast - no wrangler startup
+npm run admin -- workers/{orgId}            # List workers for specific org
 
 # Interactive mode (keeps server running for multiple queries)
 npm run admin:dev-illiana  # Then curl http://localhost:8788/overview
@@ -259,8 +261,8 @@ npm run admin:prod
 | `/r2/list` | Direct R2 access | List R2 objects (optional `?prefix=`) |
 | `/r2/info/{key}` | Direct R2 access | Get R2 object metadata |
 | `/r2/backup/{orgId}` | Direct R2 access | Get backup info for an org |
-| `/workers` | Cloudflare API | List all user workers in dispatch namespace |
-| `/workers/{orgId}` | Cloudflare API | List workers for a specific org |
+| `/workers` | Direct API (no wrangler) | List all user workers in dispatch namespace |
+| `/workers/{orgId}` | Direct API (no wrangler) | List workers for a specific org |
 | `/container/{orgId}/ls` | RPC → Container | List workspace files (optional `?path=`, `?recursive=true`) |
 | `/container/{orgId}/read/{path}` | RPC → Container | Read a file from container workspace |
 | `/container/{orgId}/write` | RPC → Container | Write a file (POST: `{path, content}`) |
@@ -268,13 +270,9 @@ npm run admin:prod
 | `/container/{orgId}/delete` | RPC → Container | Delete file/dir (POST: `{path}`) |
 | `/container/{orgId}/reset` | RPC → Container | Reset container (POST, destroys and recreates) |
 
-**How it works:** The CLI uses Cloudflare service bindings with `entrypoint: "DoRpcService"` and `remote: true` to call RPC methods on deployed workers. No HTTP routes needed - direct RPC over the Cloudflare network.
+**How it works:** Most endpoints use Cloudflare service bindings with `entrypoint: "DoRpcService"` and `remote: true` to call RPC methods on deployed workers. No HTTP routes needed - direct RPC over the Cloudflare network.
 
-**Workers endpoint setup:** The `/workers` endpoint requires a Cloudflare API token. Create `workers/admin-cli/.dev.vars` with:
-```
-CF_API_TOKEN=<your-oauth-token>
-```
-Get your token from `~/Library/Preferences/.wrangler/config/default.toml` after running `npx wrangler login`.
+**Workers endpoint:** The `/workers` endpoint uses direct Cloudflare API calls (no wrangler needed), reading the OAuth token automatically from `~/Library/Preferences/.wrangler/config/default.toml`. Run `npx wrangler login` if not already authenticated.
 
 ## Project Structure
 
