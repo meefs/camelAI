@@ -22,7 +22,11 @@
 		"test:workers": "vitest run --config vitest.workers.config.ts",
 		"test:integration": "vitest run --config vitest.integration.config.ts",
 		"test:e2e": "playwright test",
-		"test:e2e:ui": "playwright test --ui"
+		"test:e2e:ui": "playwright test --ui",
+		"admin:staging": "wrangler dev --config workers/admin-cli/wrangler.jsonc",
+		"admin:prod": "wrangler dev --config workers/admin-cli/wrangler.jsonc --env prod",
+		"admin:dev-illiana": "wrangler dev --config workers/admin-cli/wrangler.jsonc --env dev-illiana",
+		"admin:dev-miguel": "wrangler dev --config workers/admin-cli/wrangler.jsonc --env dev-miguel"
 	},
 	"dependencies": {
 		"@cloudflare/containers": "^0.0.31",
