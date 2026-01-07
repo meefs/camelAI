@@ -5,7 +5,7 @@
 	"scripts": {
 		"dev": "node scripts/dev-proxy.mjs",
 		"dev:next": "next dev -p 3000",
-		"dev:wrangler": "wrangler dev -c wrangler-dev.jsonc --local --port 8787",
+		"dev:wrangler": "wrangler dev -c wrangler-dev.jsonc --port 8787",
 		"build": "next build",
 		"build:cf": "opennextjs-cloudflare build -c wrangler.build.jsonc",
 		"start": "next start",

@@ -27,7 +27,7 @@ function spawnCommand(command, args, { name }) {
 
 const wranglerProcess = spawnCommand(
   'wrangler',
-  ['dev', '-c', 'wrangler.jsonc', '--local', '--port', String(wranglerPort)],
+  ['dev', '-c', 'wrangler.jsonc', '--port', String(wranglerPort)],
   { name: 'wrangler dev' }
 );
 

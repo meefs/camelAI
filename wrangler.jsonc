@@ -25,6 +25,9 @@
 	"images": {
 		"binding": "IMAGES"
 	},
+	"ai": {
+		"binding": "AI"
+	},
 	"r2_buckets": [
 		{
 			"binding": "R2_BUCKET",

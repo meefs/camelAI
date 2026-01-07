@@ -26,10 +26,9 @@ export async function getThreadsPaginated(
 export async function createThread(
   org: string,
   title: string | undefined,
-  createdBy?: string,
-  sessionId?: string
+  createdBy?: string
 ): Promise<Thread> {
-  return withRpc((rpc) => rpc.createThread(org, title, createdBy, sessionId));
+  return withRpc((rpc) => rpc.createThread(org, title, createdBy));
 }
 
 export async function getThread(id: string, org: string): Promise<Thread | null> {
@@ -42,6 +41,14 @@ export async function updateThread(id: string, title: string, org: string): Prom
 
 export async function deleteThread(id: string, org: string): Promise<void> {
   return withRpc((rpc) => rpc.deleteThread(id, org));
+}
+
+export async function generateThreadTitle(
+  threadId: string,
+  org: string,
+  message: string
+): Promise<void> {
+  return withRpc((rpc) => rpc.generateAndUpdateThreadTitle(threadId, org, message));
 }
 
 export async function getMessages(threadId: string, org: string): Promise<Message[]> {

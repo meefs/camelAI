@@ -1,5 +1,6 @@
 'use server';
 
+import { getCloudflareContext } from '@opennextjs/cloudflare';
 import * as chatDO from '@/lib/chat-do';
 import { requireSession } from '@/lib/server-guards';
 import { getUserByIdCached } from '@/lib/auth-context';
@@ -43,16 +44,24 @@ async function hydrateThreads(threads: Thread[]) {
 
 export async function createThread(input: {
   title?: string;
-  session_id?: string;
+  firstMessage?: string;
 }) {
   const session = await requireSession();
+  const { ctx } = getCloudflareContext();
 
   const thread = await chatDO.createThread(
     session.org_id,
     input.title,
-    session.user_id,
-    input.session_id
+    session.user_id
   );
+
+  // Generate title in background (non-blocking)
+  if (input.firstMessage && !input.title) {
+    ctx.waitUntil(
+      chatDO.generateThreadTitle(thread.id, session.org_id, input.firstMessage)
+    );
+  }
+
   return toSerializable(thread);
 }
 

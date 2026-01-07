@@ -145,6 +145,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   const [deployedApp, setDeployedApp] = useState<string | null>(null);
   const [iframeKey, setIframeKey] = useState(0);
   const [iframeLoading, setIframeLoading] = useState(true);
+  const [currentTitle, setCurrentTitle] = useState(threadTitle);
   const previewVersionRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -169,6 +170,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   useEffect(() => {
     initialScrollDoneRef.current = false;
   }, [threadId]);
+
+  // Sync current title from prop (e.g., when SSR data arrives)
+  useEffect(() => {
+    setCurrentTitle(threadTitle);
+  }, [threadTitle]);
+
   // Track connection ID to ignore events from stale WebSocket instances
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
@@ -621,6 +628,9 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
               setIframeKey(prev => prev + 1);
             }
           }
+        } else if (data.type === 'title_updated' && data.title) {
+          // Update thread title when AI generates it
+          setCurrentTitle(data.title);
         }
       } catch (e) {
         console.error('Preview WebSocket message parse error:', e);
@@ -967,16 +977,14 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
     setIsCreatingThread(true);
     const msg = welcomeInput.trim();
-    const newThreadId = crypto.randomUUID();
-    // Store in sessionStorage to survive component remount during navigation
-    sessionStorage.setItem('pendingMessage', JSON.stringify({ message: msg, orgId: resolvedOrgId, threadId: newThreadId }));
     setWelcomeInput('');
 
     try {
-      const thread = await createThreadAction({ session_id: newThreadId });
-      router.push(`/chat/${thread?.id || newThreadId}?newThread=1`);
+      const thread = await createThreadAction({ firstMessage: msg });
+      // Store in sessionStorage to survive component remount during navigation
+      sessionStorage.setItem('pendingMessage', JSON.stringify({ message: msg, orgId: resolvedOrgId, threadId: thread.id }));
+      router.push(`/chat/${thread.id}?newThread=1`);
     } catch (err) {
-      sessionStorage.removeItem('pendingMessage');
       setIsCreatingThread(false);
       setError('Failed to start a new chat');
       console.error('Failed to create thread:', err);
@@ -1047,7 +1055,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
             shouldShowChat
               ? [
                   { label: 'Chat' },
-                  { label: threadTitle?.trim() || 'Untitled Chat' },
+                  { label: currentTitle?.trim() || 'Untitled Chat' },
                 ]
               : [{ label: 'Home' }]
           }

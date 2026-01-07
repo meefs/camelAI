@@ -946,11 +946,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async createThread(
     org: string,
     title: string | undefined,
-    createdBy?: string,
-    sessionId?: string
+    createdBy?: string
   ): Promise<Thread> {
     using indexStub = asDisposable(getIndexStub(this.env, org));
-    return indexStub.createThread(title, createdBy, sessionId);
+    return indexStub.createThread(title, createdBy);
   }
 
   async getThread(id: string, org: string): Promise<Thread | null> {
@@ -968,6 +967,36 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Just delete from the index
     using indexStub = asDisposable(getIndexStub(this.env, org));
     await indexStub.deleteThread(id);
+  }
+
+  async generateAndUpdateThreadTitle(
+    threadId: string,
+    org: string,
+    message: string
+  ): Promise<void> {
+    try {
+      const response = await this.env.AI.run('@cf/google/gemma-3-12b-it', {
+        messages: [
+          { role: 'system', content: 'Summarize the message into a simple chat thread topic title. Respond with only the title, no quotes or extra punctuation.' },
+          { role: 'user', content: message },
+        ],
+        temperature: 1,
+        max_tokens: 50,
+      });
+
+      const title = (response as { response?: string })?.response?.trim()?.slice(0, 100);
+      if (!title) return;
+
+      // Update title in ChatIndexDO
+      using indexStub = asDisposable(getIndexStub(this.env, org));
+      await indexStub.updateThread(threadId, title);
+
+      // Broadcast via ChatThreadDO
+      const threadStub = this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId));
+      await threadStub.setTitle(title);
+    } catch (e) {
+      console.error('[generateAndUpdateThreadTitle] Error:', e);
+    }
   }
 
   async getMessages(threadId: string, org: string): Promise<Message[]> {
