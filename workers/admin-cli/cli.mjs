@@ -19,7 +19,7 @@ import { spawn } from 'child_process';
 import { createServer } from 'net';
 
 const ENVIRONMENTS = ['staging', 'prod', 'dev-illiana', 'dev-miguel'];
-const ENDPOINTS = ['overview', 'orgs', 'users', 'threads', 'kv-keys', 'r2/list', 'r2/backup', 'workers'];
+const ENDPOINTS = ['overview', 'orgs', 'users', 'threads', 'kv-keys', 'r2/list', 'r2/backup', 'workers', 'container'];
 
 function usage() {
 	console.log(`
@@ -36,9 +36,12 @@ Examples:
   admin dev-illiana r2/backup/{orgId}
   admin staging r2/list '?prefix=abc123'
   admin dev-illiana workers/{orgId}
+  admin dev-illiana container/{orgId}/ls
+  admin dev-illiana container/{orgId}/read/path/to/file
+  admin dev-illiana 'container/{orgId}/ls?recursive=true'
 
 Environments: ${ENVIRONMENTS.join(', ')}
-Endpoints: ${ENDPOINTS.join(', ')}, r2/info/{key}, r2/backup/{orgId}, workers/{orgId}
+Endpoints: ${ENDPOINTS.join(', ')}, r2/info/{key}, r2/backup/{orgId}, workers/{orgId}, container/{orgId}/*
 `);
 	process.exit(1);
 }
@@ -88,12 +91,13 @@ async function main() {
 	}
 
 	if (args.length > 0) {
-		// Check for exact match or path-style endpoints like r2/backup/abc123 or workers/abc123
+		// Check for exact match or path-style endpoints like r2/backup/abc123 or workers/abc123 or container/abc123/ls
 		const potentialEndpoint = args[0];
 		if (ENDPOINTS.includes(potentialEndpoint) ||
 			potentialEndpoint.startsWith('r2/') ||
 			potentialEndpoint.startsWith('kv/') ||
-			potentialEndpoint.startsWith('workers/')) {
+			potentialEndpoint.startsWith('workers/') ||
+			potentialEndpoint.startsWith('container/')) {
 			endpoint = args.shift();
 		}
 	}

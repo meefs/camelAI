@@ -64,6 +64,12 @@ export default {
 						'/r2/backup/{orgId}': 'Get backup info for an org',
 						'/workers': 'List all user workers in dispatch namespace (with optional ?prefix=)',
 						'/workers/{orgId}': 'List workers for a specific org',
+						'/container/{orgId}/ls': 'List container workspace files (optional ?path=, ?recursive=)',
+						'/container/{orgId}/read/{path}': 'Read a file from container workspace',
+						'/container/{orgId}/write': 'Write a file to container (POST: {path, content})',
+						'/container/{orgId}/mkdir': 'Create directory in container (POST: {path})',
+						'/container/{orgId}/delete': 'Delete file/dir in container (POST: {path})',
+						'/container/{orgId}/reset': 'Reset container (destroys and recreates)',
 					},
 				});
 			}
@@ -162,6 +168,16 @@ export default {
 				// Org prefix is first 32 chars of orgId
 				const prefix = orgId.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
 				return await listUserWorkers(env, prefix, orgId);
+			}
+
+			// Container filesystem endpoints
+			const containerMatch = path.match(/^\/container\/([^\/]+)\/(ls|read|write|mkdir|delete|reset)(\/.*)?$/);
+			if (containerMatch) {
+				const orgId = decodeURIComponent(containerMatch[1]!);
+				const action = containerMatch[2]!;
+				const pathArg = containerMatch[3] ? decodeURIComponent(containerMatch[3]) : undefined;
+
+				return await handleContainerAction(env, request, url, orgId, action, pathArg);
 			}
 
 			return jsonResponse({ error: 'Not found', path }, 404);
@@ -399,4 +415,134 @@ async function listUserWorkers(env: Env, prefix?: string, orgId?: string): Promi
 		error: 'Cannot list all workers without CF_API_TOKEN',
 		hint: 'Add CF_API_TOKEN to workers/admin-cli/.dev.vars with a Cloudflare API token that has Workers Scripts Read permission',
 	}, 400);
+}
+
+// Handle container filesystem actions
+async function handleContainerAction(
+	env: Env,
+	request: Request,
+	url: URL,
+	orgId: string,
+	action: string,
+	pathArg?: string
+): Promise<Response> {
+	try {
+		switch (action) {
+			case 'ls': {
+				const listPath = url.searchParams.get('path') || pathArg || '/';
+				const recursive = url.searchParams.get('recursive') === 'true';
+				const includeHidden = url.searchParams.get('includeHidden') !== 'false';
+
+				const result = await env.RPC.listWorkspaceEntries(orgId, {
+					path: listPath,
+					recursive,
+					includeHidden,
+				});
+
+				return jsonResponse({
+					orgId,
+					...result,
+				});
+			}
+
+			case 'read': {
+				if (!pathArg) {
+					return jsonResponse({ error: 'Path required for read action' }, 400);
+				}
+
+				const result = await env.RPC.readWorkspaceFile(orgId, pathArg);
+				if (!result) {
+					return jsonResponse({ error: 'File not found', path: pathArg }, 404);
+				}
+
+				return jsonResponse({
+					orgId,
+					path: result.workspacePath,
+					content: result.result.content,
+					size: result.result.size,
+					mimeType: result.result.mimeType,
+					isBinary: result.result.isBinary,
+					encoding: result.result.encoding,
+				});
+			}
+
+			case 'write': {
+				if (request.method !== 'POST') {
+					return jsonResponse({ error: 'POST required for write action' }, 405);
+				}
+
+				const body = (await request.json()) as { path?: string; content?: string };
+				const writePath = body.path || pathArg;
+				if (!writePath) {
+					return jsonResponse({ error: 'Path required for write action' }, 400);
+				}
+				if (body.content === undefined) {
+					return jsonResponse({ error: 'Content required for write action' }, 400);
+				}
+
+				const result = await env.RPC.writeWorkspaceFile(orgId, writePath, body.content);
+				return jsonResponse({
+					orgId,
+					path: result.workspacePath,
+					success: result.result.success,
+				});
+			}
+
+			case 'mkdir': {
+				if (request.method !== 'POST') {
+					return jsonResponse({ error: 'POST required for mkdir action' }, 405);
+				}
+
+				const body = (await request.json()) as { path?: string };
+				const mkdirPath = body.path || pathArg;
+				if (!mkdirPath) {
+					return jsonResponse({ error: 'Path required for mkdir action' }, 400);
+				}
+
+				const result = await env.RPC.mkdirWorkspacePath(orgId, mkdirPath);
+				return jsonResponse({
+					orgId,
+					path: result.workspacePath,
+					success: result.result.success,
+				});
+			}
+
+			case 'delete': {
+				if (request.method !== 'POST') {
+					return jsonResponse({ error: 'POST required for delete action' }, 405);
+				}
+
+				const body = (await request.json()) as { path?: string };
+				const deletePath = body.path || pathArg;
+				if (!deletePath) {
+					return jsonResponse({ error: 'Path required for delete action' }, 400);
+				}
+
+				const result = await env.RPC.deleteWorkspacePath(orgId, deletePath);
+				return jsonResponse({
+					orgId,
+					path: result.workspacePath,
+					success: result.result.success,
+				});
+			}
+
+			case 'reset': {
+				if (request.method !== 'POST') {
+					return jsonResponse({ error: 'POST required for reset action' }, 405);
+				}
+
+				const result = await env.RPC.resetOrgContainer(orgId);
+				return jsonResponse({
+					orgId,
+					...result,
+				});
+			}
+
+			default:
+				return jsonResponse({ error: `Unknown container action: ${action}` }, 400);
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : 'Unknown error';
+		return jsonResponse({ error: message, orgId, action }, 500);
+	}
 }

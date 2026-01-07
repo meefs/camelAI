@@ -261,6 +261,12 @@ npm run admin:prod
 | `/r2/backup/{orgId}` | Direct R2 access | Get backup info for an org |
 | `/workers` | Cloudflare API | List all user workers in dispatch namespace |
 | `/workers/{orgId}` | Cloudflare API | List workers for a specific org |
+| `/container/{orgId}/ls` | RPC → Container | List workspace files (optional `?path=`, `?recursive=true`) |
+| `/container/{orgId}/read/{path}` | RPC → Container | Read a file from container workspace |
+| `/container/{orgId}/write` | RPC → Container | Write a file (POST: `{path, content}`) |
+| `/container/{orgId}/mkdir` | RPC → Container | Create directory (POST: `{path}`) |
+| `/container/{orgId}/delete` | RPC → Container | Delete file/dir (POST: `{path}`) |
+| `/container/{orgId}/reset` | RPC → Container | Reset container (POST, destroys and recreates) |
 
 **How it works:** The CLI uses Cloudflare service bindings with `entrypoint: "DoRpcService"` and `remote: true` to call RPC methods on deployed workers. No HTTP routes needed - direct RPC over the Cloudflare network.
 
