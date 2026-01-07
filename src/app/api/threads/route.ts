@@ -43,14 +43,12 @@ export async function POST(request: NextRequest) {
       return unauthorizedResponse();
     }
 
-    const body = await request.json() as { title?: string; session_id?: string };
+    const body = await request.json() as { title?: string };
     const title = typeof body.title === 'string' ? body.title : undefined;
-    const sessionIdOverride = typeof body.session_id === 'string' ? body.session_id : undefined;
     const thread = await chatDO.createThread(
       session.org_id,
       title,
-      session.user_id,
-      sessionIdOverride
+      session.user_id
     );
     return jsonResponse(thread);
   } catch (error) {
