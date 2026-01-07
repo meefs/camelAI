@@ -28,7 +28,9 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
      - **Auth DOs:** `SessionDO`, `UserDO`, `OrgDO`
      - `ThreadSandbox` - Executes Claude SDK in containers
      - WebSocket routing at worker level (one container per org)
+     - `DoRpcService` - RPC entrypoint for cross-worker calls
    - `dispatcher/` - Routes `*.chiridion.ai` to user workers (WfP)
+   - `admin-cli/` - Local-only admin CLI for querying live environments
 
 3. **Sandbox** (`sandbox/`)
    - `ws-server.mjs` - WebSocket server running inside Cloudflare Container
@@ -54,6 +56,9 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
 | `src/lib/integration-crypto.ts` | Credential encryption utilities |
+| `workers/main/src/rpc-service.ts` | DoRpcService - RPC methods for cross-worker calls |
+| `workers/admin-cli/cli.mjs` | Admin CLI wrapper script |
+| `workers/admin-cli/src/index.ts` | Admin CLI worker (local-only) |
 
 ## Configuration Files
 
@@ -214,6 +219,44 @@ npm run deploy:prod
 npm run deploy:staging
 ```
 
+### Admin CLI
+
+Query live environments locally using RPC service bindings to call `DoRpcService` methods directly on deployed workers.
+
+```bash
+# Quick CLI (starts wrangler, queries, exits)
+npm run admin -- [env] [endpoint] [jq-filter]
+
+# Examples
+npm run admin -- dev-illiana overview
+npm run admin -- staging orgs
+npm run admin -- prod users '.users[] | {name, email}'
+npm run admin -- dev-illiana orgs '.orgs[] | {org_id: .id, name: .name}'
+npm run admin -- dev-illiana threads
+
+# Interactive mode (keeps server running for multiple queries)
+npm run admin:dev-illiana  # Then curl http://localhost:8788/overview
+npm run admin:staging
+npm run admin:prod
+```
+
+| Environment | Target |
+|-------------|--------|
+| `staging` (default) | staging.chiridion.ai |
+| `prod` | chiridion.ai |
+| `dev-illiana` | dev-illiana.chiridion.ai |
+| `dev-miguel` | dev-miguel.chiridion.ai |
+
+| Endpoint | RPC Method | Description |
+|----------|------------|-------------|
+| `/overview` | `getAdminOverview()` | Users, orgs, membership counts |
+| `/orgs` | `adminGetOrgsPaginated()` + `getOrgMembers()` | All orgs with member details |
+| `/users` | `adminGetUsersPaginated()` | All users with org counts |
+| `/threads` | `adminGetThreadsPaginated()` | All threads across all orgs |
+| `/kv-keys` | Direct KV access | List KV keys (optional `?prefix=`) |
+
+**How it works:** The CLI uses Cloudflare service bindings with `entrypoint: "DoRpcService"` and `remote: true` to call RPC methods on deployed workers. No HTTP routes needed - direct RPC over the Cloudflare network.
+
 ## Project Structure
 
 ```
@@ -244,9 +287,14 @@ chiridion-app/
 │   │       ├── index.ts         # Worker entry point
 │   │       ├── durable-objects.ts # Chat DOs
 │   │       ├── auth.ts          # Auth DOs
+│   │       ├── rpc-service.ts   # DoRpcService RPC entrypoint
 │   │       └── password.ts      # Password hashing
-│   └── dispatcher/          # WfP subdomain router
-│       └── src/
+│   ├── dispatcher/          # WfP subdomain router
+│   │   └── src/
+│   └── admin-cli/           # Local-only admin CLI
+│       ├── cli.mjs          # CLI wrapper script
+│       ├── src/index.ts     # Worker code
+│       └── wrangler.jsonc   # Config with remote bindings
 ├── sandbox/                 # Container sandbox code
 ├── scripts/                 # Dev scripts
 │   └── dev-proxy.mjs        # Wrangler + Next dev + proxy

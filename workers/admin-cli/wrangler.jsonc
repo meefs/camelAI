@@ -19,6 +19,14 @@
 			"remote": true
 		}
 	],
+	"services": [
+		{
+			"binding": "RPC",
+			"service": "chiridion-app-staging",
+			"entrypoint": "DoRpcService",
+			"remote": true
+		}
+	],
 
 	"env": {
 		// Query production environment
@@ -30,6 +38,14 @@
 				{
 					"binding": "EMAIL_TO_USER",
 					"id": "45b452b3b19c42f6991408c140149a70",
+					"remote": true
+				}
+			],
+			"services": [
+				{
+					"binding": "RPC",
+					"service": "chiridion-app",
+					"entrypoint": "DoRpcService",
 					"remote": true
 				}
 			]
@@ -46,6 +62,14 @@
 					"id": "ab267c4f44b847dda8bdca400a4e1884",
 					"remote": true
 				}
+			],
+			"services": [
+				{
+					"binding": "RPC",
+					"service": "chiridion-app-dev-illiana",
+					"entrypoint": "DoRpcService",
+					"remote": true
+				}
 			]
 		},
 
@@ -58,6 +82,14 @@
 				{
 					"binding": "EMAIL_TO_USER",
 					"id": "ab267c4f44b847dda8bdca400a4e1884",
+					"remote": true
+				}
+			],
+			"services": [
+				{
+					"binding": "RPC",
+					"service": "chiridion-app-dev-miguel",
+					"entrypoint": "DoRpcService",
 					"remote": true
 				}
 			]
