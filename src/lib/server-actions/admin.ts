@@ -19,9 +19,9 @@ export async function updateAdminUser(
 }
 
 export async function updateAdminOrg(orgId: string, updates: { name?: string }) {
-  await requireSuperuser('Forbidden');
+  const { session } = await requireSuperuser('Forbidden');
   if (updates.name !== undefined) {
-    await authDO.updateOrgName(orgId, updates.name);
+    await authDO.updateOrgName(orgId, updates.name, session.user_id);
   }
   const org = await authDO.getOrg(orgId);
   if (!org) {

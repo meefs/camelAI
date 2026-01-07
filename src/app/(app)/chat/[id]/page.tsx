@@ -13,16 +13,19 @@ export default async function ChatPage({ params, searchParams }: PageProps) {
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const isNewThread = resolvedSearchParams?.newThread === '1';
   const session = await requireSession();
+  if (!session.workspace_id) {
+    return null;
+  }
 
   const [messages, thread] = await Promise.all([
     isNewThread ? Promise.resolve([]) : getThreadMessages(id),
-    chatDO.getThread(id, session.org_id),
+    chatDO.getThread(id, session.workspace_id),
   ]);
 
   return (
     <Chat
       threadId={id}
-      orgId={session.org_id}
+      workspaceId={session.workspace_id}
       initialMessages={messages}
       threadTitle={thread?.title ?? null}
     />

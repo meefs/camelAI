@@ -5,7 +5,7 @@ import { getSessionId } from '@/lib/auth';
 import * as authDO from '@/lib/auth-do';
 import * as computerDO from '@/lib/computer-do';
 
-export async function resetSandboxContainerAction(orgId: string) {
+export async function resetSandboxContainerAction(workspaceId: string) {
   const sessionId = await getSessionId();
   if (!sessionId) {
     redirect('/login');
@@ -16,9 +16,13 @@ export async function resetSandboxContainerAction(orgId: string) {
     redirect('/login');
   }
 
-  if (session.org_id !== orgId) {
-    redirect(`/computer/${session.org_id}`);
+  if (!session.workspace_id) {
+    redirect('/computer');
   }
 
-  await computerDO.resetSandboxContainer(orgId);
+  if (session.workspace_id !== workspaceId) {
+    redirect(`/computer/${session.workspace_id}`);
+  }
+
+  await computerDO.resetSandboxContainer(workspaceId);
 }

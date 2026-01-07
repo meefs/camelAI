@@ -2,7 +2,10 @@ import { NextRequest } from 'next/server';
 import * as authDO from '@/lib/auth-do';
 import { forbiddenResponse, getSessionId, unauthorizedResponse } from '@/lib/auth';
 
-export async function requireWorkspaceSession(orgId: string) {
+export async function requireWorkspaceSession(
+  workspaceId: string,
+  options: { requireWrite?: boolean } = {}
+) {
   const sessionId = await getSessionId();
   if (!sessionId) {
     return { response: unauthorizedResponse() };
@@ -13,11 +16,22 @@ export async function requireWorkspaceSession(orgId: string) {
     return { response: unauthorizedResponse() };
   }
 
-  if (session.org_id !== orgId) {
-    return { response: forbiddenResponse('Organization mismatch') };
+  const workspace = await authDO.getWorkspace(workspaceId);
+  if (!workspace || workspace.org_id !== session.org_id) {
+    return { response: forbiddenResponse('Workspace not found') };
   }
 
-  return { session };
+  // FIXME: Enforce viewer role restrictions when publishing is implemented.
+  // Viewers should only access published apps, not workspace files.
+  const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id);
+  if (access === 'none') {
+    return { response: forbiddenResponse('Workspace not found') };
+  }
+  if (options.requireWrite && access !== 'full') {
+    return { response: forbiddenResponse('Read-only workspace access') };
+  }
+
+  return { session, access };
 }
 
 export function normalizeWorkspacePath(input?: string | null): string {

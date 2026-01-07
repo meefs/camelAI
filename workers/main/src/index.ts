@@ -3,11 +3,12 @@
 import openNextHandler from "../../../.open-next/worker.js";
 import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
-import { OrgContainer, handleWebSocketUpgrade, type OrgContainerEnv } from './org-container.js';
+import { WorkspaceContainer, handleWebSocketUpgrade, type WorkspaceContainerEnv } from './workspace-container.js';
+import { WorkspaceDO, type WorkspaceInfo } from './workspace.js';
 export { DoRpcService } from './rpc-service.js';
 
-// Export OrgContainer as ThreadSandbox to match wrangler.jsonc class_name
-export { OrgContainer as ThreadSandbox };
+// Export WorkspaceContainer as ThreadSandbox to match wrangler.jsonc class_name
+export { WorkspaceContainer as ThreadSandbox };
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
@@ -21,8 +22,9 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
   return null;
 }
 
-interface Env extends ChatEnv, AuthEnv, OrgContainerEnv {
+interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv {
   ASSETS: Fetcher;
+  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   NEXTJS_ENV?: string;
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
@@ -171,15 +173,22 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
   return { files, wranglerConfigs, formParts };
 }
 
-function deriveOrgPrefix(orgId: string): string {
-  return orgId.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
+function deriveWorkspacePrefix(workspaceId: string): string {
+  return workspaceId.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
-function resolveOrgContext(tokenValue: string): { orgPrefix: string; orgId: string } {
-  // Token value is the orgId; derive prefix from it
-  const orgId = tokenValue;
-  const orgPrefix = deriveOrgPrefix(orgId);
-  return { orgPrefix, orgId };
+async function resolveWorkspaceContext(
+  env: Env,
+  workspaceId: string
+): Promise<{ workspaceId: string; orgId: string; workspacePrefix: string } | null> {
+  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  const info = await workspaceStub.getInfo() as WorkspaceInfo | null;
+  if (!info || info.archived) return null;
+  return {
+    workspaceId,
+    orgId: info.org_id,
+    workspacePrefix: deriveWorkspacePrefix(workspaceId),
+  };
 }
 
 async function callCloudflareApi<T>(
@@ -264,6 +273,7 @@ async function deleteDispatchScriptSecret(
 
 async function syncDispatchScriptSecrets(
   env: Env,
+  workspaceId: string,
   orgId: string,
   accountId: string,
   dispatchNamespace: string,
@@ -273,7 +283,7 @@ async function syncDispatchScriptSecrets(
   const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
   let integrationEnvVars: Record<string, string>;
   try {
-    integrationEnvVars = await rpc.getOrgIntegrationEnvVars(orgId);
+    integrationEnvVars = await rpc.getWorkspaceIntegrationEnvVars(workspaceId);
   } finally {
     rpc[Symbol.dispose]?.();
   }
@@ -325,7 +335,7 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
   // Asset uploads use Cloudflare-issued JWTs from assets-upload-session.
   // Skip our deploy token validation and pass through - Cloudflare validates the JWT.
   // Security: JWTs can only be obtained via assets-upload-session (which requires deploy token auth)
-  // and are tied to the org-prefixed script name.
+  // and are tied to the workspace-prefixed script name.
   if (ASSETS_UPLOAD.test(url.pathname) && request.method.toUpperCase() === 'POST') {
     let pathname = url.pathname;
     // Rewrite account ID if configured
@@ -365,7 +375,7 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     return cfApiError(10001, 'Authentication error: Missing deploy token', 401);
   }
 
-  // Token -> org prefix mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
+  // Token -> workspace mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
   // to EMAIL_TO_USER for the proof-of-concept (prefix-isolated).
   const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
   const tokenValue = await tokenKv.get(`platform_script_token:${proxyToken}`);
@@ -377,14 +387,23 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     });
     return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
   }
-  const { orgPrefix, orgId } = resolveOrgContext(tokenValue);
+  const workspaceContext = await resolveWorkspaceContext(env, tokenValue);
+  if (!workspaceContext) {
+    console.warn('[cf-api-proxy] invalid deploy token workspace', {
+      method: request.method,
+      path: url.pathname,
+      workspaceId: tokenValue,
+    });
+    return cfApiError(10003, 'Authentication error: Invalid workspace', 401);
+  }
+  const { workspacePrefix, orgId, workspaceId } = workspaceContext;
 
   let pathname = url.pathname;
 
-  // Helper to prefix script name with org ID (e.g., "my-worker" -> "abc123-my-worker")
+  // Helper to prefix script name with workspace ID (e.g., "my-worker" -> "abc123-my-worker")
   const prefixScriptName = (name: string) => {
     const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-    return `${orgPrefix}-${safeName}`.slice(0, 63);
+    return `${workspacePrefix}-${safeName}`.slice(0, 63);
   };
 
   // Rewrite WFP dispatch namespace (and optionally account id) on the fly.
@@ -396,7 +415,7 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     const rewrittenNs = dispatchNamespace ?? dispatchMatch[2]!;
     pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/${rest}`;
 
-    // Prefix the script name with org ID
+    // Prefix the script name with workspace ID
     const restUrl = `/${rest}`;
     const scriptsMatch = restUrl.match(/^\/scripts\/([^\/]+)(\/.*)?$/);
     if (scriptsMatch) {
@@ -534,13 +553,14 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
       const dispatchNs = decodeURIComponent(scriptMatch[2]!);
       const scriptName = decodeURIComponent(scriptMatch[3]!);
       ctx.waitUntil(
-        syncDispatchScriptSecrets(env, orgId, account, dispatchNs, scriptName, upstreamApiToken)
+        syncDispatchScriptSecrets(env, workspaceId, orgId, account, dispatchNs, scriptName, upstreamApiToken)
           .catch(err => {
             console.error('[cf-api-proxy] failed to sync script secrets', {
               account,
               dispatchNamespace: dispatchNs,
               scriptName,
               orgId,
+              workspaceId,
               error: String(err),
             });
           })
@@ -584,8 +604,13 @@ export default {
         return new Response('Unauthorized', { status: 401 });
       }
 
-      // Verify thread belongs to user's org (prevents cross-tenant leak)
-      const indexStub = env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(session.org_id));
+      const workspaceId = session.workspace_id;
+      if (!workspaceId) {
+        return new Response('No workspace selected', { status: 400 });
+      }
+
+      // Verify thread belongs to user's workspace (prevents cross-tenant leak)
+      const indexStub = env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(workspaceId));
       const thread = await indexStub.getThread(threadId);
       if (!thread) {
         return new Response('Thread not found', { status: 404 });
@@ -596,16 +621,16 @@ export default {
       return threadStub.fetch(request);
     }
 
-    // Handle WebSocket upgrade requests at /ws/{org}
-    // The org is used to route to the correct container (one per org)
+    // Handle WebSocket upgrade requests at /ws/{workspace}
+    // The workspace is used to route to the correct container (one per workspace)
     // Thread/session management happens in the WebSocket protocol
     const wsMatch = url.pathname.match(/^\/ws\/([^\/]+)$/);
     if (wsMatch && request.headers.get('Upgrade') === 'websocket') {
-      const orgFromPath = wsMatch[1];
+      const workspaceFromPath = wsMatch[1];
 
       console.log('[ws] WebSocket upgrade request received', {
         path: url.pathname,
-        orgFromPath,
+        workspaceFromPath,
         upgrade: request.headers.get('Upgrade'),
         connection: request.headers.get('Connection'),
         secWebSocketKey: request.headers.get('Sec-WebSocket-Key') ? 'present' : 'missing',
@@ -629,21 +654,28 @@ export default {
         return new Response('Unauthorized', { status: 401 });
       }
 
-      // Use the org from session (ignore path org for security)
-      const org = session.org_id;
-      if (!org) {
+      const orgId = session.org_id;
+      const workspaceId = session.workspace_id;
+      if (!orgId) {
         console.log('[ws] No org in session, returning 400', { sessionId });
         return new Response('No organization selected', { status: 400 });
       }
+      if (!workspaceId) {
+        console.log('[ws] No workspace in session, returning 400', { sessionId });
+        return new Response('No workspace selected', { status: 400 });
+      }
+      // FIXME: Enforce viewer role restrictions when publishing is implemented.
+      // Viewers should only access published apps, not chat or computer.
 
       console.log('[ws] Authenticated, forwarding to container', {
         sessionId,
-        org,
+        orgId,
+        workspaceId,
         userId: session.user_id,
       });
 
       // Handle WebSocket upgrade with container management
-      return handleWebSocketUpgrade(request, env, org);
+      return handleWebSocketUpgrade(request, env, workspaceId, orgId);
     }
 
     // Handle preview API with deploy token auth (called from container wrangler wrapper)
@@ -662,13 +694,21 @@ export default {
 
       const token = authHeader.slice(7);
       const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-      const orgId = await tokenKv.get(`platform_script_token:${token}`);
-      if (!orgId) {
+      const workspaceId = await tokenKv.get(`platform_script_token:${token}`);
+      if (!workspaceId) {
         return new Response(JSON.stringify({ error: 'Invalid token' }), {
           status: 401,
           headers: { 'Content-Type': 'application/json' },
         });
       }
+      const workspaceContext = await resolveWorkspaceContext(env, workspaceId);
+      if (!workspaceContext) {
+        return new Response(JSON.stringify({ error: 'Invalid workspace' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const { orgId, workspacePrefix } = workspaceContext;
 
       // Parse body and set preview
       try {
@@ -680,11 +720,10 @@ export default {
           });
         }
 
-        // Prefix worker names with org prefix
-        const orgPrefix = deriveOrgPrefix(orgId);
+        // Prefix worker names with workspace prefix
         const prefixedWorkers = body.workers.map(name => {
           const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-          return `${orgPrefix}-${safeName}`.slice(0, 63);
+          return `${workspacePrefix}-${safeName}`.slice(0, 63);
         });
 
         const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
@@ -726,3 +765,4 @@ export default {
 // Export Durable Object classes
 export { ChatIndexDO, ChatThreadDO };
 export { SessionDO, UserDO, OrgDO };
+export { WorkspaceDO };

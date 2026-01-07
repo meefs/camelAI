@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { OrgContainer } from './org-container';
+import type { WorkspaceContainer } from './workspace-container';
 import type { OrgDO, SessionDO } from './auth';
 import type { DoRpcService } from './rpc-service';
 
@@ -27,7 +27,7 @@ export interface Message {
 export interface ChatEnv {
   CHAT_INDEX: DurableObjectNamespace<ChatIndexDO>;
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
-  SANDBOX: DurableObjectNamespace<OrgContainer>;
+  SANDBOX: DurableObjectNamespace<WorkspaceContainer>;
   ORG: DurableObjectNamespace<OrgDO>;
   SESSION: DurableObjectNamespace<SessionDO>;
   DO_RPC: Service<DoRpcService>;
@@ -47,7 +47,7 @@ export interface ChatEnv {
   DEBUG_CLAUDE_AGENT_SDK?: string;
 }
 
-// One DO per org - stores thread list only
+// One DO per workspace - stores thread list only
 export class ChatIndexDO extends DurableObject<ChatEnv> {
   private sql: SqlStorage;
 

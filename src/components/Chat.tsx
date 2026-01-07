@@ -35,7 +35,7 @@ import {
 
 interface ChatProps {
   threadId?: string;
-  orgId: string;
+  workspaceId: string;
   initialMessages?: Message[];
   threadTitle?: string | null;
 }
@@ -88,10 +88,10 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
 }
 
 
-export default function Chat({ threadId, orgId, initialMessages, threadTitle }: ChatProps) {
+export default function Chat({ threadId, workspaceId, initialMessages, threadTitle }: ChatProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user, currentOrg, loading: authLoading } = useAuth();
+  const { user, currentWorkspace, loading: authLoading } = useAuth();
   const isNewThreadParam = searchParams?.get('newThread') === '1';
   const parsedInitialMessages = useMemo(
     () => (initialMessages ?? []).map(msg => ({ ...msg, content: parseMessageContent(msg.content) })),
@@ -150,7 +150,15 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
   // Queue message to send when connection becomes ready
   const pendingMessageRef = useRef<string | null>(null);
-  const sessionStorageKey = useCallback((id: string) => `ws_session_${id}`, []);
+  const resolvedWorkspaceId = currentWorkspace?.id ?? workspaceId;
+  const pendingMessageKey = useMemo(
+    () => (resolvedWorkspaceId ? `pendingMessage:${resolvedWorkspaceId}` : 'pendingMessage'),
+    [resolvedWorkspaceId]
+  );
+  const sessionStorageKey = useCallback((id: string) => {
+    const workspaceKey = resolvedWorkspaceId ?? 'unknown';
+    return `ws_session_${workspaceKey}_${id}`;
+  }, [resolvedWorkspaceId]);
 
   const loadSessionState = useCallback((id: string) => {
     try {
@@ -180,8 +188,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     }
   }, [sessionStorageKey]);
 
-  const resolvedOrgId = currentOrg?.id ?? orgId;
-
   // Redirect to login if not authenticated
   useEffect(() => {
     if (!authLoading && !user) {
@@ -196,7 +202,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       return;
     }
     loadSessionState(threadId);
-  }, [threadId, loadSessionState]);
+  }, [threadId, loadSessionState, resolvedWorkspaceId]);
 
   useEffect(() => {
     if (!isNewThreadParam || !threadId) return;
@@ -286,11 +292,11 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
     // Fetch existing messages from REST API unless we have a pending first message for this thread
     let shouldFetchMessages = true;
-    const pendingPayload = sessionStorage.getItem('pendingMessage');
+    const pendingPayload = sessionStorage.getItem(pendingMessageKey);
     if (pendingPayload) {
       try {
-        const parsed = JSON.parse(pendingPayload) as { message?: string; threadId?: string };
-        if (parsed.threadId === id) {
+        const parsed = JSON.parse(pendingPayload) as { message?: string; threadId?: string; workspaceId?: string };
+        if (parsed.threadId === id && parsed.workspaceId === resolvedWorkspaceId) {
           shouldFetchMessages = false;
           // Optimistically show the pending message immediately (don't wait for WebSocket ready)
           if (typeof parsed.message === 'string') {
@@ -313,11 +319,11 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       fetchMessages(id, isReconnect);
     }
 
-    // WebSocket connects at /ws/{org} - one container per org handles all threads
+    // WebSocket connects at /ws/{workspace} - one container per workspace handles all threads
     const wsHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const orgIdForConnection = resolvedOrgId;
-    const wsUrl = `${protocol}//${wsHost}/ws/${orgIdForConnection}`;
+    const workspaceIdForConnection = resolvedWorkspaceId;
+    const wsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -338,7 +344,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       ws.send(JSON.stringify({
         type: 'init',
         threadId: id,
-        org: orgIdForConnection,
         sessionId: sessionIdRef.current,
         lastEventId: lastEventIdRef.current,
       }));
@@ -367,12 +372,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
         // Send pending message if exists (from welcome screen or queued while disconnected)
         let storedMessage = pendingMessageRef.current;
-        const storedPayload = sessionStorage.getItem('pendingMessage');
+        const storedPayload = sessionStorage.getItem(pendingMessageKey);
         if (storedPayload) {
           try {
-            const parsed = JSON.parse(storedPayload) as { message?: string; orgId?: string; threadId?: string };
-            if (parsed.orgId === resolvedOrgId && parsed.threadId === id && typeof parsed.message === 'string') {
-              sessionStorage.removeItem('pendingMessage');
+            const parsed = JSON.parse(storedPayload) as { message?: string; workspaceId?: string; threadId?: string };
+            if (parsed.workspaceId === resolvedWorkspaceId && parsed.threadId === id && typeof parsed.message === 'string') {
+              sessionStorage.removeItem(pendingMessageKey);
               storedMessage = parsed.message;
             }
           } catch (e) {
@@ -534,21 +539,21 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       }
     };
 
-  }, [currentOrg, fetchMessages]);
+  }, [fetchMessages, pendingMessageKey, persistSessionState, resolvedWorkspaceId]);
 
   // Keep the ref updated with the latest function
   connectWebSocketRef.current = connectWebSocket;
 
   // Track which threadId we're connected to
   const connectedThreadIdRef = useRef<string | null>(null);
-  const connectedOrgIdRef = useRef<string | null>(null);
+  const connectedWorkspaceIdRef = useRef<string | null>(null);
 
   // Cleanup on unmount to avoid orphaned WebSockets or reconnect timers
   useEffect(() => {
     return () => {
       connectionIdRef.current++;
       connectedThreadIdRef.current = null;
-      connectedOrgIdRef.current = null;
+      connectedWorkspaceIdRef.current = null;
 
       if (wsRef.current) {
         wsRef.current.close();
@@ -705,12 +710,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
   // Connect when threadId changes
   useEffect(() => {
-    if (!shouldShowChat || !resolvedOrgId) {
-      // No threadId or org - cleanup any existing connection
+    if (!shouldShowChat || !resolvedWorkspaceId) {
+      // No threadId or workspace - cleanup any existing connection
       if (connectedThreadIdRef.current) {
         connectionIdRef.current++;
         connectedThreadIdRef.current = null;
-        connectedOrgIdRef.current = null;
+        connectedWorkspaceIdRef.current = null;
         if (wsRef.current) {
           wsRef.current.close();
           wsRef.current = null;
@@ -725,18 +730,18 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       return;
     }
 
-    const nextOrgId = resolvedOrgId;
+    const nextWorkspaceId = resolvedWorkspaceId;
     const threadChanged = connectedThreadIdRef.current && connectedThreadIdRef.current !== threadId;
-    const orgChanged = connectedOrgIdRef.current && connectedOrgIdRef.current !== nextOrgId;
+    const workspaceChanged = connectedWorkspaceIdRef.current && connectedWorkspaceIdRef.current !== nextWorkspaceId;
 
-    // Already connected to this thread+org? Nothing to do.
-    if (connectedThreadIdRef.current === threadId && connectedOrgIdRef.current === nextOrgId) {
+    // Already connected to this thread+workspace? Nothing to do.
+    if (connectedThreadIdRef.current === threadId && connectedWorkspaceIdRef.current === nextWorkspaceId) {
       return;
     }
 
-    // Switching threads or orgs - close old connection first
-    if (connectedThreadIdRef.current || connectedOrgIdRef.current) {
-      if (threadChanged || orgChanged) {
+    // Switching threads or workspaces - close old connection first
+    if (connectedThreadIdRef.current || connectedWorkspaceIdRef.current) {
+      if (threadChanged || workspaceChanged) {
         connectionIdRef.current++;
         if (wsRef.current) {
           wsRef.current.close();
@@ -749,9 +754,9 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       }
     }
 
-    // Connect to the new thread/org
+    // Connect to the new thread/workspace
     connectedThreadIdRef.current = threadId ?? null;
-    connectedOrgIdRef.current = nextOrgId;
+    connectedWorkspaceIdRef.current = nextWorkspaceId;
     if (threadId) {
       connectWebSocketRef.current?.(threadId);
     }
@@ -759,12 +764,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     // No cleanup function - we handle cleanup explicitly when threadId changes
     // This prevents StrictMode from closing connections on remount
     // Browser closes WebSocket automatically on navigation
-  }, [threadId, shouldShowChat, resolvedOrgId]);
+  }, [threadId, shouldShowChat, resolvedWorkspaceId]);
 
   // Reconnect on visibility change (tab becomes visible)
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && shouldShowChat && resolvedOrgId) {
+      if (document.visibilityState === 'visible' && shouldShowChat && resolvedWorkspaceId) {
         // Check if main WebSocket is dead
         const needsReconnect = !wsRef.current ||
           wsRef.current.readyState === WebSocket.CLOSED ||
@@ -799,7 +804,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [threadId, shouldShowChat, resolvedOrgId, connectPreviewWebSocket]);
+  }, [threadId, shouldShowChat, resolvedWorkspaceId, connectPreviewWebSocket]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const container = scrollContainerRef.current;
@@ -967,20 +972,23 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   }, []);
 
   async function startNewChat() {
-    if (!welcomeInput.trim() || isCreatingThread || !resolvedOrgId) return;
+    if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId) return;
 
     setIsCreatingThread(true);
     const msg = welcomeInput.trim();
     const newThreadId = crypto.randomUUID();
     // Store in sessionStorage to survive component remount during navigation
-    sessionStorage.setItem('pendingMessage', JSON.stringify({ message: msg, orgId: resolvedOrgId, threadId: newThreadId }));
+    sessionStorage.setItem(
+      pendingMessageKey,
+      JSON.stringify({ message: msg, workspaceId: resolvedWorkspaceId, threadId: newThreadId })
+    );
     setWelcomeInput('');
 
     try {
       const thread = await createThreadAction({ session_id: newThreadId });
       router.push(`/chat/${thread?.id || newThreadId}?newThread=1`);
     } catch (err) {
-      sessionStorage.removeItem('pendingMessage');
+      sessionStorage.removeItem(pendingMessageKey);
       setIsCreatingThread(false);
       setError('Failed to start a new chat');
       console.error('Failed to create thread:', err);
@@ -996,7 +1004,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   }
 
   function sendMessage() {
-    if (!input.trim() || !shouldShowChat || !resolvedOrgId) {
+    if (!input.trim() || !shouldShowChat || !resolvedWorkspaceId) {
       return;
     }
 

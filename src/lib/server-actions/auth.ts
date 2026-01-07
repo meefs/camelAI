@@ -8,12 +8,14 @@ import {
   setSessionCookie,
 } from "@/lib/auth";
 import { getAuthContext, getSessionContext } from "@/lib/auth-context";
-import type { Organization, OrgMembership, User } from "@/types";
+import type { Organization, OrgMembership, User, WorkspaceWithAccess } from "@/types";
 
 type AuthPayload = {
   user: User;
   currentOrg: Organization;
+  currentWorkspace: WorkspaceWithAccess | null;
   orgs: OrgMembership[];
+  workspaces: WorkspaceWithAccess[];
 };
 
 function toSafeUser(user: User): User {
@@ -23,6 +25,8 @@ function toSafeUser(user: User): User {
     name: user.name,
     created_at: user.created_at,
     is_superuser: user.is_superuser,
+    avatar: user.avatar,
+    is_orphaned: user.is_orphaned,
   };
 }
 
@@ -32,6 +36,9 @@ function toSafeOrg(org: Organization): Organization {
     name: org.name,
     created_at: org.created_at,
     created_by: org.created_by,
+    billing_status: org.billing_status,
+    archived: org.archived,
+    archived_at: org.archived_at,
   };
 }
 
@@ -41,6 +48,17 @@ function toSafeOrgMembership(membership: OrgMembership): OrgMembership {
     org_name: membership.org_name,
     role: membership.role,
     joined_at: membership.joined_at,
+    last_workspace_id: membership.last_workspace_id ?? null,
+  };
+}
+
+function toSafeWorkspace(workspace: WorkspaceWithAccess): WorkspaceWithAccess {
+  return {
+    ...workspace,
+    avatar: {
+      color: workspace.avatar.color,
+      content: workspace.avatar.content,
+    },
   };
 }
 
@@ -63,30 +81,52 @@ export async function login(email: string, password: string): Promise<AuthPayloa
     throw new Error("Invalid email or password");
   }
 
-  const orgs = await authDO.getUserOrgs(userId);
-  if (orgs.length === 0) {
-    const org = await authDO.createOrg(`${user.name || email.split("@")[0]}'s Workspace`, userId);
-    orgs.push({
-      org_id: org.id,
-      org_name: org.name,
-      role: "admin",
-      joined_at: org.created_at,
-    });
+  let orgs = await authDO.getUserOrgs(userId);
+  const orphanResult = await authDO.handleOrphanedUserLogin(userId);
+
+  let currentOrg: Organization;
+  let workspaces: WorkspaceWithAccess[];
+  let currentWorkspace: WorkspaceWithAccess | null;
+
+  if (orphanResult) {
+    orgs = await authDO.getUserOrgs(userId);
+    currentOrg = orphanResult.org;
+    workspaces = await authDO.listUserWorkspaces(userId, currentOrg.id);
+    currentWorkspace = workspaces.find((workspace) => workspace.id === orphanResult.workspace.id) || orphanResult.workspace;
+  } else {
+    if (orgs.length === 0) {
+      const orgName = `${user.name || 'My'}'s Organization`;
+      await authDO.createOrg(orgName, userId);
+      orgs = await authDO.getUserOrgs(userId);
+    }
+
+    const currentOrgId = orgs[0].org_id;
+    const currentMembership = orgs.find((entry) => entry.org_id === currentOrgId);
+    const org = await authDO.getOrg(currentOrgId);
+    if (!org) {
+      throw new Error("Failed to load organization");
+    }
+    currentOrg = org;
+    workspaces = await authDO.listUserWorkspaces(userId, currentOrgId);
+    const preferredWorkspaceId = currentMembership?.last_workspace_id ?? null;
+    currentWorkspace = workspaces.find((workspace) => workspace.id === preferredWorkspaceId) || workspaces[0] || null;
   }
 
-  const currentOrgId = orgs[0].org_id;
-  const currentOrg = await authDO.getOrg(currentOrgId);
-  if (!currentOrg) {
-    throw new Error("Failed to load organization");
-  }
-
-  const { sessionId } = await authDO.createSession(userId, currentOrgId);
+  const { sessionId } = await authDO.createSession(
+    userId,
+    currentOrg.id,
+    currentWorkspace?.id ?? null
+  );
   await setSessionCookie(sessionId);
 
+  const responseUser = orphanResult ? { ...user, is_orphaned: false } : user;
+
   return {
-    user: toSafeUser(user),
+    user: toSafeUser(responseUser),
     currentOrg: toSafeOrg(currentOrg),
+    currentWorkspace: currentWorkspace ? toSafeWorkspace(currentWorkspace) : null,
     orgs: orgs.map(toSafeOrgMembership),
+    workspaces: workspaces.map(toSafeWorkspace),
   };
 }
 
@@ -111,8 +151,16 @@ export async function signup(
   }
 
   const { userId, user } = await authDO.createUser(email, password, name || null);
-  const org = await authDO.createOrg(`${name || email.split("@")[0]}'s Workspace`, userId);
-  const { sessionId } = await authDO.createSession(userId, org.id);
+  const orgName = `${name || email.split("@")[0]}'s Organization`;
+  const org = await authDO.createOrg(orgName, userId);
+  const workspaces = await authDO.listUserWorkspaces(userId, org.id);
+  const currentWorkspace = workspaces[0] || null;
+
+  const { sessionId } = await authDO.createSession(
+    userId,
+    org.id,
+    currentWorkspace?.id ?? null
+  );
   await setSessionCookie(sessionId);
 
   const orgs = await authDO.getUserOrgs(userId);
@@ -120,7 +168,9 @@ export async function signup(
   return {
     user: toSafeUser(user),
     currentOrg: toSafeOrg(org),
+    currentWorkspace: currentWorkspace ? toSafeWorkspace(currentWorkspace) : null,
     orgs: orgs.map(toSafeOrgMembership),
+    workspaces: workspaces.map(toSafeWorkspace),
   };
 }
 
@@ -147,7 +197,12 @@ export async function switchOrg(orgId: string): Promise<Organization> {
     throw new Error("You are not a member of this organization");
   }
 
-  await authDO.switchSessionOrg(sessionContext.sessionId, orgId);
+  const orgs = await authDO.getUserOrgs(sessionContext.session.user_id);
+  const membership = orgs.find((entry) => entry.org_id === orgId);
+  const workspaces = await authDO.listUserWorkspaces(sessionContext.session.user_id, orgId);
+  const preferredWorkspaceId = membership?.last_workspace_id ?? null;
+  const nextWorkspace = workspaces.find((workspace) => workspace.id === preferredWorkspaceId) || workspaces[0] || null;
+  await authDO.switchSessionOrg(sessionContext.sessionId, orgId, nextWorkspace?.id ?? null);
   const currentOrg = await authDO.getOrg(orgId);
   if (!currentOrg) {
     throw new Error("Organization not found");
@@ -161,6 +216,10 @@ export async function getAuthState(): Promise<AuthPayload | null> {
   return {
     user: toSafeUser(authContext.user),
     currentOrg: toSafeOrg(authContext.currentOrg),
+    currentWorkspace: authContext.currentWorkspace
+      ? toSafeWorkspace(authContext.currentWorkspace)
+      : null,
     orgs: authContext.orgs.map(toSafeOrgMembership),
+    workspaces: authContext.workspaces?.map(toSafeWorkspace) ?? [],
   };
 }

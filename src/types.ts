@@ -100,18 +100,30 @@ export interface WorkspaceOperationResult {
 }
 
 // Auth types
+export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer';
+export type WorkspaceAccessLevel = 'full' | 'read_only' | 'none';
+export type BillingStatus = 'free' | 'paying';
+
+export interface Avatar {
+  color: string;
+  content: string;
+}
+
 export interface User {
   id: string;
   email: string;
   name: string | null;
   created_at: number;
   is_superuser: boolean;
+  avatar: Avatar;
+  is_orphaned: boolean;
 }
 
 export interface Session {
   id: string;
   user_id: string;
   org_id: string;
+  workspace_id: string | null;
   created_at: number;
   expires_at: number;
 }
@@ -121,13 +133,17 @@ export interface Organization {
   name: string;
   created_at: number;
   created_by: string;
+  billing_status: BillingStatus;
+  archived: boolean;
+  archived_at?: number | null;
 }
 
 export interface OrgMembership {
   org_id: string;
   org_name: string;
-  role: 'admin' | 'member';
+  role: OrgRole;
   joined_at: number;
+  last_workspace_id?: string | null;
 }
 
 export interface Invitation {
@@ -135,17 +151,51 @@ export interface Invitation {
   org_id: string;
   org_name: string;
   email: string;
-  role: 'admin' | 'member';
+  role: OrgRole;
   invited_by: string;
   created_at: number;
   expires_at: number;
+}
+
+export interface Workspace {
+  id: string;
+  org_id: string;
+  name: string;
+  description: string | null;
+  created_by: string;
+  created_at: number;
+  avatar: Avatar;
+  archived: boolean;
+  archived_at?: number | null;
+}
+
+export interface WorkspaceWithAccess extends Workspace {
+  access_level: WorkspaceAccessLevel;
+}
+
+export interface WorkspaceMember {
+  user_id: string;
+  access_level: WorkspaceAccessLevel;
+  granted_by: string;
+  granted_at: number;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  action: string;
+  actor_id: string;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+  created_at: number;
 }
 
 // Auth context types for frontend
 export interface AuthState {
   user: User | null;
   currentOrg: Organization | null;
+  currentWorkspace?: WorkspaceWithAccess | null;
   orgs: OrgMembership[];
+  workspaces?: WorkspaceWithAccess[];
   loading: boolean;
   error: string | null;
 }

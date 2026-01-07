@@ -16,7 +16,7 @@ const PORT = parseInt(process.env.CONTROL_PLANE_PORT || '9000', 10);
 const VERSION = '2026-01-03-v2';
 
 // No auth required - control plane is only accessible from within the container
-// or via containerFetch from the OrgContainer DO. Container isolation is the security boundary.
+// or via containerFetch from the WorkspaceContainer DO. Container isolation is the security boundary.
 
 /**
  * Parse JSON body from request

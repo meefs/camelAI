@@ -1,13 +1,13 @@
 /**
- * OrgContainer - Container class for per-org sandbox containers.
+ * WorkspaceContainer - Container class for per-workspace sandbox containers.
  * Uses @cloudflare/containers to manage container lifecycle with env vars at startup.
  */
 import { Container } from '@cloudflare/containers';
 import { getTempR2Credentials } from './r2-credentials';
 import type { DoRpcService } from './rpc-service';
 
-export interface OrgContainerEnv {
-  SANDBOX: DurableObjectNamespace<OrgContainer>;
+export interface WorkspaceContainerEnv {
+  SANDBOX: DurableObjectNamespace<WorkspaceContainer>;
   DO_RPC: Service<DoRpcService>;
   R2_BUCKET: R2Bucket;
   EMAIL_TO_USER: KVNamespace;
@@ -122,24 +122,24 @@ function generateContainerToken(): string {
 const TOKEN_TTL_SECONDS = 86400;
 
 /**
- * Create a deploy token for an org's container.
+ * Create a deploy token for a workspace container.
  * Always generates a fresh token with TTL - no reuse of existing tokens.
- * Stores token → orgId mapping; prefix is derived at deploy time.
+ * Stores token → workspaceId mapping; prefix is derived at deploy time.
  */
 async function createContainerToken(
   kv: KVNamespace,
-  orgId: string
+  workspaceId: string
 ): Promise<string> {
   const token = generateContainerToken();
-  await kv.put(`platform_script_token:${token}`, orgId, { expirationTtl: TOKEN_TTL_SECONDS });
+  await kv.put(`platform_script_token:${token}`, workspaceId, { expirationTtl: TOKEN_TTL_SECONDS });
   return token;
 }
 
 /**
- * OrgContainer - One container per organization.
+ * WorkspaceContainer - One container per workspace.
  * Extends Container to handle WebSocket proxying and control plane operations.
  */
-export class OrgContainer extends Container<OrgContainerEnv> {
+export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
   // Default port for WebSocket proxying (ws-server)
   defaultPort = WS_SERVER_PORT;
 
@@ -149,32 +149,44 @@ export class OrgContainer extends Container<OrgContainerEnv> {
   // Enable outbound internet for API calls
   enableInternet = true;
 
-  // Track the org ID for this container
+  // Track the workspace + org IDs for this container
+  private workspaceId: string | null = null;
   private orgId: string | null = null;
 
   // Lifecycle hooks
   override onStart(): void {
-    console.log(`[OrgContainer] Container started for org: ${this.orgId || 'unknown'}`);
+    console.log(
+      `[WorkspaceContainer] Container started`,
+      { workspaceId: this.workspaceId || 'unknown', orgId: this.orgId || 'unknown' }
+    );
   }
 
   override onStop(): void {
-    console.log(`[OrgContainer] Container stopped for org: ${this.orgId || 'unknown'}`);
+    console.log(
+      `[WorkspaceContainer] Container stopped`,
+      { workspaceId: this.workspaceId || 'unknown', orgId: this.orgId || 'unknown' }
+    );
   }
 
   override onError(error: unknown): void {
-    console.error(`[OrgContainer] Container error for org: ${this.orgId || 'unknown'}`, error);
+    console.error(
+      `[WorkspaceContainer] Container error`,
+      { workspaceId: this.workspaceId || 'unknown', orgId: this.orgId || 'unknown', error }
+    );
     throw error;
   }
 
   /**
    * Build environment variables for container startup.
    */
-  async buildEnvVars(orgId: string): Promise<Record<string, string>> {
+  async buildEnvVars(workspaceId: string, orgId: string): Promise<Record<string, string>> {
+    this.workspaceId = workspaceId;
     this.orgId = orgId;
 
     const envVars: Record<string, string> = {
       ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
       ORG_ID: orgId,
+      WORKSPACE_ID: workspaceId,
     };
 
     // R2 config
@@ -183,8 +195,8 @@ export class OrgContainer extends Container<OrgContainerEnv> {
     if (this.env.R2_MOUNT_DIR) envVars.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
     if (this.env.R2_MOUNT_READONLY) envVars.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
 
-    // R2 prefix for org-scoped access
-    const prefix = `${orgId}/`;
+    // R2 prefix for workspace-scoped access (legacy org-id workspaces keep old prefix)
+    const prefix = workspaceId === orgId ? `${orgId}/` : `${orgId}/${workspaceId}/`;
     envVars.R2_PREFIX = prefix;
 
     // Generate temp R2 credentials
@@ -209,7 +221,7 @@ export class OrgContainer extends Container<OrgContainerEnv> {
           await this.env.R2_BUCKET.put(placeholderKey, '');
         }
       } catch (e) {
-        console.error('[OrgContainer] Failed to get R2 credentials:', e);
+        console.error('[WorkspaceContainer] Failed to get R2 credentials:', e);
       }
     }
 
@@ -224,7 +236,7 @@ export class OrgContainer extends Container<OrgContainerEnv> {
       envVars.WORKER_BASE_URL = this.env.WORKER_BASE_URL;
       envVars.CLOUDFLARE_API_BASE_URL = `${this.env.WORKER_BASE_URL}/client/v4`;
 
-      const containerToken = await createContainerToken(this.env.EMAIL_TO_USER, orgId);
+      const containerToken = await createContainerToken(this.env.EMAIL_TO_USER, workspaceId);
       envVars.CLOUDFLARE_API_TOKEN = containerToken;
     }
 
@@ -233,48 +245,49 @@ export class OrgContainer extends Container<OrgContainerEnv> {
       const rpc = this.env.DO_RPC as typeof this.env.DO_RPC & { [Symbol.dispose]?: () => void };
       let integrationEnvVars: Record<string, string>;
       try {
-        integrationEnvVars = await rpc.getOrgIntegrationEnvVars(orgId);
+        integrationEnvVars = await rpc.getWorkspaceIntegrationEnvVars(workspaceId);
       } finally {
         rpc[Symbol.dispose]?.();
       }
-      console.log('[OrgContainer] Integration env vars:', Object.entries(integrationEnvVars).map(
+      console.log('[WorkspaceContainer] Integration env vars:', Object.entries(integrationEnvVars).map(
         ([k, v]) => `${k}=${v.length} chars`
       ));
       Object.assign(envVars, integrationEnvVars);
     } catch (e) {
-      console.error('[OrgContainer] Failed to load integration env vars:', e);
+      console.error('[WorkspaceContainer] Failed to load integration env vars:', e);
     }
 
     return envVars;
   }
 
   /**
-   * Start container with org-specific environment variables.
+   * Start container with workspace-specific environment variables.
    * If container is already running, returns immediately without rebuilding env vars.
    */
-  async startForOrg(orgId: string): Promise<void> {
+  async startForWorkspace(workspaceId: string, orgId: string): Promise<void> {
+    this.workspaceId = workspaceId;
     this.orgId = orgId;
 
     // Only build env vars once per container instance - they're set as class property
     // so Container class uses them for any start path (including auto-restarts)
     if (!(this as any).envVars || Object.keys((this as any).envVars).length === 0) {
-      console.log('[OrgContainer] Building env vars for org:', orgId);
-      const envVars = await this.buildEnvVars(orgId);
+      console.log('[WorkspaceContainer] Building env vars for workspace:', { workspaceId, orgId });
+      const envVars = await this.buildEnvVars(workspaceId, orgId);
       (this as any).envVars = envVars;
     }
 
     const state = await this.getState();
-    console.log('[OrgContainer] Container state:', state.status, 'for org:', orgId);
+    console.log('[WorkspaceContainer] Container state:', state.status, 'for workspace:', workspaceId);
 
     // Only skip if container is fully healthy (ready to serve requests)
     // 'running' means container is still booting - NOT ready yet
     if (state.status === 'healthy') {
-      console.log('[OrgContainer] startForOrg skipping start; container healthy', { orgId });
+      console.log('[WorkspaceContainer] startForWorkspace skipping start; container healthy', { workspaceId });
       return;
     }
 
     // Container is stopped, stopping, or still 'running' (booting) - need to wait for ports
-    console.log('[OrgContainer] Starting/waiting for container', { orgId, status: state.status });
+    console.log('[WorkspaceContainer] Starting/waiting for container', { workspaceId, orgId, status: state.status });
 
     await this.startAndWaitForPorts({
       ports: [WS_SERVER_PORT, CONTROL_PLANE_PORT],
@@ -284,7 +297,7 @@ export class OrgContainer extends Container<OrgContainerEnv> {
       },
     });
 
-    console.log('[OrgContainer] Container started and ports ready for org:', orgId);
+    console.log('[WorkspaceContainer] Container started and ports ready for workspace:', workspaceId);
   }
 
   /**
@@ -389,18 +402,21 @@ export class OrgContainer extends Container<OrgContainerEnv> {
 }
 
 /**
- * Get sandbox ID for an org (one container per org).
+ * Get sandbox ID for a workspace (one container per workspace).
  */
-export function getContainerIdForOrg(org: string): string {
-  const safeOrg = org.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return `org-${safeOrg}`.slice(0, 63);
+export function getContainerIdForWorkspace(workspaceId: string): string {
+  const safeId = workspaceId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `ws-${safeId}`.slice(0, 63);
 }
 
 /**
- * Get container stub for an org.
+ * Get container stub for a workspace.
  */
-export function getOrgContainer(env: OrgContainerEnv, org: string): DurableObjectStub<OrgContainer> {
-  const containerId = getContainerIdForOrg(org);
+export function getWorkspaceContainer(
+  env: WorkspaceContainerEnv,
+  workspaceId: string
+): DurableObjectStub<WorkspaceContainer> {
+  const containerId = getContainerIdForWorkspace(workspaceId);
   return env.SANDBOX.get(env.SANDBOX.idFromName(containerId));
 }
 
@@ -410,29 +426,35 @@ export function getOrgContainer(env: OrgContainerEnv, org: string): DurableObjec
  */
 export async function handleWebSocketUpgrade(
   request: Request,
-  env: OrgContainerEnv,
-  org: string
+  env: WorkspaceContainerEnv,
+  workspaceId: string,
+  orgId: string
 ): Promise<Response> {
   const url = new URL(request.url);
   console.log('[handleWebSocketUpgrade] Starting', {
-    org,
+    workspaceId,
+    orgId,
     url: url.toString(),
     method: request.method,
     upgrade: request.headers.get('Upgrade'),
     connection: request.headers.get('Connection'),
   });
 
-  const container = getOrgContainer(env, org);
+  const container = getWorkspaceContainer(env, workspaceId);
   const maxRetries = 2;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      console.log('[handleWebSocketUpgrade] Starting container', { org, attempt });
+      console.log('[handleWebSocketUpgrade] Starting container', { workspaceId, orgId, attempt });
 
-      // Start container if not running (startForOrg is smart about checking state)
-      await container.startForOrg(org);
+      // Start container if not running (startForWorkspace is smart about checking state)
+      await container.startForWorkspace(workspaceId, orgId);
 
-      console.log('[handleWebSocketUpgrade] Container started, proxying WebSocket via fetch()', { org, attempt });
+      console.log('[handleWebSocketUpgrade] Container started, proxying WebSocket via fetch()', {
+        workspaceId,
+        orgId,
+        attempt,
+      });
 
       // IMPORTANT: Use container.fetch() directly, NOT a custom method.
       // The Container class's fetch() handles WebSocket forwarding specially.
@@ -441,7 +463,8 @@ export async function handleWebSocketUpgrade(
       const response = await container.fetch(request);
 
       console.log('[handleWebSocketUpgrade] fetch() response', {
-        org,
+        workspaceId,
+        orgId,
         attempt,
         status: response.status,
         webSocket: !!response.webSocket,
@@ -450,13 +473,14 @@ export async function handleWebSocketUpgrade(
       return response;
     } catch (e) {
       console.error('[handleWebSocketUpgrade] Error:', {
-        org,
+        workspaceId,
+        orgId,
         attempt,
         error: String(e),
         stack: e instanceof Error ? e.stack : undefined,
       });
       if (attempt < maxRetries) {
-        console.log('[handleWebSocketUpgrade] Retrying after error...', { org, attempt });
+        console.log('[handleWebSocketUpgrade] Retrying after error...', { workspaceId, attempt });
         await new Promise(resolve => setTimeout(resolve, 1000));
         continue;
       }

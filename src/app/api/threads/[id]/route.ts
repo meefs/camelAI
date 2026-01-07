@@ -20,7 +20,16 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
       return unauthorizedResponse();
     }
 
-    const thread = await chatDO.getThread(id, session.org_id);
+    const workspaceId = session.workspace_id;
+    if (!workspaceId) {
+      return errorResponse('No workspace selected', 400);
+    }
+    const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id);
+    if (access === 'none') {
+      return errorResponse('Workspace not found', 404);
+    }
+
+    const thread = await chatDO.getThread(id, workspaceId);
     if (!thread) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
@@ -50,7 +59,16 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
       return errorResponse('Title is required', 400);
     }
 
-    const thread = await chatDO.updateThread(id, title, session.org_id);
+    const workspaceId = session.workspace_id;
+    if (!workspaceId) {
+      return errorResponse('No workspace selected', 400);
+    }
+    const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id);
+    if (access !== 'full') {
+      return errorResponse('Workspace access denied', 403);
+    }
+
+    const thread = await chatDO.updateThread(id, title, workspaceId);
     if (!thread) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
@@ -74,12 +92,21 @@ export async function DELETE(_request: NextRequest, { params }: RouteContext) {
       return unauthorizedResponse();
     }
 
-    const thread = await chatDO.getThread(id, session.org_id);
+    const workspaceId = session.workspace_id;
+    if (!workspaceId) {
+      return errorResponse('No workspace selected', 400);
+    }
+    const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id);
+    if (access !== 'full') {
+      return errorResponse('Workspace access denied', 403);
+    }
+
+    const thread = await chatDO.getThread(id, workspaceId);
     if (!thread) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    await chatDO.deleteThread(id, session.org_id);
+    await chatDO.deleteThread(id, workspaceId);
     return jsonResponse({ success: true });
   } catch (error) {
     console.error('Error deleting thread:', error);

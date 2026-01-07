@@ -72,3 +72,23 @@ export async function requireAuthContextLite(): Promise<AuthContextLite> {
   }
   return authContext;
 }
+
+export async function requireWorkspaceAccess(
+  workspaceId: string,
+  options: { requireWrite?: boolean } = {}
+): Promise<{ session: Session; access: 'full' | 'read_only' }> {
+  const session = await requireSession();
+  const workspace = await authDO.getWorkspace(workspaceId);
+  if (!workspace || workspace.org_id !== session.org_id) {
+    throw new Error('Workspace not found');
+  }
+
+  const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id);
+  if (access === 'none') {
+    throw new Error('Workspace not found');
+  }
+  if (options.requireWrite && access !== 'full') {
+    throw new Error('Read-only workspace access');
+  }
+  return { session, access };
+}

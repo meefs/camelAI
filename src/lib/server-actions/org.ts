@@ -7,8 +7,26 @@ import {
   validateConfig,
   validateCredentials,
 } from '@/lib/integration-registry';
-import type { CreateApiTokenInput } from '@/types';
+import type { CreateApiTokenInput, OrgRole } from '@/types';
 import { requireOrgAdmin, requireOrgMember, requireSession } from '@/lib/server-guards';
+
+async function resolveWorkspaceId(
+  session: { user_id: string; workspace_id?: string | null },
+  orgId: string
+): Promise<string> {
+  const workspaces = await authDO.listUserWorkspaces(session.user_id, orgId);
+  const memberships = await authDO.getUserOrgs(session.user_id);
+  const preferredWorkspaceId = memberships.find((entry) => entry.org_id === orgId)?.last_workspace_id ?? null;
+  const current = session.workspace_id
+    ? workspaces.find((workspace) => workspace.id === session.workspace_id)
+    : null;
+  const preferred = workspaces.find((workspace) => workspace.id === preferredWorkspaceId);
+  const workspaceId = current?.id ?? preferred?.id ?? workspaces[0]?.id;
+  if (!workspaceId) {
+    throw new Error('No workspace available for this organization');
+  }
+  return workspaceId;
+}
 
 export async function createOrg(name: string) {
   const session = await requireSession();
@@ -22,14 +40,14 @@ export async function createOrg(name: string) {
 }
 
 export async function updateOrgName(orgId: string, name: string) {
-  await requireOrgAdmin(orgId, 'Only admins can update the organization');
+  const session = await requireOrgAdmin(orgId, 'Only admins can update the organization');
   if (!name || typeof name !== 'string' || name.trim().length === 0) {
     throw new Error('Invalid organization name');
   }
   if (name.length > 100) {
     throw new Error('Organization name must be 100 characters or less');
   }
-  await authDO.updateOrgName(orgId, name.trim());
+  await authDO.updateOrgName(orgId, name.trim(), session.user_id);
   const org = await authDO.getOrg(orgId);
   if (!org) {
     throw new Error('Organization not found');
@@ -40,15 +58,15 @@ export async function updateOrgName(orgId: string, name: string) {
 export async function updateOrgMemberRole(
   orgId: string,
   userId: string,
-  role: 'admin' | 'member'
+  role: OrgRole
 ) {
   const session = await requireOrgAdmin(orgId, 'Only admins can update member roles');
 
   if (!userId || typeof userId !== 'string') {
     throw new Error('User ID is required');
   }
-  if (role !== 'admin' && role !== 'member') {
-    throw new Error('Role must be "admin" or "member"');
+  if (!['admin', 'member', 'viewer'].includes(role)) {
+    throw new Error('Role must be "admin", "member", or "viewer"');
   }
 
   if (userId === session.user_id) {
@@ -60,16 +78,21 @@ export async function updateOrgMemberRole(
     throw new Error('User is not a member of this organization');
   }
 
-  if (role === 'member') {
-    const members = await authDO.getOrgMembers(orgId);
-    const admins = members.filter((member) => member.role === 'admin');
+  const members = await authDO.getOrgMembers(orgId);
+  const targetMember = members.find((member) => member.user.id === userId);
+  if (targetMember?.role === 'owner') {
+    throw new Error('Cannot change the owner role. Transfer ownership first.');
+  }
+
+  if (role !== 'admin') {
+    const admins = members.filter((member) => member.role === 'admin' || member.role === 'owner');
     const isTargetCurrentlyAdmin = admins.some((member) => member.user.id === userId);
     if (isTargetCurrentlyAdmin && admins.length === 1) {
-      throw new Error('Cannot demote the last admin. Promote another member to admin first.');
+      throw new Error('Cannot demote the last admin or owner. Promote another member to admin first.');
     }
   }
 
-  await authDO.updateOrgMemberRole(orgId, userId, role);
+  await authDO.updateOrgMemberRole(orgId, userId, role, session.user_id);
   return { success: true };
 }
 
@@ -91,10 +114,13 @@ export async function removeOrgMember(orgId: string, userId: string) {
   }
 
   const targetMember = members.find((member) => member.user.id === userId);
+  if (targetMember?.role === 'owner') {
+    throw new Error('Cannot remove the organization owner. Transfer ownership first.');
+  }
   if (targetMember?.role === 'admin') {
-    const admins = members.filter((member) => member.role === 'admin');
+    const admins = members.filter((member) => member.role === 'admin' || member.role === 'owner');
     if (admins.length === 1) {
-      throw new Error('Cannot remove the last admin. Promote another member to admin first.');
+      throw new Error('Cannot remove the last admin or owner. Promote another member to admin first.');
     }
   }
 
@@ -105,22 +131,22 @@ export async function removeOrgMember(orgId: string, userId: string) {
     }
   }
 
-  await authDO.removeOrgMember(orgId, userId);
+  await authDO.removeOrgMember(orgId, userId, session.user_id);
   return { success: true };
 }
 
 export async function createInvitation(
   orgId: string,
   email: string,
-  role: 'admin' | 'member' = 'member'
+  role: OrgRole = 'member'
 ) {
   const session = await requireOrgAdmin(orgId, 'Only admins can invite members');
 
   if (!email || !isValidEmail(email)) {
     throw new Error('Valid email is required');
   }
-  if (role !== 'admin' && role !== 'member') {
-    throw new Error('Role must be "admin" or "member"');
+  if (!['admin', 'member', 'viewer'].includes(role)) {
+    throw new Error('Role must be "admin", "member", or "viewer"');
   }
 
   const existingUser = await authDO.getUserByEmail(email);
@@ -159,6 +185,7 @@ export async function createIntegration(
   }
 ) {
   const session = await requireOrgAdmin(orgId, 'Only admins can create integrations');
+  const workspaceId = await resolveWorkspaceId(session, orgId);
 
   const { integration_type, name, config, credentials } = input;
   const definition = getIntegrationDefinition(integration_type);
@@ -182,7 +209,7 @@ export async function createIntegration(
     throw new Error(credentialErrors.join(', '));
   }
 
-  return authDO.createOrgIntegration(orgId, session.user_id, {
+  return authDO.createWorkspaceIntegration(workspaceId, session.user_id, {
     integration_type,
     name: name.trim(),
     config: config || {},
@@ -200,8 +227,9 @@ export async function updateIntegration(
     enabled?: boolean;
   }
 ) {
-  await requireOrgAdmin(orgId, 'Only admins can update integrations');
-  const existing = await authDO.getOrgIntegration(orgId, integrationId);
+  const session = await requireOrgAdmin(orgId, 'Only admins can update integrations');
+  const workspaceId = await resolveWorkspaceId(session, orgId);
+  const existing = await authDO.getWorkspaceIntegration(workspaceId, integrationId);
   if (!existing) {
     throw new Error('Integration not found');
   }
@@ -229,7 +257,7 @@ export async function updateIntegration(
     }
   }
 
-  const updated = await authDO.updateOrgIntegration(orgId, integrationId, {
+  const updated = await authDO.updateWorkspaceIntegration(workspaceId, integrationId, session.user_id, {
     name: input.name?.trim(),
     config: input.config,
     credentials: input.credentials,
@@ -242,24 +270,26 @@ export async function updateIntegration(
 }
 
 export async function deleteIntegration(orgId: string, integrationId: string) {
-  await requireOrgAdmin(orgId, 'Only admins can delete integrations');
-  const existing = await authDO.getOrgIntegration(orgId, integrationId);
+  const session = await requireOrgAdmin(orgId, 'Only admins can delete integrations');
+  const workspaceId = await resolveWorkspaceId(session, orgId);
+  const existing = await authDO.getWorkspaceIntegration(workspaceId, integrationId);
   if (!existing) {
     throw new Error('Integration not found');
   }
-  await authDO.deleteOrgIntegration(orgId, integrationId);
+  await authDO.deleteWorkspaceIntegration(workspaceId, integrationId, session.user_id);
   return { success: true };
 }
 
 export async function createApiToken(orgId: string, input: CreateApiTokenInput) {
   const session = await requireOrgAdmin(orgId, 'Only admins can create API tokens');
+  const workspaceId = await resolveWorkspaceId(session, orgId);
 
   if (!input.name || input.name.trim().length === 0) {
     throw new Error('Token name is required');
   }
 
   if (input.integration_id) {
-    const integration = await authDO.getOrgIntegration(orgId, input.integration_id);
+    const integration = await authDO.getWorkspaceIntegration(workspaceId, input.integration_id);
     if (!integration) {
       throw new Error('Integration not found');
     }
@@ -289,6 +319,7 @@ export async function deleteApiToken(orgId: string, tokenId: string) {
 }
 
 export async function getOrgIntegrations(orgId: string) {
-  await requireOrgMember(orgId);
-  return authDO.getOrgIntegrations(orgId);
+  const session = await requireOrgMember(orgId);
+  const workspaceId = await resolveWorkspaceId(session, orgId);
+  return authDO.getWorkspaceIntegrations(workspaceId);
 }

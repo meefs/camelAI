@@ -77,9 +77,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return errorResponse('Failed to accept invitation', 500);
     }
 
+    const workspaces = await authDO.listUserWorkspaces(session.user_id, orgId);
+    const workspaceId = workspaces[0]?.id ?? null;
+    await authDO.switchSessionOrg(sessionId, orgId, workspaceId);
+
     return jsonResponse({
       success: true,
       org: invitation.org,
+      workspace: workspaces[0] ?? null,
     });
   } catch (error) {
     console.error('Error accepting invitation:', error);

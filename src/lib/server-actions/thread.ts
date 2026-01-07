@@ -1,5 +1,6 @@
 'use server';
 
+import * as authDO from '@/lib/auth-do';
 import * as chatDO from '@/lib/chat-do';
 import { requireSession } from '@/lib/server-guards';
 import { getUserByIdCached } from '@/lib/auth-context';
@@ -41,14 +42,30 @@ async function hydrateThreads(threads: Thread[]) {
   }));
 }
 
+async function requireWorkspaceId(requireWrite = false) {
+  const session = await requireSession();
+  const workspaceId = session.workspace_id;
+  if (!workspaceId) {
+    throw new Error('No workspace selected');
+  }
+  const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id);
+  if (access === 'none') {
+    throw new Error('Workspace not found');
+  }
+  if (requireWrite && access !== 'full') {
+    throw new Error('Workspace access denied');
+  }
+  return { session, workspaceId };
+}
+
 export async function createThread(input: {
   title?: string;
   session_id?: string;
 }) {
-  const session = await requireSession();
+  const { session, workspaceId } = await requireWorkspaceId(true);
 
   const thread = await chatDO.createThread(
-    session.org_id,
+    workspaceId,
     input.title,
     session.user_id,
     input.session_id
@@ -57,15 +74,15 @@ export async function createThread(input: {
 }
 
 export async function getThreads() {
-  const session = await requireSession();
-  const threads = await chatDO.getThreads(session.org_id);
+  const { workspaceId } = await requireWorkspaceId();
+  const threads = await chatDO.getThreads(workspaceId);
   const hydrated = await hydrateThreads(threads);
   return toSerializable(hydrated);
 }
 
 export async function getThreadsPage(params: { offset?: number; limit?: number } = {}) {
-  const session = await requireSession();
-  const page = await chatDO.getThreadsPaginated(session.org_id, params);
+  const { workspaceId } = await requireWorkspaceId();
+  const page = await chatDO.getThreadsPaginated(workspaceId, params);
   const hydratedItems = await hydrateThreads(page.items);
   return toSerializable({
     ...page,
@@ -74,14 +91,14 @@ export async function getThreadsPage(params: { offset?: number; limit?: number }
 }
 
 export async function getThreadMessages(threadId: string) {
-  const session = await requireSession();
-  const messages = await chatDO.getMessages(threadId, session.org_id);
+  const { workspaceId } = await requireWorkspaceId();
+  const messages = await chatDO.getMessages(threadId, workspaceId);
   return toSerializable(messages);
 }
 
 export async function updateThreadTitle(threadId: string, title: string) {
-  const session = await requireSession();
-  const thread = await chatDO.updateThread(threadId, title, session.org_id);
+  const { workspaceId } = await requireWorkspaceId(true);
+  const thread = await chatDO.updateThread(threadId, title, workspaceId);
   if (!thread) {
     throw new Error('Not found');
   }
@@ -89,7 +106,7 @@ export async function updateThreadTitle(threadId: string, title: string) {
 }
 
 export async function deleteThread(threadId: string) {
-  const session = await requireSession();
-  await chatDO.deleteThread(threadId, session.org_id);
+  const { workspaceId } = await requireWorkspaceId(true);
+  await chatDO.deleteThread(threadId, workspaceId);
   return { success: true };
 }

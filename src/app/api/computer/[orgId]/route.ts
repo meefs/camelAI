@@ -16,7 +16,7 @@ interface RouteParams {
 export async function GET(_request: NextRequest, { params }: RouteParams) {
   try {
     void _request;
-    const { orgId } = await params;
+    const { orgId: workspaceId } = await params;
     const sessionId = await getSessionId();
     if (!sessionId) {
       return unauthorizedResponse();
@@ -27,11 +27,17 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       return unauthorizedResponse();
     }
 
-    if (session.org_id !== orgId) {
-      return forbiddenResponse('Organization mismatch');
+    const workspace = await authDO.getWorkspace(workspaceId);
+    if (!workspace || workspace.org_id !== session.org_id) {
+      return forbiddenResponse('Workspace not found');
     }
 
-    const listing = await computerDO.listWorkspaceFiles(orgId);
+    const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id);
+    if (access === 'none') {
+      return forbiddenResponse('Workspace not found');
+    }
+
+    const listing = await computerDO.listWorkspaceFiles(workspaceId);
     return jsonResponse(listing);
   } catch (error) {
     console.error('Error listing workspace files:', error);

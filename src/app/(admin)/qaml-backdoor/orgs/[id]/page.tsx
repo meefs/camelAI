@@ -49,14 +49,21 @@ export default async function AdminOrgDetailPage({ params }: Props) {
       throw new Error('Forbidden');
     }
 
-    await computerDO.resetSandboxContainer(id);
+    const workspaces = await authDO.listOrgWorkspaces(id);
+    if (workspaces[0]) {
+      await computerDO.resetSandboxContainer(workspaces[0].id);
+    }
   }
 
-  const [members, invitations, integrations] = await Promise.all([
+  const [members, invitations, workspaces] = await Promise.all([
     authDO.getOrgMembers(id),
     authDO.getOrgInvitations(id),
-    authDO.getOrgIntegrations(id),
+    authDO.listOrgWorkspaces(id),
   ]);
+
+  const integrations = workspaces[0]
+    ? await authDO.getWorkspaceIntegrations(workspaces[0].id)
+    : [];
 
   // Create plain object for Client Component
   const safeOrg = {
@@ -64,6 +71,9 @@ export default async function AdminOrgDetailPage({ params }: Props) {
     name: org.name,
     created_by: org.created_by,
     created_at: org.created_at,
+    billing_status: org.billing_status,
+    archived: org.archived,
+    archived_at: org.archived_at,
   };
 
   return (

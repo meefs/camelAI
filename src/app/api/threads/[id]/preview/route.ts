@@ -23,8 +23,17 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
       return unauthorizedResponse();
     }
 
-    // Verify thread belongs to user's org (prevents cross-tenant leak)
-    const thread = await chatDO.getThread(id, session.org_id);
+    const workspaceId = session.workspace_id;
+    if (!workspaceId) {
+      return NextResponse.json({ error: 'No workspace selected' }, { status: 400 });
+    }
+    const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id);
+    if (access === 'none') {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+
+    // Verify thread belongs to user's workspace (prevents cross-tenant leak)
+    const thread = await chatDO.getThread(id, workspaceId);
     if (!thread) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }

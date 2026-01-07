@@ -62,7 +62,7 @@ describe('Auth flow (full-stack with DOs)', () => {
   });
 
   describe('Organization creation and membership', () => {
-    it('should create an org and add creator as admin', async () => {
+    it('should create an org and add creator as owner', async () => {
       const email = testEmail();
       const { userId } = await rpc.createUser(email, 'password123', 'Test User');
 
@@ -76,7 +76,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       const isMember = await rpc.isOrgMember(userId, org.id);
       expect(isMember).toBe(true);
 
-      // Creator should be an admin
+      // Creator should be an admin (owners are admins)
       const isAdmin = await rpc.isOrgAdmin(userId, org.id);
       expect(isAdmin).toBe(true);
     });
@@ -91,7 +91,8 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(orgs).toHaveLength(1);
       expect(orgs[0].org_id).toBe(org.id);
       expect(orgs[0].org_name).toBe('My Workspace');
-      expect(orgs[0].role).toBe('admin');
+      expect(orgs[0].role).toBe('owner');
+      expect(orgs[0].last_workspace_id).toBeTypeOf('string');
     });
   });
 
@@ -106,11 +107,13 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(sessionId).toBeDefined();
       expect(sessionData.user_id).toBe(userId);
       expect(sessionData.org_id).toBe(org.id);
+      expect(sessionData.workspace_id).toBeTypeOf('string');
 
       // Should be able to retrieve session
       const retrieved = await rpc.getSession(sessionId);
       expect(retrieved).not.toBeNull();
       expect(retrieved!.user_id).toBe(userId);
+      expect(retrieved!.workspace_id).toBeTypeOf('string');
     });
 
     it('should destroy a session', async () => {
@@ -136,6 +139,21 @@ describe('Auth flow (full-stack with DOs)', () => {
 
       const session = await rpc.getSession(sessionId);
       expect(session!.org_id).toBe(org2.id);
+      expect(session!.workspace_id).toBeTypeOf('string');
+    });
+
+    it('persists last workspace per org when switching workspace', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
+      const org = await rpc.createOrg('Workspace Org', userId);
+      const { sessionId } = await rpc.createSession(userId, org.id);
+
+      const workspace = await rpc.createWorkspace(org.id, 'Secondary', userId);
+      await rpc.switchSessionWorkspace(sessionId, workspace.id);
+
+      const orgs = await rpc.getUserOrgs(userId);
+      const membership = orgs.find((entry) => entry.org_id === org.id);
+      expect(membership?.last_workspace_id).toBe(workspace.id);
     });
   });
 

@@ -18,7 +18,7 @@ const encoder = new TextEncoder();
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params;
-    const auth = await requireWorkspaceSession(id);
+    const auth = await requireWorkspaceSession(id, { requireWrite: true });
     if (auth.response) return auth.response;
 
     const payload = await parseJson<CreatePayload>(request);

@@ -36,9 +36,52 @@ async function waitForServer(url: string, timeout: number): Promise<boolean> {
   return false;
 }
 
+async function waitForAuthReady(baseUrl: string, timeout = 60000): Promise<boolean> {
+  const startTime = Date.now();
+  const payload = JSON.stringify({ email: 'ready-check@example.com', password: 'not-a-real-password' });
+
+  while (Date.now() - startTime < timeout) {
+    try {
+      const response = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      });
+      if (response.status !== 500) {
+        return true;
+      }
+    } catch {
+      // ignore and retry
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  return false;
+}
+
+async function waitForRouteReady(url: string, init: RequestInit, timeout = 60000): Promise<boolean> {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeout) {
+    try {
+      const response = await fetch(url, init);
+      if (response.status !== 500) {
+        return true;
+      }
+    } catch {
+      // ignore and retry
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return false;
+}
+
 export default async function globalSetup(): Promise<() => Promise<void>> {
   const port = process.env.INTEGRATION_TEST_PORT || DEFAULT_PORT;
   const serverUrl = `http://localhost:${port}`;
+  const wranglerPort = process.env.INTEGRATION_WRANGLER_PORT || String(Number(port) + 1);
+  const nextPort = process.env.INTEGRATION_NEXT_PORT || String(Number(port) + 2);
+  const nextUrl = `http://localhost:${nextPort}`;
+  const wranglerUrl = `http://localhost:${wranglerPort}`;
 
   console.log(`\n[Integration Tests] Starting dev server on port ${port}...`);
 
@@ -48,6 +91,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     env: {
       ...process.env,
       PROXY_DEV_PORT: String(port),
+      WRANGLER_DEV_PORT: wranglerPort,
+      NEXT_DEV_PORT: nextPort,
       // Disable color output for cleaner logs
       FORCE_COLOR: '0',
     },
@@ -91,6 +136,48 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       `[Integration Tests] Server failed to start within ${STARTUP_TIMEOUT / 1000}s`
     );
   }
+
+  const nextReady = await waitForServer(nextUrl, STARTUP_TIMEOUT);
+  if (!nextReady) {
+    serverProcess?.kill('SIGTERM');
+    throw new Error('[Integration Tests] Next dev failed to become ready in time');
+  }
+
+  const wranglerReady = await waitForServer(wranglerUrl, STARTUP_TIMEOUT);
+  if (!wranglerReady) {
+    serverProcess?.kill('SIGTERM');
+    throw new Error('[Integration Tests] Wrangler dev failed to become ready in time');
+  }
+
+  const authReady = await waitForAuthReady(serverUrl, STARTUP_TIMEOUT);
+  if (!authReady) {
+    serverProcess?.kill('SIGTERM');
+    throw new Error('[Integration Tests] Auth layer failed to become ready in time');
+  }
+
+  await waitForRouteReady(`${serverUrl}/api/workspaces/test`, { method: 'GET' }, STARTUP_TIMEOUT);
+  await waitForRouteReady(
+    `${serverUrl}/api/workspaces/test/access/test`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    STARTUP_TIMEOUT
+  );
+  await waitForRouteReady(
+    `${serverUrl}/api/workspaces/test/integrations`,
+    { method: 'GET' },
+    STARTUP_TIMEOUT
+  );
+  await waitForRouteReady(
+    `${serverUrl}/api/threads/test-thread-id/preview`,
+    { method: 'GET' },
+    STARTUP_TIMEOUT
+  );
+  await waitForRouteReady(`${serverUrl}/api/orgs/test`, { method: 'GET' }, STARTUP_TIMEOUT);
+  await waitForRouteReady(`${serverUrl}/api/orgs/test/members`, { method: 'GET' }, STARTUP_TIMEOUT);
+  await waitForRouteReady(
+    `${serverUrl}/api/orgs/test/invite`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    STARTUP_TIMEOUT
+  );
 
   console.log(`[Integration Tests] Server is ready at ${serverUrl}`);
 

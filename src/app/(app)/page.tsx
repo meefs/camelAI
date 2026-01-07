@@ -3,5 +3,8 @@ import { requireSession } from '@/lib/server-guards';
 
 export default async function Home() {
   const session = await requireSession();
-  return <Chat orgId={session.org_id} />;
+  if (!session.workspace_id) {
+    return null;
+  }
+  return <Chat workspaceId={session.workspace_id} />;
 }

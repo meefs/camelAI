@@ -107,7 +107,7 @@ const MonacoDiffEditor = dynamic(
 );
 
 interface ComputerPageContentProps {
-  orgId: string;
+  workspaceId: string;
 }
 
 type FsNode = {
@@ -289,14 +289,14 @@ function getFileIcon(path: string): React.ComponentType<{ className?: string }> 
   return ICON_BY_EXTENSION[ext] ?? File;
 }
 
-export default function ComputerPageContent({ orgId }: ComputerPageContentProps) {
+export default function ComputerPageContent({ workspaceId }: ComputerPageContentProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { resolvedTheme } = useTheme();
-  const { user, currentOrg, loading: authLoading } = useAuth();
+  const { user, currentWorkspace, loading: authLoading } = useAuth();
 
-  const apiBase = useMemo(() => `/api/workspaces/${orgId}/fs`, [orgId]);
-  const storageKey = useMemo(() => `workspace:${orgId}:ide-state`, [orgId]);
+  const apiBase = useMemo(() => `/api/workspaces/${workspaceId}/fs`, [workspaceId]);
+  const storageKey = useMemo(() => `workspace:${workspaceId}:ide-state`, [workspaceId]);
 
   const [nodesByPath, setNodesByPath] = useState<Record<string, FsNode>>({
     [ROOT_PATH]: {
@@ -396,10 +396,10 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
   }, [authLoading, user, router]);
 
   useEffect(() => {
-    if (!authLoading && currentOrg?.id && currentOrg.id !== orgId) {
-      router.push(`/computer/${currentOrg.id}`);
+    if (!authLoading && currentWorkspace?.id && currentWorkspace.id !== workspaceId) {
+      router.push(`/computer/${currentWorkspace.id}`);
     }
-  }, [authLoading, currentOrg?.id, orgId, router]);
+  }, [authLoading, currentWorkspace?.id, workspaceId, router]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1924,7 +1924,7 @@ export default function ComputerPageContent({ orgId }: ComputerPageContentProps)
                   />
                 </div>
                 <form
-                  action={resetSandboxContainerAction.bind(null, orgId)}
+                  action={resetSandboxContainerAction.bind(null, workspaceId)}
                   onSubmit={(event) => {
                     if (
                       !confirm(

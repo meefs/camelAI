@@ -11,6 +11,7 @@ set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
 echo "[entrypoint] ORG_ID=${ORG_ID:-unset}" >&2
+echo "[entrypoint] WORKSPACE_ID=${WORKSPACE_ID:-unset}" >&2
 echo "[entrypoint] R2_BUCKET_NAME=${R2_BUCKET_NAME:-unset}" >&2
 
 TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
@@ -97,6 +98,7 @@ chown -R claude:claude "$TARGET_DIR/.claude"
 cat > /tmp/ws-env.sh << ENVEOF
 export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'
 export ORG_ID='${ORG_ID:-}'
+export WORKSPACE_ID='${WORKSPACE_ID:-}'
 export R2_BUCKET_NAME='${R2_BUCKET_NAME:-}'
 export R2_ACCOUNT_ID='${R2_ACCOUNT_ID:-}'
 export R2_MOUNT_DIR='${R2_MOUNT_DIR:-}'

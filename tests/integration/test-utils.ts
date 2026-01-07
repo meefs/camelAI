@@ -33,11 +33,101 @@ export async function serverFetch(
   return fetch(url.toString(), options);
 }
 
+export function extractSessionCookie(response: Response): string {
+  const setCookie = response.headers.get('set-cookie');
+  if (!setCookie) {
+    throw new Error('Missing set-cookie header');
+  }
+  const match = setCookie.match(/chiridion_session=([^;]+)/);
+  if (!match) {
+    throw new Error('Missing chiridion_session cookie');
+  }
+  return `chiridion_session=${match[1] ?? ''}`;
+}
+
 /**
  * Generate a unique email for testing
  */
 export function uniqueEmail(): string {
   return `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+}
+
+export async function signupUser(options: {
+  email?: string;
+  password?: string;
+  name?: string;
+} = {}) {
+  const email = options.email ?? uniqueEmail();
+  const password = options.password ?? 'testpass123';
+  const name = options.name ?? 'Test User';
+
+  const response = await serverFetch('/api/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, name }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Signup failed: ${response.status}`);
+  }
+
+  const payload = await response.json() as {
+    user: { id: string };
+    currentOrg: { id: string };
+    currentWorkspace: { id: string } | null;
+  };
+
+  return {
+    email,
+    password,
+    sessionCookie: extractSessionCookie(response),
+    userId: payload.user.id,
+    orgId: payload.currentOrg.id,
+    workspaceId: payload.currentWorkspace?.id ?? null,
+  };
+}
+
+export async function createInvitation(
+  sessionCookie: string,
+  orgId: string,
+  email: string,
+  role: 'admin' | 'member' | 'viewer' = 'member'
+) {
+  const response = await serverFetch(`/api/orgs/${orgId}/invite`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: sessionCookie,
+    },
+    body: JSON.stringify({ email, role }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Create invitation failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<{ id: string; email: string; role: string }>;
+}
+
+export async function acceptInvitation(
+  sessionCookie: string,
+  orgId: string,
+  invitationId: string
+) {
+  const response = await serverFetch(`/api/invitations/${orgId}/${invitationId}`, {
+    method: 'POST',
+    headers: { Cookie: sessionCookie },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Accept invitation failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<{
+    success: boolean;
+    org: { id: string };
+    workspace: { id: string } | null;
+  }>;
 }
 
 /**

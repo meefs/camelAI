@@ -36,7 +36,9 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     initialState ?? {
       user: null,
       currentOrg: null,
+      currentWorkspace: null,
       orgs: [],
+      workspaces: [],
       loading: true,
       error: null,
     }
@@ -49,7 +51,9 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
         setState({
           user: data.user,
           currentOrg: data.currentOrg,
+          currentWorkspace: data.currentWorkspace ?? null,
           orgs: data.orgs,
+          workspaces: data.workspaces ?? [],
           loading: false,
           error: null,
         });
@@ -57,7 +61,9 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
         setState({
           user: null,
           currentOrg: null,
+          currentWorkspace: null,
           orgs: [],
+          workspaces: [],
           loading: false,
           error: null,
         });
@@ -66,7 +72,9 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
       setState({
         user: null,
         currentOrg: null,
+        currentWorkspace: null,
         orgs: [],
+        workspaces: [],
         loading: false,
         error: String(e),
       });
@@ -88,7 +96,9 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
       setState({
         user: data.user,
         currentOrg: data.currentOrg,
+        currentWorkspace: data.currentWorkspace ?? null,
         orgs: data.orgs,
+        workspaces: data.workspaces ?? [],
         loading: false,
         error: null,
       });
@@ -111,7 +121,9 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
       setState({
         user: data.user,
         currentOrg: data.currentOrg,
+        currentWorkspace: data.currentWorkspace ?? null,
         orgs: data.orgs,
+        workspaces: data.workspaces ?? [],
         loading: false,
         error: null,
       });
@@ -132,7 +144,9 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
       setState({
         user: null,
         currentOrg: null,
+        currentWorkspace: null,
         orgs: [],
+        workspaces: [],
         loading: false,
         error: null,
       });
@@ -143,14 +157,8 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const currentOrg = await switchOrgAction(orgId);
-
-      setState((prev) => ({
-        ...prev,
-        currentOrg,
-        loading: false,
-        error: null,
-      }));
+      await switchOrgAction(orgId);
+      await refreshAuth();
     } catch (e) {
       setState((prev) => ({
         ...prev,

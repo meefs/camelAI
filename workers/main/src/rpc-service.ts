@@ -1,7 +1,13 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { AuthEnv, SessionData, UserProfile, OrgIntegrationRecord } from './auth';
+import type { AuthEnv, SessionData, UserProfile, OrgRole } from './auth';
 import type { ChatEnv } from './durable-objects';
-import { getOrgContainer, getContainerIdForOrg, type OrgContainerEnv } from './org-container';
+import { getWorkspaceContainer, getContainerIdForWorkspace, type WorkspaceContainerEnv } from './workspace-container';
+import type {
+  WorkspaceDO,
+  WorkspaceInfo,
+  WorkspaceIntegrationRecord,
+  WorkspaceMember as WorkspaceMemberRecord,
+} from './workspace';
 import type {
   Message,
   Organization,
@@ -9,8 +15,12 @@ import type {
   SandboxFileListing,
   WorkspaceFileEntry,
   WorkspaceListResponse,
+  Workspace,
+  WorkspaceWithAccess,
+  WorkspaceAccessLevel,
   Thread,
   User,
+  AuditLogEntry,
   Integration,
   CreateIntegrationInput,
   UpdateIntegrationInput,
@@ -159,12 +169,13 @@ function mapCredentialsToEnvVars(
   return env;
 }
 
-interface DoRpcEnv extends AuthEnv, ChatEnv, OrgContainerEnv {
+interface DoRpcEnv extends AuthEnv, ChatEnv, WorkspaceContainerEnv {
+  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   INTEGRATION_SECRET_KEY: string;
 }
 
-function getIndexStub(env: DoRpcEnv, org: string) {
-  return env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(org));
+function getIndexStub(env: DoRpcEnv, workspaceId: string) {
+  return env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(workspaceId));
 }
 
 function getThreadStub(env: DoRpcEnv, threadId: string) {
@@ -217,18 +228,24 @@ type RpcDisposable<T> = T & { [Symbol.dispose](): void };
 
 function asDisposable<T extends object>(value: T): RpcDisposable<T> {
   const withSymbols = value as T & { [Symbol.dispose]?: () => void };
-  const maybeDisposable = value as { dispose?: () => void };
-  if (
-    typeof withSymbols[Symbol.dispose] !== 'function' &&
-    typeof maybeDisposable.dispose === 'function'
-  ) {
+  if (typeof withSymbols[Symbol.dispose] === 'function') {
+    return withSymbols as RpcDisposable<T>;
+  }
+
+  const disposeFn = () => {};
+
+  if (Object.isExtensible(withSymbols)) {
     try {
-      withSymbols[Symbol.dispose] = () => maybeDisposable.dispose?.();
+      withSymbols[Symbol.dispose] = disposeFn;
+      return withSymbols as RpcDisposable<T>;
     } catch {
-      // If the stub is non-extensible, fall through and let the runtime throw.
+      // Fall through to wrapper.
     }
   }
-  return withSymbols as RpcDisposable<T>;
+
+  const wrapper = Object.create(withSymbols) as RpcDisposable<T>;
+  Object.defineProperty(wrapper, Symbol.dispose, { value: disposeFn });
+  return wrapper;
 }
 
 const WORKSPACE_SYNC_DEBOUNCE_MS = 5000;
@@ -267,23 +284,95 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return this.env.R2_MOUNT_DIR || '/home/claude';
   }
 
-  /**
-   * Ensure container is running for an org.
-   * R2 sync happens automatically in the container entrypoint.
-   */
-  private async ensureContainerRunning(orgId: string): Promise<void> {
-    const container = getOrgContainer(this.env, orgId);
-    await container.startForOrg(orgId);
+  private async getWorkspaceInfo(workspaceId: string): Promise<WorkspaceInfo | null> {
+    using stub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    const info = await stub.getInfo();
+    if (!info || info.archived) return null;
+    return info;
   }
 
-  private async uploadWorkspaceSnapshot(orgId: string): Promise<void> {
+  private async requireWorkspaceInfo(workspaceId: string): Promise<WorkspaceInfo> {
+    const info = await this.getWorkspaceInfo(workspaceId);
+    if (!info) {
+      throw new Error('Workspace not found');
+    }
+    return info;
+  }
+
+  private toWorkspace(info: WorkspaceInfo): Workspace {
+    return {
+      id: info.id,
+      org_id: info.org_id,
+      name: info.name,
+      description: info.description,
+      created_by: info.created_by,
+      created_at: info.created_at,
+      avatar: {
+        color: info.avatar_color,
+        content: info.avatar_content,
+      },
+      archived: info.archived,
+      archived_at: info.archived_at,
+    };
+  }
+
+  private async getWorkspaceAccessLevel(workspaceId: string, userId: string): Promise<WorkspaceAccessLevel> {
+    using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    const info = await workspaceStub.getInfo();
+    if (!info || info.archived) return 'none';
+
+    const isMember = await this.isOrgMember(userId, info.org_id);
+    if (!isMember) return 'none';
+
+    const access = await workspaceStub.getMemberAccess(userId);
+    return access?.access_level ?? 'full';
+  }
+
+  private async ensureDefaultWorkspace(orgId: string, actorId: string): Promise<Workspace | null> {
+    const existing = await this.listOrgWorkspaces(orgId);
+    if (existing.length > 0) return existing[0];
+
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    const orgInfo = await orgStub.getInfo();
+    if (!orgInfo || orgInfo.archived) return null;
+
+    const workspaceId = orgId;
+    using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    let info = await workspaceStub.getInfo();
+    if (!info) {
+      const createdBy = orgInfo.created_by || actorId;
+      info = await workspaceStub.createWorkspace(
+        workspaceId,
+        orgId,
+        'Default Workspace',
+        createdBy
+      );
+    }
+
+    await orgStub.addWorkspace(workspaceId, info.name, info.created_at, actorId);
+    return this.toWorkspace(info);
+  }
+
+  /**
+   * Ensure container is running for a workspace.
+   * R2 sync happens automatically in the container entrypoint.
+   */
+  private async ensureContainerRunning(workspaceId: string): Promise<WorkspaceInfo> {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    const container = getWorkspaceContainer(this.env, workspaceId);
+    await container.startForWorkspace(workspaceId, info.org_id);
+    return info;
+  }
+
+  private async uploadWorkspaceSnapshot(workspaceId: string): Promise<void> {
     if (!this.hasR2Config() || this.isR2ReadOnly()) return;
 
-    const container = getOrgContainer(this.env, orgId);
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    const container = getWorkspaceContainer(this.env, workspaceId);
     const workspaceRoot = this.getWorkspaceRoot();
 
     // Ensure container is running before exec
-    await container.startForOrg(orgId);
+    await container.startForWorkspace(workspaceId, info.org_id);
 
     // Container entrypoint already synced R2 on startup, just trigger upload
     const syncResult = await container.exec(`node /app/sync.mjs upload ${workspaceRoot}`, {
@@ -292,13 +381,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
     if (!syncResult.success) {
       console.error(
-        `[workspace-sync] Upload failed for ${orgId}: ${syncResult.stderr || syncResult.stdout || 'unknown error'}`
+        `[workspace-sync] Upload failed for ${workspaceId}: ${syncResult.stderr || syncResult.stdout || 'unknown error'}`
       );
     }
   }
 
   private async runWorkspaceSyncLoop(
-    orgId: string,
+    workspaceId: string,
     state: WorkspaceSyncState
   ): Promise<void> {
     try {
@@ -310,7 +399,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         }
 
         const sequenceAtStart = state.sequence;
-        await this.uploadWorkspaceSnapshot(orgId);
+        await this.uploadWorkspaceSnapshot(workspaceId);
 
         if (state.sequence !== sequenceAtStart) {
           continue;
@@ -322,14 +411,14 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     } finally {
       state.running = false;
       state.promise = null;
-      workspaceSyncState.delete(orgId);
+      workspaceSyncState.delete(workspaceId);
     }
   }
 
-  private scheduleWorkspaceUpload(orgId: string): void {
+  private scheduleWorkspaceUpload(workspaceId: string): void {
     if (!this.hasR2Config() || this.isR2ReadOnly()) return;
     const now = Date.now();
-    let state = workspaceSyncState.get(orgId);
+    let state = workspaceSyncState.get(workspaceId);
     if (!state) {
       state = {
         nextSyncAt: now + WORKSPACE_SYNC_DEBOUNCE_MS,
@@ -337,7 +426,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         running: false,
         promise: null,
       };
-      workspaceSyncState.set(orgId, state);
+      workspaceSyncState.set(workspaceId, state);
     }
 
     state.sequence += 1;
@@ -345,7 +434,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
     if (!state.running) {
       state.running = true;
-      state.promise = this.runWorkspaceSyncLoop(orgId, state);
+      state.promise = this.runWorkspaceSyncLoop(workspaceId, state);
     }
 
     if (state.promise) {
@@ -356,14 +445,22 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   // Session functions
   async getSession(sessionId: string): Promise<SessionData | null> {
     using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
-    return stub.getData();
+    const session = await stub.getData();
+    if (!session) return null;
+    if (!session.workspace_id) {
+      const fallback = await this.ensureDefaultWorkspace(session.org_id, session.user_id);
+      if (fallback) {
+        await stub.switchWorkspace(fallback.id);
+        session.workspace_id = fallback.id;
+      }
+    }
+    return session;
   }
 
   async getSessionWithUser(
     sessionId: string
   ): Promise<{ session: SessionData; user: UserProfile } | null> {
-    using sessionStub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
-    const session = await sessionStub.getData();
+    const session = await this.getSession(sessionId);
     if (!session) return null;
 
     using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(session.user_id)));
@@ -375,15 +472,22 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   async createSession(
     userId: string,
-    orgId: string
+    orgId: string,
+    workspaceId: string | null = null
   ): Promise<{ sessionId: string; sessionData: SessionData }> {
     const sessionId = crypto.randomUUID();
     const now = Date.now();
     const expiresAt = now + 30 * 24 * 60 * 60 * 1000;
+    let resolvedWorkspaceId = workspaceId;
+    if (!resolvedWorkspaceId) {
+      const fallback = await this.ensureDefaultWorkspace(orgId, userId);
+      resolvedWorkspaceId = fallback?.id ?? null;
+    }
 
     const sessionData: SessionData = {
       user_id: userId,
       org_id: orgId,
+      workspace_id: resolvedWorkspaceId,
       created_at: now,
       last_accessed: now,
       expires_at: expiresAt,
@@ -391,6 +495,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
     using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
     await stub.setData(sessionData);
+    if (resolvedWorkspaceId) {
+      using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+      await userStub.setOrgLastWorkspace(orgId, resolvedWorkspaceId);
+    }
 
     return { sessionId, sessionData };
   }
@@ -400,9 +508,30 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     await stub.destroy();
   }
 
-  async switchSessionOrg(sessionId: string, orgId: string): Promise<void> {
+  async switchSessionOrg(sessionId: string, orgId: string, workspaceId: string | null = null): Promise<void> {
     using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
+    const session = await stub.getData();
+    let resolvedWorkspaceId = workspaceId;
+    if (!resolvedWorkspaceId && session) {
+      const fallback = await this.ensureDefaultWorkspace(orgId, session.user_id);
+      resolvedWorkspaceId = fallback?.id ?? null;
+    }
     await stub.switchOrg(orgId);
+    await stub.switchWorkspace(resolvedWorkspaceId);
+    if (session?.user_id && resolvedWorkspaceId) {
+      using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(session.user_id)));
+      await userStub.setOrgLastWorkspace(orgId, resolvedWorkspaceId);
+    }
+  }
+
+  async switchSessionWorkspace(sessionId: string, workspaceId: string | null): Promise<void> {
+    using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
+    await stub.switchWorkspace(workspaceId);
+    const session = await stub.getData();
+    if (session?.user_id && session.org_id && workspaceId) {
+      using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(session.user_id)));
+      await userStub.setOrgLastWorkspace(session.org_id, workspaceId);
+    }
   }
 
   // User functions
@@ -469,12 +598,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     for (const uo of userOrgs) {
       using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(uo.org_id)));
       const orgInfo = await orgStub.getInfo();
-      if (orgInfo) {
+      if (orgInfo && !orgInfo.archived) {
         memberships.push({
           org_id: uo.org_id,
           org_name: orgInfo.name,
           role: uo.role,
           joined_at: uo.joined_at,
+          last_workspace_id: uo.last_workspace_id ?? null,
         });
       }
     }
@@ -482,9 +612,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return memberships;
   }
 
-  async addUserToOrg(userId: string, orgId: string, role: 'admin' | 'member'): Promise<void> {
+  async addUserToOrg(userId: string, orgId: string, role: OrgRole): Promise<void> {
+    const workspaces = await this.listOrgWorkspaces(orgId);
+    const lastWorkspaceId = workspaces[0]?.id ?? null;
     using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
-    await userStub.addOrg(orgId, role);
+    await userStub.addOrg(orgId, role, lastWorkspaceId);
   }
 
   async removeUserFromOrg(userId: string, orgId: string): Promise<void> {
@@ -600,6 +732,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
           name: info.name,
           created_at: info.created_at,
           created_by: info.created_by,
+          billing_status: info.billing_status,
+          archived: info.archived,
+          archived_at: info.archived_at,
           member_count: memberCount,
         };
       })
@@ -613,15 +748,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   // Admin: Get all threads across all orgs
-  async adminGetAllThreads(): Promise<Array<Thread & { org_id: string }>> {
-    const orgIds = await this.collectAllOrgIds();
+  async adminGetAllThreads(): Promise<Array<Thread & { org_id: string; workspace_id: string }>> {
+    const workspaces = await this.collectAllWorkspaceIds();
 
-    // Fetch threads from all orgs in parallel
+    // Fetch threads from all workspaces in parallel
     const threadResults = await Promise.all(
-      Array.from(orgIds).map(async (orgId) => {
-        using indexStub = asDisposable(getIndexStub(this.env, orgId));
+      workspaces.map(async ({ workspaceId, orgId }) => {
+        using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
         const threads = await indexStub.getThreads();
-        return threads.map((thread) => ({ ...thread, org_id: orgId }));
+        return threads.map((thread) => ({ ...thread, org_id: orgId, workspace_id: workspaceId }));
       })
     );
 
@@ -633,21 +768,21 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   // Admin: Get thread with messages and preview workers
   async adminGetThreadWithMessages(
     threadId: string
-  ): Promise<{ thread: Thread; messages: Message[]; org_id: string; preview_workers: string[] } | null> {
-    const orgIds = await this.collectAllOrgIds();
+  ): Promise<{ thread: Thread; messages: Message[]; org_id: string; workspace_id: string; preview_workers: string[] } | null> {
+    const workspaces = await this.collectAllWorkspaceIds();
 
-    // Search for thread in all orgs in parallel
+    // Search for thread in all workspaces in parallel
     const results = await Promise.all(
-      Array.from(orgIds).map(async (orgId) => {
-        using indexStub = asDisposable(getIndexStub(this.env, orgId));
+      workspaces.map(async ({ workspaceId, orgId }) => {
+        using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
         const thread = await indexStub.getThread(threadId);
         if (thread) {
           // Read messages from container and preview workers in parallel
           const [messages, preview_workers] = await Promise.all([
-            this.getMessages(threadId, orgId),
+            this.getMessages(threadId, workspaceId),
             this.getThreadPreview(threadId),
           ]);
-          return { thread, messages, org_id: orgId, preview_workers };
+          return { thread, messages, org_id: orgId, workspace_id: workspaceId, preview_workers };
         }
         return null;
       })
@@ -661,12 +796,12 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     threadId: string,
     updates: { title?: string }
   ): Promise<Thread | null> {
-    const orgIds = await this.collectAllOrgIds();
+    const workspaces = await this.collectAllWorkspaceIds();
 
-    // Search for thread in all orgs in parallel
+    // Search for thread in all workspaces in parallel
     const results = await Promise.all(
-      Array.from(orgIds).map(async (orgId) => {
-        using indexStub = asDisposable(getIndexStub(this.env, orgId));
+      workspaces.map(async ({ workspaceId }) => {
+        using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
         const thread = await indexStub.getThread(threadId);
         if (thread && updates.title !== undefined) {
           return indexStub.updateThread(threadId, updates.title);
@@ -717,6 +852,23 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return orgIds;
   }
 
+  private async collectAllWorkspaceIds(): Promise<Array<{ workspaceId: string; orgId: string }>> {
+    const orgIds = await this.collectAllOrgIds();
+    const workspacePairs: Array<{ workspaceId: string; orgId: string }> = [];
+
+    await Promise.all(
+      Array.from(orgIds).map(async (orgId) => {
+        using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+        const workspaces = await orgStub.getWorkspaces();
+        for (const workspace of workspaces) {
+          workspacePairs.push({ workspaceId: workspace.id, orgId });
+        }
+      })
+    );
+
+    return workspacePairs;
+  }
+
   // Admin: Get paginated users
   async adminGetUsersPaginated(
     params: PaginationParams = {}
@@ -752,7 +904,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   // Admin: Get paginated threads
   async adminGetThreadsPaginated(
     params: PaginationParams = {}
-  ): Promise<PaginatedResult<Thread & { org_id: string }>> {
+  ): Promise<PaginatedResult<Thread & { org_id: string; workspace_id: string }>> {
     const { offset = 0, limit = 50 } = params;
 
     // Get all threads first
@@ -776,6 +928,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       name: info.name,
       created_at: info.created_at,
       created_by: info.created_by,
+      billing_status: info.billing_status,
+      archived: info.archived,
+      archived_at: info.archived_at,
     };
   }
 
@@ -785,29 +940,42 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const orgInfo = await orgStub.createOrg(orgId, name, createdBy);
 
+    const workspaceId = crypto.randomUUID();
+    using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    const workspaceInfo = await workspaceStub.createWorkspace(
+      workspaceId,
+      orgId,
+      'Default Workspace',
+      createdBy
+    );
+    await orgStub.addWorkspace(workspaceId, workspaceInfo.name, workspaceInfo.created_at, createdBy);
+
     using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(createdBy)));
-    await userStub.addOrg(orgId, 'admin');
+    await userStub.addOrg(orgId, 'owner', workspaceId);
 
     return {
       id: orgInfo.id,
       name: orgInfo.name,
       created_at: orgInfo.created_at,
       created_by: orgInfo.created_by,
+      billing_status: orgInfo.billing_status,
+      archived: orgInfo.archived,
+      archived_at: orgInfo.archived_at,
     };
   }
 
-  async updateOrgName(orgId: string, name: string): Promise<void> {
+  async updateOrgName(orgId: string, name: string, actorId: string): Promise<void> {
     using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-    await stub.updateName(name);
+    await stub.updateName(name, actorId);
   }
 
   async getOrgMembers(
     orgId: string
-  ): Promise<Array<{ user: User; role: 'admin' | 'member'; joined_at: number }>> {
+  ): Promise<Array<{ user: User; role: OrgRole; joined_at: number }>> {
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const members = await orgStub.getMembers();
 
-    const result: Array<{ user: User; role: 'admin' | 'member'; joined_at: number }> = [];
+    const result: Array<{ user: User; role: OrgRole; joined_at: number }> = [];
     for (const m of members) {
       const user = await this.getUserById(m.user_id);
       if (user) {
@@ -818,6 +986,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
             name: user.name,
             created_at: user.created_at,
             is_superuser: user.is_superuser,
+            avatar: {
+              color: user.avatar_color,
+              content: user.avatar_content,
+            },
+            is_orphaned: user.is_orphaned,
           },
           role: m.role,
           joined_at: m.joined_at,
@@ -838,17 +1011,29 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return stub.isAdmin(userId);
   }
 
-  async removeOrgMember(orgId: string, userId: string): Promise<void> {
+  async removeOrgMember(orgId: string, userId: string, actorId: string): Promise<void> {
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-    await orgStub.removeMember(userId);
+    const member = await orgStub.getMember(userId);
+    if (member?.role === 'owner') {
+      throw new Error('Cannot remove organization owner');
+    }
+    await orgStub.removeMember(userId, actorId);
 
     using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     await userStub.removeOrg(orgId);
+
+    const remaining = await userStub.getOrgs();
+    if (remaining.length === 0) {
+      await userStub.setOrphaned(true);
+    }
   }
 
-  async updateOrgMemberRole(orgId: string, userId: string, role: 'admin' | 'member'): Promise<void> {
+  async updateOrgMemberRole(orgId: string, userId: string, role: OrgRole, actorId: string): Promise<void> {
+    if (role === 'owner') {
+      throw new Error('Use transferOwnership to assign owner role');
+    }
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-    await orgStub.updateMemberRole(userId, role);
+    await orgStub.updateMemberRole(userId, role, actorId);
 
     using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     await userStub.updateOrgRole(orgId, role);
@@ -858,9 +1043,12 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async createInvitation(
     orgId: string,
     email: string,
-    role: 'admin' | 'member',
+    role: OrgRole,
     invitedBy: string
   ): Promise<{ id: string; expires_at: number }> {
+    if (role === 'owner') {
+      throw new Error('Cannot invite as owner');
+    }
     using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const invitation = await stub.createInvitation(email, role, invitedBy);
     return { id: invitation.id, expires_at: invitation.expires_at };
@@ -869,7 +1057,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async getInvitation(
     orgId: string,
     invitationId: string
-  ): Promise<{ id: string; email: string; role: 'admin' | 'member'; org: Organization } | null> {
+  ): Promise<{ id: string; email: string; role: OrgRole; org: Organization } | null> {
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const invitation = await orgStub.getInvitation(invitationId);
     if (!invitation) return null;
@@ -886,6 +1074,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         name: orgInfo.name,
         created_at: orgInfo.created_at,
         created_by: orgInfo.created_by,
+        billing_status: orgInfo.billing_status,
+        archived: orgInfo.archived,
+        archived_at: orgInfo.archived_at,
       },
     };
   }
@@ -898,8 +1089,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     const accepted = await orgStub.acceptInvitation(invitationId, userId);
     if (!accepted) return false;
 
+    const workspaces = await this.listOrgWorkspaces(orgId);
+    const lastWorkspaceId = workspaces[0]?.id ?? null;
     using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
-    await userStub.addOrg(orgId, invitation.role);
+    await userStub.addOrg(orgId, invitation.role, lastWorkspaceId);
+    await userStub.setOrphaned(false);
 
     return true;
   }
@@ -907,7 +1101,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async getOrgInvitations(orgId: string): Promise<Array<{
     id: string;
     email: string;
-    role: 'admin' | 'member';
+    role: OrgRole;
     created_at: number;
     expires_at: number;
   }>> {
@@ -927,57 +1121,291 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     await stub.deleteInvitation(invitationId);
   }
 
+  // Workspace functions
+  async createWorkspace(
+    orgId: string,
+    name: string,
+    createdBy: string,
+    description?: string | null
+  ): Promise<Workspace> {
+    const workspaceId = crypto.randomUUID();
+    using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    const info = await workspaceStub.createWorkspace(workspaceId, orgId, name, createdBy, description ?? null);
+
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    await orgStub.addWorkspace(workspaceId, info.name, info.created_at, createdBy);
+
+    return this.toWorkspace(info);
+  }
+
+  async getWorkspace(workspaceId: string): Promise<Workspace | null> {
+    const info = await this.getWorkspaceInfo(workspaceId);
+    if (!info) return null;
+    return this.toWorkspace(info);
+  }
+
+  async updateWorkspace(
+    workspaceId: string,
+    updates: {
+      name?: string;
+      description?: string | null;
+      avatar?: { color: string; content: string };
+    },
+    actorId: string
+  ): Promise<Workspace | null> {
+    using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    const info = await workspaceStub.updateWorkspace(
+      {
+        name: updates.name,
+        description: updates.description,
+        avatar_color: updates.avatar?.color,
+        avatar_content: updates.avatar?.content,
+      },
+      actorId
+    );
+    if (!info) return null;
+
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(info.org_id)));
+    await orgStub.addWorkspace(workspaceId, info.name, info.created_at, actorId);
+
+    return this.toWorkspace(info);
+  }
+
+  async archiveWorkspace(workspaceId: string, actorId: string): Promise<Workspace | null> {
+    using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    const info = await workspaceStub.archive(actorId);
+    if (!info) return null;
+
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(info.org_id)));
+    await orgStub.archiveWorkspace(workspaceId);
+
+    return this.toWorkspace(info);
+  }
+
+  async listOrgWorkspaces(orgId: string): Promise<Workspace[]> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    const entries = await orgStub.getWorkspaces();
+
+    const infos = await Promise.all(
+      entries.map(async (entry) => {
+        using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(entry.id)));
+        return workspaceStub.getInfo();
+      })
+    );
+
+    const workspaces: Workspace[] = [];
+    for (const info of infos) {
+      if (!info || info.archived || info.org_id !== orgId) continue;
+      workspaces.push(this.toWorkspace(info));
+    }
+    workspaces.sort((a, b) => a.created_at - b.created_at);
+    return workspaces;
+  }
+
+  async listUserWorkspaces(userId: string, orgId: string): Promise<WorkspaceWithAccess[]> {
+    let orgWorkspaces = await this.listOrgWorkspaces(orgId);
+    if (orgWorkspaces.length === 0) {
+      const fallback = await this.ensureDefaultWorkspace(orgId, userId);
+      if (fallback) {
+        orgWorkspaces = [fallback];
+      }
+    }
+    const results: WorkspaceWithAccess[] = [];
+    for (const workspace of orgWorkspaces) {
+      const accessLevel = await this.getWorkspaceAccessLevel(workspace.id, userId);
+      if (accessLevel === 'none') continue;
+      results.push({ ...workspace, access_level: accessLevel });
+    }
+    return results;
+  }
+
+  async getWorkspaceAccess(workspaceId: string, userId: string): Promise<WorkspaceAccessLevel> {
+    return this.getWorkspaceAccessLevel(workspaceId, userId);
+  }
+
+  async setWorkspaceAccess(
+    workspaceId: string,
+    userId: string,
+    accessLevel: WorkspaceAccessLevel,
+    actorId: string
+  ): Promise<void> {
+    using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    await workspaceStub.setMemberAccess(userId, accessLevel, actorId);
+  }
+
+  async listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMemberRecord[]> {
+    using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    return workspaceStub.listMembers();
+  }
+
+  async transferOrgOwnership(orgId: string, newOwnerId: string, actorId: string): Promise<void> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    const members = await orgStub.getMembers();
+    const currentOwner = members.find((member) => member.role === 'owner');
+    if (!currentOwner) {
+      throw new Error('Organization has no owner');
+    }
+
+    await orgStub.transferOwnership(actorId, newOwnerId);
+
+    using newOwnerStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(newOwnerId)));
+    await newOwnerStub.updateOrgRole(orgId, 'owner');
+
+    using oldOwnerStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(currentOwner.user_id)));
+    await oldOwnerStub.updateOrgRole(orgId, 'admin');
+  }
+
+  async archiveOrg(orgId: string, actorId: string): Promise<void> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    const members = await orgStub.getMembers();
+    await orgStub.archiveOrg(actorId);
+
+    const workspaces = await orgStub.getWorkspaces();
+    await Promise.all(
+      workspaces.map(async (workspace) => {
+        using workspaceStub = asDisposable(
+          this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspace.id))
+        );
+        await workspaceStub.archive(actorId);
+        await orgStub.archiveWorkspace(workspace.id);
+      })
+    );
+
+    await Promise.all(
+      members.map(async (member) => {
+        using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(member.user_id)));
+        await userStub.removeOrg(orgId);
+        const remaining = await userStub.getOrgs();
+        if (remaining.length === 0) {
+          await userStub.setOrphaned(true);
+        }
+      })
+    );
+
+    await Promise.all(
+      members.map((member) => orgStub.removeMember(member.user_id, actorId))
+    );
+  }
+
+  async checkUserOrphaned(userId: string): Promise<boolean> {
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+    const profile = await userStub.getProfile();
+    if (!profile) return false;
+
+    const orgs = await userStub.getOrgs();
+    const hasMemberships = orgs.length > 0;
+    if (!hasMemberships && !profile.is_orphaned) {
+      await userStub.setOrphaned(true);
+      return true;
+    }
+    if (hasMemberships && profile.is_orphaned) {
+      await userStub.setOrphaned(false);
+      return false;
+    }
+    return profile.is_orphaned;
+  }
+
+  async handleOrphanedUserLogin(userId: string): Promise<{
+    org: Organization;
+    workspace: WorkspaceWithAccess;
+  } | null> {
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+    const profile = await userStub.getProfile();
+    if (!profile?.is_orphaned) return null;
+
+    const baseName = profile.name?.trim() || 'My';
+    const orgName = `${baseName}'s Organization`;
+    const org = await this.createOrg(orgName, userId);
+
+    const workspaces = await this.listUserWorkspaces(userId, org.id);
+    const workspace = workspaces[0];
+    if (!workspace) {
+      throw new Error('Failed to create default workspace');
+    }
+
+    await userStub.setOrphaned(false);
+
+    return { org, workspace };
+  }
+
+  async getOrgAuditLog(orgId: string, limit = 100, offset = 0): Promise<AuditLogEntry[]> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    const entries = await orgStub.getAuditLog(limit, offset);
+    return entries.map((entry) => ({
+      id: entry.id,
+      action: entry.action,
+      actor_id: entry.actor_id,
+      target_id: entry.target_id,
+      details: entry.details ? JSON.parse(entry.details) : null,
+      created_at: entry.created_at,
+    }));
+  }
+
+  async getWorkspaceAuditLog(workspaceId: string, limit = 100, offset = 0): Promise<AuditLogEntry[]> {
+    using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    const entries = await workspaceStub.getAuditLog(limit, offset);
+    return entries.map((entry) => ({
+      id: entry.id,
+      action: entry.action,
+      actor_id: entry.actor_id,
+      target_id: entry.target_id,
+      details: entry.details ? JSON.parse(entry.details) : null,
+      created_at: entry.created_at,
+    }));
+  }
+
   // Chat functions
-  async getThreads(org: string): Promise<Thread[]> {
-    using indexStub = asDisposable(getIndexStub(this.env, org));
+  async getThreads(workspaceId: string): Promise<Thread[]> {
+    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
     return indexStub.getThreads();
   }
 
   async getThreadsPaginated(
-    org: string,
+    workspaceId: string,
     params: PaginationParams = {}
   ): Promise<PaginatedResult<Thread>> {
     const offset = params.offset ?? 0;
     const limit = params.limit ?? 50;
-    using indexStub = asDisposable(getIndexStub(this.env, org));
+    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
     return indexStub.getThreadsPaginated(offset, limit);
   }
 
   async createThread(
-    org: string,
+    workspaceId: string,
     title: string | undefined,
     createdBy?: string,
     sessionId?: string
   ): Promise<Thread> {
-    using indexStub = asDisposable(getIndexStub(this.env, org));
+    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
     return indexStub.createThread(title, createdBy, sessionId);
   }
 
-  async getThread(id: string, org: string): Promise<Thread | null> {
-    using indexStub = asDisposable(getIndexStub(this.env, org));
+  async getThread(id: string, workspaceId: string): Promise<Thread | null> {
+    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
     return indexStub.getThread(id);
   }
 
-  async updateThread(id: string, title: string, org: string): Promise<Thread | null> {
-    using indexStub = asDisposable(getIndexStub(this.env, org));
+  async updateThread(id: string, title: string, workspaceId: string): Promise<Thread | null> {
+    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
     return indexStub.updateThread(id, title);
   }
 
-  async deleteThread(id: string, org: string): Promise<void> {
+  async deleteThread(id: string, workspaceId: string): Promise<void> {
     // Messages are stored in container JSONL, not in the DO
     // Just delete from the index
-    using indexStub = asDisposable(getIndexStub(this.env, org));
+    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
     await indexStub.deleteThread(id);
   }
 
-  async getMessages(threadId: string, org: string): Promise<Message[]> {
+  async getMessages(threadId: string, workspaceId: string): Promise<Message[]> {
     // Messages are read from container's Claude JSONL file
     // threadId is the Claude session_id
     try {
-      const container = getOrgContainer(this.env, org);
+      const info = await this.requireWorkspaceInfo(workspaceId);
+      const container = getWorkspaceContainer(this.env, workspaceId);
 
       // Ensure container is running (R2 sync happens in entrypoint)
-      await container.startForOrg(org);
+      await container.startForWorkspace(workspaceId, info.org_id);
 
       // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
       const jsonlPath = `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`;
@@ -1125,10 +1553,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     }
   }
 
-  async listWorkspaceFiles(orgId: string): Promise<SandboxFileListing> {
-    const container = getOrgContainer(this.env, orgId);
+  async listWorkspaceFiles(workspaceId: string): Promise<SandboxFileListing> {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    const container = getWorkspaceContainer(this.env, workspaceId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await container.startForOrg(orgId);
+    await container.startForWorkspace(workspaceId, info.org_id);
 
     const listing = await container.listFiles(workspaceRoot, {
       recursive: true,
@@ -1144,12 +1573,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async listWorkspaceEntries(
-    orgId: string,
+    workspaceId: string,
     options: WorkspaceListOptions = {}
   ): Promise<WorkspaceListResponse> {
-    const container = getOrgContainer(this.env, orgId);
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    const container = getWorkspaceContainer(this.env, workspaceId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await container.startForOrg(orgId);
+    await container.startForWorkspace(workspaceId, info.org_id);
 
     const workspacePath = normalizeWorkspacePath(options.path);
     const listPath = resolveWorkspacePath(workspaceRoot, workspacePath);
@@ -1181,10 +1611,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     };
   }
 
-  async readWorkspaceFile(orgId: string, path: string) {
-    const container = getOrgContainer(this.env, orgId);
+  async readWorkspaceFile(workspaceId: string, path: string) {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    const container = getWorkspaceContainer(this.env, workspaceId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await container.startForOrg(orgId);
+    await container.startForWorkspace(workspaceId, info.org_id);
 
     const workspacePath = normalizeWorkspacePath(path);
     const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
@@ -1198,10 +1629,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return { workspacePath, result };
   }
 
-  async writeWorkspaceFile(orgId: string, path: string, content: string) {
-    const container = getOrgContainer(this.env, orgId);
+  async writeWorkspaceFile(workspaceId: string, path: string, content: string) {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    const container = getWorkspaceContainer(this.env, workspaceId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await container.startForOrg(orgId);
+    await container.startForWorkspace(workspaceId, info.org_id);
 
     const workspacePath = normalizeWorkspacePath(path);
     const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
@@ -1209,14 +1641,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!result.success) {
       throw new Error(`Failed to write ${workspacePath}`);
     }
-    this.scheduleWorkspaceUpload(orgId);
+    this.scheduleWorkspaceUpload(workspaceId);
     return { workspacePath, result };
   }
 
-  async mkdirWorkspacePath(orgId: string, path: string) {
-    const container = getOrgContainer(this.env, orgId);
+  async mkdirWorkspacePath(workspaceId: string, path: string) {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    const container = getWorkspaceContainer(this.env, workspaceId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await container.startForOrg(orgId);
+    await container.startForWorkspace(workspaceId, info.org_id);
 
     const workspacePath = normalizeWorkspacePath(path);
     const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
@@ -1224,14 +1657,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!result.success) {
       throw new Error(`Failed to create directory ${workspacePath}`);
     }
-    this.scheduleWorkspaceUpload(orgId);
+    this.scheduleWorkspaceUpload(workspaceId);
     return { workspacePath, result };
   }
 
-  async createWorkspaceFile(orgId: string, path: string, content = '') {
-    const container = getOrgContainer(this.env, orgId);
+  async createWorkspaceFile(workspaceId: string, path: string, content = '') {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    const container = getWorkspaceContainer(this.env, workspaceId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await container.startForOrg(orgId);
+    await container.startForWorkspace(workspaceId, info.org_id);
 
     const workspacePath = normalizeWorkspacePath(path);
     const absolutePath = resolveWorkspacePath(workspaceRoot, workspacePath);
@@ -1244,14 +1678,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!result.success) {
       throw new Error(`Failed to write ${workspacePath}`);
     }
-    this.scheduleWorkspaceUpload(orgId);
+    this.scheduleWorkspaceUpload(workspaceId);
     return { workspacePath, result };
   }
 
-  async moveWorkspacePath(orgId: string, from: string, to: string) {
-    const container = getOrgContainer(this.env, orgId);
+  async moveWorkspacePath(workspaceId: string, from: string, to: string) {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    const container = getWorkspaceContainer(this.env, workspaceId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await container.startForOrg(orgId);
+    await container.startForWorkspace(workspaceId, info.org_id);
 
     const fromPath = normalizeWorkspacePath(from);
     const toPath = normalizeWorkspacePath(to);
@@ -1261,14 +1696,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!result.success) {
       throw new Error(`Failed to move ${fromPath} to ${toPath}`);
     }
-    this.scheduleWorkspaceUpload(orgId);
+    this.scheduleWorkspaceUpload(workspaceId);
     return { fromPath, toPath, result };
   }
 
-  async deleteWorkspacePath(orgId: string, path: string) {
-    const container = getOrgContainer(this.env, orgId);
+  async deleteWorkspacePath(workspaceId: string, path: string) {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    const container = getWorkspaceContainer(this.env, workspaceId);
     const workspaceRoot = this.getWorkspaceRoot();
-    await container.startForOrg(orgId);
+    await container.startForWorkspace(workspaceId, info.org_id);
 
     const workspacePath = normalizeWorkspacePath(path);
     if (workspacePath === '/') {
@@ -1279,7 +1715,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!result.success) {
       throw new Error(`Failed to delete ${workspacePath}`);
     }
-    this.scheduleWorkspaceUpload(orgId);
+    this.scheduleWorkspaceUpload(workspaceId);
     return { workspacePath, result };
   }
 
@@ -1305,7 +1741,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   // Integration functions
-  private recordToIntegration(record: OrgIntegrationRecord): Integration {
+  private recordToIntegration(record: WorkspaceIntegrationRecord): Integration {
     return {
       id: record.id,
       integration_type: record.integration_type,
@@ -1321,21 +1757,21 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     };
   }
 
-  async getOrgIntegrations(orgId: string): Promise<Integration[]> {
-    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+  async getWorkspaceIntegrations(workspaceId: string): Promise<Integration[]> {
+    using stub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
     const records = await stub.getIntegrations();
     return records.map((r) => this.recordToIntegration(r));
   }
 
-  async getOrgIntegration(orgId: string, integrationId: string): Promise<Integration | null> {
-    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+  async getWorkspaceIntegration(workspaceId: string, integrationId: string): Promise<Integration | null> {
+    using stub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
     const record = await stub.getIntegration(integrationId);
     if (!record) return null;
     return this.recordToIntegration(record);
   }
 
-  async createOrgIntegration(
-    orgId: string,
+  async createWorkspaceIntegration(
+    workspaceId: string,
     userId: string,
     input: CreateIntegrationInput
   ): Promise<Integration> {
@@ -1347,11 +1783,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     const id = crypto.randomUUID();
     const encryptedCreds = await encryptCredentials(input.credentials, this.env.INTEGRATION_SECRET_KEY);
 
-    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    using stub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
     await stub.createIntegration(
       id,
       input.integration_type,
-      input.name,
+      input.name.trim(),
       definition.category,
       definition.authMethod,
       JSON.stringify(input.config),
@@ -1366,12 +1802,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return this.recordToIntegration(record);
   }
 
-  async updateOrgIntegration(
-    orgId: string,
+  async updateWorkspaceIntegration(
+    workspaceId: string,
     integrationId: string,
+    actorId: string,
     input: UpdateIntegrationInput
   ): Promise<Integration | null> {
-    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    using stub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
     const existing = await stub.getIntegration(integrationId);
     if (!existing) return null;
 
@@ -1398,16 +1835,30 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       updates.enabled = input.enabled;
     }
 
-    await stub.updateIntegration(integrationId, updates);
+    await stub.updateIntegration(integrationId, updates, actorId);
 
     const record = await stub.getIntegration(integrationId);
     if (!record) return null;
     return this.recordToIntegration(record);
   }
 
-  async deleteOrgIntegration(orgId: string, integrationId: string): Promise<void> {
-    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-    await stub.deleteIntegration(integrationId);
+  async deleteWorkspaceIntegration(workspaceId: string, integrationId: string, actorId: string): Promise<void> {
+    using stub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    await stub.deleteIntegration(integrationId, actorId);
+  }
+
+  async getWorkspaceIntegrationEnvVars(workspaceId: string): Promise<Record<string, string>> {
+    using stub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+    const records = await stub.getIntegrations();
+    const envVars: Record<string, string> = {};
+
+    for (const record of records) {
+      if (record.enabled !== 1) continue;
+      const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
+      const config = JSON.parse(record.config) as Record<string, unknown>;
+      Object.assign(envVars, mapCredentialsToEnvVars(record.integration_type, credentials, config));
+    }
+    return envVars;
   }
 
   // API Token functions (direct KV access)
@@ -1439,48 +1890,21 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     await deleteApiToken(this.env.API_TOKENS, tokenId);
   }
 
-  async resetOrgContainer(orgId: string): Promise<{ success: boolean; containerId: string }> {
-    const containerId = getContainerIdForOrg(orgId);
+  async resetWorkspaceContainer(workspaceId: string): Promise<{ success: boolean; containerId: string }> {
+    const containerId = getContainerIdForWorkspace(workspaceId);
     using stub = asDisposable(this.env.SANDBOX.get(this.env.SANDBOX.idFromName(containerId)));
     await stub.destroy();
     return { success: true, containerId };
   }
 
   /**
-   * Get all enabled integration credentials as ENV vars for an org.
-   * Called when spawning a container to pass integration secrets.
+   * Get enabled integration credentials as ENV vars for an org's default workspace.
+   * Called when syncing dispatch script secrets.
    */
   async getOrgIntegrationEnvVars(orgId: string): Promise<Record<string, string>> {
-    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-    const records = await stub.getIntegrations();
-
-    const envVars: Record<string, string> = {};
-
-    for (const record of records) {
-      // Skip disabled integrations
-      if (record.enabled !== 1) continue;
-
-      // Skip integrations without credentials
-      if (!record.credentials_encrypted) continue;
-
-      try {
-        const credentials = await decryptCredentials(
-          record.credentials_encrypted,
-          this.env.INTEGRATION_SECRET_KEY
-        );
-        const config = JSON.parse(record.config) as Record<string, unknown>;
-
-        // Map credentials to standard ENV var names
-        const mapped = mapCredentialsToEnvVars(record.integration_type, credentials, config);
-
-        // Merge into result (later integrations override earlier ones if same key)
-        Object.assign(envVars, mapped);
-      } catch (e) {
-        console.error(`Failed to decrypt credentials for integration ${record.id}:`, e);
-      }
-    }
-
-    return envVars;
+    const workspaces = await this.listOrgWorkspaces(orgId);
+    if (workspaces.length === 0) return {};
+    return this.getWorkspaceIntegrationEnvVars(workspaces[0].id);
   }
 
   /**

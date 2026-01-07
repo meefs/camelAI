@@ -7,12 +7,16 @@ interface PageProps {
 }
 
 export default async function ComputerPage({ params }: PageProps) {
-  const { orgId } = await params;
+  const { orgId: workspaceId } = await params;
   const session = await requireSession();
 
-  if (session.org_id !== orgId) {
-    redirect(`/computer/${session.org_id}`);
+  if (!session.workspace_id) {
+    redirect('/computer');
   }
 
-  return <ComputerPageContent orgId={orgId} />;
+  if (session.workspace_id !== workspaceId) {
+    redirect(`/computer/${session.workspace_id}`);
+  }
+
+  return <ComputerPageContent workspaceId={workspaceId} />;
 }

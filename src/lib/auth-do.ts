@@ -2,6 +2,12 @@ import type {
   User,
   Organization,
   OrgMembership,
+  OrgRole,
+  Workspace,
+  WorkspaceWithAccess,
+  WorkspaceAccessLevel,
+  WorkspaceMember,
+  AuditLogEntry,
   Integration,
   CreateIntegrationInput,
   UpdateIntegrationInput,
@@ -41,17 +47,26 @@ export async function getSessionWithUser(
 
 export async function createSession(
   userId: string,
-  orgId: string
+  orgId: string,
+  workspaceId: string | null = null
 ): Promise<{ sessionId: string; sessionData: SessionData }> {
-  return withRpc((rpc) => rpc.createSession(userId, orgId));
+  return withRpc((rpc) => rpc.createSession(userId, orgId, workspaceId));
 }
 
 export async function destroySession(sessionId: string): Promise<void> {
   return withRpc((rpc) => rpc.destroySession(sessionId));
 }
 
-export async function switchSessionOrg(sessionId: string, orgId: string): Promise<void> {
-  return withRpc((rpc) => rpc.switchSessionOrg(sessionId, orgId));
+export async function switchSessionOrg(
+  sessionId: string,
+  orgId: string,
+  workspaceId: string | null = null
+): Promise<void> {
+  return withRpc((rpc) => rpc.switchSessionOrg(sessionId, orgId, workspaceId));
+}
+
+export async function switchSessionWorkspace(sessionId: string, workspaceId: string | null): Promise<void> {
+  return withRpc((rpc) => rpc.switchSessionWorkspace(sessionId, workspaceId));
 }
 
 // User functions
@@ -83,7 +98,7 @@ export async function getUserOrgs(userId: string): Promise<OrgMembership[]> {
   return withRpc((rpc) => rpc.getUserOrgs(userId));
 }
 
-export async function addUserToOrg(userId: string, orgId: string, role: 'admin' | 'member'): Promise<void> {
+export async function addUserToOrg(userId: string, orgId: string, role: OrgRole): Promise<void> {
   return withRpc((rpc) => rpc.addUserToOrg(userId, orgId, role));
 }
 
@@ -108,6 +123,11 @@ export async function adminUpdateUser(
     name: profile.name,
     created_at: profile.created_at,
     is_superuser: profile.is_superuser,
+    avatar: {
+      color: profile.avatar_color,
+      content: profile.avatar_content,
+    },
+    is_orphaned: profile.is_orphaned,
   };
 }
 
@@ -122,6 +142,7 @@ export async function adminGetAllThreads(): Promise<Array<{
   created_at: number;
   updated_at: number;
   org_id: string;
+  workspace_id: string;
 }>> {
   return withRpc((rpc) => rpc.adminGetAllThreads());
 }
@@ -130,6 +151,7 @@ export async function adminGetThreadWithMessages(threadId: string): Promise<{
   thread: { id: string; title: string; created_by: string; created_at: number; updated_at: number };
   messages: Message[];
   org_id: string;
+  workspace_id: string;
   preview_workers: string[];
 } | null> {
   return withRpc((rpc) => rpc.adminGetThreadWithMessages(threadId));
@@ -157,7 +179,7 @@ export async function adminGetOrgsPaginated(
 
 export async function adminGetThreadsPaginated(
   params: PaginationParams = {}
-): Promise<PaginatedResult<Thread & { org_id: string }>> {
+): Promise<PaginatedResult<Thread & { org_id: string; workspace_id: string }>> {
   return withRpc((rpc) => rpc.adminGetThreadsPaginated(params));
 }
 
@@ -170,11 +192,11 @@ export async function createOrg(name: string, createdBy: string): Promise<Organi
   return withRpc((rpc) => rpc.createOrg(name, createdBy));
 }
 
-export async function updateOrgName(orgId: string, name: string): Promise<void> {
-  return withRpc((rpc) => rpc.updateOrgName(orgId, name));
+export async function updateOrgName(orgId: string, name: string, actorId: string): Promise<void> {
+  return withRpc((rpc) => rpc.updateOrgName(orgId, name, actorId));
 }
 
-export async function getOrgMembers(orgId: string): Promise<Array<{ user: User; role: 'admin' | 'member'; joined_at: number }>> {
+export async function getOrgMembers(orgId: string): Promise<Array<{ user: User; role: OrgRole; joined_at: number }>> {
   return withRpc((rpc) => rpc.getOrgMembers(orgId));
 }
 
@@ -186,19 +208,103 @@ export async function isOrgAdmin(userId: string, orgId: string): Promise<boolean
   return withRpc((rpc) => rpc.isOrgAdmin(userId, orgId));
 }
 
-export async function removeOrgMember(orgId: string, userId: string): Promise<void> {
-  return withRpc((rpc) => rpc.removeOrgMember(orgId, userId));
+export async function removeOrgMember(orgId: string, userId: string, actorId: string): Promise<void> {
+  return withRpc((rpc) => rpc.removeOrgMember(orgId, userId, actorId));
 }
 
-export async function updateOrgMemberRole(orgId: string, userId: string, role: 'admin' | 'member'): Promise<void> {
-  return withRpc((rpc) => rpc.updateOrgMemberRole(orgId, userId, role));
+export async function updateOrgMemberRole(orgId: string, userId: string, role: OrgRole, actorId: string): Promise<void> {
+  return withRpc((rpc) => rpc.updateOrgMemberRole(orgId, userId, role, actorId));
+}
+
+export async function transferOrgOwnership(orgId: string, newOwnerId: string, actorId: string): Promise<void> {
+  return withRpc((rpc) => rpc.transferOrgOwnership(orgId, newOwnerId, actorId));
+}
+
+export async function archiveOrg(orgId: string, actorId: string): Promise<void> {
+  return withRpc((rpc) => rpc.archiveOrg(orgId, actorId));
+}
+
+export async function listOrgWorkspaces(orgId: string): Promise<Workspace[]> {
+  return withRpc((rpc) => rpc.listOrgWorkspaces(orgId));
+}
+
+export async function listUserWorkspaces(userId: string, orgId: string): Promise<WorkspaceWithAccess[]> {
+  return withRpc((rpc) => rpc.listUserWorkspaces(userId, orgId));
+}
+
+export async function getWorkspace(workspaceId: string): Promise<Workspace | null> {
+  return withRpc((rpc) => rpc.getWorkspace(workspaceId));
+}
+
+export async function createWorkspace(
+  orgId: string,
+  name: string,
+  createdBy: string,
+  description?: string | null
+): Promise<Workspace> {
+  return withRpc((rpc) => rpc.createWorkspace(orgId, name, createdBy, description ?? null));
+}
+
+export async function updateWorkspace(
+  workspaceId: string,
+  updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } },
+  actorId: string
+): Promise<Workspace | null> {
+  return withRpc((rpc) => rpc.updateWorkspace(workspaceId, updates, actorId));
+}
+
+export async function archiveWorkspace(workspaceId: string, actorId: string): Promise<Workspace | null> {
+  return withRpc((rpc) => rpc.archiveWorkspace(workspaceId, actorId));
+}
+
+export async function getWorkspaceAccess(workspaceId: string, userId: string): Promise<WorkspaceAccessLevel> {
+  return withRpc((rpc) => rpc.getWorkspaceAccess(workspaceId, userId));
+}
+
+export async function setWorkspaceAccess(
+  workspaceId: string,
+  userId: string,
+  accessLevel: WorkspaceAccessLevel,
+  actorId: string
+): Promise<void> {
+  return withRpc((rpc) => rpc.setWorkspaceAccess(workspaceId, userId, accessLevel, actorId));
+}
+
+export async function listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+  return withRpc((rpc) => rpc.listWorkspaceMembers(workspaceId));
+}
+
+export async function checkUserOrphaned(userId: string): Promise<boolean> {
+  return withRpc((rpc) => rpc.checkUserOrphaned(userId));
+}
+
+export async function handleOrphanedUserLogin(
+  userId: string
+): Promise<{ org: Organization; workspace: WorkspaceWithAccess } | null> {
+  return withRpc((rpc) => rpc.handleOrphanedUserLogin(userId));
+}
+
+export async function getOrgAuditLog(
+  orgId: string,
+  limit?: number,
+  offset?: number
+): Promise<AuditLogEntry[]> {
+  return withRpc((rpc) => rpc.getOrgAuditLog(orgId, limit, offset));
+}
+
+export async function getWorkspaceAuditLog(
+  workspaceId: string,
+  limit?: number,
+  offset?: number
+): Promise<AuditLogEntry[]> {
+  return withRpc((rpc) => rpc.getWorkspaceAuditLog(workspaceId, limit, offset));
 }
 
 // Invitation functions
 export async function createInvitation(
   orgId: string,
   email: string,
-  role: 'admin' | 'member',
+  role: OrgRole,
   invitedBy: string
 ): Promise<{ id: string; expires_at: number }> {
   return withRpc((rpc) => rpc.createInvitation(orgId, email, role, invitedBy));
@@ -207,7 +313,7 @@ export async function createInvitation(
 export async function getInvitation(orgId: string, invitationId: string): Promise<{
   id: string;
   email: string;
-  role: 'admin' | 'member';
+  role: OrgRole;
   org: Organization;
 } | null> {
   return withRpc((rpc) => rpc.getInvitation(orgId, invitationId));
@@ -220,7 +326,7 @@ export async function acceptInvitation(orgId: string, invitationId: string, user
 export async function getOrgInvitations(orgId: string): Promise<Array<{
   id: string;
   email: string;
-  role: 'admin' | 'member';
+  role: OrgRole;
   created_at: number;
   expires_at: number;
 }>> {
@@ -232,32 +338,46 @@ export async function deleteInvitation(orgId: string, invitationId: string): Pro
 }
 
 // Integration functions
-export async function getOrgIntegrations(orgId: string): Promise<Integration[]> {
-  return withRpc((rpc) => rpc.getOrgIntegrations(orgId));
+export async function getWorkspaceIntegrations(workspaceId: string): Promise<Integration[]> {
+  return withRpc((rpc) => rpc.getWorkspaceIntegrations(workspaceId));
 }
 
-export async function getOrgIntegration(orgId: string, integrationId: string): Promise<Integration | null> {
-  return withRpc((rpc) => rpc.getOrgIntegration(orgId, integrationId));
+export async function getWorkspaceIntegration(
+  workspaceId: string,
+  integrationId: string
+): Promise<Integration | null> {
+  return withRpc((rpc) => rpc.getWorkspaceIntegration(workspaceId, integrationId));
 }
 
-export async function createOrgIntegration(
-  orgId: string,
+export async function createWorkspaceIntegration(
+  workspaceId: string,
   userId: string,
   input: CreateIntegrationInput
 ): Promise<Integration> {
-  return withRpc((rpc) => rpc.createOrgIntegration(orgId, userId, input));
+  return withRpc((rpc) => rpc.createWorkspaceIntegration(workspaceId, userId, input));
 }
 
-export async function updateOrgIntegration(
-  orgId: string,
+export async function updateWorkspaceIntegration(
+  workspaceId: string,
   integrationId: string,
+  actorId: string,
   input: UpdateIntegrationInput
 ): Promise<Integration | null> {
-  return withRpc((rpc) => rpc.updateOrgIntegration(orgId, integrationId, input));
+  return withRpc((rpc) => rpc.updateWorkspaceIntegration(workspaceId, integrationId, actorId, input));
 }
 
-export async function deleteOrgIntegration(orgId: string, integrationId: string): Promise<void> {
-  return withRpc((rpc) => rpc.deleteOrgIntegration(orgId, integrationId));
+export async function deleteWorkspaceIntegration(
+  workspaceId: string,
+  integrationId: string,
+  actorId: string
+): Promise<void> {
+  return withRpc((rpc) => rpc.deleteWorkspaceIntegration(workspaceId, integrationId, actorId));
+}
+
+export async function resetWorkspaceContainer(
+  workspaceId: string
+): Promise<{ success: boolean; containerId: string }> {
+  return withRpc((rpc) => rpc.resetWorkspaceContainer(workspaceId));
 }
 
 export async function restartOrgContainers(

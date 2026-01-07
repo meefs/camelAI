@@ -12,41 +12,41 @@ async function withRpc<T>(fn: (rpc: DoRpcService) => Promise<T>): Promise<T> {
   return withDoRpc(env.DO_RPC, fn);
 }
 
-export async function getThreads(org: string): Promise<Thread[]> {
-  return withRpc((rpc) => rpc.getThreads(org));
+export async function getThreads(workspaceId: string): Promise<Thread[]> {
+  return withRpc((rpc) => rpc.getThreads(workspaceId));
 }
 
 export async function getThreadsPaginated(
-  org: string,
+  workspaceId: string,
   params: PaginationParams = {}
 ): Promise<PaginatedResult<Thread>> {
-  return withRpc((rpc) => rpc.getThreadsPaginated(org, params));
+  return withRpc((rpc) => rpc.getThreadsPaginated(workspaceId, params));
 }
 
 export async function createThread(
-  org: string,
+  workspaceId: string,
   title: string | undefined,
   createdBy?: string,
   sessionId?: string
 ): Promise<Thread> {
-  return withRpc((rpc) => rpc.createThread(org, title, createdBy, sessionId));
+  return withRpc((rpc) => rpc.createThread(workspaceId, title, createdBy, sessionId));
 }
 
-export async function getThread(id: string, org: string): Promise<Thread | null> {
-  return withRpc((rpc) => rpc.getThread(id, org));
+export async function getThread(id: string, workspaceId: string): Promise<Thread | null> {
+  return withRpc((rpc) => rpc.getThread(id, workspaceId));
 }
 
-export async function updateThread(id: string, title: string, org: string): Promise<Thread | null> {
-  return withRpc((rpc) => rpc.updateThread(id, title, org));
+export async function updateThread(id: string, title: string, workspaceId: string): Promise<Thread | null> {
+  return withRpc((rpc) => rpc.updateThread(id, title, workspaceId));
 }
 
-export async function deleteThread(id: string, org: string): Promise<void> {
-  return withRpc((rpc) => rpc.deleteThread(id, org));
+export async function deleteThread(id: string, workspaceId: string): Promise<void> {
+  return withRpc((rpc) => rpc.deleteThread(id, workspaceId));
 }
 
-export async function getMessages(threadId: string, org: string): Promise<Message[]> {
+export async function getMessages(threadId: string, workspaceId: string): Promise<Message[]> {
   // Messages are read from container's Claude JSONL file
-  return withRpc((rpc) => rpc.getMessages(threadId, org));
+  return withRpc((rpc) => rpc.getMessages(threadId, workspaceId));
 }
 
 export async function setThreadPreview(threadId: string, workers: string[]): Promise<string[]> {

@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import type { NextRequest } from 'next/server';
-import type { User, Organization, OrgMembership } from '@/types';
+import type { User, Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 
 // Cookie configuration
 export const SESSION_COOKIE_NAME = 'chiridion_session';
@@ -109,6 +109,8 @@ export function isValidPassword(password: string): boolean {
 export interface AuthResult {
   user: User;
   currentOrg: Organization;
+  currentWorkspace?: WorkspaceWithAccess | null;
   orgs: OrgMembership[];
+  workspaces?: WorkspaceWithAccess[];
   sessionId: string;
 }

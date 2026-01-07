@@ -38,6 +38,11 @@ export default async function AdminUserDetailPage({ params }: Props) {
     name: user.name,
     created_at: user.created_at,
     is_superuser: user.is_superuser,
+    avatar: {
+      color: user.avatar_color,
+      content: user.avatar_content,
+    },
+    is_orphaned: user.is_orphaned,
   };
 
   return (
