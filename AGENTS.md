@@ -259,8 +259,16 @@ npm run admin:prod
 | `/r2/list` | Direct R2 access | List R2 objects (optional `?prefix=`) |
 | `/r2/info/{key}` | Direct R2 access | Get R2 object metadata |
 | `/r2/backup/{orgId}` | Direct R2 access | Get backup info for an org |
+| `/workers` | Cloudflare API | List all user workers in dispatch namespace |
+| `/workers/{orgId}` | Cloudflare API | List workers for a specific org |
 
 **How it works:** The CLI uses Cloudflare service bindings with `entrypoint: "DoRpcService"` and `remote: true` to call RPC methods on deployed workers. No HTTP routes needed - direct RPC over the Cloudflare network.
+
+**Workers endpoint setup:** The `/workers` endpoint requires a Cloudflare API token. Create `workers/admin-cli/.dev.vars` with:
+```
+CF_API_TOKEN=<your-oauth-token>
+```
+Get your token from `~/Library/Preferences/.wrangler/config/default.toml` after running `npx wrangler login`.
 
 ## Project Structure
 

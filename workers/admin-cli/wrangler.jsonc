@@ -26,6 +26,13 @@
 			"remote": true
 		}
 	],
+	"dispatch_namespaces": [
+		{
+			"binding": "DISPATCHER",
+			"namespace": "chiridion-platform",
+			"remote": true
+		}
+	],
 	"services": [
 		{
 			"binding": "RPC",
@@ -52,6 +59,13 @@
 				{
 					"binding": "R2",
 					"bucket_name": "chiridion-sandbox",
+					"remote": true
+				}
+			],
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCHER",
+					"namespace": "chiridion-platform",
 					"remote": true
 				}
 			],
@@ -84,6 +98,13 @@
 					"remote": true
 				}
 			],
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCHER",
+					"namespace": "chiridion-platform",
+					"remote": true
+				}
+			],
 			"services": [
 				{
 					"binding": "RPC",
@@ -110,6 +131,13 @@
 				{
 					"binding": "R2",
 					"bucket_name": "chiridion-sandbox",
+					"remote": true
+				}
+			],
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCHER",
+					"namespace": "chiridion-platform",
 					"remote": true
 				}
 			],

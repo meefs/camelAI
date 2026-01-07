@@ -16,14 +16,20 @@
  *   curl http://localhost:8787/users
  */
 
-import type { KVNamespace, R2Bucket } from '@cloudflare/workers-types';
+import type { KVNamespace, R2Bucket, DispatchNamespace } from '@cloudflare/workers-types';
 import type { DoRpcService } from '../../main/src/rpc-service';
+
+// Cloudflare account and dispatch namespace info (same for all envs)
+const CF_ACCOUNT_ID = '85bbd288051330fb51ee1c86031a299b';
+const CF_DISPATCH_NAMESPACE = 'chiridion-platform';
 
 interface Env {
 	EMAIL_TO_USER: KVNamespace;
 	R2: R2Bucket;
+	DISPATCHER: DispatchNamespace;
 	RPC: Service<DoRpcService>;
 	TARGET_HOST: string;
+	CF_API_TOKEN?: string; // Optional: for listing scripts via API
 }
 
 // Service binding with entrypoint gives us direct RPC access
@@ -56,6 +62,8 @@ export default {
 						'/r2/list': 'List R2 objects (with optional ?prefix=)',
 						'/r2/info/{key}': 'Get R2 object metadata',
 						'/r2/backup/{orgId}': 'Get backup info for an org',
+						'/workers': 'List all user workers in dispatch namespace (with optional ?prefix=)',
+						'/workers/{orgId}': 'List workers for a specific org',
 					},
 				});
 			}
@@ -141,6 +149,19 @@ export default {
 			if (path.startsWith('/kv/')) {
 				const key = decodeURIComponent(path.slice(4));
 				return await getKVValue(env, key);
+			}
+
+			// Dispatch namespace endpoints (user workers)
+			if (path === '/workers') {
+				const prefix = url.searchParams.get('prefix') || undefined;
+				return await listUserWorkers(env, prefix);
+			}
+
+			if (path.startsWith('/workers/')) {
+				const orgId = decodeURIComponent(path.slice(9));
+				// Org prefix is first 32 chars of orgId
+				const prefix = orgId.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
+				return await listUserWorkers(env, prefix, orgId);
 			}
 
 			return jsonResponse({ error: 'Not found', path }, 404);
@@ -276,4 +297,106 @@ function formatBytes(bytes: number): string {
 	const sizes = ['Bytes', 'KB', 'MB', 'GB'];
 	const i = Math.floor(Math.log(bytes) / Math.log(k));
 	return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+// Helper to derive org prefix from orgId (same as in main worker)
+function deriveOrgPrefix(orgId: string): string {
+	return orgId.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+// List all scripts in dispatch namespace via Cloudflare API
+async function listDispatchScripts(apiToken: string): Promise<Array<{ id: string; created_on: string; modified_on: string }>> {
+	const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/workers/dispatch/namespaces/${CF_DISPATCH_NAMESPACE}/scripts`;
+	const response = await fetch(url, {
+		headers: { Authorization: `Bearer ${apiToken}` },
+	});
+	if (!response.ok) {
+		throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+	}
+	const data = (await response.json()) as { success: boolean; result?: Array<{ id: string; created_on: string; modified_on: string }>; errors?: unknown[] };
+	if (!data.success) {
+		throw new Error(`API error: ${JSON.stringify(data.errors)}`);
+	}
+	return data.result ?? [];
+}
+
+// List user workers in dispatch namespace
+async function listUserWorkers(env: Env, prefix?: string, orgId?: string): Promise<Response> {
+	// If we have an API token, use the Cloudflare API to list all scripts
+	if (env.CF_API_TOKEN) {
+		try {
+			const allScripts = await listDispatchScripts(env.CF_API_TOKEN);
+
+			// Get all orgs to map prefixes to org names
+			const { items: orgs } = await env.RPC.adminGetOrgsPaginated({ limit: 1000 });
+			const orgByPrefix = new Map(orgs.map((org) => [deriveOrgPrefix(org.id), org]));
+
+			// Filter by orgId prefix if provided
+			const orgPrefix = orgId ? deriveOrgPrefix(orgId) : prefix;
+			const filteredScripts = orgPrefix
+				? allScripts.filter((s) => s.id.startsWith(orgPrefix))
+				: allScripts;
+
+			// Enrich with org info
+			const enrichedScripts = filteredScripts.map((script) => {
+				// Find the org prefix (first 32 chars before the first dash after position 32)
+				const possiblePrefix = script.id.slice(0, 32);
+				const org = orgByPrefix.get(possiblePrefix);
+				return {
+					scriptName: script.id,
+					orgPrefix: possiblePrefix,
+					orgId: org?.id,
+					orgName: org?.name,
+					created_on: script.created_on,
+					modified_on: script.modified_on,
+				};
+			});
+
+			return jsonResponse({
+				count: enrichedScripts.length,
+				total: allScripts.length,
+				filter: orgPrefix || '(all)',
+				scripts: enrichedScripts,
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Unknown error';
+			return jsonResponse({ error: message, hint: 'Check CF_API_TOKEN is valid' }, 500);
+		}
+	}
+
+	// Fallback: If an orgId is provided, try to get that specific worker via binding
+	if (orgId) {
+		const workerPrefix = deriveOrgPrefix(orgId);
+		try {
+			const worker = env.DISPATCHER.get(workerPrefix);
+			const testRequest = new Request('https://test.example.com/health');
+			const response = await worker.fetch(testRequest);
+			const body = await response.text().catch(() => '(could not read body)');
+
+			return jsonResponse({
+				orgId,
+				workerName: workerPrefix,
+				exists: true,
+				status: response.status,
+				statusText: response.statusText,
+				responsePreview: body.slice(0, 500),
+				message: 'Worker found (but cannot list all workers without CF_API_TOKEN)',
+				hint: 'Set CF_API_TOKEN in .dev.vars to list all workers for this org',
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Unknown error';
+			return jsonResponse({
+				orgId,
+				workerName: workerPrefix,
+				exists: false,
+				error: message,
+			}, 404);
+		}
+	}
+
+	// Without API token and no specific orgId, we can't list workers
+	return jsonResponse({
+		error: 'Cannot list all workers without CF_API_TOKEN',
+		hint: 'Add CF_API_TOKEN to workers/admin-cli/.dev.vars with a Cloudflare API token that has Workers Scripts Read permission',
+	}, 400);
 }
