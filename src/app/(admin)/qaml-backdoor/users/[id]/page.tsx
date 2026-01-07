@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import * as authDO from '@/lib/auth-do';
+import { requireSuperuser } from '@/lib/server-guards';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { UserEditForm } from '@/components/admin/user-edit-form';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +20,8 @@ interface Props {
 }
 
 export default async function AdminUserDetailPage({ params }: Props) {
+  await requireSuperuser();
+
   const { id } = await params;
 
   // Fetch user and orgs in parallel

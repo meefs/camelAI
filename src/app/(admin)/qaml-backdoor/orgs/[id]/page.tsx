@@ -3,6 +3,7 @@ import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
 import * as computerDO from '@/lib/computer-do';
 import { getSessionId } from '@/lib/auth';
+import { requireSuperuser } from '@/lib/server-guards';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { OrgEditForm } from '@/components/admin/org-edit-form';
 import { Badge } from '@/components/ui/badge';
@@ -23,6 +24,8 @@ interface Props {
 }
 
 export default async function AdminOrgDetailPage({ params }: Props) {
+  await requireSuperuser();
+
   const { id } = await params;
 
   // Fetch org first to check existence, then fetch related data in parallel
