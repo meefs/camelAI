@@ -19,6 +19,13 @@
 			"remote": true
 		}
 	],
+	"r2_buckets": [
+		{
+			"binding": "R2",
+			"bucket_name": "chiridion-sandbox",
+			"remote": true
+		}
+	],
 	"services": [
 		{
 			"binding": "RPC",
@@ -38,6 +45,13 @@
 				{
 					"binding": "EMAIL_TO_USER",
 					"id": "45b452b3b19c42f6991408c140149a70",
+					"remote": true
+				}
+			],
+			"r2_buckets": [
+				{
+					"binding": "R2",
+					"bucket_name": "chiridion-sandbox",
 					"remote": true
 				}
 			],
@@ -63,6 +77,13 @@
 					"remote": true
 				}
 			],
+			"r2_buckets": [
+				{
+					"binding": "R2",
+					"bucket_name": "chiridion-sandbox",
+					"remote": true
+				}
+			],
 			"services": [
 				{
 					"binding": "RPC",
@@ -82,6 +103,13 @@
 				{
 					"binding": "EMAIL_TO_USER",
 					"id": "ab267c4f44b847dda8bdca400a4e1884",
+					"remote": true
+				}
+			],
+			"r2_buckets": [
+				{
+					"binding": "R2",
+					"bucket_name": "chiridion-sandbox",
 					"remote": true
 				}
 			],

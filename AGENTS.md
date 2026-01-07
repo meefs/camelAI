@@ -256,6 +256,9 @@ npm run admin:prod
 | `/users` | `adminGetUsersPaginated()` | All users with org counts |
 | `/threads` | `adminGetThreadsPaginated()` | All threads across all orgs |
 | `/kv-keys` | Direct KV access | List KV keys (optional `?prefix=`) |
+| `/r2/list` | Direct R2 access | List R2 objects (optional `?prefix=`) |
+| `/r2/info/{key}` | Direct R2 access | Get R2 object metadata |
+| `/r2/backup/{orgId}` | Direct R2 access | Get backup info for an org |
 
 **How it works:** The CLI uses Cloudflare service bindings with `entrypoint: "DoRpcService"` and `remote: true` to call RPC methods on deployed workers. No HTTP routes needed - direct RPC over the Cloudflare network.
 

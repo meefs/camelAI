@@ -19,7 +19,7 @@ import { spawn } from 'child_process';
 import { createServer } from 'net';
 
 const ENVIRONMENTS = ['staging', 'prod', 'dev-illiana', 'dev-miguel'];
-const ENDPOINTS = ['overview', 'orgs', 'users', 'threads', 'kv-keys'];
+const ENDPOINTS = ['overview', 'orgs', 'users', 'threads', 'kv-keys', 'r2/list', 'r2/backup'];
 
 function usage() {
 	console.log(`
@@ -33,9 +33,11 @@ Examples:
   admin staging orgs
   admin prod users '.users[] | {name, email}'
   admin dev-illiana orgs '.orgs[] | {org_id: .id, name: .name}'
+  admin dev-illiana r2/backup/{orgId}
+  admin staging r2/list '?prefix=abc123'
 
 Environments: ${ENVIRONMENTS.join(', ')}
-Endpoints: ${ENDPOINTS.join(', ')}
+Endpoints: ${ENDPOINTS.join(', ')}, r2/info/{key}, r2/backup/{orgId}
 `);
 	process.exit(1);
 }
@@ -84,8 +86,14 @@ async function main() {
 		env = args.shift();
 	}
 
-	if (args.length > 0 && ENDPOINTS.includes(args[0])) {
-		endpoint = args.shift();
+	if (args.length > 0) {
+		// Check for exact match or path-style endpoints like r2/backup/abc123
+		const potentialEndpoint = args[0];
+		if (ENDPOINTS.includes(potentialEndpoint) ||
+			potentialEndpoint.startsWith('r2/') ||
+			potentialEndpoint.startsWith('kv/')) {
+			endpoint = args.shift();
+		}
 	}
 
 	if (args.length > 0) {

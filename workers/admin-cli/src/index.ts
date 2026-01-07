@@ -16,11 +16,12 @@
  *   curl http://localhost:8787/users
  */
 
-import type { KVNamespace } from '@cloudflare/workers-types';
+import type { KVNamespace, R2Bucket } from '@cloudflare/workers-types';
 import type { DoRpcService } from '../../main/src/rpc-service';
 
 interface Env {
 	EMAIL_TO_USER: KVNamespace;
+	R2: R2Bucket;
 	RPC: Service<DoRpcService>;
 	TARGET_HOST: string;
 }
@@ -52,6 +53,9 @@ export default {
 						'/users': 'List all users with org info',
 						'/threads': 'List all threads across all orgs',
 						'/kv-keys': 'List all KV keys (with optional ?prefix=)',
+						'/r2/list': 'List R2 objects (with optional ?prefix=)',
+						'/r2/info/{key}': 'Get R2 object metadata',
+						'/r2/backup/{orgId}': 'Get backup info for an org',
 					},
 				});
 			}
@@ -110,6 +114,22 @@ export default {
 					count: total,
 					threads,
 				});
+			}
+
+			// R2-based endpoints (direct R2 access)
+			if (path === '/r2/list') {
+				const prefix = url.searchParams.get('prefix') || undefined;
+				return await listR2Objects(env, prefix);
+			}
+
+			if (path.startsWith('/r2/info/')) {
+				const key = decodeURIComponent(path.slice(9));
+				return await getR2ObjectInfo(env, key);
+			}
+
+			if (path.startsWith('/r2/backup/')) {
+				const orgId = decodeURIComponent(path.slice(11));
+				return await getOrgBackupInfo(env, orgId);
 			}
 
 			// KV-based endpoints (direct KV access)
@@ -175,4 +195,85 @@ async function getKVValue(env: Env, key: string): Promise<Response> {
 	} catch {
 		return jsonResponse({ key, value, type: 'string' });
 	}
+}
+
+// List R2 objects with optional prefix
+async function listR2Objects(env: Env, prefix?: string): Promise<Response> {
+	const objects: Array<{
+		key: string;
+		size: number;
+		lastModified: string;
+		etag: string;
+	}> = [];
+
+	let cursor: string | undefined;
+	while (true) {
+		const list = await env.R2.list({ prefix, cursor, limit: 1000 });
+		for (const obj of list.objects) {
+			objects.push({
+				key: obj.key,
+				size: obj.size,
+				lastModified: obj.uploaded.toISOString(),
+				etag: obj.etag,
+			});
+		}
+		if (!list.truncated) break;
+		cursor = list.cursor;
+	}
+
+	return jsonResponse({
+		prefix: prefix || '(all)',
+		count: objects.length,
+		objects,
+	});
+}
+
+// Get R2 object metadata
+async function getR2ObjectInfo(env: Env, key: string): Promise<Response> {
+	const obj = await env.R2.head(key);
+	if (!obj) {
+		return jsonResponse({ error: 'Object not found', key }, 404);
+	}
+
+	return jsonResponse({
+		key: obj.key,
+		size: obj.size,
+		lastModified: obj.uploaded.toISOString(),
+		etag: obj.etag,
+		httpMetadata: obj.httpMetadata,
+		customMetadata: obj.customMetadata,
+	});
+}
+
+// Get backup info for a specific org
+async function getOrgBackupInfo(env: Env, orgId: string): Promise<Response> {
+	const backupKey = `${orgId}/workspace.tar.zst`;
+	const obj = await env.R2.head(backupKey);
+
+	if (!obj) {
+		return jsonResponse({
+			orgId,
+			backupKey,
+			exists: false,
+			message: 'No backup found for this org',
+		}, 404);
+	}
+
+	return jsonResponse({
+		orgId,
+		backupKey,
+		exists: true,
+		size: obj.size,
+		sizeHuman: formatBytes(obj.size),
+		lastModified: obj.uploaded.toISOString(),
+		etag: obj.etag,
+	});
+}
+
+function formatBytes(bytes: number): string {
+	if (bytes === 0) return '0 Bytes';
+	const k = 1024;
+	const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+	const i = Math.floor(Math.log(bytes) / Math.log(k));
+	return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
