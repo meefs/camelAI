@@ -741,7 +741,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     );
 
     const orgs = orgResults.filter(
-      (org): org is Organization & { member_count: number } => org !== null
+      (org): org is NonNullable<(typeof orgResults)[number]> => org !== null
     );
     orgs.sort((a, b) => b.created_at - a.created_at);
     return orgs;

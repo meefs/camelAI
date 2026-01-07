@@ -4,7 +4,7 @@ import * as authDO from '@/lib/auth-do';
 import * as chatDO from '@/lib/chat-do';
 import { requireSession } from '@/lib/server-guards';
 import { getUserByIdCached } from '@/lib/auth-context';
-import type { Thread } from '@/types';
+import type { Thread, User } from '@/types';
 
 function toSerializable<T>(value: T): T {
   if (value === null || value === undefined) return value;
@@ -21,6 +21,23 @@ function toSerializable<T>(value: T): T {
   return value;
 }
 
+type CachedProfile = NonNullable<Awaited<ReturnType<typeof getUserByIdCached>>>;
+
+function toUser(profile: CachedProfile): User {
+  return {
+    id: profile.id,
+    email: profile.email,
+    name: profile.name,
+    created_at: profile.created_at,
+    is_superuser: profile.is_superuser,
+    avatar: {
+      color: profile.avatar_color,
+      content: profile.avatar_content,
+    },
+    is_orphaned: profile.is_orphaned,
+  };
+}
+
 async function hydrateThreads(threads: Thread[]) {
   const creatorIds = Array.from(
     new Set(
@@ -32,9 +49,9 @@ async function hydrateThreads(threads: Thread[]) {
   const creatorEntries = await Promise.all(
     creatorIds.map(async (id) => [id, await getUserByIdCached(id)] as const)
   );
-  const creatorMap = new Map<string, NonNullable<Awaited<ReturnType<typeof getUserByIdCached>>>>();
+  const creatorMap = new Map<string, User>();
   for (const [id, user] of creatorEntries) {
-    if (user) creatorMap.set(id, user);
+    if (user) creatorMap.set(id, toUser(user));
   }
   return threads.map((thread) => ({
     ...thread,

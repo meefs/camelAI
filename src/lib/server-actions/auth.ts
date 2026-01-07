@@ -9,6 +9,7 @@ import {
 } from "@/lib/auth";
 import { getAuthContext, getSessionContext } from "@/lib/auth-context";
 import type { Organization, OrgMembership, User, WorkspaceWithAccess } from "@/types";
+import type { UserProfile } from "../../../workers/main/src/auth";
 
 type AuthPayload = {
   user: User;
@@ -18,14 +19,32 @@ type AuthPayload = {
   workspaces: WorkspaceWithAccess[];
 };
 
-function toSafeUser(user: User): User {
+function toSafeUser(user: User | UserProfile): User {
+  if ("avatar" in user) {
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      created_at: user.created_at,
+      is_superuser: user.is_superuser,
+      avatar: {
+        color: user.avatar.color,
+        content: user.avatar.content,
+      },
+      is_orphaned: user.is_orphaned,
+    };
+  }
+
   return {
     id: user.id,
     email: user.email,
     name: user.name,
     created_at: user.created_at,
     is_superuser: user.is_superuser,
-    avatar: user.avatar,
+    avatar: {
+      color: user.avatar_color,
+      content: user.avatar_content,
+    },
     is_orphaned: user.is_orphaned,
   };
 }
