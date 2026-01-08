@@ -34,8 +34,6 @@ The design is inspired by screenshots from another SaaS application. Here is a d
 │                                                                 │
 │  ○  3. Add invitation persistence tests in workers runtime      │
 │       suite                                                     │
-├─────────────────────────────────────────────────────────────────┤
-│  Review ↗                          2 files changed  +29  -44    │
 └─────────────────────────────────────────────────────────────────┘
   [                    Text input field                          ]
 ```
@@ -44,7 +42,6 @@ The design is inspired by screenshots from another SaaS application. Here is a d
 - **Header row:** Task list icon (⋮≡) + progress text ("0 out of 3 tasks completed") + expand/collapse toggle (↗↙)
 - **Task list:** Numbered items with status indicators on the left
 - **Status indicators:** Empty circle (○) = pending, loading spinner = in progress, checkmark (✓) = completed
-- **Footer row:** "Review" link with arrow + file change statistics
 - **Container position:** Floats directly above the text input field
 - **Dark theme:** Dark background, muted text colors, subtle borders
 
@@ -53,15 +50,12 @@ The design is inspired by screenshots from another SaaS application. Here is a d
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  ⋮≡ 1 out of 3 tasks completed                              ↙↗ │
-├─────────────────────────────────────────────────────────────────┤
-│  Review ↗                          3 files changed  +30  -45    │
 └─────────────────────────────────────────────────────────────────┘
   [                    Text input field                          ]
 ```
 
 **Key differences from expanded:**
 - Tasks are hidden - only the header with progress summary is visible
-- Footer row with review/stats is still visible
 - More compact vertical height
 - Toggle icon indicates it can be expanded
 
@@ -495,18 +489,6 @@ export function TodoStatusIcon({ status, className }: TodoStatusIconProps) {
 ### Task Completion
 - Brief scale pulse on checkbox when task completes (optional)
 - Strikethrough animation on text
-
----
-
-## Omissions from Reference Design
-
-The following elements from the reference screenshots are **not included** in this implementation:
-
-1. **"Review" link:** This appears to be specific to code review workflows. Chiridion doesn't have a comparable feature.
-
-2. **File change statistics (+29 -44):** While the agent does edit files, aggregating file changes across all tool calls in a turn would add complexity. This can be added later if desired.
-
-3. **External link icon on tasks:** The reference shows some tasks as clickable links. Our tasks are descriptive text only.
 
 ---
 
