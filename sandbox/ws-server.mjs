@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-01-sandbox-v7';
+const VERSION = '2026-01-07-sandbox-v8';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -166,7 +166,22 @@ function getQueryOptions(session) {
     includePartialMessages: true,
     permissionMode: 'bypassPermissions',
     allowUnsandboxedCommands: true,
-    systemPrompt: { type: 'preset', preset: 'claude_code' },
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: `
+## Cloudflare Deployment
+
+When deploying software to the internet or for the user to access:
+
+1. **Always use the globally installed \`wrangler\` CLI** - Do not install wrangler locally via npm
+2. **Build as Cloudflare Workers** - All deployable software should be written as Workers
+3. **Use Durable Objects with SQLite** - For persistence, use SQLite-backed Durable Objects (not KV)
+4. **Use \`wrangler deploy\`** - Deploy with the global wrangler binary
+
+The infrastructure is already configured for Worker deployments. For fullstack apps, use Next.js with OpenNext for Cloudflare.
+`.trim(),
+    },
     settingSources: ['project', 'user'],
     env: envVars,
   };
