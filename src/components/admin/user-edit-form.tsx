@@ -3,11 +3,14 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { User } from '@/types';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AvatarPicker } from '@/components/settings/avatar-picker';
+import { getContrastTextColor } from '@/lib/avatar';
 import { updateAdminUser } from '@/lib/server-actions/admin';
 
 interface UserEditFormProps {
@@ -18,6 +21,8 @@ export function UserEditForm({ user }: UserEditFormProps) {
   const router = useRouter();
   const [name, setName] = useState(user.name || '');
   const [isSuperuser, setIsSuperuser] = useState(user.is_superuser);
+  const [avatar, setAvatar] = useState(user.avatar);
+  const [avatarOpen, setAvatarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -32,6 +37,7 @@ export function UserEditForm({ user }: UserEditFormProps) {
       await updateAdminUser(user.id, {
         name: name || null,
         is_superuser: isSuperuser,
+        avatar,
       });
 
       setSuccess(true);
@@ -67,6 +73,27 @@ export function UserEditForm({ user }: UserEditFormProps) {
         />
       </div>
 
+      <div className="flex items-center gap-4">
+        <Avatar className="h-12 w-12">
+          <AvatarFallback
+            className="text-lg"
+            style={{
+              backgroundColor: avatar.color,
+              color: getContrastTextColor(avatar.color),
+            }}
+          >
+            {avatar.content}
+          </AvatarFallback>
+        </Avatar>
+        <Button
+          variant="outline"
+          type="button"
+          onClick={() => setAvatarOpen(true)}
+        >
+          Change avatar
+        </Button>
+      </div>
+
       <div className="flex items-center gap-3">
         <Checkbox
           id="superuser"
@@ -84,6 +111,15 @@ export function UserEditForm({ user }: UserEditFormProps) {
       <Button type="submit" disabled={loading}>
         {loading ? 'Saving...' : 'Save Changes'}
       </Button>
+
+      <AvatarPicker
+        open={avatarOpen}
+        onOpenChange={setAvatarOpen}
+        value={avatar}
+        onChange={setAvatar}
+        title="User avatar"
+        description="Update the user avatar and initials."
+      />
     </form>
   );
 }

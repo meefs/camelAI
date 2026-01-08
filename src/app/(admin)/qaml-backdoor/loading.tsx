@@ -1,4 +1,4 @@
-import { Building2, FolderKanban, MessageSquare, Users } from 'lucide-react';
+import { Building2, FolderKanban, MessageSquare, Plug, UserX, Users } from 'lucide-react';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -45,10 +45,10 @@ export default function AdminLoading() {
             <Card size="sm">
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle>Projects</CardTitle>
+                  <CardTitle>Workspaces</CardTitle>
                   <FolderKanban className="h-4 w-4 text-muted-foreground" />
                 </div>
-                <CardDescription>Code repositories</CardDescription>
+                <CardDescription>Total workspaces</CardDescription>
               </CardHeader>
               <CardContent>
                 <Skeleton className="h-8 w-12" />
@@ -68,7 +68,7 @@ export default function AdminLoading() {
             </Card>
           </div>
 
-          <div className="grid gap-3 mt-3 sm:grid-cols-2">
+          <div className="grid gap-3 mt-3 sm:grid-cols-2 lg:grid-cols-4">
             <Card size="sm">
               <CardHeader>
                 <CardTitle>Memberships</CardTitle>
@@ -82,6 +82,30 @@ export default function AdminLoading() {
               <CardHeader>
                 <CardTitle>Superusers</CardTitle>
                 <CardDescription>Admin access holders</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-8 w-12" />
+              </CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle>Orphaned Users</CardTitle>
+                  <UserX className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <CardDescription>Users without orgs</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-8 w-12" />
+              </CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle>Integrations</CardTitle>
+                  <Plug className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <CardDescription>Workspace integrations</CardDescription>
               </CardHeader>
               <CardContent>
                 <Skeleton className="h-8 w-12" />

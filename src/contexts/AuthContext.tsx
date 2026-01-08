@@ -2,13 +2,21 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import type { AuthState } from '@/types';
-import { getAuthState, login as loginAction, logout as logoutAction, signup as signupAction, switchOrg as switchOrgAction } from '@/lib/server-actions/auth';
+import {
+  getAuthState,
+  login as loginAction,
+  logout as logoutAction,
+  signup as signupAction,
+  switchOrg as switchOrgAction,
+  switchWorkspace as switchWorkspaceAction,
+} from '@/lib/server-actions/auth';
 
 interface AuthContextValue extends AuthState {
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string, name?: string) => Promise<void>;
   logout: () => Promise<void>;
   switchOrg: (orgId: string) => Promise<void>;
+  switchWorkspace: (workspaceId: string) => Promise<void>;
   refreshAuth: () => Promise<void>;
 }
 
@@ -169,6 +177,22 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     }
   };
 
+  const switchWorkspace = async (workspaceId: string) => {
+    setState((prev) => ({ ...prev, loading: true, error: null }));
+
+    try {
+      await switchWorkspaceAction(workspaceId);
+      await refreshAuth();
+    } catch (e) {
+      setState((prev) => ({
+        ...prev,
+        loading: false,
+        error: e instanceof Error ? e.message : 'Failed to switch workspace',
+      }));
+      throw e;
+    }
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -177,6 +201,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
         signup,
         logout,
         switchOrg,
+        switchWorkspace,
         refreshAuth,
       }}
     >

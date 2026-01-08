@@ -7,7 +7,7 @@ import {
   validateConfig,
   validateCredentials,
 } from '@/lib/integration-registry';
-import type { CreateApiTokenInput, OrgRole } from '@/types';
+import type { CreateApiTokenInput, Integration, Organization, OrgRole } from '@/types';
 import { requireOrgAdmin, requireOrgMember, requireSession } from '@/lib/server-guards';
 
 async function resolveWorkspaceId(
@@ -28,6 +28,25 @@ async function resolveWorkspaceId(
   return workspaceId;
 }
 
+function toSafeOrg(org: Organization): Organization {
+  return {
+    id: org.id,
+    name: org.name,
+    created_at: org.created_at,
+    created_by: org.created_by,
+    billing_status: org.billing_status,
+    archived: org.archived,
+    archived_at: org.archived_at,
+  };
+}
+
+function toSafeIntegration(integration: Integration): Integration {
+  return {
+    ...integration,
+    config: integration.config ? JSON.parse(JSON.stringify(integration.config)) : {},
+  };
+}
+
 export async function createOrg(name: string) {
   const session = await requireSession();
   if (!name || typeof name !== 'string' || name.trim().length === 0) {
@@ -36,7 +55,8 @@ export async function createOrg(name: string) {
   if (name.length > 100) {
     throw new Error('Organization name must be 100 characters or less');
   }
-  return authDO.createOrg(name.trim(), session.user_id);
+  const org = await authDO.createOrg(name.trim(), session.user_id);
+  return toSafeOrg(org);
 }
 
 export async function updateOrgName(orgId: string, name: string) {
@@ -52,7 +72,7 @@ export async function updateOrgName(orgId: string, name: string) {
   if (!org) {
     throw new Error('Organization not found');
   }
-  return org;
+  return toSafeOrg(org);
 }
 
 export async function updateOrgMemberRole(
@@ -209,12 +229,13 @@ export async function createIntegration(
     throw new Error(credentialErrors.join(', '));
   }
 
-  return authDO.createWorkspaceIntegration(workspaceId, session.user_id, {
+  const created = await authDO.createWorkspaceIntegration(workspaceId, session.user_id, {
     integration_type,
     name: name.trim(),
     config: config || {},
     credentials: credentials || {},
   });
+  return toSafeIntegration(created);
 }
 
 export async function updateIntegration(
@@ -266,7 +287,7 @@ export async function updateIntegration(
   if (!updated) {
     throw new Error('Failed to update integration');
   }
-  return updated;
+  return toSafeIntegration(updated);
 }
 
 export async function deleteIntegration(orgId: string, integrationId: string) {
@@ -321,5 +342,47 @@ export async function deleteApiToken(orgId: string, tokenId: string) {
 export async function getOrgIntegrations(orgId: string) {
   const session = await requireOrgMember(orgId);
   const workspaceId = await resolveWorkspaceId(session, orgId);
-  return authDO.getWorkspaceIntegrations(workspaceId);
+  const integrations = await authDO.getWorkspaceIntegrations(workspaceId);
+  return integrations.map(toSafeIntegration);
+}
+
+export async function transferOrgOwnership(orgId: string, newOwnerId: string) {
+  const session = await requireSession();
+  if (!newOwnerId) {
+    throw new Error('New owner ID is required');
+  }
+
+  if (session.org_id !== orgId) {
+    throw new Error('Organization mismatch');
+  }
+
+  const members = await authDO.getOrgMembers(orgId);
+  const self = members.find((member) => member.user.id === session.user_id);
+  if (self?.role !== 'owner') {
+    throw new Error('Only the organization owner can transfer ownership');
+  }
+
+  const targetMember = members.find((member) => member.user.id === newOwnerId);
+  if (!targetMember) {
+    throw new Error('User is not a member of this organization');
+  }
+
+  await authDO.transferOrgOwnership(orgId, newOwnerId, session.user_id);
+  return { success: true };
+}
+
+export async function archiveOrg(orgId: string) {
+  const session = await requireSession();
+  if (session.org_id !== orgId) {
+    throw new Error('Organization mismatch');
+  }
+
+  const members = await authDO.getOrgMembers(orgId);
+  const self = members.find((member) => member.user.id === session.user_id);
+  if (self?.role !== 'owner') {
+    throw new Error('Only the organization owner can delete the organization');
+  }
+
+  await authDO.archiveOrg(orgId, session.user_id);
+  return { success: true };
 }

@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation"
 
 import { useAuth } from "@/contexts/AuthContext"
 import { NavUser } from "@/components/sidebar/nav-user"
-import { TeamSwitcher } from "@/components/sidebar/team-switcher"
+import { WorkspaceSwitcher } from "@/components/sidebar/workspace-switcher"
 import {
   Sidebar,
   SidebarContent,
@@ -23,17 +23,19 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
 
 export function AppSidebar(props: AppSidebarProps) {
   const pathname = usePathname()
-  const { currentOrg } = useAuth()
+  const { currentWorkspace } = useAuth()
   const isHome = pathname === "/"
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"
   const isComputer = pathname.startsWith("/computer")
-  const computerHref = currentOrg?.id ? `/computer/${currentOrg.id}` : "/computer"
+  const computerHref = currentWorkspace?.id
+    ? `/computer/${currentWorkspace.id}`
+    : "/computer"
 
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
-        <TeamSwitcher />
+        <WorkspaceSwitcher />
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>

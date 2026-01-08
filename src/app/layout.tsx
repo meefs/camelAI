@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import { Inter, Geist_Mono } from 'next/font/google';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { ThemeProvider } from '@/components/theme-provider';
-import { getSessionId } from '@/lib/auth';
-import * as authDO from '@/lib/auth-do';
+import { Toaster } from '@/components/ui/sonner';
+import { getAuthContext } from '@/lib/auth-context';
 import type { AuthState } from '@/types';
 import './globals.css';
 
@@ -30,31 +30,25 @@ export default async function RootLayout({
   let initialAuth: AuthState = {
     user: null,
     currentOrg: null,
+    currentWorkspace: null,
     orgs: [],
+    workspaces: [],
     loading: false,
     error: null,
   };
-  const sessionId = await getSessionId();
-  if (sessionId) {
-    const sessionWithUser = await authDO.getSessionWithUser(sessionId);
-    if (sessionWithUser) {
-      const { session, user } = sessionWithUser;
-      const [currentOrg, orgs] = await Promise.all([
-        authDO.getOrg(session.org_id),
-        authDO.getUserOrgs(user.id),
-      ]);
-      if (currentOrg) {
-        const plainAuth = {
-          user,
-          currentOrg,
-          orgs,
-          loading: false,
-          error: null,
-        };
-        // Ensure data passed to the client is a plain object (no class instances/prototypes).
-        initialAuth = JSON.parse(JSON.stringify(plainAuth)) as AuthState;
-      }
-    }
+  const authContext = await getAuthContext();
+  if (authContext) {
+    const plainAuth = {
+      user: authContext.user,
+      currentOrg: authContext.currentOrg,
+      currentWorkspace: authContext.currentWorkspace ?? null,
+      orgs: authContext.orgs,
+      workspaces: authContext.workspaces ?? [],
+      loading: false,
+      error: null,
+    };
+    // Ensure data passed to the client is a plain object (no class instances/prototypes).
+    initialAuth = JSON.parse(JSON.stringify(plainAuth)) as AuthState;
   }
 
   return (
@@ -71,6 +65,7 @@ export default async function RootLayout({
         >
           <AuthProvider initialState={initialAuth}>
             {children}
+            <Toaster />
           </AuthProvider>
         </ThemeProvider>
       </body>

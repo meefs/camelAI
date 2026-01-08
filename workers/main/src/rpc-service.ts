@@ -27,6 +27,9 @@ import type {
   CreateApiTokenInput,
   AdminOverview,
   AdminUserSummary,
+  AdminWorkspaceSummary,
+  AdminWorkspaceDetail,
+  AdminThreadWithContext,
   PaginatedResult,
   PaginationParams,
 } from '../../../src/types';
@@ -570,6 +573,18 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return users.filter(Boolean) as UserProfile[];
   }
 
+  async updateUserProfile(
+    userId: string,
+    updates: { name?: string | null; avatar?: { color: string; content: string } }
+  ): Promise<UserProfile | null> {
+    using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+    return stub.updateProfile({
+      name: updates.name,
+      avatar_color: updates.avatar?.color,
+      avatar_content: updates.avatar?.content,
+    });
+  }
+
   async createUser(
     email: string,
     password: string,
@@ -666,6 +681,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Step 4: Process results
     const users: AdminUserSummary[] = [];
     let totalMemberships = 0;
+    let orphanedUsers = 0;
 
     for (const { profile, orgs } of userDataResults) {
       if (!profile) continue;
@@ -674,6 +690,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         orgIds.add(org.org_id);
       }
       totalMemberships += orgs.length;
+      if (profile.is_orphaned) {
+        orphanedUsers += 1;
+      }
 
       users.push({
         id: profile.id,
@@ -682,49 +701,94 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         created_at: profile.created_at,
         is_superuser: profile.is_superuser,
         org_count: orgs.length,
+        avatar: {
+          color: profile.avatar_color,
+          content: profile.avatar_content,
+        },
+        is_orphaned: profile.is_orphaned,
       });
     }
 
     users.sort((a, b) => b.created_at - a.created_at);
+
+    const orgIdList = Array.from(orgIds);
+    const workspaceIds = new Set<string>();
+    if (orgIdList.length > 0) {
+      const workspaceEntries = await Promise.all(
+        orgIdList.map(async (orgId) => {
+          using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+          const workspaces = await orgStub.getWorkspaces();
+          return workspaces.map((workspace) => workspace.id);
+        })
+      );
+      for (const entries of workspaceEntries) {
+        for (const workspaceId of entries) {
+          workspaceIds.add(workspaceId);
+        }
+      }
+    }
+
+    const workspaceIdList = Array.from(workspaceIds);
+    const integrationCounts = await Promise.all(
+      workspaceIdList.map(async (workspaceId) => {
+        using workspaceStub = asDisposable(
+          this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId))
+        );
+        const integrations = await workspaceStub.getIntegrations();
+        return integrations.length;
+      })
+    );
+    const totalIntegrations = integrationCounts.reduce((sum, count) => sum + count, 0);
 
     return {
       users,
       total_users: users.length,
       total_orgs: orgIds.size,
       total_memberships: totalMemberships,
+      total_workspaces: workspaceIds.size,
+      total_integrations: totalIntegrations,
+      orphaned_users: orphanedUsers,
     };
   }
 
   // Admin: Update user profile (name, is_superuser)
   async adminUpdateUser(
     userId: string,
-    updates: { name?: string; is_superuser?: boolean }
+    updates: { name?: string | null; is_superuser?: boolean; avatar?: { color: string; content: string } }
   ): Promise<UserProfile | null> {
     using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
-    const profile = await stub.getProfile();
+    let profile = await stub.getProfile();
     if (!profile) return null;
 
-    if (updates.name !== undefined) {
-      profile.name = updates.name;
+    if (updates.name !== undefined || updates.avatar) {
+      const updated = await stub.updateProfile({
+        name: updates.name,
+        avatar_color: updates.avatar?.color,
+        avatar_content: updates.avatar?.content,
+      });
+      if (updated) {
+        profile = updated;
+      }
     }
-    if (updates.is_superuser !== undefined) {
+    if (updates.is_superuser !== undefined && updates.is_superuser !== profile.is_superuser) {
       profile.is_superuser = updates.is_superuser;
+      await stub.setProfile(profile);
     }
-    await stub.setProfile(profile);
     return profile;
   }
 
   // Admin: Get all organizations with details
-  async adminGetAllOrgs(): Promise<Array<Organization & { member_count: number }>> {
+  async adminGetAllOrgs(): Promise<Array<Organization & { member_count: number; workspace_count: number }>> {
     const orgIds = await this.collectAllOrgIds();
 
     // Fetch org details in parallel
     const orgResults = await Promise.all(
       Array.from(orgIds).map(async (orgId) => {
         using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-        const [info, memberCount] = await Promise.all([
+        const [info, memberCount, workspaces] = await Promise.all([
           orgStub.getInfo(),
           orgStub.getMemberCount(),
+          orgStub.getWorkspaces(),
         ]);
         if (!info) return null;
         return {
@@ -735,7 +799,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
           billing_status: info.billing_status,
           archived: info.archived,
           archived_at: info.archived_at,
+          archived_by: info.archived_by,
           member_count: memberCount,
+          workspace_count: workspaces.length,
         };
       })
     );
@@ -748,15 +814,48 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   // Admin: Get all threads across all orgs
-  async adminGetAllThreads(): Promise<Array<Thread & { org_id: string; workspace_id: string }>> {
+  async adminGetAllThreads(): Promise<AdminThreadWithContext[]> {
     const workspaces = await this.collectAllWorkspaceIds();
+    const orgNameById = new Map<string, string>();
+    const workspaceNameById = new Map<string, string>();
+
+    const orgIds = Array.from(new Set(workspaces.map((workspace) => workspace.orgId)));
+    const orgInfoResults = await Promise.all(
+      orgIds.map(async (orgId) => {
+        using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+        const info = await orgStub.getInfo();
+        return { orgId, name: info?.name ?? orgId };
+      })
+    );
+    for (const entry of orgInfoResults) {
+      orgNameById.set(entry.orgId, entry.name);
+    }
+
+    const workspaceInfoResults = await Promise.all(
+      workspaces.map(async ({ workspaceId }) => {
+        using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
+        const info = await workspaceStub.getInfo();
+        return { workspaceId, name: info?.name ?? workspaceId };
+      })
+    );
+    for (const entry of workspaceInfoResults) {
+      workspaceNameById.set(entry.workspaceId, entry.name);
+    }
 
     // Fetch threads from all workspaces in parallel
     const threadResults = await Promise.all(
       workspaces.map(async ({ workspaceId, orgId }) => {
         using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
         const threads = await indexStub.getThreads();
-        return threads.map((thread) => ({ ...thread, org_id: orgId, workspace_id: workspaceId }));
+        const orgName = orgNameById.get(orgId) ?? orgId;
+        const workspaceName = workspaceNameById.get(workspaceId) ?? workspaceId;
+        return threads.map((thread) => ({
+          ...thread,
+          org_id: orgId,
+          org_name: orgName,
+          workspace_id: workspaceId,
+          workspace_name: workspaceName,
+        }));
       })
     );
 
@@ -768,7 +867,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   // Admin: Get thread with messages and preview workers
   async adminGetThreadWithMessages(
     threadId: string
-  ): Promise<{ thread: Thread; messages: Message[]; org_id: string; workspace_id: string; preview_workers: string[] } | null> {
+  ): Promise<{
+    thread: Thread;
+    messages: Message[];
+    org_id: string;
+    org_name: string;
+    workspace_id: string;
+    workspace_name: string;
+    preview_workers: string[];
+  } | null> {
     const workspaces = await this.collectAllWorkspaceIds();
 
     // Search for thread in all workspaces in parallel
@@ -778,17 +885,83 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         const thread = await indexStub.getThread(threadId);
         if (thread) {
           // Read messages from container and preview workers in parallel
-          const [messages, preview_workers] = await Promise.all([
+          const [messages, preview_workers, workspaceInfo, orgInfo] = await Promise.all([
             this.getMessages(threadId, workspaceId),
             this.getThreadPreview(threadId),
+            this.getWorkspaceInfo(workspaceId),
+            (async () => {
+              using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+              return orgStub.getInfo();
+            })(),
           ]);
-          return { thread, messages, org_id: orgId, workspace_id: workspaceId, preview_workers };
+          return {
+            thread,
+            messages,
+            org_id: orgId,
+            org_name: orgInfo?.name ?? orgId,
+            workspace_id: workspaceId,
+            workspace_name: workspaceInfo?.name ?? workspaceId,
+            preview_workers,
+          };
         }
         return null;
       })
     );
 
     return results.find((r) => r !== null) || null;
+  }
+
+  // Admin: Get workspace with related data
+  async adminGetWorkspaceDetail(workspaceId: string): Promise<AdminWorkspaceDetail | null> {
+    const info = await this.getWorkspaceInfo(workspaceId);
+    if (!info) return null;
+
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(info.org_id)));
+    const orgInfo = await orgStub.getInfo();
+    if (!orgInfo) return null;
+
+    const [threads, integrations, members] = await Promise.all([
+      (async () => {
+        using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
+        return indexStub.getThreads();
+      })(),
+      this.getWorkspaceIntegrations(workspaceId),
+      (async () => {
+        using workspaceStub = asDisposable(
+          this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId))
+        );
+        return workspaceStub.listMembers();
+      })(),
+    ]);
+
+    return {
+      workspace: this.toWorkspace(info),
+      org: {
+        id: orgInfo.id,
+        name: orgInfo.name,
+        created_at: orgInfo.created_at,
+        created_by: orgInfo.created_by,
+        billing_status: orgInfo.billing_status,
+        archived: orgInfo.archived,
+        archived_at: orgInfo.archived_at,
+        archived_by: orgInfo.archived_by,
+      },
+      threads,
+      integrations,
+      members,
+    };
+  }
+
+  async adminUpdateWorkspace(
+    workspaceId: string,
+    updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } },
+    actorId: string
+  ): Promise<Workspace | null> {
+    return this.updateWorkspace(workspaceId, updates, actorId);
+  }
+
+  async adminArchiveWorkspace(workspaceId: string, actorId: string): Promise<Workspace | null> {
+    return this.archiveWorkspace(workspaceId, actorId);
   }
 
   // Admin: Update thread
@@ -888,7 +1061,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   // Admin: Get paginated organizations
   async adminGetOrgsPaginated(
     params: PaginationParams = {}
-  ): Promise<PaginatedResult<Organization & { member_count: number }>> {
+  ): Promise<PaginatedResult<Organization & { member_count: number; workspace_count: number }>> {
     const { offset = 0, limit = 50 } = params;
 
     // Get all orgs first
@@ -901,10 +1074,64 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return { items, total, offset, limit };
   }
 
+  // Admin: Get paginated workspaces
+  async adminGetWorkspacesPaginated(
+    params: PaginationParams = {}
+  ): Promise<PaginatedResult<AdminWorkspaceSummary>> {
+    const { offset = 0, limit = 50 } = params;
+    const workspaces = await this.collectAllWorkspaceIds();
+    const orgNameById = new Map<string, string>();
+
+    const orgIds = Array.from(new Set(workspaces.map((workspace) => workspace.orgId)));
+    const orgInfoResults = await Promise.all(
+      orgIds.map(async (orgId) => {
+        using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+        const info = await orgStub.getInfo();
+        return { orgId, name: info?.name ?? orgId };
+      })
+    );
+    for (const entry of orgInfoResults) {
+      orgNameById.set(entry.orgId, entry.name);
+    }
+
+    const summaries = await Promise.all(
+      workspaces.map(async ({ workspaceId, orgId }) => {
+        using workspaceStub = asDisposable(
+          this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId))
+        );
+        const info = await workspaceStub.getInfo();
+        if (!info) return null;
+
+        using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
+        const [threads, integrations] = await Promise.all([
+          indexStub.getThreads(),
+          workspaceStub.getIntegrations(),
+        ]);
+
+        return {
+          ...this.toWorkspace(info),
+          org_id: info.org_id,
+          org_name: orgNameById.get(orgId) ?? orgId,
+          thread_count: threads.length,
+          integration_count: integrations.length,
+        };
+      })
+    );
+
+    const allItems = summaries.filter(
+      (summary): summary is AdminWorkspaceSummary => summary !== null
+    );
+    allItems.sort((a, b) => b.created_at - a.created_at);
+    const total = allItems.length;
+    const items = allItems.slice(offset, offset + limit);
+
+    return { items, total, offset, limit };
+  }
+
   // Admin: Get paginated threads
   async adminGetThreadsPaginated(
     params: PaginationParams = {}
-  ): Promise<PaginatedResult<Thread & { org_id: string; workspace_id: string }>> {
+  ): Promise<PaginatedResult<AdminThreadWithContext>> {
     const { offset = 0, limit = 50 } = params;
 
     // Get all threads first
@@ -931,6 +1158,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       billing_status: info.billing_status,
       archived: info.archived,
       archived_at: info.archived_at,
+      archived_by: info.archived_by,
     };
   }
 
@@ -961,6 +1189,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       billing_status: orgInfo.billing_status,
       archived: orgInfo.archived,
       archived_at: orgInfo.archived_at,
+      archived_by: orgInfo.archived_by,
     };
   }
 
@@ -1077,6 +1306,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         billing_status: orgInfo.billing_status,
         archived: orgInfo.archived,
         archived_at: orgInfo.archived_at,
+        archived_by: orgInfo.archived_by,
       },
     };
   }
@@ -1253,6 +1483,46 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
     using oldOwnerStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(currentOwner.user_id)));
     await oldOwnerStub.updateOrgRole(orgId, 'admin');
+  }
+
+  async adminTransferOrgOwnership(orgId: string, newOwnerId: string, actorId: string): Promise<void> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    const members = await orgStub.getMembers();
+    const currentOwner = members.find((member) => member.role === 'owner');
+    if (!currentOwner) {
+      throw new Error('Organization has no owner');
+    }
+
+    await orgStub.adminTransferOwnership(actorId, newOwnerId);
+
+    using newOwnerStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(newOwnerId)));
+    await newOwnerStub.updateOrgRole(orgId, 'owner');
+
+    using oldOwnerStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(currentOwner.user_id)));
+    await oldOwnerStub.updateOrgRole(orgId, 'admin');
+  }
+
+  async adminForceOrphanUser(userId: string, actorId: string): Promise<void> {
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+    const orgs = await userStub.getOrgs();
+    if (orgs.length === 0) {
+      await userStub.setOrphaned(true);
+      return;
+    }
+
+    const ownerMemberships = orgs.filter((org) => org.role === 'owner');
+    if (ownerMemberships.length > 0) {
+      const ownerOrgs = ownerMemberships.map((org) => org.org_id).join(', ');
+      throw new Error(`Transfer ownership before orphaning user (owner of: ${ownerOrgs})`);
+    }
+
+    for (const org of orgs) {
+      using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(org.org_id)));
+      await orgStub.removeMember(userId, actorId);
+      await userStub.removeOrg(org.org_id);
+    }
+
+    await userStub.setOrphaned(true);
   }
 
   async archiveOrg(orgId: string, actorId: string): Promise<void> {

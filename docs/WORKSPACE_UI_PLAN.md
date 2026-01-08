@@ -283,15 +283,772 @@ Connections remain in the existing Connections tab. No duplication in Settings.
 
 ---
 
-## Next Steps (Phase 2)
+---
 
-Phase 2 will detail:
-1. Specific shadcn/ui components to use for each element
-2. Layout specifications (spacing, responsive behavior)
-3. Component composition patterns
-4. Form validation and error states
-5. Loading states
-6. Implementation order/priorities
+## Phase 2: Implementation Specification
+
+### Components to Install
+
+The following shadcn components need to be installed (some may already exist):
+
+```bash
+# Required (verify if missing)
+npx shadcn@latest add form
+npx shadcn@latest add alert-dialog
+npx shadcn@latest add toast
+```
+
+**Already installed:** button, card, input, label, dropdown-menu, separator, tooltip, skeleton, badge, dialog, select, switch, table, tabs, avatar, checkbox
+
+---
+
+### File Structure
+
+```
+src/app/(app)/settings/
+├── layout.tsx              # Settings layout with side nav
+├── page.tsx                # Redirects to /settings/profile
+├── profile/
+│   └── page.tsx            # USER > Profile
+├── organization/
+│   ├── page.tsx            # Redirects to /settings/organization/general
+│   ├── general/
+│   │   └── page.tsx        # ORG > General
+│   ├── team/
+│   │   └── page.tsx        # ORG > Team (members + invitations + workspace access)
+│   ├── domains/
+│   │   └── page.tsx        # ORG > Domains (placeholder)
+│   └── danger-zone/
+│       └── page.tsx        # ORG > Danger Zone
+└── workspace/
+    ├── page.tsx            # Redirects to /settings/workspace/general
+    ├── general/
+    │   └── page.tsx        # WORKSPACE > General
+    └── danger-zone/
+        └── page.tsx        # WORKSPACE > Danger Zone
+
+src/components/settings/
+├── settings-nav.tsx        # Settings side navigation
+├── settings-header.tsx     # Page header component
+├── profile-form.tsx        # Profile edit form
+├── avatar-picker.tsx       # Avatar color/content picker
+├── org-general-form.tsx    # Org name edit form
+├── team-table.tsx          # Members/invitations table
+├── workspace-access-tags.tsx # Tag-based workspace access control
+├── invite-member-dialog.tsx # Invite modal
+├── transfer-ownership-dialog.tsx # Transfer ownership confirmation
+├── delete-org-dialog.tsx   # Delete org confirmation
+├── workspace-general-form.tsx # Workspace edit form
+├── create-workspace-dialog.tsx # Create workspace modal
+└── archive-workspace-dialog.tsx # Archive confirmation
+```
+
+---
+
+### Settings Layout (`settings/layout.tsx`)
+
+**Pattern:** Side nav on left, content area on right (not using the main app Sidebar)
+
+```tsx
+// Composition
+<div className="flex min-h-screen">
+  <SettingsNav />                    {/* Fixed width side nav */}
+  <main className="flex-1 p-6">      {/* Content area */}
+    {children}
+  </main>
+</div>
+```
+
+**SettingsNav component structure:**
+- Uses semantic nav element
+- Groups with small uppercase labels (text-xs text-muted-foreground font-medium)
+- Links use Button variant="ghost" with full width, left-aligned text
+- Active state: bg-muted
+- No container/border around the nav (clean/minimal)
+
+```tsx
+// SettingsNav structure
+<nav className="w-56 shrink-0 border-r p-4">
+  <div className="space-y-6">
+    {/* USER group */}
+    <div className="space-y-1">
+      <p className="text-xs font-medium text-muted-foreground px-2">User</p>
+      <NavLink href="/settings/profile">Profile</NavLink>
+    </div>
+
+    {/* ORGANIZATION group */}
+    <div className="space-y-1">
+      <p className="text-xs font-medium text-muted-foreground px-2">Organization</p>
+      <NavLink href="/settings/organization/general">General</NavLink>
+      <NavLink href="/settings/organization/team">Team</NavLink>
+      <NavLink href="/settings/organization/domains">Domains</NavLink>
+      <NavLink href="/settings/organization/danger-zone">Danger Zone</NavLink>
+    </div>
+
+    {/* WORKSPACE group */}
+    <div className="space-y-1">
+      <p className="text-xs font-medium text-muted-foreground px-2">Workspace</p>
+      <NavLink href="/settings/workspace/general">General</NavLink>
+      <NavLink href="/settings/workspace/danger-zone">Danger Zone</NavLink>
+    </div>
+  </div>
+</nav>
+```
+
+---
+
+### Page Header Pattern
+
+Each settings page uses a consistent header:
+
+```tsx
+<div className="space-y-6">
+  <div>
+    <h1 className="text-2xl font-semibold">Page Title</h1>
+    <p className="text-muted-foreground">Brief description of this section.</p>
+  </div>
+  <Separator />
+  {/* Page content */}
+</div>
+```
+
+---
+
+### USER > Profile
+
+**Components:** Form, Input, Label, Button, Avatar, Dialog
+
+```tsx
+// Layout
+<SettingsHeader
+  title="Profile"
+  description="Manage your personal account settings."
+/>
+
+<div className="space-y-8 max-w-2xl">
+  {/* Avatar section */}
+  <div className="flex items-center gap-4">
+    <Avatar className="h-20 w-20">
+      <AvatarFallback style={{ backgroundColor: user.avatar.color }}>
+        {user.avatar.content}
+      </AvatarFallback>
+    </Avatar>
+    <Button variant="outline" onClick={openAvatarPicker}>
+      Change avatar
+    </Button>
+  </div>
+
+  {/* Profile form */}
+  <Form>
+    <FormField name="name">
+      <Label>Display name</Label>
+      <Input placeholder="Your name" />
+    </FormField>
+
+    <FormField name="email">
+      <Label>Email</Label>
+      <Input disabled value={user.email} />
+      <p className="text-xs text-muted-foreground">
+        Email cannot be changed.
+      </p>
+    </FormField>
+
+    <Button type="submit">Save changes</Button>
+  </Form>
+</div>
+```
+
+**AvatarPicker Dialog:**
+- Color grid (8 preset colors from AVATAR_COLORS)
+- Text input for content (2 chars max, or single emoji)
+- Live preview of avatar
+
+---
+
+### ORGANIZATION > General
+
+**Components:** Form, Input, Label, Button
+**Role check:** Admin+ can edit, others see read-only
+
+```tsx
+<SettingsHeader
+  title="Organization"
+  description="Manage your organization settings."
+/>
+
+<div className="space-y-6 max-w-2xl">
+  <Form>
+    <FormField name="name">
+      <Label>Organization name</Label>
+      <Input
+        defaultValue={org.name}
+        disabled={!isAdmin}
+      />
+    </FormField>
+
+    {isAdmin && (
+      <Button type="submit">Save changes</Button>
+    )}
+  </Form>
+</div>
+```
+
+---
+
+### ORGANIZATION > Team
+
+**Components:** Table, Badge, Button, Dialog, DropdownMenu, Tooltip
+
+This is the most complex page. It combines:
+1. Members list with roles
+2. Pending invitations
+3. Workspace access per member (tag-based UX)
+
+```tsx
+<SettingsHeader
+  title="Team"
+  description="Manage members, invitations, and workspace access."
+/>
+
+{/* Invite button (Admin+ only) */}
+{isAdmin && (
+  <div className="flex justify-end mb-4">
+    <Button onClick={openInviteDialog}>
+      <Plus className="h-4 w-4 mr-2" />
+      Invite member
+    </Button>
+  </div>
+)}
+
+{/* Pending invitations section (Admin+ only) */}
+{isAdmin && pendingInvitations.length > 0 && (
+  <div className="mb-8">
+    <h3 className="text-sm font-medium mb-3">Pending invitations</h3>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Email</TableHead>
+          <TableHead>Role</TableHead>
+          <TableHead>Invited</TableHead>
+          <TableHead></TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {pendingInvitations.map(inv => (
+          <TableRow key={inv.id}>
+            <TableCell>{inv.email}</TableCell>
+            <TableCell><Badge variant="outline">{inv.role}</Badge></TableCell>
+            <TableCell>{formatDate(inv.created_at)}</TableCell>
+            <TableCell>
+              <Button variant="ghost" size="sm" onClick={() => cancelInvite(inv.id)}>
+                Cancel
+              </Button>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  </div>
+)}
+
+{/* Members table */}
+<Table>
+  <TableHeader>
+    <TableRow>
+      <TableHead>Member</TableHead>
+      <TableHead>Role</TableHead>
+      <TableHead>Workspace access</TableHead>
+      <TableHead></TableHead>
+    </TableRow>
+  </TableHeader>
+  <TableBody>
+    {members.map(member => (
+      <TableRow key={member.user_id}>
+        <TableCell>
+          <div className="flex items-center gap-3">
+            <Avatar className="h-8 w-8">
+              <AvatarFallback style={{ backgroundColor: member.avatar.color }}>
+                {member.avatar.content}
+              </AvatarFallback>
+            </Avatar>
+            <div>
+              <p className="font-medium">{member.name || member.email}</p>
+              {member.name && (
+                <p className="text-xs text-muted-foreground">{member.email}</p>
+              )}
+            </div>
+          </div>
+        </TableCell>
+        <TableCell>
+          {isAdmin && member.role !== 'owner' ? (
+            <RoleSelect value={member.role} onChange={...} />
+          ) : (
+            <Badge variant={member.role === 'owner' ? 'default' : 'outline'}>
+              {member.role}
+            </Badge>
+          )}
+        </TableCell>
+        <TableCell>
+          <WorkspaceAccessTags
+            member={member}
+            workspaces={workspaces}
+            canEdit={isAdmin}
+          />
+        </TableCell>
+        <TableCell>
+          {isAdmin && member.user_id !== currentUser.id && member.role !== 'owner' && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => removeMember(member.user_id)}>
+                  Remove from organization
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </TableCell>
+      </TableRow>
+    ))}
+  </TableBody>
+</Table>
+```
+
+---
+
+### WorkspaceAccessTags Component
+
+The tag-based workspace access control from Phase 1 feedback:
+
+```tsx
+// WorkspaceAccessTags.tsx
+interface WorkspaceAccessTagsProps {
+  member: Member;
+  workspaces: Workspace[];
+  canEdit: boolean;
+}
+
+// Each tag shows workspace name
+// Hover reveals: pencil (toggle full/read-only) and X (remove access)
+// Muted/outlined style = read-only
+// Solid style = full access
+// "+ Add" button shows dropdown of workspaces user doesn't have access to
+
+<div className="flex flex-wrap gap-1.5">
+  {memberWorkspaces.map(ws => (
+    <WorkspaceTag
+      key={ws.id}
+      workspace={ws}
+      accessLevel={ws.accessLevel}
+      canEdit={canEdit}
+      onToggleAccess={() => toggleAccess(ws.id)}
+      onRemove={() => removeAccess(ws.id)}
+    />
+  ))}
+  {canEdit && hiddenWorkspaces.length > 0 && (
+    <AddWorkspaceDropdown
+      workspaces={hiddenWorkspaces}
+      onAdd={(wsId) => grantAccess(wsId)}
+    />
+  )}
+</div>
+
+// WorkspaceTag internal structure
+<div
+  className={cn(
+    "group relative inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm",
+    accessLevel === 'full'
+      ? "bg-secondary text-secondary-foreground"
+      : "bg-secondary/50 text-muted-foreground border border-dashed"
+  )}
+>
+  <span>{workspace.name}</span>
+
+  {/* Hover actions */}
+  {canEdit && (
+    <div className="hidden group-hover:flex items-center gap-0.5 ml-1">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={onToggleAccess}
+            className="p-0.5 hover:bg-background rounded"
+          >
+            {accessLevel === 'full' ? (
+              <Pencil className="h-3 w-3" />
+            ) : (
+              <PencilOff className="h-3 w-3" />
+            )}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {accessLevel === 'full' ? 'Make read-only' : 'Grant full access'}
+        </TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={onRemove}
+            className="p-0.5 hover:bg-background rounded"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Remove access</TooltipContent>
+      </Tooltip>
+    </div>
+  )}
+</div>
+```
+
+---
+
+### ORGANIZATION > Domains
+
+**Components:** Card (empty state)
+
+```tsx
+<SettingsHeader
+  title="Domains"
+  description="Configure custom domains for your projects."
+/>
+
+<Card className="p-8 text-center">
+  <Globe className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+  <h3 className="font-medium mb-2">Custom domains coming soon</h3>
+  <p className="text-sm text-muted-foreground">
+    You'll be able to host your projects on your own domain.
+  </p>
+</Card>
+```
+
+---
+
+### ORGANIZATION > Danger Zone
+
+**Components:** Card, Button, AlertDialog, Select, Input
+
+```tsx
+<SettingsHeader
+  title="Danger Zone"
+  description="Irreversible actions for your organization."
+/>
+
+<div className="space-y-6 max-w-2xl">
+  {/* Transfer ownership */}
+  <Card className="border-destructive/50">
+    <CardHeader>
+      <CardTitle className="text-base">Transfer ownership</CardTitle>
+      <CardDescription>
+        Transfer this organization to another member. You will become an admin.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <div className="flex items-center gap-4">
+        <Select disabled={!isOwner}>
+          <SelectTrigger className="w-64">
+            <SelectValue placeholder="Select new owner" />
+          </SelectTrigger>
+          <SelectContent>
+            {members.filter(m => m.role !== 'owner').map(m => (
+              <SelectItem key={m.user_id} value={m.user_id}>
+                {m.name || m.email}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          variant="destructive"
+          disabled={!isOwner || !selectedNewOwner}
+          onClick={openTransferDialog}
+        >
+          Transfer
+        </Button>
+      </div>
+      {!isOwner && (
+        <p className="text-xs text-muted-foreground mt-2">
+          Only the organization owner can transfer ownership.
+        </p>
+      )}
+    </CardContent>
+  </Card>
+
+  {/* Delete organization */}
+  <Card className="border-destructive/50">
+    <CardHeader>
+      <CardTitle className="text-base">Delete organization</CardTitle>
+      <CardDescription>
+        Permanently delete this organization and all its workspaces. This cannot be undone.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <Button
+        variant="destructive"
+        disabled={!isOwner}
+        onClick={openDeleteDialog}
+      >
+        Delete organization
+      </Button>
+      {!isOwner && (
+        <p className="text-xs text-muted-foreground mt-2">
+          Only the organization owner can delete the organization.
+        </p>
+      )}
+    </CardContent>
+  </Card>
+</div>
+```
+
+**Delete confirmation dialog:** Requires typing org name to confirm.
+
+---
+
+### WORKSPACE > General
+
+**Components:** Form, Input, Label, Button, Avatar, Dialog
+
+```tsx
+<SettingsHeader
+  title="Workspace"
+  description="Manage settings for the current workspace."
+/>
+
+<div className="space-y-8 max-w-2xl">
+  {/* Current workspace info */}
+  <div className="flex items-center gap-4">
+    <Avatar className="h-16 w-16">
+      <AvatarFallback style={{ backgroundColor: workspace.avatar.color }}>
+        {workspace.avatar.content}
+      </AvatarFallback>
+    </Avatar>
+    {isAdmin && (
+      <Button variant="outline" onClick={openAvatarPicker}>
+        Change avatar
+      </Button>
+    )}
+  </div>
+
+  <Form>
+    <FormField name="name">
+      <Label>Workspace name</Label>
+      <Input defaultValue={workspace.name} disabled={!isAdmin} />
+    </FormField>
+
+    <FormField name="description">
+      <Label>Description</Label>
+      <Textarea
+        defaultValue={workspace.description || ''}
+        disabled={!isAdmin}
+        placeholder="Optional description"
+      />
+    </FormField>
+
+    {isAdmin && (
+      <Button type="submit">Save changes</Button>
+    )}
+  </Form>
+
+  {/* Create new workspace (Admin+ only) */}
+  {isAdmin && (
+    <>
+      <Separator />
+      <div>
+        <h3 className="font-medium mb-2">Create new workspace</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Add another workspace to this organization.
+        </p>
+        <Button variant="outline" onClick={openCreateDialog}>
+          <Plus className="h-4 w-4 mr-2" />
+          Create workspace
+        </Button>
+      </div>
+    </>
+  )}
+</div>
+```
+
+---
+
+### WORKSPACE > Danger Zone
+
+**Components:** Card, Button, AlertDialog
+
+```tsx
+<SettingsHeader
+  title="Danger Zone"
+  description="Irreversible actions for this workspace."
+/>
+
+<div className="max-w-2xl">
+  <Card className="border-destructive/50">
+    <CardHeader>
+      <CardTitle className="text-base">Archive workspace</CardTitle>
+      <CardDescription>
+        Archive this workspace. It will be hidden but data will be preserved.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <Button
+        variant="destructive"
+        disabled={!isAdmin || isLastWorkspace}
+        onClick={openArchiveDialog}
+      >
+        Archive workspace
+      </Button>
+      {isLastWorkspace && (
+        <p className="text-xs text-muted-foreground mt-2">
+          Cannot archive the only workspace in an organization.
+        </p>
+      )}
+      {!isAdmin && (
+        <p className="text-xs text-muted-foreground mt-2">
+          Only admins can archive workspaces.
+        </p>
+      )}
+    </CardContent>
+  </Card>
+</div>
+```
+
+---
+
+### Workspace Switcher Enhancement
+
+**File:** `src/components/sidebar/team-switcher.tsx` → rename to `workspace-switcher.tsx`
+
+Changes needed:
+1. Rename component to `WorkspaceSwitcher`
+2. Fetch workspaces instead of orgs
+3. Show org name as badge next to each workspace
+4. Show access level indicator for read-only workspaces
+5. Current item shows workspace name + org tag
+
+```tsx
+// Updated dropdown item structure
+<DropdownMenuItem
+  key={ws.id}
+  onClick={() => switchWorkspace(ws.id)}
+  className="gap-2 p-2"
+>
+  <Avatar className="h-6 w-6">
+    <AvatarFallback style={{ backgroundColor: ws.avatar.color }}>
+      {ws.avatar.content}
+    </AvatarFallback>
+  </Avatar>
+  <span className="truncate flex-1">{ws.name}</span>
+  <Badge variant="outline" className="text-xs">
+    {ws.org_name}
+  </Badge>
+  {ws.access_level === 'read_only' && (
+    <Badge variant="secondary" className="text-xs">
+      Read-only
+    </Badge>
+  )}
+  {ws.id === currentWorkspace?.id && (
+    <Check className="h-4 w-4 text-muted-foreground" />
+  )}
+</DropdownMenuItem>
+```
+
+---
+
+### NavUser Enhancement
+
+**File:** `src/components/sidebar/nav-user.tsx`
+
+Add Settings link to dropdown:
+
+```tsx
+<DropdownMenuContent>
+  <DropdownMenuLabel>...</DropdownMenuLabel>
+  <DropdownMenuSeparator />
+  <DropdownMenuItem asChild>
+    <Link href="/settings/profile">
+      <Settings className="h-4 w-4 mr-2" />
+      Settings
+    </Link>
+  </DropdownMenuItem>
+  <DropdownMenuItem onClick={handleLogout}>
+    <LogOut className="h-4 w-4 mr-2" />
+    Log out
+  </DropdownMenuItem>
+</DropdownMenuContent>
+```
+
+---
+
+### Connections Tab Updates
+
+**File:** `src/app/(app)/connections/connections-client.tsx`
+
+Add role-based visibility:
+
+```tsx
+const { currentOrg } = useAuth();
+const isAdmin = currentOrg?.role === 'owner' || currentOrg?.role === 'admin';
+
+// Hide add/edit/delete buttons for non-admins
+{isAdmin && (
+  <Button onClick={openAddDialog}>Add connection</Button>
+)}
+
+// In connection list, hide action buttons for non-admins
+{isAdmin && (
+  <DropdownMenu>
+    {/* Edit, Delete options */}
+  </DropdownMenu>
+)}
+```
+
+---
+
+### Implementation Priority
+
+1. **Phase 2a - Foundation:**
+   - Settings layout + nav component
+   - Settings route structure
+   - Profile page (simplest, validates patterns)
+
+2. **Phase 2b - Workspace Switcher:**
+   - Rename team-switcher → workspace-switcher
+   - Update to show workspaces with org badges
+   - Add access level indicators
+
+3. **Phase 2c - User Menu:**
+   - Add Settings link to nav-user dropdown
+
+4. **Phase 2d - Organization Settings:**
+   - Org General page
+   - Team page (most complex - members table + workspace access tags)
+   - Domains placeholder
+   - Danger Zone
+
+5. **Phase 2e - Workspace Settings:**
+   - Workspace General page
+   - Danger Zone
+   - Create workspace dialog
+
+6. **Phase 2f - Connections:**
+   - Role-based visibility updates
+
+---
+
+### Loading & Error States
+
+**Loading:** Use Skeleton components matching the content shape
+**Errors:** Use toast notifications for action failures
+**Form validation:** Use react-hook-form + zod schemas
+
+---
+
+### Responsive Behavior
+
+- Settings side nav collapses to horizontal tabs on mobile (< 768px)
+- Tables become card-based lists on mobile
+- Dialogs use Sheet on mobile (slide up from bottom)
 
 ---
 
@@ -303,3 +1060,4 @@ Phase 2 will detail:
 | 2026-01-07 | 1.1 | Added reviewer feedback |
 | 2026-01-07 | 2.0 | Revised plan incorporating all feedback |
 | 2026-01-07 | 2.1 | Refined workspace access UX with tag-based hover interactions |
+| 2026-01-07 | 3.0 | Phase 2 complete: Full implementation specification with components, layouts, and code examples |

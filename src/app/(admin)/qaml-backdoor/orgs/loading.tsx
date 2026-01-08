@@ -34,6 +34,9 @@ export default function OrgsLoading() {
                 <TableRow>
                   <TableHead>Organization</TableHead>
                   <TableHead>Members</TableHead>
+                  <TableHead>Workspaces</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Billing</TableHead>
                   <TableHead>Created By</TableHead>
                   <TableHead>Created</TableHead>
                 </TableRow>
@@ -49,6 +52,15 @@ export default function OrgsLoading() {
                     </TableCell>
                     <TableCell>
                       <Skeleton className="h-6 w-20" />
+                    </TableCell>
+                    <TableCell>
+                      <Skeleton className="h-6 w-20" />
+                    </TableCell>
+                    <TableCell>
+                      <Skeleton className="h-6 w-16" />
+                    </TableCell>
+                    <TableCell>
+                      <Skeleton className="h-6 w-16" />
                     </TableCell>
                     <TableCell>
                       <Skeleton className="h-4 w-20" />

@@ -48,7 +48,7 @@ export default function ConnectionsClient({
   categories,
   orgId,
 }: ConnectionsClientProps) {
-  const { currentOrg, loading: authLoading } = useAuth();
+  const { currentOrg, orgs, loading: authLoading } = useAuth();
 
   const [connections, setConnections] = useState<Integration[]>(initialConnections);
   const [loading, setLoading] = useState(false);
@@ -150,6 +150,8 @@ export default function ConnectionsClient({
   };
 
   const isLoading = authLoading || loading;
+  const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
+  const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
 
   return (
     <>
@@ -165,10 +167,12 @@ export default function ConnectionsClient({
                   Connect external services so your apps can read and write data.
                 </p>
               </div>
-              <Button onClick={() => setPickerOpen(true)} disabled={isLoading}>
-                <Plus className="mr-2 size-4" />
-                Add Connection
-              </Button>
+              {isAdmin && (
+                <Button onClick={() => setPickerOpen(true)} disabled={isLoading}>
+                  <Plus className="mr-2 size-4" />
+                  Add Connection
+                </Button>
+              )}
             </div>
 
             {error && (
@@ -196,10 +200,16 @@ export default function ConnectionsClient({
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <Button onClick={() => setPickerOpen(true)}>
-                    <Plus className="mr-2 size-4" />
-                    Add your first connection
-                  </Button>
+                  {isAdmin ? (
+                    <Button onClick={() => setPickerOpen(true)}>
+                      <Plus className="mr-2 size-4" />
+                      Add your first connection
+                    </Button>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Only admins can add connections.
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             ) : (
@@ -228,10 +238,16 @@ export default function ConnectionsClient({
                             </CardDescription>
                           </CardHeader>
                           <CardContent>
-                            <Button onClick={() => setPickerOpen(true)}>
-                              <Plus className="mr-2 size-4" />
-                              Add connection
-                            </Button>
+                            {isAdmin ? (
+                              <Button onClick={() => setPickerOpen(true)}>
+                                <Plus className="mr-2 size-4" />
+                                Add connection
+                              </Button>
+                            ) : (
+                              <p className="text-sm text-muted-foreground">
+                                Only admins can add connections.
+                              </p>
+                            )}
                           </CardContent>
                         </Card>
                       ) : (
@@ -277,26 +293,29 @@ export default function ConnectionsClient({
                                       <Switch
                                         checked={connection.enabled}
                                         onCheckedChange={() => handleToggleEnabled(connection)}
+                                        disabled={!isAdmin}
                                       />
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => handleEditClick(connection)}
-                                      >
-                                        <Settings className="mr-2 size-3.5" />
-                                        Configure
-                                      </Button>
-                                      <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="text-destructive hover:text-destructive"
-                                        onClick={() => handleDelete(connection)}
-                                      >
-                                        <Trash2 className="size-4" />
-                                      </Button>
-                                    </div>
+                                    {isAdmin && (
+                                      <div className="flex items-center gap-2">
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => handleEditClick(connection)}
+                                        >
+                                          <Settings className="mr-2 size-3.5" />
+                                          Configure
+                                        </Button>
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          className="text-destructive hover:text-destructive"
+                                          onClick={() => handleDelete(connection)}
+                                        >
+                                          <Trash2 className="size-4" />
+                                        </Button>
+                                      </div>
+                                    )}
                                   </div>
                                 </CardContent>
                               </Card>

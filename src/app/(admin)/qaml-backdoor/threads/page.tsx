@@ -2,7 +2,6 @@ import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
-import { Badge } from '@/components/ui/badge';
 import {
   Table,
   TableBody,
@@ -62,13 +61,14 @@ export default async function AdminThreadsPage({ searchParams }: Props) {
                 <TableRow>
                   <TableHead>Thread</TableHead>
                   <TableHead>Organization</TableHead>
+                  <TableHead>Workspace</TableHead>
                   <TableHead>Updated</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {threads.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={3} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
                       No threads found
                     </TableCell>
                   </TableRow>
@@ -91,9 +91,21 @@ export default async function AdminThreadsPage({ searchParams }: Props) {
                           href={`/qaml-backdoor/orgs/${thread.org_id}`}
                           className="hover:underline"
                         >
-                          <Badge variant="outline">
+                          <div className="font-medium">{thread.org_name}</div>
+                          <div className="text-xs text-muted-foreground font-mono">
                             {thread.org_id.slice(0, 8)}...
-                          </Badge>
+                          </div>
+                        </Link>
+                      </TableCell>
+                      <TableCell>
+                        <Link
+                          href={`/qaml-backdoor/workspaces/${thread.workspace_id}`}
+                          className="hover:underline"
+                        >
+                          <div className="font-medium">{thread.workspace_name}</div>
+                          <div className="text-xs text-muted-foreground font-mono">
+                            {thread.workspace_id.slice(0, 8)}...
+                          </div>
                         </Link>
                       </TableCell>
                       <TableCell className="text-muted-foreground">

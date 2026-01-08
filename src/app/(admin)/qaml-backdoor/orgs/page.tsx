@@ -62,6 +62,9 @@ export default async function AdminOrgsPage({ searchParams }: Props) {
                 <TableRow>
                   <TableHead>Organization</TableHead>
                   <TableHead>Members</TableHead>
+                  <TableHead>Workspaces</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Billing</TableHead>
                   <TableHead>Created By</TableHead>
                   <TableHead>Created</TableHead>
                 </TableRow>
@@ -83,6 +86,21 @@ export default async function AdminOrgsPage({ searchParams }: Props) {
                     <TableCell>
                       <Badge variant="outline">
                         {org.member_count} {org.member_count === 1 ? 'member' : 'members'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline">
+                        {org.workspace_count} {org.workspace_count === 1 ? 'workspace' : 'workspaces'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={org.archived ? 'secondary' : 'outline'}>
+                        {org.archived ? 'Archived' : 'Active'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={org.billing_status === 'paying' ? 'default' : 'outline'}>
+                        {org.billing_status === 'paying' ? 'Paying' : 'Free'}
                       </Badge>
                     </TableCell>
                     <TableCell>

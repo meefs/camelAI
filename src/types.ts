@@ -136,6 +136,7 @@ export interface Organization {
   billing_status: BillingStatus;
   archived: boolean;
   archived_at?: number | null;
+  archived_by?: string | null;
 }
 
 export interface OrgMembership {
@@ -207,6 +208,8 @@ export interface AdminUserSummary {
   created_at: number;
   is_superuser: boolean;
   org_count: number;
+  avatar: Avatar;
+  is_orphaned: boolean;
 }
 
 export interface AdminOverview {
@@ -214,6 +217,31 @@ export interface AdminOverview {
   total_users: number;
   total_orgs: number;
   total_memberships: number;
+  total_workspaces: number;
+  total_integrations: number;
+  orphaned_users: number;
+}
+
+export interface AdminWorkspaceSummary extends Workspace {
+  org_id: string;
+  org_name: string;
+  thread_count: number;
+  integration_count: number;
+}
+
+export interface AdminWorkspaceDetail {
+  workspace: Workspace;
+  org: Organization;
+  threads: Thread[];
+  integrations: Integration[];
+  members: WorkspaceMember[];
+}
+
+export interface AdminThreadWithContext extends Thread {
+  org_id: string;
+  org_name: string;
+  workspace_id: string;
+  workspace_name: string;
 }
 
 // Paginated result types for admin lists

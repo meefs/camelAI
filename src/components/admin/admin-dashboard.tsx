@@ -2,12 +2,14 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
-import { Building2, MessageSquare, Users } from 'lucide-react';
+import { Building2, FolderKanban, MessageSquare, Plug, UserX, Users } from 'lucide-react';
 import type { AdminOverview } from '@/types';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { getContrastTextColor } from '@/lib/avatar';
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
@@ -39,6 +41,7 @@ export function AdminDashboard({ overview, threadCount = 0 }: AdminDashboardProp
     () => overview.users.filter((user) => user.is_superuser).length,
     [overview.users]
   );
+  const orphanedCount = overview.orphaned_users ?? overview.users.filter((user) => user.is_orphaned).length;
 
   return (
     <>
@@ -53,7 +56,7 @@ export function AdminDashboard({ overview, threadCount = 0 }: AdminDashboardProp
             </p>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Link href="/qaml-backdoor/users">
               <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
                 <CardHeader>
@@ -78,6 +81,18 @@ export function AdminDashboard({ overview, threadCount = 0 }: AdminDashboardProp
                 <CardContent className="text-2xl font-semibold">{overview.total_orgs}</CardContent>
               </Card>
             </Link>
+            <Link href="/qaml-backdoor/workspaces">
+              <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle>Workspaces</CardTitle>
+                    <FolderKanban className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <CardDescription>Total workspaces</CardDescription>
+                </CardHeader>
+                <CardContent className="text-2xl font-semibold">{overview.total_workspaces}</CardContent>
+              </Card>
+            </Link>
             <Link href="/qaml-backdoor/threads">
               <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
                 <CardHeader>
@@ -92,7 +107,7 @@ export function AdminDashboard({ overview, threadCount = 0 }: AdminDashboardProp
             </Link>
           </div>
 
-          <div className="grid gap-3 mt-3 sm:grid-cols-2">
+          <div className="grid gap-3 mt-3 sm:grid-cols-2 lg:grid-cols-4">
             <Card size="sm">
               <CardHeader>
                 <CardTitle>Memberships</CardTitle>
@@ -106,6 +121,30 @@ export function AdminDashboard({ overview, threadCount = 0 }: AdminDashboardProp
                 <CardDescription>Admin access holders</CardDescription>
               </CardHeader>
               <CardContent className="text-2xl font-semibold">{superuserCount}</CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle>Orphaned Users</CardTitle>
+                  <UserX className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <CardDescription>Users without orgs</CardDescription>
+              </CardHeader>
+              <CardContent
+                className={`text-2xl font-semibold ${orphanedCount > 0 ? 'text-destructive' : ''}`}
+              >
+                {orphanedCount}
+              </CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle>Integrations</CardTitle>
+                  <Plug className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <CardDescription>Workspace integrations</CardDescription>
+              </CardHeader>
+              <CardContent className="text-2xl font-semibold">{overview.total_integrations}</CardContent>
             </Card>
           </div>
 
@@ -149,17 +188,34 @@ export function AdminDashboard({ overview, threadCount = 0 }: AdminDashboardProp
                         <td className="px-4 py-3">
                           <Link
                             href={`/qaml-backdoor/users/${user.id}`}
-                            className="flex flex-col hover:underline"
+                            className="flex items-center gap-3 hover:underline"
                           >
-                            <span className="font-medium text-foreground">
-                              {user.name || user.email}
-                            </span>
-                            {user.name ? (
-                              <span className="text-xs text-muted-foreground">{user.email}</span>
-                            ) : null}
-                            <span className="text-xs text-muted-foreground font-mono">
-                              {user.id.slice(0, 8)}...
-                            </span>
+                            <Avatar className="h-8 w-8">
+                              <AvatarFallback
+                                style={{
+                                  backgroundColor: user.avatar.color,
+                                  color: getContrastTextColor(user.avatar.color),
+                                }}
+                              >
+                                {user.avatar.content}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className="flex flex-col">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-foreground">
+                                  {user.name || user.email}
+                                </span>
+                                {user.is_orphaned ? (
+                                  <Badge variant="destructive">Orphaned</Badge>
+                                ) : null}
+                              </div>
+                              {user.name ? (
+                                <span className="text-xs text-muted-foreground">{user.email}</span>
+                              ) : null}
+                              <span className="text-xs text-muted-foreground font-mono">
+                                {user.id.slice(0, 8)}...
+                              </span>
+                            </div>
                           </Link>
                         </td>
                         <td className="px-4 py-3">

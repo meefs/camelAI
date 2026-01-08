@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { hashPassword, verifyPassword } from './password';
-import { generateDefaultAvatar } from '../../../src/lib/avatar';
+import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
 
 // Auth-specific environment bindings
 export interface AuthEnv {
@@ -406,6 +406,42 @@ export class UserDO extends DurableObject<AuthEnv> {
     profile.is_orphaned = isOrphaned;
     profile.orphaned_at = isOrphaned ? Date.now() : null;
     await this.setProfile(profile);
+  }
+
+  async updateProfile(updates: {
+    name?: string | null;
+    avatar_color?: string;
+    avatar_content?: string;
+  }): Promise<UserProfile | null> {
+    const profile = await this.getProfile();
+    if (!profile) return null;
+
+    let changed = false;
+
+    if (updates.name !== undefined && updates.name !== profile.name) {
+      profile.name = updates.name;
+      changed = true;
+    }
+
+    if (updates.avatar_color && updates.avatar_color !== profile.avatar_color) {
+      profile.avatar_color = updates.avatar_color;
+      changed = true;
+    }
+
+    if (updates.avatar_content && updates.avatar_content !== profile.avatar_content) {
+      const trimmed = updates.avatar_content.trim();
+      if (!validateAvatarContent(trimmed)) {
+        throw new Error('Invalid avatar content');
+      }
+      profile.avatar_content = trimmed;
+      changed = true;
+    }
+
+    if (changed) {
+      await this.setProfile(profile);
+    }
+
+    return profile;
   }
 
   // Org membership methods
@@ -938,6 +974,33 @@ export class OrgDO extends DurableObject<AuthEnv> {
     ).toArray();
     if (newOwnerRows.length === 0) {
       throw new Error('New owner is not a member');
+    }
+
+    this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'owner', newOwnerId);
+    this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'admin', currentOwner);
+    this.log('ownership_transferred', actorId, newOwnerId, { from_user_id: currentOwner });
+  }
+
+  async adminTransferOwnership(actorId: string, newOwnerId: string): Promise<void> {
+    const currentOwnerRows = this.sql.exec(
+      'SELECT user_id FROM members WHERE role = ? LIMIT 1',
+      'owner'
+    ).toArray() as Array<{ user_id: string }>;
+    const currentOwner = currentOwnerRows[0]?.user_id;
+    if (!currentOwner) {
+      throw new Error('No owner found');
+    }
+
+    const newOwnerRows = this.sql.exec(
+      'SELECT 1 FROM members WHERE user_id = ?',
+      newOwnerId
+    ).toArray();
+    if (newOwnerRows.length === 0) {
+      throw new Error('New owner is not a member');
+    }
+
+    if (newOwnerId === currentOwner) {
+      return;
     }
 
     this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'owner', newOwnerId);

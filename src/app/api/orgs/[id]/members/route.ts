@@ -26,9 +26,9 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       return unauthorizedResponse();
     }
 
-    const isAdmin = await authDO.isOrgAdmin(session.user_id, orgId);
-    if (!isAdmin) {
-      return forbiddenResponse('Only admins can view members');
+    const isMember = await authDO.isOrgMember(session.user_id, orgId);
+    if (!isMember) {
+      return forbiddenResponse('Only members can view members');
     }
 
     const members = await authDO.getOrgMembers(orgId);

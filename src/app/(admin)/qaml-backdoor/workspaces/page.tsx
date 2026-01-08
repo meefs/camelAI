@@ -1,0 +1,148 @@
+import Link from 'next/link';
+import * as authDO from '@/lib/auth-do';
+import { AdminPageHeader } from '@/components/admin/admin-page-header';
+import { AdminPagination } from '@/components/admin/admin-pagination';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { getContrastTextColor } from '@/lib/avatar';
+
+const LIMIT = 50;
+
+const dateFormatter = new Intl.DateTimeFormat('en-US', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+});
+
+function formatTimestamp(value: number) {
+  return dateFormatter.format(new Date(value));
+}
+
+interface Props {
+  searchParams: Promise<{ offset?: string }>;
+}
+
+export default async function AdminWorkspacesPage({ searchParams }: Props) {
+  const params = await searchParams;
+  const offset = parseInt(params.offset || '0', 10);
+
+  const { items: workspaces, total } = await authDO.adminGetWorkspacesPaginated({
+    offset,
+    limit: LIMIT,
+  });
+
+  return (
+    <>
+      <AdminPageHeader
+        breadcrumbs={[
+          { label: 'Admin', href: '/qaml-backdoor' },
+          { label: 'Workspaces' },
+        ]}
+      />
+
+      <div className="flex-1 min-h-0 overflow-auto">
+        <div className="max-w-6xl mx-auto w-full px-4 md:px-6 py-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h1 className="text-lg font-semibold tracking-tight">Workspaces</h1>
+              <p className="text-sm text-muted-foreground">
+                {total} total workspaces
+              </p>
+            </div>
+          </div>
+
+          <div className="border border-border rounded-lg overflow-hidden bg-card">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Workspace</TableHead>
+                  <TableHead>Organization</TableHead>
+                  <TableHead>Threads</TableHead>
+                  <TableHead>Integrations</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Created</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {workspaces.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                      No workspaces found
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  workspaces.map((workspace) => (
+                    <TableRow key={workspace.id}>
+                      <TableCell>
+                        <Link
+                          href={`/qaml-backdoor/workspaces/${workspace.id}`}
+                          className="flex items-center gap-3 hover:underline"
+                        >
+                          <Avatar className="h-8 w-8">
+                            <AvatarFallback
+                              style={{
+                                backgroundColor: workspace.avatar.color,
+                                color: getContrastTextColor(workspace.avatar.color),
+                              }}
+                            >
+                              {workspace.avatar.content}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <div className="font-medium text-foreground">{workspace.name}</div>
+                            <div className="text-xs text-muted-foreground font-mono">
+                              {workspace.id.slice(0, 8)}...
+                            </div>
+                          </div>
+                        </Link>
+                      </TableCell>
+                      <TableCell>
+                        <Link
+                          href={`/qaml-backdoor/orgs/${workspace.org_id}`}
+                          className="hover:underline"
+                        >
+                          <div className="font-medium">{workspace.org_name}</div>
+                          <div className="text-xs text-muted-foreground font-mono">
+                            {workspace.org_id.slice(0, 8)}...
+                          </div>
+                        </Link>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{workspace.thread_count}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{workspace.integration_count}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={workspace.archived ? 'secondary' : 'outline'}>
+                          {workspace.archived ? 'Archived' : 'Active'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {formatTimestamp(workspace.created_at)}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          <AdminPagination
+            total={total}
+            offset={offset}
+            limit={LIMIT}
+            baseUrl="/qaml-backdoor/workspaces"
+          />
+        </div>
+      </div>
+    </>
+  );
+}

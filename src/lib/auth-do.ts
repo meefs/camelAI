@@ -14,9 +14,11 @@ import type {
   CreateApiTokenInput,
   AdminOverview,
   AdminUserSummary,
+  AdminWorkspaceSummary,
+  AdminWorkspaceDetail,
+  AdminThreadWithContext,
   PaginatedResult,
   PaginationParams,
-  Thread,
   Message,
 } from '@/types';
 import { getCloudflareContext } from '@opennextjs/cloudflare';
@@ -82,6 +84,31 @@ export async function getUsersByIds(userIds: string[]): Promise<UserProfile[]> {
   return withRpc((rpc) => rpc.getUsersByIds(userIds));
 }
 
+export async function updateUserProfile(
+  userId: string,
+  updates: { name?: string | null; avatar?: { color: string; content: string } }
+): Promise<User | null> {
+  const profile = await withRpc((rpc) =>
+    rpc.updateUserProfile(userId, {
+      name: updates.name,
+      avatar: updates.avatar,
+    })
+  );
+  if (!profile) return null;
+  return {
+    id: profile.id,
+    email: profile.email,
+    name: profile.name,
+    created_at: profile.created_at,
+    is_superuser: profile.is_superuser,
+    avatar: {
+      color: profile.avatar_color,
+      content: profile.avatar_content,
+    },
+    is_orphaned: profile.is_orphaned,
+  };
+}
+
 export async function createUser(
   email: string,
   password: string,
@@ -113,7 +140,7 @@ export async function getAdminOverview(): Promise<AdminOverview> {
 
 export async function adminUpdateUser(
   userId: string,
-  updates: { name?: string; is_superuser?: boolean }
+  updates: { name?: string | null; is_superuser?: boolean; avatar?: { color: string; content: string } }
 ): Promise<User | null> {
   const profile = await withRpc((rpc) => rpc.adminUpdateUser(userId, updates));
   if (!profile) return null;
@@ -131,19 +158,11 @@ export async function adminUpdateUser(
   };
 }
 
-export async function adminGetAllOrgs(): Promise<Array<Organization & { member_count: number }>> {
+export async function adminGetAllOrgs(): Promise<Array<Organization & { member_count: number; workspace_count: number }>> {
   return withRpc((rpc) => rpc.adminGetAllOrgs());
 }
 
-export async function adminGetAllThreads(): Promise<Array<{
-  id: string;
-  title: string;
-  created_by: string;
-  created_at: number;
-  updated_at: number;
-  org_id: string;
-  workspace_id: string;
-}>> {
+export async function adminGetAllThreads(): Promise<AdminThreadWithContext[]> {
   return withRpc((rpc) => rpc.adminGetAllThreads());
 }
 
@@ -152,6 +171,8 @@ export async function adminGetThreadWithMessages(threadId: string): Promise<{
   messages: Message[];
   org_id: string;
   workspace_id: string;
+  org_name: string;
+  workspace_name: string;
   preview_workers: string[];
 } | null> {
   return withRpc((rpc) => rpc.adminGetThreadWithMessages(threadId));
@@ -173,14 +194,48 @@ export async function adminGetUsersPaginated(
 
 export async function adminGetOrgsPaginated(
   params: PaginationParams = {}
-): Promise<PaginatedResult<Organization & { member_count: number }>> {
+): Promise<PaginatedResult<Organization & { member_count: number; workspace_count: number }>> {
   return withRpc((rpc) => rpc.adminGetOrgsPaginated(params));
+}
+
+export async function adminGetWorkspacesPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<AdminWorkspaceSummary>> {
+  return withRpc((rpc) => rpc.adminGetWorkspacesPaginated(params));
 }
 
 export async function adminGetThreadsPaginated(
   params: PaginationParams = {}
-): Promise<PaginatedResult<Thread & { org_id: string; workspace_id: string }>> {
+): Promise<PaginatedResult<AdminThreadWithContext>> {
   return withRpc((rpc) => rpc.adminGetThreadsPaginated(params));
+}
+
+export async function adminGetWorkspaceDetail(workspaceId: string): Promise<AdminWorkspaceDetail | null> {
+  return withRpc((rpc) => rpc.adminGetWorkspaceDetail(workspaceId));
+}
+
+export async function adminUpdateWorkspace(
+  workspaceId: string,
+  updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } },
+  actorId: string
+): Promise<Workspace | null> {
+  return withRpc((rpc) => rpc.adminUpdateWorkspace(workspaceId, updates, actorId));
+}
+
+export async function adminArchiveWorkspace(workspaceId: string, actorId: string): Promise<Workspace | null> {
+  return withRpc((rpc) => rpc.adminArchiveWorkspace(workspaceId, actorId));
+}
+
+export async function adminTransferOrgOwnership(
+  orgId: string,
+  newOwnerId: string,
+  actorId: string
+): Promise<void> {
+  return withRpc((rpc) => rpc.adminTransferOrgOwnership(orgId, newOwnerId, actorId));
+}
+
+export async function adminForceOrphanUser(userId: string, actorId: string): Promise<void> {
+  return withRpc((rpc) => rpc.adminForceOrphanUser(userId, actorId));
 }
 
 // Organization functions
@@ -230,6 +285,19 @@ export async function listOrgWorkspaces(orgId: string): Promise<Workspace[]> {
 
 export async function listUserWorkspaces(userId: string, orgId: string): Promise<WorkspaceWithAccess[]> {
   return withRpc((rpc) => rpc.listUserWorkspaces(userId, orgId));
+}
+
+export async function listUserWorkspacesAcrossOrgs(
+  userId: string,
+  orgs?: OrgMembership[]
+): Promise<WorkspaceWithAccess[]> {
+  const memberships = orgs ?? (await getUserOrgs(userId));
+  if (memberships.length === 0) return [];
+
+  const workspaces = await Promise.all(
+    memberships.map((membership) => listUserWorkspaces(userId, membership.org_id))
+  );
+  return workspaces.flat();
 }
 
 export async function getWorkspace(workspaceId: string): Promise<Workspace | null> {

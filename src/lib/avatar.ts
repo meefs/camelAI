@@ -1,6 +1,6 @@
 import type { Avatar } from '@/types';
 
-const AVATAR_COLORS = [
+export const AVATAR_COLORS = [
   '#4F46E5',
   '#7C3AED',
   '#EC4899',
@@ -54,4 +54,18 @@ export function generateDefaultAvatar(source: string): Avatar {
     color: AVATAR_COLORS[hash % AVATAR_COLORS.length],
     content: initials,
   };
+}
+
+export function getContrastTextColor(hexColor: string): string {
+  if (!hexColor || !hexColor.startsWith('#') || hexColor.length < 7) {
+    return '#FFFFFF';
+  }
+  const r = parseInt(hexColor.slice(1, 3), 16);
+  const g = parseInt(hexColor.slice(3, 5), 16);
+  const b = parseInt(hexColor.slice(5, 7), 16);
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+    return '#FFFFFF';
+  }
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.5 ? '#000000' : '#FFFFFF';
 }

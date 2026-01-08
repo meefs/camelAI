@@ -104,14 +104,16 @@ export async function login(email: string, password: string): Promise<AuthPayloa
   const orphanResult = await authDO.handleOrphanedUserLogin(userId);
 
   let currentOrg: Organization;
-  let workspaces: WorkspaceWithAccess[];
+  let orgWorkspaces: WorkspaceWithAccess[];
   let currentWorkspace: WorkspaceWithAccess | null;
 
   if (orphanResult) {
     orgs = await authDO.getUserOrgs(userId);
     currentOrg = orphanResult.org;
-    workspaces = await authDO.listUserWorkspaces(userId, currentOrg.id);
-    currentWorkspace = workspaces.find((workspace) => workspace.id === orphanResult.workspace.id) || orphanResult.workspace;
+    orgWorkspaces = await authDO.listUserWorkspaces(userId, currentOrg.id);
+    currentWorkspace =
+      orgWorkspaces.find((workspace) => workspace.id === orphanResult.workspace.id) ||
+      orphanResult.workspace;
   } else {
     if (orgs.length === 0) {
       const orgName = `${user.name || 'My'}'s Organization`;
@@ -126,9 +128,12 @@ export async function login(email: string, password: string): Promise<AuthPayloa
       throw new Error("Failed to load organization");
     }
     currentOrg = org;
-    workspaces = await authDO.listUserWorkspaces(userId, currentOrgId);
+    orgWorkspaces = await authDO.listUserWorkspaces(userId, currentOrgId);
     const preferredWorkspaceId = currentMembership?.last_workspace_id ?? null;
-    currentWorkspace = workspaces.find((workspace) => workspace.id === preferredWorkspaceId) || workspaces[0] || null;
+    currentWorkspace =
+      orgWorkspaces.find((workspace) => workspace.id === preferredWorkspaceId) ||
+      orgWorkspaces[0] ||
+      null;
   }
 
   const { sessionId } = await authDO.createSession(
@@ -138,6 +143,7 @@ export async function login(email: string, password: string): Promise<AuthPayloa
   );
   await setSessionCookie(sessionId);
 
+  const allWorkspaces = await authDO.listUserWorkspacesAcrossOrgs(userId, orgs);
   const responseUser = orphanResult ? { ...user, is_orphaned: false } : user;
 
   return {
@@ -145,7 +151,7 @@ export async function login(email: string, password: string): Promise<AuthPayloa
     currentOrg: toSafeOrg(currentOrg),
     currentWorkspace: currentWorkspace ? toSafeWorkspace(currentWorkspace) : null,
     orgs: orgs.map(toSafeOrgMembership),
-    workspaces: workspaces.map(toSafeWorkspace),
+    workspaces: allWorkspaces.map(toSafeWorkspace),
   };
 }
 
@@ -172,8 +178,8 @@ export async function signup(
   const { userId, user } = await authDO.createUser(email, password, name || null);
   const orgName = `${name || email.split("@")[0]}'s Organization`;
   const org = await authDO.createOrg(orgName, userId);
-  const workspaces = await authDO.listUserWorkspaces(userId, org.id);
-  const currentWorkspace = workspaces[0] || null;
+  const orgWorkspaces = await authDO.listUserWorkspaces(userId, org.id);
+  const currentWorkspace = orgWorkspaces[0] || null;
 
   const { sessionId } = await authDO.createSession(
     userId,
@@ -183,13 +189,14 @@ export async function signup(
   await setSessionCookie(sessionId);
 
   const orgs = await authDO.getUserOrgs(userId);
+  const allWorkspaces = await authDO.listUserWorkspacesAcrossOrgs(userId, orgs);
 
   return {
     user: toSafeUser(user),
     currentOrg: toSafeOrg(org),
     currentWorkspace: currentWorkspace ? toSafeWorkspace(currentWorkspace) : null,
     orgs: orgs.map(toSafeOrgMembership),
-    workspaces: workspaces.map(toSafeWorkspace),
+    workspaces: allWorkspaces.map(toSafeWorkspace),
   };
 }
 
@@ -227,6 +234,38 @@ export async function switchOrg(orgId: string): Promise<Organization> {
     throw new Error("Organization not found");
   }
   return toSafeOrg(currentOrg);
+}
+
+export async function switchWorkspace(
+  workspaceId: string
+): Promise<WorkspaceWithAccess | null> {
+  const sessionContext = await getSessionContext();
+  if (!sessionContext) {
+    throw new Error("Not logged in");
+  }
+
+  if (!workspaceId) {
+    await authDO.switchSessionWorkspace(sessionContext.sessionId, null);
+    return null;
+  }
+
+  const workspace = await authDO.getWorkspace(workspaceId);
+  if (!workspace) {
+    throw new Error("Workspace not found");
+  }
+
+  const access = await authDO.getWorkspaceAccess(workspaceId, sessionContext.session.user_id);
+  if (access === 'none') {
+    throw new Error("Workspace not found");
+  }
+
+  if (workspace.org_id !== sessionContext.session.org_id) {
+    await authDO.switchSessionOrg(sessionContext.sessionId, workspace.org_id, workspaceId);
+  } else {
+    await authDO.switchSessionWorkspace(sessionContext.sessionId, workspaceId);
+  }
+
+  return toSafeWorkspace({ ...workspace, access_level: access });
 }
 
 export async function getAuthState(): Promise<AuthPayload | null> {

@@ -90,7 +90,7 @@ export const getAuthContext = cache(async (): Promise<AuthContext | null> => {
   if (!authContext) return null;
 
   const orgs = await authDO.getUserOrgs(authContext.session.user_id);
-  const workspaces = authContext.workspaces ?? await authDO.listUserWorkspaces(authContext.session.user_id, authContext.currentOrg.id);
+  const workspaces = await authDO.listUserWorkspacesAcrossOrgs(authContext.session.user_id, orgs);
 
   return {
     ...authContext,

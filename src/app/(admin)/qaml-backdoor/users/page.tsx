@@ -2,6 +2,7 @@ import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import {
   Table,
@@ -11,6 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { getContrastTextColor } from '@/lib/avatar';
 
 const LIMIT = 50;
 
@@ -62,6 +64,7 @@ export default async function AdminUsersPage({ searchParams }: Props) {
                 <TableRow>
                   <TableHead>User</TableHead>
                   <TableHead>Orgs</TableHead>
+                  <TableHead>Status</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead>Role</TableHead>
                 </TableRow>
@@ -72,16 +75,28 @@ export default async function AdminUsersPage({ searchParams }: Props) {
                     <TableCell>
                       <Link
                         href={`/qaml-backdoor/users/${user.id}`}
-                        className="block hover:underline"
+                        className="flex items-center gap-3 hover:underline"
                       >
-                        <div className="font-medium text-foreground">
-                          {user.name || user.email}
-                        </div>
-                        {user.name && (
-                          <div className="text-xs text-muted-foreground">{user.email}</div>
-                        )}
-                        <div className="text-xs text-muted-foreground font-mono">
-                          {user.id.slice(0, 8)}...
+                        <Avatar className="h-8 w-8">
+                          <AvatarFallback
+                            style={{
+                              backgroundColor: user.avatar.color,
+                              color: getContrastTextColor(user.avatar.color),
+                            }}
+                          >
+                            {user.avatar.content}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <div className="font-medium text-foreground">
+                            {user.name || user.email}
+                          </div>
+                          {user.name && (
+                            <div className="text-xs text-muted-foreground">{user.email}</div>
+                          )}
+                          <div className="text-xs text-muted-foreground font-mono">
+                            {user.id.slice(0, 8)}...
+                          </div>
                         </div>
                       </Link>
                     </TableCell>
@@ -89,6 +104,13 @@ export default async function AdminUsersPage({ searchParams }: Props) {
                       <Badge variant="outline">
                         {user.org_count} {user.org_count === 1 ? 'org' : 'orgs'}
                       </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {user.is_orphaned ? (
+                        <Badge variant="destructive">Orphaned</Badge>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Active</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {formatTimestamp(user.created_at)}

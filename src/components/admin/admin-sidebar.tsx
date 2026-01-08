@@ -2,6 +2,7 @@
 
 import {
   Building2,
+  FolderKanban,
   Home,
   MessageSquare,
   Users,
@@ -40,6 +41,11 @@ const modelRoutes = [
     label: 'Organizations',
     href: '/qaml-backdoor/orgs',
     icon: Building2,
+  },
+  {
+    label: 'Workspaces',
+    href: '/qaml-backdoor/workspaces',
+    icon: FolderKanban,
   },
   {
     label: 'Threads',

@@ -38,7 +38,7 @@ export default async function AdminThreadDetailPage({ params }: Props) {
     notFound();
   }
 
-  const { thread, messages, org_id, preview_workers } = result;
+  const { thread, messages, org_id, org_name, workspace_id, workspace_name, preview_workers } = result;
 
   // Create plain object for Client Component
   const safeThread = {
@@ -84,7 +84,18 @@ export default async function AdminThreadDetailPage({ params }: Props) {
                         href={`/qaml-backdoor/orgs/${org_id}`}
                         className="text-sm font-mono hover:underline"
                       >
-                        {org_id.slice(0, 8)}...
+                        {org_name} ({org_id.slice(0, 8)}...)
+                      </Link>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-sm font-medium text-muted-foreground">Workspace</dt>
+                    <dd>
+                      <Link
+                        href={`/qaml-backdoor/workspaces/${workspace_id}`}
+                        className="text-sm font-mono hover:underline"
+                      >
+                        {workspace_name} ({workspace_id.slice(0, 8)}...)
                       </Link>
                     </dd>
                   </div>

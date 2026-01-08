@@ -34,6 +34,7 @@ export default function UsersLoading() {
                 <TableRow>
                   <TableHead>User</TableHead>
                   <TableHead>Orgs</TableHead>
+                  <TableHead>Status</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead>Role</TableHead>
                 </TableRow>
@@ -42,13 +43,19 @@ export default function UsersLoading() {
                 {Array.from({ length: 10 }).map((_, i) => (
                   <TableRow key={i}>
                     <TableCell>
-                      <div className="space-y-1">
-                        <Skeleton className="h-5 w-32" />
-                        <Skeleton className="h-3 w-24" />
+                      <div className="flex items-center gap-3">
+                        <Skeleton className="h-8 w-8 rounded-full" />
+                        <div className="space-y-1">
+                          <Skeleton className="h-5 w-32" />
+                          <Skeleton className="h-3 w-24" />
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell>
                       <Skeleton className="h-6 w-16" />
+                    </TableCell>
+                    <TableCell>
+                      <Skeleton className="h-5 w-20" />
                     </TableCell>
                     <TableCell>
                       <Skeleton className="h-4 w-28" />
