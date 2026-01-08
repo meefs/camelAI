@@ -920,7 +920,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
 
     const container = scrollContainerRef.current;
     if (!container) {
-      scrollToBottom();
+      scrollToBottom('smooth');
       return;
     }
 
@@ -929,7 +929,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
 
     // Always scroll when user sends a message, or if near bottom during streaming
     if (shouldForce || stickToBottomRef.current || distanceFromBottom < 150) {
-      scrollToBottom();
+      scrollToBottom('smooth');
     }
   }, [messages, scrollToBottom, shouldShowChat, threadId]);
 
