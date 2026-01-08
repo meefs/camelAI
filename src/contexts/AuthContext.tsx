@@ -42,11 +42,15 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     }
   );
 
+  const safeSetState = useCallback((newState: AuthState | ((prev: AuthState) => AuthState)) => {
+    setState(newState);
+  }, []);
+
   const refreshAuth = useCallback(async () => {
     try {
       const data = await getAuthState();
       if (data) {
-        setState({
+        safeSetState({
           user: data.user,
           currentOrg: data.currentOrg,
           orgs: data.orgs,
@@ -54,7 +58,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
           error: null,
         });
       } else {
-        setState({
+        safeSetState({
           user: null,
           currentOrg: null,
           orgs: [],
@@ -63,7 +67,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
         });
       }
     } catch (e) {
-      setState({
+      safeSetState({
         user: null,
         currentOrg: null,
         orgs: [],
@@ -71,7 +75,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
         error: String(e),
       });
     }
-  }, []);
+  }, [safeSetState]);
 
   useEffect(() => {
     if (!initialState) {

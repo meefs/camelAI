@@ -1,17 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
-
-// Debug logging for message state changes
-const DEBUG_MESSAGES = true;
-const debugLog = (context: string, data: Record<string, unknown>) => {
-  if (!DEBUG_MESSAGES) return;
-  console.log(`[Chat:${context}]`, JSON.stringify({
-    timestamp: new Date().toISOString(),
-    ...data,
-  }, null, 2));
-};
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { ArrowDown, RefreshCw, ExternalLink, X } from 'lucide-react';
 import type { Message, ContentBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -27,25 +17,7 @@ import { Button } from '@/components/ui/button';
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
 import { cn } from '@/lib/utils';
-import { type SDKEvent } from '@/lib/streaming';
-import {
-  useMessages,
-  useIsStreaming,
-  useLoading,
-  useIsThreadInitialized,
-  setMessages,
-  addMessage,
-  setLoading,
-  addPendingMessage,
-  hasPendingMessagesForThread,
-  clearPendingMessagesForThread,
-  setStreamingMessageId,
-  startStreamingMessage,
-  applyStreamingEvent,
-  finishStreaming,
-  getMessages,
-  getStreamingMessageId,
-} from '@/stores/chat-state';
+import { type SDKEvent, applyStreamingEventToMessage } from '@/lib/streaming';
 import {
   createThread as createThreadAction,
   getThreadMessages,
@@ -56,6 +28,8 @@ interface ChatProps {
   orgId: string;
   initialMessages?: Message[];
   threadTitle?: string | null;
+  initialDeployedApp?: string | null;
+  isNewThread?: boolean;
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -106,43 +80,59 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
 }
 
 
-export default function Chat({ threadId, orgId, initialMessages, threadTitle }: ChatProps) {
+export default function Chat({ threadId, orgId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false }: ChatProps) {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const { user, currentOrg, loading: authLoading } = useAuth();
-  const isNewThreadParam = searchParams?.get('newThread') === '1';
+
+  // Parse initial messages once
   const parsedInitialMessages = useMemo(
     () => (initialMessages ?? []).map(msg => ({ ...msg, content: parseMessageContent(msg.content) })),
     [initialMessages]
   );
 
-  // Chat state (simple module-level state with React hooks)
-  const storeMessages = useMessages(threadId);
-  const isStreaming = useIsStreaming();
-  const loading = useLoading(threadId);
-  const isThreadInitialized = useIsThreadInitialized(threadId);
+  // Local state for messages, streaming, and loading
+  const [messages, setMessagesState] = useState<Message[]>(parsedInitialMessages);
+  const [streamingMessageId, setStreamingMessageIdState] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
 
-  // Hydration-safe pattern: sync initial messages to store AFTER mount.
-  // During SSR/hydration, store is empty so we fall back to prop.
-  // After effect runs, store has messages and component re-renders.
-  // Use isThreadInitialized to distinguish "not loaded yet" from "loaded but empty".
-  useEffect(() => {
-    if (threadId && parsedInitialMessages.length > 0 && !isThreadInitialized) {
-      setMessages(threadId, parsedInitialMessages);
-    }
-  }, [threadId, parsedInitialMessages, isThreadInitialized]);
+  // Refs to track current state for use in callbacks (avoids stale closures)
+  const messagesRef = useRef(messages);
+  const streamingMessageIdRef = useRef(streamingMessageId);
+  const pendingMessagesRef = useRef(pendingMessages);
 
-  // Use store messages if thread is initialized, otherwise fall back to server-rendered prop
-  const messages = isThreadInitialized ? storeMessages : parsedInitialMessages;
+  // Wrapper setters that update both state and ref
+  const setMessages = useCallback((updater: Message[] | ((prev: Message[]) => Message[])) => {
+    setMessagesState(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      messagesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const setStreamingMessageId = useCallback((id: string | null) => {
+    streamingMessageIdRef.current = id;
+    setStreamingMessageIdState(id);
+  }, []);
+
+  const setPendingMessages = useCallback((updater: Message[] | ((prev: Message[]) => Message[])) => {
+    setPendingMessagesState(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      pendingMessagesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const isStreaming = streamingMessageId !== null;
 
   const [input, setInput] = useState('');
-  const [ready, setReady] = useState(false); // Container is ready to receive messages
+  const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [welcomeInput, setWelcomeInput] = useState('');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [deployedApp, setDeployedApp] = useState<string | null>(null);
+  const [deployedApp, setDeployedApp] = useState<string | null>(initialDeployedApp ?? null);
   const [iframeKey, setIframeKey] = useState(0);
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
   const previewVersionRef = useRef<number>(0);
@@ -153,8 +143,8 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   const assistantMeasureRef = useRef<HTMLDivElement>(null);
   const assistantSpacerRef = useRef<HTMLDivElement>(null);
   const initialScrollDoneRef = useRef(false);
-  const pendingScrollMessageIdRef = useRef<string | null>(null);
-  const skipAutoScrollRef = useRef(false);
+  const stickToBottomRef = useRef(true);
+  const forceScrollOnNextUpdate = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const previewWsRef = useRef<WebSocket | null>(null);
   const previewReconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -168,6 +158,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
   useEffect(() => {
     initialScrollDoneRef.current = false;
+    stickToBottomRef.current = true;
   }, [threadId]);
 
   // Sync current title from prop (e.g., when SSR data arrives)
@@ -228,16 +219,15 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   }, [threadId, loadSessionState]);
 
   useEffect(() => {
-    if (!isNewThreadParam || !threadId) return;
+    if (!isNewThread || !threadId) return;
     const url = new URL(window.location.href);
     if (url.searchParams.get('newThread') !== '1') return;
     url.searchParams.delete('newThread');
     window.history.replaceState(null, '', url.toString());
-  }, [isNewThreadParam, threadId]);
+  }, [isNewThread, threadId]);
 
   // Fetch messages from REST API
   const fetchMessages = useCallback(async (id: string) => {
-    debugLog('fetchMessages:start', { threadId: id });
     try {
       const data = await getThreadMessages(id);
       const fetchedMsgs = Array.isArray(data) ? (data as Message[]) : [];
@@ -248,28 +238,18 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
         content: parseMessageContent(msg.content),
       }));
 
-      debugLog('fetchMessages:setMessages', {
-        threadId: id,
-        fetchedCount: fetchedMsgs.length,
-        messageIds: parsedMsgs.map(m => m.id),
-      });
-
       // Always replace with server state - local-only messages (local_*, turn_*)
       // that weren't persisted are stale. Pending messages will be re-added
       // when the ready event fires.
-      setMessages(id, parsedMsgs);
+      setMessages(parsedMsgs);
     } catch (e) {
-      debugLog('fetchMessages:exception', { threadId: id, error: String(e) });
       console.error('Failed to fetch messages:', e);
     }
   }, []);
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
-    debugLog('connectWebSocket:start', { threadId: id, isReconnect });
-
     if (!id) {
-      debugLog('connectWebSocket:noId', {});
       return;
     }
     // Clear any pending reconnect
@@ -280,13 +260,11 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
     // Increment connection ID to invalidate any pending callbacks from old connections
     const thisConnectionId = ++connectionIdRef.current;
-    debugLog('connectWebSocket:newConnectionId', { connectionId: thisConnectionId, isReconnect });
     connectionStartedAtRef.current.set(thisConnectionId, Date.now());
 
     // Close existing connection regardless of state
     // This prevents orphaned WebSockets from React StrictMode double-mounting
     if (wsRef.current) {
-      debugLog('connectWebSocket:closingExisting', { connectionId: thisConnectionId });
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -298,8 +276,8 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       reconnectAttempts.current = 0;
     }
 
-    // Fetch existing messages from REST API unless we have a pending first message for this thread
-    let shouldFetchMessages = true;
+    // Fetch existing messages from REST API unless this is a new thread
+    let shouldFetchMessages = !isNewThread;
 
     // Check sessionStorage for welcome screen pending message (survives navigation)
     const pendingPayload = sessionStorage.getItem('pendingMessage');
@@ -317,26 +295,23 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
             content: parsed.message,
             created_at: Date.now(),
           };
-          setMessages(id, [optimisticUserMsg]);
-          addPendingMessage(optimisticUserMsg);
-          setLoading(id, true);
+          setMessages([optimisticUserMsg]);
+          setPendingMessages(prev => [...prev, optimisticUserMsg]);
+          setLoading(true);
         }
       } catch {
         // Ignore malformed pending payload and continue to fetch
       }
     }
 
-    // Skip fetch if store has pending messages for THIS thread (StrictMode-safe)
-    if (shouldFetchMessages && hasPendingMessagesForThread(id)) {
+    // Skip fetch if we have pending messages (use ref to avoid stale closure)
+    if (shouldFetchMessages && pendingMessagesRef.current.length > 0) {
       shouldFetchMessages = false;
     }
 
-    // Skip fetch if store already has messages (from hydration or previous load)
-    if (shouldFetchMessages) {
-      const existingMessages = getMessages(id);
-      if (existingMessages.length > 0) {
-        shouldFetchMessages = false;
-      }
+    // Skip fetch if we already have messages (use ref to avoid stale closure)
+    if (shouldFetchMessages && messagesRef.current.length > 0) {
+      shouldFetchMessages = false;
     }
 
     if (shouldFetchMessages) {
@@ -358,12 +333,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
         return;
       }
       reconnectAttempts.current = 0;
-      debugLog('ws:open', {
-        connectionId: thisConnectionId,
-        threadId: id,
-        sessionId: sessionIdRef.current,
-        lastEventId: lastEventIdRef.current,
-      });
 
       // Send init message to container
       ws.send(JSON.stringify({
@@ -392,22 +361,20 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
       if (data.type === 'ready') {
         // Container is ready to receive messages
-        debugLog('ws:ready', { threadId: id });
         setReady(true);
 
-        // Get queued messages for THIS thread only (prevents cross-thread message leakage)
-        const queuedMessages = clearPendingMessagesForThread(id);
-
+        // Get and clear queued messages
+        const queuedMessages = pendingMessagesRef.current;
         if (queuedMessages.length > 0) {
-          debugLog('ws:sendPendingMessages', { threadId: id, count: queuedMessages.length });
-          setLoading(id, true);
+          setPendingMessages([]);
+          setLoading(true);
 
           // Restore to state if missing (fetchMessages may have cleared them during reconnect)
-          const currentMessages = getMessages(id);
+          const currentMessages = messagesRef.current;
           const existingIds = new Set(currentMessages.map(m => m.id));
           const missing = queuedMessages.filter(m => !existingIds.has(m.id));
           if (missing.length > 0) {
-            setMessages(id, [...currentMessages, ...missing]);
+            setMessages([...currentMessages, ...missing]);
           }
 
           // Send all queued messages
@@ -433,25 +400,41 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       } else if (data.type === 'sdk_event') {
         // Handle SDK events for streaming
         const sdkEvent = data.event as SDKEvent;
-        const currentStreamingId = getStreamingMessageId();
+        const currentStreamingId = streamingMessageIdRef.current;
 
         if (sdkEvent.type === 'stream_event') {
           const evt = sdkEvent.event;
           if (evt?.type === 'message_start') {
             // Add new assistant message with isStreaming: true
             const msgId = evt.message?.id || (sdkEvent as { uuid?: string }).uuid || `stream_${Date.now()}`;
-            debugLog('ws:messageStart', { msgId });
-            startStreamingMessage(id, msgId);
+            // Start streaming message
+            setStreamingMessageId(msgId);
+            const newMsg: Message = {
+              id: msgId,
+              thread_id: id,
+              role: 'assistant',
+              content: [],
+              created_at: Date.now(),
+              isStreaming: true,
+            };
+            const currentMsgs = messagesRef.current;
+            if (!currentMsgs.some(m => m.id === msgId)) {
+              setMessages([...currentMsgs, newMsg]);
+            }
           } else if (currentStreamingId) {
             // Apply streaming delta to the current message
-            applyStreamingEvent(id, sdkEvent);
+            setMessages(prev => prev.map(msg =>
+              msg.id === currentStreamingId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+            ));
           } else {
             // No streamingMessageId - try to restore from streaming message (reconnect scenario)
-            const currentMessages = getMessages(id);
+            const currentMessages = messagesRef.current;
             const streamingMsg = currentMessages.find(m => m.isStreaming);
             if (streamingMsg) {
               setStreamingMessageId(streamingMsg.id);
-              applyStreamingEvent(id, sdkEvent);
+              setMessages(prev => prev.map(msg =>
+                msg.id === streamingMsg.id ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+              ));
             }
           }
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
@@ -468,10 +451,9 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
           // Append user content blocks (tool_result) to current streaming message
-          const msgId = getStreamingMessageId();
-          if (msgId && id) {
-            const currentMessages = getMessages(id);
-            setMessages(id, currentMessages.map(msg => {
+          const msgId = streamingMessageIdRef.current;
+          if (msgId) {
+            setMessages(prev => prev.map(msg => {
               if (msg.id !== msgId) return msg;
               const content = Array.isArray(msg.content) ? msg.content : [];
               return { ...msg, content: [...content, ...sdkEvent.message!.content] };
@@ -479,38 +461,37 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
           }
         } else if (sdkEvent.type === 'result') {
           // Query complete - mark message as not streaming
-          debugLog('ws:result', { msgId: getStreamingMessageId() });
-          if (id) {
-            finishStreaming(id);
+          // Finish streaming
+          const msgId = streamingMessageIdRef.current;
+          if (msgId) {
+            setMessages(prev => prev.map(msg =>
+              msg.id === msgId ? { ...msg, isStreaming: false } : msg
+            ));
           }
+          setStreamingMessageId(null);
+          setLoading(false);
         }
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
         setError(data.error || 'An unknown error occurred');
-        // Mark any streaming message as not streaming
-        if (id) {
-          finishStreaming(id);
+        // Finish streaming on error
+        const msgId = streamingMessageIdRef.current;
+        if (msgId) {
+          setMessages(prev => prev.map(msg =>
+            msg.id === msgId ? { ...msg, isStreaming: false } : msg
+          ));
         }
+        setStreamingMessageId(null);
+        setLoading(false);
       }
     };
 
     ws.onclose = (event) => {
       // Ignore if this connection was superseded by a new one
       if (connectionIdRef.current !== thisConnectionId) {
-        debugLog('ws:close:superseded', { connectionId: thisConnectionId, currentId: connectionIdRef.current });
         return;
       }
 
-      const startedAt = connectionStartedAtRef.current.get(thisConnectionId);
-      debugLog('ws:close', {
-        connectionId: thisConnectionId,
-        attempt: reconnectAttempts.current,
-        code: event.code,
-        reason: event.reason,
-        wasClean: event.wasClean,
-        durationMs: startedAt ? Date.now() - startedAt : null,
-        readyState: ws.readyState,
-      });
       connectionStartedAtRef.current.delete(thisConnectionId);
       setReady(false);
       wsRef.current = null;
@@ -520,7 +501,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       if (reconnectAttempts.current < maxAttempts) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
         reconnectAttempts.current++;
-        debugLog('ws:reconnectScheduled', { attempt: reconnectAttempts.current, delay });
         reconnectTimeoutRef.current = setTimeout(() => {
           // Check again that we haven't been superseded
           if (connectionIdRef.current === thisConnectionId) {
@@ -537,7 +517,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       }
     };
 
-  }, [fetchMessages, resolvedOrgId, persistSessionState, threadId]);
+  }, [fetchMessages, resolvedOrgId, persistSessionState, threadId, isNewThread]);
 
   // Keep the ref updated with the latest function
   connectWebSocketRef.current = connectWebSocket;
@@ -603,7 +583,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
     ws.onopen = () => {
       previewReconnectAttempts.current = 0;
-      debugLog('preview:ws:open', { threadId: id });
     };
 
     ws.onmessage = (event) => {
@@ -634,15 +613,8 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       }
     };
 
-    ws.onclose = (event) => {
+    ws.onclose = () => {
       if (previewWsRef.current !== ws) return; // Ignore stale connections
-      debugLog('preview:ws:close', {
-        threadId: id,
-        code: event.code,
-        reason: event.reason,
-        wasClean: event.wasClean,
-        durationMs: previewConnectionStartedAtRef.current ? Date.now() - previewConnectionStartedAtRef.current : null,
-      });
       previewWsRef.current = null;
       previewConnectionStartedAtRef.current = null;
 
@@ -703,7 +675,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     return null;
   }, [messages]);
   const shouldRenderSpacer = Boolean(lastUserMessage) && (isAwaitingAssistant || lastMessage?.role === 'assistant');
-  const shouldAnchorToLastMessage = isAwaitingAssistant || lastMessage?.role === 'assistant';
 
   // Connect when threadId changes
   useEffect(() => {
@@ -804,34 +775,18 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [threadId, shouldShowChat, resolvedOrgId, connectPreviewWebSocket]);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const container = scrollContainerRef.current;
     if (container) {
+      if (behavior === 'auto') {
+        container.scrollTop = container.scrollHeight;
+        return;
+      }
       container.scrollTo({ top: container.scrollHeight, behavior });
       return;
     }
     messagesEndRef.current?.scrollIntoView({ behavior });
   }, []);
-
-  useLayoutEffect(() => {
-    if (!shouldShowChat || !threadId) return;
-    if (initialScrollDoneRef.current) return;
-    if (messages.length === 0) return;
-
-    if (shouldAnchorToLastMessage && lastMessage) {
-      const container = scrollContainerRef.current;
-      const target = container?.querySelector(`[data-message-id="${lastMessage.id}"]`) as HTMLElement | null;
-      if (target) {
-        target.scrollIntoView({ behavior: 'auto', block: 'end' });
-      } else {
-        scrollToBottom('auto');
-      }
-    } else {
-      scrollToBottom('auto');
-    }
-    setShowScrollButton(false);
-    initialScrollDoneRef.current = true;
-  }, [shouldShowChat, threadId, messages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage]);
 
   useLayoutEffect(() => {
     if (!shouldRenderSpacer) return;
@@ -911,22 +866,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     };
   }, [shouldRenderSpacer, isAwaitingAssistant, lastMessage?.id, lastUserMessage?.id, messages.length, isStreaming, loading]);
 
-  useEffect(() => {
-    const messageId = pendingScrollMessageIdRef.current;
-    if (!messageId) return;
-
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    const target = container.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
-    if (!target) return;
-
-    pendingScrollMessageIdRef.current = null;
-    requestAnimationFrame(() => {
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  }, [messages.length]);
-
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -934,15 +873,50 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
 
     const { scrollTop, scrollHeight, clientHeight } = container;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    stickToBottomRef.current = distanceFromBottom < 150;
     setShowScrollButton(distanceFromBottom > 100);
   }, []);
 
-  // Auto-scroll on new messages (only if near bottom)
   useEffect(() => {
-    if (skipAutoScrollRef.current) {
-      skipAutoScrollRef.current = false;
+    if (!shouldShowChat || !threadId) return;
+
+    const column = messageColumnRef.current;
+    if (!column || typeof ResizeObserver === 'undefined') return;
+
+    let frameId: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (!stickToBottomRef.current) return;
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+      }
+      frameId = requestAnimationFrame(() => {
+        scrollToBottom('auto');
+      });
+    });
+
+    observer.observe(column);
+
+    return () => {
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+      }
+      observer.disconnect();
+    };
+  }, [scrollToBottom, shouldShowChat, threadId]);
+
+  // Auto-scroll on new messages (only if near bottom, or forced after user sends)
+  useLayoutEffect(() => {
+    if (!shouldShowChat || !threadId) return;
+
+    if (!initialScrollDoneRef.current && messages.length > 0) {
+      initialScrollDoneRef.current = true;
+      scrollToBottom('auto');
+      setShowScrollButton(false);
       return;
     }
+
+    const shouldForce = forceScrollOnNextUpdate.current;
+    forceScrollOnNextUpdate.current = false;
 
     const container = scrollContainerRef.current;
     if (!container) {
@@ -953,11 +927,11 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     const { scrollTop, scrollHeight, clientHeight } = container;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
 
-    // Only auto-scroll if user is near bottom (within 150px)
-    if (distanceFromBottom < 150) {
+    // Always scroll when user sends a message, or if near bottom during streaming
+    if (shouldForce || stickToBottomRef.current || distanceFromBottom < 150) {
       scrollToBottom();
     }
-  }, [messages, scrollToBottom]);
+  }, [messages, scrollToBottom, shouldShowChat, threadId]);
 
   const copyMessage = useCallback(async (messageId: string, content: string) => {
     try {
@@ -992,7 +966,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return;
     }
-    debugLog('stopGeneration', { threadId });
     wsRef.current.send(JSON.stringify({ type: 'stop' }));
   }
 
@@ -1015,16 +988,14 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       content: userMessage,
       created_at: Date.now(),
     };
-    pendingScrollMessageIdRef.current = userMsg.id;
-    skipAutoScrollRef.current = true;
-    debugLog('sendMessage:addUserMessage', { messageId: userMsg.id, threadId });
 
-    // Add user message to store - it naturally appears after any streaming message
-    addMessage(threadId, userMsg);
+    // Add user message - it naturally appears after any streaming message
+    forceScrollOnNextUpdate.current = true;
+    setMessages(prev => [...prev, userMsg]);
 
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
-      setLoading(threadId, true);
+      setLoading(true);
       wsRef.current.send(JSON.stringify({
         type: 'message',
         content: userMessage,
@@ -1033,8 +1004,8 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       }));
     } else {
       // Queue the full message object for later delivery
-      addPendingMessage(userMsg);
-      setLoading(threadId, true);
+      setPendingMessages(prev => [...prev, userMsg]);
+      setLoading(true);
 
       // If not connected at all, trigger reconnect
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -1145,7 +1116,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                     "bg-background/80 backdrop-blur-sm border-border/50",
                     showScrollButton ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
                   )}
-                  onClick={() => scrollToBottom()}
+                  onClick={() => scrollToBottom('smooth')}
                 >
                   <ArrowDown className="h-4 w-4" />
                 </Button>

@@ -14,10 +14,14 @@ export default async function ChatPage({ params, searchParams }: PageProps) {
   const isNewThread = resolvedSearchParams?.newThread === '1';
   const session = await requireSession();
 
-  const [messages, thread] = await Promise.all([
+  const [messages, thread, previewWorkers] = await Promise.all([
     isNewThread ? Promise.resolve([]) : getThreadMessages(id),
     chatDO.getThread(id, session.org_id),
+    isNewThread ? Promise.resolve([]) : chatDO.getThreadPreview(id).catch(() => []),
   ]);
+
+  // Use first worker as the deployed app
+  const initialDeployedApp = previewWorkers[0] ?? null;
 
   return (
     <Chat
@@ -25,6 +29,8 @@ export default async function ChatPage({ params, searchParams }: PageProps) {
       orgId={session.org_id}
       initialMessages={messages}
       threadTitle={thread?.title ?? null}
+      initialDeployedApp={initialDeployedApp}
+      isNewThread={isNewThread}
     />
   );
 }
