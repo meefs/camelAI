@@ -144,7 +144,6 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [deployedApp, setDeployedApp] = useState<string | null>(null);
   const [iframeKey, setIframeKey] = useState(0);
-  const [iframeLoading, setIframeLoading] = useState(true);
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
   const previewVersionRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -622,12 +621,9 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
           previewVersionRef.current = newVersion;
 
           setDeployedApp(firstWorker);
-          if (firstWorker) {
-            setIframeLoading(true);
-            // Force iframe refresh on new deploy by changing key
-            if (isNewDeploy) {
-              setIframeKey(prev => prev + 1);
-            }
+          // Force iframe refresh on new deploy by changing key
+          if (firstWorker && isNewDeploy) {
+            setIframeKey(prev => prev + 1);
           }
         } else if (data.type === 'title_updated' && data.title) {
           // Update thread title when AI generates it
@@ -1181,13 +1177,8 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
               <div className="w-1/2 border-l border-border flex flex-col bg-background">
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border">
                   <div className="flex items-center gap-2">
-                    {iframeLoading ? (
-                      <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse" />
-                    ) : (
-                      <div className="w-2 h-2 bg-green-500 rounded-full" />
-                    )}
+                    <div className="w-2 h-2 bg-green-500 rounded-full" />
                     <span className="text-sm font-medium">{deployedApp}.chiridion.ai</span>
-                    {iframeLoading && <span className="text-xs text-muted-foreground">Loading...</span>}
                   </div>
                   <div className="flex items-center gap-1">
                     <Tooltip>
@@ -1195,10 +1186,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          onClick={() => {
-                            setIframeLoading(true);
-                            setIframeKey(prev => prev + 1);
-                          }}
+                          onClick={() => setIframeKey(prev => prev + 1)}
                         >
                           <RefreshCw className="h-4 w-4" />
                         </Button>
@@ -1228,10 +1216,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          onClick={() => {
-                            setDeployedApp(null);
-                            setIframeLoading(true);
-                          }}
+                          onClick={() => setDeployedApp(null)}
                         >
                           <X className="h-4 w-4" />
                         </Button>
@@ -1240,25 +1225,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
                     </Tooltip>
                   </div>
                 </div>
-                <div className="flex-1 relative">
-                  {iframeLoading && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-background">
-                      <div className="text-center">
-                        <div className="flex gap-1 justify-center mb-2">
-                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                          <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                        </div>
-                        <p className="text-sm text-muted-foreground">Waiting for worker to be ready...</p>
-                      </div>
-                    </div>
-                  )}
+                <div className="flex-1">
                   <iframe
                     key={iframeKey}
                     src={`https://${deployedApp}.chiridion.ai`}
                     className="w-full h-full bg-white"
                     title="Deployed App Preview"
-                    onLoad={() => setIframeLoading(false)}
                   />
                 </div>
               </div>
