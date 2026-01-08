@@ -344,11 +344,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle }: 
       fetchMessages(id);
     }
 
-    // WebSocket connects at /ws/{org} - one container per org handles all threads
+    // WebSocket connects at /ws/{org}?threadId={id} - one container per org handles all threads
+    // threadId in URL allows worker to mint per-thread deploy token for auto-preview
     const wsHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const orgIdForConnection = resolvedOrgId;
-    const wsUrl = `${protocol}//${wsHost}/ws/${orgIdForConnection}`;
+    const wsUrl = `${protocol}//${wsHost}/ws/${orgIdForConnection}?threadId=${encodeURIComponent(id)}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

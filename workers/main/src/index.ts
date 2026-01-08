@@ -31,6 +31,33 @@ interface Env extends ChatEnv, AuthEnv, OrgContainerEnv {
 }
 
 const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
+const CHIRIDION_THREAD_TOKEN_HEADER = 'X-Chiridion-Thread-Deploy-Token';
+
+// Token TTL (24 hours in seconds)
+const TOKEN_TTL_SECONDS = 86400;
+
+/**
+ * Generate a per-thread deploy token and store in KV.
+ * This token includes both orgId and threadId for auto-preview after deploys.
+ */
+async function mintPerThreadDeployToken(
+  kv: KVNamespace,
+  orgId: string,
+  threadId: string
+): Promise<string> {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const base64 = btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+  const token = `ctok_${base64}`;
+
+  const tokenData = JSON.stringify({ orgId, threadId });
+  await kv.put(`platform_script_token:${token}`, tokenData, { expirationTtl: TOKEN_TTL_SECONDS });
+
+  return token;
+}
 
 function json(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data), {
@@ -66,9 +93,11 @@ function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): b
   const dispatchScript = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
   const dispatchScriptDeployments = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/deployments$/;
   const dispatchScriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
+  const dispatchScriptScriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/script-settings$/;
   const dispatchAssetsUploadSession = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
   const dispatchScriptSecrets = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/secrets$/;
   const dispatchScriptSecretBinding = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/secrets\/[^/]+$/;
+  const dispatchScriptVersions = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/versions$/;
 
   switch (m) {
     case 'GET':
@@ -76,13 +105,16 @@ function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): b
         dispatchScriptDeployments.test(pathname) ||
         dispatchScriptSettings.test(pathname) ||
         dispatchScriptSecrets.test(pathname) ||
-        dispatchScriptSecretBinding.test(pathname);
+        dispatchScriptSecretBinding.test(pathname) ||
+        dispatchScriptVersions.test(pathname);
     case 'PUT':
       return dispatchScript.test(pathname) || dispatchScriptSecrets.test(pathname);
     case 'PATCH':
-      return dispatchScriptSettings.test(pathname);
+      return dispatchScriptSettings.test(pathname) || dispatchScriptScriptSettings.test(pathname);
     case 'POST':
-      return dispatchAssetsUploadSession.test(pathname) || ASSETS_UPLOAD.test(pathname);
+      return dispatchAssetsUploadSession.test(pathname) ||
+        dispatchScriptVersions.test(pathname) ||
+        ASSETS_UPLOAD.test(pathname);
     case 'DELETE':
       return dispatchScriptSecretBinding.test(pathname);
     default:
@@ -175,11 +207,33 @@ function deriveOrgPrefix(orgId: string): string {
   return orgId.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
-function resolveOrgContext(tokenValue: string): { orgPrefix: string; orgId: string } {
-  // Token value is the orgId; derive prefix from it
-  const orgId = tokenValue;
+interface TokenData {
+  orgId: string;
+  threadId?: string;
+}
+
+function resolveOrgContext(tokenValue: string): { orgPrefix: string; orgId: string; threadId?: string } {
+  // Token value can be either:
+  // - Legacy format: just the orgId string
+  // - New format: JSON object { orgId, threadId }
+  let orgId: string;
+  let threadId: string | undefined;
+
+  if (tokenValue.startsWith('{')) {
+    try {
+      const data = JSON.parse(tokenValue) as TokenData;
+      orgId = data.orgId;
+      threadId = data.threadId;
+    } catch {
+      // Malformed JSON - treat as orgId
+      orgId = tokenValue;
+    }
+  } else {
+    orgId = tokenValue;
+  }
+
   const orgPrefix = deriveOrgPrefix(orgId);
-  return { orgPrefix, orgId };
+  return { orgPrefix, orgId, threadId };
 }
 
 async function callCloudflareApi<T>(
@@ -377,7 +431,7 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     });
     return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
   }
-  const { orgPrefix, orgId } = resolveOrgContext(tokenValue);
+  const { orgPrefix, orgId, threadId } = resolveOrgContext(tokenValue);
 
   let pathname = url.pathname;
 
@@ -406,33 +460,22 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
       pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
     }
   }
-  // Convert regular worker script calls to WFP dispatch namespace format when configured.
-  // This allows wrangler in the container to use standard deploy commands while we route to WFP.
+  // Block regular worker script/service endpoints - users must use the globally installed wrangler
+  // which is configured to deploy to the dispatch namespace directly
   if (!dispatchMatch) {
-    const scriptsMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/scripts\/([^\/]+)(\/.*)?$/);
-    if (scriptsMatch) {
-      const rewrittenAccount = accountId ?? scriptsMatch[1]!;
-      const userScriptName = scriptsMatch[2]!;
-      const prefixedName = prefixScriptName(userScriptName);
-      const tail = scriptsMatch[3] ?? '';
-      if (dispatchNamespace) {
-        // Rewrite to WFP dispatch namespace format with prefixed name
-        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
-      } else {
-        // Just prefix the script name
-        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/scripts/${encodeURIComponent(prefixedName)}${tail}`;
-      }
-    }
+    const scriptsMatch = pathname.match(/^\/client\/v4\/accounts\/[^\/]+\/workers\/scripts\/[^\/]+/);
+    const servicesMatch = pathname.match(/^\/client\/v4\/accounts\/[^\/]+\/workers\/services\/[^\/]+/);
 
-    // Rewrite /workers/services/{name} to WFP dispatch namespace format
-    // Wrangler uses this to check if a worker exists before deploying
-    const servicesMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/services\/([^\/]+)(\/.*)?$/);
-    if (servicesMatch && dispatchNamespace) {
-      const rewrittenAccount = accountId ?? servicesMatch[1]!;
-      const userScriptName = servicesMatch[2]!;
-      const prefixedName = prefixScriptName(userScriptName);
-      const tail = servicesMatch[3] ?? '';
-      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
+    if (scriptsMatch || servicesMatch) {
+      console.warn('[cf-api-proxy] blocked non-dispatch worker endpoint', {
+        method: request.method,
+        path: pathname,
+      });
+      return cfApiError(
+        10000,
+        'Direct worker deployments are not supported. Please use the globally installed wrangler binary (just run "wrangler deploy" without npx or local installation).',
+        403
+      );
     }
   }
 
@@ -533,6 +576,8 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
       const account = decodeURIComponent(scriptMatch[1]!);
       const dispatchNs = decodeURIComponent(scriptMatch[2]!);
       const scriptName = decodeURIComponent(scriptMatch[3]!);
+
+      // Sync integration secrets to deployed worker
       ctx.waitUntil(
         syncDispatchScriptSecrets(env, orgId, account, dispatchNs, scriptName, upstreamApiToken)
           .catch(err => {
@@ -545,6 +590,34 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
             });
           })
       );
+
+      // Auto-set preview if threadId is in the deploy token
+      if (threadId) {
+        ctx.waitUntil(
+          (async () => {
+            try {
+              const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+              await threadStub.fetch(new Request('http://internal/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workers: [scriptName] }),
+              }));
+              console.log('[cf-api-proxy] auto-set preview', {
+                threadId,
+                scriptName,
+                orgId,
+              });
+            } catch (err) {
+              console.error('[cf-api-proxy] failed to auto-set preview', {
+                threadId,
+                scriptName,
+                orgId,
+                error: String(err),
+              });
+            }
+          })()
+        );
+      }
     }
   }
 
@@ -636,17 +709,42 @@ export default {
         return new Response('No organization selected', { status: 400 });
       }
 
+      // Extract threadId from query param for per-thread deploy token
+      const threadIdFromUrl = url.searchParams.get('threadId');
+
       console.log('[ws] Authenticated, forwarding to container', {
         sessionId,
         org,
         userId: session.user_id,
+        threadId: threadIdFromUrl,
       });
 
+      // Mint per-thread deploy token if threadId provided
+      // This token stores {orgId, threadId} so the proxy can auto-set preview after deploys
+      let modifiedRequest = request;
+      if (threadIdFromUrl) {
+        const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
+        const threadToken = await mintPerThreadDeployToken(tokenKv, org, threadIdFromUrl);
+        console.log('[ws] Minted per-thread deploy token', {
+          threadId: threadIdFromUrl,
+          tokenPrefix: threadToken.slice(0, 12),
+        });
+
+        // Create new request with deploy token header
+        const headers = new Headers(request.headers);
+        headers.set(CHIRIDION_THREAD_TOKEN_HEADER, threadToken);
+        modifiedRequest = new Request(request.url, {
+          method: request.method,
+          headers,
+          body: request.body,
+        });
+      }
+
       // Handle WebSocket upgrade with container management
-      return handleWebSocketUpgrade(request, env, org);
+      return handleWebSocketUpgrade(modifiedRequest, env, org);
     }
 
-    // Handle preview API with deploy token auth (called from container wrangler wrapper)
+    // Handle preview API with deploy token auth (legacy endpoint for manual preview setting)
     const previewMatch = url.pathname.match(/^\/api\/threads\/([^\/]+)\/preview$/);
     if (previewMatch && request.method === 'POST') {
       const threadId = previewMatch[1];

@@ -106,36 +106,6 @@ const WS_SERVER_PORT = 8080;
 const CONTROL_PLANE_PORT = 9000;
 
 /**
- * Generate a secure token for container API access.
- */
-function generateContainerToken(): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  const base64 = btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
-  return `ctok_${base64}`;
-}
-
-// TTL for deploy tokens (24 hours in seconds)
-const TOKEN_TTL_SECONDS = 86400;
-
-/**
- * Create a deploy token for an org's container.
- * Always generates a fresh token with TTL - no reuse of existing tokens.
- * Stores token → orgId mapping; prefix is derived at deploy time.
- */
-async function createContainerToken(
-  kv: KVNamespace,
-  orgId: string
-): Promise<string> {
-  const token = generateContainerToken();
-  await kv.put(`platform_script_token:${token}`, orgId, { expirationTtl: TOKEN_TTL_SECONDS });
-  return token;
-}
-
-/**
  * OrgContainer - One container per organization.
  * Extends Container to handle WebSocket proxying and control plane operations.
  */
@@ -220,12 +190,12 @@ export class OrgContainer extends Container<OrgContainerEnv> {
     envVars.CI = '1';
 
     // Cloudflare API proxy config
+    // Note: CLOUDFLARE_API_TOKEN is now set per-thread by ws-server using the token
+    // passed via X-Chiridion-Thread-Deploy-Token header during WebSocket upgrade.
+    // This enables auto-preview after deploys since the token includes threadId.
     if (this.env.WORKER_BASE_URL) {
       envVars.WORKER_BASE_URL = this.env.WORKER_BASE_URL;
       envVars.CLOUDFLARE_API_BASE_URL = `${this.env.WORKER_BASE_URL}/client/v4`;
-
-      const containerToken = await createContainerToken(this.env.EMAIL_TO_USER, orgId);
-      envVars.CLOUDFLARE_API_TOKEN = containerToken;
     }
 
     // Fetch integration credentials and pass as ENV vars

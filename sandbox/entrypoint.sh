@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-07-v1
+# Version: 2026-01-07-v2
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -75,11 +75,6 @@ if has_r2_config; then
     echo "[entrypoint] R2 snapshot already downloaded (marker exists)." >&2
   fi
 
-  # Seed starter project if workspace is empty
-  if [ ! -f "$TARGET_DIR/package.json" ] && [ -z "$(ls -A "$TARGET_DIR" 2>/dev/null || true)" ]; then
-    echo "[entrypoint] Seeding starter worker project..." >&2
-    cp -a /app/starter-worker/. "$TARGET_DIR/"
-  fi
 else
   echo "[entrypoint] No R2 credentials, running without sync." >&2
 fi

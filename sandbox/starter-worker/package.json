@@ -1,8 +1,0 @@
-{
-  "name": "chiridion-starter-worker",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "deploy": "wrangler deploy"
-  }
-}
