@@ -47,13 +47,13 @@ export function OrgDangerZone({
   )
 
   return (
-    <div className="space-y-8 max-w-2xl">
-      <div className="space-y-4">
+    <div className="space-y-8">
+      <div className="space-y-4 max-w-2xl">
         <div>
-          <h3 className="text-base font-medium">Transfer ownership</h3>
+          <h3 className="text-base font-medium text-destructive">Transfer ownership</h3>
           <p className="text-sm text-muted-foreground">
             Transfer this organization to another member. You will become an
-            admin.
+            admin. This action is irreversible. 
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-4">
@@ -90,9 +90,9 @@ export function OrgDangerZone({
 
       <Separator />
 
-      <div className="space-y-4">
+      <div className="space-y-4 max-w-2xl">
         <div>
-          <h3 className="text-base font-medium">Delete organization</h3>
+          <h3 className="text-base font-medium text-destructive">Delete organization</h3>
           <p className="text-sm text-muted-foreground">
             Permanently delete this organization and all its workspaces. This
             cannot be undone.

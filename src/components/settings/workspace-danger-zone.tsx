@@ -46,7 +46,7 @@ export function WorkspaceDangerZone({
   return (
     <div className="max-w-2xl space-y-4">
       <div>
-        <h3 className="text-base font-medium">Archive workspace</h3>
+        <h3 className="text-base font-medium text-destructive">Archive workspace</h3>
         <p className="text-sm text-muted-foreground">
           Archive this workspace. It will be hidden but data will be preserved.
         </p>

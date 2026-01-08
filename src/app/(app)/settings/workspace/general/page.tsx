@@ -52,12 +52,6 @@ export default async function WorkspaceGeneralPage() {
 
       <Separator className="my-8" />
       <div className="space-y-4">
-        <div>
-          <h2 className="text-lg font-semibold text-destructive">Danger Zone</h2>
-          <p className="text-sm text-muted-foreground">
-            Irreversible actions for this workspace.
-          </p>
-        </div>
         <WorkspaceDangerZone
           workspaceId={currentWorkspace.id}
           workspaceName={currentWorkspace.name}

@@ -88,7 +88,7 @@ export function WorkspaceGeneralForm({
   }
 
   return (
-    <div className="space-y-8 max-w-2xl">
+    <div className="space-y-8">
       <div className="flex items-center gap-4">
         <Avatar className="h-16 w-16">
           <AvatarFallback
@@ -108,7 +108,7 @@ export function WorkspaceGeneralForm({
       </div>
 
       <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 max-w-2xl">
           <FormField
             control={form.control}
             name="name"

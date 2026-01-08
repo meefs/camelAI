@@ -78,7 +78,7 @@ export function TransferOwnershipDialog({
           <DialogHeader>
             <DialogTitle>Transfer Ownership</DialogTitle>
             <DialogDescription>
-              Select a new owner for {orgName}. The current owner will be downgraded to admin.
+              Select a new owner for {orgName}. The current owner will be downgraded to admin. This action is irreversible. 
             </DialogDescription>
           </DialogHeader>
           {error ? (
