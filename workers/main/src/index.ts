@@ -203,16 +203,12 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
   return { files, wranglerConfigs, formParts };
 }
 
-function deriveOrgPrefix(orgId: string): string {
-  return orgId.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
 interface TokenData {
   orgId: string;
   threadId?: string;
 }
 
-function resolveOrgContext(tokenValue: string): { orgPrefix: string; orgId: string; threadId?: string } {
+function resolveOrgContext(tokenValue: string): { orgId: string; threadId?: string } {
   // Token value can be either:
   // - Legacy format: just the orgId string
   // - New format: JSON object { orgId, threadId }
@@ -232,8 +228,7 @@ function resolveOrgContext(tokenValue: string): { orgPrefix: string; orgId: stri
     orgId = tokenValue;
   }
 
-  const orgPrefix = deriveOrgPrefix(orgId);
-  return { orgPrefix, orgId, threadId };
+  return { orgId, threadId };
 }
 
 async function callCloudflareApi<T>(
@@ -379,7 +374,7 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
   // Asset uploads use Cloudflare-issued JWTs from assets-upload-session.
   // Skip our deploy token validation and pass through - Cloudflare validates the JWT.
   // Security: JWTs can only be obtained via assets-upload-session (which requires deploy token auth)
-  // and are tied to the org-prefixed script name.
+  // and are tied to the script name.
   if (ASSETS_UPLOAD.test(url.pathname) && request.method.toUpperCase() === 'POST') {
     let pathname = url.pathname;
     // Rewrite account ID if configured
@@ -419,8 +414,8 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     return cfApiError(10001, 'Authentication error: Missing deploy token', 401);
   }
 
-  // Token -> org prefix mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
-  // to EMAIL_TO_USER for the proof-of-concept (prefix-isolated).
+  // Token -> org mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
+  // to EMAIL_TO_USER for the proof-of-concept.
   const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
   const tokenValue = await tokenKv.get(`platform_script_token:${proxyToken}`);
   if (!tokenValue) {
@@ -431,15 +426,9 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     });
     return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
   }
-  const { orgPrefix, orgId, threadId } = resolveOrgContext(tokenValue);
+  const { orgId, threadId } = resolveOrgContext(tokenValue);
 
   let pathname = url.pathname;
-
-  // Helper to prefix script name with org ID (e.g., "my-worker" -> "abc123-my-worker")
-  const prefixScriptName = (name: string) => {
-    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-    return `${orgPrefix}-${safeName}`.slice(0, 63);
-  };
 
   // Rewrite WFP dispatch namespace (and optionally account id) on the fly.
   // /client/v4/accounts/:account_id/workers/dispatch/namespaces/:dispatch_namespace/...
@@ -449,16 +438,6 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     const rewrittenAccount = accountId ?? dispatchMatch[1]!;
     const rewrittenNs = dispatchNamespace ?? dispatchMatch[2]!;
     pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/${rest}`;
-
-    // Prefix the script name with org ID
-    const restUrl = `/${rest}`;
-    const scriptsMatch = restUrl.match(/^\/scripts\/([^\/]+)(\/.*)?$/);
-    if (scriptsMatch) {
-      const userScriptName = scriptsMatch[1]!;
-      const prefixedName = prefixScriptName(userScriptName);
-      const tail = scriptsMatch[2] ?? '';
-      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
-    }
   }
   // Block regular worker script/service endpoints - users must use the globally installed wrangler
   // which is configured to deploy to the dispatch namespace directly

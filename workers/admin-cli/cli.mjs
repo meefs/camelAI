@@ -62,12 +62,6 @@ async function listDispatchScripts(token) {
 	return data.result || [];
 }
 
-// Filter workers by org ID
-function filterWorkersByOrg(scripts, orgId) {
-	const orgPrefix = orgId.substring(0, 32);
-	return scripts.filter(s => s.id.startsWith(orgPrefix + '-'));
-}
-
 // Handle workers endpoint directly (no wrangler needed)
 async function handleWorkersDirectly(endpoint) {
 	const token = getWranglerToken();
@@ -77,19 +71,16 @@ async function handleWorkersDirectly(endpoint) {
 	const orgMatch = endpoint.match(/^workers\/(.+)$/);
 	if (orgMatch) {
 		const orgId = orgMatch[1];
-		const orgPrefix = orgId.substring(0, 32);
-		const orgWorkers = filterWorkersByOrg(allScripts, orgId);
-
 		return {
 			org_id: orgId,
-			org_prefix: orgPrefix,
-			workers: orgWorkers.map(s => ({
-				script_name: s.id.replace(orgPrefix + '-', ''),
+			warning: 'Org-scoped listing is unavailable because script names are no longer org-prefixed.',
+			workers: allScripts.map(s => ({
+				script_name: s.id,
 				full_id: s.id,
 				created_on: s.created_on,
 				modified_on: s.modified_on
 			})),
-			total: orgWorkers.length
+			total: allScripts.length
 		};
 	}
 
@@ -145,13 +136,13 @@ Examples:
   admin dev-illiana orgs '.orgs[] | {org_id: .id, name: .name}'
   admin dev-illiana r2/backup/{orgId}
   admin staging r2/list '?prefix=abc123'
-  admin dev-illiana workers/{orgId}
+  admin dev-illiana workers
   admin dev-illiana container/{orgId}/ls
   admin dev-illiana container/{orgId}/read/path/to/file
   admin dev-illiana 'container/{orgId}/ls?recursive=true'
 
 Environments: ${ENVIRONMENTS.join(', ')}
-Endpoints: ${ENDPOINTS.join(', ')}, r2/info/{key}, r2/backup/{orgId}, workers/{orgId}, container/{orgId}/*
+Endpoints: ${ENDPOINTS.join(', ')}, r2/info/{key}, r2/backup/{orgId}, workers/{orgId} (deprecated), container/{orgId}/*
 `);
 	process.exit(1);
 }

@@ -11,16 +11,38 @@ This skill guides deployment of production software to Cloudflare's edge network
 ## Core Principles
 
 1. **Always use the globally installed `wrangler` binary** - Do not install wrangler locally
-2. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
-3. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
-4. **Use Next.js for fullstack web apps** - Combine with OpenNext for Cloudflare deployment
-5. **Use shadcn/ui for frontend components** - The CLI is available via `npx shadcn@latest add <component>`
+2. **Use `create-worker` to scaffold projects** - Do not use `wrangler init` or `npm create cloudflare`
+3. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
+4. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
+5. **Use Next.js for fullstack web apps** - Combine with OpenNext for Cloudflare deployment
+6. **Use shadcn/ui for frontend components** - The CLI is available via `npx shadcn@latest add <component>`
 
-## What You Can Build
+## Creating New Projects
 
-- **APIs** - RESTful or GraphQL endpoints running on Workers
-- **Simple web apps** - Static sites with dynamic Worker functions
-- **Fullstack web apps** - Next.js applications with server-side rendering and API routes
+Use the `create-worker` command to scaffold new projects. Do NOT use `wrangler init` or `npm create cloudflare`.
+
+```bash
+# Create a fullstack Next.js app
+create-worker nextjs-fullstack my-app
+
+# Create with authentication boilerplate
+create-worker nextjs-fullstack my-app --auth
+
+# See available templates
+create-worker --help
+```
+
+### Available Templates
+
+| Template | Description |
+|----------|-------------|
+| `nextjs-fullstack` | Next.js 15 app with App Router, API routes, Tailwind CSS, and OpenNext for Cloudflare |
+
+### Template Options
+
+| Option | Description |
+|--------|-------------|
+| `--auth` | Add session-based authentication with login page and auth API routes |
 
 ## Deployment Commands
 
@@ -261,25 +283,40 @@ for (const socket of roomSockets) {
 
 ## Fullstack Apps with Next.js
 
-For fullstack applications, use Next.js with OpenNext for Cloudflare:
+For fullstack applications, use the `create-worker` command:
 
 ```bash
-# Create Next.js app
-npx create-next-app@latest my-app
+# Create Next.js app with OpenNext pre-configured
+create-worker nextjs-fullstack my-app
 
-# Add OpenNext for Cloudflare
-npm install @opennextjs/cloudflare
+# Or with authentication
+create-worker nextjs-fullstack my-app --auth
+
+cd my-app
+npm install
 
 # Add shadcn/ui components
 npx shadcn@latest init
 npx shadcn@latest add button card form input
+
+# Deploy
+wrangler deploy
 ```
+
+The template includes:
+- Next.js 15 with App Router
+- OpenNext for Cloudflare deployment
+- Tailwind CSS v4
+- TypeScript
+- Example API route at `/api/hello`
 
 ### Wrangler Configuration for Next.js
 
+The template creates this `wrangler.jsonc`:
+
 ```jsonc
 {
-  "name": "my-nextjs-app",
+  "name": "my-app",
   "main": ".open-next/worker.js",
   "compatibility_date": "2024-09-23",
   "compatibility_flags": ["nodejs_compat"],

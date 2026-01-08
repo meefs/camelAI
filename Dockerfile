@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-07-v2
+# Version: 2026-01-08-v1
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -39,6 +39,9 @@ RUN chmod -R a+rX /app
 
 # Layer 5: Wrangler wrapper (intercepts deploy to add --dispatch-namespace)
 COPY --chmod=755 sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
+
+# Layer 6: create-worker CLI (scaffolds projects from templates)
+RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker
 
 WORKDIR /home/claude
 ENTRYPOINT ["/app/entrypoint.sh"]

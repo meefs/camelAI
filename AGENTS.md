@@ -236,7 +236,7 @@ npm run admin -- prod users '.users[] | {name, email}'
 npm run admin -- dev-illiana orgs '.orgs[] | {org_id: .id, name: .name}'
 npm run admin -- dev-illiana threads
 npm run admin -- workers                    # Fast - no wrangler startup
-npm run admin -- workers/{orgId}            # List workers for specific org
+npm run admin -- workers                    # List all workers in dispatch namespace
 
 # Interactive mode (keeps server running for multiple queries)
 npm run admin:dev-illiana  # Then curl http://localhost:8788/overview
@@ -262,7 +262,7 @@ npm run admin:prod
 | `/r2/info/{key}` | Direct R2 access | Get R2 object metadata |
 | `/r2/backup/{orgId}` | Direct R2 access | Get backup info for an org |
 | `/workers` | Direct API (no wrangler) | List all user workers in dispatch namespace |
-| `/workers/{orgId}` | Direct API (no wrangler) | List workers for a specific org |
+| `/workers/{orgId}` | Direct API (no wrangler) | Deprecated: script names are no longer org-prefixed; use `/workers` |
 | `/container/{orgId}/ls` | RPC → Container | List workspace files (optional `?path=`, `?recursive=true`) |
 | `/container/{orgId}/read/{path}` | RPC → Container | Read a file from container workspace |
 | `/container/{orgId}/write` | RPC → Container | Write a file (POST: `{path, content}`) |
