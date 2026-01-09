@@ -95,6 +95,23 @@ describe('Workspace DO (full-stack with DOs)', () => {
       expect(result.error).toBe('Cannot archive the only workspace in an organization');
     });
 
+    it('keeps archived workspace entries archived after metadata updates', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Archive Owner');
+      const org = await rpc.createOrg('Archive Metadata Org', userId);
+
+      const archivedWorkspace = await rpc.createWorkspace(org.id, 'Archive Me', userId);
+      const activeWorkspace = await rpc.createWorkspace(org.id, 'Active', userId);
+
+      await rpc.archiveWorkspace(archivedWorkspace.id, userId);
+      await rpc.updateWorkspace(archivedWorkspace.id, { name: 'Renamed Archived' }, userId);
+
+      const result = await rpc.tryArchiveWorkspace(activeWorkspace.id, userId);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('Cannot archive the only workspace in an organization');
+    });
+
     it('repairs session workspace when the current workspace is archived', async () => {
       const email = testEmail();
       const { userId } = await rpc.createUser(email, 'password123', 'Session Owner');

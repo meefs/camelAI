@@ -965,7 +965,7 @@ export class OrgDO extends DurableObject<AuthEnv> {
 
   async addWorkspace(workspaceId: string, name: string, createdAt: number, actorId: string): Promise<void> {
     this.sql.exec(
-      'INSERT OR REPLACE INTO workspaces (id, name, created_at, archived) VALUES (?, ?, ?, 0)',
+      'INSERT INTO workspaces (id, name, created_at, archived) VALUES (?, ?, ?, 0) ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at',
       workspaceId,
       name,
       createdAt
