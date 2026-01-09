@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
+import { requireSuperuser } from '@/lib/server-guards';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
 import { AdminSearch } from '@/components/admin/admin-search';
@@ -28,6 +29,8 @@ interface Props {
 }
 
 export default async function AdminThreadsPage({ searchParams }: Props) {
+  await requireSuperuser();
+
   const params = await searchParams;
   const offset = parseInt(params.offset || '0', 10);
   const search = typeof params.search === 'string' ? params.search.trim() : '';

@@ -1,0 +1,27 @@
+{
+  "name": "{{PROJECT_NAME}}",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "build:cf": "opennextjs-cloudflare build",
+    "start": "next start",
+    "deploy": "npm run build:cf && deploy-worker",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@opennextjs/cloudflare": "^1.14.4",
+    "next": "15.5.9",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

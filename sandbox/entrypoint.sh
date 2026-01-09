@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-05-v1
+# Version: 2026-01-07-v2
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -68,18 +68,14 @@ if has_r2_config; then
       touch "$FIRST_RUN_MARKER"
       echo "[entrypoint] R2 download complete." >&2
     else
-      echo "[entrypoint] R2 download failed, continuing with empty workspace." >&2
-      touch "$FIRST_RUN_MARKER"
+      echo "[entrypoint] FATAL: R2 sync failed! Container cannot start without workspace data." >&2
+      echo "[entrypoint] Note: 404 (no backup yet) is handled gracefully - this is a real error." >&2
+      exit 1
     fi
   else
     echo "[entrypoint] R2 snapshot already downloaded (marker exists)." >&2
   fi
 
-  # Seed starter project if workspace is empty
-  if [ ! -f "$TARGET_DIR/package.json" ] && [ -z "$(ls -A "$TARGET_DIR" 2>/dev/null || true)" ]; then
-    echo "[entrypoint] Seeding starter worker project..." >&2
-    cp -a /app/starter-worker/. "$TARGET_DIR/"
-  fi
 else
   echo "[entrypoint] No R2 credentials, running without sync." >&2
 fi

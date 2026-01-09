@@ -52,11 +52,15 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     }
   );
 
+  const safeSetState = useCallback((newState: AuthState | ((prev: AuthState) => AuthState)) => {
+    setState(newState);
+  }, []);
+
   const refreshAuth = useCallback(async () => {
     try {
       const data = await getAuthState();
       if (data) {
-        setState({
+        safeSetState({
           user: data.user,
           currentOrg: data.currentOrg,
           currentWorkspace: data.currentWorkspace ?? null,
@@ -66,7 +70,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
           error: null,
         });
       } else {
-        setState({
+        safeSetState({
           user: null,
           currentOrg: null,
           currentWorkspace: null,
@@ -77,7 +81,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
         });
       }
     } catch (e) {
-      setState({
+      safeSetState({
         user: null,
         currentOrg: null,
         currentWorkspace: null,
@@ -87,7 +91,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
         error: String(e),
       });
     }
-  }, []);
+  }, [safeSetState]);
 
   useEffect(() => {
     if (!initialState) {
@@ -98,83 +102,84 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
   const login = async (email: string, password: string) => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
-    try {
-      const data = await loginAction(email, password);
+    const result = await loginAction(email, password);
 
-      setState({
-        user: data.user,
-        currentOrg: data.currentOrg,
-        currentWorkspace: data.currentWorkspace ?? null,
-        orgs: data.orgs,
-        workspaces: data.workspaces ?? [],
-        loading: false,
-        error: null,
-      });
-    } catch (e) {
+    if (!result.success) {
       setState((prev) => ({
         ...prev,
         loading: false,
-        error: e instanceof Error ? e.message : 'Login failed',
+        error: result.error,
       }));
-      throw e;
+      throw new Error(result.error);
     }
+
+    setState({
+      user: result.data.user,
+      currentOrg: result.data.currentOrg,
+      currentWorkspace: result.data.currentWorkspace ?? null,
+      orgs: result.data.orgs,
+      workspaces: result.data.workspaces ?? [],
+      loading: false,
+      error: null,
+    });
   };
 
   const signup = async (email: string, password: string, name?: string) => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
-    try {
-      const data = await signupAction(email, password, name);
+    const result = await signupAction(email, password, name);
 
-      setState({
-        user: data.user,
-        currentOrg: data.currentOrg,
-        currentWorkspace: data.currentWorkspace ?? null,
-        orgs: data.orgs,
-        workspaces: data.workspaces ?? [],
-        loading: false,
-        error: null,
-      });
-    } catch (e) {
+    if (!result.success) {
       setState((prev) => ({
         ...prev,
         loading: false,
-        error: e instanceof Error ? e.message : 'Signup failed',
+        error: result.error,
       }));
-      throw e;
+      throw new Error(result.error);
     }
+
+    setState({
+      user: result.data.user,
+      currentOrg: result.data.currentOrg,
+      currentWorkspace: result.data.currentWorkspace ?? null,
+      orgs: result.data.orgs,
+      workspaces: result.data.workspaces ?? [],
+      loading: false,
+      error: null,
+    });
   };
 
   const logout = async () => {
-    try {
-      await logoutAction();
-    } finally {
-      setState({
-        user: null,
-        currentOrg: null,
-        currentWorkspace: null,
-        orgs: [],
-        workspaces: [],
-        loading: false,
-        error: null,
-      });
-    }
+    const result = await logoutAction();
+
+    // Always clear local state, even if server logout failed
+    setState({
+      user: null,
+      currentOrg: null,
+      currentWorkspace: null,
+      orgs: [],
+      workspaces: [],
+      loading: false,
+      error: result.success ? null : result.error,
+    });
   };
 
   const switchOrg = async (orgId: string) => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
-    try {
-      await switchOrgAction(orgId);
-      await refreshAuth();
-    } catch (e) {
+    const result = await switchOrgAction(orgId);
+
+    if (!result.success) {
       setState((prev) => ({
         ...prev,
         loading: false,
-        error: e instanceof Error ? e.message : 'Failed to switch organization',
+        error: result.error,
       }));
-      throw e;
+      throw new Error(result.error);
     }
+
+    // After switching org, refresh to get new workspace state
+    await refreshAuth();
   };
 
   const switchWorkspace = async (workspaceId: string) => {

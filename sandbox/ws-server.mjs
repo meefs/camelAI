@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-01-sandbox-v7';
+const VERSION = '2026-01-07-sandbox-v8';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -52,9 +52,10 @@ async function writeTrace(threadId, entry) {
   }
 }
 
-function createSession(threadId) {
+function createSession(threadId, threadDeployToken = null) {
   const session = {
     threadId,
+    threadDeployToken, // Per-thread token for auto-preview after deploys
     activeQuery: null,
     queryIterator: null,
     eventLoopRunning: false,
@@ -68,14 +69,19 @@ function createSession(threadId) {
   return session;
 }
 
-function getOrCreateSession(threadId) {
+function getOrCreateSession(threadId, threadDeployToken = null) {
   if (!threadId) {
     threadId = crypto.randomUUID();
   }
   if (sessions.has(threadId)) {
-    return sessions.get(threadId);
+    const session = sessions.get(threadId);
+    // Update token if provided (new connection for existing session)
+    if (threadDeployToken && !session.threadDeployToken) {
+      session.threadDeployToken = threadDeployToken;
+    }
+    return session;
   }
-  return createSession(threadId);
+  return createSession(threadId, threadDeployToken);
 }
 
 // Log for DO persistence (NDJSON format)
@@ -140,20 +146,53 @@ function sessionFileExists(sessionId) {
 
 // Query options for Claude SDK
 function getQueryOptions(session) {
+  // Build env vars, using per-thread deploy token if available
+  // This replaces the container's org-level token with a thread-specific one
+  // that includes threadId for auto-preview after deploys
+  const envVars = {
+    ...process.env,
+    THREAD_ID: session.threadId || '',
+  };
+
+  // Use per-thread deploy token if available (preferred for auto-preview)
+  // Falls back to container's org-level token if not available
+  if (session.threadDeployToken) {
+    envVars.CLOUDFLARE_API_TOKEN = session.threadDeployToken;
+  }
+
   const options = {
     model: 'opus',
     fallbackModel: 'sonnet',
     includePartialMessages: true,
     permissionMode: 'bypassPermissions',
     allowUnsandboxedCommands: true,
-    systemPrompt: { type: 'preset', preset: 'claude_code' },
-    settingSources: ['project', 'user'],
-    // Pass thread ID to subprocess env (used by wrangler wrapper for auto-preview)
-    // WORKER_BASE_URL is already in process.env from container startup
-    env: {
-      ...process.env,
-      THREAD_ID: session.threadId || '',
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: `
+## About This Environment
+
+You are running inside **Chiridion**, a web application that brings Claude Code to the browser. Users interact through a chat interface - they cannot see your terminal, localhost servers, or file system directly.
+
+**Important constraints:**
+- **localhost is not accessible** - Users cannot open localhost URLs. If you need to show something, deploy it or output the content directly.
+- **Don't assume technical ability** - Users may not be developers. Explain what you're doing in plain language. Avoid jargon unless the user demonstrates familiarity.
+- **Show results, not processes** - Instead of saying "run npm start and open localhost:3000", deploy the app or show the output directly.
+
+## Cloudflare Deployment
+
+When deploying software to the internet or for the user to access:
+
+1. **Always use the globally installed \`wrangler\` CLI** - Do not install wrangler locally via npm
+2. **Build as Cloudflare Workers** - All deployable software should be written as Workers
+3. **Use Durable Objects with SQLite** - For persistence, use SQLite-backed Durable Objects (not KV)
+4. **Use \`wrangler deploy\`** - Deploy with the global wrangler binary
+
+The infrastructure is already configured for Worker deployments. For fullstack apps, use Next.js with OpenNext for Cloudflare.
+`.trim(),
     },
+    settingSources: ['project', 'user'],
+    env: envVars,
   };
 
   if (session.threadId) {
@@ -379,7 +418,13 @@ Bun.serve({
 
     // WebSocket upgrade
     if (req.headers.get('upgrade') === 'websocket') {
-      const success = server.upgrade(req);
+      // Extract per-thread deploy token from header (minted by worker during upgrade)
+      // This token stores {orgId, threadId} for auto-preview after deploys
+      const threadDeployToken = req.headers.get('x-chiridion-thread-deploy-token');
+
+      const success = server.upgrade(req, {
+        data: { threadDeployToken },
+      });
       if (success) {
         return undefined; // Bun handles the upgrade
       }
@@ -405,8 +450,11 @@ Bun.serve({
             return;
           }
 
-          const session = getOrCreateSession(threadId);
-          void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId } });
+          // Get per-thread deploy token from WebSocket upgrade (set by worker)
+          const threadDeployToken = ws.data?.threadDeployToken || null;
+
+          const session = getOrCreateSession(threadId, threadDeployToken);
+          void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken } });
           attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {

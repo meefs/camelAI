@@ -1,6 +1,6 @@
 'use client';
 
-import { ArrowUp, Square } from 'lucide-react';
+import { ArrowUp, Square, Loader2 } from 'lucide-react';
 import {
   InputGroup,
   InputGroupAddon,
@@ -87,7 +87,13 @@ export function PromptInput({
             onClick={handleButtonClick}
             className="rounded-full"
           >
-            {showStopButton ? <Square className="size-3" /> : <ArrowUp className="size-4" />}
+            {isLoading ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : showStopButton ? (
+              <Square className="size-3" />
+            ) : (
+              <ArrowUp className="size-4" />
+            )}
           </InputGroupButton>
         </InputGroupAddon>
       </InputGroup>

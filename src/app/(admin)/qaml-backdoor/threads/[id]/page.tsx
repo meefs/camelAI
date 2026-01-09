@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
+import { requireSuperuser } from '@/lib/server-guards';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { ThreadEditForm } from '@/components/admin/thread-edit-form';
 import { Badge } from '@/components/ui/badge';
@@ -31,6 +32,8 @@ interface Props {
 }
 
 export default async function AdminThreadDetailPage({ params }: Props) {
+  await requireSuperuser();
+
   const { id } = await params;
 
   const result = await authDO.adminGetThreadWithMessages(id);

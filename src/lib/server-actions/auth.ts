@@ -19,6 +19,15 @@ type AuthPayload = {
   workspaces: WorkspaceWithAccess[];
 };
 
+// Result type for server actions - allows returning errors without throwing
+// Best practice: return errors for expected cases, only throw for truly unexpected errors
+export type ActionResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: string };
+
+// Generic error message for unexpected errors (don't leak internal details)
+const UNEXPECTED_ERROR = "An unexpected error occurred. Please try again.";
+
 function toSafeUser(user: User | UserProfile): User {
   if ("avatar" in user) {
     return {
@@ -81,159 +90,174 @@ function toSafeWorkspace(workspace: WorkspaceWithAccess): WorkspaceWithAccess {
   };
 }
 
-export async function login(email: string, password: string): Promise<AuthPayload> {
-  if (!email || !password) {
-    throw new Error("Email and password are required");
-  }
-  if (!isValidEmail(email)) {
-    throw new Error("Invalid email address");
-  }
+export async function login(
+  email: string,
+  password: string
+): Promise<ActionResult<AuthPayload>> {
+  try {
+    // Input validation
+    if (!email || !password) {
+      return { success: false, error: "Email and password are required" };
+    }
+    if (!isValidEmail(email)) {
+      return { success: false, error: "Invalid email address" };
+    }
 
-  const userResult = await authDO.getUserByEmail(email);
-  if (!userResult) {
-    throw new Error("Invalid email or password");
-  }
+    // Check user exists
+    const userResult = await authDO.getUserByEmail(email);
+    if (!userResult) {
+      return { success: false, error: "Invalid email or password" };
+    }
 
-  const { userId, user } = userResult;
-  const isValid = await authDO.verifyUserPassword(userId, password);
-  if (!isValid) {
-    throw new Error("Invalid email or password");
-  }
+    // Verify password
+    const { userId, user } = userResult;
+    const isValid = await authDO.verifyUserPassword(userId, password);
+    if (!isValid) {
+      return { success: false, error: "Invalid email or password" };
+    }
 
-  let orgs = await authDO.getUserOrgs(userId);
-  const orphanResult = await authDO.handleOrphanedUserLogin(userId);
-
-  let currentOrg: Organization;
-  let orgWorkspaces: WorkspaceWithAccess[];
-  let currentWorkspace: WorkspaceWithAccess | null;
-
-  if (orphanResult) {
-    orgs = await authDO.getUserOrgs(userId);
-    currentOrg = orphanResult.org;
-    orgWorkspaces = await authDO.listUserWorkspaces(userId, currentOrg.id);
-    currentWorkspace =
-      orgWorkspaces.find((workspace) => workspace.id === orphanResult.workspace.id) ||
-      orphanResult.workspace;
-  } else {
+    // Get or create org
+    const orgs = await authDO.getUserOrgs(userId);
     if (orgs.length === 0) {
-      const orgName = `${user.name || 'My'}'s Organization`;
-      await authDO.createOrg(orgName, userId);
-      orgs = await authDO.getUserOrgs(userId);
+      const org = await authDO.createOrg(
+        `${user.name || email.split("@")[0]}'s Workspace`,
+        userId
+      );
+      orgs.push({
+        org_id: org.id,
+        org_name: org.name,
+        role: "admin",
+        joined_at: org.created_at,
+      });
     }
 
     const currentOrgId = orgs[0].org_id;
-    const currentMembership = orgs.find((entry) => entry.org_id === currentOrgId);
-    const org = await authDO.getOrg(currentOrgId);
-    if (!org) {
-      throw new Error("Failed to load organization");
+    const currentOrg = await authDO.getOrg(currentOrgId);
+    if (!currentOrg) {
+      return { success: false, error: "Failed to load organization" };
     }
-    currentOrg = org;
-    orgWorkspaces = await authDO.listUserWorkspaces(userId, currentOrgId);
-    const preferredWorkspaceId = currentMembership?.last_workspace_id ?? null;
-    currentWorkspace =
-      orgWorkspaces.find((workspace) => workspace.id === preferredWorkspaceId) ||
-      orgWorkspaces[0] ||
-      null;
+
+    // Create session
+    const { sessionId } = await authDO.createSession(userId, currentOrgId);
+    await setSessionCookie(sessionId);
+
+    return {
+      success: true,
+      data: {
+        user: toSafeUser(user),
+        currentOrg: toSafeOrg(currentOrg),
+        currentWorkspace: null,
+        orgs: orgs.map(toSafeOrgMembership),
+        workspaces: [],
+      },
+    };
+  } catch (error) {
+    // Log unexpected errors for debugging (will appear in instrumentation)
+    console.error("[login] Unexpected error:", error);
+    return { success: false, error: UNEXPECTED_ERROR };
   }
-
-  const { sessionId } = await authDO.createSession(
-    userId,
-    currentOrg.id,
-    currentWorkspace?.id ?? null
-  );
-  await setSessionCookie(sessionId);
-
-  const allWorkspaces = await authDO.listUserWorkspacesAcrossOrgs(userId, orgs);
-  const responseUser = orphanResult ? { ...user, is_orphaned: false } : user;
-
-  return {
-    user: toSafeUser(responseUser),
-    currentOrg: toSafeOrg(currentOrg),
-    currentWorkspace: currentWorkspace ? toSafeWorkspace(currentWorkspace) : null,
-    orgs: orgs.map(toSafeOrgMembership),
-    workspaces: allWorkspaces.map(toSafeWorkspace),
-  };
 }
 
 export async function signup(
   email: string,
   password: string,
   name?: string
-): Promise<AuthPayload> {
-  if (!email || !password) {
-    throw new Error("Email and password are required");
+): Promise<ActionResult<AuthPayload>> {
+  try {
+    // Input validation
+    if (!email || !password) {
+      return { success: false, error: "Email and password are required" };
+    }
+    if (!isValidEmail(email)) {
+      return { success: false, error: "Invalid email address" };
+    }
+    if (!isValidPassword(password)) {
+      return { success: false, error: "Password must be at least 8 characters" };
+    }
+
+    // Check for existing user
+    const existing = await authDO.getUserByEmail(email);
+    if (existing) {
+      return { success: false, error: "An account with this email already exists" };
+    }
+
+    // Create user and org
+    const { userId, user } = await authDO.createUser(email, password, name || null);
+    const org = await authDO.createOrg(
+      `${name || email.split("@")[0]}'s Workspace`,
+      userId
+    );
+
+    // Create session
+    const { sessionId } = await authDO.createSession(userId, org.id);
+    await setSessionCookie(sessionId);
+
+    const orgs = await authDO.getUserOrgs(userId);
+
+    return {
+      success: true,
+      data: {
+        user: toSafeUser(user),
+        currentOrg: toSafeOrg(org),
+        currentWorkspace: null,
+        orgs: orgs.map(toSafeOrgMembership),
+        workspaces: [],
+      },
+    };
+  } catch (error) {
+    console.error("[signup] Unexpected error:", error);
+    return { success: false, error: UNEXPECTED_ERROR };
   }
-  if (!isValidEmail(email)) {
-    throw new Error("Invalid email address");
-  }
-  if (!isValidPassword(password)) {
-    throw new Error("Password must be at least 8 characters");
-  }
-
-  const existing = await authDO.getUserByEmail(email);
-  if (existing) {
-    throw new Error("An account with this email already exists");
-  }
-
-  const { userId, user } = await authDO.createUser(email, password, name || null);
-  const orgName = `${name || email.split("@")[0]}'s Organization`;
-  const org = await authDO.createOrg(orgName, userId);
-  const orgWorkspaces = await authDO.listUserWorkspaces(userId, org.id);
-  const currentWorkspace = orgWorkspaces[0] || null;
-
-  const { sessionId } = await authDO.createSession(
-    userId,
-    org.id,
-    currentWorkspace?.id ?? null
-  );
-  await setSessionCookie(sessionId);
-
-  const orgs = await authDO.getUserOrgs(userId);
-  const allWorkspaces = await authDO.listUserWorkspacesAcrossOrgs(userId, orgs);
-
-  return {
-    user: toSafeUser(user),
-    currentOrg: toSafeOrg(org),
-    currentWorkspace: currentWorkspace ? toSafeWorkspace(currentWorkspace) : null,
-    orgs: orgs.map(toSafeOrgMembership),
-    workspaces: allWorkspaces.map(toSafeWorkspace),
-  };
 }
 
-export async function logout() {
-  const sessionContext = await getSessionContext();
-  if (sessionContext) {
-    await authDO.destroySession(sessionContext.sessionId);
+export async function logout(): Promise<ActionResult<null>> {
+  try {
+    const sessionContext = await getSessionContext();
+    if (sessionContext) {
+      await authDO.destroySession(sessionContext.sessionId);
+    }
+    await deleteSessionCookie();
+    return { success: true, data: null };
+  } catch (error) {
+    console.error("[logout] Unexpected error:", error);
+    return { success: false, error: UNEXPECTED_ERROR };
   }
-  await deleteSessionCookie();
 }
 
-export async function switchOrg(orgId: string): Promise<Organization> {
-  const sessionContext = await getSessionContext();
-  if (!sessionContext) {
-    throw new Error("Not logged in");
-  }
+export async function switchOrg(orgId: string): Promise<ActionResult<Organization>> {
+  try {
+    const sessionContext = await getSessionContext();
+    if (!sessionContext) {
+      return { success: false, error: "Not logged in" };
+    }
 
-  if (!orgId) {
-    throw new Error("Organization ID is required");
-  }
+    if (!orgId) {
+      return { success: false, error: "Organization ID is required" };
+    }
 
-  const isMember = await authDO.isOrgMember(sessionContext.session.user_id, orgId);
-  if (!isMember) {
-    throw new Error("You are not a member of this organization");
-  }
+    const isMember = await authDO.isOrgMember(sessionContext.session.user_id, orgId);
+    if (!isMember) {
+      return { success: false, error: "You are not a member of this organization" };
+    }
 
-  const orgs = await authDO.getUserOrgs(sessionContext.session.user_id);
-  const membership = orgs.find((entry) => entry.org_id === orgId);
-  const workspaces = await authDO.listUserWorkspaces(sessionContext.session.user_id, orgId);
-  const preferredWorkspaceId = membership?.last_workspace_id ?? null;
-  const nextWorkspace = workspaces.find((workspace) => workspace.id === preferredWorkspaceId) || workspaces[0] || null;
-  await authDO.switchSessionOrg(sessionContext.sessionId, orgId, nextWorkspace?.id ?? null);
-  const currentOrg = await authDO.getOrg(orgId);
-  if (!currentOrg) {
-    throw new Error("Organization not found");
+    // Get preferred workspace for the new org
+    const orgs = await authDO.getUserOrgs(sessionContext.session.user_id);
+    const membership = orgs.find((entry) => entry.org_id === orgId);
+    const workspaces = await authDO.listUserWorkspaces(sessionContext.session.user_id, orgId);
+    const preferredWorkspaceId = membership?.last_workspace_id ?? null;
+    const nextWorkspace = workspaces.find((workspace) => workspace.id === preferredWorkspaceId) || workspaces[0] || null;
+
+    await authDO.switchSessionOrg(sessionContext.sessionId, orgId, nextWorkspace?.id ?? null);
+    const currentOrg = await authDO.getOrg(orgId);
+    if (!currentOrg) {
+      return { success: false, error: "Organization not found" };
+    }
+
+    return { success: true, data: toSafeOrg(currentOrg) };
+  } catch (error) {
+    console.error("[switchOrg] Unexpected error:", error);
+    return { success: false, error: UNEXPECTED_ERROR };
   }
-  return toSafeOrg(currentOrg);
 }
 
 export async function switchWorkspace(
@@ -269,15 +293,20 @@ export async function switchWorkspace(
 }
 
 export async function getAuthState(): Promise<AuthPayload | null> {
-  const authContext = await getAuthContext();
-  if (!authContext) return null;
-  return {
-    user: toSafeUser(authContext.user),
-    currentOrg: toSafeOrg(authContext.currentOrg),
-    currentWorkspace: authContext.currentWorkspace
-      ? toSafeWorkspace(authContext.currentWorkspace)
-      : null,
-    orgs: authContext.orgs.map(toSafeOrgMembership),
-    workspaces: authContext.workspaces?.map(toSafeWorkspace) ?? [],
-  };
+  try {
+    const authContext = await getAuthContext();
+    if (!authContext) return null;
+    return {
+      user: toSafeUser(authContext.user),
+      currentOrg: toSafeOrg(authContext.currentOrg),
+      currentWorkspace: authContext.currentWorkspace
+        ? toSafeWorkspace(authContext.currentWorkspace)
+        : null,
+      orgs: authContext.orgs.map(toSafeOrgMembership),
+      workspaces: authContext.workspaces?.map(toSafeWorkspace) ?? [],
+    };
+  } catch (error) {
+    console.error("[getAuthState] Unexpected error:", error);
+    return null;
+  }
 }

@@ -77,16 +77,21 @@ async function requireWorkspaceId(requireWrite = false) {
 
 export async function createThread(input: {
   title?: string;
-  session_id?: string;
+  firstMessage?: string;
 }) {
   const { session, workspaceId } = await requireWorkspaceId(true);
 
   const thread = await chatDO.createThread(
     workspaceId,
     input.title,
-    session.user_id,
-    input.session_id
+    session.user_id
   );
+
+  // Generate title in background (non-blocking, fire-and-forget)
+  if (input.firstMessage && !input.title) {
+    chatDO.generateThreadTitle(thread.id, workspaceId, input.firstMessage).catch(() => {});
+  }
+
   return toSerializable(thread);
 }
 

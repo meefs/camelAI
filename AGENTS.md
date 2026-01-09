@@ -1,5 +1,7 @@
 # Chiridion App - Agent Documentation
 
+> **Note to agents:** Keep this file up to date. When you add new features, workers, API routes, or make significant architectural changes, update the relevant sections of this document.
+
 ## Overview
 
 Chiridion is an AI chat application built on Cloudflare's edge infrastructure. It uses the Claude SDK running inside Cloudflare Containers to provide streaming AI responses through WebSockets. The app includes multi-tenant authentication with users and organizations.
@@ -28,7 +30,9 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
      - **Auth DOs:** `SessionDO`, `UserDO`, `OrgDO`
      - `ThreadSandbox` - Executes Claude SDK in containers
      - WebSocket routing at worker level (one container per org)
+     - `DoRpcService` - RPC entrypoint for cross-worker calls
    - `dispatcher/` - Routes `*.chiridion.ai` to user workers (WfP)
+   - `admin-cli/` - Local-only admin CLI for querying live environments
 
 3. **Sandbox** (`sandbox/`)
    - `ws-server.mjs` - WebSocket server running inside Cloudflare Container
@@ -54,6 +58,10 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
 | `src/lib/integration-crypto.ts` | Credential encryption utilities |
+| `workers/main/src/rpc-service.ts` | DoRpcService - RPC methods for cross-worker calls |
+| `workers/admin-cli/cli.mjs` | Admin CLI wrapper script |
+| `workers/admin-cli/src/index.ts` | Admin CLI worker (local-only) |
+| `src/instrumentation.ts` | Next.js SSR error logging to Analytics Engine |
 
 ## Configuration Files
 
@@ -187,6 +195,34 @@ ANTHROPIC_API_KEY=your_key_here
 |---------|---------|
 | `EMAIL_TO_USER` | Maps email addresses to user IDs |
 
+### Observability
+
+**Error Analytics** - SSR errors are logged to Workers Analytics Engine via `src/instrumentation.ts`.
+
+| Binding | Dataset | Purpose |
+|---------|---------|---------|
+| `ERROR_ANALYTICS` | `chiridion_errors` | SSR error tracking |
+
+**Data points logged:**
+- `indexes[0]`: Route type (`render`, `route`, `action`, `middleware`)
+- `blobs[0-6]`: Error digest, message, path, method, route pattern, router kind, stack trace
+- `doubles[0-1]`: Timestamp, count
+
+**Querying errors** (via Cloudflare Dashboard → Analytics Engine or GraphQL API):
+```sql
+SELECT
+  blob1 AS digest,
+  blob2 AS message,
+  blob3 AS path,
+  SUM(double2) AS count
+FROM chiridion_errors
+WHERE timestamp > NOW() - INTERVAL '1' HOUR
+GROUP BY digest, message, path
+ORDER BY count DESC
+```
+
+**Live logs:** Use `npx wrangler tail --env <env>` to see `console.error` output in real-time.
+
 ### Testing
 ```bash
 # Unit tests (Vitest + jsdom)
@@ -213,6 +249,59 @@ npm run deploy:prod
 # Deploy to staging
 npm run deploy:staging
 ```
+
+### Admin CLI
+
+Query live environments locally using RPC service bindings to call `DoRpcService` methods directly on deployed workers.
+
+```bash
+# Quick CLI (starts wrangler, queries, exits)
+npm run admin -- [env] [endpoint] [jq-filter]
+
+# Examples
+npm run admin -- dev-illiana overview
+npm run admin -- staging orgs
+npm run admin -- prod users '.users[] | {name, email}'
+npm run admin -- dev-illiana orgs '.orgs[] | {org_id: .id, name: .name}'
+npm run admin -- dev-illiana threads
+npm run admin -- workers                    # Fast - no wrangler startup
+npm run admin -- workers                    # List all workers in dispatch namespace
+
+# Interactive mode (keeps server running for multiple queries)
+npm run admin:dev-illiana  # Then curl http://localhost:8788/overview
+npm run admin:staging
+npm run admin:prod
+```
+
+| Environment | Target |
+|-------------|--------|
+| `staging` (default) | staging.chiridion.ai |
+| `prod` | chiridion.ai |
+| `dev-illiana` | dev-illiana.chiridion.ai |
+| `dev-miguel` | dev-miguel.chiridion.ai |
+
+| Endpoint | RPC Method | Description |
+|----------|------------|-------------|
+| `/overview` | `getAdminOverview()` | Users, orgs, membership counts |
+| `/orgs` | `adminGetOrgsPaginated()` + `getOrgMembers()` | All orgs with member details |
+| `/users` | `adminGetUsersPaginated()` | All users with org counts |
+| `/threads` | `adminGetThreadsPaginated()` | All threads across all orgs |
+| `/kv-keys` | Direct KV access | List KV keys (optional `?prefix=`) |
+| `/r2/list` | Direct R2 access | List R2 objects (optional `?prefix=`) |
+| `/r2/info/{key}` | Direct R2 access | Get R2 object metadata |
+| `/r2/backup/{orgId}` | Direct R2 access | Get backup info for an org |
+| `/workers` | Direct API (no wrangler) | List all user workers in dispatch namespace |
+| `/workers/{orgId}` | Direct API (no wrangler) | Deprecated: script names are no longer org-prefixed; use `/workers` |
+| `/container/{orgId}/ls` | RPC → Container | List workspace files (optional `?path=`, `?recursive=true`) |
+| `/container/{orgId}/read/{path}` | RPC → Container | Read a file from container workspace |
+| `/container/{orgId}/write` | RPC → Container | Write a file (POST: `{path, content}`) |
+| `/container/{orgId}/mkdir` | RPC → Container | Create directory (POST: `{path}`) |
+| `/container/{orgId}/delete` | RPC → Container | Delete file/dir (POST: `{path}`) |
+| `/container/{orgId}/reset` | RPC → Container | Reset container (POST, destroys and recreates) |
+
+**How it works:** Most endpoints use Cloudflare service bindings with `entrypoint: "DoRpcService"` and `remote: true` to call RPC methods on deployed workers. No HTTP routes needed - direct RPC over the Cloudflare network.
+
+**Workers endpoint:** The `/workers` endpoint uses direct Cloudflare API calls (no wrangler needed), reading the OAuth token automatically from `~/Library/Preferences/.wrangler/config/default.toml`. Run `npx wrangler login` if not already authenticated.
 
 ## Project Structure
 
@@ -244,9 +333,14 @@ chiridion-app/
 │   │       ├── index.ts         # Worker entry point
 │   │       ├── durable-objects.ts # Chat DOs
 │   │       ├── auth.ts          # Auth DOs
+│   │       ├── rpc-service.ts   # DoRpcService RPC entrypoint
 │   │       └── password.ts      # Password hashing
-│   └── dispatcher/          # WfP subdomain router
-│       └── src/
+│   ├── dispatcher/          # WfP subdomain router
+│   │   └── src/
+│   └── admin-cli/           # Local-only admin CLI
+│       ├── cli.mjs          # CLI wrapper script
+│       ├── src/index.ts     # Worker code
+│       └── wrangler.jsonc   # Config with remote bindings
 ├── sandbox/                 # Container sandbox code
 ├── scripts/                 # Dev scripts
 │   └── dev-proxy.mjs        # Wrangler + Next dev + proxy

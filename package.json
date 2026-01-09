@@ -5,7 +5,7 @@
 	"scripts": {
 		"dev": "node scripts/dev-proxy.mjs",
 		"dev:next": "next dev -p 3000",
-		"dev:wrangler": "wrangler dev -c wrangler-dev.jsonc --local --port 8787",
+		"dev:wrangler": "wrangler dev -c wrangler-dev.jsonc --port 8787",
 		"build": "next build",
 		"build:cf": "opennextjs-cloudflare build -c wrangler.build.jsonc",
 		"start": "next start",
@@ -23,7 +23,12 @@
 		"test:workers": "vitest run --config vitest.workers.config.ts",
 		"test:integration": "vitest run --config vitest.integration.config.ts",
 		"test:e2e": "playwright test",
-		"test:e2e:ui": "playwright test --ui"
+		"test:e2e:ui": "playwright test --ui",
+		"admin": "node workers/admin-cli/cli.mjs",
+		"admin:staging": "wrangler dev --config workers/admin-cli/wrangler.jsonc",
+		"admin:prod": "wrangler dev --config workers/admin-cli/wrangler.jsonc --env prod",
+		"admin:dev-illiana": "wrangler dev --config workers/admin-cli/wrangler.jsonc --env dev-illiana",
+		"admin:dev-miguel": "wrangler dev --config workers/admin-cli/wrangler.jsonc --env dev-miguel"
 	},
 	"dependencies": {
 		"@cloudflare/containers": "^0.0.31",

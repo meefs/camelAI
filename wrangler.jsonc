@@ -25,6 +25,15 @@
 	"images": {
 		"binding": "IMAGES"
 	},
+	"ai": {
+		"binding": "AI"
+	},
+	"analytics_engine_datasets": [
+		{
+			"binding": "ERROR_ANALYTICS",
+			"dataset": "chiridion_errors"
+		}
+	],
 	"r2_buckets": [
 		{
 			"binding": "R2_BUCKET",
@@ -100,6 +109,9 @@
 			"images": {
 				"binding": "IMAGES"
 			},
+			"ai": {
+				"binding": "AI"
+			},
 			"r2_buckets": [
 				{
 					"binding": "R2_BUCKET",
@@ -169,6 +181,9 @@
 			"images": {
 				"binding": "IMAGES"
 			},
+			"ai": {
+				"binding": "AI"
+			},
 			"r2_buckets": [
 				{
 					"binding": "R2_BUCKET",
@@ -200,8 +215,8 @@
 				{
 					"class_name": "ThreadSandbox",
 					"image": "./Dockerfile",
-					"instance_type": "basic",
-					"max_instances": 10
+					"instance_type": "standard-1",
+					"max_instances": 5
 				}
 			],
 			"durable_objects": {
@@ -236,6 +251,9 @@
 			},
 			"images": {
 				"binding": "IMAGES"
+			},
+			"ai": {
+				"binding": "AI"
 			},
 			"r2_buckets": [
 				{
@@ -304,6 +322,9 @@
 			},
 			"images": {
 				"binding": "IMAGES"
+			},
+			"ai": {
+				"binding": "AI"
 			},
 			"r2_buckets": [
 				{

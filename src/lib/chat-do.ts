@@ -26,10 +26,9 @@ export async function getThreadsPaginated(
 export async function createThread(
   workspaceId: string,
   title: string | undefined,
-  createdBy?: string,
-  sessionId?: string
+  createdBy?: string
 ): Promise<Thread> {
-  return withRpc((rpc) => rpc.createThread(workspaceId, title, createdBy, sessionId));
+  return withRpc((rpc) => rpc.createThread(workspaceId, title, createdBy));
 }
 
 export async function getThread(id: string, workspaceId: string): Promise<Thread | null> {
@@ -42,6 +41,14 @@ export async function updateThread(id: string, title: string, workspaceId: strin
 
 export async function deleteThread(id: string, workspaceId: string): Promise<void> {
   return withRpc((rpc) => rpc.deleteThread(id, workspaceId));
+}
+
+export async function generateThreadTitle(
+  threadId: string,
+  workspaceId: string,
+  message: string
+): Promise<void> {
+  return withRpc((rpc) => rpc.generateAndUpdateThreadTitle(threadId, workspaceId, message));
 }
 
 export async function getMessages(threadId: string, workspaceId: string): Promise<Message[]> {

@@ -173,9 +173,11 @@ interface MessageBubbleProps {
   message: Message;
   onCopy: (id: string, content: string) => void;
   copiedId: string | null;
+  /** Whether to show the streaming loading indicator (only true for the last streaming message) */
+  showStreamingIndicator?: boolean;
 }
 
-export function MessageBubble({ message, onCopy, copiedId }: MessageBubbleProps) {
+export function MessageBubble({ message, onCopy, copiedId, showStreamingIndicator = false }: MessageBubbleProps) {
   const isCopied = copiedId === message.id;
   const isStreaming = message.isStreaming ?? false;
   const hasContent = typeof message.content === 'string'
@@ -224,7 +226,7 @@ export function MessageBubble({ message, onCopy, copiedId }: MessageBubbleProps)
         {hasContent && (
           <ContentBlockRenderer content={message.content} isStreaming={isStreaming} />
         )}
-        {isStreaming && <LoadingDots />}
+        {showStreamingIndicator && <LoadingDots />}
       </div>
       {/* Hover action row - only show when not streaming */}
       {!isStreaming && hasContent && (

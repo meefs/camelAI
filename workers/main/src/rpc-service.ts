@@ -603,14 +603,38 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     password: string,
     name: string | null
   ): Promise<{ userId: string; user: UserProfile }> {
+    const normalizedEmail = email.toLowerCase();
+    const kvKey = `email:${normalizedEmail}`;
+
+    // Check if email already exists (defense against race condition)
+    const existingUserId = await this.env.EMAIL_TO_USER.get(kvKey);
+    if (existingUserId) {
+      throw new Error("An account with this email already exists");
+    }
+
     const userId = crypto.randomUUID();
 
-    using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
-    const user = await stub.createUser(userId, email.toLowerCase(), password, name);
+    // Write KV first to "claim" the email
+    // This minimizes the race window (though KV doesn't support atomic put-if-absent)
+    await this.env.EMAIL_TO_USER.put(kvKey, userId);
 
-    await this.env.EMAIL_TO_USER.put(`email:${email.toLowerCase()}`, userId);
+    // Verify we still own the email (detect if someone else wrote after us)
+    const verifyUserId = await this.env.EMAIL_TO_USER.get(kvKey);
+    if (verifyUserId !== userId) {
+      // Someone else won the race, abort
+      throw new Error("An account with this email already exists");
+    }
 
-    return { userId, user };
+    // Now create the user - we've claimed the email
+    try {
+      using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+      const user = await stub.createUser(userId, normalizedEmail, password, name);
+      return { userId, user };
+    } catch (error) {
+      // If user creation fails, clean up the KV entry to avoid orphaned claims
+      await this.env.EMAIL_TO_USER.delete(kvKey);
+      throw error;
+    }
   }
 
   async verifyUserPassword(userId: string, password: string): Promise<boolean> {
@@ -1863,11 +1887,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async createThread(
     workspaceId: string,
     title: string | undefined,
-    createdBy?: string,
-    sessionId?: string
+    createdBy?: string
   ): Promise<Thread> {
     using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-    return indexStub.createThread(title, createdBy, sessionId);
+    return indexStub.createThread(title, createdBy);
   }
 
   async getThread(id: string, workspaceId: string): Promise<Thread | null> {
@@ -1885,6 +1908,36 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Just delete from the index
     using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
     await indexStub.deleteThread(id);
+  }
+
+  async generateAndUpdateThreadTitle(
+    threadId: string,
+    workspaceId: string,
+    message: string
+  ): Promise<void> {
+    try {
+      const response = await this.env.AI.run('@cf/google/gemma-3-12b-it', {
+        messages: [
+          { role: 'system', content: 'Summarize the message into a simple chat thread topic title. Respond with only the title, no quotes or extra punctuation.' },
+          { role: 'user', content: message },
+        ],
+        temperature: 1,
+        max_tokens: 50,
+      });
+
+      const title = (response as { response?: string })?.response?.trim()?.slice(0, 100);
+      if (!title) return;
+
+      // Update title in ChatIndexDO
+      using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
+      await indexStub.updateThread(threadId, title);
+
+      // Broadcast via ChatThreadDO
+      const threadStub = this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId));
+      await threadStub.setTitle(title);
+    } catch (e) {
+      console.error('[generateAndUpdateThreadTitle] Error:', e);
+    }
   }
 
   async getMessages(threadId: string, workspaceId: string): Promise<Message[]> {

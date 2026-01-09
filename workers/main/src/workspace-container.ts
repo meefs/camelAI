@@ -232,6 +232,7 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     envVars.CI = '1';
 
     // Cloudflare API proxy config
+    // Create a workspace-scoped deploy token for container to use with Cloudflare API
     if (this.env.WORKER_BASE_URL) {
       envVars.WORKER_BASE_URL = this.env.WORKER_BASE_URL;
       envVars.CLOUDFLARE_API_BASE_URL = `${this.env.WORKER_BASE_URL}/client/v4`;

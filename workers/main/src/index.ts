@@ -30,9 +30,37 @@ interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv {
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
+  ERROR_ANALYTICS?: AnalyticsEngineDataset;
 }
 
 const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
+const CHIRIDION_THREAD_TOKEN_HEADER = 'X-Chiridion-Thread-Deploy-Token';
+
+// Token TTL (24 hours in seconds)
+const TOKEN_TTL_SECONDS = 86400;
+
+/**
+ * Generate a per-thread deploy token and store in KV.
+ * This token includes both orgId and threadId for auto-preview after deploys.
+ */
+async function mintPerThreadDeployToken(
+  kv: KVNamespace,
+  orgId: string,
+  threadId: string
+): Promise<string> {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const base64 = btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+  const token = `ctok_${base64}`;
+
+  const tokenData = JSON.stringify({ orgId, threadId });
+  await kv.put(`platform_script_token:${token}`, tokenData, { expirationTtl: TOKEN_TTL_SECONDS });
+
+  return token;
+}
 
 function json(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data), {
@@ -68,9 +96,11 @@ function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): b
   const dispatchScript = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
   const dispatchScriptDeployments = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/deployments$/;
   const dispatchScriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
+  const dispatchScriptScriptSettings = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/script-settings$/;
   const dispatchAssetsUploadSession = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/assets-upload-session$/;
   const dispatchScriptSecrets = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/secrets$/;
   const dispatchScriptSecretBinding = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/secrets\/[^/]+$/;
+  const dispatchScriptVersions = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/versions$/;
 
   switch (m) {
     case 'GET':
@@ -78,13 +108,16 @@ function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): b
         dispatchScriptDeployments.test(pathname) ||
         dispatchScriptSettings.test(pathname) ||
         dispatchScriptSecrets.test(pathname) ||
-        dispatchScriptSecretBinding.test(pathname);
+        dispatchScriptSecretBinding.test(pathname) ||
+        dispatchScriptVersions.test(pathname);
     case 'PUT':
       return dispatchScript.test(pathname) || dispatchScriptSecrets.test(pathname);
     case 'PATCH':
-      return dispatchScriptSettings.test(pathname);
+      return dispatchScriptSettings.test(pathname) || dispatchScriptScriptSettings.test(pathname);
     case 'POST':
-      return dispatchAssetsUploadSession.test(pathname) || ASSETS_UPLOAD.test(pathname);
+      return dispatchAssetsUploadSession.test(pathname) ||
+        dispatchScriptVersions.test(pathname) ||
+        ASSETS_UPLOAD.test(pathname);
     case 'DELETE':
       return dispatchScriptSecretBinding.test(pathname);
     default:
@@ -177,10 +210,34 @@ function deriveWorkspacePrefix(workspaceId: string): string {
   return workspaceId.slice(0, 32).replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+interface TokenData {
+  workspaceId: string;
+  threadId?: string;
+}
+
 async function resolveWorkspaceContext(
   env: Env,
-  workspaceId: string
-): Promise<{ workspaceId: string; orgId: string; workspacePrefix: string } | null> {
+  tokenValue: string
+): Promise<{ workspaceId: string; orgId: string; workspacePrefix: string; threadId?: string } | null> {
+  // Token value can be either:
+  // - Legacy format: just the workspaceId string
+  // - New format: JSON object { workspaceId, threadId }
+  let workspaceId: string;
+  let threadId: string | undefined;
+
+  if (tokenValue.startsWith('{')) {
+    try {
+      const data = JSON.parse(tokenValue) as TokenData;
+      workspaceId = data.workspaceId;
+      threadId = data.threadId;
+    } catch {
+      // Malformed JSON - treat as workspaceId
+      workspaceId = tokenValue;
+    }
+  } else {
+    workspaceId = tokenValue;
+  }
+
   const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await workspaceStub.getInfo() as WorkspaceInfo | null;
   if (!info || info.archived) return null;
@@ -188,6 +245,7 @@ async function resolveWorkspaceContext(
     workspaceId,
     orgId: info.org_id,
     workspacePrefix: deriveWorkspacePrefix(workspaceId),
+    threadId,
   };
 }
 
@@ -392,11 +450,11 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     console.warn('[cf-api-proxy] invalid deploy token workspace', {
       method: request.method,
       path: url.pathname,
-      workspaceId: tokenValue,
+      tokenValue: tokenValue.slice(0, 20),
     });
     return cfApiError(10003, 'Authentication error: Invalid workspace', 401);
   }
-  const { workspacePrefix, orgId, workspaceId } = workspaceContext;
+  const { workspacePrefix, orgId, workspaceId, threadId } = workspaceContext;
 
   let pathname = url.pathname;
 
@@ -405,6 +463,7 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
     return `${workspacePrefix}-${safeName}`.slice(0, 63);
   };
+
 
   // Rewrite WFP dispatch namespace (and optionally account id) on the fly.
   // /client/v4/accounts/:account_id/workers/dispatch/namespaces/:dispatch_namespace/...
@@ -425,33 +484,22 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
       pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
     }
   }
-  // Convert regular worker script calls to WFP dispatch namespace format when configured.
-  // This allows wrangler in the container to use standard deploy commands while we route to WFP.
+  // Block regular worker script/service endpoints - users must use the globally installed wrangler
+  // which is configured to deploy to the dispatch namespace directly
   if (!dispatchMatch) {
-    const scriptsMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/scripts\/([^\/]+)(\/.*)?$/);
-    if (scriptsMatch) {
-      const rewrittenAccount = accountId ?? scriptsMatch[1]!;
-      const userScriptName = scriptsMatch[2]!;
-      const prefixedName = prefixScriptName(userScriptName);
-      const tail = scriptsMatch[3] ?? '';
-      if (dispatchNamespace) {
-        // Rewrite to WFP dispatch namespace format with prefixed name
-        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
-      } else {
-        // Just prefix the script name
-        pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/scripts/${encodeURIComponent(prefixedName)}${tail}`;
-      }
-    }
+    const scriptsMatch = pathname.match(/^\/client\/v4\/accounts\/[^\/]+\/workers\/scripts\/[^\/]+/);
+    const servicesMatch = pathname.match(/^\/client\/v4\/accounts\/[^\/]+\/workers\/services\/[^\/]+/);
 
-    // Rewrite /workers/services/{name} to WFP dispatch namespace format
-    // Wrangler uses this to check if a worker exists before deploying
-    const servicesMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/services\/([^\/]+)(\/.*)?$/);
-    if (servicesMatch && dispatchNamespace) {
-      const rewrittenAccount = accountId ?? servicesMatch[1]!;
-      const userScriptName = servicesMatch[2]!;
-      const prefixedName = prefixScriptName(userScriptName);
-      const tail = servicesMatch[3] ?? '';
-      pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}/scripts/${encodeURIComponent(prefixedName)}${tail}`;
+    if (scriptsMatch || servicesMatch) {
+      console.warn('[cf-api-proxy] blocked non-dispatch worker endpoint', {
+        method: request.method,
+        path: pathname,
+      });
+      return cfApiError(
+        10000,
+        'Direct worker deployments are not supported. Please use the globally installed wrangler binary (just run "wrangler deploy" without npx or local installation).',
+        403
+      );
     }
   }
 
@@ -552,6 +600,8 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
       const account = decodeURIComponent(scriptMatch[1]!);
       const dispatchNs = decodeURIComponent(scriptMatch[2]!);
       const scriptName = decodeURIComponent(scriptMatch[3]!);
+
+      // Sync integration secrets to deployed worker
       ctx.waitUntil(
         syncDispatchScriptSecrets(env, workspaceId, orgId, account, dispatchNs, scriptName, upstreamApiToken)
           .catch(err => {
@@ -565,6 +615,34 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
             });
           })
       );
+
+      // Auto-set preview if threadId is in the deploy token
+      if (threadId) {
+        ctx.waitUntil(
+          (async () => {
+            try {
+              const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+              await threadStub.fetch(new Request('http://internal/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workers: [scriptName] }),
+              }));
+              console.log('[cf-api-proxy] auto-set preview', {
+                threadId,
+                scriptName,
+                orgId,
+              });
+            } catch (err) {
+              console.error('[cf-api-proxy] failed to auto-set preview', {
+                threadId,
+                scriptName,
+                orgId,
+                error: String(err),
+              });
+            }
+          })()
+        );
+      }
     }
   }
 
@@ -697,12 +775,37 @@ export default {
         return new Response('Forbidden', { status: 403 });
       }
 
+      // Extract threadId from query param for per-thread deploy token
+      const threadIdFromUrl = url.searchParams.get('threadId');
+
       console.log('[ws] Authenticated, forwarding to container', {
         sessionId,
         orgId,
         workspaceId,
         userId: session.user_id,
+        threadId: threadIdFromUrl,
       });
+
+      // Mint per-thread deploy token if threadId provided
+      // This token stores {orgId, threadId} so the proxy can auto-set preview after deploys
+      let modifiedRequest = request;
+      if (threadIdFromUrl) {
+        const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
+        const threadToken = await mintPerThreadDeployToken(tokenKv, org, threadIdFromUrl);
+        console.log('[ws] Minted per-thread deploy token', {
+          threadId: threadIdFromUrl,
+          tokenPrefix: threadToken.slice(0, 12),
+        });
+
+        // Create new request with deploy token header
+        const headers = new Headers(request.headers);
+        headers.set(CHIRIDION_THREAD_TOKEN_HEADER, threadToken);
+        modifiedRequest = new Request(request.url, {
+          method: request.method,
+          headers,
+          body: request.body,
+        });
+      }
 
       // Handle WebSocket upgrade with container management
       return handleWebSocketUpgrade(request, env, workspaceId, orgId);
@@ -711,7 +814,7 @@ export default {
     // Handle preview API with deploy token auth (called from container wrangler wrapper)
     const previewMatch = url.pathname.match(/^\/api\/threads\/([^\/]+)\/preview$/);
     if (previewMatch && request.method === 'POST') {
-      const threadId = previewMatch[1];
+      const previewThreadId = previewMatch[1];
 
       // Validate deploy token
       const authHeader = request.headers.get('Authorization');
@@ -724,21 +827,21 @@ export default {
 
       const token = authHeader.slice(7);
       const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-      const workspaceId = await tokenKv.get(`platform_script_token:${token}`);
-      if (!workspaceId) {
+      const previewTokenValue = await tokenKv.get(`platform_script_token:${token}`);
+      if (!previewTokenValue) {
         return new Response(JSON.stringify({ error: 'Invalid token' }), {
           status: 401,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      const workspaceContext = await resolveWorkspaceContext(env, workspaceId);
-      if (!workspaceContext) {
+      const previewWorkspaceContext = await resolveWorkspaceContext(env, previewTokenValue);
+      if (!previewWorkspaceContext) {
         return new Response(JSON.stringify({ error: 'Invalid workspace' }), {
           status: 401,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      const { orgId, workspacePrefix } = workspaceContext;
+      const { workspacePrefix: previewWorkspacePrefix } = previewWorkspaceContext;
 
       // Parse body and set preview
       try {
@@ -753,10 +856,10 @@ export default {
         // Prefix worker names with workspace prefix
         const prefixedWorkers = body.workers.map(name => {
           const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-          return `${workspacePrefix}-${safeName}`.slice(0, 63);
+          return `${previewWorkspacePrefix}-${safeName}`.slice(0, 63);
         });
 
-        const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+        const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(previewThreadId));
         const response = await threadStub.fetch(new Request('http://internal/preview', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

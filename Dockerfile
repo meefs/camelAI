@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-06-v1
+# Version: 2026-01-08-v1
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -10,6 +10,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN useradd -m -s /bin/bash claude
 
 # Layer 2: System deps + Bun + Wrangler (changes rarely)
+# The globally installed wrangler is wrapped to auto-add --dispatch-namespace.
+# Users must use this global wrangler (not npx or local installs).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -24,20 +26,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && npm install -g bun wrangler@4.55.0 shadcn \
   && mv /usr/local/bin/wrangler /usr/local/bin/wrangler-real
 
-# Layer 3: Wrangler wrapper (changes rarely)
-COPY --chmod=755 sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
-
-# Layer 4: Dependencies only - cached unless package.json changes
+# Layer 3: Dependencies only - cached unless package.json changes
 WORKDIR /app
 COPY sandbox/package.json ./
 RUN bun install
 
-# Layer 5: App code (changes frequently) - copied after install for better caching
+# Layer 4: App code (changes frequently) - copied after install for better caching
 COPY --chmod=755 sandbox/entrypoint.sh ./
 COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
-COPY sandbox/starter-worker ./starter-worker
 COPY sandbox/skills ./skills
 RUN chmod -R a+rX /app
+
+# Layer 5: Wrangler wrapper (intercepts deploy to add --dispatch-namespace)
+COPY --chmod=755 sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
+
+# Layer 6: deploy-worker CLI (explicit dispatch namespace deploy, avoids PATH issues)
+COPY --chmod=755 sandbox/deploy-worker.sh /usr/local/bin/deploy-worker
+
+# Layer 7: create-worker CLI (scaffolds projects from templates)
+RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker
 
 WORKDIR /home/claude
 ENTRYPOINT ["/app/entrypoint.sh"]

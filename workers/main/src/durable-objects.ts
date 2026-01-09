@@ -33,6 +33,7 @@ export interface ChatEnv {
   DO_RPC: Service<DoRpcService>;
   API_TOKENS: KVNamespace;
   R2_BUCKET: R2Bucket;
+  AI: Ai;
   ANTHROPIC_API_KEY: string;
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
@@ -154,17 +155,10 @@ export class ChatIndexDO extends DurableObject<ChatEnv> {
   }
 
   /**
-   * Create a thread. If sessionId is provided, use it as the thread ID (Claude session_id).
-   * If the thread already exists, return the existing thread.
+   * Create a new thread with a server-generated UUID.
    */
-  createThread(title: string | undefined, createdBy?: string, sessionId?: string): Thread {
-    // If sessionId provided, check if thread already exists
-    const id = sessionId?.trim() || crypto.randomUUID();
-    const existing = this.getThread(id);
-    if (existing) {
-      return existing;
-    }
-
+  createThread(title: string | undefined, createdBy?: string): Thread {
+    const id = crypto.randomUUID();
     const now = Date.now();
     const t = title || 'New Chat';
     const creator = createdBy?.trim() || 'system';
@@ -217,6 +211,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
+
+    // Set up auto-response for ping messages - responds without waking the DO
+    ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair(
+        JSON.stringify({ type: 'ping' }),
+        JSON.stringify({ type: 'pong' })
+      )
+    );
 
     // Restore state from storage
     ctx.blockConcurrencyWhile(async () => {
@@ -308,6 +310,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         workers: this.previewWorkers,
       });
     }
+  }
+
+  // Set thread title and broadcast to connected clients
+  async setTitle(title: string): Promise<void> {
+    this.broadcast({ type: 'title_updated', title });
   }
 
   // Broadcast message to all connected WebSocket clients
