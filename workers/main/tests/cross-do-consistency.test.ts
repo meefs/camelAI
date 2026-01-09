@@ -189,6 +189,13 @@ describe('cross-DO consistency', () => {
     const memberProfile = await rpc.getUserById(memberId);
     expect(ownerProfile?.is_orphaned).toBe(true);
     expect(memberProfile?.is_orphaned).toBe(true);
+
+    const orgMembers = await rpc.getOrgMembers(org.id);
+    expect(orgMembers.some((entry) => entry.user.id === ownerId && entry.role === 'owner')).toBe(true);
+    expect(orgMembers.some((entry) => entry.user.id === memberId)).toBe(false);
+
+    expect(await rpc.isOrgMember(ownerId, org.id)).toBe(false);
+    expect(await rpc.isOrgMember(memberId, org.id)).toBe(false);
   });
 
   it('logs org audit events for membership changes', async () => {

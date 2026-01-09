@@ -89,9 +89,10 @@ describe('Workspace DO (full-stack with DOs)', () => {
       const workspaces = await rpc.listOrgWorkspaces(org.id);
       expect(workspaces).toHaveLength(1);
 
-      await expect(
-        rpc.archiveWorkspace(workspaces[0].id, userId)
-      ).rejects.toThrow('Cannot archive the only workspace in an organization');
+      const result = await rpc.tryArchiveWorkspace(workspaces[0].id, userId);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('Cannot archive the only workspace in an organization');
     });
 
     it('repairs session workspace when the current workspace is archived', async () => {

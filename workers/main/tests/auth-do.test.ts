@@ -102,9 +102,10 @@ describe('Auth flow (full-stack with DOs)', () => {
       const { userId } = await rpc.createUser(email, 'password123', 'Owner');
       const org = await rpc.createOrg('Owner Org', userId);
 
-      await expect(rpc.removeOrgMember(org.id, userId, userId)).rejects.toThrow(
-        'Cannot remove organization owner'
-      );
+      const result = await rpc.tryRemoveOrgMember(org.id, userId, userId);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('Cannot remove organization owner');
 
       const members = await rpc.getOrgMembers(org.id);
       expect(members.some((member) => member.user.id === userId && member.role === 'owner')).toBe(
@@ -117,9 +118,10 @@ describe('Auth flow (full-stack with DOs)', () => {
       const { userId } = await rpc.createUser(email, 'password123', 'Owner');
       const org = await rpc.createOrg('Owner Org', userId);
 
-      await expect(
-        rpc.updateOrgMemberRole(org.id, userId, 'member', userId)
-      ).rejects.toThrow('Cannot change the owner role');
+      const result = await rpc.tryUpdateOrgMemberRole(org.id, userId, 'member', userId);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('Cannot change the owner role. Transfer ownership first.');
 
       const members = await rpc.getOrgMembers(org.id);
       const owner = members.find((member) => member.user.id === userId);

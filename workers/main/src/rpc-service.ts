@@ -1373,11 +1373,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   async isOrgMember(userId: string, orgId: string): Promise<boolean> {
     using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    const info = await stub.getInfo();
+    if (!info || info.archived) return false;
     return stub.isMember(userId);
   }
 
   async isOrgAdmin(userId: string, orgId: string): Promise<boolean> {
     using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    const info = await stub.getInfo();
+    if (!info || info.archived) return false;
     return stub.isAdmin(userId);
   }
 
@@ -1398,15 +1402,52 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     }
   }
 
+  async tryRemoveOrgMember(
+    orgId: string,
+    userId: string,
+    actorId: string
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      await this.removeOrgMember(orgId, userId, actorId);
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
   async updateOrgMemberRole(orgId: string, userId: string, role: OrgRole, actorId: string): Promise<void> {
     if (role === 'owner') {
       throw new Error('Use transferOwnership to assign owner role');
     }
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    const existing = await orgStub.getMember(userId);
+    if (existing?.role === 'owner') {
+      throw new Error('Cannot change the owner role. Transfer ownership first.');
+    }
     await orgStub.updateMemberRole(userId, role, actorId);
 
     using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     await userStub.updateOrgRole(orgId, role);
+  }
+
+  async tryUpdateOrgMemberRole(
+    orgId: string,
+    userId: string,
+    role: OrgRole,
+    actorId: string
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      await this.updateOrgMemberRole(orgId, userId, role, actorId);
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
   }
 
   // Invitation functions
@@ -1575,6 +1616,21 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return this.toWorkspace(archivedInfo);
   }
 
+  async tryArchiveWorkspace(
+    workspaceId: string,
+    actorId: string
+  ): Promise<{ ok: true; workspace: Workspace | null } | { ok: false; error: string }> {
+    try {
+      const workspace = await this.archiveWorkspace(workspaceId, actorId);
+      return { ok: true, workspace };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
   async listOrgWorkspaces(orgId: string): Promise<Workspace[]> {
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const entries = await orgStub.getWorkspaces();
@@ -1691,6 +1747,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async archiveOrg(orgId: string, actorId: string): Promise<void> {
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const members = await orgStub.getMembers();
+    const nonOwners = members.filter((member) => member.role !== 'owner');
     await orgStub.archiveOrg(actorId);
 
     const workspaces = await orgStub.getWorkspaces();
@@ -1716,7 +1773,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     );
 
     await Promise.all(
-      members.map((member) => orgStub.removeMember(member.user_id, actorId))
+      nonOwners.map((member) => orgStub.removeMember(member.user_id, actorId))
     );
   }
 

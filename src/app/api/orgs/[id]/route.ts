@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import * as authDO from '@/lib/auth-do';
 import {
+  deleteSessionCookie,
   errorResponse,
   forbiddenResponse,
   getSessionId,
@@ -74,6 +75,10 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
     }
 
     await authDO.archiveOrg(orgId, session.user_id);
+    if (session.org_id === orgId) {
+      await authDO.destroySession(sessionId);
+      await deleteSessionCookie();
+    }
     return jsonResponse({ success: true });
   } catch (error) {
     console.error('Error archiving organization:', error);

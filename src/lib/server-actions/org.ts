@@ -8,6 +8,8 @@ import {
   validateCredentials,
 } from '@/lib/integration-registry';
 import type { CreateApiTokenInput, Integration, Organization, OrgRole } from '@/types';
+import { deleteSessionCookie } from '@/lib/auth';
+import { getSessionContext } from '@/lib/auth-context';
 import { requireOrgAdmin, requireOrgMember, requireSession } from '@/lib/server-guards';
 
 async function resolveWorkspaceId(
@@ -372,7 +374,11 @@ export async function transferOrgOwnership(orgId: string, newOwnerId: string) {
 }
 
 export async function archiveOrg(orgId: string) {
-  const session = await requireSession();
+  const sessionContext = await getSessionContext();
+  if (!sessionContext) {
+    throw new Error('Not logged in');
+  }
+  const { session, sessionId } = sessionContext;
   if (session.org_id !== orgId) {
     throw new Error('Organization mismatch');
   }
@@ -384,5 +390,7 @@ export async function archiveOrg(orgId: string) {
   }
 
   await authDO.archiveOrg(orgId, session.user_id);
+  await authDO.destroySession(sessionId);
+  await deleteSessionCookie();
   return { success: true };
 }
