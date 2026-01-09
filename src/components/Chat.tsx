@@ -124,6 +124,14 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
   }, []);
 
   const isStreaming = streamingMessageId !== null;
+  // Find the last streaming message ID (for showing loading indicator only on bottom-most)
+  const lastStreamingMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].isStreaming) return messages[i].id;
+    }
+    return null;
+  }, [messages]);
+  const hasStreamingMessage = lastStreamingMessageId !== null;
 
   const [input, setInput] = useState('');
   const [ready, setReady] = useState(false);
@@ -1118,6 +1126,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
                           message={msg}
                           onCopy={copyMessage}
                           copiedId={copiedMessageId}
+                          showStreamingIndicator={msg.id === lastStreamingMessageId}
                         />
                       </div>
                     );
@@ -1147,7 +1156,7 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
                   )}
 
                   {/* Loading indicator when waiting for assistant response */}
-                  {loading && !isStreaming && (
+                  {loading && !isStreaming && !hasStreamingMessage && (
                     <LoadingDots />
                   )}
                   {shouldRenderSpacer ? (
