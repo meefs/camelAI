@@ -18,27 +18,19 @@ fi
 
 # Check if this is a deploy command
 if [[ "$1" == "deploy" || "$1" == "publish" ]]; then
-  # Temp file to capture output while still streaming to terminal
-  OUTPUT_FILE=$(mktemp)
-  trap "rm -f '$OUTPUT_FILE'" EXIT
-
   # Add --dispatch-namespace if not already present and CF_DISPATCH_NAMESPACE is set
   if [[ ! " $* " =~ " --dispatch-namespace " ]] && [[ -n "$CF_DISPATCH_NAMESPACE" ]]; then
-    "$REAL_WRANGLER" "$@" --dispatch-namespace "$CF_DISPATCH_NAMESPACE" 2>&1 | tee "$OUTPUT_FILE"
-    EXIT_CODE=${PIPESTATUS[0]}
+    "$REAL_WRANGLER" "$@" --dispatch-namespace "$CF_DISPATCH_NAMESPACE"
+    EXIT_CODE=$?
   else
-    "$REAL_WRANGLER" "$@" 2>&1 | tee "$OUTPUT_FILE"
-    EXIT_CODE=${PIPESTATUS[0]}
+    "$REAL_WRANGLER" "$@"
+    EXIT_CODE=$?
   fi
 
-  # On successful deploy, extract script name from wrangler's output and print URL
-  # Wrangler outputs: "Uploaded <name> (x.xx sec)" for dispatch namespace deploys
-  if [[ $EXIT_CODE -eq 0 ]]; then
-    SCRIPT_NAME=$(grep -oE 'Uploaded [^ ]+ ' "$OUTPUT_FILE" | head -1 | awk '{print $2}')
-    if [[ -n "$SCRIPT_NAME" ]]; then
-      echo ""
-      echo "🚀 Deployed to: https://${SCRIPT_NAME}.chiridion.ai"
-    fi
+  # On successful deploy, print the URL
+  if [[ $EXIT_CODE -eq 0 ]] && [[ -n "$CF_DISPATCH_NAMESPACE" ]]; then
+    echo ""
+    echo "🚀 Deployed to https://<script_name>.chiridion.ai"
   fi
 
   exit $EXIT_CODE

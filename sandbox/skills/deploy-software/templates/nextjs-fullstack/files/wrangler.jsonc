@@ -1,4 +1,6 @@
 {
+  // Your app name - will be deployed to https://{{PROJECT_NAME}}.chiridion.ai
+  // Use `npm run deploy` or `deploy-worker` to deploy
   "name": "{{PROJECT_NAME}}",
   // Custom worker entry point - wraps OpenNext and exports Durable Objects
   "main": "workers/src/index.ts",

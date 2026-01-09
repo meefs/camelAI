@@ -7,7 +7,7 @@ A fullstack Next.js 15 application deployed to Cloudflare Workers.
 ```bash
 npm install
 npm run dev       # Local development
-wrangler deploy   # Deploy to Cloudflare
+npm run deploy    # Deploy to https://{{PROJECT_NAME}}.chiridion.ai
 ```
 
 ## Project Structure
@@ -336,13 +336,15 @@ wrangler secret put MY_SECRET
 ## Deployment
 
 ```bash
-# Build and deploy
+# Build and deploy to https://{{PROJECT_NAME}}.chiridion.ai
 npm run deploy
 
 # Or step by step:
 npm run build:cf    # Build with OpenNext
-wrangler deploy     # Deploy to Cloudflare
+deploy-worker       # Deploy to dispatch namespace
 ```
+
+Your app will be live at `https://{{PROJECT_NAME}}.chiridion.ai` after deployment.
 
 ## Learn More
 

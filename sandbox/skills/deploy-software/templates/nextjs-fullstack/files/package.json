@@ -7,7 +7,7 @@
     "build": "next build",
     "build:cf": "opennextjs-cloudflare build",
     "start": "next start",
-    "deploy": "npm run build:cf && wrangler deploy",
+    "deploy": "npm run build:cf && deploy-worker",
     "lint": "next lint"
   },
   "dependencies": {

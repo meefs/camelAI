@@ -40,7 +40,10 @@ RUN chmod -R a+rX /app
 # Layer 5: Wrangler wrapper (intercepts deploy to add --dispatch-namespace)
 COPY --chmod=755 sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
 
-# Layer 6: create-worker CLI (scaffolds projects from templates)
+# Layer 6: deploy-worker CLI (explicit dispatch namespace deploy, avoids PATH issues)
+COPY --chmod=755 sandbox/deploy-worker.sh /usr/local/bin/deploy-worker
+
+# Layer 7: create-worker CLI (scaffolds projects from templates)
 RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker
 
 WORKDIR /home/claude
