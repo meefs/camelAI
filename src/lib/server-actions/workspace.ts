@@ -4,7 +4,7 @@ import * as authDO from "@/lib/auth-do"
 import { validateAvatarContent } from "@/lib/avatar"
 import { getSessionContext } from "@/lib/auth-context"
 import { requireSession } from "@/lib/server-guards"
-import type { Workspace, WorkspaceAccessLevel } from "@/types"
+import type { Workspace, WorkspaceAccessLevel, WorkspaceWithAccess, AuditLogEntry } from "@/types"
 
 function toSafeWorkspace(workspace: Workspace) {
   return {
@@ -150,4 +150,93 @@ export async function setWorkspaceAccess(
 
   await authDO.setWorkspaceAccess(workspaceId, userId, accessLevel, session.user_id)
   return { success: true }
+}
+
+export async function getWorkspaces(): Promise<WorkspaceWithAccess[]> {
+  const session = await requireSession()
+  const workspaces = await authDO.listUserWorkspaces(session.user_id, session.org_id)
+  return workspaces.map((ws) => ({
+    ...toSafeWorkspace(ws),
+    access_level: ws.access_level,
+  }))
+}
+
+export async function getWorkspace(workspaceId: string): Promise<WorkspaceWithAccess | null> {
+  const session = await requireSession()
+  const workspace = await authDO.getWorkspace(workspaceId)
+  if (!workspace || workspace.org_id !== session.org_id) {
+    return null
+  }
+  const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id)
+  if (access === "none") {
+    return null
+  }
+  return {
+    ...toSafeWorkspace(workspace),
+    access_level: access,
+  }
+}
+
+export async function getWorkspaceMembers(workspaceId: string) {
+  const session = await requireSession()
+  const workspace = await authDO.getWorkspace(workspaceId)
+  if (!workspace || workspace.org_id !== session.org_id) {
+    throw new Error("Workspace not found")
+  }
+  const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id)
+  if (access === "none") {
+    throw new Error("Workspace not found")
+  }
+  const members = await authDO.listWorkspaceMembers(workspaceId)
+  // Hydrate with user data
+  const userIds = members.map((m) => m.user_id)
+  const users = await authDO.getUsersByIds(userIds)
+  const userMap = new Map(users.map((u) => [u.id, u]))
+
+  return members.map((m) => {
+    const user = userMap.get(m.user_id)
+    return {
+      user_id: m.user_id,
+      access_level: m.access_level,
+      granted_at: m.granted_at,
+      granted_by: m.granted_by,
+      user: user ? {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        avatar: { color: user.avatar_color, content: user.avatar_content },
+      } : null,
+    }
+  })
+}
+
+export async function removeWorkspaceAccess(workspaceId: string, userId: string) {
+  const session = await requireSession()
+  const workspace = await authDO.getWorkspace(workspaceId)
+  if (!workspace || workspace.org_id !== session.org_id) {
+    throw new Error("Workspace not found")
+  }
+  const isAdmin = await authDO.isOrgAdmin(session.user_id, session.org_id)
+  if (!isAdmin) {
+    throw new Error("Only admins can remove workspace access")
+  }
+  await authDO.setWorkspaceAccess(workspaceId, userId, "none", session.user_id)
+  return { success: true }
+}
+
+export async function getWorkspaceAuditLog(
+  workspaceId: string,
+  limit?: number,
+  offset?: number
+): Promise<AuditLogEntry[]> {
+  const session = await requireSession()
+  const workspace = await authDO.getWorkspace(workspaceId)
+  if (!workspace || workspace.org_id !== session.org_id) {
+    throw new Error("Workspace not found")
+  }
+  const isAdmin = await authDO.isOrgAdmin(session.user_id, session.org_id)
+  if (!isAdmin) {
+    throw new Error("Only admins can view audit logs")
+  }
+  return authDO.getWorkspaceAuditLog(workspaceId, limit, offset)
 }

@@ -132,3 +132,23 @@ export async function deleteThread(threadId: string) {
   await chatDO.deleteThread(threadId, workspaceId);
   return { success: true };
 }
+
+export async function getThread(threadId: string) {
+  const { workspaceId } = await requireWorkspaceId();
+  const thread = await chatDO.getThread(threadId, workspaceId);
+  if (!thread) {
+    return null;
+  }
+  const hydrated = await hydrateThreads([thread]);
+  return toSerializable(hydrated[0]);
+}
+
+export async function getThreadPreview(threadId: string): Promise<string[]> {
+  const { workspaceId } = await requireWorkspaceId();
+  // Verify thread belongs to user's workspace (prevents cross-tenant leak)
+  const thread = await chatDO.getThread(threadId, workspaceId);
+  if (!thread) {
+    throw new Error('Thread not found');
+  }
+  return chatDO.getThreadPreview(threadId);
+}

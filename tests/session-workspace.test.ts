@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { switchOrg } from '@/lib/server-actions/auth';
-import { POST as switchWorkspace } from '@/app/api/auth/switch-workspace/route';
+import { switchOrg, switchWorkspace } from '@/lib/server-actions/auth';
 
 const mockGetSessionContext = vi.fn();
 
@@ -56,46 +55,46 @@ describe('session workspace', () => {
   });
 
   it('switches workspace within same org', async () => {
-    mockGetSessionId.mockResolvedValue('session-1');
-    mockGetSession.mockResolvedValue({
-      user_id: 'user-1',
-      org_id: 'org-1',
-      workspace_id: 'ws-1',
-      created_at: Date.now(),
-      last_accessed: Date.now(),
-      expires_at: Date.now() + 1000,
+    mockGetSessionContext.mockResolvedValue({
+      sessionId: 'session-1',
+      session: {
+        user_id: 'user-1',
+        org_id: 'org-1',
+        workspace_id: 'ws-1',
+      },
     });
-    mockGetWorkspace.mockResolvedValue({ id: 'ws-2', org_id: 'org-1' });
+    mockGetWorkspace.mockResolvedValue({
+      id: 'ws-2',
+      org_id: 'org-1',
+      name: 'Workspace 2',
+      description: null,
+      created_by: 'user-1',
+      created_at: Date.now(),
+      avatar: { color: '#000000', content: 'W2' },
+      archived: false,
+      archived_at: null,
+    });
     mockGetWorkspaceAccess.mockResolvedValue('full');
 
-    const response = await switchWorkspace(new Request('http://localhost/api/auth/switch-workspace', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspace_id: 'ws-2' }),
-    }) as Request as any);
+    const result = await switchWorkspace('ws-2');
 
-    expect(response.status).toBe(200);
+    expect(result?.id).toBe('ws-2');
     expect(mockSwitchSessionWorkspace).toHaveBeenCalledWith('session-1', 'ws-2');
   });
 
   it('handles null workspace_id gracefully', async () => {
-    mockGetSessionId.mockResolvedValue('session-1');
-    mockGetSession.mockResolvedValue({
-      user_id: 'user-1',
-      org_id: 'org-1',
-      workspace_id: 'ws-1',
-      created_at: Date.now(),
-      last_accessed: Date.now(),
-      expires_at: Date.now() + 1000,
+    mockGetSessionContext.mockResolvedValue({
+      sessionId: 'session-1',
+      session: {
+        user_id: 'user-1',
+        org_id: 'org-1',
+        workspace_id: 'ws-1',
+      },
     });
 
-    const response = await switchWorkspace(new Request('http://localhost/api/auth/switch-workspace', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspace_id: null }),
-    }) as Request as any);
+    const result = await switchWorkspace('');
 
-    expect(response.status).toBe(200);
+    expect(result).toBeNull();
     expect(mockSwitchSessionWorkspace).toHaveBeenCalledWith('session-1', null);
   });
 

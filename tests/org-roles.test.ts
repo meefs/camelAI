@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { updateOrgMemberRole, removeOrgMember } from '@/lib/server-actions/org';
 import { POST as transferOwnership } from '@/app/api/orgs/[id]/transfer-ownership/route';
-import { POST as createWorkspace } from '@/app/api/workspaces/route';
+import { createWorkspace } from '@/lib/server-actions/workspace';
 
 const mockRequireOrgAdmin = vi.fn();
 const mockRequireSession = vi.fn();
@@ -104,72 +104,62 @@ describe('org roles', () => {
   });
 
   it('owner can manage workspaces', async () => {
-    mockGetSessionId.mockResolvedValue('session-1');
-    mockGetSession.mockResolvedValue({
+    mockRequireSession.mockResolvedValue({
       user_id: ownerId,
       org_id: orgId,
       workspace_id: 'ws-1',
-      created_at: Date.now(),
-      last_accessed: Date.now(),
-      expires_at: Date.now() + 1000,
     });
     mockIsOrgAdmin.mockResolvedValue(true);
-    mockCreateWorkspace.mockResolvedValue({ id: 'ws-2', org_id: orgId, name: 'New Workspace' });
+    mockCreateWorkspace.mockResolvedValue({
+      id: 'ws-2',
+      org_id: orgId,
+      name: 'New Workspace',
+      description: null,
+      created_by: ownerId,
+      created_at: Date.now(),
+      avatar: { color: '#000000', content: 'NW' },
+      archived: false,
+      archived_at: null,
+    });
 
-    const response = await createWorkspace(new Request('http://localhost/api/workspaces', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'New Workspace' }),
-    }) as Request as any);
+    const result = await createWorkspace('New Workspace');
 
-    expect(response.status).toBe(200);
-    const payload = await response.json() as { id: string };
-    expect(payload.id).toBe('ws-2');
+    expect(result.id).toBe('ws-2');
   });
 
   it('admin can manage workspaces', async () => {
-    mockGetSessionId.mockResolvedValue('session-1');
-    mockGetSession.mockResolvedValue({
+    mockRequireSession.mockResolvedValue({
       user_id: adminId,
       org_id: orgId,
       workspace_id: 'ws-1',
-      created_at: Date.now(),
-      last_accessed: Date.now(),
-      expires_at: Date.now() + 1000,
     });
     mockIsOrgAdmin.mockResolvedValue(true);
-    mockCreateWorkspace.mockResolvedValue({ id: 'ws-3', org_id: orgId, name: 'Admin Workspace' });
+    mockCreateWorkspace.mockResolvedValue({
+      id: 'ws-3',
+      org_id: orgId,
+      name: 'Admin Workspace',
+      description: null,
+      created_by: adminId,
+      created_at: Date.now(),
+      avatar: { color: '#000000', content: 'AW' },
+      archived: false,
+      archived_at: null,
+    });
 
-    const response = await createWorkspace(new Request('http://localhost/api/workspaces', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Admin Workspace' }),
-    }) as Request as any);
+    const result = await createWorkspace('Admin Workspace');
 
-    expect(response.status).toBe(200);
-    const payload = await response.json() as { id: string };
-    expect(payload.id).toBe('ws-3');
+    expect(result.id).toBe('ws-3');
   });
 
   it('member cannot manage workspaces', async () => {
-    mockGetSessionId.mockResolvedValue('session-2');
-    mockGetSession.mockResolvedValue({
+    mockRequireSession.mockResolvedValue({
       user_id: memberId,
       org_id: orgId,
       workspace_id: 'ws-1',
-      created_at: Date.now(),
-      last_accessed: Date.now(),
-      expires_at: Date.now() + 1000,
     });
     mockIsOrgAdmin.mockResolvedValue(false);
 
-    const response = await createWorkspace(new Request('http://localhost/api/workspaces', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'New Workspace' }),
-    }) as Request as any);
-
-    expect(response.status).toBe(403);
+    await expect(createWorkspace('New Workspace')).rejects.toThrow('Only admins can create workspaces');
   });
 
   it('owner can transfer ownership', async () => {
