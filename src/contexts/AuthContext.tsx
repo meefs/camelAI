@@ -86,83 +86,82 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
   const login = async (email: string, password: string) => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
-    try {
-      const data = await loginAction(email, password);
+    const result = await loginAction(email, password);
 
-      setState({
-        user: data.user,
-        currentOrg: data.currentOrg,
-        orgs: data.orgs,
-        loading: false,
-        error: null,
-      });
-    } catch (e) {
+    if (!result.success) {
       setState((prev) => ({
         ...prev,
         loading: false,
-        error: e instanceof Error ? e.message : 'Login failed',
+        error: result.error,
       }));
-      throw e;
+      throw new Error(result.error);
     }
+
+    setState({
+      user: result.data.user,
+      currentOrg: result.data.currentOrg,
+      orgs: result.data.orgs,
+      loading: false,
+      error: null,
+    });
   };
 
   const signup = async (email: string, password: string, name?: string) => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
-    try {
-      const data = await signupAction(email, password, name);
+    const result = await signupAction(email, password, name);
 
-      setState({
-        user: data.user,
-        currentOrg: data.currentOrg,
-        orgs: data.orgs,
-        loading: false,
-        error: null,
-      });
-    } catch (e) {
+    if (!result.success) {
       setState((prev) => ({
         ...prev,
         loading: false,
-        error: e instanceof Error ? e.message : 'Signup failed',
+        error: result.error,
       }));
-      throw e;
+      throw new Error(result.error);
     }
+
+    setState({
+      user: result.data.user,
+      currentOrg: result.data.currentOrg,
+      orgs: result.data.orgs,
+      loading: false,
+      error: null,
+    });
   };
 
   const logout = async () => {
-    try {
-      await logoutAction();
-    } finally {
-      setState({
-        user: null,
-        currentOrg: null,
-        orgs: [],
-        loading: false,
-        error: null,
-      });
-    }
+    const result = await logoutAction();
+
+    // Always clear local state, even if server logout failed
+    setState({
+      user: null,
+      currentOrg: null,
+      orgs: [],
+      loading: false,
+      error: result.success ? null : result.error,
+    });
   };
 
   const switchOrg = async (orgId: string) => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
-    try {
-      const currentOrg = await switchOrgAction(orgId);
+    const result = await switchOrgAction(orgId);
 
-      setState((prev) => ({
-        ...prev,
-        currentOrg,
-        loading: false,
-        error: null,
-      }));
-    } catch (e) {
+    if (!result.success) {
       setState((prev) => ({
         ...prev,
         loading: false,
-        error: e instanceof Error ? e.message : 'Failed to switch organization',
+        error: result.error,
       }));
-      throw e;
+      throw new Error(result.error);
     }
+
+    setState((prev) => ({
+      ...prev,
+      currentOrg: result.data,
+      loading: false,
+      error: null,
+    }));
   };
 
   return (

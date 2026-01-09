@@ -28,6 +28,7 @@ interface Env extends ChatEnv, AuthEnv, OrgContainerEnv {
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
+  ERROR_ANALYTICS?: AnalyticsEngineDataset;
 }
 
 const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';

@@ -5,10 +5,15 @@ import { errorResponse, jsonResponse } from '@/lib/auth';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as { email?: string; password?: string; name?: string };
-    const payload = await signup(body.email ?? '', body.password ?? '', body.name);
-    return jsonResponse(payload);
+    const result = await signup(body.email ?? '', body.password ?? '', body.name);
+
+    if (!result.success) {
+      return errorResponse(result.error, 400);
+    }
+
+    return jsonResponse(result.data);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Signup failed';
-    return errorResponse(message, 400);
+    return errorResponse(message, 500);
   }
 }

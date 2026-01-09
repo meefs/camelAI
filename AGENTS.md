@@ -61,6 +61,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/main/src/rpc-service.ts` | DoRpcService - RPC methods for cross-worker calls |
 | `workers/admin-cli/cli.mjs` | Admin CLI wrapper script |
 | `workers/admin-cli/src/index.ts` | Admin CLI worker (local-only) |
+| `src/instrumentation.ts` | Next.js SSR error logging to Analytics Engine |
 
 ## Configuration Files
 
@@ -193,6 +194,34 @@ ANTHROPIC_API_KEY=your_key_here
 | Binding | Purpose |
 |---------|---------|
 | `EMAIL_TO_USER` | Maps email addresses to user IDs |
+
+### Observability
+
+**Error Analytics** - SSR errors are logged to Workers Analytics Engine via `src/instrumentation.ts`.
+
+| Binding | Dataset | Purpose |
+|---------|---------|---------|
+| `ERROR_ANALYTICS` | `chiridion_errors` | SSR error tracking |
+
+**Data points logged:**
+- `indexes[0]`: Route type (`render`, `route`, `action`, `middleware`)
+- `blobs[0-6]`: Error digest, message, path, method, route pattern, router kind, stack trace
+- `doubles[0-1]`: Timestamp, count
+
+**Querying errors** (via Cloudflare Dashboard → Analytics Engine or GraphQL API):
+```sql
+SELECT
+  blob1 AS digest,
+  blob2 AS message,
+  blob3 AS path,
+  SUM(double2) AS count
+FROM chiridion_errors
+WHERE timestamp > NOW() - INTERVAL '1' HOUR
+GROUP BY digest, message, path
+ORDER BY count DESC
+```
+
+**Live logs:** Use `npx wrangler tail --env <env>` to see `console.error` output in real-time.
 
 ### Testing
 ```bash

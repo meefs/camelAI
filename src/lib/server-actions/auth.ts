@@ -16,6 +16,15 @@ type AuthPayload = {
   orgs: OrgMembership[];
 };
 
+// Result type for server actions - allows returning errors without throwing
+// Best practice: return errors for expected cases, only throw for truly unexpected errors
+export type ActionResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: string };
+
+// Generic error message for unexpected errors (don't leak internal details)
+const UNEXPECTED_ERROR = "An unexpected error occurred. Please try again.";
+
 function toSafeUser(user: User): User {
   return {
     id: user.id,
@@ -44,123 +53,176 @@ function toSafeOrgMembership(membership: OrgMembership): OrgMembership {
   };
 }
 
-export async function login(email: string, password: string): Promise<AuthPayload> {
-  if (!email || !password) {
-    throw new Error("Email and password are required");
-  }
-  if (!isValidEmail(email)) {
-    throw new Error("Invalid email address");
-  }
+export async function login(
+  email: string,
+  password: string
+): Promise<ActionResult<AuthPayload>> {
+  try {
+    // Input validation
+    if (!email || !password) {
+      return { success: false, error: "Email and password are required" };
+    }
+    if (!isValidEmail(email)) {
+      return { success: false, error: "Invalid email address" };
+    }
 
-  const userResult = await authDO.getUserByEmail(email);
-  if (!userResult) {
-    throw new Error("Invalid email or password");
+    // Check user exists
+    const userResult = await authDO.getUserByEmail(email);
+    if (!userResult) {
+      return { success: false, error: "Invalid email or password" };
+    }
+
+    // Verify password
+    const { userId, user } = userResult;
+    const isValid = await authDO.verifyUserPassword(userId, password);
+    if (!isValid) {
+      return { success: false, error: "Invalid email or password" };
+    }
+
+    // Get or create org
+    const orgs = await authDO.getUserOrgs(userId);
+    if (orgs.length === 0) {
+      const org = await authDO.createOrg(
+        `${user.name || email.split("@")[0]}'s Workspace`,
+        userId
+      );
+      orgs.push({
+        org_id: org.id,
+        org_name: org.name,
+        role: "admin",
+        joined_at: org.created_at,
+      });
+    }
+
+    const currentOrgId = orgs[0].org_id;
+    const currentOrg = await authDO.getOrg(currentOrgId);
+    if (!currentOrg) {
+      return { success: false, error: "Failed to load organization" };
+    }
+
+    // Create session
+    const { sessionId } = await authDO.createSession(userId, currentOrgId);
+    await setSessionCookie(sessionId);
+
+    return {
+      success: true,
+      data: {
+        user: toSafeUser(user),
+        currentOrg: toSafeOrg(currentOrg),
+        orgs: orgs.map(toSafeOrgMembership),
+      },
+    };
+  } catch (error) {
+    // Log unexpected errors for debugging (will appear in instrumentation)
+    console.error("[login] Unexpected error:", error);
+    return { success: false, error: UNEXPECTED_ERROR };
   }
-
-  const { userId, user } = userResult;
-  const isValid = await authDO.verifyUserPassword(userId, password);
-  if (!isValid) {
-    throw new Error("Invalid email or password");
-  }
-
-  const orgs = await authDO.getUserOrgs(userId);
-  if (orgs.length === 0) {
-    const org = await authDO.createOrg(`${user.name || email.split("@")[0]}'s Workspace`, userId);
-    orgs.push({
-      org_id: org.id,
-      org_name: org.name,
-      role: "admin",
-      joined_at: org.created_at,
-    });
-  }
-
-  const currentOrgId = orgs[0].org_id;
-  const currentOrg = await authDO.getOrg(currentOrgId);
-  if (!currentOrg) {
-    throw new Error("Failed to load organization");
-  }
-
-  const { sessionId } = await authDO.createSession(userId, currentOrgId);
-  await setSessionCookie(sessionId);
-
-  return {
-    user: toSafeUser(user),
-    currentOrg: toSafeOrg(currentOrg),
-    orgs: orgs.map(toSafeOrgMembership),
-  };
 }
 
 export async function signup(
   email: string,
   password: string,
   name?: string
-): Promise<AuthPayload> {
-  if (!email || !password) {
-    throw new Error("Email and password are required");
-  }
-  if (!isValidEmail(email)) {
-    throw new Error("Invalid email address");
-  }
-  if (!isValidPassword(password)) {
-    throw new Error("Password must be at least 8 characters");
-  }
+): Promise<ActionResult<AuthPayload>> {
+  try {
+    // Input validation
+    if (!email || !password) {
+      return { success: false, error: "Email and password are required" };
+    }
+    if (!isValidEmail(email)) {
+      return { success: false, error: "Invalid email address" };
+    }
+    if (!isValidPassword(password)) {
+      return { success: false, error: "Password must be at least 8 characters" };
+    }
 
-  const existing = await authDO.getUserByEmail(email);
-  if (existing) {
-    throw new Error("An account with this email already exists");
+    // Check for existing user
+    const existing = await authDO.getUserByEmail(email);
+    if (existing) {
+      return { success: false, error: "An account with this email already exists" };
+    }
+
+    // Create user and org
+    const { userId, user } = await authDO.createUser(email, password, name || null);
+    const org = await authDO.createOrg(
+      `${name || email.split("@")[0]}'s Workspace`,
+      userId
+    );
+
+    // Create session
+    const { sessionId } = await authDO.createSession(userId, org.id);
+    await setSessionCookie(sessionId);
+
+    const orgs = await authDO.getUserOrgs(userId);
+
+    return {
+      success: true,
+      data: {
+        user: toSafeUser(user),
+        currentOrg: toSafeOrg(org),
+        orgs: orgs.map(toSafeOrgMembership),
+      },
+    };
+  } catch (error) {
+    console.error("[signup] Unexpected error:", error);
+    return { success: false, error: UNEXPECTED_ERROR };
   }
-
-  const { userId, user } = await authDO.createUser(email, password, name || null);
-  const org = await authDO.createOrg(`${name || email.split("@")[0]}'s Workspace`, userId);
-  const { sessionId } = await authDO.createSession(userId, org.id);
-  await setSessionCookie(sessionId);
-
-  const orgs = await authDO.getUserOrgs(userId);
-
-  return {
-    user: toSafeUser(user),
-    currentOrg: toSafeOrg(org),
-    orgs: orgs.map(toSafeOrgMembership),
-  };
 }
 
-export async function logout() {
-  const sessionContext = await getSessionContext();
-  if (sessionContext) {
-    await authDO.destroySession(sessionContext.sessionId);
+export async function logout(): Promise<ActionResult<null>> {
+  try {
+    const sessionContext = await getSessionContext();
+    if (sessionContext) {
+      await authDO.destroySession(sessionContext.sessionId);
+    }
+    await deleteSessionCookie();
+    return { success: true, data: null };
+  } catch (error) {
+    console.error("[logout] Unexpected error:", error);
+    return { success: false, error: UNEXPECTED_ERROR };
   }
-  await deleteSessionCookie();
 }
 
-export async function switchOrg(orgId: string): Promise<Organization> {
-  const sessionContext = await getSessionContext();
-  if (!sessionContext) {
-    throw new Error("Not logged in");
-  }
+export async function switchOrg(orgId: string): Promise<ActionResult<Organization>> {
+  try {
+    const sessionContext = await getSessionContext();
+    if (!sessionContext) {
+      return { success: false, error: "Not logged in" };
+    }
 
-  if (!orgId) {
-    throw new Error("Organization ID is required");
-  }
+    if (!orgId) {
+      return { success: false, error: "Organization ID is required" };
+    }
 
-  const isMember = await authDO.isOrgMember(sessionContext.session.user_id, orgId);
-  if (!isMember) {
-    throw new Error("You are not a member of this organization");
-  }
+    const isMember = await authDO.isOrgMember(sessionContext.session.user_id, orgId);
+    if (!isMember) {
+      return { success: false, error: "You are not a member of this organization" };
+    }
 
-  await authDO.switchSessionOrg(sessionContext.sessionId, orgId);
-  const currentOrg = await authDO.getOrg(orgId);
-  if (!currentOrg) {
-    throw new Error("Organization not found");
+    await authDO.switchSessionOrg(sessionContext.sessionId, orgId);
+    const currentOrg = await authDO.getOrg(orgId);
+    if (!currentOrg) {
+      return { success: false, error: "Organization not found" };
+    }
+
+    return { success: true, data: toSafeOrg(currentOrg) };
+  } catch (error) {
+    console.error("[switchOrg] Unexpected error:", error);
+    return { success: false, error: UNEXPECTED_ERROR };
   }
-  return toSafeOrg(currentOrg);
 }
 
 export async function getAuthState(): Promise<AuthPayload | null> {
-  const authContext = await getAuthContext();
-  if (!authContext) return null;
-  return {
-    user: toSafeUser(authContext.user),
-    currentOrg: toSafeOrg(authContext.currentOrg),
-    orgs: authContext.orgs.map(toSafeOrgMembership),
-  };
+  try {
+    const authContext = await getAuthContext();
+    if (!authContext) return null;
+    return {
+      user: toSafeUser(authContext.user),
+      currentOrg: toSafeOrg(authContext.currentOrg),
+      orgs: authContext.orgs.map(toSafeOrgMembership),
+    };
+  } catch (error) {
+    console.error("[getAuthState] Unexpected error:", error);
+    return null;
+  }
 }
