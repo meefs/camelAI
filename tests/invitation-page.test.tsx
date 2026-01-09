@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import InvitationPage from '@/app/invitations/[orgId]/[invitationId]/page';
+import { hardRedirect } from '@/lib/navigation';
 
 const pushMock = vi.fn();
 let params = { orgId: 'org-123', invitationId: 'invite-456' };
@@ -19,6 +20,10 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => useAuthMock(),
+}));
+
+vi.mock('@/lib/navigation', () => ({
+  hardRedirect: vi.fn(),
 }));
 
 const invitationPayload = {
@@ -129,7 +134,6 @@ describe('InvitationPage', () => {
   });
 
   it('handles accept flow', async () => {
-    vi.useFakeTimers();
     useAuthMock.mockReturnValue({
       user: { email: 'invitee@example.com' },
       loading: false,
@@ -145,8 +149,8 @@ describe('InvitationPage', () => {
         json: () => Promise.resolve({ success: true }),
       });
 
-    const hrefSpy = vi.spyOn(window.location, 'href', 'set');
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const redirectMock = vi.mocked(hardRedirect);
+    const user = userEvent.setup();
     render(<InvitationPage />);
 
     await user.click(await screen.findByRole('button', { name: /accept invitation/i }));
@@ -160,12 +164,12 @@ describe('InvitationPage', () => {
 
     expect(await screen.findByText(/invitation accepted/i)).toBeInTheDocument();
 
-    await act(async () => {
-      vi.advanceTimersByTime(1000);
-    });
-
-    expect(hrefSpy).toHaveBeenCalledWith('/');
-    hrefSpy.mockRestore();
+    await waitFor(
+      () => {
+        expect(redirectMock).toHaveBeenCalledWith('/');
+      },
+      { timeout: 2000 }
+    );
   });
 
   it('handles decline flow', async () => {

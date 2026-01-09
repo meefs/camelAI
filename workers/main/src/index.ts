@@ -667,6 +667,36 @@ export default {
       // FIXME: Enforce viewer role restrictions when publishing is implemented.
       // Viewers should only access published apps, not chat or computer.
 
+      let accessLevel: 'full' | 'read_only' | 'none' = 'none';
+      try {
+        const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
+        try {
+          accessLevel = await rpc.getWorkspaceAccess(workspaceId, session.user_id);
+        } finally {
+          rpc[Symbol.dispose]?.();
+        }
+      } catch (err) {
+        console.warn('[ws] Failed to resolve workspace access', {
+          sessionId,
+          orgId,
+          workspaceId,
+          userId: session.user_id,
+          error: String(err),
+        });
+        return new Response('Forbidden', { status: 403 });
+      }
+
+      if (accessLevel !== 'full') {
+        console.log('[ws] Workspace access denied', {
+          sessionId,
+          orgId,
+          workspaceId,
+          userId: session.user_id,
+          accessLevel,
+        });
+        return new Response('Forbidden', { status: 403 });
+      }
+
       console.log('[ws] Authenticated, forwarding to container', {
         sessionId,
         orgId,

@@ -15,6 +15,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { LogoIcon } from '@/components/ui/logo';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/contexts/AuthContext';
+import { hardRedirect } from '@/lib/navigation';
 import type { OrgRole } from '@/types';
 import { Loader2 } from 'lucide-react';
 
@@ -121,7 +122,7 @@ export default function InvitationPage() {
   useEffect(() => {
     if (status !== 'success') return;
     const timeout = setTimeout(() => {
-      window.location.href = '/';
+      hardRedirect('/');
     }, 1000);
     return () => clearTimeout(timeout);
   }, [status]);
