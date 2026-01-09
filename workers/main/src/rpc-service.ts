@@ -30,6 +30,7 @@ import type {
   AdminWorkspaceSummary,
   AdminWorkspaceDetail,
   AdminThreadWithContext,
+  AdminInvitation,
   PaginatedResult,
   PaginationParams,
 } from '../../../src/types';
@@ -1059,13 +1060,21 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     params: PaginationParams = {}
   ): Promise<PaginatedResult<AdminUserSummary>> {
     const { offset = 0, limit = 50 } = params;
+    const search = params.search?.trim().toLowerCase();
 
     // Get all users first (we need the full list to know total)
     const overview = await this.getAdminOverview();
-    const total = overview.users.length;
+    const allUsers = overview.users;
+    const filtered = search
+      ? allUsers.filter((user) => {
+        const haystack = `${user.id} ${user.email} ${user.name ?? ''}`.toLowerCase();
+        return haystack.includes(search);
+      })
+      : allUsers;
+    const total = filtered.length;
 
     // Apply pagination
-    const items = overview.users.slice(offset, offset + limit);
+    const items = filtered.slice(offset, offset + limit);
 
     return { items, total, offset, limit };
   }
@@ -1075,13 +1084,20 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     params: PaginationParams = {}
   ): Promise<PaginatedResult<Organization & { member_count: number; workspace_count: number }>> {
     const { offset = 0, limit = 50 } = params;
+    const search = params.search?.trim().toLowerCase();
 
     // Get all orgs first
     const allOrgs = await this.adminGetAllOrgs();
-    const total = allOrgs.length;
+    const filtered = search
+      ? allOrgs.filter((org) => {
+        const haystack = `${org.id} ${org.name}`.toLowerCase();
+        return haystack.includes(search);
+      })
+      : allOrgs;
+    const total = filtered.length;
 
     // Apply pagination
-    const items = allOrgs.slice(offset, offset + limit);
+    const items = filtered.slice(offset, offset + limit);
 
     return { items, total, offset, limit };
   }
@@ -1091,6 +1107,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     params: PaginationParams = {}
   ): Promise<PaginatedResult<AdminWorkspaceSummary>> {
     const { offset = 0, limit = 50 } = params;
+    const search = params.search?.trim().toLowerCase();
     const workspaces = await this.collectAllWorkspaceIds();
     const orgNameById = new Map<string, string>();
 
@@ -1134,8 +1151,14 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       (summary): summary is AdminWorkspaceSummary => summary !== null
     );
     allItems.sort((a, b) => b.created_at - a.created_at);
-    const total = allItems.length;
-    const items = allItems.slice(offset, offset + limit);
+    const filtered = search
+      ? allItems.filter((workspace) => {
+        const haystack = `${workspace.id} ${workspace.name} ${workspace.org_name} ${workspace.description ?? ''}`.toLowerCase();
+        return haystack.includes(search);
+      })
+      : allItems;
+    const total = filtered.length;
+    const items = filtered.slice(offset, offset + limit);
 
     return { items, total, offset, limit };
   }
@@ -1145,15 +1168,121 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     params: PaginationParams = {}
   ): Promise<PaginatedResult<AdminThreadWithContext>> {
     const { offset = 0, limit = 50 } = params;
+    const search = params.search?.trim().toLowerCase();
 
     // Get all threads first
     const allThreads = await this.adminGetAllThreads();
-    const total = allThreads.length;
+    const filtered = search
+      ? allThreads.filter((thread) => {
+        const haystack = `${thread.id} ${thread.title} ${thread.org_name} ${thread.workspace_name}`.toLowerCase();
+        return haystack.includes(search);
+      })
+      : allThreads;
+    const total = filtered.length;
 
     // Apply pagination
-    const items = allThreads.slice(offset, offset + limit);
+    const items = filtered.slice(offset, offset + limit);
 
     return { items, total, offset, limit };
+  }
+
+  async adminGetInvitationsPaginated(
+    params: PaginationParams = {}
+  ): Promise<PaginatedResult<AdminInvitation>> {
+    const { offset = 0, limit = 50 } = params;
+    const search = params.search?.trim().toLowerCase();
+    const orgIds = await this.collectAllOrgIds();
+
+    const orgResults = await Promise.all(
+      Array.from(orgIds).map(async (orgId) => {
+        using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+        const [info, invitations] = await Promise.all([
+          orgStub.getInfo(),
+          orgStub.getInvitations(),
+        ]);
+        if (!info) return null;
+        return {
+          org_id: orgId,
+          org_name: info.name,
+          invitations,
+        };
+      })
+    );
+
+    const entries: Array<{
+      id: string;
+      email: string;
+      role: OrgRole;
+      org_id: string;
+      org_name: string;
+      invited_by: string;
+      created_at: number;
+      expires_at: number;
+    }> = [];
+    const inviterIds = new Set<string>();
+
+    for (const entry of orgResults) {
+      if (!entry) continue;
+      for (const invitation of entry.invitations) {
+        inviterIds.add(invitation.invited_by);
+        entries.push({
+          id: invitation.id,
+          email: invitation.email,
+          role: invitation.role,
+          org_id: entry.org_id,
+          org_name: entry.org_name,
+          invited_by: invitation.invited_by,
+          created_at: invitation.created_at,
+          expires_at: invitation.expires_at,
+        });
+      }
+    }
+
+    const inviterProfiles = await Promise.all(
+      Array.from(inviterIds).map(async (userId) => {
+        using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+        const profile = await userStub.getProfile();
+        return { userId, profile };
+      })
+    );
+    const inviterMap = new Map<string, { email: string; name: string | null }>();
+    for (const { userId, profile } of inviterProfiles) {
+      if (!profile) continue;
+      inviterMap.set(userId, { email: profile.email, name: profile.name });
+    }
+
+    const allInvitations = entries.map((entry) => {
+      const inviter = inviterMap.get(entry.invited_by);
+      return {
+        id: entry.id,
+        email: entry.email,
+        role: entry.role,
+        org_id: entry.org_id,
+        org_name: entry.org_name,
+        invited_by: entry.invited_by,
+        inviter_email: inviter?.email ?? entry.invited_by,
+        inviter_name: inviter?.name ?? null,
+        created_at: entry.created_at,
+        expires_at: entry.expires_at,
+      };
+    });
+
+    const filtered = search
+      ? allInvitations.filter((invitation) => {
+        const haystack = `${invitation.id} ${invitation.email} ${invitation.org_name}`.toLowerCase();
+        return haystack.includes(search);
+      })
+      : allInvitations;
+    const sorted = filtered.sort((a, b) => b.created_at - a.created_at);
+    const total = sorted.length;
+    const items = sorted.slice(offset, offset + limit);
+
+    return { items, total, offset, limit };
+  }
+
+  async adminDeleteInvitation(orgId: string, invitationId: string): Promise<void> {
+    using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    await stub.deleteInvitation(invitationId);
   }
 
   // Organization functions
@@ -1349,7 +1478,8 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }>> {
     using stub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     const invitations = await stub.getInvitations();
-    return invitations.map((inv) => ({
+    const now = Date.now();
+    return invitations.filter((inv) => inv.expires_at > now).map((inv) => ({
       id: inv.id,
       email: inv.email,
       role: inv.role,

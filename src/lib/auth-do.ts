@@ -17,6 +17,7 @@ import type {
   AdminWorkspaceSummary,
   AdminWorkspaceDetail,
   AdminThreadWithContext,
+  AdminInvitation,
   PaginatedResult,
   PaginationParams,
   Message,
@@ -210,6 +211,12 @@ export async function adminGetThreadsPaginated(
   return withRpc((rpc) => rpc.adminGetThreadsPaginated(params));
 }
 
+export async function adminGetInvitationsPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<AdminInvitation>> {
+  return withRpc((rpc) => rpc.adminGetInvitationsPaginated(params));
+}
+
 export async function adminGetWorkspaceDetail(workspaceId: string): Promise<AdminWorkspaceDetail | null> {
   return withRpc((rpc) => rpc.adminGetWorkspaceDetail(workspaceId));
 }
@@ -236,6 +243,10 @@ export async function adminTransferOrgOwnership(
 
 export async function adminForceOrphanUser(userId: string, actorId: string): Promise<void> {
   return withRpc((rpc) => rpc.adminForceOrphanUser(userId, actorId));
+}
+
+export async function adminDeleteInvitation(orgId: string, invitationId: string): Promise<void> {
+  return withRpc((rpc) => rpc.adminDeleteInvitation(orgId, invitationId));
 }
 
 // Organization functions

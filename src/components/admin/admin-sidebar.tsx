@@ -4,6 +4,7 @@ import {
   Building2,
   FolderKanban,
   Home,
+  Mail,
   MessageSquare,
   Users,
 } from 'lucide-react';
@@ -51,6 +52,11 @@ const modelRoutes = [
     label: 'Threads',
     href: '/qaml-backdoor/threads',
     icon: MessageSquare,
+  },
+  {
+    label: 'Invitations',
+    href: '/qaml-backdoor/invitations',
+    icon: Mail,
   },
 ];
 

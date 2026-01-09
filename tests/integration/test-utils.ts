@@ -4,6 +4,7 @@
 
 import { readFileSync } from 'fs';
 import path from 'path';
+import type { OrgRole } from '@/types';
 
 const SERVER_URL_FILE = path.join(__dirname, '.server-url');
 
@@ -91,7 +92,7 @@ export async function createInvitation(
   sessionCookie: string,
   orgId: string,
   email: string,
-  role: 'admin' | 'member' | 'viewer' = 'member'
+  role: OrgRole = 'member'
 ) {
   const response = await serverFetch(`/api/orgs/${orgId}/invite`, {
     method: 'POST',
@@ -106,7 +107,17 @@ export async function createInvitation(
     throw new Error(`Create invitation failed: ${response.status}`);
   }
 
-  return response.json() as Promise<{ id: string; email: string; role: string }>;
+  return response.json() as Promise<{ id: string; email: string; role: string; expires_at: number }>;
+}
+
+export async function createTestInvitation(
+  orgId: string,
+  email: string,
+  role: OrgRole = 'member',
+  sessionCookie: string
+): Promise<{ id: string; expires_at: number }> {
+  const invitation = await createInvitation(sessionCookie, orgId, email, role);
+  return { id: invitation.id, expires_at: invitation.expires_at };
 }
 
 export async function acceptInvitation(

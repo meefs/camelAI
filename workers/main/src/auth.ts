@@ -771,10 +771,6 @@ export class OrgDO extends DurableObject<AuthEnv> {
 
   // Invitation methods
   async getInvitations(): Promise<OrgInvitation[]> {
-    // Clean up expired invitations first
-    const now = Date.now();
-    this.sql.exec('DELETE FROM invitations WHERE expires_at < ?', now);
-
     return this.sql.exec(
       'SELECT id, email, role, invited_by, created_at, expires_at FROM invitations ORDER BY created_at DESC'
     ).toArray() as unknown as OrgInvitation[];

@@ -54,6 +54,10 @@ function LoginContent() {
   const [submitting, setSubmitting] = useState(false);
 
   const redirectTo = getSafeRedirect(searchParams.get('redirect'));
+  const signupHref =
+    redirectTo === '/'
+      ? '/signup'
+      : `/signup?redirect=${encodeURIComponent(redirectTo)}`;
 
   useEffect(() => {
     if (!loading && user) {
@@ -144,7 +148,7 @@ function LoginContent() {
 
               <div className="text-center text-sm">
                 Don&apos;t have an account?{' '}
-                <Link href="/signup" className="text-primary hover:underline underline-offset-4">
+                <Link href={signupHref} className="text-primary hover:underline underline-offset-4">
                   Sign up
                 </Link>
               </div>

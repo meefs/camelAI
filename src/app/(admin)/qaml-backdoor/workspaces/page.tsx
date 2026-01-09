@@ -2,6 +2,7 @@ import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
+import { AdminSearch } from '@/components/admin/admin-search';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -26,17 +27,22 @@ function formatTimestamp(value: number) {
 }
 
 interface Props {
-  searchParams: Promise<{ offset?: string }>;
+  searchParams: Promise<{ offset?: string; search?: string }>;
 }
 
 export default async function AdminWorkspacesPage({ searchParams }: Props) {
   const params = await searchParams;
   const offset = parseInt(params.offset || '0', 10);
+  const search = typeof params.search === 'string' ? params.search.trim() : '';
 
   const { items: workspaces, total } = await authDO.adminGetWorkspacesPaginated({
     offset,
     limit: LIMIT,
+    search: search || undefined,
   });
+  const baseUrl = search
+    ? `/qaml-backdoor/workspaces?search=${encodeURIComponent(search)}`
+    : '/qaml-backdoor/workspaces';
 
   return (
     <>
@@ -49,12 +55,15 @@ export default async function AdminWorkspacesPage({ searchParams }: Props) {
 
       <div className="flex-1 min-h-0 overflow-auto">
         <div className="max-w-6xl mx-auto w-full px-4 md:px-6 py-6">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
             <div>
               <h1 className="text-lg font-semibold tracking-tight">Workspaces</h1>
               <p className="text-sm text-muted-foreground">
                 {total} total workspaces
               </p>
+            </div>
+            <div className="w-full sm:w-64">
+              <AdminSearch placeholder="Search workspaces" />
             </div>
           </div>
 
@@ -139,7 +148,7 @@ export default async function AdminWorkspacesPage({ searchParams }: Props) {
             total={total}
             offset={offset}
             limit={LIMIT}
-            baseUrl="/qaml-backdoor/workspaces"
+            baseUrl={baseUrl}
           />
         </div>
       </div>

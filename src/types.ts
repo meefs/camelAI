@@ -244,6 +244,19 @@ export interface AdminThreadWithContext extends Thread {
   workspace_name: string;
 }
 
+export interface AdminInvitation {
+  id: string;
+  email: string;
+  role: OrgRole;
+  org_id: string;
+  org_name: string;
+  invited_by: string;
+  inviter_email: string;
+  inviter_name: string | null;
+  created_at: number;
+  expires_at: number;
+}
+
 // Paginated result types for admin lists
 export interface PaginatedResult<T> {
   items: T[];
@@ -255,6 +268,7 @@ export interface PaginatedResult<T> {
 export interface PaginationParams {
   offset?: number;
   limit?: number;
+  search?: string;
 }
 
 // Integration types

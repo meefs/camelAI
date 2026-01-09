@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, Suspense } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -34,8 +34,18 @@ export default function SignupPage() {
   );
 }
 
+// Validate redirect URL to prevent open redirects
+function getSafeRedirect(redirect: string | null): string {
+  if (!redirect) return '/';
+  if (redirect.startsWith('/') && !redirect.startsWith('//') && !redirect.includes(':')) {
+    return redirect;
+  }
+  return '/';
+}
+
 function SignupContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, loading, signup } = useAuth();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -43,12 +53,17 @@ function SignupContent() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const redirectTo = getSafeRedirect(searchParams.get('redirect'));
+  const loginHref =
+    redirectTo === '/'
+      ? '/login'
+      : `/login?redirect=${encodeURIComponent(redirectTo)}`;
 
   useEffect(() => {
     if (!loading && user) {
-      router.push('/');
+      router.push(redirectTo);
     }
-  }, [user, loading, router]);
+  }, [user, loading, router, redirectTo]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,7 +83,7 @@ function SignupContent() {
 
     try {
       await signup(email, password, name || undefined);
-      router.push('/');
+      router.push(redirectTo);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Signup failed');
     } finally {
@@ -165,7 +180,7 @@ function SignupContent() {
 
               <div className="text-center text-sm">
                 Already have an account?{' '}
-                <Link href="/login" className="text-primary hover:underline underline-offset-4">
+                <Link href={loginHref} className="text-primary hover:underline underline-offset-4">
                   Sign in
                 </Link>
               </div>

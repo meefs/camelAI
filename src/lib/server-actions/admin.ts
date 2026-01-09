@@ -151,3 +151,9 @@ export async function forceAdminOrphanUser(userId: string) {
   await authDO.adminForceOrphanUser(userId, session.user_id);
   return { success: true };
 }
+
+export async function deleteAdminInvitation(orgId: string, invitationId: string) {
+  await requireSuperuser('Forbidden');
+  await authDO.adminDeleteInvitation(orgId, invitationId);
+  return { success: true };
+}

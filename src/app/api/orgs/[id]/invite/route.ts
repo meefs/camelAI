@@ -7,7 +7,7 @@ import {
   jsonResponse,
   unauthorizedResponse,
 } from '@/lib/auth';
-import { createInvitation, deleteInvitation } from '@/lib/server-actions/org';
+import { createInvitation } from '@/lib/server-actions/org';
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -59,7 +59,35 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     if (!invitationId) {
       return errorResponse('Invitation ID is required', 400);
     }
-    await deleteInvitation(orgId, invitationId);
+
+    const sessionId = await getSessionId();
+    if (!sessionId) {
+      return unauthorizedResponse();
+    }
+
+    const session = await authDO.getSession(sessionId);
+    if (!session) {
+      return unauthorizedResponse();
+    }
+
+    const isAdmin = await authDO.isOrgAdmin(session.user_id, orgId);
+    if (!isAdmin) {
+      const invitation = await authDO.getInvitation(orgId, invitationId);
+      if (!invitation) {
+        return errorResponse('Invitation not found or expired', 404);
+      }
+
+      const user = await authDO.getUserById(session.user_id);
+      if (!user) {
+        return unauthorizedResponse();
+      }
+
+      if (user.email.toLowerCase() !== invitation.email.toLowerCase()) {
+        return errorResponse('Invitation not found or expired', 404);
+      }
+    }
+
+    await authDO.deleteInvitation(orgId, invitationId);
     return jsonResponse({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to delete invitation';
