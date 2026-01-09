@@ -116,9 +116,23 @@ export async function login(
       return { success: false, error: "Invalid email or password" };
     }
 
-    // Get or create org
+    // Handle orphaned users (may create recovery org/workspace)
+    const orphanRecovery = await authDO.handleOrphanedUserLogin(userId);
+
+    // Get orgs (refresh after orphan handling may have created new org)
     const orgs = await authDO.getUserOrgs(userId);
-    if (orgs.length === 0) {
+
+    let currentOrg: Organization;
+    let workspaces: WorkspaceWithAccess[];
+    let currentWorkspace: WorkspaceWithAccess | null;
+
+    if (orphanRecovery) {
+      // User was orphaned and got a recovery org/workspace
+      currentOrg = orphanRecovery.org;
+      workspaces = [orphanRecovery.workspace];
+      currentWorkspace = orphanRecovery.workspace;
+    } else if (orgs.length === 0) {
+      // No orgs - create one
       const org = await authDO.createOrg(
         `${user.name || email.split("@")[0]}'s Workspace`,
         userId
@@ -129,16 +143,24 @@ export async function login(
         role: "admin",
         joined_at: org.created_at,
       });
+      currentOrg = org;
+      workspaces = [];
+      currentWorkspace = null;
+    } else {
+      // Normal case - use first org
+      const currentOrgId = orgs[0].org_id;
+      const org = await authDO.getOrg(currentOrgId);
+      if (!org) {
+        return { success: false, error: "Failed to load organization" };
+      }
+      currentOrg = org;
+      workspaces = await authDO.listUserWorkspaces(userId, currentOrgId);
+      const preferredWorkspaceId = orgs[0].last_workspace_id ?? null;
+      currentWorkspace = workspaces.find((ws) => ws.id === preferredWorkspaceId) || workspaces[0] || null;
     }
 
-    const currentOrgId = orgs[0].org_id;
-    const currentOrg = await authDO.getOrg(currentOrgId);
-    if (!currentOrg) {
-      return { success: false, error: "Failed to load organization" };
-    }
-
-    // Create session
-    const { sessionId } = await authDO.createSession(userId, currentOrgId);
+    // Create session with workspace
+    const { sessionId } = await authDO.createSession(userId, currentOrg.id, currentWorkspace?.id ?? null);
     await setSessionCookie(sessionId);
 
     return {
@@ -146,9 +168,9 @@ export async function login(
       data: {
         user: toSafeUser(user),
         currentOrg: toSafeOrg(currentOrg),
-        currentWorkspace: null,
+        currentWorkspace: currentWorkspace ? toSafeWorkspace(currentWorkspace) : null,
         orgs: orgs.map(toSafeOrgMembership),
-        workspaces: [],
+        workspaces: workspaces.map(toSafeWorkspace),
       },
     };
   } catch (error) {
