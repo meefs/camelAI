@@ -19,6 +19,7 @@
 		"cf-typegen": "wrangler types --env-interface CloudflareEnv ./cloudflare-env.d.ts",
 		"test": "vitest",
 		"test:run": "vitest run",
+		"test:all": "npm run test:run && npm run test:integration && npm run test:workers",
 		"test:workers": "vitest run --config vitest.workers.config.ts",
 		"test:integration": "vitest run --config vitest.integration.config.ts",
 		"test:e2e": "playwright test",

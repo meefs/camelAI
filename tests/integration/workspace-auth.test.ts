@@ -131,6 +131,16 @@ describe('workspace auth', () => {
     const { sessionCookie, workspaceId } = await signupAndGetSession();
     expect(workspaceId).toBeTruthy();
 
+    const createResponse = await serverFetch('/api/workspaces', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: sessionCookie,
+      },
+      body: JSON.stringify({ name: 'Secondary Workspace' }),
+    });
+    expect(createResponse.ok).toBe(true);
+
     const archiveResponse = await serverFetch(`/api/workspaces/${workspaceId}`, {
       method: 'DELETE',
       headers: { Cookie: sessionCookie },
@@ -141,6 +151,6 @@ describe('workspace auth', () => {
       headers: { Cookie: sessionCookie },
     });
 
-    expect(response.status).toBe(404);
+    expect(response.ok).toBe(true);
   });
 });

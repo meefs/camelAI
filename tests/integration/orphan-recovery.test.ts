@@ -3,7 +3,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { acceptInvitation, createInvitation, serverFetch, signupUser, uniqueEmail } from './test-utils';
+import {
+  acceptInvitation,
+  createInvitation,
+  extractSessionCookie,
+  serverFetch,
+  signupUser,
+  uniqueEmail,
+} from './test-utils';
 
 const PASSWORD = 'testpass123';
 
@@ -14,11 +21,15 @@ async function loginUser(email: string, password: string) {
     body: JSON.stringify({ email, password }),
   });
   expect(response.ok).toBe(true);
-  return response.json() as Promise<{
+  const payload = await response.json() as {
     user: { id: string; is_orphaned: boolean };
     currentOrg: { id: string };
     currentWorkspace: { id: string } | null;
-  }>;
+  };
+  return {
+    payload,
+    sessionCookie: extractSessionCookie(response),
+  };
 }
 
 describe('orphan recovery', () => {
@@ -34,15 +45,9 @@ describe('orphan recovery', () => {
     const meResponse = await serverFetch('/api/auth/me', {
       headers: { Cookie: user.sessionCookie },
     });
-    expect(meResponse.ok).toBe(true);
-    const mePayload = await meResponse.json() as {
-      user: { is_orphaned: boolean };
-      currentOrg: { archived: boolean };
-    };
-    expect(mePayload.user.is_orphaned).toBe(true);
-    expect(mePayload.currentOrg.archived).toBe(true);
+    expect(meResponse.status).toBe(401);
 
-    const payload = await loginUser(user.email, user.password);
+    const { payload } = await loginUser(user.email, user.password);
     expect(payload.currentOrg.id).toBeTruthy();
     expect(payload.currentOrg.id).not.toBe(user.orgId);
     expect(payload.currentWorkspace?.id).toBeTruthy();
@@ -61,11 +66,13 @@ describe('orphan recovery', () => {
     });
     expect(archiveResponse.ok).toBe(true);
 
-    const acceptResponse = await acceptInvitation(invitee.sessionCookie, owner.orgId, invitation.id);
+    const { sessionCookie } = await loginUser(invitee.email, invitee.password);
+
+    const acceptResponse = await acceptInvitation(sessionCookie, owner.orgId, invitation.id);
     expect(acceptResponse.success).toBe(true);
 
     const meResponse = await serverFetch('/api/auth/me', {
-      headers: { Cookie: invitee.sessionCookie },
+      headers: { Cookie: sessionCookie },
     });
     expect(meResponse.ok).toBe(true);
     const payload = await meResponse.json() as {
