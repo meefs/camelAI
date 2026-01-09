@@ -50,8 +50,30 @@ export function WorkspaceSwitcher() {
     return <WorkspaceSwitcherSkeleton />
   }
 
-  if (!currentOrg || !currentWorkspace) {
+  if (!currentOrg) {
     return null
+  }
+
+  if (!currentWorkspace) {
+    return (
+      <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton size="lg" disabled>
+            <Avatar className="h-8 w-8 rounded-lg">
+              <AvatarFallback className="rounded-lg bg-muted">?</AvatarFallback>
+            </Avatar>
+            <div className="grid flex-1 text-left text-sm leading-tight">
+              <span className="truncate font-medium text-muted-foreground">
+                No workspace
+              </span>
+              <span className="truncate text-xs text-muted-foreground">
+                {currentOrg.name}
+              </span>
+            </div>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      </SidebarMenu>
+    )
   }
 
   return (
@@ -103,7 +125,7 @@ export function WorkspaceSwitcher() {
                   onClick={() => switchWorkspace(workspace.id)}
                   className="gap-2 p-2"
                 >
-                  <Avatar className="h-6 w-6">
+                  <Avatar className="h-6 w-6 shrink-0">
                     <AvatarFallback
                       style={{
                         backgroundColor: workspace.avatar.color,
@@ -113,24 +135,23 @@ export function WorkspaceSwitcher() {
                       {workspace.avatar.content}
                     </AvatarFallback>
                   </Avatar>
-                  <div className="flex min-w-0 flex-1 items-center gap-2">
-                    <span className="truncate">{workspace.name}</span>
-                    {orgName ? (
-                      <Badge
-                        variant="outline"
-                        className="max-w-[140px] shrink-0 truncate text-[10px] text-muted-foreground"
-                      >
-                        {orgName}
-                      </Badge>
-                    ) : null}
-                    {workspace.access_level === "read_only" ? (
-                      <Badge variant="secondary" className="shrink-0 text-[10px]">
-                        Read-only
-                      </Badge>
-                    ) : null}
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-sm">{workspace.name}</span>
+                    <div className="flex items-center gap-1">
+                      {orgName ? (
+                        <span className="truncate text-xs text-muted-foreground">
+                          {orgName}
+                        </span>
+                      ) : null}
+                      {workspace.access_level === "read_only" ? (
+                        <Badge variant="secondary" className="shrink-0 text-[10px]">
+                          Read-only
+                        </Badge>
+                      ) : null}
+                    </div>
                   </div>
                   {workspace.id === currentWorkspace.id ? (
-                    <Check className="h-4 w-4 text-muted-foreground" />
+                    <Check className="h-4 w-4 shrink-0 text-muted-foreground" />
                   ) : null}
                 </DropdownMenuItem>
               )

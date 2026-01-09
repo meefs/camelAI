@@ -664,6 +664,7 @@ export class OrgDO extends DurableObject<AuthEnv> {
 
   // Member methods
   async getMembers(): Promise<OrgMember[]> {
+    this.ensureOwnerExists('system');
     return this.sql.exec('SELECT user_id, role, joined_at FROM members ORDER BY joined_at ASC')
       .toArray() as unknown as OrgMember[];
   }
@@ -692,14 +693,24 @@ export class OrgDO extends DurableObject<AuthEnv> {
 
   async removeMember(userId: string, actorId: string): Promise<void> {
     const existing = await this.getMember(userId);
+    if (existing?.role === 'owner') {
+      throw new Error('Cannot remove the organization owner. Transfer ownership first.');
+    }
     this.sql.exec('DELETE FROM members WHERE user_id = ?', userId);
     if (existing) {
       this.log('member_removed', actorId, userId, { role: existing.role });
     }
+    this.ensureOwnerExists(actorId);
   }
 
   async updateMemberRole(userId: string, role: OrgRole, actorId: string): Promise<void> {
     const existing = await this.getMember(userId);
+    if (role === 'owner') {
+      throw new Error('Use transferOwnership to assign owner role');
+    }
+    if (existing?.role === 'owner') {
+      throw new Error('Cannot change the owner role. Transfer ownership first.');
+    }
     this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', role, userId);
     if (existing && existing.role !== role) {
       this.log('member_role_changed', actorId, userId, {
@@ -707,6 +718,7 @@ export class OrgDO extends DurableObject<AuthEnv> {
         new_role: role,
       });
     }
+    this.ensureOwnerExists(actorId);
   }
 
   async isMember(userId: string): Promise<boolean> {
@@ -736,6 +748,25 @@ export class OrgDO extends DurableObject<AuthEnv> {
   async getMemberCount(): Promise<number> {
     const rows = this.sql.exec('SELECT COUNT(*) as count FROM members').toArray();
     return (rows[0] as { count: number }).count;
+  }
+
+  private ensureOwnerExists(actorId: string): void {
+    const ownerRows = this.sql.exec(
+      'SELECT user_id FROM members WHERE role = ? LIMIT 1',
+      'owner'
+    ).toArray() as Array<{ user_id: string }>;
+    if (ownerRows.length > 0) return;
+
+    const fallbackRows = this.sql.exec(
+      `SELECT user_id, role, joined_at FROM members
+       ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, joined_at ASC
+       LIMIT 1`
+    ).toArray() as Array<{ user_id: string }>;
+    const fallback = fallbackRows[0];
+    if (!fallback) return;
+
+    this.sql.exec('UPDATE members SET role = ? WHERE user_id = ?', 'owner', fallback.user_id);
+    this.log('owner_recovered', actorId, fallback.user_id);
   }
 
   // Invitation methods

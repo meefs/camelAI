@@ -37,6 +37,7 @@ import {
   CardContent,
   CardHeader,
 } from "@/components/ui/card"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { useAuth } from "@/contexts/AuthContext"
 import {
   deleteInvitation,
@@ -97,6 +98,8 @@ export function TeamTable({
   const { logout } = useAuth()
   const [inviteOpen, setInviteOpen] = useState(false)
   const [editingWorkspaceAccess, setEditingWorkspaceAccess] = useState(false)
+  const [pendingRemoveMemberId, setPendingRemoveMemberId] = useState<string | null>(null)
+  const [leaveOrgOpen, setLeaveOrgOpen] = useState(false)
   const [memberList, setMemberList] = useState<MemberWithAccess[]>(members)
   const [inviteList, setInviteList] = useState<TeamInvitation[]>(invitations)
 
@@ -156,7 +159,6 @@ export function TeamTable({
   }
 
   const handleRemoveMember = async (userId: string) => {
-    if (!confirm("Remove this member from the organization?")) return
     try {
       await removeOrgMember(orgId, userId)
       setMemberList((prev) => prev.filter((member) => member.user.id !== userId))
@@ -169,7 +171,6 @@ export function TeamTable({
   }
 
   const handleLeaveOrg = async () => {
-    if (!confirm("Leave this organization?")) return
     try {
       await removeOrgMember(orgId, currentUserId)
       await logout()
@@ -207,7 +208,15 @@ export function TeamTable({
   return (
     <div className="space-y-6">
       {canManageMembers ? (
-        <div className="flex justify-end">
+        <div className="flex flex-wrap justify-end gap-2">
+          {canEditWorkspaceAccess ? (
+            <Button
+              variant={editingWorkspaceAccess ? "default" : "outline"}
+              onClick={() => setEditingWorkspaceAccess((prev) => !prev)}
+            >
+              {editingWorkspaceAccess ? "Done editing" : "Edit access"}
+            </Button>
+          ) : null}
           <Button onClick={() => setInviteOpen(true)}>
             <Plus className="mr-2 size-4" />
             Invite member
@@ -222,23 +231,7 @@ export function TeamTable({
               <TableHead>Member</TableHead>
               <TableHead>Role</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>
-                <div className="flex items-center justify-between gap-2">
-                  <span>Workspace access</span>
-                  {canEditWorkspaceAccess ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2"
-                      onClick={() =>
-                        setEditingWorkspaceAccess((prev) => !prev)
-                      }
-                    >
-                      {editingWorkspaceAccess ? "Done" : "Edit"}
-                    </Button>
-                  ) : null}
-                </div>
-              </TableHead>
+              <TableHead>Workspace access</TableHead>
               <TableHead></TableHead>
             </TableRow>
           </TableHeader>
@@ -331,9 +324,10 @@ export function TeamTable({
                               <MoreHorizontal className="size-4" />
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
+                          <DropdownMenuContent align="end" className="min-w-[180px]">
                             <DropdownMenuItem
-                              onClick={() => handleRemoveMember(member.user.id)}
+                              onClick={() => setPendingRemoveMemberId(member.user.id)}
+                              className="whitespace-nowrap"
                             >
                               Remove from organization
                             </DropdownMenuItem>
@@ -341,7 +335,11 @@ export function TeamTable({
                         </DropdownMenu>
                       ) : null}
                       {isSelf && !isOwner ? (
-                        <Button variant="ghost" size="sm" onClick={handleLeaveOrg}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setLeaveOrgOpen(true)}
+                        >
                           Leave
                         </Button>
                       ) : null}
@@ -395,9 +393,10 @@ export function TeamTable({
                             <MoreHorizontal className="size-4" />
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
+                        <DropdownMenuContent align="end" className="min-w-[180px]">
                           <DropdownMenuItem
                             onClick={() => handleCancelInvite(invitation.id)}
+                            className="whitespace-nowrap"
                           >
                             Cancel invitation
                           </DropdownMenuItem>
@@ -411,20 +410,6 @@ export function TeamTable({
           </TableBody>
         </Table>
       </div>
-
-      {canEditWorkspaceAccess ? (
-        <div className="flex items-center justify-between text-sm text-muted-foreground md:hidden">
-          <span>Workspace access</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2"
-            onClick={() => setEditingWorkspaceAccess((prev) => !prev)}
-          >
-            {editingWorkspaceAccess ? "Done" : "Edit"}
-          </Button>
-        </div>
-      ) : null}
 
       <div className="space-y-3 md:hidden">
         {rows.map((row) => {
@@ -505,19 +490,19 @@ export function TeamTable({
                       }
                     />
                   </div>
-                  {canManageMembers && member.role !== "owner" && !isSelf ? (
-                    <Button
-                      variant="outline"
-                      onClick={() => handleRemoveMember(member.user.id)}
-                    >
-                      Remove from organization
-                    </Button>
-                  ) : null}
-                  {isSelf && !isOwner ? (
-                    <Button variant="ghost" onClick={handleLeaveOrg}>
-                      Leave organization
-                    </Button>
-                  ) : null}
+                {canManageMembers && member.role !== "owner" && !isSelf ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => setPendingRemoveMemberId(member.user.id)}
+                  >
+                    Remove from organization
+                  </Button>
+                ) : null}
+                {isSelf && !isOwner ? (
+                  <Button variant="ghost" onClick={() => setLeaveOrgOpen(true)}>
+                    Leave organization
+                  </Button>
+                ) : null}
                 </CardContent>
               </Card>
             )
@@ -581,6 +566,32 @@ export function TeamTable({
             },
             ...prev,
           ])
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(pendingRemoveMemberId)}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemoveMemberId(null)
+        }}
+        title="Remove member from organization?"
+        description="This member will lose access to this organization and its workspaces."
+        confirmLabel="Remove member"
+        variant="destructive"
+        onConfirm={() => {
+          if (pendingRemoveMemberId) {
+            void handleRemoveMember(pendingRemoveMemberId)
+          }
+        }}
+      />
+      <ConfirmDialog
+        open={leaveOrgOpen}
+        onOpenChange={setLeaveOrgOpen}
+        title="Leave organization?"
+        description="You will lose access to this organization and its workspaces."
+        confirmLabel="Leave organization"
+        variant="destructive"
+        onConfirm={() => {
+          void handleLeaveOrg()
         }}
       />
     </div>

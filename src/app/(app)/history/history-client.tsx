@@ -56,7 +56,7 @@ export default function HistoryClient({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [limit]);
 
   useEffect(() => {
     if (currentOrg?.id && currentOrg.id !== activeOrgId) {

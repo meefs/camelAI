@@ -16,7 +16,7 @@ export default function OrgDomainsPage() {
         <Globe className="mx-auto mb-4 size-12 text-muted-foreground" />
         <h3 className="mb-2 font-medium">Custom domains coming soon</h3>
         <p className="text-sm text-muted-foreground">
-          You'll be able to host your projects on your own domain.
+          You&apos;ll be able to host your projects on your own domain.
         </p>
       </Card>
     </div>

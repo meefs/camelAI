@@ -20,9 +20,11 @@ function formatTimestamp(value: number) {
   return dateFormatter.format(new Date(value))
 }
 
+type AuditLogUser = Pick<User, "id" | "email" | "name">
+
 interface AuditLogTableProps {
   entries: AuditLogEntry[]
-  users?: User[]
+  users?: AuditLogUser[]
 }
 
 export function AuditLogTable({ entries, users = [] }: AuditLogTableProps) {

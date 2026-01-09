@@ -79,7 +79,7 @@ export function ProfileForm({ user }: ProfileFormProps) {
   return (
     <div className="space-y-8 max-w-2xl">
       <div className="flex items-center gap-4">
-        <Avatar className="h-20 w-20">
+        <Avatar className="h-16 w-16">
           <AvatarFallback
             style={{
               backgroundColor: avatar.color,

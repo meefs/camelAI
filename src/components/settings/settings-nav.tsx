@@ -9,13 +9,17 @@ import { cn } from "@/lib/utils"
 const navGroups = [
   {
     label: "User",
-    items: [{ label: "Profile", href: "/settings/profile" }],
+    items: [
+      { label: "Profile", href: "/settings/profile" },
+      { label: "Organizations", href: "/settings/organizations" },
+    ],
   },
   {
     label: "Organization",
     items: [
       { label: "General", href: "/settings/organization/general" },
       { label: "Team", href: "/settings/organization/team" },
+      { label: "Workspaces", href: "/settings/organization/workspaces" },
       { label: "Billing", href: "/settings/organization/billing" },
       { label: "Domains", href: "/settings/organization/domains" },
     ],

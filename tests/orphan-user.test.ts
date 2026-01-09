@@ -6,6 +6,7 @@ const mockVerifyUserPassword = vi.fn();
 const mockGetUserOrgs = vi.fn();
 const mockHandleOrphanedUserLogin = vi.fn();
 const mockListUserWorkspaces = vi.fn();
+const mockListUserWorkspacesAcrossOrgs = vi.fn();
 const mockCreateSession = vi.fn();
 const mockCreateOrg = vi.fn();
 const mockGetOrg = vi.fn();
@@ -16,6 +17,8 @@ vi.mock('@/lib/auth-do', () => ({
   getUserOrgs: (...args: [string]) => mockGetUserOrgs(...args),
   handleOrphanedUserLogin: (...args: [string]) => mockHandleOrphanedUserLogin(...args),
   listUserWorkspaces: (...args: [string, string]) => mockListUserWorkspaces(...args),
+  listUserWorkspacesAcrossOrgs: (...args: [string, unknown]) =>
+    mockListUserWorkspacesAcrossOrgs(...args),
   createSession: (...args: [string, string, string | null]) => mockCreateSession(...args),
   createOrg: (...args: [string, string]) => mockCreateOrg(...args),
   getOrg: (...args: [string]) => mockGetOrg(...args),
@@ -38,6 +41,7 @@ describe('orphaned user login', () => {
     mockGetUserOrgs.mockReset();
     mockHandleOrphanedUserLogin.mockReset();
     mockListUserWorkspaces.mockReset();
+    mockListUserWorkspacesAcrossOrgs.mockReset();
     mockCreateSession.mockReset();
     mockCreateOrg.mockReset();
     mockGetOrg.mockReset();
@@ -85,6 +89,7 @@ describe('orphaned user login', () => {
     ]);
     mockHandleOrphanedUserLogin.mockResolvedValue({ org, workspace });
     mockListUserWorkspaces.mockResolvedValue([workspace]);
+    mockListUserWorkspacesAcrossOrgs.mockResolvedValue([workspace]);
     mockCreateSession.mockResolvedValue({ sessionId: 'session-1', sessionData: { workspace_id: workspace.id } });
 
     const result = await login(user.email, 'password123');
@@ -137,6 +142,7 @@ describe('orphaned user login', () => {
     ]);
     mockGetOrg.mockResolvedValue(org);
     mockListUserWorkspaces.mockResolvedValue([workspace]);
+    mockListUserWorkspacesAcrossOrgs.mockResolvedValue([workspace]);
     mockCreateSession.mockResolvedValue({ sessionId: 'session-2', sessionData: { workspace_id: workspace.id } });
 
     const result = await login(user.email, 'password123');
@@ -188,6 +194,7 @@ describe('orphaned user login', () => {
       { org_id: org.id, org_name: org.name, role: 'owner', joined_at: Date.now() },
     ]);
     mockListUserWorkspaces.mockResolvedValue([workspace]);
+    mockListUserWorkspacesAcrossOrgs.mockResolvedValue([workspace]);
     mockCreateSession.mockResolvedValue({ sessionId: 'session-3', sessionData: { workspace_id: workspace.id } });
 
     await login(user.email, 'password123');

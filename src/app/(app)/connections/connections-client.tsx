@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -59,6 +60,7 @@ export default function ConnectionsClient({
   const [selectedConnection, setSelectedConnection] = useState<Integration | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [activeOrgId, setActiveOrgId] = useState(orgId);
+  const [deleteTarget, setDeleteTarget] = useState<Integration | null>(null);
 
   const refreshConnections = useCallback(
     async (targetOrgId = activeOrgId) => {
@@ -96,12 +98,11 @@ export default function ConnectionsClient({
     }
   };
 
-  const handleDelete = async (connection: Integration) => {
-    if (!activeOrgId) return;
-    if (!confirm(`Are you sure you want to delete "${connection.name}"?`)) return;
+  const handleDelete = async () => {
+    if (!activeOrgId || !deleteTarget) return;
 
     try {
-      await deleteIntegration(activeOrgId, connection.id);
+      await deleteIntegration(activeOrgId, deleteTarget.id);
       await refreshConnections(activeOrgId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete connection');
@@ -310,7 +311,7 @@ export default function ConnectionsClient({
                                           variant="ghost"
                                           size="icon"
                                           className="text-destructive hover:text-destructive"
-                                          onClick={() => handleDelete(connection)}
+                                          onClick={() => setDeleteTarget(connection)}
                                         >
                                           <Trash2 className="size-4" />
                                         </Button>
@@ -391,6 +392,23 @@ export default function ConnectionsClient({
           onSuccess={handleEditSuccess}
         />
       )}
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        title="Delete connection?"
+        description={
+          deleteTarget
+            ? `Are you sure you want to delete "${deleteTarget.name}"? This action cannot be undone.`
+            : "Are you sure you want to delete this connection?"
+        }
+        confirmLabel="Delete connection"
+        variant="destructive"
+        onConfirm={() => {
+          void handleDelete();
+        }}
+      />
     </>
   );
 }

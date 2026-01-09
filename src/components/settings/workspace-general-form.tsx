@@ -5,8 +5,6 @@ import { z } from "zod"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
-import { Plus } from "lucide-react"
-
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import {
@@ -19,10 +17,8 @@ import {
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { Separator } from "@/components/ui/separator"
 import { updateWorkspaceInfo } from "@/lib/server-actions/workspace"
 import { AvatarPicker } from "@/components/settings/avatar-picker"
-import { CreateWorkspaceDialog } from "@/components/settings/create-workspace-dialog"
 import { useAuth } from "@/contexts/AuthContext"
 import { getContrastTextColor } from "@/lib/avatar"
 import type { Workspace } from "@/types"
@@ -45,7 +41,6 @@ export function WorkspaceGeneralForm({
 }: WorkspaceGeneralFormProps) {
   const { refreshAuth } = useAuth()
   const [avatarOpen, setAvatarOpen] = useState(false)
-  const [createOpen, setCreateOpen] = useState(false)
   const [avatar, setAvatar] = useState(workspace.avatar)
   const [saving, setSaving] = useState(false)
 
@@ -150,22 +145,6 @@ export function WorkspaceGeneralForm({
         </form>
       </Form>
 
-      {canEdit ? (
-        <>
-          <Separator />
-          <div>
-            <h3 className="font-medium mb-2">Create new workspace</h3>
-            <p className="text-sm text-muted-foreground mb-4">
-              Add another workspace to this organization.
-            </p>
-            <Button variant="outline" type="button" onClick={() => setCreateOpen(true)}>
-              <Plus className="mr-2 size-4" />
-              Create workspace
-            </Button>
-          </div>
-        </>
-      ) : null}
-
       <AvatarPicker
         open={avatarOpen}
         onOpenChange={setAvatarOpen}
@@ -173,14 +152,6 @@ export function WorkspaceGeneralForm({
         onChange={setAvatar}
         title="Workspace avatar"
         description="Update the workspace avatar and initials."
-      />
-
-      <CreateWorkspaceDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        onCreated={() => {
-          refreshAuth()
-        }}
       />
     </div>
   )

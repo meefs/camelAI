@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { MoreVertical, CheckSquare, Pencil, Trash2 } from 'lucide-react';
 import type { Thread } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -140,10 +140,10 @@ export function ChatRow({
     setIsEditing(false);
   };
 
-  const handleCancelRename = () => {
+  const handleCancelRename = useCallback(() => {
     setEditValue(thread.title);
     setIsEditing(false);
-  };
+  }, [thread.title]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {

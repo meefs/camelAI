@@ -131,13 +131,15 @@ export function applyStreamingEventToMessage(
 
   if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
     // Clear internal offset when streaming completes
-    const { _blockOffset: _, ...rest } = message;
+    const rest = { ...message };
+    delete (rest as { _blockOffset?: number })._blockOffset;
     return { ...rest, isStreaming: false };
   }
 
   if (evt?.type === 'message_stop') {
     // Clear internal offset when streaming completes
-    const { _blockOffset: _, ...rest } = message;
+    const rest = { ...message };
+    delete (rest as { _blockOffset?: number })._blockOffset;
     return { ...rest, isStreaming: false };
   }
 

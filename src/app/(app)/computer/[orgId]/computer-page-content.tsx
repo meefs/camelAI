@@ -42,6 +42,7 @@ import type { WorkspaceFileRead, WorkspaceListResponse } from '@/types';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
   Dialog,
   DialogContent,
@@ -325,6 +326,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const [dialogSubmitting, setDialogSubmitting] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [confirmEditOpen, setConfirmEditOpen] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [editingEnabled, setEditingEnabled] = useState(false);
   const [savingPaths, setSavingPaths] = useState<Set<string>>(new Set());
   const [conflictState, setConflictState] = useState<ConflictState | null>(null);
@@ -343,6 +345,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const pendingModelsRef = useRef<Map<string, { content: string; language: string }>>(
     new Map()
   );
+  const resetFormRef = useRef<HTMLFormElement | null>(null);
   const activePathRef = useRef<string | null>(null);
   const dragSourcePathRef = useRef<string | null>(null);
   const dragOverPathRef = useRef<string | null>(null);
@@ -1924,21 +1927,30 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                   />
                 </div>
                 <form
+                  ref={resetFormRef}
                   action={resetSandboxContainerAction.bind(null, workspaceId)}
-                  onSubmit={(event) => {
-                    if (
-                      !confirm(
-                        'Reset the sandbox container? Active sessions will disconnect and the container will restart on next use.'
-                      )
-                    ) {
-                      event.preventDefault();
-                    }
-                  }}
                 >
-                  <Button size="sm" variant="destructive" className="h-8">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    className="h-8"
+                    onClick={() => setResetConfirmOpen(true)}
+                  >
                     Reset Container
                   </Button>
                 </form>
+                <ConfirmDialog
+                  open={resetConfirmOpen}
+                  onOpenChange={setResetConfirmOpen}
+                  title="Reset sandbox container?"
+                  description="Reset the sandbox container? Active sessions will disconnect and the container will restart on next use."
+                  confirmLabel="Reset container"
+                  variant="destructive"
+                  onConfirm={() => {
+                    resetFormRef.current?.requestSubmit();
+                  }}
+                />
                 <Button
                   size="sm"
                   variant="outline"

@@ -96,6 +96,136 @@ describe('Auth flow (full-stack with DOs)', () => {
     });
   });
 
+  describe('Organization ownership invariants', () => {
+    it('prevents removing the org owner', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Owner');
+      const org = await rpc.createOrg('Owner Org', userId);
+
+      await expect(rpc.removeOrgMember(org.id, userId, userId)).rejects.toThrow(
+        'Cannot remove organization owner'
+      );
+
+      const members = await rpc.getOrgMembers(org.id);
+      expect(members.some((member) => member.user.id === userId && member.role === 'owner')).toBe(
+        true
+      );
+    });
+
+    it('prevents demoting the org owner without transfer', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Owner');
+      const org = await rpc.createOrg('Owner Org', userId);
+
+      await expect(
+        rpc.updateOrgMemberRole(org.id, userId, 'member', userId)
+      ).rejects.toThrow('Cannot change the owner role');
+
+      const members = await rpc.getOrgMembers(org.id);
+      const owner = members.find((member) => member.user.id === userId);
+      expect(owner?.role).toBe('owner');
+    });
+  });
+
+  describe('Invitations', () => {
+    it('should create an invitation', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
+      const org = await rpc.createOrg('Test Org', userId);
+
+      const invitation = await rpc.createInvitation(
+        org.id,
+        'invitee@example.com',
+        'member',
+        userId
+      );
+
+      expect(invitation.id).toBeDefined();
+      expect(invitation.expires_at).toBeGreaterThan(Date.now());
+    });
+
+    it('should persist invitations across requests', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
+      const org = await rpc.createOrg('Test Org', userId);
+
+      await rpc.createInvitation(org.id, 'invitee@example.com', 'member', userId);
+
+      const invitations = await rpc.getOrgInvitations(org.id);
+
+      expect(invitations).toHaveLength(1);
+      expect(invitations[0].email).toBe('invitee@example.com');
+    });
+
+    it('should retrieve invitation details', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
+      const org = await rpc.createOrg('Test Org', userId);
+
+      const { id } = await rpc.createInvitation(
+        org.id,
+        'invitee@example.com',
+        'admin',
+        userId
+      );
+
+      const invitation = await rpc.getInvitation(org.id, id);
+
+      expect(invitation).not.toBeNull();
+      expect(invitation!.email).toBe('invitee@example.com');
+      expect(invitation!.role).toBe('admin');
+      expect(invitation!.org.id).toBe(org.id);
+    });
+
+    it('should accept invitation and add user to org', async () => {
+      const inviterEmail = testEmail();
+      const { userId: inviterId } = await rpc.createUser(
+        inviterEmail,
+        'password123',
+        'Inviter'
+      );
+      const org = await rpc.createOrg('Test Org', inviterId);
+
+      const inviteeEmail = testEmail();
+      const { id: invitationId } = await rpc.createInvitation(
+        org.id,
+        inviteeEmail,
+        'member',
+        inviterId
+      );
+
+      const { userId: inviteeId } = await rpc.createUser(
+        inviteeEmail,
+        'password123',
+        'Invitee'
+      );
+
+      const accepted = await rpc.acceptInvitation(org.id, invitationId, inviteeId);
+
+      expect(accepted).toBe(true);
+
+      const isMember = await rpc.isOrgMember(inviteeId, org.id);
+      expect(isMember).toBe(true);
+    });
+
+    it('should delete an invitation', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
+      const org = await rpc.createOrg('Test Org', userId);
+
+      const { id } = await rpc.createInvitation(
+        org.id,
+        'invitee@example.com',
+        'member',
+        userId
+      );
+      await rpc.deleteInvitation(org.id, id);
+
+      const invitations = await rpc.getOrgInvitations(org.id);
+      expect(invitations).toHaveLength(0);
+    });
+  });
+
   describe('Session management', () => {
     it('should create and retrieve a session', async () => {
       const email = testEmail();

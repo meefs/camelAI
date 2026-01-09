@@ -359,8 +359,8 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
 
       if (typeof data?.eventId === 'number') {
         lastEventIdRef.current = Math.max(lastEventIdRef.current, data.eventId);
-        if (threadId) {
-          persistSessionState(threadId);
+        if (id) {
+          persistSessionState(id);
         }
       }
 
@@ -402,8 +402,8 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
           lastEventIdRef.current = 0;
         }
         sessionIdRef.current = newSessionId;
-        if (threadId) {
-          persistSessionState(threadId);
+        if (id) {
+          persistSessionState(id);
         }
       } else if (data.type === 'sdk_event') {
         // Handle SDK events for streaming - streaming is now stored directly in messages
@@ -421,7 +421,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
               if (prev.some(m => m.id === msgId)) return prev;
               return [...prev, {
                 id: msgId,
-                thread_id: threadId || '',
+                thread_id: id,
                 role: 'assistant' as const,
                 content: [],
                 created_at: Date.now(),
@@ -547,11 +547,14 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   // Track which threadId we're connected to
   const connectedThreadIdRef = useRef<string | null>(null);
   const connectedWorkspaceIdRef = useRef<string | null>(null);
+  const bumpConnectionId = useCallback(() => {
+    connectionIdRef.current += 1;
+  }, []);
 
   // Cleanup on unmount to avoid orphaned WebSockets or reconnect timers
   useEffect(() => {
     return () => {
-      connectionIdRef.current++;
+      bumpConnectionId();
       connectedThreadIdRef.current = null;
       connectedWorkspaceIdRef.current = null;
 
@@ -575,7 +578,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         previewReconnectTimeoutRef.current = null;
       }
     };
-  }, []);
+  }, [bumpConnectionId]);
 
   // Preview WebSocket - connects to /ws/thread/{threadId} for live preview state updates
   // Uses a stable connect function to handle reconnection
@@ -833,7 +836,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     }
     setShowScrollButton(false);
     initialScrollDoneRef.current = true;
-  }, [shouldShowChat, threadId, messages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage?.id]);
+  }, [shouldShowChat, threadId, messages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage, lastMessage?.id]);
 
   useLayoutEffect(() => {
     if (!shouldRenderSpacer) return;

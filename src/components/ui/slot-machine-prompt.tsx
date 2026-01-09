@@ -99,7 +99,7 @@ export function SlotMachinePrompt({
         revealed: false,
       }))
     );
-  }, []);
+  }, [targetText]);
 
   return (
     <div className={cn('relative w-full max-w-md', className)}>

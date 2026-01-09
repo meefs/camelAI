@@ -6,6 +6,7 @@ const mockVerifyUserPassword = vi.fn();
 const mockGetUserOrgs = vi.fn();
 const mockHandleOrphanedUserLogin = vi.fn();
 const mockListUserWorkspaces = vi.fn();
+const mockListUserWorkspacesAcrossOrgs = vi.fn();
 const mockCreateSession = vi.fn();
 const mockGetOrg = vi.fn();
 
@@ -15,6 +16,8 @@ vi.mock('@/lib/auth-do', () => ({
   getUserOrgs: (...args: [string]) => mockGetUserOrgs(...args),
   handleOrphanedUserLogin: (...args: [string]) => mockHandleOrphanedUserLogin(...args),
   listUserWorkspaces: (...args: [string, string]) => mockListUserWorkspaces(...args),
+  listUserWorkspacesAcrossOrgs: (...args: [string, unknown]) =>
+    mockListUserWorkspacesAcrossOrgs(...args),
   createSession: (...args: [string, string, string | null]) => mockCreateSession(...args),
   getOrg: (...args: [string]) => mockGetOrg(...args),
 }));
@@ -36,6 +39,7 @@ describe('login selects last-used workspace', () => {
     mockGetUserOrgs.mockReset();
     mockHandleOrphanedUserLogin.mockReset();
     mockListUserWorkspaces.mockReset();
+    mockListUserWorkspacesAcrossOrgs.mockReset();
     mockCreateSession.mockReset();
     mockGetOrg.mockReset();
     mockSetSessionCookie.mockReset();
@@ -103,6 +107,7 @@ describe('login selects last-used workspace', () => {
     ]);
     mockGetOrg.mockResolvedValue(org);
     mockListUserWorkspaces.mockResolvedValue(workspaces);
+    mockListUserWorkspacesAcrossOrgs.mockResolvedValue(workspaces);
     mockCreateSession.mockResolvedValue({ sessionId: 'session-1', sessionData: { workspace_id: 'ws-2' } });
 
     const result = await login(user.email, 'password123');

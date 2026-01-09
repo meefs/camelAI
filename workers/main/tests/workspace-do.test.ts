@@ -80,6 +80,58 @@ describe('Workspace DO (full-stack with DOs)', () => {
     expect(actions).toContain('workspace_archived');
   });
 
+  describe('Workspace archive edge cases', () => {
+    it('blocks archiving the only workspace in an org', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Solo Owner');
+      const org = await rpc.createOrg('Solo Org', userId);
+
+      const workspaces = await rpc.listOrgWorkspaces(org.id);
+      expect(workspaces).toHaveLength(1);
+
+      await expect(
+        rpc.archiveWorkspace(workspaces[0].id, userId)
+      ).rejects.toThrow('Cannot archive the only workspace in an organization');
+    });
+
+    it('repairs session workspace when the current workspace is archived', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Session Owner');
+      const org = await rpc.createOrg('Session Org', userId);
+
+      const secondWorkspace = await rpc.createWorkspace(org.id, 'Second', userId);
+      const { sessionId } = await rpc.createSession(userId, org.id);
+
+      const session = await rpc.getSession(sessionId);
+      const defaultWorkspaceId = session?.workspace_id;
+      expect(defaultWorkspaceId).toBeTruthy();
+      expect(defaultWorkspaceId).not.toBe(secondWorkspace.id);
+
+      await rpc.archiveWorkspace(defaultWorkspaceId!, userId);
+
+      const repaired = await rpc.getSession(sessionId);
+      expect(repaired?.workspace_id).toBe(secondWorkspace.id);
+    });
+
+    it('clears last_workspace_id when the workspace is archived', async () => {
+      const email = testEmail();
+      const { userId } = await rpc.createUser(email, 'password123', 'Org Owner');
+      const org = await rpc.createOrg('Last Workspace Org', userId);
+      const secondWorkspace = await rpc.createWorkspace(org.id, 'Second', userId);
+      const { sessionId } = await rpc.createSession(userId, org.id);
+
+      await rpc.switchSessionWorkspace(sessionId, secondWorkspace.id);
+
+      let orgs = await rpc.getUserOrgs(userId);
+      expect(orgs[0]?.last_workspace_id).toBe(secondWorkspace.id);
+
+      await rpc.archiveWorkspace(secondWorkspace.id, userId);
+
+      orgs = await rpc.getUserOrgs(userId);
+      expect(orgs[0]?.last_workspace_id).not.toBe(secondWorkspace.id);
+    });
+  });
+
   it('manages workspace access levels', async () => {
     const ownerEmail = testEmail();
     const memberEmail = testEmail();

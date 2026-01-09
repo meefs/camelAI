@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { Pencil, PencilOff, X } from "lucide-react"
 
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -12,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { getContrastTextColor } from "@/lib/avatar"
 import { cn } from "@/lib/utils"
 import { setWorkspaceAccess } from "@/lib/server-actions/workspace"
 import type { Workspace, WorkspaceAccessLevel } from "@/types"
@@ -133,23 +135,42 @@ export function WorkspaceAccessTags({
           ) : null}
         </div>
       ))}
-      {showControls && hiddenWorkspaces.length > 0 ? (
+      {showControls ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="h-7">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7"
+              disabled={hiddenWorkspaces.length === 0}
+            >
               + Add
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            {hiddenWorkspaces.map((workspace) => (
-              <DropdownMenuItem
-                key={workspace.id}
-                onClick={() => handleAdd(workspace.id)}
-              >
-                {workspace.name}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
+          {hiddenWorkspaces.length > 0 ? (
+            <DropdownMenuContent align="start" className="min-w-[180px]">
+              {hiddenWorkspaces.map((workspace) => (
+                <DropdownMenuItem
+                  key={workspace.id}
+                  onClick={() => handleAdd(workspace.id)}
+                  className="whitespace-nowrap gap-2"
+                >
+                  <Avatar className="h-5 w-5">
+                    <AvatarFallback
+                      style={{
+                        backgroundColor: workspace.avatar.color,
+                        color: getContrastTextColor(workspace.avatar.color),
+                        fontSize: "0.625rem",
+                      }}
+                    >
+                      {workspace.avatar.content}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="truncate">{workspace.name}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          ) : null}
         </DropdownMenu>
       ) : null}
     </div>

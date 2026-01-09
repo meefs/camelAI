@@ -28,14 +28,11 @@ export function OrgMemberRoleSelect({
   currentRole,
   disabled = false,
 }: OrgMemberRoleSelectProps) {
-  if (currentRole === "owner") {
-    return <span className="text-xs text-muted-foreground">Owner</span>
-  }
-
   const router = useRouter()
   const [value, setValue] = useState<OrgRole>(currentRole)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  const isOwner = currentRole === "owner"
 
   useEffect(() => {
     setValue(currentRole)
@@ -54,6 +51,10 @@ export function OrgMemberRoleSelect({
         setError(err instanceof Error ? err.message : "Failed to update role")
       }
     })
+  }
+
+  if (isOwner) {
+    return <span className="text-xs text-muted-foreground">Owner</span>
   }
 
   return (

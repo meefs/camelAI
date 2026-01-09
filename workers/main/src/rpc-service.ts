@@ -450,11 +450,23 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
     const session = await stub.getData();
     if (!session) return null;
-    if (!session.workspace_id) {
+    let resolvedWorkspaceId = session.workspace_id;
+    if (resolvedWorkspaceId) {
+      const info = await this.getWorkspaceInfo(resolvedWorkspaceId);
+      if (!info || info.org_id !== session.org_id) {
+        resolvedWorkspaceId = null;
+      }
+    }
+    if (!resolvedWorkspaceId) {
       const fallback = await this.ensureDefaultWorkspace(session.org_id, session.user_id);
-      if (fallback) {
-        await stub.switchWorkspace(fallback.id);
-        session.workspace_id = fallback.id;
+      resolvedWorkspaceId = fallback?.id ?? null;
+    }
+    if (resolvedWorkspaceId !== session.workspace_id) {
+      await stub.switchWorkspace(resolvedWorkspaceId);
+      session.workspace_id = resolvedWorkspaceId;
+      if (resolvedWorkspaceId) {
+        using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(session.user_id)));
+        await userStub.setOrgLastWorkspace(session.org_id, resolvedWorkspaceId);
       }
     }
     return session;
@@ -1403,13 +1415,34 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   async archiveWorkspace(workspaceId: string, actorId: string): Promise<Workspace | null> {
     using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
-    const info = await workspaceStub.archive(actorId);
+    const info = await workspaceStub.getInfo();
     if (!info) return null;
 
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(info.org_id)));
+    const orgWorkspaces = await orgStub.getWorkspaces();
+    const activeWorkspaces = orgWorkspaces.filter((entry) => !entry.archived);
+    const isActiveTarget = activeWorkspaces.some((entry) => entry.id === workspaceId);
+    if (isActiveTarget && activeWorkspaces.length <= 1) {
+      throw new Error('Cannot archive the only workspace in an organization');
+    }
+
+    const archivedInfo = await workspaceStub.archive(actorId);
+    if (!archivedInfo) return null;
     await orgStub.archiveWorkspace(workspaceId);
 
-    return this.toWorkspace(info);
+    const members = await orgStub.getMembers();
+    await Promise.all(
+      members.map(async (member) => {
+        using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(member.user_id)));
+        const orgs = await userStub.getOrgs();
+        const membership = orgs.find((org) => org.org_id === info.org_id);
+        if (membership?.last_workspace_id === workspaceId) {
+          await userStub.setOrgLastWorkspace(info.org_id, null);
+        }
+      })
+    );
+
+    return this.toWorkspace(archivedInfo);
   }
 
   async listOrgWorkspaces(orgId: string): Promise<Workspace[]> {

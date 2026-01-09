@@ -199,6 +199,7 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
 
   // Images
   img: ({ src, alt }) => (
+    // eslint-disable-next-line @next/next/no-img-element
     <img
       src={src}
       alt={alt || ''}

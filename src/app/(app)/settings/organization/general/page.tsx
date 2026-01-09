@@ -2,7 +2,6 @@ import { Separator } from "@/components/ui/separator"
 import { OrgDangerZone } from "@/components/settings/org-danger-zone"
 import { SettingsHeader } from "@/components/settings/settings-header"
 import { OrgGeneralForm } from "@/components/settings/org-general-form"
-import { CreateOrgSection } from "@/components/settings/create-org-section"
 import { requireAuthContextLite } from "@/lib/server-guards"
 import * as authDO from "@/lib/auth-do"
 
@@ -48,9 +47,6 @@ export default async function OrgGeneralPage() {
       />
       <Separator />
       <OrgGeneralForm org={safeOrg} canEdit={isAdmin} />
-
-      <Separator />
-      <CreateOrgSection />
 
       <Separator className="my-8" />
       <div className="space-y-4">

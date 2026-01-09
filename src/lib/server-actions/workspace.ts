@@ -2,6 +2,7 @@
 
 import * as authDO from "@/lib/auth-do"
 import { validateAvatarContent } from "@/lib/avatar"
+import { getSessionContext } from "@/lib/auth-context"
 import { requireSession } from "@/lib/server-guards"
 import type { Workspace, WorkspaceAccessLevel } from "@/types"
 
@@ -93,6 +94,10 @@ export async function updateWorkspaceInfo(
 
 export async function archiveWorkspace(workspaceId: string) {
   const session = await requireSession()
+  const sessionContext = await getSessionContext()
+  if (!sessionContext) {
+    throw new Error("Not logged in")
+  }
   const workspace = await authDO.getWorkspace(workspaceId)
   if (!workspace || workspace.org_id !== session.org_id) {
     throw new Error("Workspace not found")
@@ -104,14 +109,20 @@ export async function archiveWorkspace(workspaceId: string) {
   }
 
   const workspaces = await authDO.listOrgWorkspaces(session.org_id)
-  const activeCount = workspaces.filter((entry) => !entry.archived).length
-  if (activeCount <= 1) {
+  const activeWorkspaces = workspaces.filter((entry) => entry.id !== workspaceId)
+  if (activeWorkspaces.length === 0) {
     throw new Error("Cannot archive the only workspace in an organization")
   }
 
   const archived = await authDO.archiveWorkspace(workspaceId, session.user_id)
   if (!archived) {
     throw new Error("Workspace not found")
+  }
+  if (session.workspace_id === workspaceId) {
+    const fallback = activeWorkspaces[0]
+    if (fallback) {
+      await authDO.switchSessionWorkspace(sessionContext.sessionId, fallback.id)
+    }
   }
   return toSafeWorkspace(archived)
 }
