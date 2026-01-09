@@ -151,6 +151,8 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
   const previewReconnectAttempts = useRef(0);
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const previewPingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef(0);
   const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
@@ -269,6 +271,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
       wsRef.current = null;
     }
 
+    // Clear any existing ping interval
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
+
     setReady(false);
     // Clear any streaming message on reconnect
     setStreamingMessageId(null);
@@ -333,6 +341,16 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
         return;
       }
       reconnectAttempts.current = 0;
+
+      // Start ping interval to detect connection issues early
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+      }
+      pingIntervalRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000); // Ping every 30 seconds
 
       // Send init message to container
       ws.send(JSON.stringify({
@@ -492,6 +510,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
         return;
       }
 
+      // Clear ping interval
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+
       connectionStartedAtRef.current.delete(thisConnectionId);
       setReady(false);
       wsRef.current = null;
@@ -552,6 +576,16 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
         clearTimeout(previewReconnectTimeoutRef.current);
         previewReconnectTimeoutRef.current = null;
       }
+
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+
+      if (previewPingIntervalRef.current) {
+        clearInterval(previewPingIntervalRef.current);
+        previewPingIntervalRef.current = null;
+      }
     };
   }, []);
 
@@ -570,6 +604,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
       previewWsRef.current = null;
     }
 
+    // Clear any existing ping interval
+    if (previewPingIntervalRef.current) {
+      clearInterval(previewPingIntervalRef.current);
+      previewPingIntervalRef.current = null;
+    }
+
     if (!isReconnect) {
       previewReconnectAttempts.current = 0;
     }
@@ -583,6 +623,17 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
 
     ws.onopen = () => {
       previewReconnectAttempts.current = 0;
+
+      // Start ping interval to detect connection issues early
+      // The DO auto-responds without waking up
+      if (previewPingIntervalRef.current) {
+        clearInterval(previewPingIntervalRef.current);
+      }
+      previewPingIntervalRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000); // Ping every 30 seconds
     };
 
     ws.onmessage = (event) => {
@@ -617,6 +668,12 @@ export default function Chat({ threadId, orgId, initialMessages, threadTitle, in
       if (previewWsRef.current !== ws) return; // Ignore stale connections
       previewWsRef.current = null;
       previewConnectionStartedAtRef.current = null;
+
+      // Clear ping interval
+      if (previewPingIntervalRef.current) {
+        clearInterval(previewPingIntervalRef.current);
+        previewPingIntervalRef.current = null;
+      }
 
       // Auto-reconnect with exponential backoff
       const maxAttempts = 5;

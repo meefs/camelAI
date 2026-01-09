@@ -212,6 +212,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
 
+    // Set up auto-response for ping messages - responds without waking the DO
+    ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair(
+        JSON.stringify({ type: 'ping' }),
+        JSON.stringify({ type: 'pong' })
+      )
+    );
+
     // Restore state from storage
     ctx.blockConcurrencyWhile(async () => {
       const stored = await ctx.storage.get<string[]>('previewWorkers');
