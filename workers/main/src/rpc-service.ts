@@ -2,6 +2,12 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { AuthEnv, SessionData, UserProfile, OrgRole } from './auth';
 import type { ChatEnv } from './durable-objects';
 import { getWorkspaceContainer, getContainerIdForWorkspace, type WorkspaceContainerEnv } from './workspace-container';
+
+// Sessions created before this timestamp are considered invalid.
+// Set this to invalidate all old sessions after schema changes.
+// Current value: 2025-01-09T22:00:00.000Z
+const MINIMUM_VALID_SESSION_CREATED_AT = 1736459200000;
+
 import type {
   WorkspaceDO,
   WorkspaceInfo,
@@ -451,6 +457,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
     const session = await stub.getData();
     if (!session) return null;
+    // Invalidate sessions created before the minimum valid timestamp
+    if (session.created_at < MINIMUM_VALID_SESSION_CREATED_AT) {
+      await stub.destroy();
+      return null;
+    }
     let resolvedWorkspaceId = session.workspace_id;
     if (resolvedWorkspaceId) {
       const info = await this.getWorkspaceInfo(resolvedWorkspaceId);
