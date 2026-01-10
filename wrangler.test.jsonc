@@ -12,6 +12,10 @@
 		{
 			"binding": "API_TOKENS",
 			"id": "test-api-tokens"
+		},
+		{
+			"binding": "SESSIONS",
+			"id": "test-sessions"
 		}
 	],
 	"services": [
@@ -24,13 +28,12 @@
 	"durable_objects": {
 		"bindings": [
 			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
-			{ "name": "SESSION", "class_name": "SessionDO" },
 			{ "name": "USER", "class_name": "UserDO" },
 			{ "name": "ORG", "class_name": "OrgDO" },
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 		]
 	},
 	"migrations": [
-		{ "tag": "v1", "new_sqlite_classes": ["ChatIndexDO", "SessionDO", "UserDO", "OrgDO", "WorkspaceDO"] }
+		{ "tag": "v1", "new_sqlite_classes": ["ChatIndexDO", "UserDO", "OrgDO", "WorkspaceDO"] }
 	]
 }

@@ -49,6 +49,10 @@
 		{
 			"binding": "API_TOKENS",
 			"id": "e894eb2caf1641ad8870da994b992fce"
+		},
+		{
+			"binding": "SESSIONS",
+			"id": "f5ab08fdb1d7404fbc45a171217b4a27"
 		}
 	],
 	"containers": [
@@ -76,8 +80,7 @@
 			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 			{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
-			{ "name": "SESSION", "class_name": "SessionDO" },
-			{ "name": "USER", "class_name": "UserDO" },
+						{ "name": "USER", "class_name": "UserDO" },
 			{ "name": "ORG", "class_name": "OrgDO" },
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 		]
@@ -88,7 +91,8 @@
 		{ "tag": "v3", "new_sqlite_classes": ["ChatThreadDO", "ChatIndexDO"] },
 		{ "tag": "v4", "new_sqlite_classes": ["ThreadSandbox"] },
 		{ "tag": "v5", "new_sqlite_classes": ["SessionDO", "UserDO", "OrgDO"] },
-		{ "tag": "v6", "new_sqlite_classes": ["WorkspaceDO"] }
+		{ "tag": "v6", "new_sqlite_classes": ["WorkspaceDO"] },
+		{ "tag": "v7", "deleted_classes": ["SessionDO"] }
 	],
 	"env": {
 		"prod": {
@@ -127,6 +131,10 @@
 				{
 					"binding": "API_TOKENS",
 					"id": "0ee80299e67c4c7fa0c1ad618b7e7a9c"
+				},
+				{
+					"binding": "SESSIONS",
+					"id": "67958a5b0d104621bd93c91c802ccd1c"
 				}
 			],
 			"services": [
@@ -153,8 +161,7 @@
 					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
-					{ "name": "SESSION", "class_name": "SessionDO" },
-					{ "name": "USER", "class_name": "UserDO" },
+										{ "name": "USER", "class_name": "UserDO" },
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 				]
@@ -198,6 +205,10 @@
 				{
 					"binding": "API_TOKENS",
 					"id": "e894eb2caf1641ad8870da994b992fce"
+				},
+				{
+					"binding": "SESSIONS",
+					"id": "f5ab08fdb1d7404fbc45a171217b4a27"
 				}
 			],
 			"services": [
@@ -224,8 +235,7 @@
 					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
-					{ "name": "SESSION", "class_name": "SessionDO" },
-					{ "name": "USER", "class_name": "UserDO" },
+										{ "name": "USER", "class_name": "UserDO" },
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 				]
@@ -270,6 +280,10 @@
 				{
 					"binding": "API_TOKENS",
 					"id": "e894eb2caf1641ad8870da994b992fce"
+				},
+				{
+					"binding": "SESSIONS",
+					"id": "a38773869d2e465fbf705c81fa2e01eb"
 				}
 			],
 			"services": [
@@ -296,8 +310,7 @@
 					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
-					{ "name": "SESSION", "class_name": "SessionDO" },
-					{ "name": "USER", "class_name": "UserDO" },
+										{ "name": "USER", "class_name": "UserDO" },
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 				]
@@ -342,6 +355,10 @@
 				{
 					"binding": "API_TOKENS",
 					"id": "e894eb2caf1641ad8870da994b992fce"
+				},
+				{
+					"binding": "SESSIONS",
+					"id": "c632a963433e4949b6dea43728034b36"
 				}
 			],
 			"services": [
@@ -368,8 +385,7 @@
 					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
-					{ "name": "SESSION", "class_name": "SessionDO" },
-					{ "name": "USER", "class_name": "UserDO" },
+										{ "name": "USER", "class_name": "UserDO" },
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 				]

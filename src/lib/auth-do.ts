@@ -24,7 +24,8 @@ import type {
 } from '@/types';
 import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { withDoRpc } from '@/lib/do-rpc';
-import type { SessionData, UserProfile } from '../../workers/main/src/auth';
+import type { UserProfile } from '../../workers/main/src/auth';
+import type { SessionData } from '../../workers/main/src/session-kv';
 import type { ApiTokenData } from '../../workers/main/src/api-tokens';
 import type { DoRpcService } from '../../workers/main/src/rpc-service';
 

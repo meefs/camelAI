@@ -1,12 +1,14 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { AuthEnv, SessionData, UserProfile, OrgRole } from './auth';
+import type { AuthEnv, UserProfile, OrgRole } from './auth';
 import type { ChatEnv } from './durable-objects';
 import { getWorkspaceContainer, getContainerIdForWorkspace, type WorkspaceContainerEnv } from './workspace-container';
-
-// Sessions created before this timestamp are considered invalid.
-// Set this to invalidate all old sessions after schema changes.
-// Current value: 2025-01-09T22:00:00.000Z
-const MINIMUM_VALID_SESSION_CREATED_AT = 1736459200000;
+import {
+  getSession as getSessionKV,
+  createSession as createSessionKV,
+  updateSession as updateSessionKV,
+  destroySession as destroySessionKV,
+  type SessionData,
+} from './session-kv';
 
 import type {
   WorkspaceDO,
@@ -182,6 +184,7 @@ function mapCredentialsToEnvVars(
 interface DoRpcEnv extends AuthEnv, ChatEnv, WorkspaceContainerEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   INTEGRATION_SECRET_KEY: string;
+  SESSIONS: KVNamespace;
 }
 
 function getIndexStub(env: DoRpcEnv, workspaceId: string) {
@@ -452,16 +455,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     }
   }
 
-  // Session functions
+  // Session functions (using KV storage)
   async getSession(sessionId: string): Promise<SessionData | null> {
-    using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
-    const session = await stub.getData();
+    const session = await getSessionKV(this.env.SESSIONS, sessionId);
     if (!session) return null;
-    // Invalidate sessions created before the minimum valid timestamp
-    if (session.created_at < MINIMUM_VALID_SESSION_CREATED_AT) {
-      await stub.destroy();
-      return null;
-    }
+
     let resolvedWorkspaceId = session.workspace_id;
     if (resolvedWorkspaceId) {
       const info = await this.getWorkspaceInfo(resolvedWorkspaceId);
@@ -474,8 +472,8 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       resolvedWorkspaceId = fallback?.id ?? null;
     }
     if (resolvedWorkspaceId !== session.workspace_id) {
-      await stub.switchWorkspace(resolvedWorkspaceId);
       session.workspace_id = resolvedWorkspaceId;
+      await updateSessionKV(this.env.SESSIONS, sessionId, session);
       if (resolvedWorkspaceId) {
         using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(session.user_id)));
         await userStub.setOrgLastWorkspace(session.org_id, resolvedWorkspaceId);
@@ -504,7 +502,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   ): Promise<{ sessionId: string; sessionData: SessionData }> {
     const sessionId = crypto.randomUUID();
     const now = Date.now();
-    const expiresAt = now + 30 * 24 * 60 * 60 * 1000;
+    const expiresAt = now + 30 * 24 * 60 * 60 * 1000; // 30 days
     let resolvedWorkspaceId = workspaceId;
     if (!resolvedWorkspaceId) {
       const fallback = await this.ensureDefaultWorkspace(orgId, userId);
@@ -520,8 +518,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       expires_at: expiresAt,
     };
 
-    using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
-    await stub.setData(sessionData);
+    await createSessionKV(this.env.SESSIONS, sessionId, sessionData);
     if (resolvedWorkspaceId) {
       using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
       await userStub.setOrgLastWorkspace(orgId, resolvedWorkspaceId);
@@ -531,31 +528,37 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   async destroySession(sessionId: string): Promise<void> {
-    using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
-    await stub.destroy();
+    await destroySessionKV(this.env.SESSIONS, sessionId);
   }
 
   async switchSessionOrg(sessionId: string, orgId: string, workspaceId: string | null = null): Promise<void> {
-    using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
-    const session = await stub.getData();
+    const session = await getSessionKV(this.env.SESSIONS, sessionId);
+    if (!session) return;
+
     let resolvedWorkspaceId = workspaceId;
-    if (!resolvedWorkspaceId && session) {
+    if (!resolvedWorkspaceId) {
       const fallback = await this.ensureDefaultWorkspace(orgId, session.user_id);
       resolvedWorkspaceId = fallback?.id ?? null;
     }
-    await stub.switchOrg(orgId);
-    await stub.switchWorkspace(resolvedWorkspaceId);
-    if (session?.user_id && resolvedWorkspaceId) {
+
+    session.org_id = orgId;
+    session.workspace_id = resolvedWorkspaceId;
+    await updateSessionKV(this.env.SESSIONS, sessionId, session);
+
+    if (resolvedWorkspaceId) {
       using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(session.user_id)));
       await userStub.setOrgLastWorkspace(orgId, resolvedWorkspaceId);
     }
   }
 
   async switchSessionWorkspace(sessionId: string, workspaceId: string | null): Promise<void> {
-    using stub = asDisposable(this.env.SESSION.get(this.env.SESSION.idFromName(sessionId)));
-    await stub.switchWorkspace(workspaceId);
-    const session = await stub.getData();
-    if (session?.user_id && session.org_id && workspaceId) {
+    const session = await getSessionKV(this.env.SESSIONS, sessionId);
+    if (!session) return;
+
+    session.workspace_id = workspaceId;
+    await updateSessionKV(this.env.SESSIONS, sessionId, session);
+
+    if (workspaceId) {
       using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(session.user_id)));
       await userStub.setOrgLastWorkspace(session.org_id, workspaceId);
     }

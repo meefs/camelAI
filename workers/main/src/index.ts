@@ -2,9 +2,10 @@
 // @ts-ignore - .open-next/worker.js is generated at build time
 import openNextHandler from "../../../.open-next/worker.js";
 import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
-import { SessionDO, UserDO, OrgDO, type AuthEnv } from "./auth.js";
+import { UserDO, OrgDO, type AuthEnv } from "./auth.js";
 import { WorkspaceContainer, handleWebSocketUpgrade, type WorkspaceContainerEnv } from './workspace-container.js';
 import { WorkspaceDO, type WorkspaceInfo } from './workspace.js';
+import { getSession as getSessionKV } from './session-kv.js';
 export { DoRpcService } from './rpc-service.js';
 
 // Export WorkspaceContainer as ThreadSandbox to match wrangler.jsonc class_name
@@ -25,6 +26,7 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
 interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv {
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  SESSIONS: KVNamespace;
   NEXTJS_ENV?: string;
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
@@ -676,8 +678,7 @@ export default {
         return new Response('Unauthorized', { status: 401 });
       }
 
-      const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
-      const session = await sessionStub.getData();
+      const session = await getSessionKV(env.SESSIONS, sessionId);
       if (!session) {
         return new Response('Unauthorized', { status: 401 });
       }
@@ -725,8 +726,7 @@ export default {
         return new Response('Unauthorized', { status: 401 });
       }
 
-      const sessionStub = env.SESSION.get(env.SESSION.idFromName(sessionId));
-      const session = await sessionStub.getData();
+      const session = await getSessionKV(env.SESSIONS, sessionId);
       if (!session) {
         console.log('[ws] Invalid session, returning 401', { sessionId });
         return new Response('Unauthorized', { status: 401 });
@@ -897,5 +897,5 @@ export default {
 
 // Export Durable Object classes
 export { ChatIndexDO, ChatThreadDO };
-export { SessionDO, UserDO, OrgDO };
+export { UserDO, OrgDO };
 export { WorkspaceDO };

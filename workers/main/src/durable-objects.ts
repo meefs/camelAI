@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { WorkspaceContainer } from './workspace-container';
-import type { OrgDO, SessionDO } from './auth';
+import type { OrgDO } from './auth';
 import type { DoRpcService } from './rpc-service';
 
 // Preview state for a thread
@@ -29,7 +29,6 @@ export interface ChatEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   SANDBOX: DurableObjectNamespace<WorkspaceContainer>;
   ORG: DurableObjectNamespace<OrgDO>;
-  SESSION: DurableObjectNamespace<SessionDO>;
   DO_RPC: Service<DoRpcService>;
   API_TOKENS: KVNamespace;
   R2_BUCKET: R2Bucket;

@@ -4,20 +4,9 @@ import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/a
 
 // Auth-specific environment bindings
 export interface AuthEnv {
-  SESSION: DurableObjectNamespace<SessionDO>;
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   EMAIL_TO_USER: KVNamespace;
-}
-
-// Types
-export interface SessionData {
-  user_id: string;
-  org_id: string;
-  workspace_id: string | null;
-  created_at: number;
-  last_accessed: number;
-  expires_at: number;
 }
 
 export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer';
@@ -112,104 +101,6 @@ export interface OrgIntegrationRecord {
  *
  * Note: PRAGMA user_version is NOT supported by Cloudflare SQLite.
  */
-
-// Session Durable Object - one per session
-export class SessionDO extends DurableObject<AuthEnv> {
-  private sql: SqlStorage;
-
-  constructor(ctx: DurableObjectState, env: AuthEnv) {
-    super(ctx, env);
-    this.sql = ctx.storage.sql;
-
-    ctx.blockConcurrencyWhile(async () => {
-      this.migrate();
-    });
-  }
-
-  private migrate() {
-    // Create schema version table first (if not exists)
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS _schema_version (
-        version INTEGER PRIMARY KEY
-      )
-    `);
-    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
-    const version = rows[0]?.version ?? 0;
-
-    if (version < 1) {
-      // V1: Fresh start
-      this.sql.exec('DROP TABLE IF EXISTS session_data');
-      this.sql.exec(`
-        CREATE TABLE session_data (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL
-        )
-      `);
-      this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
-    }
-
-    if (version < 2) {
-      // V2: workspace_id added to session JSON (no schema change)
-      this.sql.exec('UPDATE _schema_version SET version = 2');
-    }
-  }
-
-  async getData(): Promise<SessionData | null> {
-    const rows = this.sql.exec('SELECT value FROM session_data WHERE key = ?', 'data').toArray();
-    if (rows.length === 0) return null;
-
-    const data = JSON.parse((rows[0] as { value: string }).value) as SessionData;
-    if (data.workspace_id === undefined) {
-      data.workspace_id = null;
-      await this.setData(data);
-    }
-
-    // Check expiration
-    if (data.expires_at < Date.now()) {
-      await this.destroy();
-      return null;
-    }
-
-    return data;
-  }
-
-  async setData(data: SessionData): Promise<void> {
-    this.sql.exec(
-      'INSERT OR REPLACE INTO session_data (key, value) VALUES (?, ?)',
-      'data',
-      JSON.stringify(data)
-    );
-  }
-
-  async updateLastAccessed(): Promise<void> {
-    const data = await this.getData();
-    if (data) {
-      data.last_accessed = Date.now();
-      await this.setData(data);
-    }
-  }
-
-  async switchOrg(orgId: string): Promise<void> {
-    const data = await this.getData();
-    if (data) {
-      data.org_id = orgId;
-      data.workspace_id = null;
-      await this.setData(data);
-    }
-  }
-
-  async switchWorkspace(workspaceId: string | null): Promise<void> {
-    const data = await this.getData();
-    if (data) {
-      data.workspace_id = workspaceId;
-      await this.setData(data);
-    }
-  }
-
-  async destroy(): Promise<void> {
-    this.sql.exec('DELETE FROM session_data');
-  }
-}
 
 // User Durable Object - one per user
 export class UserDO extends DurableObject<AuthEnv> {
