@@ -396,7 +396,7 @@ export class OrgDO extends DurableObject<AuthEnv> {
         version INTEGER PRIMARY KEY
       )
     `);
-    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version ORDER BY version DESC LIMIT 1').toArray();
     const version = rows[0]?.version ?? 0;
 
     if (version < 1) {
@@ -445,6 +445,8 @@ export class OrgDO extends DurableObject<AuthEnv> {
           updated_at INTEGER NOT NULL
         )
       `);
+      // Delete old version rows and insert new one
+      this.sql.exec('DELETE FROM _schema_version');
       this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
     }
 
@@ -480,8 +482,20 @@ export class OrgDO extends DurableObject<AuthEnv> {
           JSON.stringify(info)
         );
       }
-      this.sql.exec('UPDATE _schema_version SET version = 2');
+      // Delete old version rows and insert new one
+      this.sql.exec('DELETE FROM _schema_version');
+      this.sql.exec('INSERT INTO _schema_version (version) VALUES (2)');
     }
+
+    // Always ensure workspaces table exists (defensive)
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS workspaces (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        archived INTEGER NOT NULL DEFAULT 0
+      )
+    `);
   }
 
   // Org info methods
@@ -869,8 +883,19 @@ export class OrgDO extends DurableObject<AuthEnv> {
   }
 
   async getWorkspaces(): Promise<Array<{ id: string; name: string; created_at: number; archived: number }>> {
-    return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces ORDER BY created_at ASC')
-      .toArray() as unknown as Array<{ id: string; name: string; created_at: number; archived: number }>;
+    try {
+      return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces ORDER BY created_at ASC')
+        .toArray() as unknown as Array<{ id: string; name: string; created_at: number; archived: number }>;
+    } catch (error) {
+      // If table doesn't exist, run migration and retry
+      if (error instanceof Error && error.message.includes('no such table')) {
+        console.error('Workspaces table missing, running migration...');
+        this.migrate();
+        return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces ORDER BY created_at ASC')
+          .toArray() as unknown as Array<{ id: string; name: string; created_at: number; archived: number }>;
+      }
+      throw error;
+    }
   }
 
   async transferOwnership(actorId: string, newOwnerId: string): Promise<void> {
