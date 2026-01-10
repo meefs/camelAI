@@ -30,7 +30,6 @@ describe('requireWorkspaceAccess', () => {
     workspace_id: 'ws-1',
     created_at: Date.now(),
     last_accessed: Date.now(),
-    expires_at: Date.now() + 1000,
   };
 
   beforeEach(() => {

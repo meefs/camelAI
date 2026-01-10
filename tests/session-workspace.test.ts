@@ -107,7 +107,6 @@ describe('session workspace', () => {
         workspace_id: 'ws-1',
         created_at: Date.now(),
         last_accessed: Date.now(),
-        expires_at: Date.now() + 1000,
       },
     });
     mockIsOrgMember.mockResolvedValue(true);
@@ -140,7 +139,6 @@ describe('session workspace', () => {
         workspace_id: null,
         created_at: Date.now(),
         last_accessed: Date.now(),
-        expires_at: Date.now() + 1000,
       },
     });
     mockIsOrgMember.mockResolvedValue(true);
@@ -175,7 +173,6 @@ describe('session workspace', () => {
         workspace_id: 'ws-legacy',
         created_at: Date.now(),
         last_accessed: Date.now(),
-        expires_at: Date.now() + 1000,
       },
     });
     mockIsOrgMember.mockResolvedValue(true);
@@ -211,7 +208,6 @@ describe('session workspace', () => {
         workspace_id: 'ws-archived',
         created_at: Date.now(),
         last_accessed: Date.now(),
-        expires_at: Date.now() + 1000,
       },
     });
     mockIsOrgMember.mockResolvedValue(true);

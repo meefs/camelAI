@@ -12,7 +12,6 @@ export interface SessionData {
   workspace_id: string | null;
   created_at: number;
   last_accessed: number;
-  expires_at: number;
 }
 
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
@@ -29,18 +28,8 @@ export async function getSession(
   kv: KVNamespace,
   sessionId: string
 ): Promise<SessionData | null> {
-  const data = await kv.get(sessionKey(sessionId), 'json');
-  if (!data) return null;
-
-  const session = data as SessionData;
-
-  // Check expiration
-  if (session.expires_at < Date.now()) {
-    await destroySession(kv, sessionId, session.user_id);
-    return null;
-  }
-
-  return session;
+  // KV automatically returns null for expired keys
+  return kv.get(sessionKey(sessionId), 'json');
 }
 
 export async function createSession(
@@ -77,7 +66,6 @@ export async function createNewSession(
     workspace_id: workspaceId,
     created_at: now,
     last_accessed: now,
-    expires_at: now + SESSION_TTL_SECONDS * 1000,
   };
   await createSession(kv, sessionId, sessionData);
   return { sessionId, sessionData };
@@ -88,12 +76,9 @@ export async function updateSession(
   sessionId: string,
   data: SessionData
 ): Promise<void> {
-  // Calculate remaining TTL based on expires_at
-  const remainingMs = data.expires_at - Date.now();
-  const remainingSeconds = Math.max(60, Math.floor(remainingMs / 1000)); // min 60s
-
+  // Sliding expiration: reset TTL on every update
   await kv.put(sessionKey(sessionId), JSON.stringify(data), {
-    expirationTtl: remainingSeconds,
+    expirationTtl: SESSION_TTL_SECONDS,
   });
 }
 
