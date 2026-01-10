@@ -43,11 +43,11 @@ const TOKEN_TTL_SECONDS = 86400;
 
 /**
  * Generate a per-thread deploy token and store in KV.
- * This token includes both orgId and threadId for auto-preview after deploys.
+ * This token includes both workspaceId and threadId for auto-preview after deploys.
  */
 async function mintPerThreadDeployToken(
   kv: KVNamespace,
-  orgId: string,
+  workspaceId: string,
   threadId: string
 ): Promise<string> {
   const bytes = new Uint8Array(32);
@@ -58,7 +58,7 @@ async function mintPerThreadDeployToken(
     .replace(/=/g, '');
   const token = `ctok_${base64}`;
 
-  const tokenData = JSON.stringify({ orgId, threadId });
+  const tokenData = JSON.stringify({ workspaceId, threadId });
   await kv.put(`platform_script_token:${token}`, tokenData, { expirationTtl: TOKEN_TTL_SECONDS });
 
   return token;
@@ -765,11 +765,11 @@ export default {
       });
 
       // Mint per-thread deploy token if threadId provided
-      // This token stores {orgId, threadId} so the proxy can auto-set preview after deploys
+      // This token stores {workspaceId, threadId} so the proxy can auto-set preview after deploys
       let modifiedRequest = request;
       if (threadIdFromUrl) {
         const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-        const threadToken = await mintPerThreadDeployToken(tokenKv, orgId, threadIdFromUrl);
+        const threadToken = await mintPerThreadDeployToken(tokenKv, workspaceId, threadIdFromUrl);
         console.log('[ws] Minted per-thread deploy token', {
           threadId: threadIdFromUrl,
           tokenPrefix: threadToken.slice(0, 12),
