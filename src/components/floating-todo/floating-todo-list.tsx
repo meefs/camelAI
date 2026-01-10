@@ -61,7 +61,7 @@ export function FloatingTodoList({ todos, isStreaming, className }: FloatingTodo
             "motion-reduce:animate-none"
           )}
         >
-          <ScrollArea className="max-h-[200px]">
+          <ScrollArea viewportClassName="max-h-[200px]">
             <div className="space-y-2 px-4 pb-3">
               {todos.map((todo, index) => (
                 <TodoTaskItem
