@@ -223,22 +223,17 @@ async function resolveWorkspaceContext(
   let workspaceId: string;
   let threadId: string | undefined;
 
-  console.log('[resolveWorkspaceContext] tokenValue:', tokenValue.slice(0, 50));
-
   if (tokenValue.startsWith('{')) {
     try {
       const data = JSON.parse(tokenValue) as TokenData;
       workspaceId = data.workspaceId;
       threadId = data.threadId;
-      console.log('[resolveWorkspaceContext] parsed JSON:', { workspaceId, threadId });
     } catch {
       // Malformed JSON - treat as workspaceId
       workspaceId = tokenValue;
-      console.log('[resolveWorkspaceContext] JSON parse failed, using as workspaceId');
     }
   } else {
     workspaceId = tokenValue;
-    console.log('[resolveWorkspaceContext] legacy format, workspaceId:', workspaceId);
   }
 
   const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
@@ -602,7 +597,6 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
       );
 
       // Auto-set preview if threadId is in the deploy token
-      console.log('[cf-api-proxy] PUT script detected', { scriptName, threadId, workspaceId, orgId });
       if (threadId) {
         ctx.waitUntil(
           (async () => {
