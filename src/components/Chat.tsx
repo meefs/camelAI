@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowDown, RefreshCw, ExternalLink, X } from 'lucide-react';
-import type { Message, ContentBlock } from '@/types';
+import type { Message, ContentBlock, ToolUseBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   Tooltip,
@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/tooltip';
 import { PageHeader } from '@/components/page-header';
 import { PromptInput } from '@/components/prompt-input';
+import { FloatingTodoList, type TodoItem, type TodoStatus } from '@/components/floating-todo';
 import { Button } from '@/components/ui/button';
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
@@ -53,6 +54,11 @@ function coerceContentBlocks(value: unknown): ContentBlock[] | null {
   return null;
 }
 
+function isTodoToolUseBlock(block: ContentBlock): block is ToolUseBlock {
+  if (block.type !== 'tool_use') return false;
+  return block.name === 'TodoWrite';
+}
+
 // Parse message content - handles both plain string and JSON-encoded ContentBlock[]
 function parseMessageContent(content: string | ContentBlock[]): string | ContentBlock[] {
   const directBlocks = coerceContentBlocks(content);
@@ -79,6 +85,34 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
   return content;
 }
 
+const todoStatuses = new Set<TodoStatus>(['pending', 'in_progress', 'completed']);
+
+function coerceTodoItem(value: unknown): TodoItem | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const content = record.content;
+  const status = record.status;
+  const activeForm = record.activeForm;
+  if (typeof content !== 'string' || typeof status !== 'string') return null;
+  if (!todoStatuses.has(status as TodoStatus)) return null;
+  return {
+    content,
+    status: status as TodoStatus,
+    activeForm: typeof activeForm === 'string' ? activeForm : content,
+  };
+}
+
+function extractTodoItemsFromMessage(message: Message): TodoItem[] | null {
+  if (!Array.isArray(message.content)) return null;
+  const todoToolUse = message.content
+    .filter(isTodoToolUseBlock)
+    .pop();
+  if (!todoToolUse) return null;
+  const todosInput = todoToolUse.input.todos;
+  if (!Array.isArray(todosInput)) return null;
+  return todosInput.map(coerceTodoItem).filter(Boolean) as TodoItem[];
+}
+
 
 export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false }: ChatProps) {
   const router = useRouter();
@@ -97,6 +131,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [streamingMessageId, setStreamingMessageIdState] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
+  const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
 
   // Refs to track current state for use in callbacks (avoids stale closures)
   const messagesRef = useRef(messages);
@@ -126,6 +161,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   }, []);
 
   const isStreaming = streamingMessageId !== null;
+  const wasStreamingRef = useRef(isStreaming);
   // Find the last streaming message ID (for showing loading indicator only on bottom-most)
   const lastStreamingMessageId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -171,7 +207,33 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   useEffect(() => {
     initialScrollDoneRef.current = false;
     stickToBottomRef.current = true;
+    setCurrentTodos([]);
   }, [threadId]);
+
+  useEffect(() => {
+    if (!streamingMessageId) return;
+    const streamingMessage = messages.find(message => message.id === streamingMessageId);
+    if (!streamingMessage) return;
+    const todos = extractTodoItemsFromMessage(streamingMessage);
+    if (!todos) return;
+    setCurrentTodos(todos);
+  }, [messages, streamingMessageId]);
+
+  useEffect(() => {
+    if (!wasStreamingRef.current && isStreaming) {
+      setCurrentTodos(prev => (prev.length ? [] : prev));
+    }
+    wasStreamingRef.current = isStreaming;
+  }, [isStreaming]);
+
+  useEffect(() => {
+    if (!currentTodos.length || isStreaming) return;
+    const allComplete = currentTodos.every(todo => todo.status === 'completed');
+    const timeout = setTimeout(() => {
+      setCurrentTodos([]);
+    }, allComplete ? 1500 : 2000);
+    return () => clearTimeout(timeout);
+  }, [currentTodos, isStreaming]);
 
   // Sync current title from prop (e.g., when SSR data arrives)
   useEffect(() => {
@@ -1228,6 +1290,13 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
               {/* Composer container */}
               <div className="bg-background pt-2 pb-4 px-4">
                 <div className="max-w-3xl mx-auto w-full">
+                  {currentTodos.length > 0 && (
+                    <FloatingTodoList
+                      todos={currentTodos}
+                      isStreaming={isStreaming}
+                      className="mb-3"
+                    />
+                  )}
                   <PromptInput
                     value={input}
                     onChange={setInput}
