@@ -36,10 +36,10 @@ export function FileLink({
   className,
   mono = false,
 }: FileLinkProps) {
-  const { currentOrg } = useAuth();
+  const { currentWorkspace } = useAuth();
   const normalizedPath = normalizeWorkspacePath(path);
 
-  if (!normalizedPath || !currentOrg?.id) {
+  if (!normalizedPath || !currentWorkspace?.id) {
     return (
       <span className={cn(mono && "font-mono", className)}>
         {children ?? path}
@@ -47,7 +47,7 @@ export function FileLink({
     );
   }
 
-  const href = `/computer/${currentOrg.id}?file=${encodeURIComponent(normalizedPath)}`;
+  const href = `/computer/${currentWorkspace.id}?file=${encodeURIComponent(normalizedPath)}`;
 
   return (
     <a

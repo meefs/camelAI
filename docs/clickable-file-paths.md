@@ -9,12 +9,19 @@ This document extends the tool-call UX design to make file paths clickable. When
 **Goal:** Make file paths in tool calls clickable, opening the referenced file in the Computer tab.
 
 **Current State:**
-- Tool calls display file paths as plain text (e.g., `Path: /home/claude/app/index.html`)
-- The Computer page (`/computer/[orgId]`) has no deep linking support
-- File paths appear in both the collapsed summary and expanded details
+- FileLink component exists at `src/components/tool-call/file-link.tsx`
+- **Bug:** FileLink uses `currentOrg.id` in the URL but should use `currentWorkspace?.id`
+- The computer page route is `/computer/[orgId]` but the param is actually a `workspaceId` (confusing naming)
+- Computer page already supports `?file=` query param for deep linking
+
+**Schema Context (Important):**
+- **Org → Workspace**: One-to-many (orgs have multiple workspaces)
+- **Workspace → Container**: One-to-one (each workspace has its own container)
+- **Threads → Workspace**: Threads are stored per-workspace (ChatIndexDO is per-workspace)
+- **Session has `workspace_id`**: Tracks user's current workspace
 
 **Target State:**
-- File paths are clickable links
+- File paths are clickable links using the correct workspace ID
 - Clicking opens a new tab with the Computer page, file pre-selected
 - Works for all file-related tools: Read, Write, Edit, Glob, Grep, NotebookEdit
 
@@ -25,430 +32,177 @@ This document extends the tool-call UX design to make file paths clickable. When
 ### Deep Link Format
 
 ```
-/computer/{orgId}?file={encodedPath}
+/computer/{workspaceId}?file={encodedPath}
 ```
 
 **Examples:**
-- `/computer/abc123?file=%2Fhome%2Fclaude%2Fapp%2Findex.html`
-- `/computer/abc123?file=%2Fhome%2Fclaude%2Fstyle.css`
+- `/computer/ws_abc123?file=%2Fapp%2Findex.html`
+- `/computer/ws_abc123?file=%2Fstyle.css`
 
-**Why query param instead of path segment:**
-- File paths can be deeply nested (`/a/b/c/d/e.txt`)
-- Path segments would conflict with Next.js routing
-- Query params are simpler to encode/decode
-
-### Alternative: Hash-based
-
+**Note:** The route param is named `[orgId]` in `src/app/(app)/computer/[orgId]/` but is actually a workspace ID. See `page.tsx` line 10 where `orgId` is renamed to `workspaceId`:
+```typescript
+const { orgId: workspaceId } = await params;
 ```
-/computer/{orgId}#/home/claude/app/index.html
-```
-
-Hash-based could work but query params are easier to read server-side if needed later.
-
-**Recommendation:** Use query param `?file=`
 
 ---
 
-## Implementation Phases
+## Implementation Tasks
 
-### Phase 1: Computer Page Deep Link Support
+### Task 1: Fix FileLink to Use Workspace ID
 
-**Goal:** Make the Computer page respond to the `?file=` query param.
+**File:** `src/components/tool-call/file-link.tsx`
 
-**Changes to `src/app/(app)/computer/[orgId]/computer-page-content.tsx`:**
-
-1. Read `file` query param on mount
-2. If present, call `openFile(decodedPath)` after initial load
-3. Expand parent directories in the tree to reveal the file
-
-**Implementation approach:**
-
+**Current (broken):**
 ```typescript
-// In ComputerPageContent component
-
-import { useSearchParams } from 'next/navigation';
-
-// Inside component:
-const searchParams = useSearchParams();
-const initialFilePath = searchParams.get('file');
-
-// Effect to handle deep link on mount
-useEffect(() => {
-  if (!initialFilePath || !hydrated) return;
-
-  const decodedPath = decodeURIComponent(initialFilePath);
-
-  // Ensure parent directories are expanded
-  void ensurePathExpanded(decodedPath).then(() => {
-    openFile(decodedPath);
-    scrollToNode(decodedPath);
-  });
-}, [initialFilePath, hydrated, ensurePathExpanded, openFile, scrollToNode]);
+const { currentOrg } = useAuth();
+// ...
+const href = `/computer/${currentOrg.id}?file=${encodeURIComponent(normalizedPath)}`;
 ```
 
-**Key functions already available:**
-- `ensurePathExpanded(path)` - Expands all parent directories
-- `openFile(path)` - Opens file in editor
-- `scrollToNode(path)` - Scrolls tree to show the file
-
-**Acceptance criteria:**
-- Navigating to `/computer/{orgId}?file=/path/to/file` opens that file
-- Parent directories are auto-expanded in the tree
-- File is selected in the tree view
-- File content is shown in the editor
-
----
-
-### Phase 2: FileLink Component
-
-**Goal:** Create a reusable component for clickable file paths.
-
-**Create `src/components/tool-call/file-link.tsx`:**
-
+**Fixed:**
 ```typescript
-"use client";
-
-import { ExternalLink } from 'lucide-react';
-import { useAuth } from '@/contexts/AuthContext';
-import { cn } from '@/lib/utils';
-
-interface FileLinkProps {
-  /** The full file path (e.g., /home/claude/app/index.html) */
-  path: string;
-  /** Display text - defaults to filename only */
-  children?: React.ReactNode;
-  /** Show external link icon */
-  showIcon?: boolean;
-  /** Additional classes */
-  className?: string;
-  /** Use monospace font */
-  mono?: boolean;
-}
-
-export function FileLink({
-  path,
-  children,
-  showIcon = false,
-  className,
-  mono = false
-}: FileLinkProps) {
-  const { currentOrg } = useAuth();
-
-  if (!path || !currentOrg?.id) {
-    // Fallback to plain text if no org context
-    return <span className={cn(mono && "font-mono", className)}>{children ?? path}</span>;
-  }
-
-  const href = `/computer/${currentOrg.id}?file=${encodeURIComponent(path)}`;
-
+const { currentWorkspace } = useAuth();
+// ...
+if (!normalizedPath || !currentWorkspace?.id) {
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={cn(
-        "inline-flex items-center gap-1 hover:underline",
-        "text-foreground/80 hover:text-foreground",
-        mono && "font-mono",
-        className
-      )}
-      onClick={(e) => e.stopPropagation()} // Prevent triggering parent collapse
-    >
+    <span className={cn(mono && "font-mono", className)}>
       {children ?? path}
-      {showIcon && <ExternalLink className="h-3 w-3 opacity-50" />}
-    </a>
-  );
-}
-```
-
-**Key behaviors:**
-- Opens in new tab (`target="_blank"`)
-- `stopPropagation` prevents collapsing the tool call when clicking
-- Graceful fallback to plain text if no org context
-- Optional external link icon for clarity
-
-**Acceptance criteria:**
-- Component renders as a link
-- Clicking opens new tab
-- Link has proper encoding for special characters
-- Fallback works when auth context unavailable
-
----
-
-### Phase 3: Update Tool Detail Components
-
-**Goal:** Replace plain file paths with FileLink in expanded details.
-
-**Files to modify:**
-
-1. **`details/shared.tsx`** - Update `DetailRow` to support link rendering
-
-```typescript
-// Add to DetailRow props
-interface DetailRowProps {
-  label: string;
-  value?: React.ReactNode;
-  copyValue?: string;
-  mono?: boolean;
-  className?: string;
-  tooltipThreshold?: number;
-  /** If true, renders value as a FileLink */
-  asFileLink?: boolean;
-  /** The file path for FileLink (uses value if not provided) */
-  filePath?: string;
-}
-
-// Update rendering logic
-export function DetailRow({
-  label,
-  value,
-  copyValue,
-  mono = false,
-  className,
-  tooltipThreshold = 48,
-  asFileLink = false,
-  filePath,
-}: DetailRowProps) {
-  // ... existing code ...
-
-  let renderValue: React.ReactNode;
-
-  if (asFileLink && typeof value === 'string') {
-    renderValue = (
-      <FileLink
-        path={filePath ?? value}
-        mono={mono}
-        className="truncate block"
-      >
-        {value}
-      </FileLink>
-    );
-  } else if (typeof value === 'string') {
-    // ... existing truncation/tooltip logic ...
-  } else {
-    renderValue = value;
-  }
-
-  // ... rest of component ...
-}
-```
-
-2. **`details/read-details.tsx`**
-
-```typescript
-// Change this:
-<DetailRow label="Path:" value={path} copyValue={path} mono />
-
-// To this:
-<DetailRow label="Path:" value={path} copyValue={path} mono asFileLink />
-```
-
-3. **`details/write-details.tsx`**
-
-```typescript
-<DetailRow label="Path:" value={path} copyValue={path} mono asFileLink />
-```
-
-4. **`details/edit-details.tsx`**
-
-```typescript
-<DetailRow label="Path:" value={path} copyValue={path} mono asFileLink />
-```
-
-5. **`details/notebook-details.tsx`**
-
-```typescript
-// Similar pattern for notebook_path
-<DetailRow label="Notebook:" value={notebookPath} copyValue={notebookPath} mono asFileLink />
-```
-
-6. **`details/search-details.tsx`** (Glob/Grep results)
-
-For file lists in Glob/Grep results, each file in the list should be a FileLink:
-
-```typescript
-// In the file list rendering:
-{files.map((file, i) => (
-  <FileLink
-    key={i}
-    path={file}
-    mono
-    className="block truncate text-xs"
-  />
-))}
-```
-
-**Acceptance criteria:**
-- All file paths in expanded details are clickable
-- Copy button still works alongside the link
-- Clicking link opens computer tab, doesn't collapse the tool call
-
----
-
-### Phase 4: Clickable Filename in Collapsed Summary
-
-**Goal:** Make the filename in the collapsed view clickable.
-
-This is trickier because the collapsed view is a single clickable element (to expand). We need to:
-1. Make the filename itself a link
-2. Prevent the link click from triggering expand
-
-**Update `tool-call.tsx`:**
-
-```typescript
-// Import FileLink
-import { FileLink } from './file-link';
-
-// Update the summary rendering to split into parts
-function ToolCallSummary({
-  tool,
-  result,
-  isStreaming
-}: {
-  tool?: ToolUseBlock;
-  result?: ToolResultBlock;
-  isStreaming?: boolean;
-}) {
-  // Get action and filename separately
-  const { action, filename, path } = getToolSummaryParts(tool, result);
-
-  // If no path, just return plain text
-  if (!path) {
-    return <span className="tool-call__text min-w-0 flex-1 truncate">{action}</span>;
-  }
-
-  return (
-    <span className="tool-call__text min-w-0 flex-1 truncate">
-      {action}{' '}
-      <FileLink path={path} className="hover:underline">
-        {filename}
-      </FileLink>
     </span>
   );
 }
+
+const href = `/computer/${currentWorkspace.id}?file=${encodeURIComponent(normalizedPath)}`;
 ```
 
-**Update `tool-summary.ts` to export parts:**
+**Key changes:**
+1. Import `currentWorkspace` instead of `currentOrg` from `useAuth()`
+2. Check `currentWorkspace?.id` instead of `currentOrg?.id`
+3. Use `currentWorkspace.id` in the URL
 
-```typescript
-interface ToolSummaryParts {
-  action: string;      // "Read", "Created", "Edited"
-  filename?: string;   // "Chat.tsx"
-  path?: string;       // "/home/claude/src/Chat.tsx"
-}
-
-export function getToolSummaryParts(
-  tool?: ToolUseBlock,
-  result?: ToolResultBlock
-): ToolSummaryParts {
-  if (!tool) return { action: result ? 'Result' : 'Tool call' };
-
-  const { name, input } = tool;
-  const inputRecord = input || {};
-
-  switch (name) {
-    case 'Read': {
-      const path = typeof inputRecord.file_path === 'string' ? inputRecord.file_path : '';
-      return { action: 'Read', filename: getFilename(path), path: path || undefined };
-    }
-    case 'Write': {
-      const path = typeof inputRecord.file_path === 'string' ? inputRecord.file_path : '';
-      return { action: 'Created', filename: getFilename(path), path: path || undefined };
-    }
-    case 'Edit': {
-      const path = typeof inputRecord.file_path === 'string' ? inputRecord.file_path : '';
-      return { action: 'Edited', filename: getFilename(path), path: path || undefined };
-    }
-    // ... other cases return { action: 'whatever' } without path
-    default:
-      return { action: name };
-  }
-}
-
-// Keep getToolSummary for backwards compatibility
-export function getToolSummary(tool?: ToolUseBlock, result?: ToolResultBlock): string {
-  const parts = getToolSummaryParts(tool, result);
-  if (parts.filename) {
-    return `${parts.action} ${parts.filename}`;
-  }
-  return parts.action;
-}
-```
-
-**Important:** The FileLink's `onClick` with `stopPropagation` prevents the link click from triggering the Collapsible's toggle.
+**Why this works:**
+- AuthContext already provides `currentWorkspace` (see `src/contexts/AuthContext.tsx` line 47, 66-67)
+- Chat component receives `workspaceId` prop and the session tracks `workspace_id`
+- When user is in a chat, `currentWorkspace` will be set to the workspace containing that thread
 
 **Acceptance criteria:**
-- Filename in collapsed view is a clickable link
-- Clicking filename opens computer tab
-- Clicking elsewhere on the row still expands the tool call
-- Non-file tools (Bash, WebFetch, etc.) work normally
+- [ ] Clicking a file link opens `/computer/{workspaceId}?file=...`
+- [ ] File link falls back to plain text when `currentWorkspace` is null
+- [ ] Links work correctly in different workspaces
+
+---
+
+### Task 2: Verify Computer Page Deep Link Support
+
+**File:** `src/app/(app)/computer/[orgId]/computer-page-content.tsx`
+
+The computer page already has deep link support. Verify the following work correctly:
+
+**Expected behavior:**
+1. `?file=` query param is read on mount via `useSearchParams()`
+2. Path is decoded and normalized (removes `/home/claude`, `/workspace`, `/root` prefixes)
+3. Parent directories are expanded in the tree
+4. File is opened in the editor
+
+**Testing checklist:**
+- [ ] `/computer/{workspaceId}?file=/app/index.html` opens the file
+- [ ] `/computer/{workspaceId}?file=/deep/nested/path/file.txt` expands tree and opens
+- [ ] `/computer/{workspaceId}?file=/nonexistent.txt` handles gracefully (no crash)
+- [ ] Special characters in path work (`file=%2Ftest%20file.txt`)
+
+---
+
+### Task 3: Verify Tool Detail Components Use FileLink
+
+Check that all file-related tool detail components use the FileLink component:
+
+**Files to verify:**
+
+| File | Path Field | Status |
+|------|------------|--------|
+| `details/read-details.tsx` | `file_path` | ☐ Check |
+| `details/write-details.tsx` | `file_path` | ☐ Check |
+| `details/edit-details.tsx` | `file_path` | ☐ Check |
+| `details/notebook-details.tsx` | `notebook_path` | ☐ Check |
+| `details/search-details.tsx` | File list items | ☐ Check |
+
+If any are not using FileLink, update them to use `<FileLink path={...}>`.
+
+---
+
+### Task 4: Verify Collapsed Summary Uses FileLink
+
+**File:** `src/components/tool-call/tool-call.tsx`
+
+Check that the collapsed summary (e.g., "Read Chat.tsx", "Edited index.html") has the filename as a clickable FileLink.
+
+**Expected behavior:**
+- Clicking the filename opens the computer tab
+- Clicking elsewhere on the row expands the tool call
+- FileLink's `stopPropagation` prevents click bubbling
 
 ---
 
 ## Edge Cases
 
 ### 1. File doesn't exist
-
-If the user clicks a link to a file that was deleted:
 - The computer page will attempt to open it
-- The existing `removeMissingTab` logic handles 404s gracefully
-- User sees the file tree without the file selected
+- Existing error handling shows file tree without the file selected
+- **No changes needed** - existing behavior is acceptable
 
-**No changes needed** - existing error handling is sufficient.
-
-### 2. User not authenticated
-
-- FileLink checks for `currentOrg` from auth context
+### 2. User not authenticated or no workspace
+- FileLink checks for `currentWorkspace` from auth context
 - Falls back to plain text if not available
 - Links won't be generated for unauthenticated views
 
-### 3. Very long file paths
-
-- FileLink uses truncation styling
-- Tooltip shows full path on hover (inherited from DetailRow)
+### 3. Cross-workspace file references
+- If a historical message references a file from a different workspace, the link will go to the current workspace
+- This is acceptable since files are workspace-scoped and old references may be stale anyway
 
 ### 4. Special characters in paths
-
 - `encodeURIComponent` handles spaces, unicode, etc.
 - Computer page decodes with `decodeURIComponent`
 
 ---
 
-## File Structure
+## File Structure Reference
 
 ```
 src/components/tool-call/
-├── file-link.tsx          # NEW: FileLink component
-├── tool-call.tsx          # Update: Use FileLink in summary
-├── tool-summary.ts        # Update: Add getToolSummaryParts
+├── file-link.tsx              # FIX: Use currentWorkspace.id
+├── tool-call.tsx              # VERIFY: Uses FileLink in summary
+├── tool-summary.ts            # Helper for summary text
 └── details/
-    ├── shared.tsx         # Update: Add asFileLink prop to DetailRow
-    ├── read-details.tsx   # Update: Use asFileLink
-    ├── write-details.tsx  # Update: Use asFileLink
-    ├── edit-details.tsx   # Update: Use asFileLink
-    ├── notebook-details.tsx # Update: Use asFileLink
-    └── search-details.tsx # Update: FileLink for file lists
+    ├── shared.tsx             # DetailRow with asFileLink prop
+    ├── read-details.tsx       # VERIFY: Uses FileLink
+    ├── write-details.tsx      # VERIFY: Uses FileLink
+    ├── edit-details.tsx       # VERIFY: Uses FileLink
+    ├── notebook-details.tsx   # VERIFY: Uses FileLink
+    └── search-details.tsx     # VERIFY: Uses FileLink for file lists
+
+src/app/(app)/computer/[orgId]/
+├── page.tsx                   # Route wrapper (param is workspaceId despite name)
+└── computer-page-content.tsx  # VERIFY: ?file= deep link works
+
+src/contexts/AuthContext.tsx   # Provides currentWorkspace
 ```
 
 ---
 
 ## Testing Checklist
 
-### Phase 1: Deep Link
-- [ ] `/computer/{orgId}?file=/existing/file.txt` opens file
-- [ ] `/computer/{orgId}?file=/deep/nested/path/file.txt` expands tree and opens
-- [ ] `/computer/{orgId}?file=/nonexistent.txt` handles gracefully
-- [ ] `/computer/{orgId}?file=` (empty) doesn't break
-- [ ] Special characters in path work (`file=%2Fhome%2Ftest%20file.txt`)
+### FileLink Fix
+- [ ] FileLink uses `currentWorkspace.id` in URL
+- [ ] Fallback to plain text when no workspace context
+- [ ] Click opens new tab with correct workspace
 
-### Phase 2: FileLink Component
-- [ ] Renders as `<a>` tag
-- [ ] Has `target="_blank"` and `rel="noopener noreferrer"`
-- [ ] Generates correct href with encoded path
-- [ ] Falls back to span when no auth context
-- [ ] `stopPropagation` works
+### Deep Link
+- [ ] `/computer/{workspaceId}?file=/existing/file.txt` opens file
+- [ ] `/computer/{workspaceId}?file=/deep/nested/path/file.txt` expands tree and opens
+- [ ] `/computer/{workspaceId}?file=/nonexistent.txt` handles gracefully
+- [ ] `/computer/{workspaceId}?file=` (empty) doesn't break
+- [ ] Special characters in path work
 
-### Phase 3: Detail Components
+### Tool Details
 - [ ] Read details path is clickable
 - [ ] Write details path is clickable
 - [ ] Edit details path is clickable
@@ -456,7 +210,7 @@ src/components/tool-call/
 - [ ] Glob/Grep file lists have clickable files
 - [ ] Copy button still works next to link
 
-### Phase 4: Collapsed Summary
+### Collapsed Summary
 - [ ] "Read Chat.tsx" has clickable "Chat.tsx"
 - [ ] "Created index.html" has clickable "index.html"
 - [ ] "Edited style.css" has clickable "style.css"
@@ -466,13 +220,150 @@ src/components/tool-call/
 
 ---
 
+## Tests
+
+### Task 5: Add Regression Test for FileLink
+
+**Create:** `tests/file-link.test.tsx`
+
+This test ensures FileLink uses `workspaceId` (not `orgId`) in generated URLs, preventing regression to the old org-based routing.
+
+```typescript
+/**
+ * Regression test for FileLink component
+ *
+ * Ensures file links use workspaceId (not orgId) in URLs.
+ * This is critical because the schema changed from org→container to workspace→container.
+ *
+ * Run with: npm run test:run -- tests/file-link.test.tsx
+ */
+
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
+
+// Mock useAuth to return controlled workspace/org values
+const mockUseAuth = vi.fn();
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => mockUseAuth(),
+}));
+
+// Import after mocking
+import { FileLink } from '@/components/tool-call/file-link';
+
+describe('FileLink', () => {
+  describe('URL generation regression test', () => {
+    it('uses workspaceId, NOT orgId, in the href', () => {
+      // Setup: workspace and org have DIFFERENT IDs
+      mockUseAuth.mockReturnValue({
+        currentOrg: { id: 'org-123', name: 'Test Org' },
+        currentWorkspace: { id: 'ws-456', name: 'Test Workspace' },
+      });
+
+      render(<FileLink path="/app/index.html" />);
+
+      const link = screen.getByRole('link');
+      const href = link.getAttribute('href');
+
+      // CRITICAL: URL must contain workspace ID, not org ID
+      expect(href).toContain('/computer/ws-456');
+      expect(href).not.toContain('/computer/org-123');
+      expect(href).toContain('file=%2Fapp%2Findex.html');
+    });
+
+    it('falls back to plain text when no workspace is set', () => {
+      mockUseAuth.mockReturnValue({
+        currentOrg: { id: 'org-123', name: 'Test Org' },
+        currentWorkspace: null,
+      });
+
+      render(<FileLink path="/app/index.html" />);
+
+      // Should render as span, not link
+      expect(screen.queryByRole('link')).toBeNull();
+      expect(screen.getByText('/app/index.html')).toBeInTheDocument();
+    });
+  });
+
+  describe('path normalization', () => {
+    it('strips /home/claude prefix from paths', () => {
+      mockUseAuth.mockReturnValue({
+        currentWorkspace: { id: 'ws-456' },
+      });
+
+      render(<FileLink path="/home/claude/app/index.html" />);
+
+      const link = screen.getByRole('link');
+      const href = link.getAttribute('href');
+
+      // Should normalize to /app/index.html
+      expect(href).toContain('file=%2Fapp%2Findex.html');
+      expect(href).not.toContain('home');
+      expect(href).not.toContain('claude');
+    });
+
+    it('strips /workspace prefix from paths', () => {
+      mockUseAuth.mockReturnValue({
+        currentWorkspace: { id: 'ws-456' },
+      });
+
+      render(<FileLink path="/workspace/app/style.css" />);
+
+      const link = screen.getByRole('link');
+      expect(link.getAttribute('href')).toContain('file=%2Fapp%2Fstyle.css');
+    });
+  });
+
+  describe('link behavior', () => {
+    it('opens in new tab with security attributes', () => {
+      mockUseAuth.mockReturnValue({
+        currentWorkspace: { id: 'ws-456' },
+      });
+
+      render(<FileLink path="/app/index.html" />);
+
+      const link = screen.getByRole('link');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    });
+
+    it('encodes special characters in file paths', () => {
+      mockUseAuth.mockReturnValue({
+        currentWorkspace: { id: 'ws-456' },
+      });
+
+      render(<FileLink path="/app/my file (1).html" />);
+
+      const link = screen.getByRole('link');
+      const href = link.getAttribute('href');
+
+      // Spaces and parentheses should be encoded
+      expect(href).toContain('file=%2Fapp%2Fmy%20file%20(1).html');
+    });
+  });
+});
+```
+
+**Why this test matters:**
+- The first test explicitly checks that `workspaceId` (not `orgId`) appears in the URL
+- Uses different IDs for workspace and org to catch the regression
+- If someone accidentally reverts to `currentOrg.id`, this test will fail
+
+**Running the test:**
+```bash
+npm run test:run -- tests/file-link.test.tsx
+```
+
+---
+
 ## Summary
 
-This implementation adds clickable file paths in 4 phases:
+The main fix is straightforward: update `file-link.tsx` to use `currentWorkspace.id` instead of `currentOrg.id`. The rest of the infrastructure (computer page deep links, FileLink component, tool detail components) appears to already be in place.
 
-1. **Computer page deep link** - Accept `?file=` query param
-2. **FileLink component** - Reusable link component
-3. **Detail components** - Use FileLink for paths in expanded view
-4. **Collapsed summary** - Make filename clickable in collapsed view
+**Implementation order:**
+1. Fix FileLink to use workspace ID
+2. Add regression test for FileLink
+3. Verify computer page deep links work
+4. Verify all tool details use FileLink
+5. Test end-to-end
 
-The changes are additive and non-breaking. Each phase can be implemented and tested independently.
+**Estimated scope:** Small - primarily a one-line fix in `file-link.tsx`, a new test file, and verification of existing functionality.
