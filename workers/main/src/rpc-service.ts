@@ -502,7 +502,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   ): Promise<{ sessionId: string; sessionData: SessionData }> {
     const sessionId = crypto.randomUUID();
     const now = Date.now();
-    const expiresAt = now + 30 * 24 * 60 * 60 * 1000; // 30 days
     let resolvedWorkspaceId = workspaceId;
     if (!resolvedWorkspaceId) {
       const fallback = await this.ensureDefaultWorkspace(orgId, userId);
@@ -515,7 +514,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       workspace_id: resolvedWorkspaceId,
       created_at: now,
       last_accessed: now,
-      expires_at: expiresAt,
     };
 
     await createSessionKV(this.env.SESSIONS, sessionId, sessionData);
