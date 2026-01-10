@@ -29,6 +29,7 @@ import {
   type SessionData,
   getSession as getSessionKV,
   destroySession as destroySessionKV,
+  createNewSession as createNewSessionKV,
 } from '../../workers/main/src/session-kv';
 import type { ApiTokenData } from '../../workers/main/src/api-tokens';
 import type { DoRpcService } from '../../workers/main/src/rpc-service';
@@ -64,7 +65,7 @@ export async function createSession(
   orgId: string,
   workspaceId: string | null = null
 ): Promise<{ sessionId: string; sessionData: SessionData }> {
-  return withRpc((rpc) => rpc.createSession(userId, orgId, workspaceId));
+  return createNewSessionKV(getSessionsKV(), userId, orgId, workspaceId);
 }
 
 export async function destroySession(sessionId: string): Promise<void> {

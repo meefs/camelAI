@@ -59,6 +59,30 @@ export async function createSession(
   });
 }
 
+/**
+ * Creates a new session with auto-generated ID.
+ * Pure KV operation - no DO calls.
+ */
+export async function createNewSession(
+  kv: KVNamespace,
+  userId: string,
+  orgId: string,
+  workspaceId: string | null
+): Promise<{ sessionId: string; sessionData: SessionData }> {
+  const sessionId = crypto.randomUUID();
+  const now = Date.now();
+  const sessionData: SessionData = {
+    user_id: userId,
+    org_id: orgId,
+    workspace_id: workspaceId,
+    created_at: now,
+    last_accessed: now,
+    expires_at: now + SESSION_TTL_SECONDS * 1000,
+  };
+  await createSession(kv, sessionId, sessionData);
+  return { sessionId, sessionData };
+}
+
 export async function updateSession(
   kv: KVNamespace,
   sessionId: string,

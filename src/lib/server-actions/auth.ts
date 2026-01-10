@@ -203,15 +203,23 @@ export async function signup(
       return { success: false, error: "An account with this email already exists" };
     }
 
-    // Create user and org
+    // Create user and org (createOrg also creates a default workspace)
     const { userId, user } = await authDO.createUser(email, password, name || null);
     const org = await authDO.createOrg(
       `${name || email.split("@")[0]}'s Workspace`,
       userId
     );
 
-    // Create session
-    const { sessionId } = await authDO.createSession(userId, org.id);
+    // Get the default workspace that was created with the org
+    const workspaces = await authDO.listUserWorkspaces(userId, org.id);
+    const defaultWorkspace = workspaces[0] || null;
+
+    // Create session with workspace
+    const { sessionId } = await authDO.createSession(
+      userId,
+      org.id,
+      defaultWorkspace?.id ?? null
+    );
     await setSessionCookie(sessionId);
 
     const orgs = await authDO.getUserOrgs(userId);
@@ -221,9 +229,9 @@ export async function signup(
       data: {
         user: toSafeUser(user),
         currentOrg: toSafeOrg(org),
-        currentWorkspace: null,
+        currentWorkspace: defaultWorkspace ? toSafeWorkspace(defaultWorkspace) : null,
         orgs: orgs.map(toSafeOrgMembership),
-        workspaces: [],
+        workspaces: workspaces.map(toSafeWorkspace),
       },
     };
   } catch (error) {
