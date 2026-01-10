@@ -5,11 +5,13 @@
 import { describe, it, expect } from 'vitest';
 import { env, SELF } from 'cloudflare:test';
 import type { DoRpcService } from '../src/rpc-service';
+import { createNewSession } from '../src/session-kv';
 
 const testEmail = () => `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 
 describe('WebSocket access guard', () => {
   const rpc = env.DO_RPC as unknown as DoRpcService;
+  const sessionsKV = env.SESSIONS as KVNamespace;
 
   async function setupMemberSession() {
     const ownerEmail = testEmail();
@@ -21,7 +23,9 @@ describe('WebSocket access guard', () => {
     const invitation = await rpc.createInvitation(org.id, memberEmail, 'member', ownerId);
     await rpc.acceptInvitation(org.id, invitation.id, memberId);
 
-    const { sessionId, sessionData } = await rpc.createSession(memberId, org.id);
+    const workspaces = await rpc.listOrgWorkspaces(org.id);
+    const workspaceId = workspaces[0]?.id ?? null;
+    const { sessionId, sessionData } = await createNewSession(sessionsKV, memberId, org.id, workspaceId);
     expect(sessionData.workspace_id).toBeTruthy();
 
     return {

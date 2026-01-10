@@ -4,7 +4,6 @@ import type { ChatEnv } from './durable-objects';
 import { getWorkspaceContainer, getContainerIdForWorkspace, type WorkspaceContainerEnv } from './workspace-container';
 import {
   getSession as getSessionKV,
-  createSession as createSessionKV,
   updateSession as updateSessionKV,
   destroySession as destroySessionKV,
   type SessionData,
@@ -493,36 +492,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!user) return null;
 
     return { session, user };
-  }
-
-  async createSession(
-    userId: string,
-    orgId: string,
-    workspaceId: string | null = null
-  ): Promise<{ sessionId: string; sessionData: SessionData }> {
-    const sessionId = crypto.randomUUID();
-    const now = Date.now();
-    let resolvedWorkspaceId = workspaceId;
-    if (!resolvedWorkspaceId) {
-      const fallback = await this.ensureDefaultWorkspace(orgId, userId);
-      resolvedWorkspaceId = fallback?.id ?? null;
-    }
-
-    const sessionData: SessionData = {
-      user_id: userId,
-      org_id: orgId,
-      workspace_id: resolvedWorkspaceId,
-      created_at: now,
-      last_accessed: now,
-    };
-
-    await createSessionKV(this.env.SESSIONS, sessionId, sessionData);
-    if (resolvedWorkspaceId) {
-      using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
-      await userStub.setOrgLastWorkspace(orgId, resolvedWorkspaceId);
-    }
-
-    return { sessionId, sessionData };
   }
 
   async destroySession(sessionId: string): Promise<void> {

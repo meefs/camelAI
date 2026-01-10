@@ -10,10 +10,22 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env } from 'cloudflare:test';
 import type { DoRpcService } from '../src/rpc-service';
+import { createNewSession, type SessionData } from '../src/session-kv';
 
 describe('Auth flow (full-stack with DOs)', () => {
   // Get the RPC service binding
   const rpc = env.DO_RPC as unknown as DoRpcService;
+  const sessionsKV = env.SESSIONS as KVNamespace;
+
+  // Helper to create a session with the org's default workspace
+  async function createTestSession(
+    userId: string,
+    orgId: string
+  ): Promise<{ sessionId: string; sessionData: SessionData }> {
+    const workspaces = await rpc.listOrgWorkspaces(orgId);
+    const workspaceId = workspaces[0]?.id ?? null;
+    return createNewSession(sessionsKV, userId, orgId, workspaceId);
+  }
 
   // Generate unique email for each test to avoid conflicts
   const testEmail = () => `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
@@ -234,7 +246,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       const { userId } = await rpc.createUser(email, 'password123', 'Test User');
       const org = await rpc.createOrg('Workspace', userId);
 
-      const { sessionId, sessionData } = await rpc.createSession(userId, org.id);
+      const { sessionId, sessionData } = await createTestSession(userId, org.id);
 
       expect(sessionId).toBeDefined();
       expect(sessionData.user_id).toBe(userId);
@@ -252,7 +264,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       const email = testEmail();
       const { userId } = await rpc.createUser(email, 'password123', 'Test User');
       const org = await rpc.createOrg('Workspace', userId);
-      const { sessionId } = await rpc.createSession(userId, org.id);
+      const { sessionId } = await createTestSession(userId, org.id);
 
       await rpc.destroySession(sessionId);
 
@@ -265,7 +277,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       const { userId } = await rpc.createUser(email, 'password123', 'Test User');
       const org1 = await rpc.createOrg('Workspace 1', userId);
       const org2 = await rpc.createOrg('Workspace 2', userId);
-      const { sessionId } = await rpc.createSession(userId, org1.id);
+      const { sessionId } = await createTestSession(userId, org1.id);
 
       await rpc.switchSessionOrg(sessionId, org2.id);
 
@@ -278,7 +290,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       const email = testEmail();
       const { userId } = await rpc.createUser(email, 'password123', 'Test User');
       const org = await rpc.createOrg('Workspace Org', userId);
-      const { sessionId } = await rpc.createSession(userId, org.id);
+      const { sessionId } = await createTestSession(userId, org.id);
 
       const workspace = await rpc.createWorkspace(org.id, 'Secondary', userId);
       await rpc.switchSessionWorkspace(sessionId, workspace.id);
@@ -302,7 +314,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(org.created_by).toBe(userId);
 
       // 3. Create session
-      const { sessionId, sessionData } = await rpc.createSession(userId, org.id);
+      const { sessionId, sessionData } = await createTestSession(userId, org.id);
       expect(sessionData.user_id).toBe(userId);
       expect(sessionData.org_id).toBe(org.id);
 

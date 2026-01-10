@@ -8,9 +8,21 @@ import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
 import type { DoRpcService } from '../src/rpc-service';
 import type { WorkspaceInfo, WorkspaceIntegrationRecord } from '../src/workspace';
+import { createNewSession, type SessionData } from '../src/session-kv';
 
 describe('Workspace DO (full-stack with DOs)', () => {
   const rpc = env.DO_RPC as unknown as DoRpcService;
+  const sessionsKV = env.SESSIONS as KVNamespace;
+
+  // Helper to create a session with the org's default workspace
+  async function createTestSession(
+    userId: string,
+    orgId: string
+  ): Promise<{ sessionId: string; sessionData: SessionData }> {
+    const workspaces = await rpc.listOrgWorkspaces(orgId);
+    const workspaceId = workspaces[0]?.id ?? null;
+    return createNewSession(sessionsKV, userId, orgId, workspaceId);
+  }
 
   const testEmail = () => `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 
@@ -118,7 +130,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
       const org = await rpc.createOrg('Session Org', userId);
 
       const secondWorkspace = await rpc.createWorkspace(org.id, 'Second', userId);
-      const { sessionId } = await rpc.createSession(userId, org.id);
+      const { sessionId } = await createTestSession(userId, org.id);
 
       const session = await rpc.getSession(sessionId);
       const defaultWorkspaceId = session?.workspace_id;
@@ -136,7 +148,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
       const { userId } = await rpc.createUser(email, 'password123', 'Org Owner');
       const org = await rpc.createOrg('Last Workspace Org', userId);
       const secondWorkspace = await rpc.createWorkspace(org.id, 'Second', userId);
-      const { sessionId } = await rpc.createSession(userId, org.id);
+      const { sessionId } = await createTestSession(userId, org.id);
 
       await rpc.switchSessionWorkspace(sessionId, secondWorkspace.id);
 
