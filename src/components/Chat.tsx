@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowDown, RefreshCw, ExternalLink, X } from 'lucide-react';
-import type { Message, ContentBlock } from '@/types';
+import type { Message, ContentBlock, ToolUseBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   Tooltip,
@@ -54,6 +54,11 @@ function coerceContentBlocks(value: unknown): ContentBlock[] | null {
   return null;
 }
 
+function isTodoToolUseBlock(block: ContentBlock): block is ToolUseBlock {
+  if (block.type !== 'tool_use') return false;
+  return block.name === 'TodoWrite';
+}
+
 // Parse message content - handles both plain string and JSON-encoded ContentBlock[]
 function parseMessageContent(content: string | ContentBlock[]): string | ContentBlock[] {
   const directBlocks = coerceContentBlocks(content);
@@ -100,10 +105,10 @@ function coerceTodoItem(value: unknown): TodoItem | null {
 function extractTodoItemsFromMessage(message: Message): TodoItem[] | null {
   if (!Array.isArray(message.content)) return null;
   const todoToolUse = message.content
-    .filter(block => block.type === 'tool_use' && block.name === 'TodoWrite')
+    .filter(isTodoToolUseBlock)
     .pop();
   if (!todoToolUse) return null;
-  const todosInput = (todoToolUse.input as { todos?: unknown }).todos;
+  const todosInput = todoToolUse.input.todos;
   if (!Array.isArray(todosInput)) return null;
   return todosInput.map(coerceTodoItem).filter(Boolean) as TodoItem[];
 }
@@ -156,6 +161,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   }, []);
 
   const isStreaming = streamingMessageId !== null;
+  const wasStreamingRef = useRef(isStreaming);
   // Find the last streaming message ID (for showing loading indicator only on bottom-most)
   const lastStreamingMessageId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -212,6 +218,13 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     if (!todos) return;
     setCurrentTodos(todos);
   }, [messages, streamingMessageId]);
+
+  useEffect(() => {
+    if (!wasStreamingRef.current && isStreaming) {
+      setCurrentTodos(prev => (prev.length ? [] : prev));
+    }
+    wasStreamingRef.current = isStreaming;
+  }, [isStreaming]);
 
   useEffect(() => {
     if (!currentTodos.length || isStreaming) return;
