@@ -25,12 +25,17 @@ import type {
 import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { withDoRpc } from '@/lib/do-rpc';
 import type { UserProfile } from '../../workers/main/src/auth';
-import type { SessionData } from '../../workers/main/src/session-kv';
+import {
+  type SessionData,
+  getSession as getSessionKV,
+  destroySession as destroySessionKV,
+} from '../../workers/main/src/session-kv';
 import type { ApiTokenData } from '../../workers/main/src/api-tokens';
 import type { DoRpcService } from '../../workers/main/src/rpc-service';
 
 interface AuthEnv {
   DO_RPC: DoRpcService;
+  SESSIONS: KVNamespace;
 }
 
 async function withRpc<T>(fn: (rpc: DoRpcService) => Promise<T>): Promise<T> {
@@ -38,9 +43,14 @@ async function withRpc<T>(fn: (rpc: DoRpcService) => Promise<T>): Promise<T> {
   return withDoRpc(env.DO_RPC, fn);
 }
 
-// Session functions
+function getSessionsKV(): KVNamespace {
+  const { env } = getCloudflareContext() as unknown as { env: AuthEnv };
+  return env.SESSIONS;
+}
+
+// Session functions - getSession and destroySession call KV directly (no RPC needed)
 export async function getSession(sessionId: string): Promise<SessionData | null> {
-  return withRpc((rpc) => rpc.getSession(sessionId));
+  return getSessionKV(getSessionsKV(), sessionId);
 }
 
 export async function getSessionWithUser(
@@ -58,7 +68,7 @@ export async function createSession(
 }
 
 export async function destroySession(sessionId: string): Promise<void> {
-  return withRpc((rpc) => rpc.destroySession(sessionId));
+  return destroySessionKV(getSessionsKV(), sessionId);
 }
 
 export async function switchSessionOrg(
