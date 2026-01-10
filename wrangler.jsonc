@@ -261,10 +261,11 @@
 					"bucket_name": "chiridion-sandbox"
 				}
 			],
+			// Dedicated KV namespace for dev-miguel (prevents cross-env data contamination)
 			"kv_namespaces": [
 				{
 					"binding": "EMAIL_TO_USER",
-					"id": "ab267c4f44b847dda8bdca400a4e1884"
+					"id": "06c511f882d041ea89a98cb413f4b2f3"
 				},
 				{
 					"binding": "API_TOKENS",
@@ -332,10 +333,11 @@
 					"bucket_name": "chiridion-sandbox"
 				}
 			],
+			// Dedicated KV namespace for dev-illiana (prevents cross-env data contamination)
 			"kv_namespaces": [
 				{
 					"binding": "EMAIL_TO_USER",
-					"id": "ab267c4f44b847dda8bdca400a4e1884"
+					"id": "b5d67155aac54d208f00fc5d51f2d080"
 				},
 				{
 					"binding": "API_TOKENS",
