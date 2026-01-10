@@ -1,9 +1,6 @@
 /**
- * Session storage using KV instead of Durable Objects.
- *
- * Key structure:
- * - session:{sessionId} -> SessionData (with TTL)
- * - user_sessions:{userId}:{sessionId} -> "1" (for listing user sessions)
+ * Session storage using KV.
+ * Key structure: session:{sessionId} -> SessionData (with TTL)
  */
 
 export interface SessionData {
@@ -20,10 +17,6 @@ function sessionKey(sessionId: string): string {
   return `session:${sessionId}`;
 }
 
-function userSessionKey(userId: string, sessionId: string): string {
-  return `user_sessions:${userId}:${sessionId}`;
-}
-
 export async function getSession(
   kv: KVNamespace,
   sessionId: string
@@ -37,20 +30,13 @@ export async function createSession(
   sessionId: string,
   data: SessionData
 ): Promise<void> {
-  // Store session with TTL
   await kv.put(sessionKey(sessionId), JSON.stringify(data), {
-    expirationTtl: SESSION_TTL_SECONDS,
-  });
-
-  // Store user->session mapping for listing
-  await kv.put(userSessionKey(data.user_id, sessionId), '1', {
     expirationTtl: SESSION_TTL_SECONDS,
   });
 }
 
 /**
  * Creates a new session with auto-generated ID.
- * Pure KV operation - no DO calls.
  */
 export async function createNewSession(
   kv: KVNamespace,
@@ -84,38 +70,7 @@ export async function updateSession(
 
 export async function destroySession(
   kv: KVNamespace,
-  sessionId: string,
-  userId?: string
+  sessionId: string
 ): Promise<void> {
-  // If we don't have userId, fetch session first to get it
-  let resolvedUserId = userId;
-  if (!resolvedUserId) {
-    const session = await kv.get(sessionKey(sessionId), 'json') as SessionData | null;
-    resolvedUserId = session?.user_id;
-  }
-
-  // Delete session
   await kv.delete(sessionKey(sessionId));
-
-  // Delete user->session mapping if we have userId
-  if (resolvedUserId) {
-    await kv.delete(userSessionKey(resolvedUserId, sessionId));
-  }
-}
-
-export async function listUserSessions(
-  kv: KVNamespace,
-  userId: string
-): Promise<string[]> {
-  const prefix = `user_sessions:${userId}:`;
-  const list = await kv.list({ prefix });
-  return list.keys.map((k) => k.name.slice(prefix.length));
-}
-
-export async function destroyAllUserSessions(
-  kv: KVNamespace,
-  userId: string
-): Promise<void> {
-  const sessionIds = await listUserSessions(kv, userId);
-  await Promise.all(sessionIds.map((id) => destroySession(kv, id, userId)));
 }
