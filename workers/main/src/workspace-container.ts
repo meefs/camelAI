@@ -144,7 +144,7 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
   defaultPort = WS_SERVER_PORT;
 
   // Idle timeout before container sleeps
-  sleepAfter = '10m';
+  sleepAfter = '1h';
 
   // Enable outbound internet for API calls
   enableInternet = true;
