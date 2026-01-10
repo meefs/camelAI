@@ -791,7 +791,7 @@ export default {
       let modifiedRequest = request;
       if (threadIdFromUrl) {
         const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-        const threadToken = await mintPerThreadDeployToken(tokenKv, org, threadIdFromUrl);
+        const threadToken = await mintPerThreadDeployToken(tokenKv, orgId, threadIdFromUrl);
         console.log('[ws] Minted per-thread deploy token', {
           threadId: threadIdFromUrl,
           tokenPrefix: threadToken.slice(0, 12),
