@@ -59,7 +59,11 @@
 		{
 			"class_name": "ThreadSandbox",
 			"image": "./Dockerfile",
-			"instance_type": "basic",
+			"instance_type": {
+				"vcpu": 1,
+				"memory_mib": 4096,
+				"disk_mb": 20000
+			},
 			"max_instances": 5
 		}
 	],
@@ -152,7 +156,11 @@
 				{
 					"class_name": "ThreadSandbox",
 					"image": "./Dockerfile",
-					"instance_type": "standard-1",
+					"instance_type": {
+						"vcpu": 1,
+						"memory_mib": 4096,
+						"disk_mb": 20000
+					},
 					"max_instances": 50
 				}
 			],
@@ -226,7 +234,11 @@
 				{
 					"class_name": "ThreadSandbox",
 					"image": "./Dockerfile",
-					"instance_type": "standard-1",
+					"instance_type": {
+						"vcpu": 1,
+						"memory_mib": 4096,
+						"disk_mb": 20000
+					},
 					"max_instances": 5
 				}
 			],
@@ -301,7 +313,11 @@
 				{
 					"class_name": "ThreadSandbox",
 					"image": "./Dockerfile",
-					"instance_type": "standard-1",
+					"instance_type": {
+						"vcpu": 1,
+						"memory_mib": 4096,
+						"disk_mb": 20000
+					},
 					"max_instances": 5
 				}
 			],
@@ -376,7 +392,11 @@
 				{
 					"class_name": "ThreadSandbox",
 					"image": "./Dockerfile",
-					"instance_type": "basic",
+					"instance_type": {
+						"vcpu": 1,
+						"memory_mib": 4096,
+						"disk_mb": 20000
+					},
 					"max_instances": 5
 				}
 			],
