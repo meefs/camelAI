@@ -26,7 +26,8 @@
 		"binding": "IMAGES"
 	},
 	"ai": {
-		"binding": "AI"
+		"binding": "AI",
+		"remote": true
 	},
 	"analytics_engine_datasets": [
 		{
@@ -118,7 +119,8 @@
 				"binding": "IMAGES"
 			},
 			"ai": {
-				"binding": "AI"
+				"binding": "AI",
+				"remote": true
 			},
 			"r2_buckets": [
 				{
@@ -197,7 +199,8 @@
 				"binding": "IMAGES"
 			},
 			"ai": {
-				"binding": "AI"
+				"binding": "AI",
+				"remote": true
 			},
 			"r2_buckets": [
 				{
@@ -275,7 +278,8 @@
 				"binding": "IMAGES"
 			},
 			"ai": {
-				"binding": "AI"
+				"binding": "AI",
+				"remote": true
 			},
 			"r2_buckets": [
 				{
@@ -354,7 +358,8 @@
 				"binding": "IMAGES"
 			},
 			"ai": {
-				"binding": "AI"
+				"binding": "AI",
+				"remote": true
 			},
 			"r2_buckets": [
 				{
