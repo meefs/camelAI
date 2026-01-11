@@ -81,6 +81,14 @@ export interface OrgIntegrationRecord {
   updated_at: number;
 }
 
+export interface WorkerScript {
+  script_name: string;
+  workspace_id: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
 /**
  * Migration Pattern for Durable Objects
  * ======================================
@@ -482,6 +490,20 @@ export class OrgDO extends DurableObject<AuthEnv> {
       }
       this.sql.exec('UPDATE _schema_version SET version = 2');
     }
+
+    if (version < 3) {
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS worker_scripts (
+          script_name TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec('CREATE INDEX IF NOT EXISTS worker_scripts_workspace_id ON worker_scripts(workspace_id)');
+      this.sql.exec('UPDATE _schema_version SET version = 3');
+    }
   }
 
   // Org info methods
@@ -833,6 +855,89 @@ export class OrgDO extends DurableObject<AuthEnv> {
   /** @deprecated Integrations are workspace-scoped; migrate to WorkspaceDO. */
   async dropLegacyIntegrations(): Promise<void> {
     this.sql.exec('DROP TABLE IF EXISTS integrations');
+  }
+
+  // Worker script methods
+  async registerWorkerScript(
+    scriptName: string,
+    workspaceId: string,
+    createdBy: string
+  ): Promise<WorkerScript> {
+    const now = Date.now();
+    const existing = await this.getWorkerScript(scriptName);
+
+    if (existing) {
+      this.sql.exec(
+        'UPDATE worker_scripts SET workspace_id = ?, updated_at = ? WHERE script_name = ?',
+        workspaceId,
+        now,
+        scriptName
+      );
+      this.log('worker_script_updated', createdBy, scriptName, { workspace_id: workspaceId });
+      return {
+        script_name: scriptName,
+        workspace_id: workspaceId,
+        created_by: existing.created_by,
+        created_at: existing.created_at,
+        updated_at: now,
+      };
+    }
+
+    this.sql.exec(
+      'INSERT INTO worker_scripts (script_name, workspace_id, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      scriptName,
+      workspaceId,
+      createdBy,
+      now,
+      now
+    );
+    this.log('worker_script_registered', createdBy, scriptName, { workspace_id: workspaceId });
+    return {
+      script_name: scriptName,
+      workspace_id: workspaceId,
+      created_by: createdBy,
+      created_at: now,
+      updated_at: now,
+    };
+  }
+
+  async getWorkerScript(scriptName: string): Promise<WorkerScript | null> {
+    const rows = this.sql.exec(
+      'SELECT script_name, workspace_id, created_by, created_at, updated_at FROM worker_scripts WHERE script_name = ?',
+      scriptName
+    ).toArray() as unknown as WorkerScript[];
+    return rows[0] || null;
+  }
+
+  async listWorkerScripts(): Promise<WorkerScript[]> {
+    return this.sql.exec(
+      'SELECT script_name, workspace_id, created_by, created_at, updated_at FROM worker_scripts ORDER BY updated_at DESC'
+    ).toArray() as unknown as WorkerScript[];
+  }
+
+  async listWorkerScriptsByWorkspace(workspaceId: string): Promise<WorkerScript[]> {
+    return this.sql.exec(
+      'SELECT script_name, workspace_id, created_by, created_at, updated_at FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC',
+      workspaceId
+    ).toArray() as unknown as WorkerScript[];
+  }
+
+  async updateWorkerScript(scriptName: string, actorId: string): Promise<WorkerScript | null> {
+    const now = Date.now();
+    this.sql.exec('UPDATE worker_scripts SET updated_at = ? WHERE script_name = ?', now, scriptName);
+    const script = await this.getWorkerScript(scriptName);
+    if (script) {
+      this.log('worker_script_touched', actorId, scriptName);
+    }
+    return script;
+  }
+
+  async deleteWorkerScript(scriptName: string, actorId: string): Promise<boolean> {
+    const existing = await this.getWorkerScript(scriptName);
+    if (!existing) return false;
+    this.sql.exec('DELETE FROM worker_scripts WHERE script_name = ?', scriptName);
+    this.log('worker_script_deleted', actorId, scriptName, { workspace_id: existing.workspace_id });
+    return true;
   }
 
   private log(

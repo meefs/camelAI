@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { AuthEnv, UserProfile, OrgRole } from './auth';
+import type { AuthEnv, UserProfile, OrgRole, WorkerScript } from './auth';
 import type { ChatEnv } from './durable-objects';
 import { getWorkspaceContainer, getContainerIdForWorkspace, type WorkspaceContainerEnv } from './workspace-container';
 import {
@@ -1847,6 +1847,38 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       details: entry.details ? JSON.parse(entry.details) : null,
       created_at: entry.created_at,
     }));
+  }
+
+  // Worker script registry functions
+  async registerWorkerScript(
+    orgId: string,
+    scriptName: string,
+    workspaceId: string,
+    userId: string
+  ): Promise<WorkerScript> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    return orgStub.registerWorkerScript(scriptName, workspaceId, userId);
+  }
+
+  async getWorkerScript(orgId: string, scriptName: string): Promise<WorkerScript | null> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    return orgStub.getWorkerScript(scriptName);
+  }
+
+  async listWorkerScripts(orgId: string): Promise<WorkerScript[]> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    return orgStub.listWorkerScripts();
+  }
+
+  async listWorkerScriptsByWorkspace(workspaceId: string): Promise<WorkerScript[]> {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(info.org_id)));
+    return orgStub.listWorkerScriptsByWorkspace(workspaceId);
+  }
+
+  async deleteWorkerScript(orgId: string, scriptName: string, actorId: string): Promise<boolean> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    return orgStub.deleteWorkerScript(scriptName, actorId);
   }
 
   // Chat functions
