@@ -11,6 +11,24 @@
 			"namespace": "chiridion-platform"
 		}
 	],
+	"kv_namespaces": [
+		{
+			"binding": "API_TOKENS",
+			"id": "e894eb2caf1641ad8870da994b992fce"
+		},
+		{
+			"binding": "SESSIONS",
+			"id": "f5ab08fdb1d7404fbc45a171217b4a27"
+		}
+	],
+	"services": [
+		{
+			"binding": "MAIN_RPC",
+			"service": "chiridion-app",
+			"entrypoint": "DoRpcService",
+			"remote": true
+		}
+	],
 	"env": {
 		"prod": {
 			"name": "chiridion-dispatcher",
@@ -21,6 +39,24 @@
 				{
 					"binding": "DISPATCHER",
 					"namespace": "chiridion-platform"
+				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "API_TOKENS",
+					"id": "e894eb2caf1641ad8870da994b992fce"
+				},
+				{
+					"binding": "SESSIONS",
+					"id": "f5ab08fdb1d7404fbc45a171217b4a27"
+				}
+			],
+			"services": [
+				{
+					"binding": "MAIN_RPC",
+					"service": "chiridion-app",
+					"entrypoint": "DoRpcService",
+					"remote": true
 				}
 			]
 		},
@@ -34,6 +70,24 @@
 					"binding": "DISPATCHER",
 					"namespace": "chiridion-platform"
 				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "API_TOKENS",
+					"id": "0ee80299e67c4c7fa0c1ad618b7e7a9c"
+				},
+				{
+					"binding": "SESSIONS",
+					"id": "67958a5b0d104621bd93c91c802ccd1c"
+				}
+			],
+			"services": [
+				{
+					"binding": "MAIN_RPC",
+					"service": "chiridion-app-staging",
+					"entrypoint": "DoRpcService",
+					"remote": true
+				}
 			]
 		},
 		"dev-miguel": {
@@ -46,6 +100,24 @@
 					"binding": "DISPATCHER",
 					"namespace": "chiridion-platform"
 				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "API_TOKENS",
+					"id": "e894eb2caf1641ad8870da994b992fce"
+				},
+				{
+					"binding": "SESSIONS",
+					"id": "a38773869d2e465fbf705c81fa2e01eb"
+				}
+			],
+			"services": [
+				{
+					"binding": "MAIN_RPC",
+					"service": "chiridion-app-dev-miguel",
+					"entrypoint": "DoRpcService",
+					"remote": true
+				}
 			]
 		},
 		"dev-illiana": {
@@ -57,6 +129,24 @@
 				{
 					"binding": "DISPATCHER",
 					"namespace": "chiridion-platform"
+				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "API_TOKENS",
+					"id": "e894eb2caf1641ad8870da994b992fce"
+				},
+				{
+					"binding": "SESSIONS",
+					"id": "c632a963433e4949b6dea43728034b36"
+				}
+			],
+			"services": [
+				{
+					"binding": "MAIN_RPC",
+					"service": "chiridion-app-dev-illiana",
+					"entrypoint": "DoRpcService",
+					"remote": true
 				}
 			]
 		}

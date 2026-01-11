@@ -493,3 +493,51 @@ export async function validateApiToken(tokenId: string): Promise<ApiTokenData | 
 export async function deleteApiToken(tokenId: string): Promise<void> {
   return withRpc((rpc) => rpc.deleteApiToken(tokenId));
 }
+
+// Worker script functions
+export interface WorkerScriptAccess {
+  script_name: string;
+  workspace_id: string;
+  org_id: string;
+  is_public: boolean;
+}
+
+export async function getWorkerAccessInfo(scriptName: string): Promise<WorkerScriptAccess | null> {
+  return withRpc((rpc) => rpc.getWorkerAccessInfo(scriptName));
+}
+
+// Worker cross-domain auth functions
+export interface WorkerAuthState {
+  return_url: string;
+  script_name: string;
+  required_org_id: string;
+  created_at: number;
+}
+
+export interface WorkerAuthToken {
+  user_id: string;
+  org_id: string;
+  state: string;
+  script_name: string;
+  created_at: number;
+}
+
+export interface DispatcherSession {
+  user_id: string;
+  org_id: string;
+  created_at: number;
+  last_accessed: number;
+}
+
+export async function validateAndConsumeWorkerAuthState(state: string): Promise<WorkerAuthState | null> {
+  return withRpc((rpc) => rpc.validateAndConsumeAuthStateRpc(state));
+}
+
+export async function createWorkerAuthToken(
+  userId: string,
+  orgId: string,
+  state: string,
+  scriptName: string
+): Promise<string> {
+  return withRpc((rpc) => rpc.createWorkerAuthTokenRpc(userId, orgId, state, scriptName));
+}

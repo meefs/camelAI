@@ -1,5 +1,18 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { AuthEnv, UserProfile, OrgRole, WorkerScript } from './auth';
+import type { AuthEnv, UserProfile, OrgRole, WorkerScript, WorkerScriptAccess } from './auth';
+import {
+  createAuthState,
+  validateAndConsumeAuthState,
+  createWorkerAuthToken,
+  validateAndConsumeAuthToken,
+  createDispatcherSession,
+  getDispatcherSession,
+  touchDispatcherSession,
+  destroyDispatcherSession,
+  type WorkerAuthState,
+  type WorkerAuthToken,
+  type DispatcherSession,
+} from './worker-auth';
 import type { ChatEnv } from './durable-objects';
 import { getWorkspaceContainer, getContainerIdForWorkspace, type WorkspaceContainerEnv } from './workspace-container';
 import {
@@ -1857,7 +1870,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     userId: string
   ): Promise<WorkerScript> {
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-    return orgStub.registerWorkerScript(scriptName, workspaceId, userId);
+    const script = await orgStub.registerWorkerScript(scriptName, workspaceId, userId);
+    // Update global script→org index for dispatcher lookups (denormalized for fast access)
+    await this.env.API_TOKENS.put(
+      `script_org:${scriptName}`,
+      JSON.stringify({ org_id: orgId, is_public: script.is_public })
+    );
+    return script;
   }
 
   async getWorkerScript(orgId: string, scriptName: string): Promise<WorkerScript | null> {
@@ -1878,7 +1897,114 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   async deleteWorkerScript(orgId: string, scriptName: string, actorId: string): Promise<boolean> {
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-    return orgStub.deleteWorkerScript(scriptName, actorId);
+    const result = await orgStub.deleteWorkerScript(scriptName, actorId);
+    if (result) {
+      // Remove from global script→org index
+      await this.env.API_TOKENS.delete(`script_org:${scriptName}`);
+    }
+    return result;
+  }
+
+  async setWorkerScriptPublic(
+    orgId: string,
+    scriptName: string,
+    isPublic: boolean,
+    actorId: string
+  ): Promise<WorkerScript | null> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    const script = await orgStub.setWorkerScriptPublic(scriptName, isPublic, actorId);
+    if (script) {
+      // Update the denormalized KV index
+      await this.env.API_TOKENS.put(
+        `script_org:${scriptName}`,
+        JSON.stringify({ org_id: orgId, is_public: script.is_public })
+      );
+    }
+    return script;
+  }
+
+  /**
+   * Get worker access info by script name (searches global index).
+   * Used by the dispatcher to check if a worker is public/private and get its org.
+   * This uses only KV lookup (no DO query) for fast access on every request.
+   */
+  async getWorkerAccessInfo(scriptName: string): Promise<WorkerScriptAccess | null> {
+    // Look up from denormalized global index (single KV read, no DO query)
+    const data = await this.env.API_TOKENS.get(`script_org:${scriptName}`);
+    if (!data) return null;
+
+    const { org_id, is_public } = JSON.parse(data) as { org_id: string; is_public: boolean };
+    return {
+      script_name: scriptName,
+      workspace_id: '', // Not needed for access check, avoids DO lookup
+      org_id,
+      is_public,
+    };
+  }
+
+  /**
+   * Update the global script→org index.
+   * Called after registerWorkerScript to maintain the index.
+   */
+  async updateWorkerScriptIndex(scriptName: string, orgId: string, isPublic: boolean = false): Promise<void> {
+    await this.env.API_TOKENS.put(
+      `script_org:${scriptName}`,
+      JSON.stringify({ org_id: orgId, is_public: isPublic })
+    );
+  }
+
+  // Worker cross-domain auth functions
+  async createWorkerAuthStateRpc(
+    returnUrl: string,
+    scriptName: string,
+    requiredOrgId: string
+  ): Promise<string> {
+    return createAuthState(this.env.API_TOKENS, {
+      return_url: returnUrl,
+      script_name: scriptName,
+      required_org_id: requiredOrgId,
+    });
+  }
+
+  async validateAndConsumeAuthStateRpc(state: string): Promise<WorkerAuthState | null> {
+    return validateAndConsumeAuthState(this.env.API_TOKENS, state);
+  }
+
+  async createWorkerAuthTokenRpc(
+    userId: string,
+    orgId: string,
+    state: string,
+    scriptName: string
+  ): Promise<string> {
+    return createWorkerAuthToken(this.env.API_TOKENS, {
+      user_id: userId,
+      org_id: orgId,
+      state,
+      script_name: scriptName,
+    });
+  }
+
+  async validateAndConsumeAuthTokenRpc(token: string): Promise<WorkerAuthToken | null> {
+    return validateAndConsumeAuthToken(this.env.API_TOKENS, token);
+  }
+
+  async createDispatcherSessionRpc(
+    userId: string,
+    orgId: string
+  ): Promise<{ sessionId: string; session: DispatcherSession }> {
+    return createDispatcherSession(this.env.SESSIONS, userId, orgId);
+  }
+
+  async getDispatcherSessionRpc(sessionId: string): Promise<DispatcherSession | null> {
+    return getDispatcherSession(this.env.SESSIONS, sessionId);
+  }
+
+  async touchDispatcherSessionRpc(sessionId: string): Promise<DispatcherSession | null> {
+    return touchDispatcherSession(this.env.SESSIONS, sessionId);
+  }
+
+  async destroyDispatcherSessionRpc(sessionId: string): Promise<void> {
+    return destroyDispatcherSession(this.env.SESSIONS, sessionId);
   }
 
   // Chat functions

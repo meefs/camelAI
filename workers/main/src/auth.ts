@@ -87,6 +87,14 @@ export interface WorkerScript {
   created_by: string;
   created_at: number;
   updated_at: number;
+  is_public: boolean;
+}
+
+export interface WorkerScriptAccess {
+  script_name: string;
+  workspace_id: string;
+  org_id: string;
+  is_public: boolean;
 }
 
 /**
@@ -504,6 +512,16 @@ export class OrgDO extends DurableObject<AuthEnv> {
       this.sql.exec('CREATE INDEX IF NOT EXISTS worker_scripts_workspace_id ON worker_scripts(workspace_id)');
       this.sql.exec('UPDATE _schema_version SET version = 3');
     }
+
+    if (version < 4) {
+      // V4: Add is_public column to worker_scripts (default false = private)
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0');
+      } catch {
+        // Column may already exist in fresh databases that ran V3 after this migration was added
+      }
+      this.sql.exec('UPDATE _schema_version SET version = 4');
+    }
   }
 
   // Org info methods
@@ -880,11 +898,12 @@ export class OrgDO extends DurableObject<AuthEnv> {
         created_by: existing.created_by,
         created_at: existing.created_at,
         updated_at: now,
+        is_public: existing.is_public,
       };
     }
 
     this.sql.exec(
-      'INSERT INTO worker_scripts (script_name, workspace_id, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO worker_scripts (script_name, workspace_id, created_by, created_at, updated_at, is_public) VALUES (?, ?, ?, ?, ?, 0)',
       scriptName,
       workspaceId,
       createdBy,
@@ -898,28 +917,75 @@ export class OrgDO extends DurableObject<AuthEnv> {
       created_by: createdBy,
       created_at: now,
       updated_at: now,
+      is_public: false,
     };
   }
 
   async getWorkerScript(scriptName: string): Promise<WorkerScript | null> {
     const rows = this.sql.exec(
-      'SELECT script_name, workspace_id, created_by, created_at, updated_at FROM worker_scripts WHERE script_name = ?',
+      'SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public FROM worker_scripts WHERE script_name = ?',
       scriptName
-    ).toArray() as unknown as WorkerScript[];
-    return rows[0] || null;
+    ).toArray() as unknown as Array<{
+      script_name: string;
+      workspace_id: string;
+      created_by: string;
+      created_at: number;
+      updated_at: number;
+      is_public: number;
+    }>;
+    if (rows.length === 0) return null;
+    const row = rows[0];
+    return {
+      script_name: row.script_name,
+      workspace_id: row.workspace_id,
+      created_by: row.created_by,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      is_public: row.is_public === 1,
+    };
   }
 
   async listWorkerScripts(): Promise<WorkerScript[]> {
-    return this.sql.exec(
-      'SELECT script_name, workspace_id, created_by, created_at, updated_at FROM worker_scripts ORDER BY updated_at DESC'
-    ).toArray() as unknown as WorkerScript[];
+    const rows = this.sql.exec(
+      'SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public FROM worker_scripts ORDER BY updated_at DESC'
+    ).toArray() as unknown as Array<{
+      script_name: string;
+      workspace_id: string;
+      created_by: string;
+      created_at: number;
+      updated_at: number;
+      is_public: number;
+    }>;
+    return rows.map((row) => ({
+      script_name: row.script_name,
+      workspace_id: row.workspace_id,
+      created_by: row.created_by,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      is_public: row.is_public === 1,
+    }));
   }
 
   async listWorkerScriptsByWorkspace(workspaceId: string): Promise<WorkerScript[]> {
-    return this.sql.exec(
-      'SELECT script_name, workspace_id, created_by, created_at, updated_at FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC',
+    const rows = this.sql.exec(
+      'SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC',
       workspaceId
-    ).toArray() as unknown as WorkerScript[];
+    ).toArray() as unknown as Array<{
+      script_name: string;
+      workspace_id: string;
+      created_by: string;
+      created_at: number;
+      updated_at: number;
+      is_public: number;
+    }>;
+    return rows.map((row) => ({
+      script_name: row.script_name,
+      workspace_id: row.workspace_id,
+      created_by: row.created_by,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      is_public: row.is_public === 1,
+    }));
   }
 
   async updateWorkerScript(scriptName: string, actorId: string): Promise<WorkerScript | null> {
@@ -930,6 +996,24 @@ export class OrgDO extends DurableObject<AuthEnv> {
       this.log('worker_script_touched', actorId, scriptName);
     }
     return script;
+  }
+
+  async setWorkerScriptPublic(scriptName: string, isPublic: boolean, actorId: string): Promise<WorkerScript | null> {
+    const existing = await this.getWorkerScript(scriptName);
+    if (!existing) return null;
+    const now = Date.now();
+    this.sql.exec(
+      'UPDATE worker_scripts SET is_public = ?, updated_at = ? WHERE script_name = ?',
+      isPublic ? 1 : 0,
+      now,
+      scriptName
+    );
+    this.log('worker_script_visibility_changed', actorId, scriptName, { is_public: isPublic });
+    return {
+      ...existing,
+      is_public: isPublic,
+      updated_at: now,
+    };
   }
 
   async deleteWorkerScript(scriptName: string, actorId: string): Promise<boolean> {
