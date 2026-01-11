@@ -63,7 +63,7 @@
 			"instance_type": {
 				"vcpu": 1,
 				"memory_mib": 4096,
-				"disk_mb": 20000
+				"disk_mb": 8000
 			},
 			"max_instances": 5
 		}
@@ -161,7 +161,7 @@
 					"instance_type": {
 						"vcpu": 1,
 						"memory_mib": 4096,
-						"disk_mb": 20000
+						"disk_mb": 8000
 					},
 					"max_instances": 50
 				}
@@ -240,7 +240,7 @@
 					"instance_type": {
 						"vcpu": 1,
 						"memory_mib": 4096,
-						"disk_mb": 20000
+						"disk_mb": 8000
 					},
 					"max_instances": 5
 				}
@@ -320,7 +320,7 @@
 					"instance_type": {
 						"vcpu": 1,
 						"memory_mib": 4096,
-						"disk_mb": 20000
+						"disk_mb": 8000
 					},
 					"max_instances": 5
 				}
@@ -400,7 +400,7 @@
 					"instance_type": {
 						"vcpu": 1,
 						"memory_mib": 4096,
-						"disk_mb": 20000
+						"disk_mb": 8000
 					},
 					"max_instances": 5
 				}
