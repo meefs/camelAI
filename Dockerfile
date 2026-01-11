@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-08-v1
+# Version: 2026-01-11-v1
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -45,6 +45,10 @@ COPY --chmod=755 sandbox/deploy-worker.sh /usr/local/bin/deploy-worker
 
 # Layer 7: create-worker CLI (scaffolds projects from templates)
 RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker
+
+# Layer 8: Alias npm to bun for faster package operations
+# Bun is npm-compatible and already used for dependencies in this container
+RUN ln -sf $(which bun) /usr/local/bin/npm
 
 WORKDIR /home/claude
 ENTRYPOINT ["/app/entrypoint.sh"]
