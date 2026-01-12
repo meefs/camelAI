@@ -506,6 +506,36 @@ export async function getWorkerAccessInfo(scriptName: string): Promise<WorkerScr
   return withRpc((rpc) => rpc.getWorkerAccessInfo(scriptName));
 }
 
+export interface WorkerScript {
+  script_name: string;
+  workspace_id: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  is_public: boolean;
+}
+
+export async function listWorkerScripts(orgId: string): Promise<WorkerScript[]> {
+  return withRpc((rpc) => rpc.listWorkerScripts(orgId));
+}
+
+export async function deleteWorkerScript(
+  orgId: string,
+  scriptName: string,
+  actorId: string
+): Promise<boolean> {
+  return withRpc((rpc) => rpc.deleteWorkerScript(orgId, scriptName, actorId));
+}
+
+export async function setWorkerScriptPublic(
+  orgId: string,
+  scriptName: string,
+  isPublic: boolean,
+  actorId: string
+): Promise<WorkerScript | null> {
+  return withRpc((rpc) => rpc.setWorkerScriptPublic(orgId, scriptName, isPublic, actorId));
+}
+
 // Worker cross-domain auth functions
 export interface WorkerAuthState {
   return_url: string;

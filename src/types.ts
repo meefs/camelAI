@@ -316,3 +316,13 @@ export interface CreateApiTokenInput {
   scopes?: string[]; // defaults to ['proxy']
   expires_in_days?: number; // null = never expires
 }
+
+// Worker/App types
+export interface WorkerScript {
+  script_name: string;
+  workspace_id: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  is_public: boolean;
+}

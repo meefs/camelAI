@@ -1,6 +1,6 @@
 "use client"
 
-import { AppWindowMac, Cable, Home, MessagesSquare } from "lucide-react"
+import { AppWindowMac, Boxes, Cable, Home, MessagesSquare } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
@@ -27,6 +27,7 @@ export function AppSidebar(props: AppSidebarProps) {
   const isHome = pathname === "/"
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"
+  const isApps = pathname === "/apps"
   const isComputer = pathname.startsWith("/computer")
   const computerHref = currentWorkspace?.id
     ? `/computer/${currentWorkspace.id}`
@@ -69,6 +70,14 @@ export function AppSidebar(props: AppSidebarProps) {
                 <Link href="/connections">
                   <Cable />
                   <span>Connections</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild tooltip="Apps" isActive={isApps}>
+                <Link href="/apps">
+                  <Boxes />
+                  <span>Apps</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
