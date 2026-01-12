@@ -985,7 +985,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   // Admin: Update thread (threads stored in OrgDO)
   async adminUpdateThread(
     threadId: string,
-    updates: { title?: string }
+    updates: { title?: string; created_by?: string }
   ): Promise<Thread | null> {
     const orgIds = await this.collectAllOrgIds();
 
@@ -994,8 +994,8 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       Array.from(orgIds).map(async (orgId) => {
         using orgStub = asDisposable(getOrgStub(this.env, orgId));
         const thread = await orgStub.getThread(threadId);
-        if (thread && updates.title !== undefined) {
-          const updated = await orgStub.updateThread(threadId, updates.title);
+        if (thread && (updates.title !== undefined || updates.created_by !== undefined)) {
+          const updated = await orgStub.adminUpdateThread(threadId, updates, 'admin-cli');
           return updated ? this.toThread(updated) : null;
         }
         return null;
@@ -1751,6 +1751,34 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     }
 
     await userStub.setOrphaned(true);
+  }
+
+  async adminAddOrgMember(
+    orgId: string,
+    userId: string,
+    role: 'admin' | 'member',
+    actorId: string
+  ): Promise<void> {
+    // Validate user exists before adding membership
+    const user = await this.getUserById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Add user to org
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    await orgStub.addMember(userId, role, actorId);
+
+    // Get first workspace to set as lastWorkspaceId
+    const workspaces = await orgStub.getWorkspaces();
+    const firstWorkspace = workspaces[0] ?? null;
+
+    // Add org to user
+    using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+    await userStub.addOrg(orgId, role, firstWorkspace?.id ?? null);
+
+    // Clear orphaned status if set
+    await userStub.setOrphaned(false);
   }
 
   async archiveOrg(orgId: string, actorId: string): Promise<void> {

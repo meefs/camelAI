@@ -62,6 +62,8 @@ export default {
 						'/container/{orgId}/mkdir': 'Create directory in container (POST: {path})',
 						'/container/{orgId}/delete': 'Delete file/dir in container (POST: {path})',
 						'/container/{orgId}/reset': 'Reset container (destroys and recreates)',
+						'/orgs/{orgId}/add-member': 'Add member to org (POST: {userId, role?, actorId?})',
+						'/threads/{threadId}/update': 'Update thread (POST: {created_by?, title?})',
 					},
 				});
 			}
@@ -113,12 +115,60 @@ export default {
 				});
 			}
 
+			// Get user orgs: GET /users/{userId}/orgs
+			const userOrgsMatch = path.match(/^\/users\/([^\/]+)\/orgs$/);
+			if (userOrgsMatch) {
+				const userId = decodeURIComponent(userOrgsMatch[1]!);
+				const orgs = await env.RPC.getUserOrgs(userId);
+				return jsonResponse({
+					userId,
+					orgs,
+				});
+			}
+
 			if (path === '/threads') {
 				const { items: threads, total } = await env.RPC.adminGetThreadsPaginated({ limit: 1000 });
 				return jsonResponse({
 					targetHost: env.TARGET_HOST,
 					count: total,
 					threads,
+				});
+			}
+
+			// Add member to org: POST /orgs/{orgId}/add-member
+			const addMemberMatch = path.match(/^\/orgs\/([^\/]+)\/add-member$/);
+			if (addMemberMatch && request.method === 'POST') {
+				const orgId = decodeURIComponent(addMemberMatch[1]!);
+				const body = (await request.json()) as { userId?: string; role?: string; actorId?: string };
+				if (!body.userId) {
+					return jsonResponse({ error: 'userId required' }, 400);
+				}
+				const role = (body.role || 'member') as 'admin' | 'member';
+				const actorId = body.actorId || 'admin-cli';
+				await env.RPC.adminAddOrgMember(orgId, body.userId, role, actorId);
+				return jsonResponse({
+					success: true,
+					orgId,
+					userId: body.userId,
+					role,
+				});
+			}
+
+			// Update thread: POST /threads/{threadId}/update
+			const updateThreadMatch = path.match(/^\/threads\/([^\/]+)\/update$/);
+			if (updateThreadMatch && request.method === 'POST') {
+				const threadId = decodeURIComponent(updateThreadMatch[1]!);
+				const body = (await request.json()) as { title?: string; created_by?: string };
+				if (!body.title && !body.created_by) {
+					return jsonResponse({ error: 'At least one of title or created_by required' }, 400);
+				}
+				const result = await env.RPC.adminUpdateThread(threadId, body);
+				if (!result) {
+					return jsonResponse({ error: 'Thread not found', threadId }, 404);
+				}
+				return jsonResponse({
+					success: true,
+					thread: result,
 				});
 			}
 

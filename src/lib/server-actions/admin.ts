@@ -70,6 +70,18 @@ export async function transferAdminOrgOwnership(orgId: string, newOwnerId: strin
   return { success: true };
 }
 
+export async function addAdminOrgMember(orgId: string, userId: string, role: 'admin' | 'member') {
+  const { session } = await requireSuperuser('Forbidden');
+  if (!userId || typeof userId !== 'string') {
+    throw new Error('User ID is required');
+  }
+  if (!['admin', 'member'].includes(role)) {
+    throw new Error('Role must be "admin" or "member"');
+  }
+  await authDO.adminAddOrgMember(orgId, userId, role, session.user_id);
+  return { success: true };
+}
+
 export async function archiveAdminOrg(orgId: string) {
   const { session } = await requireSuperuser('Forbidden');
   await authDO.archiveOrg(orgId, session.user_id);

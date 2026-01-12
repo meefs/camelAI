@@ -253,6 +253,15 @@ export async function adminTransferOrgOwnership(
   return withRpc((rpc) => rpc.adminTransferOrgOwnership(orgId, newOwnerId, actorId));
 }
 
+export async function adminAddOrgMember(
+  orgId: string,
+  userId: string,
+  role: 'admin' | 'member',
+  actorId: string
+): Promise<void> {
+  return withRpc((rpc) => rpc.adminAddOrgMember(orgId, userId, role, actorId));
+}
+
 export async function adminForceOrphanUser(userId: string, actorId: string): Promise<void> {
   return withRpc((rpc) => rpc.adminForceOrphanUser(userId, actorId));
 }

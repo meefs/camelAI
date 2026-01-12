@@ -1291,6 +1291,41 @@ export class OrgDO extends DurableObject<AuthEnv> {
   }
 
   /**
+   * Admin: Update thread with arbitrary fields
+   */
+  adminUpdateThread(id: string, updates: { title?: string; created_by?: string }, actorId?: string): OrgThread | null {
+    const existing = this.getThread(id);
+    if (!existing) return null;
+    const now = Date.now();
+
+    const setClauses: string[] = ['updated_at = ?'];
+    const params: (string | number)[] = [now];
+
+    if (updates.title !== undefined) {
+      setClauses.push('title = ?');
+      params.push(updates.title);
+    }
+    if (updates.created_by !== undefined) {
+      setClauses.push('created_by = ?');
+      params.push(updates.created_by);
+    }
+
+    params.push(id);
+    this.sql.exec(`UPDATE threads SET ${setClauses.join(', ')} WHERE id = ?`, ...params);
+
+    if (actorId) {
+      this.log('thread_admin_updated', actorId, id, updates);
+    }
+
+    return {
+      ...existing,
+      title: updates.title ?? existing.title,
+      created_by: updates.created_by ?? existing.created_by,
+      updated_at: now,
+    };
+  }
+
+  /**
    * Delete a thread
    */
   deleteThread(id: string, actorId?: string): boolean {

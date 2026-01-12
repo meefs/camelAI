@@ -5,6 +5,7 @@ import * as computerDO from '@/lib/computer-do';
 import { getSessionId } from '@/lib/auth';
 import { requireSuperuser } from '@/lib/server-guards';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
+import { AddOrgMemberDialog } from '@/components/admin/add-org-member-dialog';
 import { OrgDangerZone } from '@/components/admin/org-danger-zone';
 import { OrgMemberRoleSelect } from '@/components/admin/org-member-role-select';
 import { OrgEditForm } from '@/components/admin/org-edit-form';
@@ -263,11 +264,14 @@ export default async function AdminOrgDetailPage({ params }: Props) {
             </Card>
 
             <Card>
-              <CardHeader>
-                <CardTitle>Members</CardTitle>
-                <CardDescription>
-                  {members.length} {members.length === 1 ? 'member' : 'members'}
-                </CardDescription>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0">
+                <div>
+                  <CardTitle>Members</CardTitle>
+                  <CardDescription>
+                    {members.length} {members.length === 1 ? 'member' : 'members'}
+                  </CardDescription>
+                </div>
+                <AddOrgMemberDialog orgId={org.id} />
               </CardHeader>
               <CardContent>
                 {members.length === 0 ? (
