@@ -259,9 +259,7 @@ export interface AdminAppSummary {
   is_public: boolean;
 }
 
-export interface AdminAppDetail extends AdminAppSummary {
-  // Reserved for additional admin fields in the detail view.
-}
+export type AdminAppDetail = AdminAppSummary;
 
 export interface AdminInvitation {
   id: string;
