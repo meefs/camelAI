@@ -1,11 +1,13 @@
 /**
- * Worker entry point that serves the React SPA and handles API routes.
+ * Worker entry point that serves the React SPA and handles API routes using Hono.
  *
  * This pattern allows you to:
- * 1. Handle API routes in the worker (e.g., /api/*)
+ * 1. Handle API routes in the worker using Hono's routing (e.g., /api/*)
  * 2. Export Durable Object classes for persistence
  * 3. Serve static assets for all other routes (React SPA)
  */
+
+import { Hono } from "hono";
 
 // To add Durable Objects:
 // 1. Copy workers/src/durable-objects.example.ts and customize it
@@ -22,36 +24,33 @@ interface Env {
   // MY_DO: DurableObjectNamespace<MyDO>;
 }
 
-export default {
-  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
+const app = new Hono<{ Bindings: Env }>();
 
-    // API routes
-    if (url.pathname.startsWith("/api/")) {
-      return handleApi(request, url, env);
-    }
+// API routes
+app.get("/api/hello", (c) => {
+  return c.json({
+    message: "Hello from Cloudflare Workers!",
+    timestamp: new Date().toISOString(),
+  });
+});
 
-    // Serve static assets for all other routes
-    // The React app will handle client-side routing
-    return env.ASSETS.fetch(request);
-  },
-} satisfies ExportedHandler<Env>;
+// Add more API routes here
+// Example: POST /api/items
+// app.post("/api/items", async (c) => {
+//   const body = await c.req.json();
+//   // Handle create item...
+//   return c.json({ success: true });
+// });
 
-async function handleApi(request: Request, url: URL, _env: Env): Promise<Response> {
-  // Example: GET /api/hello
-  if (url.pathname === "/api/hello" && request.method === "GET") {
-    return Response.json({
-      message: "Hello from Cloudflare Workers!",
-      timestamp: new Date().toISOString(),
-    });
-  }
+// 404 for unmatched API routes
+app.all("/api/*", (c) => {
+  return c.json({ error: "Not found" }, 404);
+});
 
-  // Add more API routes here
-  // Example: POST /api/items
-  // if (url.pathname === "/api/items" && request.method === "POST") {
-  //   const body = await request.json();
-  //   // Handle create item...
-  // }
+// Serve static assets for all other routes
+// The React app will handle client-side routing
+app.all("*", async (c) => {
+  return c.env.ASSETS.fetch(c.req.raw);
+});
 
-  return Response.json({ error: "Not found" }, { status: 404 });
-}
+export default app;

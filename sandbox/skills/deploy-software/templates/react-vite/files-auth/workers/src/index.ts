@@ -1,14 +1,15 @@
 /**
- * Worker entry point that serves the React SPA, handles API routes, and auth.
+ * Worker entry point that serves the React SPA, handles API routes and auth using Hono.
  *
  * This pattern allows you to:
- * 1. Handle API routes in the worker (e.g., /api/*)
+ * 1. Handle API routes in the worker using Hono's routing (e.g., /api/*)
  * 2. Handle authentication routes (/api/auth/*)
  * 3. Export Durable Object classes for persistence
  * 4. Serve static assets for all other routes (React SPA)
  */
 
-import { handleAuthLogin, handleAuthLogout, handleAuthMe } from "./auth-routes.js";
+import { Hono } from "hono";
+import { authRoutes } from "./auth-routes.js";
 
 // To add Durable Objects:
 // 1. Copy workers/src/durable-objects.example.ts and customize it
@@ -25,47 +26,36 @@ interface Env {
   // MY_DO: DurableObjectNamespace<MyDO>;
 }
 
-export default {
-  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
+const app = new Hono<{ Bindings: Env }>();
 
-    // API routes
-    if (url.pathname.startsWith("/api/")) {
-      return handleApi(request, url, env);
-    }
+// Mount auth routes
+app.route("/api/auth", authRoutes);
 
-    // Serve static assets for all other routes
-    // The React app will handle client-side routing
-    return env.ASSETS.fetch(request);
-  },
-} satisfies ExportedHandler<Env>;
+// API routes
+app.get("/api/hello", (c) => {
+  return c.json({
+    message: "Hello from Cloudflare Workers!",
+    timestamp: new Date().toISOString(),
+  });
+});
 
-async function handleApi(request: Request, url: URL, _env: Env): Promise<Response> {
-  // Auth routes
-  if (url.pathname === "/api/auth/login" && request.method === "POST") {
-    return handleAuthLogin(request);
-  }
-  if (url.pathname === "/api/auth/logout" && request.method === "POST") {
-    return handleAuthLogout(request);
-  }
-  if (url.pathname === "/api/auth/me" && request.method === "GET") {
-    return handleAuthMe(request);
-  }
+// Add more API routes here
+// Example: POST /api/items
+// app.post("/api/items", async (c) => {
+//   const body = await c.req.json();
+//   // Handle create item...
+//   return c.json({ success: true });
+// });
 
-  // Example: GET /api/hello
-  if (url.pathname === "/api/hello" && request.method === "GET") {
-    return Response.json({
-      message: "Hello from Cloudflare Workers!",
-      timestamp: new Date().toISOString(),
-    });
-  }
+// 404 for unmatched API routes
+app.all("/api/*", (c) => {
+  return c.json({ error: "Not found" }, 404);
+});
 
-  // Add more API routes here
-  // Example: POST /api/items
-  // if (url.pathname === "/api/items" && request.method === "POST") {
-  //   const body = await request.json();
-  //   // Handle create item...
-  // }
+// Serve static assets for all other routes
+// The React app will handle client-side routing
+app.all("*", async (c) => {
+  return c.env.ASSETS.fetch(c.req.raw);
+});
 
-  return Response.json({ error: "Not found" }, { status: 404 });
-}
+export default app;

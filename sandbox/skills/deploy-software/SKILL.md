@@ -311,6 +311,7 @@ The template includes:
 - Tailwind CSS v4
 - shadcn/ui pre-configured
 - TypeScript
+- Hono for type-safe API routing
 - Worker with example API route at `/api/hello`
 
 ### Wrangler Configuration for React + Vite
@@ -332,22 +333,60 @@ The template creates this `wrangler.jsonc`:
 
 ### Adding API Routes
 
-API routes are defined in `workers/src/index.ts`:
+API routes are defined in `workers/src/index.ts` using [Hono](https://hono.dev):
 
 ```typescript
-async function handleApi(request: Request, url: URL, env: Env): Promise<Response> {
-  if (url.pathname === "/api/items" && request.method === "GET") {
-    return Response.json({ items: [] });
-  }
+import { Hono } from "hono";
 
-  if (url.pathname === "/api/items" && request.method === "POST") {
-    const body = await request.json();
-    // Handle create item...
-    return Response.json({ success: true });
-  }
-
-  return Response.json({ error: "Not found" }, { status: 404 });
+interface Env {
+  ASSETS: Fetcher;
 }
+
+const app = new Hono<{ Bindings: Env }>();
+
+app.get("/api/items", (c) => {
+  return c.json({ items: [] });
+});
+
+app.post("/api/items", async (c) => {
+  const body = await c.req.json();
+  // Handle create item...
+  return c.json({ success: true });
+});
+
+// 404 for unmatched API routes
+app.all("/api/*", (c) => {
+  return c.json({ error: "Not found" }, 404);
+});
+
+// Serve static assets for all other routes
+app.all("*", async (c) => {
+  return c.env.ASSETS.fetch(c.req.raw);
+});
+
+export default app;
+```
+
+### Organizing Routes with Hono
+
+For larger apps, organize routes into separate files:
+
+```typescript
+// workers/src/items-routes.ts
+import { Hono } from "hono";
+
+export const itemsRoutes = new Hono();
+
+itemsRoutes.get("/", (c) => c.json({ items: [] }));
+itemsRoutes.post("/", async (c) => {
+  const body = await c.req.json();
+  return c.json({ success: true });
+});
+
+// workers/src/index.ts
+import { itemsRoutes } from "./items-routes.js";
+
+app.route("/api/items", itemsRoutes);
 ```
 
 ## Best Practices
