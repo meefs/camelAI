@@ -1,13 +1,19 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Thread } from '@/types';
+import type { Thread, WorkspaceWithAccess } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { PageHeader } from '@/components/page-header';
 import { ChatsToolbar } from '@/components/history/chats-toolbar';
 import { ChatsList } from '@/components/history/chats-list';
-import { deleteThread, getThreadsPage, updateThreadTitle } from '@/lib/server-actions/thread';
+import { SwitchWorkspaceDialog } from '@/components/history/switch-workspace-dialog';
+import {
+  deleteThread,
+  getThreadsPage,
+  getThreadsPageAllWorkspaces,
+  updateThreadTitle,
+} from '@/lib/server-actions/thread';
 
 // Note: Auth is handled by the (app) layout - no need to check here
 
@@ -27,26 +33,56 @@ export default function HistoryClient({
   initialLimit,
 }: HistoryClientProps) {
   const router = useRouter();
-  const { currentOrg, loading: authLoading } = useAuth();
+  const {
+    currentOrg,
+    currentWorkspace,
+    workspaces,
+    switchWorkspace,
+    loading: authLoading,
+  } = useAuth();
   const [threads, setThreads] = useState<Thread[]>(initialThreads);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [filter, setFilter] = useState<'this-workspace' | 'all-workspaces'>('this-workspace');
   const [selectMode, setSelectMode] = useState<'off' | 'manual' | 'implicit'>('off');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeOrgId, setActiveOrgId] = useState(initialOrgId);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
+    currentWorkspace?.id ?? null
+  );
   const [total, setTotal] = useState(initialTotal);
   const [offset, setOffset] = useState(initialOffset);
   const [limit, setLimit] = useState(initialLimit);
+  const [switchDialog, setSwitchDialog] = useState<{
+    open: boolean;
+    threadId: string | null;
+    workspace: WorkspaceWithAccess | null;
+  }>({ open: false, threadId: null, workspace: null });
+  const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const isSelecting = selectMode !== 'off';
   const hasMore = threads.length < total;
+  const workspaceMap = useMemo(
+    () => new Map((workspaces ?? []).map((workspace) => [workspace.id, workspace])),
+    [workspaces]
+  );
 
-  const refreshThreads = useCallback(async () => {
+  const fetchThreadsPage = useCallback(
+    async (nextFilter: 'this-workspace' | 'all-workspaces', nextOffset: number, nextLimit: number) => {
+      if (nextFilter === 'all-workspaces') {
+        return getThreadsPageAllWorkspaces({ offset: nextOffset, limit: nextLimit });
+      }
+      return getThreadsPage({ offset: nextOffset, limit: nextLimit });
+    },
+    []
+  );
+
+  const refreshThreads = useCallback(async (nextFilter: 'this-workspace' | 'all-workspaces' = filter) => {
     try {
       setLoading(true);
-      const page = await getThreadsPage({ offset: 0, limit });
+      const page = await fetchThreadsPage(nextFilter, 0, limit);
       setThreads(Array.isArray(page.items) ? (page.items as Thread[]) : []);
       setTotal(page.total);
       setOffset(page.offset);
@@ -56,7 +92,7 @@ export default function HistoryClient({
     } finally {
       setLoading(false);
     }
-  }, [limit]);
+  }, [fetchThreadsPage, filter, limit]);
 
   useEffect(() => {
     if (currentOrg?.id && currentOrg.id !== activeOrgId) {
@@ -65,12 +101,21 @@ export default function HistoryClient({
     }
   }, [currentOrg?.id, activeOrgId, refreshThreads]);
 
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id ?? null;
+    if (workspaceId === activeWorkspaceId) return;
+    setActiveWorkspaceId(workspaceId);
+    if (filter === 'this-workspace' && workspaceId) {
+      refreshThreads();
+    }
+  }, [activeWorkspaceId, currentWorkspace?.id, filter, refreshThreads]);
+
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return;
     try {
       setLoadingMore(true);
       const nextOffset = offset + limit;
-      const page = await getThreadsPage({ offset: nextOffset, limit });
+      const page = await fetchThreadsPage(filter, nextOffset, limit);
       setThreads((prev) => [...prev, ...(page.items as Thread[])]);
       setTotal(page.total);
       setOffset(page.offset);
@@ -80,7 +125,7 @@ export default function HistoryClient({
     } finally {
       setLoadingMore(false);
     }
-  }, [hasMore, limit, loadingMore, offset]);
+  }, [fetchThreadsPage, filter, hasMore, limit, loadingMore, offset]);
 
   useEffect(() => {
     const target = loadMoreRef.current;
@@ -102,6 +147,16 @@ export default function HistoryClient({
   // Filter threads by search query
   const filteredThreads = threads.filter(thread =>
     thread.title.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const handleFilterChange = useCallback(
+    (value: 'this-workspace' | 'all-workspaces') => {
+      setFilter(value);
+      setSelectedIds(new Set());
+      setSelectMode('off');
+      refreshThreads(value);
+    },
+    [refreshThreads]
   );
 
   const enterSelectMode = useCallback((mode: 'manual' | 'implicit') => {
@@ -148,8 +203,10 @@ export default function HistoryClient({
 
   // Thread actions
   const handleRenameThread = async (id: string, newTitle: string) => {
+    const thread = threads.find((entry) => entry.id === id);
+    if (!thread) return;
     try {
-      await updateThreadTitle(id, newTitle);
+      await updateThreadTitle(id, newTitle, thread.workspace_id);
       setThreads(prev => prev.map(t => t.id === id ? { ...t, title: newTitle } : t));
     } catch (error) {
       console.error('Failed to rename thread:', error);
@@ -157,8 +214,10 @@ export default function HistoryClient({
   };
 
   const handleDeleteThread = async (id: string) => {
+    const thread = threads.find((entry) => entry.id === id);
+    if (!thread) return;
     try {
-      await deleteThread(id);
+      await deleteThread(id, thread.workspace_id);
       setThreads(prev => prev.filter(t => t.id !== id));
       setSelectedIds(prev => {
         const next = new Set(prev);
@@ -177,7 +236,36 @@ export default function HistoryClient({
   };
 
   const handleOpenThread = (id: string) => {
-    router.push(`/chat/${id}`);
+    const thread = threads.find((entry) => entry.id === id);
+    if (!thread) return;
+
+    if (!currentWorkspace || thread.workspace_id === currentWorkspace.id) {
+      router.push(`/chat/${id}`);
+      return;
+    }
+
+    const targetWorkspace = workspaceMap.get(thread.workspace_id);
+    if (!targetWorkspace) {
+      router.push(`/chat/${id}`);
+      return;
+    }
+
+    setSwitchDialog({ open: true, threadId: id, workspace: targetWorkspace });
+  };
+
+  const handleConfirmSwitch = async () => {
+    if (!switchDialog.workspace || !switchDialog.threadId) return;
+
+    setSwitchingWorkspace(true);
+    try {
+      await switchWorkspace(switchDialog.workspace.id);
+      router.push(`/chat/${switchDialog.threadId}`);
+    } catch (error) {
+      console.error('Failed to switch workspace:', error);
+    } finally {
+      setSwitchingWorkspace(false);
+      setSwitchDialog({ open: false, threadId: null, workspace: null });
+    }
   };
 
   return (
@@ -191,6 +279,8 @@ export default function HistoryClient({
           <ChatsToolbar
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            filter={filter}
+            onFilterChange={handleFilterChange}
             totalCount={searchQuery ? filteredThreads.length : total}
             isSelecting={isSelecting}
             selectedCount={selectedIds.size}
@@ -216,9 +306,26 @@ export default function HistoryClient({
             loadingMore={loadingMore}
             loadMoreRef={loadMoreRef}
             scrollViewportRef={scrollViewportRef}
+            workspaceMap={workspaceMap}
+            currentWorkspaceId={currentWorkspace?.id ?? null}
+            showWorkspaceBadges={filter === 'all-workspaces'}
           />
         </div>
       </div>
+
+      {switchDialog.workspace ? (
+        <SwitchWorkspaceDialog
+          open={switchDialog.open}
+          onOpenChange={(open) => {
+            if (!open) {
+              setSwitchDialog({ open: false, threadId: null, workspace: null });
+            }
+          }}
+          workspace={switchDialog.workspace}
+          onConfirm={handleConfirmSwitch}
+          loading={switchingWorkspace}
+        />
+      ) : null}
     </>
   );
 }

@@ -23,6 +23,13 @@ export async function getThreadsPaginated(
   return withRpc((rpc) => rpc.getThreadsPaginated(workspaceId, params));
 }
 
+export async function getThreadsPaginatedAllWorkspaces(
+  workspaceIds: string[],
+  params: PaginationParams = {}
+): Promise<PaginatedResult<Thread>> {
+  return withRpc((rpc) => rpc.getThreadsAllWorkspaces(workspaceIds, params));
+}
+
 export async function createThread(
   workspaceId: string,
   title: string | undefined,

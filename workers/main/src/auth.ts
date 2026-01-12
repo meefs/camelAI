@@ -1279,6 +1279,49 @@ export class OrgDO extends DurableObject<AuthEnv> {
   }
 
   /**
+   * Get threads across specific workspaces with pagination.
+   */
+  getThreadsAllWorkspacesPaginated(
+    workspaceIds: string[],
+    offset = 0,
+    limit = 50
+  ): { items: OrgThread[]; total: number; offset: number; limit: number } {
+    const resolvedOffset = Math.max(0, Math.floor(offset));
+    const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+
+    if (workspaceIds.length === 0) {
+      return {
+        items: [],
+        total: 0,
+        offset: resolvedOffset,
+        limit: resolvedLimit,
+      };
+    }
+
+    const placeholders = workspaceIds.map(() => '?').join(',');
+    const items = this.sql
+      .exec(
+        `SELECT * FROM threads WHERE workspace_id IN (${placeholders}) ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+        ...workspaceIds,
+        resolvedLimit,
+        resolvedOffset
+      )
+      .toArray() as unknown as OrgThread[];
+
+    const totalRows = this.sql
+      .exec(`SELECT COUNT(*) as count FROM threads WHERE workspace_id IN (${placeholders})`, ...workspaceIds)
+      .toArray() as Array<{ count: number }>;
+    const total = Number(totalRows[0]?.count ?? 0);
+
+    return {
+      items,
+      total,
+      offset: resolvedOffset,
+      limit: resolvedLimit,
+    };
+  }
+
+  /**
    * Create a new thread with a server-generated UUID
    */
   createThread(workspaceId: string, title: string | undefined, createdBy?: string): OrgThread {

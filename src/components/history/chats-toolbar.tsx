@@ -4,11 +4,14 @@ import { Search, Trash2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 
 interface ChatsToolbarProps {
   searchQuery: string;
   onSearchChange: (query: string) => void;
+  filter: 'this-workspace' | 'all-workspaces';
+  onFilterChange: (value: 'this-workspace' | 'all-workspaces') => void;
   totalCount: number;
   isSelecting: boolean;
   selectedCount: number;
@@ -22,6 +25,8 @@ interface ChatsToolbarProps {
 export function ChatsToolbar({
   searchQuery,
   onSearchChange,
+  filter,
+  onFilterChange,
   totalCount,
   isSelecting,
   selectedCount,
@@ -44,6 +49,13 @@ export function ChatsToolbar({
           className="pl-9 h-10"
         />
       </div>
+
+      <Tabs value={filter} onValueChange={(value) => onFilterChange(value as 'this-workspace' | 'all-workspaces')}>
+        <TabsList variant="line">
+          <TabsTrigger value="this-workspace">This workspace</TabsTrigger>
+          <TabsTrigger value="all-workspaces">All workspaces</TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       {/* Controls Row */}
       <div className="group/header relative flex items-center justify-between h-8 pl-12 pr-3 sm:pl-3 sm:pr-3">

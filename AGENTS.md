@@ -115,6 +115,7 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 1. Each thread belongs to a workspace
 2. Threads are stored in `OrgDO` (one per organization)
 3. `ChatThreadDO` handles real-time preview state for each thread
+4. History can query threads across accessible workspaces via `getThreadsAllWorkspacesPaginated` on `OrgDO`
 
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization

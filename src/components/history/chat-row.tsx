@@ -2,11 +2,12 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { MoreVertical, CheckSquare, Pencil, Trash2 } from 'lucide-react';
-import type { Thread } from '@/types';
+import type { Thread, Workspace } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   DropdownMenu,
@@ -15,12 +16,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { getContrastTextColor } from '@/lib/avatar';
 import { cn } from '@/lib/utils';
 
 interface ChatRowProps {
   thread: Thread;
   isSelecting: boolean;
   isSelected: boolean;
+  workspace?: Workspace;
+  showWorkspaceBadge?: boolean;
   onToggleSelect: (id: string) => void;
   onOpen: (id: string) => void;
   onRename: (id: string, newTitle: string) => void;
@@ -73,6 +77,8 @@ export function ChatRow({
   thread,
   isSelecting,
   isSelected,
+  workspace,
+  showWorkspaceBadge = false,
   onToggleSelect,
   onOpen,
   onRename,
@@ -170,9 +176,53 @@ export function ChatRow({
 
   const creatorLabel = getCreatorLabel(thread.creator?.name, thread.creator?.email);
   const creatorInitials = creatorLabel ? getInitials(creatorLabel) : '?';
+  const creatorAvatar = thread.creator?.avatar;
+  const creatorFallbackStyle = creatorAvatar?.color
+    ? {
+        backgroundColor: creatorAvatar.color,
+        color: getContrastTextColor(creatorAvatar.color),
+      }
+    : undefined;
+  const creatorContent = creatorAvatar?.content ?? creatorInitials;
   const normalizedEditValue = normalizeTitleInput(editValue);
   const isSaveDisabled =
     normalizedEditValue.trim().length === 0 || normalizedEditValue.trim() === thread.title;
+  const workspaceBadge = showWorkspaceBadge && workspace ? (
+    <Badge
+      variant="secondary"
+      className="gap-1 pl-1 pr-2 text-[10px] text-muted-foreground max-w-[140px] min-w-0 shrink justify-start"
+    >
+      <span
+        className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-medium shrink-0"
+        style={{
+          backgroundColor: workspace.avatar.color,
+          color: getContrastTextColor(workspace.avatar.color),
+        }}
+      >
+        {workspace.avatar.content}
+      </span>
+      <span className="truncate min-w-0">{workspace.name}</span>
+    </Badge>
+  ) : null;
+  const creatorAvatarNode = (
+    <Avatar size="xs">
+      <AvatarFallback style={creatorFallbackStyle}>
+        {creatorContent}
+      </AvatarFallback>
+    </Avatar>
+  );
+  const creatorWithTooltip = creatorLabel ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {creatorAvatarNode}
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        {creatorLabel}
+      </TooltipContent>
+    </Tooltip>
+  ) : (
+    creatorAvatarNode
+  );
 
   return (
     <div
@@ -255,55 +305,20 @@ export function ChatRow({
               </Button>
             </div>
             <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-              {creatorLabel ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Avatar size="xs">
-                      <AvatarFallback>
-                        {creatorInitials}
-                      </AvatarFallback>
-                    </Avatar>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {creatorLabel}
-                  </TooltipContent>
-                </Tooltip>
-              ) : (
-                <Avatar size="xs">
-                  <AvatarFallback>
-                    {creatorInitials}
-                  </AvatarFallback>
-                </Avatar>
-              )}
+              {creatorWithTooltip}
               <span>{formatRelativeTime(thread.updated_at)}</span>
             </div>
           </>
         ) : (
           <>
-            <p className="text-sm font-medium truncate text-foreground">
-              {thread.title || 'Untitled Chat'}
-            </p>
+            <div className="flex items-center gap-2 min-w-0">
+              <p className="text-sm font-medium truncate text-foreground min-w-0">
+                {thread.title || 'Untitled Chat'}
+              </p>
+              {workspaceBadge}
+            </div>
             <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-              {creatorLabel ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Avatar size="xs">
-                      <AvatarFallback>
-                        {creatorInitials}
-                      </AvatarFallback>
-                    </Avatar>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {creatorLabel}
-                  </TooltipContent>
-                </Tooltip>
-              ) : (
-                <Avatar size="xs">
-                  <AvatarFallback>
-                    {creatorInitials}
-                  </AvatarFallback>
-                </Avatar>
-              )}
+              {creatorWithTooltip}
               <span>{formatRelativeTime(thread.updated_at)}</span>
             </div>
           </>
