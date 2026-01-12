@@ -82,10 +82,9 @@
 	],
 	"durable_objects": {
 		"bindings": [
-			{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 			{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
-						{ "name": "USER", "class_name": "UserDO" },
+			{ "name": "USER", "class_name": "UserDO" },
 			{ "name": "ORG", "class_name": "OrgDO" },
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 		]
@@ -97,7 +96,8 @@
 		{ "tag": "v4", "new_sqlite_classes": ["ThreadSandbox"] },
 		{ "tag": "v5", "new_sqlite_classes": ["SessionDO", "UserDO", "OrgDO"] },
 		{ "tag": "v6", "new_sqlite_classes": ["WorkspaceDO"] },
-		{ "tag": "v7", "deleted_classes": ["SessionDO"] }
+		{ "tag": "v7", "deleted_classes": ["SessionDO"] },
+		{ "tag": "v8", "deleted_classes": ["ChatIndexDO"] }
 	],
 	"env": {
 		"prod": {
@@ -168,10 +168,9 @@
 			],
 			"durable_objects": {
 				"bindings": [
-					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
-										{ "name": "USER", "class_name": "UserDO" },
+					{ "name": "USER", "class_name": "UserDO" },
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 				]
@@ -247,10 +246,9 @@
 			],
 			"durable_objects": {
 				"bindings": [
-					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
-										{ "name": "USER", "class_name": "UserDO" },
+					{ "name": "USER", "class_name": "UserDO" },
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 				]
@@ -327,10 +325,9 @@
 			],
 			"durable_objects": {
 				"bindings": [
-					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
-										{ "name": "USER", "class_name": "UserDO" },
+					{ "name": "USER", "class_name": "UserDO" },
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 				]
@@ -407,10 +404,9 @@
 			],
 			"durable_objects": {
 				"bindings": [
-					{ "name": "CHAT_INDEX", "class_name": "ChatIndexDO" },
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 					{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
-										{ "name": "USER", "class_name": "UserDO" },
+					{ "name": "USER", "class_name": "UserDO" },
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }
 				]

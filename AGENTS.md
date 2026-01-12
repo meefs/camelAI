@@ -26,8 +26,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 2. **Workers** (`workers/`)
    - `main/` - Main Chiridion app worker
      - Cloudflare Workers with Durable Objects
-     - **Chat DOs:** `ChatIndexDO` (thread/project metadata per org)
-     - **Auth DOs:** `SessionDO`, `UserDO`, `OrgDO`
+     - **Auth DOs:** `UserDO`, `OrgDO` (OrgDO stores threads per workspace)
      - `ThreadSandbox` - Executes Claude SDK in containers
      - WebSocket routing at worker level (one container per org)
      - `DoRpcService` - RPC entrypoint for cross-worker calls
@@ -50,9 +49,9 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `src/app/signup/page.tsx` | Signup page |
 | `src/lib/auth.ts` | Cookie handling, validation helpers |
 | `src/lib/auth-do.ts` | Functions to interact with auth DOs |
-| `workers/main/src/durable-objects.ts` | ChatIndexDO for thread/project metadata |
+| `workers/main/src/durable-objects.ts` | ChatThreadDO for thread preview state |
 | `workers/main/src/container.ts` | Container lifecycle and WebSocket routing |
-| `workers/main/src/auth.ts` | SessionDO, UserDO, OrgDO implementations |
+| `workers/main/src/auth.ts` | UserDO, OrgDO implementations (threads stored in OrgDO) |
 | `workers/main/src/password.ts` | PBKDF2 password hashing |
 | `workers/main/src/index.ts` | Worker entry point |
 | `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
@@ -108,10 +107,10 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 6. Thread ID = Claude session_id (received on first message)
 7. Frontend updates React state with streaming content
 
-### Projects
-1. Each thread belongs to a project (`project_id` on threads)
-2. `ChatIndexDO` stores projects and threads per org
-3. A default project is created per org and assigned to existing/new threads when none is specified
+### Threads
+1. Each thread belongs to a workspace
+2. Threads are stored in `OrgDO` (one per organization)
+3. `ChatThreadDO` handles real-time preview state for each thread
 
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization
@@ -287,7 +286,6 @@ npm run admin:prod
 | `/orgs` | `adminGetOrgsPaginated()` + `getOrgMembers()` | All orgs with member details |
 | `/users` | `adminGetUsersPaginated()` | All users with org counts |
 | `/threads` | `adminGetThreadsPaginated()` | All threads across all orgs |
-| `/migrate-threads` | `adminMigrateAllThreads()` | POST: Migrate threads from ChatIndexDO to OrgDO |
 | `/kv-keys` | Direct KV access | List KV keys (optional `?prefix=`) |
 | `/r2/list` | Direct R2 access | List R2 objects (optional `?prefix=`) |
 | `/r2/info/{key}` | Direct R2 access | Get R2 object metadata |

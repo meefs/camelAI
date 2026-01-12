@@ -547,13 +547,6 @@ export class OrgDO extends DurableObject<AuthEnv> {
       `);
       this.sql.exec('CREATE INDEX IF NOT EXISTS threads_workspace_id ON threads(workspace_id)');
       this.sql.exec('CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)');
-      // Track which workspaces have had their threads migrated from ChatIndexDO
-      this.sql.exec(`
-        CREATE TABLE IF NOT EXISTS _workspace_thread_migration (
-          workspace_id TEXT PRIMARY KEY,
-          migrated_at INTEGER NOT NULL
-        )
-      `);
       this.sql.exec('UPDATE _schema_version SET version = 5');
     }
   }
@@ -1331,46 +1324,5 @@ export class OrgDO extends DurableObject<AuthEnv> {
         resolvedLimit
       )
       .toArray() as unknown as OrgThread[];
-  }
-
-  // Thread migration methods (for backfilling from ChatIndexDO)
-
-  /**
-   * Check if a workspace's threads have been migrated from ChatIndexDO
-   */
-  isWorkspaceThreadsMigrated(workspaceId: string): boolean {
-    const rows = this.sql
-      .exec('SELECT 1 FROM _workspace_thread_migration WHERE workspace_id = ?', workspaceId)
-      .toArray();
-    return rows.length > 0;
-  }
-
-  /**
-   * Import threads from legacy ChatIndexDO format.
-   * Uses INSERT OR IGNORE to avoid duplicates if threads were already created in OrgDO.
-   * Marks the workspace as migrated after import.
-   */
-  importLegacyThreads(
-    workspaceId: string,
-    threads: Array<{ id: string; title: string; created_by: string; created_at: number; updated_at: number }>
-  ): void {
-    for (const thread of threads) {
-      this.sql.exec(
-        'INSERT OR IGNORE INTO threads (id, workspace_id, title, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-        thread.id,
-        workspaceId,
-        thread.title,
-        thread.created_by,
-        thread.created_at,
-        thread.updated_at
-      );
-    }
-    // Mark workspace as migrated
-    const now = Date.now();
-    this.sql.exec(
-      'INSERT OR REPLACE INTO _workspace_thread_migration (workspace_id, migrated_at) VALUES (?, ?)',
-      workspaceId,
-      now
-    );
   }
 }

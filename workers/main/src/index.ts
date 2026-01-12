@@ -1,7 +1,7 @@
 // Custom worker that wraps OpenNext and handles WebSocket + Durable Objects
 // @ts-ignore - .open-next/worker.js is generated at build time
 import openNextHandler from "../../../.open-next/worker.js";
-import { ChatIndexDO, ChatThreadDO, type ChatEnv } from "./durable-objects.js";
+import { ChatThreadDO, type ChatEnv } from "./durable-objects.js";
 import { UserDO, OrgDO, type AuthEnv } from "./auth.js";
 import { WorkspaceContainer, handleWebSocketUpgrade, type WorkspaceContainerEnv } from './workspace-container.js';
 import { WorkspaceDO, type WorkspaceInfo } from './workspace.js';
@@ -763,8 +763,14 @@ export default {
       }
 
       // Verify thread belongs to user's workspace (prevents cross-tenant leak)
-      const indexStub = env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(workspaceId));
-      const thread = await indexStub.getThread(threadId);
+      // Use RPC service since threads are now stored in OrgDO
+      const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
+      let thread;
+      try {
+        thread = await rpc.getThread(threadId, workspaceId);
+      } finally {
+        rpc[Symbol.dispose]?.();
+      }
       if (!thread) {
         return new Response('Thread not found', { status: 404 });
       }
@@ -967,6 +973,6 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 // Export Durable Object classes
-export { ChatIndexDO, ChatThreadDO };
+export { ChatThreadDO };
 export { UserDO, OrgDO };
 export { WorkspaceDO };
