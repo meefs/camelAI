@@ -193,10 +193,12 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
     return new Response('Service temporarily unavailable', { status: 503 });
   }
 
-  // Fail closed: if worker not in registry, deny access
-  // This ensures "private by default" - unknown workers are not accessible
+  // Fail open: if worker not in registry, dispatch anyway
+  // This allows existing deployed workers to continue working even if not yet registered
+  // Once all workers are registered, this can be changed to fail closed
   if (!accessInfo) {
-    return new Response(`Worker "${scriptName}" not found`, { status: 404 });
+    console.log(`[dispatcher] Worker "${scriptName}" not in registry, dispatching anyway (fail open)`);
+    return dispatchToWorker(request, env, scriptName);
   }
 
   // If public, dispatch directly
