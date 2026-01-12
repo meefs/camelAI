@@ -50,6 +50,8 @@ import type {
   AdminWorkspaceSummary,
   AdminWorkspaceDetail,
   AdminThreadWithContext,
+  AdminAppSummary,
+  AdminAppDetail,
   AdminInvitation,
   PaginatedResult,
   PaginationParams,
@@ -929,6 +931,62 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return results.find((r) => r !== null) || null;
   }
 
+  // Admin: Get app with context (worker scripts stored in OrgDO)
+  async adminGetAppDetail(scriptName: string): Promise<AdminAppDetail | null> {
+    const normalized = scriptName.trim();
+    if (!normalized) return null;
+
+    const fetchFromOrg = async (orgId: string): Promise<AdminAppDetail | null> => {
+      using orgStub = asDisposable(getOrgStub(this.env, orgId));
+      const script = await orgStub.getWorkerScript(normalized);
+      if (!script) return null;
+
+      const [info, workspaces] = await Promise.all([
+        orgStub.getInfo(),
+        orgStub.getWorkspaces(),
+      ]);
+      const workspace = workspaces.find((entry) => entry.id === script.workspace_id);
+      const orgName = info?.name ?? orgId;
+      const workspaceName = workspace?.name ?? script.workspace_id;
+      const creator = script.created_by.startsWith('system:')
+        ? null
+        : await this.getUserById(script.created_by);
+
+      return {
+        script_name: script.script_name,
+        workspace_id: script.workspace_id,
+        workspace_name: workspaceName,
+        org_id: orgId,
+        org_name: orgName,
+        created_by: script.created_by,
+        created_by_name: creator?.name ?? null,
+        created_by_email: creator?.email ?? null,
+        created_at: script.created_at,
+        updated_at: script.updated_at,
+        is_public: script.is_public,
+      };
+    };
+
+    const indexData = await this.env.API_TOKENS.get(`script_org:${normalized}`);
+    const indexedOrgId = indexData
+      ? (JSON.parse(indexData) as { org_id: string }).org_id
+      : null;
+
+    if (indexedOrgId) {
+      const result = await fetchFromOrg(indexedOrgId);
+      if (result) return result;
+    }
+
+    const orgIds = await this.collectAllOrgIds();
+    for (const orgId of orgIds) {
+      if (orgId === indexedOrgId) continue;
+      const result = await fetchFromOrg(orgId);
+      if (result) return result;
+    }
+
+    return null;
+  }
+
   // Admin: Get workspace with related data (threads stored in OrgDO)
   async adminGetWorkspaceDetail(workspaceId: string): Promise<AdminWorkspaceDetail | null> {
     const info = await this.getWorkspaceInfo(workspaceId);
@@ -1193,6 +1251,93 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     const items = filtered.slice(offset, offset + limit);
 
     return { items, total, offset, limit };
+  }
+
+  async adminGetAppsPaginated(
+    params: PaginationParams = {}
+  ): Promise<PaginatedResult<AdminAppSummary>> {
+    const { offset = 0, limit = 50 } = params;
+    const search = params.search?.trim().toLowerCase();
+    const orgIds = await this.collectAllOrgIds();
+
+    const appResults = await Promise.all(
+      Array.from(orgIds).map(async (orgId) => {
+        using orgStub = asDisposable(getOrgStub(this.env, orgId));
+        const [info, scripts, workspaces] = await Promise.all([
+          orgStub.getInfo(),
+          orgStub.listWorkerScripts(),
+          orgStub.getWorkspaces(),
+        ]);
+        const orgName = info?.name ?? orgId;
+        const workspaceNameById = new Map(
+          workspaces.map((workspace) => [workspace.id, workspace.name])
+        );
+
+        return scripts.map((script) => ({
+          script,
+          org_id: orgId,
+          org_name: orgName,
+          workspace_name: workspaceNameById.get(script.workspace_id) ?? script.workspace_id,
+        }));
+      })
+    );
+
+    const entries = appResults.flat();
+    const creatorIds = entries
+      .map((entry) => entry.script.created_by)
+      .filter((id) => id && !id.startsWith('system:'));
+    const creators = await this.getUsersByIds(creatorIds);
+    const creatorMap = new Map(creators.map((creator) => [creator.id, creator]));
+
+    const allApps = entries.map((entry) => {
+      const creator = creatorMap.get(entry.script.created_by);
+      return {
+        script_name: entry.script.script_name,
+        workspace_id: entry.script.workspace_id,
+        workspace_name: entry.workspace_name,
+        org_id: entry.org_id,
+        org_name: entry.org_name,
+        created_by: entry.script.created_by,
+        created_by_name: creator?.name ?? null,
+        created_by_email: creator?.email ?? null,
+        created_at: entry.script.created_at,
+        updated_at: entry.script.updated_at,
+        is_public: entry.script.is_public,
+      };
+    });
+
+    const filtered = search
+      ? allApps.filter((app) => {
+        const haystack = [
+          app.script_name,
+          app.org_name,
+          app.workspace_name,
+          app.created_by,
+          app.created_by_name ?? '',
+          app.created_by_email ?? '',
+        ]
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(search);
+      })
+      : allApps;
+    const sorted = filtered.sort((a, b) => b.updated_at - a.updated_at);
+    const total = sorted.length;
+    const items = sorted.slice(offset, offset + limit);
+
+    return { items, total, offset, limit };
+  }
+
+  async adminGetAppCount(): Promise<number> {
+    const orgIds = await this.collectAllOrgIds();
+    const counts = await Promise.all(
+      Array.from(orgIds).map(async (orgId) => {
+        using orgStub = asDisposable(getOrgStub(this.env, orgId));
+        const scripts = await orgStub.listWorkerScripts();
+        return scripts.length;
+      })
+    );
+    return counts.reduce((total, count) => total + count, 0);
   }
 
   async adminGetInvitationsPaginated(
