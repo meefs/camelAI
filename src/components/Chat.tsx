@@ -114,6 +114,45 @@ function extractTodoItemsFromMessage(message: Message): TodoItem[] | null {
   return todosInput.map(coerceTodoItem).filter(Boolean) as TodoItem[];
 }
 
+function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
+  const record = event as Record<string, unknown>;
+  const messageRecord = (event.message ?? {}) as Record<string, unknown>;
+  const isMeta = Boolean(
+    record.isMeta ??
+    record.is_meta ??
+    messageRecord.isMeta ??
+    messageRecord.is_meta
+  );
+  const sourceToolUseID = (
+    record.sourceToolUseID ??
+    record.sourceToolUseId ??
+    record.source_tool_use_id ??
+    record.parent_tool_use_id ??
+    messageRecord.sourceToolUseID ??
+    messageRecord.sourceToolUseId ??
+    messageRecord.source_tool_use_id ??
+    messageRecord.parent_tool_use_id
+  );
+  return { isMeta, sourceToolUseID: typeof sourceToolUseID === 'string' ? sourceToolUseID : undefined };
+}
+
+function getLastToolUseId(message?: Message): string | undefined {
+  if (!message || !Array.isArray(message.content)) return undefined;
+  for (let i = message.content.length - 1; i >= 0; i -= 1) {
+    const block = message.content[i];
+    if (block.type === 'tool_use' && block.id) return block.id;
+  }
+  return undefined;
+}
+
+function getLastToolUseIdFromMessages(messages: Message[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const id = getLastToolUseId(messages[i]);
+    if (id) return id;
+  }
+  return undefined;
+}
+
 
 export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false }: ChatProps) {
   const router = useRouter();
@@ -133,6 +172,10 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [loading, setLoading] = useState(false);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
+  const visibleMessages = useMemo(
+    () => messages.filter(message => !message.isMeta && !message.sourceToolUseID),
+    [messages]
+  );
 
   // Refs to track current state for use in callbacks (avoids stale closures)
   const messagesRef = useRef(messages);
@@ -171,6 +214,22 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     return null;
   }, [messages]);
   const hasStreamingMessage = lastStreamingMessageId !== null;
+  const skillSheetsByToolId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const message of messages) {
+      if (!message.sourceToolUseID) continue;
+      const content = typeof message.content === 'string'
+        ? message.content
+        : message.content
+            .map(block => (block.type === 'text' ? block.text : ''))
+            .filter(Boolean)
+            .join('\n\n');
+      if (content) {
+        map.set(message.sourceToolUseID, content);
+      }
+    }
+    return map;
+  }, [messages]);
 
   const [input, setInput] = useState('');
   const [ready, setReady] = useState(false);
@@ -549,13 +608,42 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
             }
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
-          // Append user content blocks (tool_result) to current streaming message
+          const contentBlocks = sdkEvent.message.content;
+          const isToolResultEvent =
+            Array.isArray(contentBlocks) &&
+            contentBlocks.length > 0 &&
+            contentBlocks.every(block => block.type === 'tool_result');
+          const { sourceToolUseID } = extractMetaInfo(sdkEvent);
+
+          if (!isToolResultEvent) {
+            const shouldBeMeta = true;
+            const streamingMessage = streamingMessageIdRef.current
+              ? messagesRef.current.find(msg => msg.id === streamingMessageIdRef.current)
+              : undefined;
+            const fallbackToolUseId = shouldBeMeta && !sourceToolUseID
+              ? (getLastToolUseId(streamingMessage) || getLastToolUseIdFromMessages(messagesRef.current))
+              : undefined;
+            const resolvedToolUseId = sourceToolUseID || fallbackToolUseId;
+            const metaMsg: Message = {
+              id: `meta_${resolvedToolUseId ?? Date.now()}_${Date.now()}`,
+              thread_id: id,
+              role: 'user',
+              content: contentBlocks,
+              created_at: Date.now(),
+              isMeta: shouldBeMeta,
+              sourceToolUseID: resolvedToolUseId,
+            };
+            setMessages(prev => [...prev, metaMsg]);
+            return;
+          }
+
+          // Regular user content (tool_result) - append to streaming message
           const msgId = streamingMessageIdRef.current;
           if (msgId) {
             setMessages(prev => prev.map(msg => {
               if (msg.id !== msgId) return msg;
               const content = Array.isArray(msg.content) ? msg.content : [];
-              return { ...msg, content: [...content, ...sdkEvent.message!.content] };
+              return { ...msg, content: [...content, ...contentBlocks] };
             }));
           }
         } else if (sdkEvent.type === 'result') {
@@ -806,15 +894,15 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
-  const lastMessage = messages[messages.length - 1];
+  const lastMessage = visibleMessages[visibleMessages.length - 1];
   const showAssistantTail = loading || isStreaming;
   const isAwaitingAssistant = showAssistantTail && lastMessage?.role === 'user';
   const lastUserMessage = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].role === 'user') return messages[i];
+    for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
+      if (visibleMessages[i].role === 'user') return visibleMessages[i];
     }
     return null;
-  }, [messages]);
+  }, [visibleMessages]);
   const shouldRenderSpacer = Boolean(lastUserMessage) && (isAwaitingAssistant || lastMessage?.role === 'assistant');
 
   // Connect when threadId changes
@@ -932,7 +1020,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   useLayoutEffect(() => {
     if (!shouldShowChat || !threadId) return;
     if (initialScrollDoneRef.current) return;
-    if (messages.length === 0) return;
+    if (visibleMessages.length === 0) return;
 
     if (shouldAnchorToLastMessage && lastMessage) {
       const container = scrollContainerRef.current;
@@ -947,7 +1035,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     }
     setShowScrollButton(false);
     initialScrollDoneRef.current = true;
-  }, [shouldShowChat, threadId, messages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage, lastMessage?.id]);
+  }, [shouldShowChat, threadId, visibleMessages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage, lastMessage?.id]);
 
   useLayoutEffect(() => {
     if (!shouldRenderSpacer) return;
@@ -1025,7 +1113,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       }
       observer.disconnect();
     };
-  }, [shouldRenderSpacer, isAwaitingAssistant, lastMessage?.id, lastUserMessage?.id, messages.length, isStreaming, loading]);
+  }, [shouldRenderSpacer, isAwaitingAssistant, lastMessage?.id, lastUserMessage?.id, visibleMessages.length, isStreaming, loading]);
 
   // Handle scroll position tracking
   const handleScroll = useCallback(() => {
@@ -1069,7 +1157,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   useLayoutEffect(() => {
     if (!shouldShowChat || !threadId) return;
 
-    if (!initialScrollDoneRef.current && messages.length > 0) {
+    if (!initialScrollDoneRef.current && visibleMessages.length > 0) {
       initialScrollDoneRef.current = true;
       scrollToBottom('auto');
       setShowScrollButton(false);
@@ -1092,7 +1180,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     if (shouldForce || stickToBottomRef.current || distanceFromBottom < 150) {
       scrollToBottom('smooth');
     }
-  }, [messages, scrollToBottom, shouldShowChat, threadId]);
+  }, [visibleMessages, scrollToBottom, shouldShowChat, threadId]);
 
   const copyMessage = useCallback(async (messageId: string, content: string) => {
     try {
@@ -1273,7 +1361,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
             >
               {/* Centered message column */}
               <div ref={messageColumnRef} className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col">
-                  {messages.map(msg => {
+                  {visibleMessages.map(msg => {
                     const isLastUserMessage = msg.id === lastUserMessage?.id;
                     const isLastAssistantMessage = !isAwaitingAssistant && lastMessage?.role === 'assistant' && msg.id === lastMessage?.id;
                     const messageRef = isLastUserMessage
@@ -1291,6 +1379,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                           onCopy={copyMessage}
                           copiedId={copiedMessageId}
                           showStreamingIndicator={msg.id === lastStreamingMessageId}
+                          skillSheets={skillSheetsByToolId}
                         />
                       </div>
                     );

@@ -122,6 +122,18 @@ export function getToolSummaryParts(
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
       return { action: `Agent: ${description || 'working...'}` };
     }
+    case 'Skill': {
+      const skill = typeof inputRecord.skill === 'string' ? inputRecord.skill : '';
+      if (isStreaming) {
+        return { action: 'Reading skill...' };
+      }
+      const path = skill ? `/home/claude/.claude/skills/${skill}/SKILL.md` : '';
+      return {
+        action: 'Read skill',
+        filename: skill || 'skill',
+        path: path || undefined,
+      };
+    }
     case 'WebFetch': {
       const url = typeof inputRecord.url === 'string' ? inputRecord.url : '';
       if (isStreaming && !url) {

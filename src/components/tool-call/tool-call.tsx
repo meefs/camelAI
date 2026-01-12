@@ -15,6 +15,7 @@ export interface ToolCallProps {
   result?: ToolResultBlock;
   isStreaming?: boolean;
   defaultExpanded?: boolean;
+  skillSheet?: string;
 }
 
 function getStatusClass(status: ToolStatus) {
@@ -45,6 +46,15 @@ function ToolCallSummary({
   );
 
   if (!parts.path || !parts.filename) {
+    if (parts.filename && !parts.path) {
+      return (
+        <span className="tool-call__text min-w-0 flex-1 truncate">
+          {parts.action}{' '}
+          <span className="truncate">{parts.filename}</span>
+        </span>
+      );
+    }
+
     return (
       <span className="tool-call__text min-w-0 flex-1 truncate">
         {parts.action}
@@ -62,7 +72,7 @@ function ToolCallSummary({
   );
 }
 
-export function ToolCall({ tool, result, isStreaming, defaultExpanded = false }: ToolCallProps) {
+export function ToolCall({ tool, result, isStreaming, defaultExpanded = false, skillSheet }: ToolCallProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const status = getToolStatus(tool, result, isStreaming);
 
@@ -101,7 +111,7 @@ export function ToolCall({ tool, result, isStreaming, defaultExpanded = false }:
           "motion-reduce:animate-none"
         )}
       >
-        <ToolCallDetails tool={tool} result={result} />
+        <ToolCallDetails tool={tool} result={result} skillSheet={skillSheet} />
       </CollapsibleContent>
     </Collapsible>
   );

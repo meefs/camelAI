@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useMemo, useState, useCallback } from 'react';
+import { memo, useMemo, useState, useCallback, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
@@ -44,20 +44,38 @@ function CodeBlockPre({ children }: { children?: React.ReactNode }) {
     language = match ? match[1] : '';
   }
 
-  // Highlight code asynchronously
-  useMemo(() => {
-    if (codeString) {
-      const lang = language && PRELOAD_LANGUAGES.includes(language as typeof PRELOAD_LANGUAGES[number])
-        ? language
-        : 'text';
-      codeToHtml(codeString, {
-        lang,
-        themes: SHIKI_DEFAULT_THEMES,
-        defaultColor: false,
-      })
-        .then(setHighlightedCode)
-        .catch(() => setHighlightedCode(null));
+  useEffect(() => {
+    let isActive = true;
+
+    if (!codeString) {
+      setHighlightedCode(null);
+      return () => {
+        isActive = false;
+      };
     }
+
+    const lang = language && PRELOAD_LANGUAGES.includes(language as typeof PRELOAD_LANGUAGES[number])
+      ? language
+      : 'text';
+    codeToHtml(codeString, {
+      lang,
+      themes: SHIKI_DEFAULT_THEMES,
+      defaultColor: false,
+    })
+      .then((html) => {
+        if (isActive) {
+          setHighlightedCode(html);
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setHighlightedCode(null);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
   }, [codeString, language]);
 
   const handleCopy = useCallback(async () => {
