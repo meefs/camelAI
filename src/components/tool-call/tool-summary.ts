@@ -124,12 +124,14 @@ export function getToolSummaryParts(
     }
     case 'Skill': {
       const skill = typeof inputRecord.skill === 'string' ? inputRecord.skill : '';
-      if (isStreaming && !skill) {
-        return { action: 'Activating skill...' };
+      if (isStreaming) {
+        return { action: 'Reading skill...' };
       }
+      const path = skill ? `/home/claude/.claude/skills/${skill}/SKILL.md` : '';
       return {
-        action: 'Activated',
+        action: 'Read skill',
         filename: skill || 'skill',
+        path: path || undefined,
       };
     }
     case 'WebFetch': {

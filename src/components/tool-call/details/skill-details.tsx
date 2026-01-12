@@ -17,6 +17,9 @@ export function SkillDetails({ tool, result, skillSheet }: SkillDetailsProps) {
   const [isSheetExpanded, setIsSheetExpanded] = useState(false);
   const input = tool?.input ?? {};
   const skillName = typeof input.skill === 'string' ? input.skill : '';
+  const skillPath = skillName
+    ? `/home/claude/.claude/skills/${skillName}/SKILL.md`
+    : '';
   const resultText = getResultText(result);
   const sheetText = skillSheet ?? '';
   const previewLength = 200;
@@ -27,7 +30,13 @@ export function SkillDetails({ tool, result, skillSheet }: SkillDetailsProps) {
 
   return (
     <div className="space-y-1">
-      <DetailRow label="Skill:" value={skillName} mono />
+      <DetailRow
+        label="Skill:"
+        value={skillName}
+        mono
+        asFileLink={Boolean(skillName)}
+        filePath={skillPath || undefined}
+      />
       {resultText ? <DetailRow label="Status:" value={resultText} /> : null}
 
       {sheetText ? (
