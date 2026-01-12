@@ -203,8 +203,10 @@ export default function HistoryClient({
 
   // Thread actions
   const handleRenameThread = async (id: string, newTitle: string) => {
+    const thread = threads.find((entry) => entry.id === id);
+    if (!thread) return;
     try {
-      await updateThreadTitle(id, newTitle);
+      await updateThreadTitle(id, newTitle, thread.workspace_id);
       setThreads(prev => prev.map(t => t.id === id ? { ...t, title: newTitle } : t));
     } catch (error) {
       console.error('Failed to rename thread:', error);
@@ -212,8 +214,10 @@ export default function HistoryClient({
   };
 
   const handleDeleteThread = async (id: string) => {
+    const thread = threads.find((entry) => entry.id === id);
+    if (!thread) return;
     try {
-      await deleteThread(id);
+      await deleteThread(id, thread.workspace_id);
       setThreads(prev => prev.filter(t => t.id !== id));
       setSelectedIds(prev => {
         const next = new Set(prev);
