@@ -62,17 +62,17 @@ export async function signupUser(options: {
   const password = options.password ?? 'testpass123';
   const name = options.name ?? 'Test User';
 
-  const response = await serverFetch('/api/auth/signup', {
+  const response = await serverFetch('/api/test/auth', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, name }),
+    body: JSON.stringify({ action: 'signup', email, password, name }),
   });
 
   if (!response.ok) {
     throw new Error(`Signup failed: ${response.status}`);
   }
 
-  const payload = await response.json() as {
+  const payload = (await response.json()) as {
     user: { id: string };
     currentOrg: { id: string };
     currentWorkspace: { id: string } | null;
@@ -86,6 +86,52 @@ export async function signupUser(options: {
     orgId: payload.currentOrg.id,
     workspaceId: payload.currentWorkspace?.id ?? null,
   };
+}
+
+export async function loginUser(options: { email: string; password: string }) {
+  const response = await serverFetch('/api/test/auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'login', email: options.email, password: options.password }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Login failed: ${response.status}`);
+  }
+
+  const payload = (await response.json()) as {
+    user: { id: string; is_orphaned: boolean };
+    currentOrg: { id: string };
+    currentWorkspace: { id: string } | null;
+  };
+
+  return {
+    sessionCookie: extractSessionCookie(response),
+    userId: payload.user.id,
+    orgId: payload.currentOrg.id,
+    workspaceId: payload.currentWorkspace?.id ?? null,
+    isOrphaned: payload.user.is_orphaned,
+  };
+}
+
+export async function getAuthState(sessionCookie: string) {
+  const response = await serverFetch('/api/test/auth', {
+    method: 'GET',
+    headers: { Cookie: sessionCookie },
+  });
+  return response;
+}
+
+export async function switchWorkspace(sessionCookie: string, workspaceId: string | null) {
+  const response = await serverFetch('/api/test/auth', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: sessionCookie,
+    },
+    body: JSON.stringify({ action: 'switch-workspace', workspace_id: workspaceId }),
+  });
+  return response;
 }
 
 export async function createInvitation(

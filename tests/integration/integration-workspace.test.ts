@@ -3,46 +3,14 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { serverFetch, uniqueEmail } from './test-utils';
-
-const PASSWORD = 'testpass123';
-
-function extractSessionCookie(response: Response): string {
-  const setCookie = response.headers.get('set-cookie');
-  expect(setCookie).toBeTruthy();
-  const match = setCookie?.match(/chiridion_session=([^;]+)/);
-  expect(match).toBeTruthy();
-  return `chiridion_session=${match?.[1] ?? ''}`;
-}
-
-async function signupAndGetSession() {
-  const response = await serverFetch('/api/auth/signup', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email: uniqueEmail(),
-      password: PASSWORD,
-      name: 'Integration Tester',
-    }),
-  });
-
-  expect(response.ok).toBe(true);
-  const payload = await response.json() as {
-    currentWorkspace: { id: string } | null;
-  };
-
-  return {
-    sessionCookie: extractSessionCookie(response),
-    workspaceId: payload.currentWorkspace?.id ?? null,
-  };
-}
+import { serverFetch, signupUser } from './test-utils';
 
 describe('workspace integrations', () => {
   let sessionCookie = '';
   let workspaceId: string | null = null;
 
   beforeAll(async () => {
-    const session = await signupAndGetSession();
+    const session = await signupUser({ name: 'Integration Tester' });
     sessionCookie = session.sessionCookie;
     workspaceId = session.workspaceId;
     if (!workspaceId) {

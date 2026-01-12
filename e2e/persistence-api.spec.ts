@@ -1,31 +1,37 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
+
+const PASSWORD = 'password123';
+
+const generateEmail = () =>
+  `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+
+async function signup(page: Page, email = generateEmail()) {
+  await page.goto('/signup');
+  await page.fill('input#email', email);
+  await page.fill('input#password', PASSWORD);
+  await page.fill('input#confirmPassword', PASSWORD);
+  await page.click('button[type="submit"]');
+  await expect(page).toHaveURL('/', { timeout: 10000 });
+  return email;
+}
 
 test.describe('Message Persistence via WebSocket', () => {
-  test('messages sent via WebSocket should persist after reload', async ({ page, request }) => {
-    // Create account via API
-    const email = `test-ws-${Date.now()}@example.com`;
-    const signupResp = await request.post('/api/auth/signup', {
-      data: { email, password: 'password123' }
-    });
-    expect(signupResp.ok()).toBeTruthy();
-    console.log('Signup response status:', signupResp.status());
+  test('messages sent via WebSocket should persist after reload', async ({ page }) => {
+    // Create account via UI
+    await signup(page);
 
-    // Get cookies from signup response
-    const cookies = signupResp.headers()['set-cookie'];
-    console.log('Got cookies:', cookies ? 'yes' : 'no');
-
-    // Create a thread via API
-    const threadResp = await request.post('/api/threads', {
-      data: { title: 'WS Test Thread' }
+    // Create a thread via API (uses session cookie from browser)
+    const threadResp = await page.request.post('/api/threads', {
+      data: { title: 'WS Test Thread' },
     });
     expect(threadResp.ok()).toBeTruthy();
-    const thread = await threadResp.json();
+    const thread = (await threadResp.json()) as { id: string };
     console.log('Created thread:', thread.id);
 
     // Set up WebSocket listener before navigation
-    page.on('websocket', ws => {
+    page.on('websocket', (ws) => {
       console.log('WebSocket opened:', ws.url());
-      ws.on('framereceived', frame => {
+      ws.on('framereceived', (frame) => {
         const payload = frame.payload as string;
         if (payload.length < 500) {
           console.log('WS frame received:', payload.substring(0, 200));
@@ -34,21 +40,8 @@ test.describe('Message Persistence via WebSocket', () => {
       ws.on('close', () => console.log('WebSocket closed'));
     });
 
-    // Navigate to the chat page (should use the cookies from request context)
+    // Navigate to the chat page
     await page.goto(`/chat/${thread.id}`);
-
-    // Check if we're redirected to login (auth issue)
-    const currentUrl = page.url();
-    console.log('Current URL:', currentUrl);
-
-    if (currentUrl.includes('/login')) {
-      console.log('Redirected to login - auth issue');
-      // Try to set cookie manually from the API context
-      const storageState = await request.storageState();
-      console.log('Storage state cookies:', storageState.cookies.length);
-      await page.context().addCookies(storageState.cookies);
-      await page.goto(`/chat/${thread.id}`);
-    }
 
     // Wait for page to load
     await page.waitForLoadState('networkidle');

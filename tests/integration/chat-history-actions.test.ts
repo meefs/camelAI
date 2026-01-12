@@ -5,32 +5,7 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { serverFetch, uniqueEmail } from './test-utils';
-
-const PASSWORD = 'testpass123';
-
-function extractSessionCookie(response: Response): string {
-  const setCookie = response.headers.get('set-cookie');
-  expect(setCookie).toBeTruthy();
-  const match = setCookie?.match(/chiridion_session=([^;]+)/);
-  expect(match).toBeTruthy();
-  return `chiridion_session=${match?.[1] ?? ''}`;
-}
-
-async function signupAndGetSessionCookie(): Promise<string> {
-  const response = await serverFetch('/api/auth/signup', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email: uniqueEmail(),
-      password: PASSWORD,
-      name: 'History Test',
-    }),
-  });
-
-  expect(response.ok).toBe(true);
-  return extractSessionCookie(response);
-}
+import { serverFetch, signupUser } from './test-utils';
 
 async function createThread(sessionCookie: string, title: string) {
   const response = await serverFetch('/api/threads', {
@@ -78,7 +53,8 @@ describe('Chat History Actions Integration', () => {
   let sessionCookie = '';
 
   beforeAll(async () => {
-    sessionCookie = await signupAndGetSessionCookie();
+    const session = await signupUser({ name: 'History Test' });
+    sessionCookie = session.sessionCookie;
   });
 
   it('renames a chat thread', async () => {

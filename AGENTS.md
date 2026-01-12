@@ -92,11 +92,11 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 ## Data Flow
 
 ### Authentication
-1. User signs up/logs in via `/api/auth/signup` or `/api/auth/login`
+1. User signs up/logs in via server actions (`login()`, `signup()` in `src/lib/server-actions/auth.ts`)
 2. Password verified with PBKDF2 (100k iterations, SHA-256)
 3. Session created in `SessionDO`, cookie set with `httpOnly`, `sameSite: lax`
 4. Email → userId mapping stored in KV (`EMAIL_TO_USER`)
-5. `AuthContext` fetches session state from `/api/auth/me`
+5. `AuthContext` calls `getAuthState()` server action to fetch session state
 
 ### Message Sending
 1. User types message in `Chat.tsx`
@@ -123,15 +123,6 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 - `result` - Query complete
 
 ## API Routes
-
-### Auth
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/auth/signup` | POST | Create account |
-| `/api/auth/login` | POST | Login |
-| `/api/auth/logout` | POST | Logout |
-| `/api/auth/me` | GET | Get current session |
-| `/api/auth/switch-org` | POST | Switch active org |
 
 ### Organizations
 | Route | Method | Purpose |
@@ -310,7 +301,6 @@ chiridion-app/
 ├── src/
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── auth/        # Auth endpoints
 │   │   │   ├── chat/        # Chat endpoint
 │   │   │   ├── integrations/# Integration type registry
 │   │   │   ├── invitations/ # Invitation acceptance
@@ -369,7 +359,7 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 
 ### Unit Tests (Vitest + jsdom) (`tests/`)
 - Config: `vitest.config.ts` with `jsdom`, `tests/setup.ts` (matchMedia), excludes `tests/integration/**`.
-- Auth/UI state: `AuthContext.test.tsx` (login/signup/logout/switch org flows, loading/error states).
+- Auth/UI state: `AuthContext.test.tsx` tests auth flows with mocked server actions.
 - Auth helpers: `auth-validation.test.ts`, `admin-auth.test.ts`, `auth-serialization.test.ts` (plain-object safety for DO responses).
 - Chat rendering logic: `Chat.test.tsx` (partial message replacement vs append), `content-parsing.test.ts` (JSON content blocks), `stream-playback.test.ts` (stream event reducer in `src/lib/streaming`).
 - Crypto: `password.test.ts` (PBKDF2 hash/verify, edge cases).
@@ -377,7 +367,7 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 ### Integration Tests (Vitest + dev server) (`tests/integration/`)
 - Run with `npm run test:integration` using `vitest.integration.config.ts`.
 - `global-setup.ts` starts `npm run dev` (wrangler + next) on `INTEGRATION_TEST_PORT` (default `3100`), waits for readiness, writes `.server-url` for tests to read.
-- Tests focus on real HTTP behavior and auth gating (server actions own auth):
+- Tests focus on page accessibility and auth gating (auth uses server actions, not API routes):
   - `pages.test.ts` checks login/signup SSR, public invitation pages, and protected route redirects.
   - `api-routes.test.ts` asserts auth required for chat, threads preview, workspace FS, and computer APIs; static asset behavior.
 - Runs sequentially (single fork) to avoid port conflicts.
@@ -392,5 +382,6 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 - `auth.spec.ts` covers signup/login/logout and protected-route redirects.
 - `chat.spec.ts` validates chat creation, streaming deltas, and tool use UI.
 - `streaming.spec.ts` inspects WebSocket `sdk_event` flow and partial assistant events.
-- `persistence.spec.ts` + `persistence-api.spec.ts` verify message/tool block persistence across reload (UI + API-created threads).
+- `persistence.spec.ts` + `persistence-api.spec.ts` verify message/tool block persistence across reload.
+- `invitation.spec.ts` tests invitation page error handling.
 - `admin.spec.ts` covers admin access control; superuser tests require `SUPERUSER_TEST_EMAIL` and `SUPERUSER_TEST_PASSWORD`.

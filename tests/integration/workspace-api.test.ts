@@ -3,43 +3,7 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { acceptInvitation, createInvitation, serverFetch, signupUser, uniqueEmail } from './test-utils';
-
-const PASSWORD = 'testpass123';
-
-function extractSessionCookie(response: Response): string {
-  const setCookie = response.headers.get('set-cookie');
-  expect(setCookie).toBeTruthy();
-  const match = setCookie?.match(/chiridion_session=([^;]+)/);
-  expect(match).toBeTruthy();
-  return `chiridion_session=${match?.[1] ?? ''}`;
-}
-
-async function signupAndGetSession() {
-  const response = await serverFetch('/api/auth/signup', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email: uniqueEmail(),
-      password: PASSWORD,
-      name: 'Workspace Tester',
-    }),
-  });
-
-  expect(response.ok).toBe(true);
-  const payload = await response.json() as {
-    user: { id: string };
-    currentOrg: { id: string };
-    currentWorkspace: { id: string } | null;
-  };
-
-  return {
-    sessionCookie: extractSessionCookie(response),
-    userId: payload.user.id,
-    orgId: payload.currentOrg.id,
-    workspaceId: payload.currentWorkspace?.id ?? null,
-  };
-}
+import { acceptInvitation, createInvitation, serverFetch, signupUser, switchWorkspace } from './test-utils';
 
 async function createWorkspace(sessionCookie: string, name: string) {
   const response = await serverFetch('/api/workspaces', {
@@ -60,7 +24,7 @@ describe('workspace API', () => {
   let baseWorkspaceId: string | null = null;
 
   beforeAll(async () => {
-    const session = await signupAndGetSession();
+    const session = await signupUser({ name: 'Workspace Tester' });
     sessionCookie = session.sessionCookie;
     baseWorkspaceId = session.workspaceId;
   });
@@ -151,17 +115,10 @@ describe('workspace API', () => {
     expect(workspaces.some((entry) => entry.id === workspace.id)).toBe(false);
   });
 
-  it('POST /api/auth/switch-workspace switches active workspace', async () => {
+  it('switch-workspace switches active workspace', async () => {
     const workspace = await createWorkspace(sessionCookie, 'Switch Workspace');
 
-    const response = await serverFetch('/api/auth/switch-workspace', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Cookie: sessionCookie,
-      },
-      body: JSON.stringify({ workspace_id: workspace.id }),
-    });
+    const response = await switchWorkspace(sessionCookie, workspace.id);
 
     expect(response.ok).toBe(true);
     const payload = await response.json() as { workspace: { id: string } | null };

@@ -38,11 +38,15 @@ async function waitForServer(url: string, timeout: number): Promise<boolean> {
 
 async function waitForAuthReady(baseUrl: string, timeout = 60000): Promise<boolean> {
   const startTime = Date.now();
-  const payload = JSON.stringify({ email: 'ready-check@example.com', password: 'not-a-real-password' });
+  const payload = JSON.stringify({
+    action: 'login',
+    email: 'ready-check@example.com',
+    password: 'not-a-real-password',
+  });
 
   while (Date.now() - startTime < timeout) {
     try {
-      const response = await fetch(`${baseUrl}/api/auth/login`, {
+      const response = await fetch(`${baseUrl}/api/test/auth`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: payload,

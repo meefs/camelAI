@@ -25,11 +25,11 @@ async function getSessionCookie(page: Page) {
 }
 
 async function getCurrentOrgId(page: Page, sessionCookie: string) {
-  const response = await page.request.get('/api/auth/me', {
+  const response = await page.request.get('/api/test/auth', {
     headers: { Cookie: sessionCookie },
   });
   expect(response.ok()).toBe(true);
-  const payload = await response.json() as { currentOrg: { id: string } };
+  const payload = (await response.json()) as { currentOrg: { id: string } };
   return payload.currentOrg.id;
 }
 
@@ -47,7 +47,7 @@ async function createInvitation(
     data: { email, role: 'member' },
   });
   expect(response.ok()).toBe(true);
-  const payload = await response.json() as { id: string };
+  const payload = (await response.json()) as { id: string };
   return payload.id;
 }
 

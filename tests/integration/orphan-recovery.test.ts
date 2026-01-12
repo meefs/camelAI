@@ -6,31 +6,14 @@ import { describe, it, expect } from 'vitest';
 import {
   acceptInvitation,
   createInvitation,
-  extractSessionCookie,
+  getAuthState,
+  loginUser,
   serverFetch,
   signupUser,
   uniqueEmail,
 } from './test-utils';
 
 const PASSWORD = 'testpass123';
-
-async function loginUser(email: string, password: string) {
-  const response = await serverFetch('/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
-  expect(response.ok).toBe(true);
-  const payload = await response.json() as {
-    user: { id: string; is_orphaned: boolean };
-    currentOrg: { id: string };
-    currentWorkspace: { id: string } | null;
-  };
-  return {
-    payload,
-    sessionCookie: extractSessionCookie(response),
-  };
-}
 
 describe('orphan recovery', () => {
   it('orphaned user login creates new org and workspace', async () => {
@@ -42,16 +25,14 @@ describe('orphan recovery', () => {
     });
     expect(archiveResponse.ok).toBe(true);
 
-    const meResponse = await serverFetch('/api/auth/me', {
-      headers: { Cookie: user.sessionCookie },
-    });
+    const meResponse = await getAuthState(user.sessionCookie);
     expect(meResponse.status).toBe(401);
 
-    const { payload } = await loginUser(user.email, user.password);
-    expect(payload.currentOrg.id).toBeTruthy();
-    expect(payload.currentOrg.id).not.toBe(user.orgId);
-    expect(payload.currentWorkspace?.id).toBeTruthy();
-    expect(payload.user.is_orphaned).toBe(false);
+    const loginResult = await loginUser({ email: user.email, password: user.password });
+    expect(loginResult.orgId).toBeTruthy();
+    expect(loginResult.orgId).not.toBe(user.orgId);
+    expect(loginResult.workspaceId).toBeTruthy();
+    expect(loginResult.isOrphaned).toBe(false);
   });
 
   it('orphaned user accepting invite joins existing org', async () => {
@@ -66,14 +47,12 @@ describe('orphan recovery', () => {
     });
     expect(archiveResponse.ok).toBe(true);
 
-    const { sessionCookie } = await loginUser(invitee.email, invitee.password);
+    const { sessionCookie } = await loginUser({ email: invitee.email, password: invitee.password });
 
     const acceptResponse = await acceptInvitation(sessionCookie, owner.orgId, invitation.id);
     expect(acceptResponse.success).toBe(true);
 
-    const meResponse = await serverFetch('/api/auth/me', {
-      headers: { Cookie: sessionCookie },
-    });
+    const meResponse = await getAuthState(sessionCookie);
     expect(meResponse.ok).toBe(true);
     const payload = await meResponse.json() as {
       user: { is_orphaned: boolean };
