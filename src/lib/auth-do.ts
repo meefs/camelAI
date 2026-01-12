@@ -17,6 +17,8 @@ import type {
   AdminWorkspaceSummary,
   AdminWorkspaceDetail,
   AdminThreadWithContext,
+  AdminAppSummary,
+  AdminAppDetail,
   AdminInvitation,
   PaginatedResult,
   PaginationParams,
@@ -221,6 +223,20 @@ export async function adminGetThreadsPaginated(
   params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminThreadWithContext>> {
   return withRpc((rpc) => rpc.adminGetThreadsPaginated(params));
+}
+
+export async function adminGetAppsPaginated(
+  params: PaginationParams = {}
+): Promise<PaginatedResult<AdminAppSummary>> {
+  return withRpc((rpc) => rpc.adminGetAppsPaginated(params));
+}
+
+export async function adminGetAppDetail(scriptName: string): Promise<AdminAppDetail | null> {
+  return withRpc((rpc) => rpc.adminGetAppDetail(scriptName));
+}
+
+export async function adminGetAppCount(): Promise<number> {
+  return withRpc((rpc) => rpc.adminGetAppCount());
 }
 
 export async function adminGetInvitationsPaginated(
@@ -543,6 +559,23 @@ export async function setWorkerScriptPublic(
   actorId: string
 ): Promise<WorkerScript | null> {
   return withRpc((rpc) => rpc.setWorkerScriptPublic(orgId, scriptName, isPublic, actorId));
+}
+
+export async function adminSetAppPublic(
+  orgId: string,
+  scriptName: string,
+  isPublic: boolean,
+  actorId: string
+): Promise<WorkerScript | null> {
+  return withRpc((rpc) => rpc.setWorkerScriptPublic(orgId, scriptName, isPublic, actorId));
+}
+
+export async function adminDeleteApp(
+  orgId: string,
+  scriptName: string,
+  actorId: string
+): Promise<boolean> {
+  return withRpc((rpc) => rpc.deleteWorkerScript(orgId, scriptName, actorId));
 }
 
 // Worker cross-domain auth functions

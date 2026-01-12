@@ -5,9 +5,10 @@ import { requireSuperuser } from '@/lib/server-guards';
 export default async function AdminPage() {
   await requireSuperuser();
 
-  const [overview, threads] = await Promise.all([
+  const [overview, threads, appCount] = await Promise.all([
     authDO.getAdminOverview(),
     authDO.adminGetAllThreads(),
+    authDO.adminGetAppCount(),
   ]);
 
   const safeOverview = {
@@ -36,6 +37,7 @@ export default async function AdminPage() {
     <AdminDashboard
       overview={safeOverview}
       threadCount={threads.length}
+      appCount={appCount}
     />
   );
 }
