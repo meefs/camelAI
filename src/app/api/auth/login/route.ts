@@ -5,15 +5,13 @@ import { errorResponse, jsonResponse } from '@/lib/auth';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as { email?: string; password?: string };
-    const result = await login(body.email ?? '', body.password ?? '');
-
-    if (!result.success) {
-      return errorResponse(result.error, 400);
-    }
-
-    return jsonResponse(result.data);
+    const data = await login(body.email ?? '', body.password ?? '');
+    return jsonResponse(data);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Login failed';
-    return errorResponse(message, 500);
+    // Validation errors (invalid email, wrong password) return 400
+    // Unexpected errors would have generic message and return 500
+    const isValidationError = message !== 'Login failed' && !message.includes('unexpected');
+    return errorResponse(message, isValidationError ? 400 : 500);
   }
 }

@@ -112,10 +112,7 @@ describe('login selects last-used workspace', () => {
 
     const result = await login(user.email, 'password123');
 
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.currentWorkspace?.id).toBe('ws-2');
-    }
+    expect(result.currentWorkspace?.id).toBe('ws-2');
     expect(mockCreateSession).toHaveBeenCalledWith(user.id, org.id, 'ws-2');
     expect(mockSetSessionCookie).toHaveBeenCalledWith('session-1');
   });
