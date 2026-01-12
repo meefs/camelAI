@@ -930,7 +930,7 @@ export class OrgDO extends DurableObject<AuthEnv> {
     }
 
     this.sql.exec(
-      'INSERT INTO worker_scripts (script_name, workspace_id, created_by, created_at, updated_at, is_public) VALUES (?, ?, ?, ?, ?, 0)',
+      'INSERT INTO worker_scripts (script_name, workspace_id, created_by, created_at, updated_at, is_public) VALUES (?, ?, ?, ?, ?, 1)',
       scriptName,
       workspaceId,
       createdBy,
@@ -944,7 +944,7 @@ export class OrgDO extends DurableObject<AuthEnv> {
       created_by: createdBy,
       created_at: now,
       updated_at: now,
-      is_public: false,
+      is_public: true,
     };
   }
 

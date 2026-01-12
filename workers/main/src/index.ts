@@ -139,11 +139,12 @@ async function registerScriptOwnership(
 ): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   // Use "system:deploy" as actor for automated deploys
-  await orgStub.registerWorkerScript(scriptName, workspaceId, 'system:deploy');
-  // Update the denormalized KV index
+  // registerWorkerScript preserves existing is_public on redeploy, or defaults to true for new scripts
+  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, 'system:deploy');
+  // Update the denormalized KV index with the actual is_public value
   await env.API_TOKENS.put(
     `${SCRIPT_ORG_PREFIX}${scriptName}`,
-    JSON.stringify({ org_id: orgId, is_public: false })
+    JSON.stringify({ org_id: orgId, is_public: script.is_public })
   );
 }
 
