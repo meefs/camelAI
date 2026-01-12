@@ -7,8 +7,8 @@
  * - Dispatcher sessions: Sessions for authenticated access to workers
  *
  * All stored in existing KV namespaces with prefixes:
- * - Auth state: wauth_state:{uuid} in API_TOKENS KV (30s TTL)
- * - One-time token: wauth_token:{token} in API_TOKENS KV (30s TTL)
+ * - Auth state: wauth_state:{uuid} in API_TOKENS KV (60s TTL)
+ * - One-time token: wauth_token:{token} in API_TOKENS KV (60s TTL)
  * - Dispatcher session: worker_session:{uuid} in SESSIONS KV (30d TTL)
  */
 
@@ -17,9 +17,9 @@ const AUTH_STATE_PREFIX = 'wauth_state:';
 const AUTH_TOKEN_PREFIX = 'wauth_token:';
 const DISPATCHER_SESSION_PREFIX = 'worker_session:';
 
-// TTLs
-const AUTH_STATE_TTL_SECONDS = 30;
-const AUTH_TOKEN_TTL_SECONDS = 30;
+// TTLs (KV requires minimum 60 seconds)
+const AUTH_STATE_TTL_SECONDS = 60;
+const AUTH_TOKEN_TTL_SECONDS = 60;
 const DISPATCHER_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
 // Token prefix for one-time tokens

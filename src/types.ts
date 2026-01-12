@@ -249,6 +249,22 @@ export interface AdminThreadWithContext extends Thread {
   workspace_name: string;
 }
 
+export interface AdminAppSummary {
+  script_name: string;
+  workspace_id: string;
+  workspace_name: string;
+  org_id: string;
+  org_name: string;
+  created_by: string;
+  created_by_name: string | null;
+  created_by_email: string | null;
+  created_at: number;
+  updated_at: number;
+  is_public: boolean;
+}
+
+export type AdminAppDetail = AdminAppSummary;
+
 export interface AdminInvitation {
   id: string;
   email: string;

@@ -45,6 +45,10 @@ cleanup() {
     wait "$CONTROL_PID" 2>/dev/null || true
   fi
 
+  # Unmount R2 goofys mounts
+  fusermount -u /mnt/user-uploads 2>/dev/null || true
+  fusermount -u /mnt/user-outputs 2>/dev/null || true
+
   # Upload workspace to R2
   if has_r2_config && [ "${R2_MOUNT_READONLY:-}" != "1" ] && [ "${R2_MOUNT_READONLY:-}" != "true" ]; then
     echo "[entrypoint] Uploading snapshot to R2..." >&2
@@ -78,6 +82,32 @@ if has_r2_config; then
 
 else
   echo "[entrypoint] No R2 credentials, running without sync." >&2
+fi
+
+# Mount R2 paths via goofys for file sharing with user
+if has_r2_config; then
+  echo "[entrypoint] Mounting R2 file sharing directories..." >&2
+  R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+  R2_BASE="${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}"
+
+  # Create mount directories
+  mkdir -p /mnt/user-uploads /mnt/user-outputs
+
+  # Mount user-uploads (files uploaded by user via web UI)
+  if goofys --endpoint "$R2_ENDPOINT" -o allow_other --uid "$(id -u claude)" --gid "$(id -g claude)" \
+      "${R2_BUCKET_NAME}:${R2_BASE}user-uploads" /mnt/user-uploads 2>&1; then
+    echo "[entrypoint] Mounted /mnt/user-uploads" >&2
+  else
+    echo "[entrypoint] WARNING: Failed to mount /mnt/user-uploads" >&2
+  fi
+
+  # Mount user-outputs (files created for user to download)
+  if goofys --endpoint "$R2_ENDPOINT" -o allow_other --uid "$(id -u claude)" --gid "$(id -g claude)" \
+      "${R2_BUCKET_NAME}:${R2_BASE}user-outputs" /mnt/user-outputs 2>&1; then
+    echo "[entrypoint] Mounted /mnt/user-outputs" >&2
+  else
+    echo "[entrypoint] WARNING: Failed to mount /mnt/user-outputs" >&2
+  fi
 fi
 
 # Ensure workspace directory exists and is owned by claude

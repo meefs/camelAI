@@ -97,6 +97,28 @@ export async function updateAdminThread(threadId: string, updates: { title?: str
   return thread;
 }
 
+export async function updateAdminApp(
+  orgId: string,
+  scriptName: string,
+  data: { is_public: boolean }
+) {
+  const { session } = await requireSuperuser('Forbidden');
+  const updated = await authDO.adminSetAppPublic(orgId, scriptName, data.is_public, session.user_id);
+  if (!updated) {
+    throw new Error('App not found');
+  }
+  return updated;
+}
+
+export async function deleteAdminApp(orgId: string, scriptName: string) {
+  const { session } = await requireSuperuser('Forbidden');
+  const success = await authDO.adminDeleteApp(orgId, scriptName, session.user_id);
+  if (!success) {
+    throw new Error('App not found');
+  }
+  return { success: true };
+}
+
 export async function updateAdminWorkspace(
   workspaceId: string,
   updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } }

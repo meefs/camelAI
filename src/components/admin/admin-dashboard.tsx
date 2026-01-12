@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
-import { Building2, FolderKanban, MessageSquare, Plug, UserX, Users } from 'lucide-react';
+import { Building2, FolderKanban, MessageSquare, Plug, Rocket, UserX, Users } from 'lucide-react';
 import type { AdminOverview } from '@/types';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -23,9 +23,10 @@ function formatTimestamp(value: number) {
 interface AdminDashboardProps {
   overview: AdminOverview;
   threadCount?: number;
+  appCount?: number;
 }
 
-export function AdminDashboard({ overview, threadCount = 0 }: AdminDashboardProps) {
+export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: AdminDashboardProps) {
   const [query, setQuery] = useState('');
   const normalizedQuery = query.trim().toLowerCase();
 
@@ -56,7 +57,7 @@ export function AdminDashboard({ overview, threadCount = 0 }: AdminDashboardProp
             </p>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <Link href="/qaml-backdoor/users">
               <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
                 <CardHeader>
@@ -103,6 +104,18 @@ export function AdminDashboard({ overview, threadCount = 0 }: AdminDashboardProp
                   <CardDescription>Chat conversations</CardDescription>
                 </CardHeader>
                 <CardContent className="text-2xl font-semibold">{threadCount}</CardContent>
+              </Card>
+            </Link>
+            <Link href="/qaml-backdoor/apps">
+              <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle>Apps</CardTitle>
+                    <Rocket className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <CardDescription>Deployed workers</CardDescription>
+                </CardHeader>
+                <CardContent className="text-2xl font-semibold">{appCount}</CardContent>
               </Card>
             </Link>
           </div>

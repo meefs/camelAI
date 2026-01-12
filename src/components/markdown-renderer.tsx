@@ -7,6 +7,8 @@ import type { Components } from 'react-markdown';
 import { cn } from '@/lib/utils';
 import { Check, Copy } from 'lucide-react';
 import { codeToHtml } from 'shiki';
+import { isChiridionUrl } from '@/lib/chiridion-url';
+import { ChiridionLink } from '@/components/chiridion-link';
 import { SHIKI_DEFAULT_THEMES, PRELOAD_LANGUAGES } from '@/lib/shiki-config';
 
 interface MarkdownRendererProps {
@@ -141,20 +143,38 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
   // Code blocks - pre wraps code, handles syntax highlighting and copy
   pre: CodeBlockPre as Components['pre'],
 
-  // Links
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={cn(
-        'underline underline-offset-2 hover:no-underline',
-        variant === 'user' ? 'text-primary-foreground/90' : 'text-primary'
-      )}
-    >
-      {children}
-    </a>
-  ),
+  // Links - handle chiridion:// protocol for downloads
+  a: ({ href, children }) => {
+    // Check for chiridion:// protocol
+    if (isChiridionUrl(href)) {
+      return (
+        <ChiridionLink
+          href={href!}
+          className={cn(
+            'underline underline-offset-2 hover:no-underline',
+            variant === 'user' ? 'text-primary-foreground/90' : 'text-primary'
+          )}
+        >
+          {children}
+        </ChiridionLink>
+      );
+    }
+
+    // Regular link
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={cn(
+          'underline underline-offset-2 hover:no-underline',
+          variant === 'user' ? 'text-primary-foreground/90' : 'text-primary'
+        )}
+      >
+        {children}
+      </a>
+    );
+  },
 
   // Lists
   ul: ({ children }) => (

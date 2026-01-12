@@ -22,9 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     python3 \
     python3-pip \
+    fuse \
+    libfuse2 \
   && rm -rf /var/lib/apt/lists/* \
   && npm install -g bun wrangler@4.55.0 shadcn \
-  && mv /usr/local/bin/wrangler /usr/local/bin/wrangler-real
+  && mv /usr/local/bin/wrangler /usr/local/bin/wrangler-real \
+  && curl -L -o /usr/local/bin/goofys https://github.com/kahing/goofys/releases/download/v0.24.0/goofys \
+  && chmod +x /usr/local/bin/goofys
 
 # Layer 3: Dependencies only - cached unless package.json changes
 WORKDIR /app

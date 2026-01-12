@@ -14,6 +14,7 @@ import {
 import { PageHeader } from '@/components/page-header';
 import { PromptInput } from '@/components/prompt-input';
 import { FloatingTodoList, type TodoItem, type TodoStatus } from '@/components/floating-todo';
+import type { Attachment } from '@/components/attachment-list';
 import { Button } from '@/components/ui/button';
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
@@ -237,6 +238,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [deployedApp, setDeployedApp] = useState<string | null>(initialDeployedApp ?? null);
   const [iframeKey, setIframeKey] = useState(0);
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
@@ -1190,6 +1192,58 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     }
   }, []);
 
+  const handleFilesSelected = useCallback(async (files: File[]) => {
+    if (!resolvedWorkspaceId) return;
+
+    for (const file of files) {
+      const id = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+      // Add to state as uploading
+      setAttachments(prev => [...prev, {
+        id,
+        name: file.name,
+        path: '',
+        size: file.size,
+        status: 'uploading',
+      }]);
+
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch(`/api/workspaces/${resolvedWorkspaceId}/upload`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          throw new Error('Upload failed');
+        }
+
+        const data = await response.json() as { path: string; size: number };
+
+        // Update state to complete
+        setAttachments(prev => prev.map(a =>
+          a.id === id
+            ? { ...a, path: data.path, size: data.size, status: 'complete' as const }
+            : a
+        ));
+      } catch (err) {
+        console.error('File upload failed:', err);
+        // Update state to error
+        setAttachments(prev => prev.map(a =>
+          a.id === id
+            ? { ...a, status: 'error' as const, error: 'Upload failed' }
+            : a
+        ));
+      }
+    }
+  }, [resolvedWorkspaceId]);
+
+  const handleAttachmentRemove = useCallback((id: string) => {
+    setAttachments(prev => prev.filter(a => a.id !== id));
+  }, []);
+
   async function startNewChat() {
     if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId) return;
 
@@ -1225,10 +1279,24 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     const userMessage = input.trim();
     setInput('');
 
+    // Build message content with file references appended
+    const completedAttachments = attachments.filter(a => a.status === 'complete');
+    let finalContent = userMessage;
+    if (completedAttachments.length > 0) {
+      const fileRefs = completedAttachments
+        .map(a => `(user uploaded file to ${a.path})`)
+        .join('\n');
+      finalContent = `${userMessage}\n\n${fileRefs}`;
+    }
+
+    // Clear attachments after building message
+    setAttachments([]);
+
     // Clear any previous error
     setError(null);
 
     // Add user message to state immediately (optimistic)
+    // Display only the user's typed text (not file references)
     const userMsg: Message = {
       id: `local_${Date.now()}`,
       thread_id: threadId,
@@ -1246,13 +1314,14 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       setLoading(true);
       wsRef.current.send(JSON.stringify({
         type: 'message',
-        content: userMessage,
+        content: finalContent,
         sessionId: sessionIdRef.current,
         threadId,
       }));
     } else {
-      // Queue the full message object for later delivery
-      setPendingMessages(prev => [...prev, userMsg]);
+      // Queue the full message object for later delivery (with file refs in content)
+      const queuedMsg: Message = { ...userMsg, content: finalContent };
+      setPendingMessages(prev => [...prev, queuedMsg]);
       setLoading(true);
 
       // If not connected at all, trigger reconnect
@@ -1394,6 +1463,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                     placeholder="Type a message..."
                     isAssistantRunning={loading || isStreaming}
                     autoFocus
+                    attachments={attachments}
+                    onFilesSelected={handleFilesSelected}
+                    onAttachmentRemove={handleAttachmentRemove}
                   />
                 </div>
               </div>

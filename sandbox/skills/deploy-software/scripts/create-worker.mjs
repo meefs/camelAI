@@ -6,11 +6,11 @@
  *   create-worker <template> <project-name> [options]
  *
  * Templates:
- *   nextjs-fullstack  - Next.js app with API routes and optional auth
+ *   react-vite  - React app with Vite, React Router, Tailwind, and shadcn/ui
  *
  * Options:
- *   --auth            - Include authentication boilerplate
- *   --help            - Show this help message
+ *   --auth      - Include authentication boilerplate
+ *   --help      - Show this help message
  */
 
 import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, statSync } from 'fs';
@@ -21,11 +21,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = join(__dirname, '..', 'templates');
 
 const TEMPLATES = {
-  'nextjs-fullstack': {
-    name: 'Next.js Fullstack',
-    description: 'Next.js app with API routes, Durable Objects, and OpenNext for Cloudflare',
+  'react-vite': {
+    name: 'React + Vite',
+    description: 'React app with Vite, React Router, Tailwind CSS v4, and shadcn/ui',
     options: {
-      auth: 'Include session-based authentication with Durable Objects',
+      auth: 'Include session-based authentication with AuthContext and login page',
     },
   },
 };
@@ -50,8 +50,8 @@ Templates:`);
 
   console.log(`
 Examples:
-  create-worker nextjs-fullstack my-app
-  create-worker nextjs-fullstack my-app --auth
+  create-worker react-vite my-app
+  create-worker react-vite my-app --auth
 `);
 }
 

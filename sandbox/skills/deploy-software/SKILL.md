@@ -14,7 +14,7 @@ This skill guides deployment of production software to Cloudflare's edge network
 2. **Use `create-worker` to scaffold projects** - Do not use `wrangler init` or `npm create cloudflare`
 3. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
 4. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
-5. **Use Next.js for fullstack web apps** - Combine with OpenNext for Cloudflare deployment
+5. **Use React + Vite for fullstack web apps** - With React Router and Tailwind CSS pre-configured
 6. **Use shadcn/ui for frontend components** - The CLI is available via `npx shadcn@latest add <component>`
 
 ## Creating New Projects
@@ -22,11 +22,11 @@ This skill guides deployment of production software to Cloudflare's edge network
 Use the `create-worker` command to scaffold new projects. Do NOT use `wrangler init` or `npm create cloudflare`.
 
 ```bash
-# Create a fullstack Next.js app
-create-worker nextjs-fullstack my-app
+# Create a fullstack React app (recommended)
+create-worker react-vite my-app
 
 # Create with authentication boilerplate
-create-worker nextjs-fullstack my-app --auth
+create-worker react-vite my-app --auth
 
 # See available templates
 create-worker --help
@@ -36,7 +36,7 @@ create-worker --help
 
 | Template | Description |
 |----------|-------------|
-| `nextjs-fullstack` | Next.js 15 app with App Router, API routes, Tailwind CSS, and OpenNext for Cloudflare |
+| `react-vite` | React app with Vite, React Router, Tailwind CSS v4, and shadcn/ui pre-configured |
 
 ### Template Options
 
@@ -281,50 +281,112 @@ for (const socket of roomSockets) {
 }
 ```
 
-## Fullstack Apps with Next.js
+## Fullstack Apps with React + Vite
 
 For fullstack applications, use the `create-worker` command:
 
 ```bash
-# Create Next.js app with OpenNext pre-configured
-create-worker nextjs-fullstack my-app
+# Create React app with Vite (recommended)
+create-worker react-vite my-app
 
 # Or with authentication
-create-worker nextjs-fullstack my-app --auth
+create-worker react-vite my-app --auth
 
 cd my-app
 npm install
 
-# Add shadcn/ui components
-npx shadcn@latest init
+# Add shadcn/ui components (already configured)
 npx shadcn@latest add button card form input
 
+# Local development
+npm run dev
+
 # Deploy
-wrangler deploy
+npm run deploy
 ```
 
 The template includes:
-- Next.js 15 with App Router
-- OpenNext for Cloudflare deployment
+- React 19 with React Router 7
+- Vite for fast builds and HMR
 - Tailwind CSS v4
+- shadcn/ui pre-configured
 - TypeScript
-- Example API route at `/api/hello`
+- Hono for type-safe API routing
+- Worker with example API route at `/api/hello`
 
-### Wrangler Configuration for Next.js
+### Wrangler Configuration for React + Vite
 
 The template creates this `wrangler.jsonc`:
 
 ```jsonc
 {
   "name": "my-app",
-  "main": ".open-next/worker.js",
-  "compatibility_date": "2024-09-23",
+  "main": "workers/src/index.ts",
+  "compatibility_date": "2024-12-01",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
-    "directory": ".open-next/assets",
+    "directory": "dist",
     "binding": "ASSETS"
   }
 }
+```
+
+### Adding API Routes
+
+API routes are defined in `workers/src/index.ts` using [Hono](https://hono.dev):
+
+```typescript
+import { Hono } from "hono";
+
+interface Env {
+  ASSETS: Fetcher;
+}
+
+const app = new Hono<{ Bindings: Env }>();
+
+app.get("/api/items", (c) => {
+  return c.json({ items: [] });
+});
+
+app.post("/api/items", async (c) => {
+  const body = await c.req.json();
+  // Handle create item...
+  return c.json({ success: true });
+});
+
+// 404 for unmatched API routes
+app.all("/api/*", (c) => {
+  return c.json({ error: "Not found" }, 404);
+});
+
+// Serve static assets for all other routes
+app.all("*", async (c) => {
+  return c.env.ASSETS.fetch(c.req.raw);
+});
+
+export default app;
+```
+
+### Organizing Routes with Hono
+
+For larger apps, organize routes into separate files:
+
+```typescript
+// workers/src/items-routes.ts
+import { Hono } from "hono";
+
+export const itemsRoutes = new Hono();
+
+itemsRoutes.get("/", (c) => c.json({ items: [] }));
+itemsRoutes.post("/", async (c) => {
+  const body = await c.req.json();
+  return c.json({ success: true });
+});
+
+// workers/src/index.ts
+import { itemsRoutes } from "./items-routes.js";
+
+app.route("/api/items", itemsRoutes);
 ```
 
 ## Best Practices

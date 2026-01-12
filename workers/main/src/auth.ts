@@ -993,6 +993,50 @@ export class OrgDO extends DurableObject<AuthEnv> {
     }));
   }
 
+  async listWorkerScriptsPaginated(
+    offset: number,
+    limit: number,
+    search?: string
+  ): Promise<{ items: WorkerScript[]; total: number }> {
+    const normalized = search?.trim().toLowerCase();
+    const whereClause = normalized ? 'WHERE lower(script_name) LIKE ?' : '';
+    const params: Array<string | number> = [];
+    if (normalized) {
+      params.push(`%${normalized}%`);
+    }
+
+    const countRows = this.sql.exec(
+      `SELECT COUNT(*) as count FROM worker_scripts ${whereClause}`,
+      ...params
+    ).toArray() as unknown as Array<{ count: number }>;
+    const total = countRows[0]?.count ?? 0;
+
+    const rows = this.sql.exec(
+      `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+      ...params,
+      limit,
+      offset
+    ).toArray() as unknown as Array<{
+      script_name: string;
+      workspace_id: string;
+      created_by: string;
+      created_at: number;
+      updated_at: number;
+      is_public: number;
+    }>;
+    return {
+      items: rows.map((row) => ({
+        script_name: row.script_name,
+        workspace_id: row.workspace_id,
+        created_by: row.created_by,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        is_public: row.is_public === 1,
+      })),
+      total,
+    };
+  }
+
   async listWorkerScriptsByWorkspace(workspaceId: string): Promise<WorkerScript[]> {
     const rows = this.sql.exec(
       'SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC',
