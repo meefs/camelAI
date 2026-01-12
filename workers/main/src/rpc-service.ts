@@ -2208,6 +2208,31 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     };
   }
 
+  async getThreadsAllWorkspaces(
+    workspaceIds: string[],
+    params: PaginationParams = {}
+  ): Promise<PaginatedResult<Thread>> {
+    const offset = params.offset ?? 0;
+    const limit = params.limit ?? 50;
+    if (workspaceIds.length === 0) {
+      return {
+        items: [],
+        total: 0,
+        offset,
+        limit,
+      };
+    }
+    const info = await this.requireWorkspaceInfo(workspaceIds[0]);
+    using orgStub = asDisposable(getOrgStub(this.env, info.org_id));
+    const result = await orgStub.getThreadsAllWorkspacesPaginated(workspaceIds, offset, limit);
+    return {
+      items: result.items.map((t) => this.toThread(t)),
+      total: result.total,
+      offset: result.offset,
+      limit: result.limit,
+    };
+  }
+
   async createThread(
     workspaceId: string,
     title: string | undefined,

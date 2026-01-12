@@ -1,7 +1,7 @@
 'use client';
 
 import type { RefObject } from 'react';
-import type { Thread } from '@/types';
+import type { Thread, WorkspaceWithAccess } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
@@ -22,6 +22,9 @@ interface ChatsListProps {
   onRenameThread: (id: string, newTitle: string) => void;
   onDeleteThread: (id: string) => void;
   onEnterSelectMode: () => void;
+  workspaceMap?: Map<string, WorkspaceWithAccess>;
+  currentWorkspaceId?: string | null;
+  showWorkspaceBadges?: boolean;
 }
 
 function LoadingSkeleton() {
@@ -73,6 +76,9 @@ export function ChatsList({
   onRenameThread,
   onDeleteThread,
   onEnterSelectMode,
+  workspaceMap,
+  currentWorkspaceId,
+  showWorkspaceBadges = false,
 }: ChatsListProps) {
   if (loading) {
     return (
@@ -100,6 +106,14 @@ export function ChatsList({
               thread={thread}
               isSelecting={isSelecting}
               isSelected={selectedIds.has(thread.id)}
+              workspace={workspaceMap?.get(thread.workspace_id)}
+              showWorkspaceBadge={
+                Boolean(
+                  showWorkspaceBadges &&
+                    currentWorkspaceId &&
+                    thread.workspace_id !== currentWorkspaceId
+                )
+              }
               onToggleSelect={onToggleSelect}
               onOpen={onOpenThread}
               onRename={onRenameThread}

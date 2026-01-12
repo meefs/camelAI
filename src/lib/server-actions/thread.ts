@@ -116,6 +116,32 @@ export async function getThreadsPage(params: { offset?: number; limit?: number }
   });
 }
 
+export async function getThreadsPageAllWorkspaces(
+  params: { offset?: number; limit?: number } = {}
+) {
+  const session = await requireSession();
+  const workspaces = await authDO.listUserWorkspaces(session.user_id, session.org_id);
+  const accessibleIds = workspaces
+    .filter((workspace) => workspace.access_level !== 'none')
+    .map((workspace) => workspace.id);
+
+  if (accessibleIds.length === 0) {
+    return toSerializable({
+      items: [],
+      total: 0,
+      offset: params.offset ?? 0,
+      limit: params.limit ?? 50,
+    });
+  }
+
+  const page = await chatDO.getThreadsPaginatedAllWorkspaces(accessibleIds, params);
+  const hydratedItems = await hydrateThreads(page.items);
+  return toSerializable({
+    ...page,
+    items: hydratedItems,
+  });
+}
+
 export async function getThreadMessages(threadId: string) {
   const { workspaceId } = await requireWorkspaceId();
   const messages = await chatDO.getMessages(threadId, workspaceId);
