@@ -3,9 +3,21 @@ import type { ContentBlock, Message } from '@/types';
 export interface SDKEvent {
   type: string;
   subtype?: string;
+  isMeta?: boolean;
+  is_meta?: boolean;
+  sourceToolUseID?: string;
+  sourceToolUseId?: string;
+  source_tool_use_id?: string;
+  parent_tool_use_id?: string;
   message?: {
     content: ContentBlock[];
     stop_reason?: string | null;
+    isMeta?: boolean;
+    is_meta?: boolean;
+    sourceToolUseID?: string;
+    sourceToolUseId?: string;
+    source_tool_use_id?: string;
+    parent_tool_use_id?: string;
   };
   event?: {
     type: string;

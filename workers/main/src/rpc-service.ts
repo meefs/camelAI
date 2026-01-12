@@ -2254,9 +2254,39 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
           if (event.type === 'user' && event.message?.content) {
             const firstContent = event.message.content[0];
+            const isMeta = Boolean(
+              event.isMeta ??
+              event.is_meta ??
+              event.message?.isMeta ??
+              event.message?.is_meta
+            );
+            const sourceToolUseID = (
+              event.sourceToolUseID ??
+              event.sourceToolUseId ??
+              event.source_tool_use_id ??
+              event.parent_tool_use_id ??
+              event.message?.sourceToolUseID ??
+              event.message?.sourceToolUseId ??
+              event.message?.source_tool_use_id ??
+              event.message?.parent_tool_use_id
+            );
+            const resolvedToolUseId = typeof sourceToolUseID === 'string' ? sourceToolUseID : undefined;
+
             if (firstContent?.type === 'tool_result') {
               const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
               appendToolResult(event.message.content, createdAt);
+            } else if (isMeta || resolvedToolUseId) {
+              const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
+              const id = event.uuid || `meta_${resolvedToolUseId || messages.length}`;
+              messages.push({
+                id,
+                thread_id: threadId,
+                role: 'user',
+                content: event.message.content,
+                created_at: createdAt,
+                isMeta: true,
+                sourceToolUseID: resolvedToolUseId,
+              });
             } else {
               flushAssistantGroup();
               const id = event.uuid || `user_${messages.length}`;

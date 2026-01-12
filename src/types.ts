@@ -43,6 +43,10 @@ export interface Message {
   isStreaming?: boolean;
   /** @internal Block offset for streaming, cleared when done */
   _blockOffset?: number;
+  /** Indicates this is a meta message (e.g., skill sheet), not a real user message */
+  isMeta?: boolean;
+  /** Links meta message to the originating tool_use block */
+  sourceToolUseID?: string;
 }
 
 export interface SandboxFileInfo {

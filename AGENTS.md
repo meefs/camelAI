@@ -44,6 +44,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 |------|---------|
 | `src/components/Chat.tsx` | Main chat UI with streaming state management |
 | `src/components/floating-todo/*` | Floating todo list UI for streaming task progress |
+| `src/components/tool-call/*` | Tool call UI, summaries, and expanded details (including Skill sheet rendering) |
 | `src/contexts/AuthContext.tsx` | React context for auth state |
 | `src/app/login/page.tsx` | Login page |
 | `src/app/signup/page.tsx` | Signup page |

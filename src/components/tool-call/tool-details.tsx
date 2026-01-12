@@ -12,17 +12,22 @@ import { WebDetails } from './details/web-details';
 import { TodoDetails } from './details/todo-details';
 import { NotebookDetails } from './details/notebook-details';
 import { GenericDetails } from './details/generic-details';
+import { SkillDetails } from './details/skill-details';
 
 interface ToolCallDetailsProps {
   tool?: ToolUseBlock;
   result?: ToolResultBlock;
+  skillSheet?: string;
 }
 
-export function ToolCallDetails({ tool, result }: ToolCallDetailsProps) {
+export function ToolCallDetails({ tool, result, skillSheet }: ToolCallDetailsProps) {
   const name = tool?.name;
 
   let content: ReactNode;
   switch (name) {
+    case 'Skill':
+      content = <SkillDetails tool={tool} result={result} skillSheet={skillSheet} />;
+      break;
     case 'Read':
       content = <ReadDetails tool={tool} result={result} />;
       break;

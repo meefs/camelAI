@@ -65,9 +65,10 @@ export function contentToString(content: string | ContentBlock[]): string {
 interface ContentBlockRendererProps {
   content: string | ContentBlock[];
   isStreaming?: boolean;
+  skillSheets?: Map<string, string>;
 }
 
-function ContentBlockRenderer({ content, isStreaming = false }: ContentBlockRendererProps) {
+function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
     return <MarkdownRenderer content={content} isStreaming={isStreaming} />;
@@ -115,10 +116,11 @@ function ContentBlockRenderer({ content, isStreaming = false }: ContentBlockRend
 
     if (block.type === 'tool_use') {
       const result = toolResultsById.get(block.id);
+      const skillSheet = skillSheets?.get(block.id);
       items.push({
         kind: 'tool',
         key: `tool-${block.id || index}`,
-        node: <ToolCall tool={block} result={result} isStreaming={isStreaming} />,
+        node: <ToolCall tool={block} result={result} isStreaming={isStreaming} skillSheet={skillSheet} />,
       });
       return;
     }
@@ -175,9 +177,20 @@ interface MessageBubbleProps {
   copiedId: string | null;
   /** Whether to show the streaming loading indicator (only true for the last streaming message) */
   showStreamingIndicator?: boolean;
+  skillSheets?: Map<string, string>;
 }
 
-export function MessageBubble({ message, onCopy, copiedId, showStreamingIndicator = false }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  onCopy,
+  copiedId,
+  showStreamingIndicator = false,
+  skillSheets,
+}: MessageBubbleProps) {
+  if (message.isMeta || message.sourceToolUseID) {
+    return null;
+  }
+
   const isCopied = copiedId === message.id;
   const isStreaming = message.isStreaming ?? false;
   const hasContent = typeof message.content === 'string'
@@ -188,7 +201,7 @@ export function MessageBubble({ message, onCopy, copiedId, showStreamingIndicato
     return (
       <div className="flex flex-col items-end gap-1">
         <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
-          <ContentBlockRenderer content={message.content} />
+          <ContentBlockRenderer content={message.content} skillSheets={skillSheets} />
         </div>
         {/* Hover action row */}
         <div
@@ -224,7 +237,7 @@ export function MessageBubble({ message, onCopy, copiedId, showStreamingIndicato
     <div className="flex flex-col gap-1">
       <div className="max-w-none space-y-4">
         {hasContent && (
-          <ContentBlockRenderer content={message.content} isStreaming={isStreaming} />
+          <ContentBlockRenderer content={message.content} isStreaming={isStreaming} skillSheets={skillSheets} />
         )}
         {showStreamingIndicator && <LoadingDots />}
       </div>
