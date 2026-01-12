@@ -89,7 +89,63 @@ function cfApiError(code: number, message: string, status: number): Response {
 
 const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
 const DISPATCH_SCRIPT_BASE = /^\/client\/v4\/accounts\/([^/]+)\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)$/;
+const DISPATCH_SCRIPT_ANY = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/([^/]+)(?:\/|$)/;
 const ASSETS_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
+const SCRIPT_ORG_PREFIX = 'script_org:';
+
+/**
+ * Extract script name from a dispatch namespace API path.
+ */
+function extractScriptName(pathname: string): string | null {
+  const match = pathname.match(DISPATCH_SCRIPT_ANY);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1] ?? '').trim() || null;
+  } catch {
+    return match[1]?.trim() || null;
+  }
+}
+
+/**
+ * Check if a script is owned by a different org.
+ * Returns null if not owned, the owning org_id if owned by same org, or throws if owned by different org.
+ */
+async function checkScriptOwnership(
+  kv: KVNamespace,
+  scriptName: string,
+  requestingOrgId: string
+): Promise<{ owned: boolean; orgId: string | null }> {
+  const data = await kv.get(`${SCRIPT_ORG_PREFIX}${scriptName}`);
+  if (!data) {
+    return { owned: false, orgId: null };
+  }
+  try {
+    const parsed = JSON.parse(data) as { org_id: string; is_public?: boolean };
+    return { owned: true, orgId: parsed.org_id };
+  } catch {
+    // Legacy format: just org_id string
+    return { owned: true, orgId: data };
+  }
+}
+
+/**
+ * Register script ownership after successful deploy.
+ */
+async function registerScriptOwnership(
+  env: Env,
+  scriptName: string,
+  orgId: string,
+  workspaceId: string
+): Promise<void> {
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  // Use "system:deploy" as actor for automated deploys
+  await orgStub.registerWorkerScript(scriptName, workspaceId, 'system:deploy');
+  // Update the denormalized KV index
+  await env.API_TOKENS.put(
+    `${SCRIPT_ORG_PREFIX}${scriptName}`,
+    JSON.stringify({ org_id: orgId, is_public: false })
+  );
+}
 
 function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
   const m = method.toUpperCase();
@@ -502,6 +558,26 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
     return cfApiError(10003, 'Forbidden: Request blocked by API proxy allowlist', 403);
   }
 
+  // Enforce script ownership - prevent org A from deploying to a script owned by org B
+  const scriptName = extractScriptName(pathname);
+  if (scriptName) {
+    const ownership = await checkScriptOwnership(env.API_TOKENS, scriptName, orgId);
+    if (ownership.owned && ownership.orgId !== orgId) {
+      console.warn('[cf-api-proxy] script ownership violation', {
+        method: request.method,
+        path: pathname,
+        scriptName,
+        requestingOrgId: orgId,
+        owningOrgId: ownership.orgId,
+      });
+      return cfApiError(
+        10014,
+        `Script "${scriptName}" is owned by another organization`,
+        403
+      );
+    }
+  }
+
   const upstreamUrl = new URL(`https://api.cloudflare.com${pathname}${url.search}`);
   const headers = new Headers(request.headers);
 
@@ -580,6 +656,26 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
       const account = decodeURIComponent(scriptMatch[1]!);
       const dispatchNs = decodeURIComponent(scriptMatch[2]!);
       const scriptName = decodeURIComponent(scriptMatch[3]!);
+
+      // Register script ownership (or update last_deployed timestamp)
+      ctx.waitUntil(
+        registerScriptOwnership(env, scriptName, orgId, workspaceId)
+          .then(() => {
+            console.log('[cf-api-proxy] registered script ownership', {
+              scriptName,
+              orgId,
+              workspaceId,
+            });
+          })
+          .catch(err => {
+            console.error('[cf-api-proxy] failed to register script ownership', {
+              scriptName,
+              orgId,
+              workspaceId,
+              error: String(err),
+            });
+          })
+      );
 
       // Sync integration secrets to deployed worker
       ctx.waitUntil(
