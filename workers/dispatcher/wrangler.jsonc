@@ -45,11 +45,11 @@
 			"kv_namespaces": [
 				{
 					"binding": "API_TOKENS",
-					"id": "e894eb2caf1641ad8870da994b992fce"
+					"id": "0ee80299e67c4c7fa0c1ad618b7e7a9c"
 				},
 				{
 					"binding": "SESSIONS",
-					"id": "f5ab08fdb1d7404fbc45a171217b4a27"
+					"id": "67958a5b0d104621bd93c91c802ccd1c"
 				}
 			],
 			"services": [
@@ -76,11 +76,11 @@
 			"kv_namespaces": [
 				{
 					"binding": "API_TOKENS",
-					"id": "0ee80299e67c4c7fa0c1ad618b7e7a9c"
+					"id": "e894eb2caf1641ad8870da994b992fce"
 				},
 				{
 					"binding": "SESSIONS",
-					"id": "67958a5b0d104621bd93c91c802ccd1c"
+					"id": "f5ab08fdb1d7404fbc45a171217b4a27"
 				}
 			],
 			"services": [
