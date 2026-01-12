@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { AuthEnv, UserProfile, OrgRole, WorkerScript, WorkerScriptAccess } from './auth';
+import type { AuthEnv, UserProfile, OrgRole, WorkerScript, WorkerScriptAccess, OrgThread } from './auth';
 import {
   createAuthState,
   validateAndConsumeAuthState,
@@ -199,8 +199,13 @@ interface DoRpcEnv extends AuthEnv, ChatEnv, WorkspaceContainerEnv {
   SESSIONS: KVNamespace;
 }
 
+/** @deprecated Use getOrgStub instead - threads are now stored in OrgDO */
 function getIndexStub(env: DoRpcEnv, workspaceId: string) {
   return env.CHAT_INDEX.get(env.CHAT_INDEX.idFromName(workspaceId));
+}
+
+function getOrgStub(env: DoRpcEnv, orgId: string) {
+  return env.ORG.get(env.ORG.idFromName(orgId));
 }
 
 function getThreadStub(env: DoRpcEnv, threadId: string) {
@@ -844,48 +849,80 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return orgs;
   }
 
-  // Admin: Get all threads across all orgs
+  // Admin: Migrate all threads from ChatIndexDO to OrgDO
+  // Call this after deploy to ensure all threads are migrated
+  async adminMigrateAllThreads(): Promise<{
+    orgs_processed: number;
+    workspaces_processed: number;
+    workspaces_migrated: number;
+    threads_migrated: number;
+  }> {
+    const orgIds = await this.collectAllOrgIds();
+    let workspaces_processed = 0;
+    let workspaces_migrated = 0;
+    let threads_migrated = 0;
+
+    for (const orgId of orgIds) {
+      using orgStub = asDisposable(getOrgStub(this.env, orgId));
+      const workspaces = await orgStub.getWorkspaces();
+
+      for (const ws of workspaces) {
+        workspaces_processed++;
+        const isMigrated = await orgStub.isWorkspaceThreadsMigrated(ws.id);
+        if (isMigrated) continue;
+
+        using indexStub = asDisposable(getIndexStub(this.env, ws.id));
+        const legacyThreads = await indexStub.getThreads();
+        await orgStub.importLegacyThreads(ws.id, legacyThreads);
+
+        workspaces_migrated++;
+        threads_migrated += legacyThreads.length;
+      }
+    }
+
+    return {
+      orgs_processed: orgIds.size,
+      workspaces_processed,
+      workspaces_migrated,
+      threads_migrated,
+    };
+  }
+
+  // Admin: Get all threads across all orgs (threads are now stored in OrgDO)
   async adminGetAllThreads(): Promise<AdminThreadWithContext[]> {
-    const workspaces = await this.collectAllWorkspaceIds();
-    const orgNameById = new Map<string, string>();
+    const orgIds = await this.collectAllOrgIds();
     const workspaceNameById = new Map<string, string>();
 
-    const orgIds = Array.from(new Set(workspaces.map((workspace) => workspace.orgId)));
-    const orgInfoResults = await Promise.all(
-      orgIds.map(async (orgId) => {
-        using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-        const info = await orgStub.getInfo();
-        return { orgId, name: info?.name ?? orgId };
-      })
-    );
-    for (const entry of orgInfoResults) {
-      orgNameById.set(entry.orgId, entry.name);
-    }
+    // Ensure all workspaces are migrated first
+    await Promise.all(Array.from(orgIds).map((orgId) => this.ensureAllWorkspacesMigrated(orgId)));
 
-    const workspaceInfoResults = await Promise.all(
-      workspaces.map(async ({ workspaceId }) => {
-        using workspaceStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
-        const info = await workspaceStub.getInfo();
-        return { workspaceId, name: info?.name ?? workspaceId };
-      })
-    );
-    for (const entry of workspaceInfoResults) {
-      workspaceNameById.set(entry.workspaceId, entry.name);
-    }
-
-    // Fetch threads from all workspaces in parallel
+    // Fetch org info and threads in parallel for each org
     const threadResults = await Promise.all(
-      workspaces.map(async ({ workspaceId, orgId }) => {
-        using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-        const threads = await indexStub.getThreads();
-        const orgName = orgNameById.get(orgId) ?? orgId;
-        const workspaceName = workspaceNameById.get(workspaceId) ?? workspaceId;
+      Array.from(orgIds).map(async (orgId) => {
+        using orgStub = asDisposable(getOrgStub(this.env, orgId));
+        const [info, threads] = await Promise.all([orgStub.getInfo(), orgStub.getThreads()]);
+        const orgName = info?.name ?? orgId;
+
+        // Get workspace names for threads (batch per org)
+        const workspaceIds = [...new Set(threads.map((t) => t.workspace_id))];
+        const workspaceInfos = await Promise.all(
+          workspaceIds.map(async (wsId) => {
+            if (workspaceNameById.has(wsId)) return null;
+            using wsStub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(wsId)));
+            const wsInfo = await wsStub.getInfo();
+            return { wsId, name: wsInfo?.name ?? wsId };
+          })
+        );
+        for (const wsInfo of workspaceInfos) {
+          if (wsInfo) workspaceNameById.set(wsInfo.wsId, wsInfo.name);
+        }
+
         return threads.map((thread) => ({
-          ...thread,
+          ...this.toThread(thread),
           org_id: orgId,
           org_name: orgName,
-          workspace_id: workspaceId,
-          workspace_name: workspaceName,
+          workspace_id: thread.workspace_id,
+          workspace_name: workspaceNameById.get(thread.workspace_id) ?? thread.workspace_id,
         }));
       })
     );
@@ -895,7 +932,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return allThreads;
   }
 
-  // Admin: Get thread with messages and preview workers
+  // Admin: Get thread with messages and preview workers (threads stored in OrgDO)
   async adminGetThreadWithMessages(
     threadId: string
   ): Promise<{
@@ -907,31 +944,31 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     workspace_name: string;
     preview_workers: string[];
   } | null> {
-    const workspaces = await this.collectAllWorkspaceIds();
+    const orgIds = await this.collectAllOrgIds();
 
-    // Search for thread in all workspaces in parallel
+    // Ensure all workspaces are migrated first
+    await Promise.all(Array.from(orgIds).map((orgId) => this.ensureAllWorkspacesMigrated(orgId)));
+
+    // Search for thread in all orgs in parallel
     const results = await Promise.all(
-      workspaces.map(async ({ workspaceId, orgId }) => {
-        using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-        const thread = await indexStub.getThread(threadId);
+      Array.from(orgIds).map(async (orgId) => {
+        using orgStub = asDisposable(getOrgStub(this.env, orgId));
+        const thread = await orgStub.getThread(threadId);
         if (thread) {
           // Read messages from container and preview workers in parallel
           const [messages, preview_workers, workspaceInfo, orgInfo] = await Promise.all([
-            this.getMessages(threadId, workspaceId),
+            this.getMessages(threadId, thread.workspace_id),
             this.getThreadPreview(threadId),
-            this.getWorkspaceInfo(workspaceId),
-            (async () => {
-              using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-              return orgStub.getInfo();
-            })(),
+            this.getWorkspaceInfo(thread.workspace_id),
+            orgStub.getInfo(),
           ]);
           return {
-            thread,
+            thread: this.toThread(thread),
             messages,
             org_id: orgId,
             org_name: orgInfo?.name ?? orgId,
-            workspace_id: workspaceId,
-            workspace_name: workspaceInfo?.name ?? workspaceId,
+            workspace_id: thread.workspace_id,
+            workspace_name: workspaceInfo?.name ?? thread.workspace_id,
             preview_workers,
           };
         }
@@ -942,19 +979,22 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return results.find((r) => r !== null) || null;
   }
 
-  // Admin: Get workspace with related data
+  // Admin: Get workspace with related data (threads stored in OrgDO)
   async adminGetWorkspaceDetail(workspaceId: string): Promise<AdminWorkspaceDetail | null> {
     const info = await this.getWorkspaceInfo(workspaceId);
     if (!info) return null;
 
-    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(info.org_id)));
+    // Ensure threads are migrated for this workspace
+    await this.ensureThreadsMigrated(workspaceId, info.org_id);
+
+    using orgStub = asDisposable(getOrgStub(this.env, info.org_id));
     const orgInfo = await orgStub.getInfo();
     if (!orgInfo) return null;
 
     const [threads, integrations, members] = await Promise.all([
       (async () => {
-        using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-        return indexStub.getThreads();
+        const orgThreads = await orgStub.getThreadsByWorkspace(workspaceId);
+        return orgThreads.map((t) => this.toThread(t));
       })(),
       this.getWorkspaceIntegrations(workspaceId),
       (async () => {
@@ -995,20 +1035,24 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return this.archiveWorkspace(workspaceId, actorId);
   }
 
-  // Admin: Update thread
+  // Admin: Update thread (threads stored in OrgDO)
   async adminUpdateThread(
     threadId: string,
     updates: { title?: string }
   ): Promise<Thread | null> {
-    const workspaces = await this.collectAllWorkspaceIds();
+    const orgIds = await this.collectAllOrgIds();
 
-    // Search for thread in all workspaces in parallel
+    // Ensure all workspaces are migrated first
+    await Promise.all(Array.from(orgIds).map((orgId) => this.ensureAllWorkspacesMigrated(orgId)));
+
+    // Search for thread in all orgs in parallel
     const results = await Promise.all(
-      workspaces.map(async ({ workspaceId }) => {
-        using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-        const thread = await indexStub.getThread(threadId);
+      Array.from(orgIds).map(async (orgId) => {
+        using orgStub = asDisposable(getOrgStub(this.env, orgId));
+        const thread = await orgStub.getThread(threadId);
         if (thread && updates.title !== undefined) {
-          return indexStub.updateThread(threadId, updates.title);
+          const updated = await orgStub.updateThread(threadId, updates.title);
+          return updated ? this.toThread(updated) : null;
         }
         return null;
       })
@@ -1120,7 +1164,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return { items, total, offset, limit };
   }
 
-  // Admin: Get paginated workspaces
+  // Admin: Get paginated workspaces (threads stored in OrgDO)
   async adminGetWorkspacesPaginated(
     params: PaginationParams = {}
   ): Promise<PaginatedResult<AdminWorkspaceSummary>> {
@@ -1128,38 +1172,44 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     const search = params.search?.trim().toLowerCase();
     const workspaces = await this.collectAllWorkspaceIds();
     const orgNameById = new Map<string, string>();
+    const threadCountByWorkspace = new Map<string, number>();
 
     const orgIds = Array.from(new Set(workspaces.map((workspace) => workspace.orgId)));
-    const orgInfoResults = await Promise.all(
+
+    // Ensure all workspaces are migrated first
+    await Promise.all(orgIds.map((orgId) => this.ensureAllWorkspacesMigrated(orgId)));
+
+    // Fetch org info and thread counts in parallel
+    await Promise.all(
       orgIds.map(async (orgId) => {
-        using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-        const info = await orgStub.getInfo();
-        return { orgId, name: info?.name ?? orgId };
+        using orgStub = asDisposable(getOrgStub(this.env, orgId));
+        const [info, threads] = await Promise.all([orgStub.getInfo(), orgStub.getThreads()]);
+        orgNameById.set(orgId, info?.name ?? orgId);
+
+        // Count threads by workspace
+        for (const thread of threads) {
+          const count = threadCountByWorkspace.get(thread.workspace_id) ?? 0;
+          threadCountByWorkspace.set(thread.workspace_id, count + 1);
+        }
       })
     );
-    for (const entry of orgInfoResults) {
-      orgNameById.set(entry.orgId, entry.name);
-    }
 
     const summaries = await Promise.all(
       workspaces.map(async ({ workspaceId, orgId }) => {
         using workspaceStub = asDisposable(
           this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId))
         );
-        const info = await workspaceStub.getInfo();
-        if (!info) return null;
-
-        using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-        const [threads, integrations] = await Promise.all([
-          indexStub.getThreads(),
+        const [info, integrations] = await Promise.all([
+          workspaceStub.getInfo(),
           workspaceStub.getIntegrations(),
         ]);
+        if (!info) return null;
 
         return {
           ...this.toWorkspace(info),
           org_id: info.org_id,
           org_name: orgNameById.get(orgId) ?? orgId,
-          thread_count: threads.length,
+          thread_count: threadCountByWorkspace.get(workspaceId) ?? 0,
           integration_count: integrations.length,
         };
       })
@@ -2007,10 +2057,68 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return destroyDispatcherSession(this.env.SESSIONS, sessionId);
   }
 
-  // Chat functions
-  async getThreads(workspaceId: string): Promise<Thread[]> {
+  // Chat functions - threads are stored in OrgDO with workspace_id for filtering
+
+  private toThread(orgThread: OrgThread): Thread {
+    return {
+      id: orgThread.id,
+      workspace_id: orgThread.workspace_id,
+      title: orgThread.title,
+      created_by: orgThread.created_by,
+      created_at: orgThread.created_at,
+      updated_at: orgThread.updated_at,
+    };
+  }
+
+  /**
+   * Ensure threads for a workspace have been migrated from legacy ChatIndexDO to OrgDO.
+   * This is a lazy migration that runs once per workspace on first access.
+   */
+  private async ensureThreadsMigrated(workspaceId: string, orgId: string): Promise<void> {
+    using orgStub = asDisposable(getOrgStub(this.env, orgId));
+    const isMigrated = await orgStub.isWorkspaceThreadsMigrated(workspaceId);
+    if (isMigrated) return;
+
+    // Read threads from legacy ChatIndexDO
     using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-    return indexStub.getThreads();
+    const legacyThreads = await indexStub.getThreads();
+
+    // Import to OrgDO (INSERT OR IGNORE prevents duplicates)
+    if (legacyThreads.length > 0) {
+      await orgStub.importLegacyThreads(workspaceId, legacyThreads);
+    } else {
+      // Mark as migrated even if empty to avoid repeated checks
+      await orgStub.importLegacyThreads(workspaceId, []);
+    }
+  }
+
+  /**
+   * Ensure all workspaces in an org have their threads migrated.
+   * Used by admin methods that access all threads across an org.
+   */
+  private async ensureAllWorkspacesMigrated(orgId: string): Promise<void> {
+    using orgStub = asDisposable(getOrgStub(this.env, orgId));
+    const workspaces = await orgStub.getWorkspaces();
+
+    // Migrate each workspace in parallel
+    await Promise.all(
+      workspaces.map(async (ws) => {
+        const isMigrated = await orgStub.isWorkspaceThreadsMigrated(ws.id);
+        if (isMigrated) return;
+
+        using indexStub = asDisposable(getIndexStub(this.env, ws.id));
+        const legacyThreads = await indexStub.getThreads();
+        await orgStub.importLegacyThreads(ws.id, legacyThreads);
+      })
+    );
+  }
+
+  async getThreads(workspaceId: string): Promise<Thread[]> {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    await this.ensureThreadsMigrated(workspaceId, info.org_id);
+    using orgStub = asDisposable(getOrgStub(this.env, info.org_id));
+    const threads = await orgStub.getThreadsByWorkspace(workspaceId);
+    return threads.map((t) => this.toThread(t));
   }
 
   async getThreadsPaginated(
@@ -2019,8 +2127,16 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   ): Promise<PaginatedResult<Thread>> {
     const offset = params.offset ?? 0;
     const limit = params.limit ?? 50;
-    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-    return indexStub.getThreadsPaginated(offset, limit);
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    await this.ensureThreadsMigrated(workspaceId, info.org_id);
+    using orgStub = asDisposable(getOrgStub(this.env, info.org_id));
+    const result = await orgStub.getThreadsPaginated(offset, limit, workspaceId);
+    return {
+      items: result.items.map((t) => this.toThread(t)),
+      total: result.total,
+      offset: result.offset,
+      limit: result.limit,
+    };
   }
 
   async createThread(
@@ -2028,25 +2144,45 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     title: string | undefined,
     createdBy?: string
   ): Promise<Thread> {
-    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-    return indexStub.createThread(title, createdBy);
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    using orgStub = asDisposable(getOrgStub(this.env, info.org_id));
+    const thread = await orgStub.createThread(workspaceId, title, createdBy);
+    return this.toThread(thread);
   }
 
   async getThread(id: string, workspaceId: string): Promise<Thread | null> {
-    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-    return indexStub.getThread(id);
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    await this.ensureThreadsMigrated(workspaceId, info.org_id);
+    using orgStub = asDisposable(getOrgStub(this.env, info.org_id));
+    const thread = await orgStub.getThread(id);
+    if (!thread) return null;
+    // Verify the thread belongs to this workspace
+    if (thread.workspace_id !== workspaceId) return null;
+    return this.toThread(thread);
   }
 
   async updateThread(id: string, title: string, workspaceId: string): Promise<Thread | null> {
-    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-    return indexStub.updateThread(id, title);
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    await this.ensureThreadsMigrated(workspaceId, info.org_id);
+    using orgStub = asDisposable(getOrgStub(this.env, info.org_id));
+    // Verify the thread belongs to this workspace first
+    const existing = await orgStub.getThread(id);
+    if (!existing || existing.workspace_id !== workspaceId) return null;
+    const thread = await orgStub.updateThread(id, title);
+    if (!thread) return null;
+    return this.toThread(thread);
   }
 
   async deleteThread(id: string, workspaceId: string): Promise<void> {
     // Messages are stored in container JSONL, not in the DO
     // Just delete from the index
-    using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-    await indexStub.deleteThread(id);
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    await this.ensureThreadsMigrated(workspaceId, info.org_id);
+    using orgStub = asDisposable(getOrgStub(this.env, info.org_id));
+    // Verify the thread belongs to this workspace first
+    const existing = await orgStub.getThread(id);
+    if (!existing || existing.workspace_id !== workspaceId) return;
+    await orgStub.deleteThread(id);
   }
 
   async generateAndUpdateThreadTitle(
@@ -2067,9 +2203,11 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       const title = (response as { response?: string })?.response?.trim()?.slice(0, 100);
       if (!title) return;
 
-      // Update title in ChatIndexDO
-      using indexStub = asDisposable(getIndexStub(this.env, workspaceId));
-      await indexStub.updateThread(threadId, title);
+      // Update title in OrgDO
+      const info = await this.requireWorkspaceInfo(workspaceId);
+      await this.ensureThreadsMigrated(workspaceId, info.org_id);
+      using orgStub = asDisposable(getOrgStub(this.env, info.org_id));
+      await orgStub.updateThread(threadId, title);
 
       // Broadcast via ChatThreadDO
       const threadStub = this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId));

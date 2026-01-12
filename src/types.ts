@@ -1,5 +1,6 @@
 export interface Thread {
   id: string;
+  workspace_id: string;
   title: string;
   created_by: string;
   created_at: number;

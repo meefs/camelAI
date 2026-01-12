@@ -97,6 +97,15 @@ export interface WorkerScriptAccess {
   is_public: boolean;
 }
 
+export interface OrgThread {
+  id: string;
+  workspace_id: string;
+  title: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
 /**
  * Migration Pattern for Durable Objects
  * ======================================
@@ -521,6 +530,31 @@ export class OrgDO extends DurableObject<AuthEnv> {
         // Column may already exist in fresh databases that ran V3 after this migration was added
       }
       this.sql.exec('UPDATE _schema_version SET version = 4');
+    }
+
+    if (version < 5) {
+      // V5: Add threads table (consolidated from ChatIndexDO)
+      // Threads are now stored per-org with workspace_id for filtering
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS threads (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec('CREATE INDEX IF NOT EXISTS threads_workspace_id ON threads(workspace_id)');
+      this.sql.exec('CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)');
+      // Track which workspaces have had their threads migrated from ChatIndexDO
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS _workspace_thread_migration (
+          workspace_id TEXT PRIMARY KEY,
+          migrated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec('UPDATE _schema_version SET version = 5');
     }
   }
 
@@ -1136,5 +1170,207 @@ export class OrgDO extends DurableObject<AuthEnv> {
       resolvedLimit,
       resolvedOffset
     ).toArray() as unknown as Array<{ id: string; action: string; actor_id: string; target_id: string | null; details: string | null; created_at: number }>;
+  }
+
+  // Thread methods (consolidated from ChatIndexDO)
+
+  /**
+   * Get all threads across all workspaces in this org
+   */
+  getThreads(): OrgThread[] {
+    return this.sql
+      .exec('SELECT * FROM threads ORDER BY updated_at DESC')
+      .toArray() as unknown as OrgThread[];
+  }
+
+  /**
+   * Get threads for a specific workspace
+   */
+  getThreadsByWorkspace(workspaceId: string): OrgThread[] {
+    return this.sql
+      .exec('SELECT * FROM threads WHERE workspace_id = ? ORDER BY updated_at DESC', workspaceId)
+      .toArray() as unknown as OrgThread[];
+  }
+
+  /**
+   * Get threads with pagination (optionally filtered by workspace)
+   */
+  getThreadsPaginated(
+    offset = 0,
+    limit = 50,
+    workspaceId?: string
+  ): { items: OrgThread[]; total: number; offset: number; limit: number } {
+    const resolvedOffset = Math.max(0, Math.floor(offset));
+    const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+
+    let items: OrgThread[];
+    let total: number;
+
+    if (workspaceId) {
+      items = this.sql
+        .exec(
+          'SELECT * FROM threads WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?',
+          workspaceId,
+          resolvedLimit,
+          resolvedOffset
+        )
+        .toArray() as unknown as OrgThread[];
+      const totalRows = this.sql
+        .exec('SELECT COUNT(*) as count FROM threads WHERE workspace_id = ?', workspaceId)
+        .toArray() as Array<{ count: number }>;
+      total = Number(totalRows[0]?.count ?? 0);
+    } else {
+      items = this.sql
+        .exec(
+          'SELECT * FROM threads ORDER BY updated_at DESC LIMIT ? OFFSET ?',
+          resolvedLimit,
+          resolvedOffset
+        )
+        .toArray() as unknown as OrgThread[];
+      const totalRows = this.sql
+        .exec('SELECT COUNT(*) as count FROM threads')
+        .toArray() as Array<{ count: number }>;
+      total = Number(totalRows[0]?.count ?? 0);
+    }
+
+    return {
+      items,
+      total,
+      offset: resolvedOffset,
+      limit: resolvedLimit,
+    };
+  }
+
+  /**
+   * Create a new thread with a server-generated UUID
+   */
+  createThread(workspaceId: string, title: string | undefined, createdBy?: string): OrgThread {
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const t = title || 'New Chat';
+    const creator = createdBy?.trim() || 'system';
+    this.sql.exec(
+      'INSERT INTO threads (id, workspace_id, title, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      id,
+      workspaceId,
+      t,
+      creator,
+      now,
+      now
+    );
+    this.log('thread_created', creator, id, { workspace_id: workspaceId, title: t });
+    return {
+      id,
+      workspace_id: workspaceId,
+      title: t,
+      created_by: creator,
+      created_at: now,
+      updated_at: now,
+    };
+  }
+
+  /**
+   * Get a thread by ID
+   */
+  getThread(id: string): OrgThread | null {
+    const rows = this.sql
+      .exec('SELECT * FROM threads WHERE id = ?', id)
+      .toArray() as unknown as OrgThread[];
+    return rows[0] || null;
+  }
+
+  /**
+   * Update a thread's title
+   */
+  updateThread(id: string, title: string, actorId?: string): OrgThread | null {
+    const existing = this.getThread(id);
+    if (!existing) return null;
+    const now = Date.now();
+    this.sql.exec('UPDATE threads SET title = ?, updated_at = ? WHERE id = ?', title, now, id);
+    if (actorId) {
+      this.log('thread_updated', actorId, id, { title });
+    }
+    return {
+      ...existing,
+      title,
+      updated_at: now,
+    };
+  }
+
+  /**
+   * Delete a thread
+   */
+  deleteThread(id: string, actorId?: string): boolean {
+    const existing = this.getThread(id);
+    if (!existing) return false;
+    this.sql.exec('DELETE FROM threads WHERE id = ?', id);
+    if (actorId) {
+      this.log('thread_deleted', actorId, id, { workspace_id: existing.workspace_id });
+    }
+    return true;
+  }
+
+  /**
+   * Touch a thread (update its updated_at timestamp)
+   */
+  touchThread(id: string): void {
+    const now = Date.now();
+    this.sql.exec('UPDATE threads SET updated_at = ? WHERE id = ?', now, id);
+  }
+
+  /**
+   * Search threads by title across all workspaces in this org
+   */
+  searchThreads(query: string, limit = 50): OrgThread[] {
+    const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const searchPattern = `%${query}%`;
+    return this.sql
+      .exec(
+        'SELECT * FROM threads WHERE title LIKE ? ORDER BY updated_at DESC LIMIT ?',
+        searchPattern,
+        resolvedLimit
+      )
+      .toArray() as unknown as OrgThread[];
+  }
+
+  // Thread migration methods (for backfilling from ChatIndexDO)
+
+  /**
+   * Check if a workspace's threads have been migrated from ChatIndexDO
+   */
+  isWorkspaceThreadsMigrated(workspaceId: string): boolean {
+    const rows = this.sql
+      .exec('SELECT 1 FROM _workspace_thread_migration WHERE workspace_id = ?', workspaceId)
+      .toArray();
+    return rows.length > 0;
+  }
+
+  /**
+   * Import threads from legacy ChatIndexDO format.
+   * Uses INSERT OR IGNORE to avoid duplicates if threads were already created in OrgDO.
+   * Marks the workspace as migrated after import.
+   */
+  importLegacyThreads(
+    workspaceId: string,
+    threads: Array<{ id: string; title: string; created_by: string; created_at: number; updated_at: number }>
+  ): void {
+    for (const thread of threads) {
+      this.sql.exec(
+        'INSERT OR IGNORE INTO threads (id, workspace_id, title, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        thread.id,
+        workspaceId,
+        thread.title,
+        thread.created_by,
+        thread.created_at,
+        thread.updated_at
+      );
+    }
+    // Mark workspace as migrated
+    const now = Date.now();
+    this.sql.exec(
+      'INSERT OR REPLACE INTO _workspace_thread_migration (workspace_id, migrated_at) VALUES (?, ?)',
+      workspaceId,
+      now
+    );
   }
 }

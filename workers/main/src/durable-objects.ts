@@ -47,7 +47,12 @@ export interface ChatEnv {
   DEBUG_CLAUDE_AGENT_SDK?: string;
 }
 
-// One DO per workspace - stores thread list only
+/**
+ * @deprecated ChatIndexDO is deprecated. Thread storage has been consolidated into OrgDO.
+ * This class is retained for backwards compatibility during migration.
+ * All new thread operations should use OrgDO methods instead.
+ * TODO: Remove this class after migration is complete.
+ */
 export class ChatIndexDO extends DurableObject<ChatEnv> {
   private sql: SqlStorage;
 

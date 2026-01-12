@@ -52,6 +52,7 @@ export default {
 						'/orgs': 'List all organizations with members',
 						'/users': 'List all users with org info',
 						'/threads': 'List all threads across all orgs',
+						'/migrate-threads': 'POST: Migrate all threads from ChatIndexDO to OrgDO',
 						'/kv-keys': 'List all KV keys (with optional ?prefix=)',
 						'/r2/list': 'List R2 objects (with optional ?prefix=)',
 						'/r2/info/{key}': 'Get R2 object metadata',
@@ -119,6 +120,19 @@ export default {
 					targetHost: env.TARGET_HOST,
 					count: total,
 					threads,
+				});
+			}
+
+			// Migrate all threads from ChatIndexDO to OrgDO
+			if (path === '/migrate-threads') {
+				if (request.method !== 'POST') {
+					return jsonResponse({ error: 'POST required to run migration' }, 405);
+				}
+				const result = await env.RPC.adminMigrateAllThreads();
+				return jsonResponse({
+					targetHost: env.TARGET_HOST,
+					message: 'Thread migration complete',
+					...result,
 				});
 			}
 
