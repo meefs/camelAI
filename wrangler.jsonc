@@ -280,6 +280,12 @@
 				"binding": "AI",
 				"remote": true
 			},
+			"analytics_engine_datasets": [
+				{
+					"binding": "ERROR_ANALYTICS",
+					"dataset": "chiridion_errors"
+				}
+			],
 			"r2_buckets": [
 				{
 					"binding": "R2_BUCKET",
