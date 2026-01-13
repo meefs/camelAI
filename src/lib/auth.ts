@@ -1,4 +1,4 @@
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import type { NextRequest } from 'next/server';
 import type { User, Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 
@@ -53,6 +53,31 @@ function shouldUseSecureCookie(request?: NextRequest): boolean {
   return (process.env.NEXTJS_ENV ?? process.env.NODE_ENV) === 'production';
 }
 
+// Get the cookie domain from the request hostname
+// Returns undefined for localhost (host-only cookie), or the parent domain for chiridion.ai
+async function getCookieDomain(request?: NextRequest): Promise<string | undefined> {
+  let hostname: string | undefined;
+
+  if (request) {
+    hostname = request.headers.get('host')?.split(':')[0] || request.nextUrl?.hostname;
+  } else {
+    // In server actions, use headers() to get the host
+    const headerStore = await headers();
+    hostname = headerStore.get('host')?.split(':')[0] || undefined;
+  }
+
+  if (!hostname) return undefined;
+
+  // For chiridion.ai domains, set domain to .chiridion.ai to include all subdomains
+  // This allows the cookie to be sent to *.apps.chiridion.ai for iframe previews
+  if (hostname.endsWith('.chiridion.ai') || hostname === 'chiridion.ai') {
+    return '.chiridion.ai';
+  }
+
+  // For localhost or other domains, don't set domain (host-only cookie)
+  return undefined;
+}
+
 // Get session ID from cookie
 export async function getSessionId(): Promise<string | null> {
   const cookieStore = await cookies();
@@ -63,9 +88,11 @@ export async function getSessionId(): Promise<string | null> {
 // Set session cookie
 export async function setSessionCookie(sessionId: string, request?: NextRequest): Promise<void> {
   const cookieStore = await cookies();
+  const domain = await getCookieDomain(request);
   cookieStore.set(SESSION_COOKIE_NAME, sessionId, {
     ...SESSION_COOKIE_OPTIONS,
     secure: shouldUseSecureCookie(request),
+    ...(domain && { domain }),
   });
 }
 

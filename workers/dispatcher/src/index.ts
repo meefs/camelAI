@@ -8,9 +8,16 @@
  * Example: hello-world.apps.chiridion.ai -> routes to worker "hello-world" (same-site for iframe)
  *          hello-world.chiridion.app -> routes to worker "hello-world" (vanity URL)
  *
- * Private workers require authentication via cross-domain auth flow:
+ * Private worker authentication:
+ *
+ * Same-site requests (*.apps.chiridion.ai):
+ * - Main app session cookie is available (same-site)
+ * - Validates session directly via RPC, no redirect needed
+ * - Used for iframe previews embedded in the main app
+ *
+ * Cross-site requests (*.chiridion.app):
  * 1. User visits private worker
- * 2. Dispatcher checks session cookie
+ * 2. Dispatcher checks dispatcher session cookie
  * 3. If no session, redirects to main app for auth
  * 4. Main app validates user and redirects back with token
  * 5. Dispatcher validates token and creates session cookie
@@ -39,6 +46,9 @@ interface Env {
 
 // Cookie settings for dispatcher session
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+
+// Main app session cookie name (same-site requests will have this)
+const MAIN_APP_SESSION_COOKIE = 'chiridion_session';
 
 // Main app URL for auth redirects (determined from request hostname)
 function getMainAppUrl(hostname: string): string {
@@ -85,6 +95,13 @@ function createSessionCookie(sessionId: string, hostname: string): string {
     `Secure`,
     `SameSite=Lax`,
   ].join('; ');
+}
+
+// Check if request is from same-site (*.apps.chiridion.ai or *.apps.*.chiridion.ai)
+// These requests will have the main app session cookie available
+function isSameSiteRequest(hostname: string): boolean {
+  // Match patterns like: my-app.apps.chiridion.ai or my-app.apps.staging.chiridion.ai
+  return hostname.includes('.apps.') && hostname.endsWith('.chiridion.ai');
 }
 
 // Auth callback route
@@ -213,14 +230,36 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
 
   // Private worker - check session
   const cookieHeader = request.headers.get('Cookie');
-  const sessionId = getCookieValue(cookieHeader, DISPATCHER_SESSION_COOKIE);
+  const dispatcherSessionId = getCookieValue(cookieHeader, DISPATCHER_SESSION_COOKIE);
 
-  if (sessionId) {
-    // Validate session
-    const session = await getDispatcherSession(env.SESSIONS, sessionId);
+  if (dispatcherSessionId) {
+    // Validate dispatcher session
+    const session = await getDispatcherSession(env.SESSIONS, dispatcherSessionId);
     if (session && session.org_id === accessInfo.org_id) {
       // Valid session with matching org - dispatch
       return dispatchToWorker(request, env, scriptName);
+    }
+  }
+
+  // For same-site requests (*.apps.chiridion.ai), check main app session cookie
+  // This avoids the redirect dance when embedded in an iframe on the main app
+  if (isSameSiteRequest(url.hostname)) {
+    const mainSessionId = getCookieValue(cookieHeader, MAIN_APP_SESSION_COOKIE);
+    if (mainSessionId) {
+      try {
+        const session = await env.MAIN_RPC.getSession(mainSessionId);
+        if (session) {
+          // Check if user is a member of the org that owns this worker
+          const isMember = await env.MAIN_RPC.isOrgMember(session.user_id, accessInfo.org_id);
+          if (isMember) {
+            console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${scriptName} via main session`);
+            return dispatchToWorker(request, env, scriptName);
+          }
+        }
+      } catch (e) {
+        console.error(`[dispatcher] Error validating main session: ${e}`);
+        // Fall through to redirect
+      }
     }
   }
 
