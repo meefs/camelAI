@@ -21,6 +21,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { getOrgApps, setAppPublic, deleteApp } from '@/lib/server-actions/apps';
+import { getAppUrl } from '@/lib/app-url';
 
 interface AppsClientProps {
   initialApps: WorkerScript[];
@@ -108,10 +109,6 @@ export default function AppsClient({
     }
   };
 
-  const getAppUrl = (scriptName: string) => {
-    // TODO: Make this configurable based on environment
-    return `https://${scriptName}.chiridion.app`;
-  };
 
   const isLoading = authLoading || loading;
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);

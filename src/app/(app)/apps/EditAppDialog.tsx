@@ -16,6 +16,7 @@ import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle, ExternalLink } from 'lucide-react';
 import { setAppPublic } from '@/lib/server-actions/apps';
+import { getAppUrl } from '@/lib/app-url';
 
 interface EditAppDialogProps {
   open: boolean;
@@ -68,10 +69,6 @@ export function EditAppDialog({
     setIsPublic(app.is_public);
     setError(null);
     onOpenChange(false);
-  };
-
-  const getAppUrl = (scriptName: string) => {
-    return `https://${scriptName}.chiridion.app`;
   };
 
   return (

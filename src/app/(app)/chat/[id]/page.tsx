@@ -1,3 +1,4 @@
+import { headers } from 'next/headers';
 import Chat from '@/components/Chat';
 import * as chatDO from '@/lib/chat-do';
 import { requireSession } from '@/lib/server-guards';
@@ -26,6 +27,9 @@ export default async function ChatPage({ params, searchParams }: PageProps) {
   // Use first worker as the deployed app
   const initialDeployedApp = previewWorkers[0] ?? null;
 
+  const headerStore = await headers();
+  const hostname = headerStore.get('host')?.split(':')[0];
+
   return (
     <Chat
       threadId={id}
@@ -34,6 +38,7 @@ export default async function ChatPage({ params, searchParams }: PageProps) {
       threadTitle={thread?.title ?? null}
       initialDeployedApp={initialDeployedApp}
       isNewThread={isNewThread}
+      hostname={hostname}
     />
   );
 }

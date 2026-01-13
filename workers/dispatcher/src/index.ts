@@ -42,6 +42,8 @@ interface Env {
   API_TOKENS: KVNamespace;
   SESSIONS: KVNamespace;
   MAIN_RPC: DoRpcService;
+  // Set to "true" to skip all auth checks (local development only)
+  SKIP_AUTH?: string;
 }
 
 // Cookie settings for dispatcher session
@@ -204,6 +206,12 @@ async function handleAuthCallback(request: Request, env: Env, scriptName: string
  */
 async function handleWorkerRequest(request: Request, env: Env, scriptName: string): Promise<Response> {
   const url = new URL(request.url);
+
+  // Skip all auth checks in local development mode
+  if (env.SKIP_AUTH === 'true') {
+    console.log(`[dispatcher] SKIP_AUTH enabled, dispatching directly to: ${scriptName}`);
+    return dispatchToWorker(request, env, scriptName);
+  }
 
   // Get worker access info via RPC
   let accessInfo: { is_public: boolean; org_id: string } | null = null;

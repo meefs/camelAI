@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
 import { requireSuperuser } from '@/lib/server-guards';
+import { getVanityDomain } from '@/lib/app-url.server';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
 import { AdminSearch } from '@/components/admin/admin-search';
@@ -45,6 +46,8 @@ export default async function AdminAppsPage({ searchParams }: Props) {
   const baseUrl = search
     ? `/qaml-backdoor/apps?search=${encodeURIComponent(search)}`
     : '/qaml-backdoor/apps';
+
+  const vanityDomain = await getVanityDomain();
 
   return (
     <>
@@ -101,12 +104,12 @@ export default async function AdminAppsPage({ searchParams }: Props) {
                             </div>
                           </Link>
                           <a
-                            href={`https://${app.script_name}.chiridion.app`}
+                            href={`https://${app.script_name}.${vanityDomain}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-xs text-primary hover:underline font-mono"
                           >
-                            {app.script_name}.chiridion.app
+                            {app.script_name}.{vanityDomain}
                           </a>
                         </div>
                       </TableCell>

@@ -125,6 +125,21 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       `);
       this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
     }
+
+    if (version < 2) {
+      // V2: Ensure audit_log table exists (fix for DOs that may have been created with incomplete V1)
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS audit_log (
+          id TEXT PRIMARY KEY,
+          action TEXT NOT NULL,
+          actor_id TEXT NOT NULL,
+          target_id TEXT,
+          details TEXT,
+          created_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec('UPDATE _schema_version SET version = 2');
+    }
   }
 
   private log(

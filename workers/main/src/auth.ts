@@ -549,6 +549,21 @@ export class OrgDO extends DurableObject<AuthEnv> {
       this.sql.exec('CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)');
       this.sql.exec('UPDATE _schema_version SET version = 5');
     }
+
+    if (version < 6) {
+      // V6: Ensure audit_log table exists (fix for DOs that may have skipped V2 migration)
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS audit_log (
+          id TEXT PRIMARY KEY,
+          action TEXT NOT NULL,
+          actor_id TEXT NOT NULL,
+          target_id TEXT,
+          details TEXT,
+          created_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec('UPDATE _schema_version SET version = 6');
+    }
   }
 
   // Org info methods
