@@ -5,11 +5,19 @@
  * dispatch namespace. Supports subdomain-based routing with private worker
  * access control.
  *
- * Example: hello-world.chiridion.ai -> routes to worker "hello-world"
+ * Example: hello-world.apps.chiridion.ai -> routes to worker "hello-world" (same-site for iframe)
+ *          hello-world.chiridion.app -> routes to worker "hello-world" (vanity URL)
  *
- * Private workers require authentication via cross-domain auth flow:
+ * Private worker authentication:
+ *
+ * Same-site requests (*.apps.chiridion.ai):
+ * - Main app session cookie is available (same-site)
+ * - Validates session directly via RPC, no redirect needed
+ * - Used for iframe previews embedded in the main app
+ *
+ * Cross-site requests (*.chiridion.app):
  * 1. User visits private worker
- * 2. Dispatcher checks session cookie
+ * 2. Dispatcher checks dispatcher session cookie
  * 3. If no session, redirects to main app for auth
  * 4. Main app validates user and redirects back with token
  * 5. Dispatcher validates token and creates session cookie
@@ -39,15 +47,21 @@ interface Env {
 // Cookie settings for dispatcher session
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
+// Main app session cookie name (same-site requests will have this)
+const MAIN_APP_SESSION_COOKIE = 'chiridion_session';
+
 // Main app URL for auth redirects (determined from request hostname)
 function getMainAppUrl(hostname: string): string {
   // Extract environment from hostname
-  // e.g., worker.dev-miguel.chiridion.ai -> dev-miguel.chiridion.ai
-  // e.g., worker.chiridion.ai -> chiridion.ai
+  // e.g., worker.dev-miguel.chiridion.app -> dev-miguel.chiridion.ai (main app)
+  // e.g., worker.chiridion.app -> chiridion.ai (main app)
   const parts = hostname.split('.');
   if (parts.length >= 3) {
     // Remove the first part (subdomain/worker name)
-    return `https://${parts.slice(1).join('.')}`;
+    // Convert .chiridion.app to .chiridion.ai for main app redirect
+    const remaining = parts.slice(1).join('.');
+    const mainAppHost = remaining.replace('.chiridion.app', '.chiridion.ai').replace(/^chiridion\.app$/, 'chiridion.ai');
+    return `https://${mainAppHost}`;
   }
   // Fallback to chiridion.ai
   return 'https://chiridion.ai';
@@ -68,7 +82,7 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
 
 // Create Set-Cookie header for session
 function createSessionCookie(sessionId: string, hostname: string): string {
-  // Get domain for cookie (e.g., .chiridion.ai to cover all subdomains)
+  // Get domain for cookie (e.g., .chiridion.app to cover all subdomains)
   const parts = hostname.split('.');
   const domain = parts.length >= 2 ? `.${parts.slice(-2).join('.')}` : hostname;
 
@@ -83,6 +97,13 @@ function createSessionCookie(sessionId: string, hostname: string): string {
   ].join('; ');
 }
 
+// Check if request is from same-site (*.apps.chiridion.ai or *.apps.*.chiridion.ai)
+// These requests will have the main app session cookie available
+function isSameSiteRequest(hostname: string): boolean {
+  // Match patterns like: my-app.apps.chiridion.ai or my-app.apps.staging.chiridion.ai
+  return hostname.includes('.apps.') && hostname.endsWith('.chiridion.ai');
+}
+
 // Auth callback route
 const AUTH_CALLBACK_PATH = '/__chiridion_auth/callback';
 
@@ -91,7 +112,7 @@ export default {
     const url = new URL(request.url);
     const hostname = url.hostname;
 
-    // Check for subdomain-based routing (e.g., hello-world.chiridion.ai)
+    // Check for subdomain-based routing (e.g., hello-world.chiridion.app)
     // Skip for apex domain and www
     const hostParts = hostname.split('.');
     if (hostParts.length >= 3 || (hostParts.length === 2 && !hostname.includes('workers.dev'))) {
@@ -114,9 +135,10 @@ export default {
         {
           message: 'Chiridion Dispatch Worker',
           routes: {
-            subdomain: '<worker-name>.chiridion.ai',
+            vanity: '<worker-name>.chiridion.app',
+            iframe: '<worker-name>.apps.chiridion.ai',
           },
-          example: 'hello-world.chiridion.ai',
+          example: 'hello-world.chiridion.app',
         },
         null,
         2
@@ -208,14 +230,36 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
 
   // Private worker - check session
   const cookieHeader = request.headers.get('Cookie');
-  const sessionId = getCookieValue(cookieHeader, DISPATCHER_SESSION_COOKIE);
+  const dispatcherSessionId = getCookieValue(cookieHeader, DISPATCHER_SESSION_COOKIE);
 
-  if (sessionId) {
-    // Validate session
-    const session = await getDispatcherSession(env.SESSIONS, sessionId);
+  if (dispatcherSessionId) {
+    // Validate dispatcher session
+    const session = await getDispatcherSession(env.SESSIONS, dispatcherSessionId);
     if (session && session.org_id === accessInfo.org_id) {
       // Valid session with matching org - dispatch
       return dispatchToWorker(request, env, scriptName);
+    }
+  }
+
+  // For same-site requests (*.apps.chiridion.ai), check main app session cookie
+  // This avoids the redirect dance when embedded in an iframe on the main app
+  if (isSameSiteRequest(url.hostname)) {
+    const mainSessionId = getCookieValue(cookieHeader, MAIN_APP_SESSION_COOKIE);
+    if (mainSessionId) {
+      try {
+        const session = await env.MAIN_RPC.getSession(mainSessionId);
+        if (session) {
+          // Check if user is a member of the org that owns this worker
+          const isMember = await env.MAIN_RPC.isOrgMember(session.user_id, accessInfo.org_id);
+          if (isMember) {
+            console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${scriptName} via main session`);
+            return dispatchToWorker(request, env, scriptName);
+          }
+        }
+      } catch (e) {
+        console.error(`[dispatcher] Error validating main session: ${e}`);
+        // Fall through to redirect
+      }
     }
   }
 

@@ -101,12 +101,12 @@ export default async function AdminAppsPage({ searchParams }: Props) {
                             </div>
                           </Link>
                           <a
-                            href={`https://${app.script_name}.chiridion.ai`}
+                            href={`https://${app.script_name}.chiridion.app`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-xs text-primary hover:underline font-mono"
                           >
-                            {app.script_name}.chiridion.ai
+                            {app.script_name}.chiridion.app
                           </a>
                         </div>
                       </TableCell>

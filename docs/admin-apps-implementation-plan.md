@@ -273,13 +273,13 @@ export default async function AdminAppsPage({ searchParams }: Props) {
                             {app.script_name}
                           </div>
                           <a
-                            href={`https://${app.script_name}.chiridion.ai`}
+                            href={`https://${app.script_name}.chiridion.app`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-xs text-primary hover:underline"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            {app.script_name}.chiridion.ai
+                            {app.script_name}.chiridion.app
                           </a>
                         </Link>
                       </TableCell>
@@ -414,12 +414,12 @@ export default async function AdminAppDetailPage({ params }: Props) {
                     <dt className="text-sm font-medium text-muted-foreground">Live URL</dt>
                     <dd>
                       <a
-                        href={`https://${app.script_name}.chiridion.ai`}
+                        href={`https://${app.script_name}.chiridion.app`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-sm text-primary hover:underline inline-flex items-center gap-1"
                       >
-                        {app.script_name}.chiridion.ai
+                        {app.script_name}.chiridion.app
                         <ExternalLink className="h-3 w-3" />
                       </a>
                     </dd>

@@ -30,7 +30,7 @@ if [[ "$1" == "deploy" || "$1" == "publish" ]]; then
   # On successful deploy, print the URL
   if [[ $EXIT_CODE -eq 0 ]] && [[ -n "$CF_DISPATCH_NAMESPACE" ]]; then
     echo ""
-    echo "🚀 Deployed to https://<script_name>.chiridion.ai"
+    echo "🚀 Deployed to https://<script_name>.chiridion.app"
   fi
 
   exit $EXIT_CODE

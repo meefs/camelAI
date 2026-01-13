@@ -1,5 +1,5 @@
 {
-  // Your app name - will be deployed to https://{{PROJECT_NAME}}.chiridion.ai
+  // Your app name - will be deployed to https://{{PROJECT_NAME}}.chiridion.app
   // Use `npm run deploy` or `deploy-worker` to deploy
   "name": "{{PROJECT_NAME}}",
   // Custom worker entry point - serves static assets and exports Durable Objects

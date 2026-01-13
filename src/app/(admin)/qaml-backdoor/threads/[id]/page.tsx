@@ -130,12 +130,12 @@ export default async function AdminThreadDetailPage({ params }: Props) {
                       <div key={worker} className="flex items-center justify-between p-2 rounded-md bg-muted">
                         <code className="text-sm">{worker}</code>
                         <a
-                          href={`https://${worker}.chiridion.ai`}
+                          href={`https://${worker}.chiridion.app`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-sm text-primary hover:underline"
                         >
-                          https://{worker}.chiridion.ai
+                          https://{worker}.chiridion.app
                         </a>
                       </div>
                     ))}
