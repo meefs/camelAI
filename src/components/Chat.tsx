@@ -115,8 +115,8 @@ function extractTodoItemsFromMessage(message: Message): TodoItem[] | null {
 }
 
 function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
-  const record = event as Record<string, unknown>;
-  const messageRecord = (event.message ?? {}) as Record<string, unknown>;
+  const record = event as unknown as Record<string, unknown>;
+  const messageRecord = (event.message ?? {}) as unknown as Record<string, unknown>;
   const isMeta = Boolean(
     record.isMeta ??
     record.is_meta ??
