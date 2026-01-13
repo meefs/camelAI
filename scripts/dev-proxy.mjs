@@ -1,7 +1,28 @@
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawn, execSync } from 'node:child_process';
 import process from 'node:process';
 import httpProxy from 'http-proxy';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function getPackageVersion(pkg) {
+  try {
+    const output = execSync(`npm list ${pkg} --depth=0 --json`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const json = JSON.parse(output);
+    return json.dependencies?.[pkg]?.version || 'not found';
+  } catch {
+    return 'not found';
+  }
+}
+
+function printVersions() {
+  const wranglerVersion = getPackageVersion('wrangler');
+  const openNextVersion = getPackageVersion('@opennextjs/cloudflare');
+  console.log(`[dev-proxy] wrangler: ${wranglerVersion}`);
+  console.log(`[dev-proxy] @opennextjs/cloudflare: ${openNextVersion}`);
+}
 
 const nextPort = Number(process.env.NEXT_DEV_PORT || 3001);
 const wranglerPort = Number(process.env.WRANGLER_DEV_PORT || 8787);
@@ -10,10 +31,12 @@ const proxyPort = Number(process.env.PROXY_DEV_PORT || 3100);
 const nextTarget = `http://localhost:${nextPort}`;
 const wranglerTarget = `http://localhost:${wranglerPort}`;
 
-function spawnCommand(command, args, { name }) {
+printVersions();
+
+function spawnCommand(command, args, { name, env = process.env }) {
   const child = spawn(command, args, {
     stdio: 'inherit',
-    env: process.env,
+    env,
     detached: true,
   });
   child.on('exit', (code, signal) => {
@@ -25,10 +48,26 @@ function spawnCommand(command, args, { name }) {
   return child;
 }
 
+// Start Docker API proxy for FUSE support in containers
+const dockerProxySocket = '/tmp/docker-fuse-proxy.sock';
+const dockerProxyProcess = spawnCommand(
+  'node',
+  [path.join(__dirname, 'docker-api-proxy.mjs')],
+  { name: 'docker-proxy' }
+);
+
+// Give proxy a moment to start
+await new Promise(resolve => setTimeout(resolve, 500));
+
+const wranglerEnv = {
+  ...process.env,
+  DOCKER_HOST: `unix://${dockerProxySocket}`,
+};
+
 const wranglerProcess = spawnCommand(
   'wrangler',
   ['dev', '-c', 'wrangler.jsonc', '--port', String(wranglerPort)],
-  { name: 'wrangler dev' }
+  { name: 'wrangler dev', env: wranglerEnv }
 );
 
 function waitForWranglerReady({ timeoutMs = 30000, intervalMs = 500 } = {}) {
@@ -158,6 +197,7 @@ function shutdown() {
   server.close();
   if (nextProcess?.pid) process.kill(-nextProcess.pid, 'SIGINT');
   if (wranglerProcess?.pid) process.kill(-wranglerProcess.pid, 'SIGINT');
+  if (dockerProxyProcess?.pid) process.kill(-dockerProxyProcess.pid, 'SIGINT');
 }
 
 process.on('SIGINT', () => {

@@ -239,6 +239,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [deployedApp, setDeployedApp] = useState<string | null>(initialDeployedApp ?? null);
   const [iframeKey, setIframeKey] = useState(0);
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
@@ -1244,17 +1245,69 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     setAttachments(prev => prev.filter(a => a.id !== id));
   }, []);
 
+  // Drag-drop handlers for the whole chat area
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (resolvedWorkspaceId) {
+      setIsDragOver(true);
+    }
+  }, [resolvedWorkspaceId]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only set drag over to false if we're leaving the container entirely
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX;
+    const y = e.clientY;
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    if (!resolvedWorkspaceId) return;
+
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      handleFilesSelected(Array.from(files));
+    }
+  }, [resolvedWorkspaceId, handleFilesSelected]);
+
   async function startNewChat() {
     if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId) return;
 
+    // Don't allow sending while uploads are in progress
+    const hasUploadingAttachments = attachments.some(a => a.status === 'uploading');
+    if (hasUploadingAttachments) return;
+
     setIsCreatingThread(true);
-    const msg = welcomeInput.trim();
+    const userMessage = welcomeInput.trim();
     setWelcomeInput('');
 
+    // Build message content with file references appended
+    const completedAttachments = attachments.filter(a => a.status === 'complete');
+    let finalContent = userMessage;
+    if (completedAttachments.length > 0) {
+      const fileRefs = completedAttachments
+        .map(a => `(user uploaded file to ${a.path})`)
+        .join('\n');
+      finalContent = `${userMessage}\n\n${fileRefs}`;
+    }
+
+    // Clear attachments
+    setAttachments([]);
+
     try {
-      const thread = await createThreadAction({ firstMessage: msg });
+      const thread = await createThreadAction({ firstMessage: userMessage });
       // Store in sessionStorage to survive component remount during navigation
-      sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: msg, workspaceId: resolvedWorkspaceId, threadId: thread.id }));
+      // Use finalContent (with file refs) for the actual message, userMessage for display
+      sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: finalContent, workspaceId: resolvedWorkspaceId, threadId: thread.id }));
       router.push(`/chat/${thread.id}?newThread=1`);
     } catch (err) {
       sessionStorage.removeItem(pendingMessageKey);
@@ -1347,7 +1400,20 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         />
 
         {shouldShowChat ? (
-          <div className="flex-1 flex min-h-0">
+          <div
+            className="flex-1 flex min-h-0 relative"
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {/* Drag overlay */}
+            {isDragOver && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
+                <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
+                  <span className="text-lg font-medium text-primary">Drop files here to upload</span>
+                </div>
+              </div>
+            )}
             {/* Chat Panel */}
             <div className={cn("flex flex-col min-h-0", deployedApp ? "w-1/2" : "flex-1")}>
             {/* Chat Body - Single Scroll Container */}
@@ -1538,7 +1604,20 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
           </div>
         ) : (
           /* Welcome Screen */
-          <div className="flex-1 flex flex-col items-center justify-center px-4">
+          <div
+            className="flex-1 flex flex-col items-center justify-center px-4 relative"
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {/* Drag overlay */}
+            {isDragOver && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
+                <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
+                  <span className="text-lg font-medium text-primary">Drop files here to upload</span>
+                </div>
+              </div>
+            )}
             <div className="w-full max-w-3xl space-y-8">
               <div className="text-center">
                 <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
@@ -1553,6 +1632,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                 isLoading={isCreatingThread}
                 minHeight="80px"
                 autoFocus
+                attachments={attachments}
+                onFilesSelected={handleFilesSelected}
+                onAttachmentRemove={handleAttachmentRemove}
               />
             </div>
           </div>

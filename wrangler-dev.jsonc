@@ -15,6 +15,13 @@
 		"binding": "ASSETS",
 		"directory": ".open-next/assets"
 	},
+	"r2_buckets": [
+		{
+			"binding": "R2_BUCKET",
+			"bucket_name": "chiridion-sandbox",
+      "remote": true
+		}
+	],
 	"services": [
 		{
 			"binding": "DO_RPC",

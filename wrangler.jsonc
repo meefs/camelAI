@@ -38,7 +38,8 @@
 	"r2_buckets": [
 		{
 			"binding": "R2_BUCKET",
-			"bucket_name": "chiridion-sandbox"
+			"bucket_name": "chiridion-sandbox",
+      "remote": true
 		}
 	],
 	// Shared dev/staging KV namespaces
@@ -66,7 +67,7 @@
 				"disk_mb": 8000
 			},
 			"max_instances": 5
-		}
+		},
 	],
 	// Service bindings for local dev (without --env flag)
 	"services": [

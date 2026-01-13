@@ -170,23 +170,6 @@ export function PromptInput({
             </InputGroupAddon>
           )}
 
-          {/* Plus button for file upload */}
-          {showFileUpload && (
-            <InputGroupAddon align="inline-start" className="pl-3">
-              <InputGroupButton
-                type="button"
-                size="icon-xs"
-                variant="ghost"
-                onClick={handlePlusClick}
-                disabled={disabled}
-                className="rounded-full text-muted-foreground hover:text-foreground"
-                aria-label="Attach file"
-              >
-                <Plus className="size-4" />
-              </InputGroupButton>
-            </InputGroupAddon>
-          )}
-
           <InputGroupTextarea
             value={value}
             onChange={(e) => onChange(e.target.value)}
@@ -194,14 +177,27 @@ export function PromptInput({
             placeholder={placeholder}
             disabled={disabled}
             autoFocus={autoFocus}
-            className={cn(
-              'text-base p-3.5 max-h-96 overflow-y-auto',
-              showFileUpload && 'pl-1'
-            )}
+            className="text-base p-3.5 max-h-96 overflow-y-auto"
             style={{ minHeight }}
           />
 
-          <InputGroupAddon align="block-end" className="justify-end pb-3 pr-3">
+          <InputGroupAddon align="block-end" className="justify-between pb-3 px-3">
+            {/* Plus button for file upload */}
+            {showFileUpload ? (
+              <InputGroupButton
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                onClick={handlePlusClick}
+                disabled={disabled}
+                className="rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
+                aria-label="Attach file"
+              >
+                <Plus className="size-4" />
+              </InputGroupButton>
+            ) : (
+              <div />
+            )}
             <InputGroupButton
               type={showStopButton ? 'button' : 'submit'}
               size="icon-sm"
