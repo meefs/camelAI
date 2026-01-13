@@ -33,7 +33,7 @@
 		"prod": {
 			"name": "chiridion-dispatcher",
 			"routes": [
-				{ "pattern": "*.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				{ "pattern": "*.apps.chiridion.ai/*", "zone_name": "chiridion.ai" },
 				{ "pattern": "*.chiridion.app/*", "zone_name": "chiridion.app" }
 			],
 			"dispatch_namespaces": [
@@ -64,7 +64,7 @@
 		"staging": {
 			"name": "chiridion-dispatcher-staging",
 			"routes": [
-				{ "pattern": "*.staging.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				{ "pattern": "*.apps.staging.chiridion.ai/*", "zone_name": "chiridion.ai" },
 				{ "pattern": "*.staging.chiridion.app/*", "zone_name": "chiridion.app" }
 			],
 			"dispatch_namespaces": [
@@ -95,7 +95,7 @@
 		"dev-miguel": {
 			"name": "chiridion-dispatcher-dev-miguel",
 			"routes": [
-				{ "pattern": "*.dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				{ "pattern": "*.apps.dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" },
 				{ "pattern": "*.dev-miguel.chiridion.app/*", "zone_name": "chiridion.app" }
 			],
 			"dispatch_namespaces": [
@@ -126,7 +126,7 @@
 		"dev-illiana": {
 			"name": "chiridion-dispatcher-dev-illiana",
 			"routes": [
-				{ "pattern": "*.dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				{ "pattern": "*.apps.dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" },
 				{ "pattern": "*.dev-illiana.chiridion.app/*", "zone_name": "chiridion.app" }
 			],
 			"dispatch_namespaces": [

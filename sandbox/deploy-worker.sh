@@ -20,7 +20,7 @@ EXIT_CODE=$?
 # On successful deploy, print the URL
 if [[ $EXIT_CODE -eq 0 ]]; then
   echo ""
-  echo "🚀 Deployed to https://<script_name>.chiridion.ai"
+  echo "🚀 Deployed to https://<script_name>.chiridion.app"
 fi
 
 exit $EXIT_CODE

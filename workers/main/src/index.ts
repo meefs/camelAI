@@ -952,7 +952,7 @@ export default {
         }
 
         // Return full URLs for the deployed workers
-        const urls = prefixedWorkers.map(w => `https://${w}.chiridion.ai`);
+        const urls = prefixedWorkers.map(w => `https://${w}.chiridion.app`);
         return new Response(JSON.stringify({ workers: prefixedWorkers, urls }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },

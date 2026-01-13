@@ -5,7 +5,8 @@
  * dispatch namespace. Supports subdomain-based routing with private worker
  * access control.
  *
- * Example: hello-world.chiridion.ai -> routes to worker "hello-world"
+ * Example: hello-world.apps.chiridion.ai -> routes to worker "hello-world" (same-site for iframe)
+ *          hello-world.chiridion.app -> routes to worker "hello-world" (vanity URL)
  *
  * Private workers require authentication via cross-domain auth flow:
  * 1. User visits private worker
@@ -42,12 +43,15 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 // Main app URL for auth redirects (determined from request hostname)
 function getMainAppUrl(hostname: string): string {
   // Extract environment from hostname
-  // e.g., worker.dev-miguel.chiridion.ai -> dev-miguel.chiridion.ai
-  // e.g., worker.chiridion.ai -> chiridion.ai
+  // e.g., worker.dev-miguel.chiridion.app -> dev-miguel.chiridion.ai (main app)
+  // e.g., worker.chiridion.app -> chiridion.ai (main app)
   const parts = hostname.split('.');
   if (parts.length >= 3) {
     // Remove the first part (subdomain/worker name)
-    return `https://${parts.slice(1).join('.')}`;
+    // Convert .chiridion.app to .chiridion.ai for main app redirect
+    const remaining = parts.slice(1).join('.');
+    const mainAppHost = remaining.replace('.chiridion.app', '.chiridion.ai').replace(/^chiridion\.app$/, 'chiridion.ai');
+    return `https://${mainAppHost}`;
   }
   // Fallback to chiridion.ai
   return 'https://chiridion.ai';
@@ -68,7 +72,7 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
 
 // Create Set-Cookie header for session
 function createSessionCookie(sessionId: string, hostname: string): string {
-  // Get domain for cookie (e.g., .chiridion.ai to cover all subdomains)
+  // Get domain for cookie (e.g., .chiridion.app to cover all subdomains)
   const parts = hostname.split('.');
   const domain = parts.length >= 2 ? `.${parts.slice(-2).join('.')}` : hostname;
 
@@ -91,7 +95,7 @@ export default {
     const url = new URL(request.url);
     const hostname = url.hostname;
 
-    // Check for subdomain-based routing (e.g., hello-world.chiridion.ai)
+    // Check for subdomain-based routing (e.g., hello-world.chiridion.app)
     // Skip for apex domain and www
     const hostParts = hostname.split('.');
     if (hostParts.length >= 3 || (hostParts.length === 2 && !hostname.includes('workers.dev'))) {
@@ -114,9 +118,10 @@ export default {
         {
           message: 'Chiridion Dispatch Worker',
           routes: {
-            subdomain: '<worker-name>.chiridion.ai',
+            vanity: '<worker-name>.chiridion.app',
+            iframe: '<worker-name>.apps.chiridion.ai',
           },
-          example: 'hello-world.chiridion.ai',
+          example: 'hello-world.chiridion.app',
         },
         null,
         2

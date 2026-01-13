@@ -1544,7 +1544,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 bg-green-500 rounded-full" />
-                    <span className="text-sm font-medium">{deployedApp}.chiridion.ai</span>
+                    <span className="text-sm font-medium">{deployedApp}.chiridion.app</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <Tooltip>
@@ -1567,7 +1567,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                           asChild
                         >
                           <a
-                            href={`https://${deployedApp}.chiridion.ai`}
+                            href={`https://${deployedApp}.chiridion.app`}
                             target="_blank"
                             rel="noopener noreferrer"
                           >
@@ -1594,7 +1594,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                 <div className="flex-1">
                   <iframe
                     key={iframeKey}
-                    src={`https://${deployedApp}.chiridion.ai`}
+                    src={`https://${deployedApp}.apps.chiridion.ai`}
                     className="w-full h-full bg-white"
                     title="Deployed App Preview"
                   />

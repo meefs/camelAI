@@ -9,7 +9,7 @@ interface RouteContext {
 
 // GET /api/threads/[id]/preview - Get current preview workers (script names)
 // Returns array of script names like ["myworker"]
-// Frontend constructs full URL: https://{scriptName}.chiridion.ai
+// Frontend constructs full URL: https://{scriptName}.chiridion.app
 export async function GET(_request: NextRequest, { params }: RouteContext) {
   const { id } = await params;
   try {

@@ -110,7 +110,7 @@ export default function AppsClient({
 
   const getAppUrl = (scriptName: string) => {
     // TODO: Make this configurable based on environment
-    return `https://${scriptName}.chiridion.ai`;
+    return `https://${scriptName}.chiridion.app`;
   };
 
   const isLoading = authLoading || loading;

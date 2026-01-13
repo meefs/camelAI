@@ -71,7 +71,7 @@ export function EditAppDialog({
   };
 
   const getAppUrl = (scriptName: string) => {
-    return `https://${scriptName}.chiridion.ai`;
+    return `https://${scriptName}.chiridion.app`;
   };
 
   return (
