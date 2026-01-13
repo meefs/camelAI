@@ -168,11 +168,19 @@ function MobileViewSwitcher({
   onChange: (value: 'chat' | 'preview') => void;
 }) {
   return (
-    <div className="flex justify-center py-3 bg-background">
-      <Tabs value={value} onValueChange={(nextValue) => onChange(nextValue as 'chat' | 'preview')}>
-        <TabsList>
-          <TabsTrigger value="chat">Chat</TabsTrigger>
-          <TabsTrigger value="preview">Preview</TabsTrigger>
+    <div className="w-full bg-background px-4 py-3">
+      <Tabs
+        value={value}
+        onValueChange={(nextValue) => onChange(nextValue as 'chat' | 'preview')}
+        className="w-full"
+      >
+        <TabsList className="grid w-full grid-cols-2 overflow-hidden rounded-lg bg-muted/80 p-1 shadow-inner !h-11">
+          <TabsTrigger value="chat" className="rounded-md text-sm font-semibold data-[state=active]:shadow-sm !h-9">
+            Chat
+          </TabsTrigger>
+          <TabsTrigger value="preview" className="rounded-md text-sm font-semibold data-[state=active]:shadow-sm !h-9">
+            Preview
+          </TabsTrigger>
         </TabsList>
       </Tabs>
     </div>
