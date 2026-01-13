@@ -309,9 +309,10 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   // Queue message to send when connection becomes ready
   const pendingMessageRef = useRef<string | null>(null);
   const resolvedWorkspaceId = currentWorkspace?.id ?? workspaceId;
+  // Use workspaceId prop directly (from SSR) to avoid race conditions with auth context hydration
   const pendingMessageKey = useMemo(
-    () => (resolvedWorkspaceId ? `pendingMessage:${resolvedWorkspaceId}` : 'pendingMessage'),
-    [resolvedWorkspaceId]
+    () => (workspaceId ? `pendingMessage:${workspaceId}` : 'pendingMessage'),
+    [workspaceId]
   );
   const sessionStorageKey = useCallback((id: string) => {
     const workspaceKey = resolvedWorkspaceId ?? 'unknown';
@@ -434,7 +435,8 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     if (pendingPayload) {
       try {
         const parsed = JSON.parse(pendingPayload) as { message?: string; threadId?: string; workspaceId?: string };
-        if (parsed.threadId === id && parsed.workspaceId === resolvedWorkspaceId && typeof parsed.message === 'string') {
+        // Use workspaceId prop (from SSR) to match how pendingMessageKey is computed
+        if (parsed.threadId === id && parsed.workspaceId === workspaceId && typeof parsed.message === 'string') {
           shouldFetchMessages = false;
           sessionStorage.removeItem(pendingMessageKey);
           // Add to state (both messages and pending queue)
@@ -711,7 +713,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       }
     };
 
-  }, [fetchMessages, pendingMessageKey, persistSessionState, resolvedWorkspaceId, threadId, isNewThread]);
+  }, [fetchMessages, pendingMessageKey, persistSessionState, resolvedWorkspaceId, workspaceId, threadId, isNewThread]);
 
   // Keep the ref updated with the latest function
   connectWebSocketRef.current = connectWebSocket;
@@ -1307,7 +1309,8 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       const thread = await createThreadAction({ firstMessage: userMessage });
       // Store in sessionStorage to survive component remount during navigation
       // Use finalContent (with file refs) for the actual message, userMessage for display
-      sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: finalContent, workspaceId: resolvedWorkspaceId, threadId: thread.id }));
+      // Use workspaceId prop (from SSR) to ensure consistency with pendingMessageKey
+      sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: finalContent, workspaceId: workspaceId, threadId: thread.id }));
       router.push(`/chat/${thread.id}?newThread=1`);
     } catch (err) {
       sessionStorage.removeItem(pendingMessageKey);
