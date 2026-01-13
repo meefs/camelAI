@@ -74,9 +74,9 @@ export function UserEditForm({ user }: UserEditFormProps) {
       </div>
 
       <div className="flex items-center gap-4">
-        <Avatar className="h-12 w-12">
+        <Avatar size="lg">
           <AvatarFallback
-            className="text-lg"
+            content={avatar.content}
             style={{
               backgroundColor: avatar.color,
               color: getContrastTextColor(avatar.color),

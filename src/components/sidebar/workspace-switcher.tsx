@@ -27,7 +27,7 @@ function WorkspaceSwitcherSkeleton() {
       <SidebarMenuItem>
         <SidebarMenuButton size="lg" asChild>
           <div aria-hidden="true" className="flex items-center gap-2">
-            <Skeleton className="h-8 w-8 rounded-lg" />
+            <Skeleton className="h-8 w-8 rounded-full" />
             <div className="flex-1 space-y-1 group-data-[collapsible=icon]:hidden">
               <Skeleton className="h-4 w-28" />
               <Skeleton className="h-3 w-16" />
@@ -59,8 +59,8 @@ export function WorkspaceSwitcher() {
       <SidebarMenu>
         <SidebarMenuItem>
           <SidebarMenuButton size="lg" disabled>
-            <Avatar className="h-8 w-8 rounded-lg">
-              <AvatarFallback className="rounded-lg bg-muted">?</AvatarFallback>
+            <Avatar size="default">
+              <AvatarFallback content="?">?</AvatarFallback>
             </Avatar>
             <div className="grid flex-1 text-left text-sm leading-tight">
               <span className="truncate font-medium text-muted-foreground">
@@ -85,9 +85,9 @@ export function WorkspaceSwitcher() {
               size="lg"
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             >
-              <Avatar className="h-8 w-8 rounded-lg">
+              <Avatar size="default">
                 <AvatarFallback
-                  className="rounded-lg"
+                  content={currentWorkspace.avatar.content}
                   style={{
                     backgroundColor: currentWorkspace.avatar.color,
                     color: getContrastTextColor(currentWorkspace.avatar.color),
@@ -125,8 +125,9 @@ export function WorkspaceSwitcher() {
                   onClick={() => switchWorkspace(workspace.id)}
                   className="gap-2 p-2"
                 >
-                  <Avatar className="h-6 w-6 shrink-0">
+                  <Avatar size="md" className="shrink-0">
                     <AvatarFallback
+                      content={workspace.avatar.content}
                       style={{
                         backgroundColor: workspace.avatar.color,
                         color: getContrastTextColor(workspace.avatar.color),

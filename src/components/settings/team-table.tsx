@@ -247,8 +247,9 @@ export function TeamTable({
                   <TableRow key={member.user.id}>
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        <Avatar className="h-8 w-8">
+                        <Avatar size="default">
                           <AvatarFallback
+                            content={member.user.avatar.content}
                             style={{
                               backgroundColor: member.user.avatar.color,
                               color: getContrastTextColor(member.user.avatar.color),
@@ -356,8 +357,8 @@ export function TeamTable({
                 <TableRow key={`invite-${invitation.id}`}>
                   <TableCell>
                     <div className="flex items-center gap-3">
-                      <Avatar className="h-8 w-8">
-                        <AvatarFallback>{inviteInitial}</AvatarFallback>
+                      <Avatar size="default">
+                        <AvatarFallback content={inviteInitial}>{inviteInitial}</AvatarFallback>
                       </Avatar>
                       <div>
                         <p className="font-medium">{invitation.email}</p>
@@ -423,8 +424,9 @@ export function TeamTable({
               <Card key={member.user.id}>
                 <CardHeader className="space-y-3">
                   <div className="flex items-center gap-3">
-                    <Avatar className="h-9 w-9">
+                    <Avatar size="lg">
                       <AvatarFallback
+                        content={member.user.avatar.content}
                         style={{
                           backgroundColor: member.user.avatar.color,
                           color: getContrastTextColor(member.user.avatar.color),
@@ -516,8 +518,8 @@ export function TeamTable({
             <Card key={`invite-${invitation.id}`}>
               <CardHeader className="space-y-3">
                 <div className="flex items-center gap-3">
-                  <Avatar className="h-9 w-9">
-                    <AvatarFallback>{inviteInitial}</AvatarFallback>
+                  <Avatar size="lg">
+                    <AvatarFallback content={inviteInitial}>{inviteInitial}</AvatarFallback>
                   </Avatar>
                   <div>
                     <p className="font-medium">{invitation.email}</p>

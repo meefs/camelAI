@@ -85,8 +85,9 @@ export function WorkspaceGeneralForm({
   return (
     <div className="space-y-8">
       <div className="flex items-center gap-4">
-        <Avatar className="h-16 w-16">
+        <Avatar size="xl">
           <AvatarFallback
+            content={avatar.content}
             style={{
               backgroundColor: avatar.color,
               color: getContrastTextColor(avatar.color),

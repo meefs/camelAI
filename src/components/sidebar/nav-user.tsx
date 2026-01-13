@@ -43,7 +43,7 @@ function NavUserSkeleton() {
       <SidebarMenuItem>
         <SidebarMenuButton size="lg" asChild>
           <div aria-hidden="true" className="flex items-center gap-2">
-            <Skeleton className="h-8 w-8 rounded-lg" />
+            <Skeleton className="h-8 w-8 rounded-full" />
             <div className="flex-1 space-y-1 group-data-[collapsible=icon]:hidden">
               <Skeleton className="h-4 w-24" />
               <Skeleton className="h-3 w-32" />
@@ -93,8 +93,8 @@ export function NavUser() {
               size="lg"
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             >
-              <Avatar className="h-8 w-8 rounded-lg">
-                <AvatarFallback className="rounded-lg" style={avatarStyle}>
+              <Avatar size="default">
+                <AvatarFallback content={avatarContent} style={avatarStyle}>
                   {avatarContent}
                 </AvatarFallback>
               </Avatar>
@@ -115,8 +115,8 @@ export function NavUser() {
           >
             <DropdownMenuLabel className="p-0 font-normal">
               <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                <Avatar className="h-8 w-8 rounded-lg">
-                  <AvatarFallback className="rounded-lg" style={avatarStyle}>
+                <Avatar size="default">
+                  <AvatarFallback content={avatarContent} style={avatarStyle}>
                     {avatarContent}
                   </AvatarFallback>
                 </Avatar>

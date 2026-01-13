@@ -64,9 +64,9 @@ export function WorkspaceEditForm({ workspace }: WorkspaceEditFormProps) {
       )}
 
       <div className="flex items-center gap-4">
-        <Avatar className="h-16 w-16">
+        <Avatar size="xl">
           <AvatarFallback
-            className="text-2xl"
+            content={avatar.content}
             style={{
               backgroundColor: avatar.color,
               color: getContrastTextColor(avatar.color),

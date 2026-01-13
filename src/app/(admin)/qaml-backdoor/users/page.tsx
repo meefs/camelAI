@@ -89,8 +89,9 @@ export default async function AdminUsersPage({ searchParams }: Props) {
                         href={`/qaml-backdoor/users/${user.id}`}
                         className="flex items-center gap-3 hover:underline"
                       >
-                        <Avatar className="h-8 w-8">
+                        <Avatar size="default">
                           <AvatarFallback
+                            content={user.avatar.content}
                             style={{
                               backgroundColor: user.avatar.color,
                               color: getContrastTextColor(user.avatar.color),

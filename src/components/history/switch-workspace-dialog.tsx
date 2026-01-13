@@ -10,6 +10,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import type { Workspace } from '@/types';
 import { getContrastTextColor } from '@/lib/avatar';
 
@@ -36,15 +37,17 @@ export function SwitchWorkspaceDialog({
           <AlertDialogDescription>
             This chat belongs to a different workspace. Switch to{' '}
             <span className="inline-flex items-center gap-1 font-medium text-foreground">
-              <span
-                className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-medium"
-                style={{
-                  backgroundColor: workspace.avatar.color,
-                  color: getContrastTextColor(workspace.avatar.color),
-                }}
-              >
-                {workspace.avatar.content}
-              </span>
+              <Avatar size="xs">
+                <AvatarFallback
+                  content={workspace.avatar.content}
+                  style={{
+                    backgroundColor: workspace.avatar.color,
+                    color: getContrastTextColor(workspace.avatar.color),
+                  }}
+                >
+                  {workspace.avatar.content}
+                </AvatarFallback>
+              </Avatar>
               {workspace.name}
             </span>{' '}
             to continue this conversation.
