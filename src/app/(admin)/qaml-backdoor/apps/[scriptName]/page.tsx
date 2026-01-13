@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
 import { requireSuperuser } from '@/lib/server-guards';
+import { getVanityDomain } from '@/lib/app-url.server';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AppEditForm } from '@/components/admin/app-edit-form';
 import { AppDangerZone } from '@/components/admin/app-danger-zone';
@@ -48,6 +49,8 @@ export default async function AdminAppDetailPage({ params }: Props) {
     is_public: app.is_public,
   };
 
+  const vanityDomain = await getVanityDomain();
+
   return (
     <>
       <AdminPageHeader
@@ -76,12 +79,12 @@ export default async function AdminAppDetailPage({ params }: Props) {
                     <dt className="text-sm font-medium text-muted-foreground">Live URL</dt>
                     <dd>
                       <a
-                        href={`https://${app.script_name}.chiridion.app`}
+                        href={`https://${app.script_name}.${vanityDomain}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-sm text-primary hover:underline inline-flex items-center gap-1"
                       >
-                        {app.script_name}.chiridion.app
+                        {app.script_name}.{vanityDomain}
                         <ExternalLink className="h-3 w-3" />
                       </a>
                     </dd>

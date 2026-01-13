@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import * as authDO from '@/lib/auth-do';
 import { requireSuperuser } from '@/lib/server-guards';
+import { getVanityDomain } from '@/lib/app-url.server';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { ThreadEditForm } from '@/components/admin/thread-edit-form';
 import { Badge } from '@/components/ui/badge';
@@ -51,6 +52,8 @@ export default async function AdminThreadDetailPage({ params }: Props) {
     created_at: thread.created_at,
     updated_at: thread.updated_at,
   };
+
+  const vanityDomain = await getVanityDomain();
 
   return (
     <>
@@ -130,12 +133,12 @@ export default async function AdminThreadDetailPage({ params }: Props) {
                       <div key={worker} className="flex items-center justify-between p-2 rounded-md bg-muted">
                         <code className="text-sm">{worker}</code>
                         <a
-                          href={`https://${worker}.chiridion.app`}
+                          href={`https://${worker}.${vanityDomain}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-sm text-primary hover:underline"
                         >
-                          https://{worker}.chiridion.app
+                          https://{worker}.{vanityDomain}
                         </a>
                       </div>
                     ))}

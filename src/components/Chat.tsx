@@ -24,6 +24,7 @@ import {
   createThread as createThreadAction,
   getThreadMessages,
 } from '@/lib/server-actions/thread';
+import { getAppUrl, getAppIframeUrl, getVanityDomain } from '@/lib/app-url';
 
 interface ChatProps {
   threadId?: string;
@@ -32,6 +33,8 @@ interface ChatProps {
   threadTitle?: string | null;
   initialDeployedApp?: string | null;
   isNewThread?: boolean;
+  /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
+  hostname?: string;
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -154,7 +157,7 @@ function getLastToolUseIdFromMessages(messages: Message[]): string | undefined {
 }
 
 
-export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false }: ChatProps) {
+export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false, hostname }: ChatProps) {
   const router = useRouter();
   const { user, currentWorkspace, loading: authLoading } = useAuth();
   // Anchor to last message for existing threads with messages (not new threads)
@@ -1546,7 +1549,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 bg-green-500 rounded-full" />
-                    <span className="text-sm font-medium">{deployedApp}.chiridion.app</span>
+                    <span className="text-sm font-medium">{deployedApp}.{getVanityDomain(hostname)}</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <Tooltip>
@@ -1569,7 +1572,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                           asChild
                         >
                           <a
-                            href={`https://${deployedApp}.chiridion.app`}
+                            href={getAppUrl(deployedApp, hostname)}
                             target="_blank"
                             rel="noopener noreferrer"
                           >
@@ -1596,7 +1599,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                 <div className="flex-1">
                   <iframe
                     key={iframeKey}
-                    src={`https://${deployedApp}.apps.chiridion.ai`}
+                    src={getAppIframeUrl(deployedApp, hostname)}
                     className="w-full h-full bg-white"
                     title="Deployed App Preview"
                   />
