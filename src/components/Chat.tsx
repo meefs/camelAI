@@ -279,6 +279,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [iframeKey, setIframeKey] = useState(0);
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
+  const [appHostname, setAppHostname] = useState('');
   const previewVersionRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -311,6 +312,12 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   useEffect(() => {
     setMobileView('chat');
   }, [threadId, deployedApp]);
+
+  useLayoutEffect(() => {
+    if (typeof window !== 'undefined') {
+      setAppHostname(window.location.hostname);
+    }
+  }, []);
 
   useEffect(() => {
     if (!streamingMessageId) return;
@@ -1432,8 +1439,24 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     { label: 'Chat' },
     { label: currentTitle?.trim() || 'Untitled Chat' },
   ];
-  const previewHost = deployedApp ? `${deployedApp}.chiridion.ai` : '';
-  const previewUrl = deployedApp ? `https://${deployedApp}.chiridion.ai` : '';
+  const previewDomains = useMemo(() => {
+    if (!deployedApp || !appHostname) {
+      return { iframeHost: '', vanityHost: '' };
+    }
+    const envPrefix = appHostname.endsWith('.chiridion.ai')
+      ? appHostname.replace('.chiridion.ai', '')
+      : appHostname.endsWith('.chiridion.app')
+        ? appHostname.replace('.chiridion.app', '')
+        : '';
+    const envSuffix = envPrefix ? `.${envPrefix}` : '';
+    return {
+      iframeHost: `${deployedApp}.apps${envSuffix}.chiridion.ai`,
+      vanityHost: `${deployedApp}${envSuffix}.chiridion.app`,
+    };
+  }, [deployedApp, appHostname]);
+  const previewHost = previewDomains.iframeHost || deployedApp || '';
+  const previewUrl = previewDomains.iframeHost ? `https://${previewDomains.iframeHost}` : '';
+  const previewVanityUrl = previewDomains.vanityHost ? `https://${previewDomains.vanityHost}` : '';
   const showMobilePreview = Boolean(deployedApp) && mobileView === 'preview';
 
   const previewPanelBody = deployedApp ? (
@@ -1464,7 +1487,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                 asChild
               >
                 <a
-                  href={previewUrl}
+                  href={previewVanityUrl || 'about:blank'}
                   target="_blank"
                   rel="noopener noreferrer"
                 >
@@ -1491,7 +1514,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       <div className="flex-1 min-h-0">
         <iframe
           key={iframeKey}
-          src={previewUrl}
+          src={previewUrl || 'about:blank'}
           className="w-full h-full bg-white"
           title="Deployed App Preview"
         />
