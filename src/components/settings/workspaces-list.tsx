@@ -151,8 +151,9 @@ export function WorkspacesList({
               >
                 <TableCell>
                   <div className="flex items-center gap-3">
-                    <Avatar className="h-8 w-8">
+                    <Avatar size="default">
                       <AvatarFallback
+                        content={workspace.avatar.content}
                         style={{
                           backgroundColor: workspace.avatar.color,
                           color: getContrastTextColor(workspace.avatar.color),
@@ -222,8 +223,9 @@ export function WorkspacesList({
             <CardHeader className="space-y-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-3">
-                  <Avatar className="h-8 w-8">
+                  <Avatar size="default">
                     <AvatarFallback
+                      content={workspace.avatar.content}
                       style={{
                         backgroundColor: workspace.avatar.color,
                         color: getContrastTextColor(workspace.avatar.color),

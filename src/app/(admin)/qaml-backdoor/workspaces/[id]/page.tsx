@@ -127,8 +127,9 @@ export default async function AdminWorkspaceDetailPage({ params }: Props) {
                   <div>
                     <dt className="text-sm font-medium text-muted-foreground">Avatar</dt>
                     <dd className="flex items-center gap-3 mt-1">
-                      <Avatar className="h-10 w-10">
+                      <Avatar size="lg">
                         <AvatarFallback
+                          content={workspace.avatar.content}
                           style={{
                             backgroundColor: workspace.avatar.color,
                             color: getContrastTextColor(workspace.avatar.color),

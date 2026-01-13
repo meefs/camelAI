@@ -155,12 +155,12 @@ export function WorkspaceAccessTags({
                   onClick={() => handleAdd(workspace.id)}
                   className="whitespace-nowrap gap-2"
                 >
-                  <Avatar className="h-5 w-5">
+                  <Avatar size="sm">
                     <AvatarFallback
+                      content={workspace.avatar.content}
                       style={{
                         backgroundColor: workspace.avatar.color,
                         color: getContrastTextColor(workspace.avatar.color),
-                        fontSize: "0.625rem",
                       }}
                     >
                       {workspace.avatar.content}

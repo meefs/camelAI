@@ -192,21 +192,23 @@ export function ChatRow({
       variant="secondary"
       className="gap-1 pl-1 pr-2 text-[10px] text-muted-foreground max-w-[140px] min-w-0 shrink justify-start"
     >
-      <span
-        className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-medium shrink-0"
-        style={{
-          backgroundColor: workspace.avatar.color,
-          color: getContrastTextColor(workspace.avatar.color),
-        }}
-      >
-        {workspace.avatar.content}
-      </span>
+      <Avatar size="xs">
+        <AvatarFallback
+          content={workspace.avatar.content}
+          style={{
+            backgroundColor: workspace.avatar.color,
+            color: getContrastTextColor(workspace.avatar.color),
+          }}
+        >
+          {workspace.avatar.content}
+        </AvatarFallback>
+      </Avatar>
       <span className="truncate min-w-0">{workspace.name}</span>
     </Badge>
   ) : null;
   const creatorAvatarNode = (
-    <Avatar size="xs">
-      <AvatarFallback style={creatorFallbackStyle}>
+    <Avatar size="2xs">
+      <AvatarFallback content={creatorContent} style={creatorFallbackStyle}>
         {creatorContent}
       </AvatarFallback>
     </Avatar>

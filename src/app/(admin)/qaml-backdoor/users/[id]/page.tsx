@@ -104,9 +104,9 @@ export default async function AdminUserDetailPage({ params }: Props) {
                   <div>
                     <dt className="text-sm font-medium text-muted-foreground">Avatar</dt>
                     <dd className="mt-1">
-                      <Avatar className="h-16 w-16">
+                      <Avatar size="xl">
                         <AvatarFallback
-                          className="text-2xl"
+                          content={user.avatar_content}
                           style={{
                             backgroundColor: user.avatar_color,
                             color: getContrastTextColor(user.avatar_color),

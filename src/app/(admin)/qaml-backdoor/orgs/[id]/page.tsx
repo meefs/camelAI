@@ -226,8 +226,9 @@ export default async function AdminOrgDetailPage({ params }: Props) {
                               href={`/qaml-backdoor/workspaces/${workspace.id}`}
                               className="flex items-center gap-3 hover:underline"
                             >
-                              <Avatar className="h-8 w-8">
+                              <Avatar size="default">
                                 <AvatarFallback
+                                  content={workspace.avatar.content}
                                   style={{
                                     backgroundColor: workspace.avatar.color,
                                     color: getContrastTextColor(workspace.avatar.color),
@@ -294,8 +295,9 @@ export default async function AdminOrgDetailPage({ params }: Props) {
                               href={`/qaml-backdoor/users/${member.user.id}`}
                               className="flex items-center gap-3 hover:underline"
                             >
-                              <Avatar className="h-8 w-8">
+                              <Avatar size="default">
                                 <AvatarFallback
+                                  content={member.user.avatar.content}
                                   style={{
                                     backgroundColor: member.user.avatar.color,
                                     color: getContrastTextColor(member.user.avatar.color),

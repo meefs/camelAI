@@ -94,8 +94,9 @@ export default async function AdminWorkspacesPage({ searchParams }: Props) {
                           href={`/qaml-backdoor/workspaces/${workspace.id}`}
                           className="flex items-center gap-3 hover:underline"
                         >
-                          <Avatar className="h-8 w-8">
+                          <Avatar size="default">
                             <AvatarFallback
+                              content={workspace.avatar.content}
                               style={{
                                 backgroundColor: workspace.avatar.color,
                                 color: getContrastTextColor(workspace.avatar.color),
