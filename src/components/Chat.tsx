@@ -1443,11 +1443,16 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     if (!deployedApp || !appHostname) {
       return { iframeHost: '', vanityHost: '' };
     }
-    const envPrefix = appHostname.endsWith('.chiridion.ai')
+    let envPrefix = appHostname.endsWith('.chiridion.ai')
       ? appHostname.replace('.chiridion.ai', '')
       : appHostname.endsWith('.chiridion.app')
         ? appHostname.replace('.chiridion.app', '')
         : '';
+    if (envPrefix === 'www') {
+      envPrefix = '';
+    } else if (envPrefix.startsWith('www.')) {
+      envPrefix = envPrefix.slice(4);
+    }
     const envSuffix = envPrefix ? `.${envPrefix}` : '';
     return {
       iframeHost: `${deployedApp}.apps${envSuffix}.chiridion.ai`,
