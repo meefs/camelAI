@@ -1621,11 +1621,6 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
               />
             </div>
           </div>
-          {isMobile && deployedApp && (
-            <div className="border-t border-border">
-              <MobileViewSwitcher value={mobileView} onChange={setMobileView} />
-            </div>
-          )}
         </div>
       </div>
     </>
@@ -1650,16 +1645,31 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
               </div>
             )}
             {isMobile ? (
-              <div className="flex flex-1 min-h-0 flex-col">
-                <div className={cn("flex-1 min-h-0 flex-col", showMobilePreview ? "hidden" : "flex")}>
-                  {chatPanelContent}
-                </div>
-                {deployedApp && (
-                  <div className={cn("flex-1 min-h-0 flex-col bg-background", showMobilePreview ? "flex" : "hidden")}>
-                    {previewPanelBody}
-                    <div className="sticky bottom-0 z-20 border-t border-border bg-background">
+              <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+                {deployedApp ? (
+                  <>
+                    <div className="relative flex-1 min-h-0 overflow-hidden">
+                      <div
+                        className={cn(
+                          "flex h-full w-[200%] will-change-transform motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-out",
+                          showMobilePreview ? "-translate-x-1/2" : "translate-x-0"
+                        )}
+                      >
+                        <div className="flex w-1/2 shrink-0 flex-col min-h-0">
+                          {chatPanelContent}
+                        </div>
+                        <div className="flex w-1/2 shrink-0 flex-col min-h-0 bg-background">
+                          {previewPanelBody}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 border-t border-border bg-background">
                       <MobileViewSwitcher value={mobileView} onChange={setMobileView} />
                     </div>
+                  </>
+                ) : (
+                  <div className="flex flex-1 min-h-0 flex-col">
+                    {chatPanelContent}
                   </div>
                 )}
               </div>
