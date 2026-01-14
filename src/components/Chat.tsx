@@ -31,7 +31,7 @@ import {
   createThread as createThreadAction,
   getThreadMessages,
 } from '@/lib/server-actions/thread';
-import { getAppUrl, getAppIframeUrl, getVanityDomain } from '@/lib/app-url';
+import { getAppUrl, getAppIframeUrl, getVanityDomain, getIframeDomain } from '@/lib/app-url';
 
 interface ChatProps {
   threadId?: string;
@@ -282,7 +282,6 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [iframeKey, setIframeKey] = useState(0);
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
-  const [appHostname, setAppHostname] = useState('');
   const previewVersionRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -316,11 +315,6 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     setMobileView('chat');
   }, [threadId, deployedApp]);
 
-  useLayoutEffect(() => {
-    if (typeof window !== 'undefined') {
-      setAppHostname(window.location.hostname);
-    }
-  }, []);
 
   useEffect(() => {
     if (!streamingMessageId) return;
@@ -1442,25 +1436,14 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     { label: currentTitle?.trim() || 'Untitled Chat' },
   ];
   const previewDomains = useMemo(() => {
-    if (!deployedApp || !appHostname) {
+    if (!deployedApp) {
       return { iframeHost: '', vanityHost: '' };
     }
-    let envPrefix = appHostname.endsWith('.chiridion.ai')
-      ? appHostname.replace('.chiridion.ai', '')
-      : appHostname.endsWith('.chiridion.app')
-        ? appHostname.replace('.chiridion.app', '')
-        : '';
-    if (envPrefix === 'www') {
-      envPrefix = '';
-    } else if (envPrefix.startsWith('www.')) {
-      envPrefix = envPrefix.slice(4);
-    }
-    const envSuffix = envPrefix ? `.${envPrefix}` : '';
     return {
-      iframeHost: `${deployedApp}.apps${envSuffix}.chiridion.ai`,
-      vanityHost: `${deployedApp}${envSuffix}.chiridion.app`,
+      iframeHost: `${deployedApp}.${getIframeDomain(hostname)}`,
+      vanityHost: `${deployedApp}.${getVanityDomain(hostname)}`,
     };
-  }, [deployedApp, appHostname]);
+  }, [deployedApp, hostname]);
   const previewHost = previewDomains.iframeHost || deployedApp || '';
   const previewUrl = previewDomains.iframeHost ? `https://${previewDomains.iframeHost}` : '';
   const previewVanityUrl = previewDomains.vanityHost ? `https://${previewDomains.vanityHost}` : '';
