@@ -94,8 +94,11 @@ describe('orphaned user login', () => {
 
     const result = await login(user.email, 'password123');
 
-    expect(result.currentOrg.id).toBe(org.id);
-    expect(result.currentWorkspace?.id).toBe(workspace.id);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.currentOrg.id).toBe(org.id);
+      expect(result.data.currentWorkspace?.id).toBe(workspace.id);
+    }
     expect(mockCreateSession).toHaveBeenCalledWith(user.id, org.id, workspace.id);
     expect(mockSetSessionCookie).toHaveBeenCalledWith('session-1');
   });
@@ -147,7 +150,10 @@ describe('orphaned user login', () => {
 
     const result = await login(user.email, 'password123');
 
-    expect(result.currentOrg.id).toBe(org.id);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.currentOrg.id).toBe(org.id);
+    }
     expect(mockCreateOrg).not.toHaveBeenCalled();
     expect(mockCreateSession).toHaveBeenCalledWith(user.id, org.id, workspace.id);
     expect(mockSetSessionCookie).toHaveBeenCalledWith('session-2');

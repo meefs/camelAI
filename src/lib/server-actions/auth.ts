@@ -19,6 +19,10 @@ export type AuthPayload = {
   workspaces: WorkspaceWithAccess[];
 };
 
+export type AuthResult =
+  | { success: true; data: AuthPayload }
+  | { success: false; error: string };
+
 function toSafeUser(user: User | UserProfile): User {
   if ("avatar" in user) {
     return {
@@ -84,26 +88,26 @@ function toSafeWorkspace(workspace: WorkspaceWithAccess): WorkspaceWithAccess {
 export async function login(
   email: string,
   password: string
-): Promise<AuthPayload> {
+): Promise<AuthResult> {
   // Input validation
   if (!email || !password) {
-    throw new Error("Email and password are required");
+    return { success: false, error: "Email and password are required" };
   }
   if (!isValidEmail(email)) {
-    throw new Error("Invalid email address");
+    return { success: false, error: "Invalid email address" };
   }
 
   // Check user exists
   const userResult = await authDO.getUserByEmail(email);
   if (!userResult) {
-    throw new Error("Invalid email or password");
+    return { success: false, error: "Invalid email or password" };
   }
 
   // Verify password
   const { userId, user } = userResult;
   const isValid = await authDO.verifyUserPassword(userId, password);
   if (!isValid) {
-    throw new Error("Invalid email or password");
+    return { success: false, error: "Invalid email or password" };
   }
 
   // Handle orphaned users (may create recovery org/workspace)
@@ -141,7 +145,7 @@ export async function login(
     const currentOrgId = orgs[0].org_id;
     const org = await authDO.getOrg(currentOrgId);
     if (!org) {
-      throw new Error("Failed to load organization");
+      return { success: false, error: "Failed to load organization" };
     }
     currentOrg = org;
     workspaces = await authDO.listUserWorkspaces(userId, currentOrgId);
@@ -154,11 +158,14 @@ export async function login(
   await setSessionCookie(sessionId);
 
   return {
-    user: toSafeUser(user),
-    currentOrg: toSafeOrg(currentOrg),
-    currentWorkspace: currentWorkspace ? toSafeWorkspace(currentWorkspace) : null,
-    orgs: orgs.map(toSafeOrgMembership),
-    workspaces: workspaces.map(toSafeWorkspace),
+    success: true,
+    data: {
+      user: toSafeUser(user),
+      currentOrg: toSafeOrg(currentOrg),
+      currentWorkspace: currentWorkspace ? toSafeWorkspace(currentWorkspace) : null,
+      orgs: orgs.map(toSafeOrgMembership),
+      workspaces: workspaces.map(toSafeWorkspace),
+    },
   };
 }
 
@@ -166,22 +173,22 @@ export async function signup(
   email: string,
   password: string,
   name?: string
-): Promise<AuthPayload> {
+): Promise<AuthResult> {
   // Input validation
   if (!email || !password) {
-    throw new Error("Email and password are required");
+    return { success: false, error: "Email and password are required" };
   }
   if (!isValidEmail(email)) {
-    throw new Error("Invalid email address");
+    return { success: false, error: "Invalid email address" };
   }
   if (!isValidPassword(password)) {
-    throw new Error("Password must be at least 8 characters");
+    return { success: false, error: "Password must be at least 8 characters" };
   }
 
   // Check for existing user
   const existing = await authDO.getUserByEmail(email);
   if (existing) {
-    throw new Error("An account with this email already exists");
+    return { success: false, error: "An account with this email already exists" };
   }
 
   // Create user and org (createOrg also creates a default workspace)
@@ -206,11 +213,14 @@ export async function signup(
   const orgs = await authDO.getUserOrgs(userId);
 
   return {
-    user: toSafeUser(user),
-    currentOrg: toSafeOrg(org),
-    currentWorkspace: defaultWorkspace ? toSafeWorkspace(defaultWorkspace) : null,
-    orgs: orgs.map(toSafeOrgMembership),
-    workspaces: workspaces.map(toSafeWorkspace),
+    success: true,
+    data: {
+      user: toSafeUser(user),
+      currentOrg: toSafeOrg(org),
+      currentWorkspace: defaultWorkspace ? toSafeWorkspace(defaultWorkspace) : null,
+      orgs: orgs.map(toSafeOrgMembership),
+      workspaces: workspaces.map(toSafeWorkspace),
+    },
   };
 }
 

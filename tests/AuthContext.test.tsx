@@ -168,7 +168,7 @@ describe('AuthContext', () => {
 
   it('should handle login success', async () => {
     vi.mocked(authActions.getAuthState).mockResolvedValue(null);
-    vi.mocked(authActions.login).mockResolvedValue(mockAuthPayload);
+    vi.mocked(authActions.login).mockResolvedValue({ success: true, data: mockAuthPayload });
 
     render(
       <AuthProvider>
@@ -194,7 +194,7 @@ describe('AuthContext', () => {
 
   it('should handle login failure', async () => {
     vi.mocked(authActions.getAuthState).mockResolvedValue(null);
-    vi.mocked(authActions.login).mockRejectedValue(new Error('Invalid credentials'));
+    vi.mocked(authActions.login).mockResolvedValue({ success: false, error: 'Invalid credentials' });
 
     render(
       <AuthProvider>

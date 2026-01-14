@@ -9,6 +9,7 @@ import {
   signup as signupAction,
   switchOrg as switchOrgAction,
   switchWorkspace as switchWorkspaceAction,
+  type AuthResult,
 } from '@/lib/server-actions/auth';
 
 interface AuthContextValue extends AuthState {
@@ -103,18 +104,28 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const data = await loginAction(email, password);
+      const result = await loginAction(email, password);
+
+      if (!result.success) {
+        setState((prev) => ({
+          ...prev,
+          loading: false,
+          error: result.error,
+        }));
+        throw new Error(result.error);
+      }
 
       setState({
-        user: data.user,
-        currentOrg: data.currentOrg,
-        currentWorkspace: data.currentWorkspace ?? null,
-        orgs: data.orgs,
-        workspaces: data.workspaces ?? [],
+        user: result.data.user,
+        currentOrg: result.data.currentOrg,
+        currentWorkspace: result.data.currentWorkspace ?? null,
+        orgs: result.data.orgs,
+        workspaces: result.data.workspaces ?? [],
         loading: false,
         error: null,
       });
     } catch (e) {
+      // Handle unexpected errors (network, DO failures, etc.)
       const error = e instanceof Error ? e.message : 'Login failed';
       setState((prev) => ({
         ...prev,
@@ -129,18 +140,28 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const data = await signupAction(email, password, name);
+      const result = await signupAction(email, password, name);
+
+      if (!result.success) {
+        setState((prev) => ({
+          ...prev,
+          loading: false,
+          error: result.error,
+        }));
+        throw new Error(result.error);
+      }
 
       setState({
-        user: data.user,
-        currentOrg: data.currentOrg,
-        currentWorkspace: data.currentWorkspace ?? null,
-        orgs: data.orgs,
-        workspaces: data.workspaces ?? [],
+        user: result.data.user,
+        currentOrg: result.data.currentOrg,
+        currentWorkspace: result.data.currentWorkspace ?? null,
+        orgs: result.data.orgs,
+        workspaces: result.data.workspaces ?? [],
         loading: false,
         error: null,
       });
     } catch (e) {
+      // Handle unexpected errors (network, DO failures, etc.)
       const error = e instanceof Error ? e.message : 'Signup failed';
       setState((prev) => ({
         ...prev,
