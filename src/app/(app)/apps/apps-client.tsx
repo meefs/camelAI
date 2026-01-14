@@ -1,46 +1,42 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 
-import type { WorkerScript } from '@/types';
+import type { WorkerScriptWithCreator } from '@/types';
 import { PageHeader } from '@/components/page-header';
-import { EditAppDialog } from './EditAppDialog';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
-import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { AppCard } from './AppCard';
+import { AppSettingsDialog } from './AppSettingsDialog';
+import { AppCardSkeleton } from './AppCardSkeleton';
+import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import {
-  AlertCircle,
-  Boxes,
-  ExternalLink,
-  Settings,
-  Trash2,
-} from 'lucide-react';
-import { getOrgApps, setAppPublic, deleteApp } from '@/lib/server-actions/apps';
-import { getAppUrl } from '@/lib/app-url';
+import { AlertCircle, Boxes } from 'lucide-react';
+import { getOrgApps } from '@/lib/server-actions/apps';
 
 interface AppsClientProps {
-  initialApps: WorkerScript[];
+  initialApps: WorkerScriptWithCreator[];
   orgId: string;
+  hostname?: string;
+  initialNow: number;
 }
 
 export default function AppsClient({
   initialApps,
   orgId,
+  hostname,
+  initialNow,
 }: AppsClientProps) {
   const { currentOrg, orgs, loading: authLoading } = useAuth();
 
-  const [apps, setApps] = useState<WorkerScript[]>(initialApps);
+  const [apps, setApps] = useState<WorkerScriptWithCreator[]>(initialApps);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [selectedApp, setSelectedApp] = useState<WorkerScript | null>(null);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [selectedApp, setSelectedApp] = useState<WorkerScriptWithCreator | null>(null);
   const [activeOrgId, setActiveOrgId] = useState(orgId);
-  const [deleteTarget, setDeleteTarget] = useState<WorkerScript | null>(null);
+  const [referenceTime, setReferenceTime] = useState(initialNow);
 
   const refreshApps = useCallback(
     async (targetOrgId = activeOrgId) => {
@@ -50,6 +46,7 @@ export default function AppsClient({
         setError(null);
         const data = await getOrgApps(targetOrgId);
         setApps(data);
+        setReferenceTime(Date.now());
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load apps');
       } finally {
@@ -66,49 +63,31 @@ export default function AppsClient({
     }
   }, [currentOrg?.id, activeOrgId, refreshApps]);
 
-  const handleTogglePublic = async (app: WorkerScript) => {
-    if (!activeOrgId) return;
-
-    try {
-      setError(null);
-      await setAppPublic(activeOrgId, app.script_name, !app.is_public);
-      await refreshApps(activeOrgId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update app');
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!activeOrgId || !deleteTarget) return;
-
-    try {
-      setError(null);
-      await deleteApp(activeOrgId, deleteTarget.script_name);
-      setDeleteTarget(null);
-      await refreshApps(activeOrgId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete app');
-    }
-  };
-
-  const handleEditClick = (app: WorkerScript) => {
+  const handleOpenSettings = (app: WorkerScriptWithCreator) => {
     setSelectedApp(app);
-    setEditDialogOpen(true);
+    setSettingsDialogOpen(true);
   };
 
-  const handleEditSuccess = () => {
-    setEditDialogOpen(false);
-    setSelectedApp(null);
-    refreshApps(activeOrgId);
+  const handleSettingsSuccess = () => {
+    void refreshApps(activeOrgId);
   };
 
-  const handleEditDialogOpenChange = (open: boolean) => {
-    setEditDialogOpen(open);
+  const handleSettingsDialogOpenChange = (open: boolean) => {
+    setSettingsDialogOpen(open);
     if (!open) {
       setSelectedApp(null);
     }
   };
 
+  const handleStartChat = (app: WorkerScriptWithCreator) => {
+    // FIXME: Wire to workspace chat once app context handoff is supported.
+    toast(`Chat for ${app.script_name} is coming soon.`);
+  };
+
+  const handleViewSource = (app: WorkerScriptWithCreator) => {
+    // FIXME: Deep link to the Computer tab once source_path is available.
+    toast(`Source view for ${app.script_name} is coming soon.`);
+  };
 
   const isLoading = authLoading || loading;
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
@@ -138,92 +117,37 @@ export default function AppsClient({
             )}
 
             {isLoading ? (
-              <div className="mt-6 flex items-center justify-center py-16 text-sm text-muted-foreground">
-                Loading apps...
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <AppCardSkeleton key={i} />
+                ))}
               </div>
             ) : apps.length === 0 ? (
-              <Card className="mt-6 border-dashed">
-                <CardHeader className="flex flex-row items-start gap-4">
-                  <div className="flex size-12 items-center justify-center rounded-lg bg-muted">
-                    <Boxes className="size-5" />
-                  </div>
-                  <div>
-                    <CardTitle>No apps deployed yet</CardTitle>
-                    <CardDescription>
-                      Deploy an app from a chat conversation to see it here.
-                    </CardDescription>
-                  </div>
+              <Card className="mt-6 border-dashed p-0">
+                <div className="aspect-video w-full bg-muted/60 flex items-center justify-center">
+                  <Boxes className="size-6 text-muted-foreground" />
+                </div>
+                <CardHeader className="space-y-2 pb-4">
+                  <CardTitle>No apps deployed yet</CardTitle>
+                  <CardDescription>
+                    Deploy an app from a chat conversation to see it here.
+                  </CardDescription>
                 </CardHeader>
               </Card>
             ) : (
               <div className="mt-6 grid gap-4 md:grid-cols-2">
                 {apps.map((app) => (
-                  <Card key={app.script_name}>
-                    <CardHeader className="flex flex-row items-start justify-between gap-4">
-                      <div className="flex items-start gap-3">
-                        <div className="flex size-10 items-center justify-center rounded-lg border">
-                          <Boxes className="size-5" />
-                        </div>
-                        <div>
-                          <CardTitle className="flex items-center gap-2">
-                            {app.script_name}
-                            <a
-                              href={getAppUrl(app.script_name)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-muted-foreground hover:text-foreground"
-                            >
-                              <ExternalLink className="size-4" />
-                            </a>
-                          </CardTitle>
-                          <CardDescription>
-                            Deployed {new Date(app.created_at).toLocaleDateString()}
-                          </CardDescription>
-                        </div>
-                      </div>
-                      <Badge variant={app.is_public ? 'default' : 'secondary'}>
-                        {app.is_public ? 'Public' : 'Private'}
-                      </Badge>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="flex items-center justify-between text-sm text-muted-foreground">
-                        <span>Last updated</span>
-                        <span>
-                          {new Date(app.updated_at).toLocaleDateString()}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-sm">
-                          <span>Public access</span>
-                          <Switch
-                            checked={app.is_public}
-                            onCheckedChange={() => handleTogglePublic(app)}
-                            disabled={!isAdmin}
-                          />
-                        </div>
-                        {isAdmin && (
-                          <div className="flex items-center gap-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleEditClick(app)}
-                            >
-                              <Settings className="mr-2 size-3.5" />
-                              Settings
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="text-destructive hover:text-destructive"
-                              onClick={() => setDeleteTarget(app)}
-                            >
-                              <Trash2 className="size-4" />
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
+                  <AppCard
+                    key={app.script_name}
+                    app={app}
+                    creator={app.creator}
+                    isAdmin={isAdmin}
+                    hostname={hostname}
+                    now={referenceTime}
+                    onOpenSettings={handleOpenSettings}
+                    onStartChat={handleStartChat}
+                    onViewSource={handleViewSource}
+                  />
                 ))}
               </div>
             )}
@@ -232,32 +156,16 @@ export default function AppsClient({
       </div>
 
       {selectedApp && (
-        <EditAppDialog
-          open={editDialogOpen}
-          onOpenChange={handleEditDialogOpenChange}
+        <AppSettingsDialog
+          open={settingsDialogOpen}
+          onOpenChange={handleSettingsDialogOpenChange}
           app={selectedApp}
           orgId={activeOrgId}
-          onSuccess={handleEditSuccess}
+          isAdmin={isAdmin}
+          hostname={hostname}
+          onSuccess={handleSettingsSuccess}
         />
       )}
-
-      <ConfirmDialog
-        open={Boolean(deleteTarget)}
-        onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
-        }}
-        title="Delete app?"
-        description={
-          deleteTarget
-            ? `Are you sure you want to delete "${deleteTarget.script_name}"? This will remove the deployed worker. This action cannot be undone.`
-            : 'Are you sure you want to delete this app?'
-        }
-        confirmLabel="Delete app"
-        variant="destructive"
-        onConfirm={() => {
-          void handleDelete();
-        }}
-      />
     </>
   );
 }

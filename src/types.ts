@@ -347,3 +347,14 @@ export interface WorkerScript {
   updated_at: number;
   is_public: boolean;
 }
+
+export interface AppCreator {
+  id: string;
+  name: string | null;
+  email: string | null;
+  avatar: Avatar | null;
+}
+
+export interface WorkerScriptWithCreator extends WorkerScript {
+  creator?: AppCreator;
+}
