@@ -57,6 +57,14 @@
 			"id": "f5ab08fdb1d7404fbc45a171217b4a27"
 		}
 	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "APP_SCREENSHOT_QUEUE",
+				"queue": "chiridion-app-screenshots-local"
+			}
+		]
+	},
 	"containers": [
 		{
 			"class_name": "ThreadSandbox",
@@ -144,6 +152,14 @@
 					"id": "67958a5b0d104621bd93c91c802ccd1c"
 				}
 			],
+			"queues": {
+				"producers": [
+					{
+						"binding": "APP_SCREENSHOT_QUEUE",
+						"queue": "chiridion-app-screenshots"
+					}
+				]
+			},
 			"services": [
 				{
 					"binding": "WORKER_SELF_REFERENCE",
@@ -234,6 +250,14 @@
 					"id": "f5ab08fdb1d7404fbc45a171217b4a27"
 				}
 			],
+			"queues": {
+				"producers": [
+					{
+						"binding": "APP_SCREENSHOT_QUEUE",
+						"queue": "chiridion-app-screenshots-staging"
+					}
+				]
+			},
 			"services": [
 				{
 					"binding": "WORKER_SELF_REFERENCE",
@@ -319,6 +343,14 @@
 					"id": "a38773869d2e465fbf705c81fa2e01eb"
 				}
 			],
+			"queues": {
+				"producers": [
+					{
+						"binding": "APP_SCREENSHOT_QUEUE",
+						"queue": "chiridion-app-screenshots-dev-miguel"
+					}
+				]
+			},
 			"services": [
 				{
 					"binding": "WORKER_SELF_REFERENCE",
@@ -404,6 +436,14 @@
 					"id": "c632a963433e4949b6dea43728034b36"
 				}
 			],
+			"queues": {
+				"producers": [
+					{
+						"binding": "APP_SCREENSHOT_QUEUE",
+						"queue": "chiridion-app-screenshots-dev-illiana"
+					}
+				]
+			},
 			"services": [
 				{
 					"binding": "WORKER_SELF_REFERENCE",

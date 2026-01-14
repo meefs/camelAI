@@ -9,21 +9,25 @@
  * All stored in existing KV namespaces with prefixes:
  * - Auth state: wauth_state:{uuid} in API_TOKENS KV (60s TTL)
  * - One-time token: wauth_token:{token} in API_TOKENS KV (60s TTL)
+ * - Screenshot token: screenshot_token:{token} in API_TOKENS KV (5m TTL)
  * - Dispatcher session: worker_session:{uuid} in SESSIONS KV (30d TTL)
  */
 
 // Key prefixes
 const AUTH_STATE_PREFIX = 'wauth_state:';
 const AUTH_TOKEN_PREFIX = 'wauth_token:';
+const SCREENSHOT_TOKEN_PREFIX = 'screenshot_token:';
 const DISPATCHER_SESSION_PREFIX = 'worker_session:';
 
 // TTLs (KV requires minimum 60 seconds)
 const AUTH_STATE_TTL_SECONDS = 60;
 const AUTH_TOKEN_TTL_SECONDS = 60;
+const SCREENSHOT_TOKEN_TTL_SECONDS = 60 * 5;
 const DISPATCHER_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
 // Token prefix for one-time tokens
 const TOKEN_PREFIX = 'wtok_';
+const SCREENSHOT_TOKEN_VALUE_PREFIX = 'stkn_';
 
 /**
  * Auth state stored before redirecting to main app for authentication.
@@ -46,6 +50,14 @@ export interface WorkerAuthToken {
   state: string;
   script_name: string;
   created_at: number;
+}
+
+export interface ScreenshotToken {
+  script_name: string;
+  org_id: string;
+  purpose: 'screenshot';
+  created_at: number;
+  expires_at: number;
 }
 
 /**
@@ -170,6 +182,62 @@ export async function validateAndConsumeAuthToken(
   // Additional timestamp validation
   const age = Date.now() - data.created_at;
   if (age > AUTH_TOKEN_TTL_SECONDS * 1000) {
+    return null;
+  }
+
+  return data;
+}
+
+// ============================================================================
+// Screenshot Token Functions (stored in API_TOKENS KV)
+// ============================================================================
+
+/**
+ * Create a one-time screenshot token for private app previews.
+ */
+export async function createScreenshotToken(
+  kv: KVNamespace,
+  data: Pick<ScreenshotToken, 'script_name' | 'org_id'>
+): Promise<string> {
+  const token = generateSecureToken(SCREENSHOT_TOKEN_VALUE_PREFIX);
+  const now = Date.now();
+  const tokenData: ScreenshotToken = {
+    script_name: data.script_name,
+    org_id: data.org_id,
+    purpose: 'screenshot',
+    created_at: now,
+    expires_at: now + SCREENSHOT_TOKEN_TTL_SECONDS * 1000,
+  };
+  await kv.put(
+    `${SCREENSHOT_TOKEN_PREFIX}${token}`,
+    JSON.stringify(tokenData),
+    { expirationTtl: SCREENSHOT_TOKEN_TTL_SECONDS }
+  );
+  return token;
+}
+
+/**
+ * Validate and consume a screenshot token (single-use).
+ */
+export async function validateAndConsumeScreenshotToken(
+  kv: KVNamespace,
+  token: string
+): Promise<ScreenshotToken | null> {
+  if (!token.startsWith(SCREENSHOT_TOKEN_VALUE_PREFIX)) {
+    return null;
+  }
+
+  const key = `${SCREENSHOT_TOKEN_PREFIX}${token}`;
+  const data = await kv.get<ScreenshotToken>(key, 'json');
+  if (!data) return null;
+
+  await kv.delete(key);
+
+  if (Date.now() > data.expires_at) {
+    return null;
+  }
+
+  if (data.purpose !== 'screenshot') {
     return null;
   }
 

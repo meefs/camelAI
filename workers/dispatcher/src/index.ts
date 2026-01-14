@@ -28,6 +28,7 @@ import {
   getDispatcherSession,
   createDispatcherSession,
   validateAndConsumeAuthToken,
+  validateAndConsumeScreenshotToken,
   createAuthState,
   DISPATCHER_SESSION_COOKIE,
   type DispatcherSession,
@@ -210,6 +211,29 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
   if (env.SKIP_AUTH === 'true') {
     console.log(`[dispatcher] SKIP_AUTH enabled, dispatching directly to: ${scriptName}`);
     return dispatchToWorker(request, env, scriptName);
+  }
+
+  const screenshotHeader = request.headers.get('x-chiridion-screenshot-token')?.trim();
+  const authHeader = request.headers.get('Authorization') ?? '';
+  const bearerMatch = authHeader.match(/^Bearer\s+(.+)\s*$/i);
+  const bearerToken = bearerMatch?.[1]?.trim();
+  const screenshotToken = screenshotHeader || bearerToken || null;
+
+  if (screenshotToken?.startsWith('stkn_')) {
+    const tokenData = await validateAndConsumeScreenshotToken(env.API_TOKENS, screenshotToken);
+    if (!tokenData || tokenData.script_name !== scriptName) {
+      return new Response('Invalid screenshot token', { status: 401 });
+    }
+
+    const forwardHeaders = new Headers(request.headers);
+    forwardHeaders.delete('x-chiridion-screenshot-token');
+    if (screenshotToken === bearerToken) {
+      forwardHeaders.delete('Authorization');
+    }
+
+    return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, scriptName);
+  } else if (screenshotHeader) {
+    return new Response('Invalid screenshot token', { status: 401 });
   }
 
   // Get worker access info via RPC

@@ -13,6 +13,10 @@ function toSafeWorkerScript(script: authDO.WorkerScript): WorkerScript {
     created_at: script.created_at,
     updated_at: script.updated_at,
     is_public: script.is_public,
+    preview_key: script.preview_key,
+    preview_updated_at: script.preview_updated_at,
+    preview_status: script.preview_status,
+    preview_error: script.preview_error,
   };
 }
 

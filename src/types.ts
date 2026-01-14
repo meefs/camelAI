@@ -261,6 +261,7 @@ export interface AdminAppSummary {
   created_at: number;
   updated_at: number;
   is_public: boolean;
+  preview_status: AppPreviewStatus | null;
 }
 
 export type AdminAppDetail = AdminAppSummary;
@@ -339,6 +340,8 @@ export interface CreateApiTokenInput {
 }
 
 // Worker/App types
+export type AppPreviewStatus = 'pending' | 'ready' | 'failed';
+
 export interface WorkerScript {
   script_name: string;
   workspace_id: string;
@@ -346,6 +349,10 @@ export interface WorkerScript {
   created_at: number;
   updated_at: number;
   is_public: boolean;
+  preview_key: string | null;
+  preview_updated_at: number | null;
+  preview_status: AppPreviewStatus | null;
+  preview_error: string | null;
 }
 
 export interface AppCreator {

@@ -78,6 +78,7 @@ export function AppCard({
 }: AppCardProps) {
   const [copied, setCopied] = useState(false);
   const [copyMessage, setCopyMessage] = useState('');
+  const [previewFailed, setPreviewFailed] = useState(false);
   const appUrl = getAppUrl(app.script_name, hostname);
   const displayUrl = appUrl.replace(/^https?:\/\//, '');
   const creator = creatorOverride ?? app.creator;
@@ -92,6 +93,11 @@ export function AppCard({
     : undefined;
   // FIXME: Derive from source_path once deployment metadata is available.
   const sourceLabel = 'index.html';
+  const previewVersion = app.preview_updated_at ?? app.updated_at;
+  const previewUrl = app.preview_status === 'ready' && app.preview_key
+    ? `/api/apps/${encodeURIComponent(app.script_name)}/preview?v=${previewVersion}`
+    : null;
+  const showPreview = Boolean(previewUrl) && !previewFailed;
 
   useEffect(() => {
     if (!copyMessage) return;
@@ -101,6 +107,10 @@ export function AppCard({
     }, 2000);
     return () => window.clearTimeout(timer);
   }, [copyMessage]);
+
+  useEffect(() => {
+    setPreviewFailed(false);
+  }, [previewUrl]);
 
   const handleCopy = async () => {
     try {
@@ -114,9 +124,21 @@ export function AppCard({
   };
 
   return (
-    <Card className="p-0">
-      <div className="aspect-video w-full bg-muted/80 flex items-center justify-center">
-        <Globe className="size-8 text-muted-foreground/50" />
+    <Card className="p-0 overflow-hidden">
+      <div className="relative aspect-video w-full">
+        {showPreview ? (
+          <img
+            src={previewUrl ?? undefined}
+            alt={`${app.script_name} preview`}
+            className="h-full w-full object-cover"
+            loading="lazy"
+            onError={() => setPreviewFailed(true)}
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-muted/80 via-muted/40 to-muted/80">
+            <Globe className="size-8 text-muted-foreground/60" />
+          </div>
+        )}
       </div>
       <CardHeader className="space-y-3 pb-3">
         <div className="flex items-start justify-between gap-3">

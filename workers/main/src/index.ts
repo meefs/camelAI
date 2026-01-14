@@ -6,6 +6,7 @@ import { UserDO, OrgDO, type AuthEnv } from "./auth.js";
 import { WorkspaceContainer, handleWebSocketUpgrade, type WorkspaceContainerEnv } from './workspace-container.js';
 import { WorkspaceDO, type WorkspaceInfo } from './workspace.js';
 import { getSession as getSessionKV } from './session-kv.js';
+import { createScreenshotToken } from './worker-auth.js';
 export { DoRpcService } from './rpc-service.js';
 
 // Export WorkspaceContainer as ThreadSandbox to match wrangler.jsonc class_name
@@ -23,6 +24,16 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
   return null;
 }
 
+interface AppScreenshotJob {
+  script_name: string;
+  org_id: string;
+  workspace_id: string;
+  deploy_ts: number;
+  env_prefix: string;
+  is_public: boolean;
+  screenshot_token?: string;
+}
+
 interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv {
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
@@ -33,6 +44,7 @@ interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv {
   CF_DISPATCH_NAMESPACE?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
+  APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
 }
 
 const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
@@ -62,6 +74,33 @@ async function mintPerThreadDeployToken(
   await kv.put(`platform_script_token:${token}`, tokenData, { expirationTtl: TOKEN_TTL_SECONDS });
 
   return token;
+}
+
+function getEnvPrefix(hostname: string): string {
+  if (hostname.endsWith('.chiridion.ai') || hostname === 'chiridion.ai') {
+    const parts = hostname.split('.');
+    if (parts.length <= 2 || parts[0] === 'www') {
+      return '';
+    }
+    return parts[0] ?? '';
+  }
+
+  if (hostname === 'localhost' || hostname.startsWith('127.0.0.1')) {
+    return 'local';
+  }
+
+  return '';
+}
+
+function resolveEnvPrefix(baseUrl: string | undefined, hostname: string): string {
+  if (baseUrl) {
+    try {
+      return getEnvPrefix(new URL(baseUrl).hostname);
+    } catch {
+      return getEnvPrefix(hostname);
+    }
+  }
+  return getEnvPrefix(hostname);
 }
 
 function json(data: unknown, init?: ResponseInit): Response {
@@ -136,7 +175,7 @@ async function registerScriptOwnership(
   scriptName: string,
   orgId: string,
   workspaceId: string
-): Promise<void> {
+) {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   // Use "system:deploy" as actor for automated deploys
   // registerWorkerScript preserves existing is_public on redeploy, or defaults to true for new scripts
@@ -146,6 +185,99 @@ async function registerScriptOwnership(
     `${SCRIPT_ORG_PREFIX}${scriptName}`,
     JSON.stringify({ org_id: orgId, is_public: script.is_public })
   );
+  return script;
+}
+
+async function handleDeploySideEffects(
+  env: Env,
+  info: {
+    scriptName: string;
+    orgId: string;
+    workspaceId: string;
+    hostname: string;
+  }
+): Promise<void> {
+  const { scriptName, orgId, workspaceId, hostname } = info;
+  const script = await registerScriptOwnership(env, scriptName, orgId, workspaceId);
+  console.log('[cf-api-proxy] registered script ownership', {
+    scriptName,
+    orgId,
+    workspaceId,
+  });
+
+  if (!env.APP_SCREENSHOT_QUEUE) {
+    return;
+  }
+
+  const envPrefix = resolveEnvPrefix(env.WORKER_BASE_URL, hostname);
+  if (envPrefix === 'local') {
+    console.log('[cf-api-proxy] skipping screenshot for local env', {
+      scriptName,
+      orgId,
+    });
+    return;
+  }
+
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  const previewResult = await orgStub.updateWorkerScriptPreview(scriptName, {
+    status: 'pending',
+    preview_key: null,
+    preview_error: null,
+    deploy_ts: script.updated_at,
+  });
+
+  if (previewResult.stale) {
+    console.log('[cf-api-proxy] skipping stale screenshot request', {
+      scriptName,
+      orgId,
+      deployTs: script.updated_at,
+      updatedAt: previewResult.script?.updated_at ?? null,
+    });
+    return;
+  }
+
+  const screenshotToken = script.is_public
+    ? undefined
+    : await createScreenshotToken(env.API_TOKENS, {
+        script_name: scriptName,
+        org_id: orgId,
+      });
+
+  const job: AppScreenshotJob = {
+    script_name: scriptName,
+    org_id: orgId,
+    workspace_id: workspaceId,
+    deploy_ts: script.updated_at,
+    env_prefix: envPrefix,
+    is_public: script.is_public,
+    ...(screenshotToken ? { screenshot_token: screenshotToken } : {}),
+  };
+
+  try {
+    await env.APP_SCREENSHOT_QUEUE.send(job, {
+      contentType: 'json',
+      messageId: `${scriptName}:${script.updated_at}`,
+    });
+    console.log('[cf-api-proxy] queued app screenshot', {
+      scriptName,
+      orgId,
+      workspaceId,
+      deployTs: script.updated_at,
+    });
+  } catch (err) {
+    console.error('[cf-api-proxy] failed to enqueue app screenshot', {
+      scriptName,
+      orgId,
+      workspaceId,
+      error: String(err),
+    });
+    await orgStub.updateWorkerScriptPreview(scriptName, {
+      status: 'failed',
+      preview_key: null,
+      preview_error: String(err),
+      deploy_ts: script.updated_at,
+    });
+  }
 }
 
 function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
@@ -658,24 +790,21 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
       const dispatchNs = decodeURIComponent(scriptMatch[2]!);
       const scriptName = decodeURIComponent(scriptMatch[3]!);
 
-      // Register script ownership (or update last_deployed timestamp)
+      // Register script ownership and enqueue screenshots
       ctx.waitUntil(
-        registerScriptOwnership(env, scriptName, orgId, workspaceId)
-          .then(() => {
-            console.log('[cf-api-proxy] registered script ownership', {
-              scriptName,
-              orgId,
-              workspaceId,
-            });
-          })
-          .catch(err => {
-            console.error('[cf-api-proxy] failed to register script ownership', {
-              scriptName,
-              orgId,
-              workspaceId,
-              error: String(err),
-            });
-          })
+        handleDeploySideEffects(env, {
+          scriptName,
+          orgId,
+          workspaceId,
+          hostname: url.hostname,
+        }).catch(err => {
+          console.error('[cf-api-proxy] failed to process deploy side effects', {
+            scriptName,
+            orgId,
+            workspaceId,
+            error: String(err),
+          });
+        })
       );
 
       // Sync integration secrets to deployed worker

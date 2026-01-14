@@ -32,6 +32,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
      - `DoRpcService` - RPC entrypoint for cross-worker calls
    - `dispatcher/` - Routes `*.chiridion.app` to user workers (WfP)
    - `admin-cli/` - Local-only admin CLI for querying live environments
+   - `screenshot/` - Queue consumer that renders app previews via Browser Rendering and stores in R2
 
 3. **Sandbox** (`sandbox/`)
    - `ws-server.mjs` - WebSocket server running inside Cloudflare Container
@@ -58,6 +59,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/main/src/auth.ts` | UserDO, OrgDO implementations (threads stored in OrgDO) |
 | `workers/main/src/password.ts` | PBKDF2 password hashing |
 | `workers/main/src/index.ts` | Worker entry point |
+| `workers/screenshot/src/index.ts` | Queue consumer for app preview screenshots |
 | `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
@@ -66,6 +68,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/admin-cli/cli.mjs` | Admin CLI wrapper script |
 | `workers/admin-cli/src/index.ts` | Admin CLI worker (local-only) |
 | `src/instrumentation.ts` | Next.js SSR error logging to Analytics Engine |
+| `src/app/api/apps/[scriptName]/preview/route.ts` | Authenticated preview image endpoint for app cards |
 
 ## Configuration Files
 
@@ -73,6 +76,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 |------|---------|
 | `wrangler.jsonc` | Main production/deployment config |
 | `wrangler.build.jsonc` | OpenNext build config |
+| `workers/screenshot/wrangler.jsonc` | Screenshot worker deployment config |
 | `components.json` | shadcn/ui configuration |
 | `.mcp.json` | MCP server config (shadcn registry access) |
 
@@ -117,6 +121,13 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 3. `ChatThreadDO` handles real-time preview state for each thread
 4. History can query threads across accessible workspaces via `getThreadsAllWorkspacesPaginated` on `OrgDO`
 
+### App Previews
+1. Deploy succeeds in `workers/main/src/index.ts` and enqueues an `APP_SCREENSHOT_QUEUE` job.
+2. Screenshot worker renders `https://{script}.apps.{env}.chiridion.ai` via Browser Rendering.
+3. JPEG previews are stored in R2 under `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg`.
+4. OrgDO updates `worker_scripts.preview_*` fields for status + key.
+5. Apps page loads previews through `/api/apps/[scriptName]/preview` (org membership required).
+
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization
 - `stream_event` - Real-time streaming:
@@ -155,6 +166,11 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 | `/api/projects/[id]` | GET, PUT, DELETE | Get/update/delete project |
 | `/api/chat` | POST | Send message (REST fallback) |
 | `/ws/{org}` | WebSocket | Real-time chat (one connection per org) |
+
+### Apps (auth required)
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/apps/[scriptName]/preview` | GET | Stream app preview screenshot from R2 |
 
 ## Development
 

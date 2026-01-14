@@ -80,13 +80,14 @@ export default async function AdminAppsPage({ searchParams }: Props) {
                   <TableHead>Organization</TableHead>
                   <TableHead>Workspace</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Preview</TableHead>
                   <TableHead>Updated</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {apps.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                       No apps found
                     </TableCell>
                   </TableRow>
@@ -138,6 +139,21 @@ export default async function AdminAppsPage({ searchParams }: Props) {
                       <TableCell>
                         <Badge variant={app.is_public ? 'default' : 'secondary'}>
                           {app.is_public ? 'Public' : 'Private'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            app.preview_status === 'ready'
+                              ? 'default'
+                              : app.preview_status === 'failed'
+                                ? 'destructive'
+                                : app.preview_status === 'pending'
+                                  ? 'secondary'
+                                  : 'outline'
+                          }
+                        >
+                          {app.preview_status ?? 'Unknown'}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-muted-foreground">

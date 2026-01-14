@@ -23,6 +23,7 @@ import type {
   PaginatedResult,
   PaginationParams,
   Message,
+  AppPreviewStatus,
 } from '@/types';
 import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { withDoRpc } from '@/lib/do-rpc';
@@ -538,10 +539,21 @@ export interface WorkerScript {
   created_at: number;
   updated_at: number;
   is_public: boolean;
+  preview_key: string | null;
+  preview_updated_at: number | null;
+  preview_status: AppPreviewStatus | null;
+  preview_error: string | null;
 }
 
 export async function listWorkerScripts(orgId: string): Promise<WorkerScript[]> {
   return withRpc((rpc) => rpc.listWorkerScripts(orgId));
+}
+
+export async function getWorkerScript(
+  orgId: string,
+  scriptName: string
+): Promise<WorkerScript | null> {
+  return withRpc((rpc) => rpc.getWorkerScript(orgId, scriptName));
 }
 
 export async function deleteWorkerScript(
