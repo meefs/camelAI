@@ -111,16 +111,17 @@ export interface WorkerScriptPreviewUpdateResult {
 }
 
 interface WorkerScriptRow {
+  [key: string]: SqlStorageValue;
   script_name: string;
   workspace_id: string;
   created_by: string;
   created_at: number;
   updated_at: number;
   is_public: number;
-  preview_key?: string | null;
-  preview_updated_at?: number | null;
-  preview_status?: WorkerScriptPreviewStatus | null;
-  preview_error?: string | null;
+  preview_key: string | null;
+  preview_updated_at: number | null;
+  preview_status: WorkerScriptPreviewStatus | null;
+  preview_error: string | null;
 }
 
 export interface WorkerScriptAccess {
@@ -1079,7 +1080,8 @@ export class OrgDO extends DurableObject<AuthEnv> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
                                      preview_key, preview_updated_at, preview_status, preview_error
                               FROM worker_scripts WHERE script_name = ?`;
-    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public
+    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
                        FROM worker_scripts WHERE script_name = ?`;
     const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [scriptName]);
     if (rows.length === 0) return null;
@@ -1090,7 +1092,8 @@ export class OrgDO extends DurableObject<AuthEnv> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
                                      preview_key, preview_updated_at, preview_status, preview_error
                               FROM worker_scripts ORDER BY updated_at DESC`;
-    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public
+    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
                        FROM worker_scripts ORDER BY updated_at DESC`;
     const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, []);
     return rows.map((row) => this.toWorkerScript(row));
@@ -1117,7 +1120,8 @@ export class OrgDO extends DurableObject<AuthEnv> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
                                      preview_key, preview_updated_at, preview_status, preview_error
                               FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
-    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public
+    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
                        FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
     const items = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [...params, limit, offset]);
     return {
@@ -1130,7 +1134,8 @@ export class OrgDO extends DurableObject<AuthEnv> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
                                      preview_key, preview_updated_at, preview_status, preview_error
                               FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC`;
-    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public
+    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
                        FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC`;
     const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [workspaceId]);
     return rows.map((row) => this.toWorkerScript(row));
