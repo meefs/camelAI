@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowDown, RefreshCw, ExternalLink, X } from 'lucide-react';
 import type { Message, ContentBlock, ToolUseBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
+import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Tooltip,
   TooltipContent,
@@ -16,6 +17,12 @@ import { PromptInput } from '@/components/prompt-input';
 import { FloatingTodoList, type TodoItem, type TodoStatus } from '@/components/floating-todo';
 import type { Attachment } from '@/components/attachment-list';
 import { Button } from '@/components/ui/button';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from '@/components/ui/resizable';
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
 import { cn } from '@/lib/utils';
@@ -156,10 +163,38 @@ function getLastToolUseIdFromMessages(messages: Message[]): string | undefined {
   return undefined;
 }
 
+function MobileViewSwitcher({
+  value,
+  onChange,
+}: {
+  value: 'chat' | 'preview';
+  onChange: (value: 'chat' | 'preview') => void;
+}) {
+  return (
+    <div className="w-full bg-background px-4 py-3">
+      <Tabs
+        value={value}
+        onValueChange={(nextValue) => onChange(nextValue as 'chat' | 'preview')}
+        className="w-full"
+      >
+        <TabsList className="grid w-full grid-cols-2 overflow-hidden rounded-lg bg-muted/80 p-1 shadow-inner !h-11">
+          <TabsTrigger value="chat" className="rounded-md text-sm font-semibold data-[state=active]:shadow-sm !h-9">
+            Chat
+          </TabsTrigger>
+          <TabsTrigger value="preview" className="rounded-md text-sm font-semibold data-[state=active]:shadow-sm !h-9">
+            Preview
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+    </div>
+  );
+}
+
 
 export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false, hostname }: ChatProps) {
   const router = useRouter();
   const { user, currentWorkspace, loading: authLoading } = useAuth();
+  const isMobile = useIsMobile();
   // Anchor to last message for existing threads with messages (not new threads)
   const shouldAnchorToLastMessage = !isNewThread && initialMessages && initialMessages.length > 0;
 
@@ -245,7 +280,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [isDragOver, setIsDragOver] = useState(false);
   const [deployedApp, setDeployedApp] = useState<string | null>(initialDeployedApp ?? null);
   const [iframeKey, setIframeKey] = useState(0);
+  const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
+  const [appHostname, setAppHostname] = useState('');
   const previewVersionRef = useRef<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -274,6 +311,16 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     stickToBottomRef.current = true;
     setCurrentTodos([]);
   }, [threadId]);
+
+  useEffect(() => {
+    setMobileView('chat');
+  }, [threadId, deployedApp]);
+
+  useLayoutEffect(() => {
+    if (typeof window !== 'undefined') {
+      setAppHostname(window.location.hostname);
+    }
+  }, []);
 
   useEffect(() => {
     if (!streamingMessageId) return;
@@ -1390,252 +1437,216 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     }
   }
 
-  return (
-    <TooltipProvider>
-      <>
-        <PageHeader
-          breadcrumbs={
-            shouldShowChat
-              ? [
-                  { label: 'Chat' },
-                  { label: currentTitle?.trim() || 'Untitled Chat' },
-                ]
-              : [{ label: 'Home' }]
-          }
-        />
+  const chatBreadcrumbs = [
+    { label: 'Chat' },
+    { label: currentTitle?.trim() || 'Untitled Chat' },
+  ];
+  const previewDomains = useMemo(() => {
+    if (!deployedApp || !appHostname) {
+      return { iframeHost: '', vanityHost: '' };
+    }
+    let envPrefix = appHostname.endsWith('.chiridion.ai')
+      ? appHostname.replace('.chiridion.ai', '')
+      : appHostname.endsWith('.chiridion.app')
+        ? appHostname.replace('.chiridion.app', '')
+        : '';
+    if (envPrefix === 'www') {
+      envPrefix = '';
+    } else if (envPrefix.startsWith('www.')) {
+      envPrefix = envPrefix.slice(4);
+    }
+    const envSuffix = envPrefix ? `.${envPrefix}` : '';
+    return {
+      iframeHost: `${deployedApp}.apps${envSuffix}.chiridion.ai`,
+      vanityHost: `${deployedApp}${envSuffix}.chiridion.app`,
+    };
+  }, [deployedApp, appHostname]);
+  const previewHost = previewDomains.iframeHost || deployedApp || '';
+  const previewUrl = previewDomains.iframeHost ? `https://${previewDomains.iframeHost}` : '';
+  const previewVanityUrl = previewDomains.vanityHost ? `https://${previewDomains.vanityHost}` : '';
+  const showMobilePreview = Boolean(deployedApp) && mobileView === 'preview';
 
-        {shouldShowChat ? (
-          <div
-            className="flex-1 flex min-h-0 relative"
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-          >
-            {/* Drag overlay */}
-            {isDragOver && (
-              <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
-                <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
-                  <span className="text-lg font-medium text-primary">Drop files here to upload</span>
-                </div>
-              </div>
-            )}
-            {/* Chat Panel */}
-            <div className={cn("flex flex-col min-h-0", deployedApp ? "w-1/2" : "flex-1")}>
-            {/* Chat Body - Single Scroll Container */}
-            <div
-              ref={scrollContainerRef}
-              onScroll={handleScroll}
-              tabIndex={0}
-              role="region"
-              aria-label="Chat messages"
-              className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden"
-            >
-              {/* Centered message column */}
-              <div ref={messageColumnRef} className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col">
-                  {visibleMessages.map(msg => {
-                    const isLastUserMessage = msg.id === lastUserMessage?.id;
-                    const isLastAssistantMessage = !isAwaitingAssistant && lastMessage?.role === 'assistant' && msg.id === lastMessage?.id;
-                    const messageRef = isLastUserMessage
-                      ? lastUserMessageRef
-                      : (isLastAssistantMessage ? assistantMeasureRef : undefined);
-                    return (
-                      <div
-                        key={msg.id}
-                        ref={messageRef}
-                        data-message-id={msg.id}
-                        className={cn("group", msg.role === 'user' ? "mt-6 mb-1" : "")}
-                      >
-                        <MessageBubble
-                          message={msg}
-                          onCopy={copyMessage}
-                          copiedId={copiedMessageId}
-                          showStreamingIndicator={msg.id === lastStreamingMessageId}
-                          skillSheets={skillSheetsByToolId}
-                        />
-                      </div>
-                    );
-                  })}
-
-                  {/* Error display */}
-                  {error && (
-                    <div className="bg-destructive/10 border border-destructive/20 px-4 py-3 rounded-xl">
-                      <div className="flex items-start gap-3">
-                        <svg className="w-5 h-5 text-destructive shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                        </svg>
-                        <div className="flex-1">
-                          <p className="text-sm font-medium text-destructive mb-1">Something went wrong</p>
-                          <p className="text-sm text-muted-foreground">{error}</p>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          className="shrink-0 text-muted-foreground hover:text-foreground"
-                          onClick={() => setError(null)}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Loading indicator when waiting for assistant response */}
-                  {loading && !isStreaming && !hasStreamingMessage && (
-                    <LoadingDots />
-                  )}
-                  {shouldRenderSpacer ? (
-                    <div className="flex flex-col">
-                      <div ref={assistantSpacerRef} aria-hidden="true" className="pointer-events-none w-full shrink-0" />
-                      <div ref={messagesEndRef} />
-                    </div>
-                  ) : (
-                    <div ref={messagesEndRef} />
-                  )}
-                </div>
-            </div>
-
-            {/* Sticky Composer */}
-            <div className="sticky bottom-0 z-20 shrink-0">
-              {/* Scroll to bottom button */}
-              <div className="relative">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className={cn(
-                    "absolute -top-12 left-1/2 -translate-x-1/2 rounded-full shadow-md transition-all duration-200",
-                    "bg-background/80 backdrop-blur-sm border-border/50",
-                    showScrollButton ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
-                  )}
-                  onClick={() => scrollToBottom('smooth')}
+  const previewPanelBody = deployedApp ? (
+    <>
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 bg-green-500 rounded-full" />
+          <span className="text-sm font-medium">{previewHost}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setIframeKey(prev => prev + 1)}
+              >
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Reload</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                asChild
+              >
+                <a
+                  href={previewVanityUrl || 'about:blank'}
+                  target="_blank"
+                  rel="noopener noreferrer"
                 >
-                  <ArrowDown className="h-4 w-4" />
+                  <ExternalLink className="h-4 w-4" />
+                </a>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Open in new tab</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setDeployedApp(null)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Close preview</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+      <div className="flex-1 min-h-0">
+        <iframe
+          key={iframeKey}
+          src={previewUrl || 'about:blank'}
+          className="w-full h-full bg-white"
+          title="Deployed App Preview"
+        />
+      </div>
+    </>
+  ) : null;
+
+  const chatPanelContent = (
+    <>
+      <PageHeader
+        breadcrumbs={chatBreadcrumbs}
+      />
+      {/* Chat Body - Single Scroll Container */}
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        tabIndex={0}
+        role="region"
+        aria-label="Chat messages"
+        className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden"
+      >
+        {/* Centered message column */}
+        <div ref={messageColumnRef} className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col">
+          {visibleMessages.map(msg => {
+            const isLastUserMessage = msg.id === lastUserMessage?.id;
+            const isLastAssistantMessage = !isAwaitingAssistant && lastMessage?.role === 'assistant' && msg.id === lastMessage?.id;
+            const messageRef = isLastUserMessage
+              ? lastUserMessageRef
+              : (isLastAssistantMessage ? assistantMeasureRef : undefined);
+            return (
+              <div
+                key={msg.id}
+                ref={messageRef}
+                data-message-id={msg.id}
+                className={cn("group", msg.role === 'user' ? "mt-6 mb-1" : "")}
+              >
+                <MessageBubble
+                  message={msg}
+                  onCopy={copyMessage}
+                  copiedId={copiedMessageId}
+                  showStreamingIndicator={msg.id === lastStreamingMessageId}
+                  skillSheets={skillSheetsByToolId}
+                />
+              </div>
+            );
+          })}
+
+          {/* Error display */}
+          {error && (
+            <div className="bg-destructive/10 border border-destructive/20 px-4 py-3 rounded-xl">
+              <div className="flex items-start gap-3">
+                <svg className="w-5 h-5 text-destructive shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-destructive mb-1">Something went wrong</p>
+                  <p className="text-sm text-muted-foreground">{error}</p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                  onClick={() => setError(null)}
+                >
+                  <X className="h-4 w-4" />
                 </Button>
               </div>
-              {/* Gradient fade above composer */}
-              <div
-                className="absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent pointer-events-none"
-                aria-hidden="true"
-              />
-              {/* Composer container */}
-              <div className="bg-background pt-2 pb-4 px-4">
-                <div className="max-w-3xl mx-auto w-full">
-                  {currentTodos.length > 0 && (
-                    <FloatingTodoList
-                      todos={currentTodos}
-                      isStreaming={isStreaming}
-                      className="mb-3"
-                    />
-                  )}
-                  <PromptInput
-                    value={input}
-                    onChange={setInput}
-                    onSubmit={sendMessage}
-                    onStop={stopGeneration}
-                    placeholder="Type a message..."
-                    isAssistantRunning={loading || isStreaming}
-                    autoFocus
-                    attachments={attachments}
-                    onFilesSelected={handleFilesSelected}
-                    onAttachmentRemove={handleAttachmentRemove}
-                  />
-                </div>
-              </div>
             </div>
-            </div>
+          )}
 
-            {/* Deployed App Preview */}
-            {deployedApp && (
-              <div className="w-1/2 border-l border-border flex flex-col bg-background">
-                <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-green-500 rounded-full" />
-                    <span className="text-sm font-medium">{deployedApp}.{getVanityDomain(hostname)}</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => setIframeKey(prev => prev + 1)}
-                        >
-                          <RefreshCw className="h-4 w-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>Reload</TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          asChild
-                        >
-                          <a
-                            href={getAppUrl(deployedApp, hostname)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>Open in new tab</TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => setDeployedApp(null)}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>Close preview</TooltipContent>
-                    </Tooltip>
-                  </div>
-                </div>
-                <div className="flex-1">
-                  <iframe
-                    key={iframeKey}
-                    src={getAppIframeUrl(deployedApp, hostname)}
-                    className="w-full h-full bg-white"
-                    title="Deployed App Preview"
-                  />
-                </div>
-              </div>
+          {/* Loading indicator when waiting for assistant response */}
+          {loading && !isStreaming && !hasStreamingMessage && (
+            <LoadingDots />
+          )}
+          {shouldRenderSpacer ? (
+            <div className="flex flex-col">
+              <div ref={assistantSpacerRef} aria-hidden="true" className="pointer-events-none w-full shrink-0" />
+              <div ref={messagesEndRef} />
+            </div>
+          ) : (
+            <div ref={messagesEndRef} />
+          )}
+        </div>
+      </div>
+
+      {/* Sticky Composer */}
+      <div className="sticky bottom-0 z-20 shrink-0">
+        {/* Scroll to bottom button */}
+        <div className="relative">
+          <Button
+            variant="outline"
+            size="icon"
+            className={cn(
+              "absolute -top-12 left-1/2 -translate-x-1/2 rounded-full shadow-md transition-all duration-200",
+              "bg-background/80 backdrop-blur-sm border-border/50",
+              showScrollButton ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
             )}
-          </div>
-        ) : (
-          /* Welcome Screen */
-          <div
-            className="flex-1 flex flex-col items-center justify-center px-4 relative"
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
+            onClick={() => scrollToBottom('smooth')}
           >
-            {/* Drag overlay */}
-            {isDragOver && (
-              <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
-                <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
-                  <span className="text-lg font-medium text-primary">Drop files here to upload</span>
-                </div>
-              </div>
-            )}
-            <div className="w-full max-w-3xl space-y-8">
-              <div className="text-center">
-                <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
-                <p className="text-muted-foreground">What would you like to explore today?</p>
-              </div>
-
+            <ArrowDown className="h-4 w-4" />
+          </Button>
+        </div>
+        {/* Gradient fade above composer */}
+        <div
+          className="absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent pointer-events-none"
+          aria-hidden="true"
+        />
+        {/* Composer container */}
+        <div className="bg-background">
+          <div className="pt-2 pb-4 px-4">
+            <div className="max-w-3xl mx-auto w-full">
+              {currentTodos.length > 0 && (
+                <FloatingTodoList
+                  todos={currentTodos}
+                  isStreaming={isStreaming}
+                  className="mb-3"
+                />
+              )}
               <PromptInput
-                value={welcomeInput}
-                onChange={setWelcomeInput}
-                onSubmit={startNewChat}
-                placeholder="Ask anything..."
-                isLoading={isCreatingThread}
-                minHeight="80px"
+                value={input}
+                onChange={setInput}
+                onSubmit={sendMessage}
+                onStop={stopGeneration}
+                placeholder="Type a message..."
+                isAssistantRunning={loading || isStreaming}
                 autoFocus
                 attachments={attachments}
                 onFilesSelected={handleFilesSelected}
@@ -1643,6 +1654,126 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
               />
             </div>
           </div>
+        </div>
+      </div>
+    </>
+  );
+
+  return (
+    <TooltipProvider>
+      <>
+        {shouldShowChat ? (
+          <div
+            className="flex-1 min-h-0 relative flex flex-col"
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {/* Drag overlay */}
+            {isDragOver && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
+                <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
+                  <span className="text-lg font-medium text-primary">Drop files here to upload</span>
+                </div>
+              </div>
+            )}
+            {isMobile ? (
+              <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+                {deployedApp ? (
+                  <>
+                    <div className="relative flex-1 min-h-0 overflow-hidden">
+                      <div
+                        className={cn(
+                          "flex h-full w-[200%] will-change-transform motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-out",
+                          showMobilePreview ? "-translate-x-1/2" : "translate-x-0"
+                        )}
+                      >
+                        <div className="flex w-1/2 shrink-0 flex-col min-h-0">
+                          {chatPanelContent}
+                        </div>
+                        <div className="flex w-1/2 shrink-0 flex-col min-h-0 bg-background">
+                          {previewPanelBody}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 border-t border-border bg-background">
+                      <MobileViewSwitcher value={mobileView} onChange={setMobileView} />
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-1 min-h-0 flex-col">
+                    {chatPanelContent}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <ResizablePanelGroup
+                direction="horizontal"
+                className="flex-1 min-h-0"
+              >
+                <ResizablePanel
+                  defaultSize={deployedApp ? "50%" : "100%"}
+                  minSize="30%"
+                  className="flex flex-col min-h-0 min-w-0"
+                >
+                  {chatPanelContent}
+                </ResizablePanel>
+
+                {deployedApp && (
+                  <>
+                    <ResizableHandle withHandle />
+                    <ResizablePanel
+                      defaultSize="50%"
+                      minSize="25%"
+                      maxSize="70%"
+                      className="flex flex-col min-h-0 min-w-0 bg-background"
+                    >
+                      {previewPanelBody}
+                    </ResizablePanel>
+                  </>
+                )}
+              </ResizablePanelGroup>
+            )}
+          </div>
+        ) : (
+          <>
+            <PageHeader breadcrumbs={[{ label: 'Home' }]} />
+            {/* Welcome Screen */}
+            <div
+              className="flex-1 flex flex-col items-center justify-center px-4 relative"
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              {/* Drag overlay */}
+              {isDragOver && (
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
+                  <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
+                    <span className="text-lg font-medium text-primary">Drop files here to upload</span>
+                  </div>
+                </div>
+              )}
+              <div className="w-full max-w-3xl space-y-8">
+                <div className="text-center">
+                  <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
+                  <p className="text-muted-foreground">What would you like to explore today?</p>
+                </div>
+
+                <PromptInput
+                  value={welcomeInput}
+                  onChange={setWelcomeInput}
+                  onSubmit={startNewChat}
+                  placeholder="Ask anything..."
+                  isLoading={isCreatingThread}
+                  minHeight="80px"
+                  autoFocus
+                  attachments={attachments}
+                  onFilesSelected={handleFilesSelected}
+                  onAttachmentRemove={handleAttachmentRemove}
+                />
+              </div>
+            </div>
+          </>
         )}
       </>
     </TooltipProvider>
