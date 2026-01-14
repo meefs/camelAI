@@ -10,6 +10,7 @@
  * - Auth state: wauth_state:{uuid} in API_TOKENS KV (60s TTL)
  * - One-time token: wauth_token:{token} in API_TOKENS KV (60s TTL)
  * - Screenshot token: screenshot_token:{token} in API_TOKENS KV (5m TTL)
+ * - Screenshot session: screenshot_session:{uuid} in SESSIONS KV (5m TTL)
  * - Dispatcher session: worker_session:{uuid} in SESSIONS KV (30d TTL)
  */
 
@@ -17,12 +18,14 @@
 const AUTH_STATE_PREFIX = 'wauth_state:';
 const AUTH_TOKEN_PREFIX = 'wauth_token:';
 const SCREENSHOT_TOKEN_PREFIX = 'screenshot_token:';
+const SCREENSHOT_SESSION_PREFIX = 'screenshot_session:';
 const DISPATCHER_SESSION_PREFIX = 'worker_session:';
 
 // TTLs (KV requires minimum 60 seconds)
 const AUTH_STATE_TTL_SECONDS = 60;
 const AUTH_TOKEN_TTL_SECONDS = 60;
 const SCREENSHOT_TOKEN_TTL_SECONDS = 60 * 5;
+export const SCREENSHOT_SESSION_TTL_SECONDS = 60 * 5;
 const DISPATCHER_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
 // Token prefix for one-time tokens
@@ -56,6 +59,13 @@ export interface ScreenshotToken {
   script_name: string;
   org_id: string;
   purpose: 'screenshot';
+  created_at: number;
+  expires_at: number;
+}
+
+export interface ScreenshotSession {
+  script_name: string;
+  org_id: string;
   created_at: number;
   expires_at: number;
 }
@@ -193,7 +203,7 @@ export async function validateAndConsumeAuthToken(
 // ============================================================================
 
 /**
- * Create a one-time screenshot token for private app previews.
+ * Create a screenshot token for private app previews.
  */
 export async function createScreenshotToken(
   kv: KVNamespace,
@@ -242,6 +252,51 @@ export async function validateAndConsumeScreenshotToken(
   }
 
   return data;
+}
+
+// ============================================================================
+// Screenshot Session Functions (stored in SESSIONS KV)
+// ============================================================================
+
+/**
+ * Create a short-lived screenshot session for asset loading.
+ */
+export async function createScreenshotSession(
+  kv: KVNamespace,
+  data: Pick<ScreenshotSession, 'script_name' | 'org_id'>
+): Promise<{ sessionId: string; session: ScreenshotSession }> {
+  const sessionId = crypto.randomUUID();
+  const now = Date.now();
+  const session: ScreenshotSession = {
+    script_name: data.script_name,
+    org_id: data.org_id,
+    created_at: now,
+    expires_at: now + SCREENSHOT_SESSION_TTL_SECONDS * 1000,
+  };
+  await kv.put(
+    `${SCREENSHOT_SESSION_PREFIX}${sessionId}`,
+    JSON.stringify(session),
+    { expirationTtl: SCREENSHOT_SESSION_TTL_SECONDS }
+  );
+  return { sessionId, session };
+}
+
+/**
+ * Get a screenshot session by ID.
+ * Returns null if session doesn't exist or is expired.
+ */
+export async function getScreenshotSession(
+  kv: KVNamespace,
+  sessionId: string
+): Promise<ScreenshotSession | null> {
+  const key = `${SCREENSHOT_SESSION_PREFIX}${sessionId}`;
+  const session = await kv.get<ScreenshotSession>(key, 'json');
+  if (!session) return null;
+  if (Date.now() > session.expires_at) {
+    await kv.delete(key);
+    return null;
+  }
+  return session;
 }
 
 // ============================================================================
@@ -338,6 +393,9 @@ export function isValidReturnUrl(url: string, allowedDomainPattern: RegExp): boo
 
 // Default pattern for worker domains (*.chiridion.run)
 export const WORKER_DOMAIN_PATTERN = /^[a-zA-Z0-9-]+\.chiridion\.run$/;
+
+// Cookie name for screenshot sessions
+export const SCREENSHOT_SESSION_COOKIE = 'chiridion_screenshot_session';
 
 // Cookie name for dispatcher sessions
 export const DISPATCHER_SESSION_COOKIE = 'chiridion_run_session';

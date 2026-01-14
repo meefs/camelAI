@@ -29,6 +29,10 @@ import {
   createDispatcherSession,
   validateAndConsumeAuthToken,
   validateAndConsumeScreenshotToken,
+  createScreenshotSession,
+  getScreenshotSession,
+  SCREENSHOT_SESSION_COOKIE,
+  SCREENSHOT_SESSION_TTL_SECONDS,
   createAuthState,
   DISPATCHER_SESSION_COOKIE,
   type DispatcherSession,
@@ -49,6 +53,7 @@ interface Env {
 
 // Cookie settings for dispatcher session
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+const SCREENSHOT_SESSION_MAX_AGE = SCREENSHOT_SESSION_TTL_SECONDS;
 
 // Main app session cookie name (same-site requests will have this)
 const MAIN_APP_SESSION_COOKIE = 'chiridion_session';
@@ -94,6 +99,18 @@ function createSessionCookie(sessionId: string, hostname: string): string {
     `Path=/`,
     `Domain=${domain}`,
     `Max-Age=${SESSION_MAX_AGE}`,
+    `HttpOnly`,
+    `Secure`,
+    `SameSite=Lax`,
+  ].join('; ');
+}
+
+// Create Set-Cookie header for screenshot sessions (host-only)
+function createScreenshotSessionCookie(sessionId: string): string {
+  return [
+    `${SCREENSHOT_SESSION_COOKIE}=${sessionId}`,
+    `Path=/`,
+    `Max-Age=${SCREENSHOT_SESSION_MAX_AGE}`,
     `HttpOnly`,
     `Secure`,
     `SameSite=Lax`,
@@ -213,11 +230,29 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
     return dispatchToWorker(request, env, scriptName);
   }
 
+  const cookieHeader = request.headers.get('Cookie');
   const screenshotHeader = request.headers.get('x-chiridion-screenshot-token')?.trim();
   const authHeader = request.headers.get('Authorization') ?? '';
   const bearerMatch = authHeader.match(/^Bearer\s+(.+)\s*$/i);
   const bearerToken = bearerMatch?.[1]?.trim();
   const screenshotToken = screenshotHeader || bearerToken || null;
+  const hasScreenshotBearer = Boolean(bearerToken && bearerToken.startsWith('stkn_'));
+
+  const screenshotSessionId = getCookieValue(cookieHeader, SCREENSHOT_SESSION_COOKIE);
+  if (screenshotSessionId) {
+    const session = await getScreenshotSession(env.SESSIONS, screenshotSessionId);
+    if (session && session.script_name === scriptName) {
+      if (screenshotHeader || hasScreenshotBearer) {
+        const forwardHeaders = new Headers(request.headers);
+        forwardHeaders.delete('x-chiridion-screenshot-token');
+        if (hasScreenshotBearer) {
+          forwardHeaders.delete('Authorization');
+        }
+        return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, scriptName);
+      }
+      return dispatchToWorker(request, env, scriptName);
+    }
+  }
 
   if (screenshotToken?.startsWith('stkn_')) {
     const tokenData = await validateAndConsumeScreenshotToken(env.API_TOKENS, screenshotToken);
@@ -225,13 +260,25 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
       return new Response('Invalid screenshot token', { status: 401 });
     }
 
+    const { sessionId } = await createScreenshotSession(env.SESSIONS, {
+      script_name: tokenData.script_name,
+      org_id: tokenData.org_id,
+    });
+
     const forwardHeaders = new Headers(request.headers);
     forwardHeaders.delete('x-chiridion-screenshot-token');
     if (screenshotToken === bearerToken) {
       forwardHeaders.delete('Authorization');
     }
 
-    return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, scriptName);
+    const response = await dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, scriptName);
+    const headers = new Headers(response.headers);
+    headers.append('Set-Cookie', createScreenshotSessionCookie(sessionId));
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   } else if (screenshotHeader) {
     return new Response('Invalid screenshot token', { status: 401 });
   }
@@ -260,7 +307,6 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
   }
 
   // Private worker - check session
-  const cookieHeader = request.headers.get('Cookie');
   const dispatcherSessionId = getCookieValue(cookieHeader, DISPATCHER_SESSION_COOKIE);
 
   if (dispatcherSessionId) {

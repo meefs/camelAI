@@ -22,7 +22,7 @@ interface Env {
 const VIEWPORT = {
   width: 1280,
   height: 720,
-  deviceScaleFactor: 2,
+  deviceScaleFactor: 1.5,
 };
 const SCREENSHOT_CLIP = {
   x: 0,

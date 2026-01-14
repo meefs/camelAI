@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AppCreator, WorkerScriptWithCreator } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
@@ -79,6 +80,8 @@ export function AppCard({
   const [copied, setCopied] = useState(false);
   const [copyMessage, setCopyMessage] = useState('');
   const [previewFailed, setPreviewFailed] = useState(false);
+  const [previewLoaded, setPreviewLoaded] = useState(false);
+  const previewRef = useRef<HTMLImageElement | null>(null);
   const appUrl = getAppUrl(app.script_name, hostname);
   const displayUrl = appUrl.replace(/^https?:\/\//, '');
   const creator = creatorOverride ?? app.creator;
@@ -98,6 +101,7 @@ export function AppCard({
     ? `/api/apps/${encodeURIComponent(app.script_name)}/preview?v=${previewVersion}`
     : null;
   const showPreview = Boolean(previewUrl) && !previewFailed;
+  const previewLoading = showPreview && !previewLoaded;
 
   useEffect(() => {
     if (!copyMessage) return;
@@ -110,7 +114,19 @@ export function AppCard({
 
   useEffect(() => {
     setPreviewFailed(false);
+    setPreviewLoaded(false);
   }, [previewUrl]);
+
+  useEffect(() => {
+    if (!showPreview || previewLoaded || previewFailed) return;
+    const img = previewRef.current;
+    if (!img || !img.complete) return;
+    if (img.naturalWidth > 0) {
+      setPreviewLoaded(true);
+    } else {
+      setPreviewFailed(true);
+    }
+  }, [previewFailed, previewLoaded, previewUrl, showPreview]);
 
   const handleCopy = async () => {
     try {
@@ -127,13 +143,26 @@ export function AppCard({
     <Card className="p-0 overflow-hidden">
       <div className="relative aspect-video w-full">
         {showPreview ? (
-          <img
-            src={previewUrl ?? undefined}
-            alt={`${app.script_name} preview`}
-            className="h-full w-full object-cover"
-            loading="lazy"
-            onError={() => setPreviewFailed(true)}
-          />
+          <>
+            <img
+              ref={previewRef}
+              src={previewUrl ?? undefined}
+              alt={`${app.script_name} preview`}
+              className={`h-full w-full object-cover transition-opacity duration-300 ${previewLoaded ? 'opacity-100' : 'opacity-0'}`}
+              loading="lazy"
+              decoding="async"
+              onLoad={() => setPreviewLoaded(true)}
+              onError={() => {
+                setPreviewFailed(true);
+                setPreviewLoaded(false);
+              }}
+            />
+            {previewLoading ? (
+              <div className="absolute inset-0" aria-hidden="true">
+                <Skeleton className="h-full w-full rounded-none" />
+              </div>
+            ) : null}
+          </>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-muted/80 via-muted/40 to-muted/80">
             <Globe className="size-8 text-muted-foreground/60" />

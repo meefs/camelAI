@@ -124,9 +124,10 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 ### App Previews
 1. Deploy succeeds in `workers/main/src/index.ts` and enqueues an `APP_SCREENSHOT_QUEUE` job (local dev captures inline with Browser Rendering against `LOCAL_APP_PREVIEW_URL`, defaulting to `https://hello-world-test.chiridion.app/`).
 2. Screenshot worker renders `https://{script}.apps.{env}.chiridion.ai` via Browser Rendering.
-3. JPEG previews are stored in R2 under `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg`.
-4. OrgDO updates `worker_scripts.preview_*` fields for status + key.
-5. Apps page loads previews through `/api/apps/[scriptName]/preview` (org membership required).
+3. For private apps, the dispatcher exchanges the single-use screenshot token for a short-lived screenshot session cookie to allow asset requests.
+4. JPEG previews are stored in R2 under `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg`.
+5. OrgDO updates `worker_scripts.preview_*` fields for status + key.
+6. Apps page loads previews through `/api/apps/[scriptName]/preview` (org membership required).
 
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization
