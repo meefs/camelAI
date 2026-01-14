@@ -62,6 +62,12 @@ const VIEWPORT = {
   height: 720,
   deviceScaleFactor: 2,
 };
+const SCREENSHOT_CLIP = {
+  x: 0,
+  y: 0,
+  width: VIEWPORT.width,
+  height: VIEWPORT.height,
+};
 const NAVIGATION_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 1500;
 const POST_LOAD_DELAY_MS = 600;
@@ -158,6 +164,28 @@ function truncateError(err: unknown, maxLength = 500): string {
   return `${message.slice(0, maxLength)}...`;
 }
 
+async function navigateWithFallback(page: Page, targetUrl: string, logContext: Record<string, unknown>) {
+  try {
+    const response = await page.goto(targetUrl, {
+      waitUntil: 'networkidle0',
+      timeout: NAVIGATION_TIMEOUT_MS,
+    });
+    return { response, waitUntil: 'networkidle0' as const };
+  } catch (err) {
+    console.warn('[cf-api-proxy] local navigation fallback', {
+      ...logContext,
+      error: truncateError(err),
+      from: 'networkidle0',
+      to: 'domcontentloaded',
+    });
+    const response = await page.goto(targetUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: NAVIGATION_TIMEOUT_MS,
+    });
+    return { response, waitUntil: 'domcontentloaded' as const };
+  }
+}
+
 async function waitForReadySignal(page: Page): Promise<void> {
   try {
     await page.waitForFunction(
@@ -199,17 +227,30 @@ async function captureLocalPreview(env: Env, job: AppScreenshotJob): Promise<voi
     browser = await puppeteer.launch(env.BROWSER);
     page = await browser.newPage();
     await page.setViewport(VIEWPORT);
-    await page.goto(targetUrl, {
-      waitUntil: 'networkidle0',
-      timeout: NAVIGATION_TIMEOUT_MS,
+    const { response, waitUntil } = await navigateWithFallback(page, targetUrl, {
+      scriptName: job.script_name,
+      orgId: job.org_id,
     });
+    console.log('[cf-api-proxy] local navigation complete', {
+      scriptName: job.script_name,
+      orgId: job.org_id,
+      status: response?.status() ?? null,
+      waitUntil,
+    });
+    if (response && !response.ok()) {
+      const statusText = typeof response.statusText === 'function' ? response.statusText() : '';
+      throw new Error(
+        `Navigation failed with status ${response.status()}${statusText ? ` ${statusText}` : ''} for ${targetUrl}`
+      );
+    }
     await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
     await waitForReadySignal(page);
     await page.waitForTimeout(POST_LOAD_DELAY_MS);
+    await page.evaluate(() => window.scrollTo(0, 0));
     const image = (await page.screenshot({
       type: 'jpeg',
       quality: 80,
-      fullPage: false,
+      clip: SCREENSHOT_CLIP,
     })) as Buffer;
 
     const { currentKey, versionedKey } = buildPreviewKeys(job);

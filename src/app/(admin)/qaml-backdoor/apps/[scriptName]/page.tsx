@@ -135,6 +135,29 @@ export default async function AdminAppDetailPage({ params }: Props) {
                     </dd>
                   </div>
                   <div>
+                    <dt className="text-sm font-medium text-muted-foreground">Preview</dt>
+                    <dd className="space-y-1">
+                      <Badge
+                        variant={
+                          app.preview_status === 'ready'
+                            ? 'default'
+                            : app.preview_status === 'failed'
+                              ? 'destructive'
+                              : app.preview_status === 'pending'
+                                ? 'secondary'
+                                : 'outline'
+                        }
+                      >
+                        {app.preview_status ?? 'Unknown'}
+                      </Badge>
+                      {app.preview_status === 'failed' && app.preview_error ? (
+                        <div className="text-xs text-muted-foreground font-mono break-words">
+                          {app.preview_error}
+                        </div>
+                      ) : null}
+                    </dd>
+                  </div>
+                  <div>
                     <dt className="text-sm font-medium text-muted-foreground">Created</dt>
                     <dd className="text-sm">{formatTimestamp(app.created_at)}</dd>
                   </div>

@@ -262,6 +262,7 @@ export interface AdminAppSummary {
   updated_at: number;
   is_public: boolean;
   preview_status: AppPreviewStatus | null;
+  preview_error: string | null;
 }
 
 export type AdminAppDetail = AdminAppSummary;

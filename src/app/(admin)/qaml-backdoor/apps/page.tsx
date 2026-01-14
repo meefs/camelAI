@@ -6,6 +6,7 @@ import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
 import { AdminSearch } from '@/components/admin/admin-search';
 import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   Table,
   TableBody,
@@ -142,19 +143,36 @@ export default async function AdminAppsPage({ searchParams }: Props) {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge
-                          variant={
-                            app.preview_status === 'ready'
-                              ? 'default'
-                              : app.preview_status === 'failed'
-                                ? 'destructive'
-                                : app.preview_status === 'pending'
-                                  ? 'secondary'
-                                  : 'outline'
-                          }
-                        >
-                          {app.preview_status ?? 'Unknown'}
-                        </Badge>
+                        <div className="space-y-1">
+                          <Badge
+                            variant={
+                              app.preview_status === 'ready'
+                                ? 'default'
+                                : app.preview_status === 'failed'
+                                  ? 'destructive'
+                                  : app.preview_status === 'pending'
+                                    ? 'secondary'
+                                    : 'outline'
+                            }
+                          >
+                            {app.preview_status ?? 'Unknown'}
+                          </Badge>
+                          {app.preview_status === 'failed' && app.preview_error ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span
+                                  className="block max-w-[240px] truncate text-xs text-muted-foreground font-mono"
+                                  tabIndex={0}
+                                >
+                                  {app.preview_error}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs break-words font-mono">
+                                {app.preview_error}
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {formatTimestamp(app.updated_at)}

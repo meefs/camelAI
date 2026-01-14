@@ -974,6 +974,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         updated_at: script.updated_at,
         is_public: script.is_public,
         preview_status: script.preview_status ?? null,
+        preview_error: script.preview_error ?? null,
       };
     };
 
@@ -1314,6 +1315,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         updated_at: entry.script.updated_at,
         is_public: entry.script.is_public,
         preview_status: entry.script.preview_status ?? null,
+        preview_error: entry.script.preview_error ?? null,
       };
     });
 

@@ -24,6 +24,12 @@ const VIEWPORT = {
   height: 720,
   deviceScaleFactor: 2,
 };
+const SCREENSHOT_CLIP = {
+  x: 0,
+  y: 0,
+  width: VIEWPORT.width,
+  height: VIEWPORT.height,
+};
 
 const PREVIEW_PREFIX = 'app-previews';
 const NAVIGATION_TIMEOUT_MS = 30_000;
@@ -52,6 +58,28 @@ function truncateError(err: unknown, maxLength = 500): string {
   const message = err instanceof Error ? err.message : String(err);
   if (message.length <= maxLength) return message;
   return `${message.slice(0, maxLength)}...`;
+}
+
+async function navigateWithFallback(page: Page, targetUrl: string, logContext: Record<string, unknown>) {
+  try {
+    const response = await page.goto(targetUrl, {
+      waitUntil: 'networkidle0',
+      timeout: NAVIGATION_TIMEOUT_MS,
+    });
+    return { response, waitUntil: 'networkidle0' as const };
+  } catch (err) {
+    console.warn('[app-screenshot] navigation fallback', {
+      ...logContext,
+      error: truncateError(err),
+      from: 'networkidle0',
+      to: 'domcontentloaded',
+    });
+    const response = await page.goto(targetUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: NAVIGATION_TIMEOUT_MS,
+    });
+    return { response, waitUntil: 'domcontentloaded' as const };
+  }
 }
 
 async function waitForReadySignal(page: Page): Promise<void> {
@@ -114,6 +142,29 @@ export default {
           continue;
         }
 
+        if (!env.BROWSER) {
+          const errorMessage = 'Missing BROWSER binding for screenshot worker. Ensure Browser Rendering is enabled and the env includes a browser binding.';
+          console.error('[app-screenshot] missing browser binding', {
+            scriptName: job.script_name,
+            orgId: job.org_id,
+          });
+          await env.MAIN_RPC.updateWorkerScriptPreview(job.org_id, job.script_name, {
+            status: 'failed',
+            preview_key: null,
+            preview_error: errorMessage,
+            deploy_ts: job.deploy_ts,
+          });
+          message.ack();
+          continue;
+        }
+
+        console.log('[app-screenshot] processing job', {
+          scriptName: job.script_name,
+          orgId: job.org_id,
+          envPrefix: job.env_prefix,
+          targetUrl,
+        });
+
         const browser = await puppeteer.launch(env.BROWSER);
         let page: Page | null = null;
         try {
@@ -124,17 +175,30 @@ export default {
               'x-chiridion-screenshot-token': job.screenshot_token,
             });
           }
-          await page.goto(targetUrl, {
-            waitUntil: 'networkidle0',
-            timeout: NAVIGATION_TIMEOUT_MS,
+          const { response, waitUntil } = await navigateWithFallback(page, targetUrl, {
+            scriptName: job.script_name,
+            orgId: job.org_id,
           });
+          console.log('[app-screenshot] navigation complete', {
+            scriptName: job.script_name,
+            orgId: job.org_id,
+            status: response?.status() ?? null,
+            waitUntil,
+          });
+          if (response && !response.ok()) {
+            const statusText = typeof response.statusText === 'function' ? response.statusText() : '';
+            throw new Error(
+              `Navigation failed with status ${response.status()}${statusText ? ` ${statusText}` : ''} for ${targetUrl}`
+            );
+          }
           await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
           await waitForReadySignal(page);
           await page.waitForTimeout(POST_LOAD_DELAY_MS);
+          await page.evaluate(() => window.scrollTo(0, 0));
           const image = (await page.screenshot({
             type: 'jpeg',
             quality: 80,
-            fullPage: false,
+            clip: SCREENSHOT_CLIP,
           })) as Buffer;
 
           const { currentKey, versionedKey } = buildPreviewKeys(job);
