@@ -106,6 +106,14 @@ export interface OrgThread {
   updated_at: number;
 }
 
+export interface ProxyUsageInput {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 /**
  * Migration Pattern for Durable Objects
  * ======================================
@@ -563,6 +571,26 @@ export class OrgDO extends DurableObject<AuthEnv> {
         )
       `);
       this.sql.exec('UPDATE _schema_version SET version = 6');
+    }
+
+    if (version < 7) {
+      // V7: Proxy usage rollups per user
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS proxy_usage (
+          user_id TEXT PRIMARY KEY,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          total_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+          requests INTEGER NOT NULL DEFAULT 0,
+          last_provider TEXT,
+          last_model TEXT,
+          last_token_id TEXT,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec('UPDATE _schema_version SET version = 7');
     }
   }
 
@@ -1461,5 +1489,64 @@ export class OrgDO extends DurableObject<AuthEnv> {
         resolvedLimit
       )
       .toArray() as unknown as OrgThread[];
+  }
+
+  /**
+   * Record proxy usage for a user (rollup per user within the org).
+   */
+  recordProxyUsage(
+    userId: string,
+    usage: ProxyUsageInput,
+    provider?: string | null,
+    model?: string | null,
+    tokenId?: string | null
+  ): void {
+    const now = Date.now();
+    const inputTokens = Math.max(0, Math.floor(usage.input_tokens ?? 0));
+    const outputTokens = Math.max(0, Math.floor(usage.output_tokens ?? 0));
+    const totalTokens = Math.max(0, Math.floor(usage.total_tokens ?? inputTokens + outputTokens));
+    const cacheCreationTokens = Math.max(0, Math.floor(usage.cache_creation_input_tokens ?? 0));
+    const cacheReadTokens = Math.max(0, Math.floor(usage.cache_read_input_tokens ?? 0));
+
+    this.sql.exec(
+      `
+      INSERT INTO proxy_usage (
+        user_id,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
+        requests,
+        last_provider,
+        last_model,
+        last_token_id,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        input_tokens = input_tokens + excluded.input_tokens,
+        output_tokens = output_tokens + excluded.output_tokens,
+        total_tokens = total_tokens + excluded.total_tokens,
+        cache_creation_input_tokens = cache_creation_input_tokens + excluded.cache_creation_input_tokens,
+        cache_read_input_tokens = cache_read_input_tokens + excluded.cache_read_input_tokens,
+        requests = requests + 1,
+        last_provider = excluded.last_provider,
+        last_model = excluded.last_model,
+        last_token_id = excluded.last_token_id,
+        updated_at = excluded.updated_at
+      `,
+      userId,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      cacheCreationTokens,
+      cacheReadTokens,
+      1,
+      provider ?? null,
+      model ?? null,
+      tokenId ?? null,
+      now
+    );
   }
 }

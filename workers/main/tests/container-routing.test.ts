@@ -8,9 +8,11 @@ import type { WorkspaceContainerEnv } from '../src/workspace-container';
 
 function buildEnvVarsForTest(workspaceId: string, orgId: string) {
   const fakeEnv = {
-    ANTHROPIC_API_KEY: 'test-key',
+    PROXY_BASE_URL: 'http://proxy.test.local',
     DO_RPC: {
       getWorkspaceIntegrationEnvVars: async () => ({}),
+      getOrg: async () => ({ created_by: 'user-1' }),
+      createOrgApiToken: async () => ({ tokenId: 'tok_test', tokenData: {} }),
       [Symbol.dispose]: () => {},
     },
   } as unknown as WorkspaceContainerEnv;

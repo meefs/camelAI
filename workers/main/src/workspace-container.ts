@@ -21,6 +21,7 @@ export interface WorkspaceContainerEnv {
   R2_API_TOKEN?: string;
   R2_PARENT_ACCESS_KEY_ID?: string;
   WORKER_BASE_URL?: string;
+  PROXY_BASE_URL?: string;
 }
 
 // Control plane response types
@@ -184,7 +185,6 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     this.orgId = orgId;
 
     const envVars: Record<string, string> = {
-      ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
       ORG_ID: orgId,
       WORKSPACE_ID: workspaceId,
     };
@@ -239,6 +239,31 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
 
       const containerToken = await createContainerToken(this.env.EMAIL_TO_USER, workspaceId);
       envVars.CLOUDFLARE_API_TOKEN = containerToken;
+    }
+
+    // LLM proxy config (mint per-org API key for sandbox container)
+    const proxyBaseUrl = this.env.PROXY_BASE_URL;
+    if (!proxyBaseUrl) {
+      throw new Error('PROXY_BASE_URL is required for sandbox LLM access');
+    }
+    try {
+      const rpc = this.env.DO_RPC as typeof this.env.DO_RPC & { [Symbol.dispose]?: () => void };
+      try {
+        const orgInfo = await rpc.getOrg(orgId);
+        const actorId = orgInfo?.created_by || 'system';
+        const { tokenId } = await rpc.createOrgApiToken(orgId, actorId, {
+          name: `sandbox-${workspaceId}`,
+          scopes: ['proxy'],
+        });
+        envVars.ANTHROPIC_BASE_URL = proxyBaseUrl;
+        envVars.ANTHROPIC_API_KEY = tokenId;
+        console.log('[WorkspaceContainer] Minted proxy API key for workspace', { workspaceId, orgId });
+      } finally {
+        rpc[Symbol.dispose]?.();
+      }
+    } catch (e) {
+      console.error('[WorkspaceContainer] Failed to mint proxy API key:', e);
+      throw e;
     }
 
     // Fetch integration credentials and pass as ENV vars

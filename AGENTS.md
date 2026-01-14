@@ -26,12 +26,13 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 2. **Workers** (`workers/`)
    - `main/` - Main Chiridion app worker
      - Cloudflare Workers with Durable Objects
-     - **Auth DOs:** `UserDO`, `OrgDO` (OrgDO stores threads per workspace)
+    - **Auth DOs:** `UserDO`, `OrgDO` (OrgDO stores threads per workspace + proxy usage rollups)
      - `ThreadSandbox` - Executes Claude SDK in containers
      - WebSocket routing at worker level (one container per org)
      - `DoRpcService` - RPC entrypoint for cross-worker calls
    - `dispatcher/` - Routes `*.chiridion.app` to user workers (WfP)
    - `admin-cli/` - Local-only admin CLI for querying live environments
+   - `proxy/` - Multi-provider LLM proxy worker (Anthropic/OpenAI-compatible/Bedrock/Azure Foundry) with token accounting
 
 3. **Sandbox** (`sandbox/`)
    - `ws-server.mjs` - WebSocket server running inside Cloudflare Container
@@ -65,6 +66,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/main/src/rpc-service.ts` | DoRpcService - RPC methods for cross-worker calls |
 | `workers/admin-cli/cli.mjs` | Admin CLI wrapper script |
 | `workers/admin-cli/src/index.ts` | Admin CLI worker (local-only) |
+| `workers/proxy/src/index.ts` | LLM proxy worker entry (multi-provider, streaming, token usage) |
+| `workers/proxy/wrangler.jsonc` | Proxy worker deployment config |
 | `src/instrumentation.ts` | Next.js SSR error logging to Analytics Engine |
 
 ## Configuration Files
@@ -156,6 +159,11 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 | `/api/chat` | POST | Send message (REST fallback) |
 | `/ws/{org}` | WebSocket | Real-time chat (one connection per org) |
 
+### Proxy Worker (separate service)
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/v1/messages` | POST | LLM proxy (Anthropic-style request/response, streaming supported) |
+
 ## Development
 
 ### Prerequisites
@@ -184,6 +192,36 @@ ANTHROPIC_API_KEY=your_key_here
 | `ANTHROPIC_API_KEY` | Claude API key for SDK |
 | `NEXTJS_ENV` | Environment (development/production) |
 | `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
+| `PROXY_BASE_URL` | Base URL for the LLM proxy used by sandbox containers (sets `ANTHROPIC_BASE_URL` in containers) |
+
+### Proxy Worker Environment Variables (`workers/proxy`)
+
+| Variable | Description |
+|----------|-------------|
+| `PROXY_PROVIDERS` | JSON array of provider configs (name/type/baseUrl/etc.) |
+| `PROXY_DEFAULT_PROVIDER` | Default provider name |
+| `PROXY_FALLBACK_ORDER` | Comma-separated provider fallback list |
+| `PROXY_LOG_LEVEL` | Logging verbosity (`debug`, `info`, `warn`, `error`, `none`) |
+| `PROXY_MODEL_ALIASES` | JSON map of Anthropic model IDs → canonical aliases |
+| `PROXY_BEDROCK_MODEL_MAP` | JSON map of Anthropic model IDs/aliases → Bedrock model IDs (e.g., `global.anthropic.claude-...-v1:0`) |
+| `ANTHROPIC_API_KEY` | Upstream Anthropic key |
+| `ANTHROPIC_API_URL` | Anthropic base URL override |
+| `ANTHROPIC_VERSION` | Anthropic API version header override |
+| `ANTHROPIC_FOUNDRY_API_KEY` | Upstream Foundry API key |
+| `ANTHROPIC_FOUNDRY_BASE_URL` | Foundry base URL (optional if resource is set) |
+| `ANTHROPIC_FOUNDRY_RESOURCE` | Foundry resource name (optional if base URL is set) |
+| `AZURE_FOUNDRY_API_KEY` | Back-compat alias for Foundry API key |
+| `AZURE_FOUNDRY_BASE_URL` | Back-compat alias for Foundry base URL |
+| `AZURE_FOUNDRY_RESOURCE` | Back-compat alias for Foundry resource name |
+| `AWS_REGION` | AWS region for Bedrock runtime |
+| `BEDROCK_MODEL_ID` | Bedrock model identifier |
+| `ANTHROPIC_BEDROCK_BASE_URL` | Optional Bedrock runtime base URL override |
+| `BEDROCK_API_KEY` | Bedrock Runtime API key (uses bearer token auth) |
+| `AWS_BEARER_TOKEN_BEDROCK` | Alternate Bedrock API key env var (bearer token auth) |
+
+Proxy auth uses API tokens minted via `DoRpcService.createOrgApiToken` (stored in `API_TOKENS` KV on the main worker). Requests must include `Authorization: Bearer <token>` or `x-api-key`. The proxy relies on the `MAIN_RPC` service binding to validate tokens and record usage.
+
+Sandbox containers require `PROXY_BASE_URL` on the main worker; the container mints a per-org proxy token and exports `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` (no upstream key fallback).
 
 ### KV Namespaces
 
@@ -332,6 +370,9 @@ chiridion-app/
 │   │       └── password.ts      # Password hashing
 │   ├── dispatcher/          # WfP subdomain router
 │   │   └── src/
+│   ├── proxy/               # LLM proxy worker
+│   │   ├── src/index.ts     # Proxy worker entry
+│   │   └── wrangler.jsonc   # Proxy worker config
 │   └── admin-cli/           # Local-only admin CLI
 │       ├── cli.mjs          # CLI wrapper script
 │       ├── src/index.ts     # Worker code

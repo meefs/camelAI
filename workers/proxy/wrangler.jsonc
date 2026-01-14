@@ -1,0 +1,21 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "chiridion-llm-proxy",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-12-01",
+	"compatibility_flags": ["nodejs_compat"],
+
+	"vars": {
+		"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+		"ANTHROPIC_VERSION": "2023-06-01"
+		// "PROXY_PROVIDERS": "[{\"name\":\"anthropic\",\"type\":\"anthropic\"},{\"name\":\"foundry\",\"type\":\"foundry\"},{\"name\":\"bedrock\",\"type\":\"bedrock\",\"modelId\":\"anthropic.claude-3-5-sonnet-20241022-v2:0\"}]"
+	},
+
+	"services": [
+		{
+			"binding": "MAIN_RPC",
+			"service": "chiridion-app",
+			"entrypoint": "DoRpcService",
+		}
+	]
+}

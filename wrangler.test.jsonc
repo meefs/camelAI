@@ -4,6 +4,9 @@
 	"main": "workers/main/src/index.ts",
 	"compatibility_date": "2025-12-01",
 	"compatibility_flags": ["nodejs_compat"],
+	"vars": {
+		"PROXY_BASE_URL": "http://proxy.test.local"
+	},
 	"kv_namespaces": [
 		{
 			"binding": "EMAIL_TO_USER",
