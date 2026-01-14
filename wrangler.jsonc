@@ -167,6 +167,12 @@
 					"max_instances": 50
 				}
 			],
+			"analytics_engine_datasets": [
+				{
+					"binding": "ERROR_ANALYTICS",
+					"dataset": "chiridion_errors_prod"
+				}
+			],
 			"durable_objects": {
 				"bindings": [
 					{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
@@ -206,6 +212,12 @@
 				{
 					"binding": "R2_BUCKET",
 					"bucket_name": "chiridion-sandbox"
+				}
+			],
+			"analytics_engine_datasets": [
+				{
+					"binding": "ERROR_ANALYTICS",
+					"dataset": "chiridion_errors_staging"
 				}
 			],
 			"kv_namespaces": [
@@ -283,7 +295,7 @@
 			"analytics_engine_datasets": [
 				{
 					"binding": "ERROR_ANALYTICS",
-					"dataset": "chiridion_errors"
+					"dataset": "chiridion_errors_dev_miguel"
 				}
 			],
 			"r2_buckets": [
@@ -369,6 +381,12 @@
 				{
 					"binding": "R2_BUCKET",
 					"bucket_name": "chiridion-sandbox"
+				}
+			],
+			"analytics_engine_datasets": [
+				{
+					"binding": "ERROR_ANALYTICS",
+					"dataset": "chiridion_errors_dev_illiana"
 				}
 			],
 			// Dedicated KV namespace for dev-illiana (prevents cross-env data contamination)
