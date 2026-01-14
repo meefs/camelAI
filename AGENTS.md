@@ -122,7 +122,7 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 4. History can query threads across accessible workspaces via `getThreadsAllWorkspacesPaginated` on `OrgDO`
 
 ### App Previews
-1. Deploy succeeds in `workers/main/src/index.ts` and enqueues an `APP_SCREENSHOT_QUEUE` job.
+1. Deploy succeeds in `workers/main/src/index.ts` and enqueues an `APP_SCREENSHOT_QUEUE` job (local dev captures inline with Browser Rendering against `LOCAL_APP_PREVIEW_URL`, defaulting to `https://hello-world-test.chiridion.app/`).
 2. Screenshot worker renders `https://{script}.apps.{env}.chiridion.ai` via Browser Rendering.
 3. JPEG previews are stored in R2 under `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg`.
 4. OrgDO updates `worker_scripts.preview_*` fields for status + key.
@@ -200,6 +200,7 @@ ANTHROPIC_API_KEY=your_key_here
 | `ANTHROPIC_API_KEY` | Claude API key for SDK |
 | `NEXTJS_ENV` | Environment (development/production) |
 | `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
+| `LOCAL_APP_PREVIEW_URL` | Optional override for local app preview screenshots (defaults to `https://hello-world-test.chiridion.app/`) |
 
 ### KV Namespaces
 

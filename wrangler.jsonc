@@ -25,6 +25,9 @@
 	"images": {
 		"binding": "IMAGES"
 	},
+	"browser": {
+		"binding": "BROWSER"
+	},
 	"ai": {
 		"binding": "AI",
 		"remote": true

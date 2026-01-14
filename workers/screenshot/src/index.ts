@@ -16,6 +16,7 @@ interface Env {
   R2_BUCKET: R2Bucket;
   MAIN_RPC: DoRpcService;
   BROWSER: Fetcher;
+  LOCAL_APP_PREVIEW_URL?: string;
 }
 
 const VIEWPORT = {
@@ -38,9 +39,10 @@ function buildPreviewKeys(job: AppScreenshotJob): { currentKey: string; versione
   };
 }
 
-function buildTargetUrl(job: AppScreenshotJob): string | null {
+function buildTargetUrl(job: AppScreenshotJob, env: Env): string | null {
   if (job.env_prefix === 'local') {
-    return null;
+    const override = env.LOCAL_APP_PREVIEW_URL?.trim();
+    return override ? override : 'https://hello-world-test.chiridion.app/';
   }
   const suffix = job.env_prefix ? `apps.${job.env_prefix}.chiridion.ai` : 'apps.chiridion.ai';
   return `https://${job.script_name}.${suffix}`;
@@ -102,7 +104,7 @@ export default {
           continue;
         }
 
-        const targetUrl = buildTargetUrl(job);
+        const targetUrl = buildTargetUrl(job, env);
         if (!targetUrl) {
           console.log('[app-screenshot] skipping local env screenshot', {
             scriptName: job.script_name,
@@ -117,7 +119,7 @@ export default {
         try {
           page = await browser.newPage();
           await page.setViewport(VIEWPORT);
-          if (job.screenshot_token) {
+          if (job.screenshot_token && job.env_prefix !== 'local') {
             await page.setExtraHTTPHeaders({
               'x-chiridion-screenshot-token': job.screenshot_token,
             });

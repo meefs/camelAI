@@ -7,6 +7,7 @@ import { WorkspaceContainer, handleWebSocketUpgrade, type WorkspaceContainerEnv 
 import { WorkspaceDO, type WorkspaceInfo } from './workspace.js';
 import { getSession as getSessionKV } from './session-kv.js';
 import { createScreenshotToken } from './worker-auth.js';
+import puppeteer, { type Page } from '@cloudflare/puppeteer';
 export { DoRpcService } from './rpc-service.js';
 
 // Export WorkspaceContainer as ThreadSandbox to match wrangler.jsonc class_name
@@ -45,6 +46,8 @@ interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv {
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
+  BROWSER?: Fetcher;
+  LOCAL_APP_PREVIEW_URL?: string;
 }
 
 const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
@@ -52,6 +55,16 @@ const CHIRIDION_THREAD_TOKEN_HEADER = 'X-Chiridion-Thread-Deploy-Token';
 
 // Token TTL (24 hours in seconds)
 const TOKEN_TTL_SECONDS = 86400;
+const PREVIEW_PREFIX = 'app-previews';
+const LOCAL_PREVIEW_URL = 'https://hello-world-test.chiridion.app/';
+const VIEWPORT = {
+  width: 1280,
+  height: 720,
+  deviceScaleFactor: 2,
+};
+const NAVIGATION_TIMEOUT_MS = 30_000;
+const READY_TIMEOUT_MS = 1500;
+const POST_LOAD_DELAY_MS = 600;
 
 /**
  * Generate a per-thread deploy token and store in KV.
@@ -85,7 +98,7 @@ function getEnvPrefix(hostname: string): string {
     return parts[0] ?? '';
   }
 
-  if (hostname === 'localhost' || hostname.startsWith('127.0.0.1')) {
+  if (hostname === 'localhost' || hostname.startsWith('127.0.0.1') || hostname.endsWith('.local')) {
     return 'local';
   }
 
@@ -124,6 +137,149 @@ function cfApiError(code: number, message: string, status: number): Response {
     messages: [],
     result: null,
   }, { status });
+}
+
+function buildPreviewKeys(job: AppScreenshotJob): { currentKey: string; versionedKey: string } {
+  const base = `${PREVIEW_PREFIX}/${job.org_id}/${job.workspace_id}/${job.script_name}`;
+  return {
+    currentKey: `${base}/current.jpg`,
+    versionedKey: `${base}/${job.deploy_ts}.jpg`,
+  };
+}
+
+function getLocalPreviewUrl(env: Env): string {
+  const override = env.LOCAL_APP_PREVIEW_URL?.trim();
+  return override ? override : LOCAL_PREVIEW_URL;
+}
+
+function truncateError(err: unknown, maxLength = 500): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.length <= maxLength) return message;
+  return `${message.slice(0, maxLength)}...`;
+}
+
+async function waitForReadySignal(page: Page): Promise<void> {
+  try {
+    await page.waitForFunction(
+      () => {
+        const root = document.documentElement;
+        if (root?.dataset?.chiridionReady === 'true') return true;
+        if (document.body?.dataset?.chiridionReady === 'true') return true;
+        return Boolean(document.querySelector('[data-chiridion-ready="true"]'));
+      },
+      { timeout: READY_TIMEOUT_MS }
+    );
+  } catch {
+    // Optional signal - ignore timeout.
+  }
+}
+
+async function captureLocalPreview(env: Env, job: AppScreenshotJob): Promise<void> {
+  const orgStub = env.ORG.get(env.ORG.idFromName(job.org_id));
+  if (!env.BROWSER) {
+    const errorMessage = 'Missing BROWSER binding for local screenshot capture.';
+    await orgStub.updateWorkerScriptPreview(job.script_name, {
+      status: 'failed',
+      preview_key: null,
+      preview_error: errorMessage,
+      deploy_ts: job.deploy_ts,
+    });
+    console.warn('[cf-api-proxy] local screenshot skipped (missing BROWSER)', {
+      scriptName: job.script_name,
+      orgId: job.org_id,
+    });
+    return;
+  }
+
+  const targetUrl = getLocalPreviewUrl(env);
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+  let page: Page | null = null;
+
+  try {
+    browser = await puppeteer.launch(env.BROWSER);
+    page = await browser.newPage();
+    await page.setViewport(VIEWPORT);
+    await page.goto(targetUrl, {
+      waitUntil: 'networkidle0',
+      timeout: NAVIGATION_TIMEOUT_MS,
+    });
+    await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
+    await waitForReadySignal(page);
+    await page.waitForTimeout(POST_LOAD_DELAY_MS);
+    const image = (await page.screenshot({
+      type: 'jpeg',
+      quality: 80,
+      fullPage: false,
+    })) as Buffer;
+
+    const { currentKey, versionedKey } = buildPreviewKeys(job);
+    await env.R2_BUCKET.put(versionedKey, image, {
+      httpMetadata: {
+        contentType: 'image/jpeg',
+        cacheControl: 'public, max-age=31536000, immutable',
+      },
+      customMetadata: {
+        script_name: job.script_name,
+        org_id: job.org_id,
+        workspace_id: job.workspace_id,
+        deploy_ts: String(job.deploy_ts),
+      },
+    });
+    await env.R2_BUCKET.put(currentKey, image, {
+      httpMetadata: {
+        contentType: 'image/jpeg',
+        cacheControl: 'public, max-age=300',
+      },
+      customMetadata: {
+        script_name: job.script_name,
+        org_id: job.org_id,
+        workspace_id: job.workspace_id,
+        deploy_ts: String(job.deploy_ts),
+      },
+    });
+
+    const updateResult = await orgStub.updateWorkerScriptPreview(job.script_name, {
+      status: 'ready',
+      preview_key: currentKey,
+      preview_error: null,
+      deploy_ts: job.deploy_ts,
+    });
+
+    if (updateResult.stale) {
+      console.log('[cf-api-proxy] local preview update skipped (stale)', {
+        scriptName: job.script_name,
+        orgId: job.org_id,
+      });
+      return;
+    }
+
+    console.log('[cf-api-proxy] local preview captured', {
+      scriptName: job.script_name,
+      orgId: job.org_id,
+      targetUrl,
+    });
+  } catch (err) {
+    const errorMessage = truncateError(err);
+    console.error('[cf-api-proxy] local preview capture failed', {
+      scriptName: job.script_name,
+      orgId: job.org_id,
+      error: errorMessage,
+    });
+
+    await orgStub.updateWorkerScriptPreview(job.script_name, {
+      status: 'failed',
+      preview_key: null,
+      preview_error: errorMessage,
+      deploy_ts: job.deploy_ts,
+    });
+  } finally {
+    if (page) {
+      await page.close();
+    }
+    if (browser) {
+      await browser.close();
+    }
+  }
 }
 
 const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
@@ -205,19 +361,7 @@ async function handleDeploySideEffects(
     workspaceId,
   });
 
-  if (!env.APP_SCREENSHOT_QUEUE) {
-    return;
-  }
-
   const envPrefix = resolveEnvPrefix(env.WORKER_BASE_URL, hostname);
-  if (envPrefix === 'local') {
-    console.log('[cf-api-proxy] skipping screenshot for local env', {
-      scriptName,
-      orgId,
-    });
-    return;
-  }
-
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const previewResult = await orgStub.updateWorkerScriptPreview(scriptName, {
     status: 'pending',
@@ -236,6 +380,24 @@ async function handleDeploySideEffects(
     return;
   }
 
+  const jobBase: AppScreenshotJob = {
+    script_name: scriptName,
+    org_id: orgId,
+    workspace_id: workspaceId,
+    deploy_ts: script.updated_at,
+    env_prefix: envPrefix,
+    is_public: script.is_public,
+  };
+
+  if (envPrefix === 'local') {
+    await captureLocalPreview(env, jobBase);
+    return;
+  }
+
+  if (!env.APP_SCREENSHOT_QUEUE) {
+    return;
+  }
+
   const screenshotToken = script.is_public
     ? undefined
     : await createScreenshotToken(env.API_TOKENS, {
@@ -244,12 +406,7 @@ async function handleDeploySideEffects(
       });
 
   const job: AppScreenshotJob = {
-    script_name: scriptName,
-    org_id: orgId,
-    workspace_id: workspaceId,
-    deploy_ts: script.updated_at,
-    env_prefix: envPrefix,
-    is_public: script.is_public,
+    ...jobBase,
     ...(screenshotToken ? { screenshot_token: screenshotToken } : {}),
   };
 
