@@ -35,12 +35,18 @@ export async function POST(request: NextRequest) {
 
     switch (action) {
       case 'signup': {
-        const data = await signup(body.email ?? '', body.password ?? '', body.name);
-        return jsonResponse(data);
+        const result = await signup(body.email ?? '', body.password ?? '', body.name);
+        if (!result.success) {
+          return errorResponse(result.error, 400);
+        }
+        return jsonResponse(result.data);
       }
       case 'login': {
-        const data = await login(body.email ?? '', body.password ?? '');
-        return jsonResponse(data);
+        const result = await login(body.email ?? '', body.password ?? '');
+        if (!result.success) {
+          return errorResponse(result.error, 400);
+        }
+        return jsonResponse(result.data);
       }
       case 'logout': {
         await logout();

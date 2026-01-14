@@ -10,12 +10,12 @@
  *
  * Private worker authentication:
  *
- * Same-site requests (*.apps.chiridion.ai):
- * - Main app session cookie is available (same-site)
+ * Same-site requests (*.chiridion.ai):
+ * - Main app session cookie is available (same domain)
  * - Validates session directly via RPC, no redirect needed
- * - Used for iframe previews embedded in the main app
+ * - Checks if user is a member of the workspace that deployed the worker
  *
- * Cross-site requests (*.chiridion.app):
+ * Cross-site requests (*.chiridion.app vanity URLs):
  * 1. User visits private worker
  * 2. Dispatcher checks dispatcher session cookie
  * 3. If no session, redirects to main app for auth
@@ -99,11 +99,10 @@ function createSessionCookie(sessionId: string, hostname: string): string {
   ].join('; ');
 }
 
-// Check if request is from same-site (*.apps.chiridion.ai or *.apps.*.chiridion.ai)
-// These requests will have the main app session cookie available
+// Check if request is from same-site (any *.chiridion.ai subdomain)
+// These requests will have the main app session cookie available since they share the same domain
 function isSameSiteRequest(hostname: string): boolean {
-  // Match patterns like: my-app.apps.chiridion.ai or my-app.apps.staging.chiridion.ai
-  return hostname.includes('.apps.') && hostname.endsWith('.chiridion.ai');
+  return hostname.endsWith('.chiridion.ai');
 }
 
 // Auth callback route
@@ -249,29 +248,38 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
     }
   }
 
-  // For same-site requests (*.apps.chiridion.ai), check main app session cookie
-  // This avoids the redirect dance when embedded in an iframe on the main app
+  // For same-site requests (*.chiridion.ai), check main app session cookie directly
+  // No redirect dance needed - the cookie is already available or the user isn't logged in
   if (isSameSiteRequest(url.hostname)) {
     const mainSessionId = getCookieValue(cookieHeader, MAIN_APP_SESSION_COOKIE);
-    if (mainSessionId) {
-      try {
-        const session = await env.MAIN_RPC.getSession(mainSessionId);
-        if (session) {
-          // Check if user is a member of the org that owns this worker
-          const isMember = await env.MAIN_RPC.isOrgMember(session.user_id, accessInfo.org_id);
-          if (isMember) {
-            console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${scriptName} via main session`);
-            return dispatchToWorker(request, env, scriptName);
-          }
-        }
-      } catch (e) {
-        console.error(`[dispatcher] Error validating main session: ${e}`);
-        // Fall through to redirect
+    if (!mainSessionId) {
+      // No session cookie - user is not logged in
+      return new Response('Unauthorized', { status: 401 });
+    }
+
+    try {
+      const session = await env.MAIN_RPC.getSession(mainSessionId);
+      if (!session) {
+        // Invalid/expired session
+        return new Response('Unauthorized', { status: 401 });
       }
+
+      // Check if user is a member of the org that owns this worker
+      const isMember = await env.MAIN_RPC.isOrgMember(session.user_id, accessInfo.org_id);
+      if (!isMember) {
+        // User is logged in but not a member of this workspace
+        return new Response('Forbidden', { status: 403 });
+      }
+
+      console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${scriptName} via main session`);
+      return dispatchToWorker(request, env, scriptName);
+    } catch (e) {
+      console.error(`[dispatcher] Error validating main session: ${e}`);
+      return new Response('Service temporarily unavailable', { status: 503 });
     }
   }
 
-  // No valid session - redirect to auth
+  // Cross-site request (*.chiridion.app) - redirect to auth
   return redirectToAuth(env, url, scriptName, accessInfo.org_id);
 }
 
