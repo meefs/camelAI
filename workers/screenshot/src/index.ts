@@ -103,6 +103,7 @@ export default {
     for (const message of batch.messages) {
       const job = message.body;
       const startedAt = Date.now();
+      const attempt = message.attempts ?? 1;
 
       if (!job?.script_name || !job.org_id || !job.workspace_id) {
         console.warn('[app-screenshot] invalid job payload', { job });
@@ -165,14 +166,23 @@ export default {
           targetUrl,
         });
 
+        let screenshotToken = job.screenshot_token;
+        if (!job.is_public && job.env_prefix !== 'local') {
+          if (!screenshotToken || attempt > 1) {
+            screenshotToken = await env.MAIN_RPC.createScreenshotToken(job.org_id, job.script_name);
+          }
+        } else {
+          screenshotToken = undefined;
+        }
+
         const browser = await puppeteer.launch(env.BROWSER);
         let page: Page | null = null;
         try {
           page = await browser.newPage();
           await page.setViewport(VIEWPORT);
-          if (job.screenshot_token && job.env_prefix !== 'local') {
+          if (screenshotToken && job.env_prefix !== 'local') {
             await page.setExtraHTTPHeaders({
-              'x-chiridion-screenshot-token': job.screenshot_token,
+              'x-chiridion-screenshot-token': screenshotToken,
             });
           }
           const { response, waitUntil } = await navigateWithFallback(page, targetUrl, {

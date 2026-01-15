@@ -15,6 +15,7 @@ import {
   validateAndConsumeAuthState,
   createWorkerAuthToken,
   validateAndConsumeAuthToken,
+  createScreenshotToken,
   createDispatcherSession,
   getDispatcherSession,
   touchDispatcherSession,
@@ -2108,6 +2109,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   ): Promise<WorkerScriptPreviewUpdateResult> {
     using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
     return orgStub.updateWorkerScriptPreview(scriptName, input);
+  }
+
+  async createScreenshotToken(orgId: string, scriptName: string): Promise<string> {
+    return createScreenshotToken(this.env.API_TOKENS, {
+      script_name: scriptName,
+      org_id: orgId,
+    });
   }
 
   /**
