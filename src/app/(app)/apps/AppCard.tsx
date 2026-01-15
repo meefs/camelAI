@@ -8,13 +8,13 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Input } from '@/components/ui/input';
 import { getAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
 import {
   Check,
   Copy,
   ExternalLink,
-  FileCode,
   Globe,
   Lock,
   MessageSquare,
@@ -140,7 +140,7 @@ export function AppCard({
   };
 
   return (
-    <Card className="p-0 overflow-hidden">
+    <Card className="gap-0 overflow-hidden p-0">
       <div className="relative aspect-video w-full">
         {showPreview ? (
           <>
@@ -169,8 +169,8 @@ export function AppCard({
           </div>
         )}
       </div>
-      <CardHeader className="space-y-3 pb-3">
-        <div className="flex items-start justify-between gap-3">
+      <CardHeader className="pb-2 pt-4">
+        <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 space-y-1">
             <CardTitle className="truncate text-base font-semibold">
               {app.script_name}
@@ -181,10 +181,9 @@ export function AppCard({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  className="h-6 px-0 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
                   onClick={() => onViewSource(app)}
                 >
-                  <FileCode className="size-3" />
                   <span>{sourceLabel}</span>
                 </Button>
               </TooltipTrigger>
@@ -205,7 +204,7 @@ export function AppCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-3 pb-4 pt-0">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2 text-xs/relaxed text-muted-foreground">
           <Avatar size="2xs">
             <AvatarFallback content={creatorContent} style={creatorFallbackStyle}>
               {creatorContent}
@@ -215,41 +214,50 @@ export function AppCard({
           <span aria-hidden="true">&middot;</span>
           <span>Updated {getRelativeTime(app.updated_at, now)}</span>
         </div>
-        <div className="flex items-center justify-between gap-2">
-          <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
-            {displayUrl}
-          </span>
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="relative">
+              <Input
+                readOnly
+                value={displayUrl}
+                aria-label="App URL"
+                className="h-9 truncate pr-16 text-xs/relaxed text-muted-foreground"
+              />
+              <div className="absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-1">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={copied ? 'Copied URL' : 'Copy URL'}
+                      onClick={handleCopy}
+                    >
+                      {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{copied ? 'Copied!' : 'Copy URL'}</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Open in new tab"
+                      onClick={() => {
+                        window.open(appUrl, '_blank', 'noopener,noreferrer');
+                      }}
+                    >
+                      <ExternalLink className="size-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Open in new tab</TooltipContent>
+                </Tooltip>
+              </div>
+            </div>
+          </div>
           <div className="flex items-center gap-1">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={copied ? 'Copied URL' : 'Copy URL'}
-                  onClick={handleCopy}
-                >
-                  {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{copied ? 'Copied!' : 'Copy URL'}</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Open in new tab"
-                  onClick={() => {
-                    window.open(appUrl, '_blank', 'noopener,noreferrer');
-                  }}
-                >
-                  <ExternalLink className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Open in new tab</TooltipContent>
-            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button

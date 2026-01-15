@@ -371,12 +371,28 @@ async function registerScriptOwnership(
   env: Env,
   scriptName: string,
   orgId: string,
-  workspaceId: string
+  workspaceId: string,
+  threadId?: string
 ) {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  // Use "system:deploy" as actor for automated deploys
+  let createdBy = 'system:deploy';
+  if (threadId) {
+    try {
+      const thread = await orgStub.getThread(threadId);
+      if (thread?.created_by && thread.workspace_id === workspaceId) {
+        createdBy = thread.created_by;
+      }
+    } catch (err) {
+      console.warn('[cf-api-proxy] failed to resolve deploy creator', {
+        threadId,
+        orgId,
+        workspaceId,
+        error: String(err),
+      });
+    }
+  }
   // registerWorkerScript preserves existing is_public on redeploy, or defaults to true for new scripts
-  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, 'system:deploy');
+  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy);
   // Update the denormalized KV index with the actual is_public value
   await env.API_TOKENS.put(
     `${SCRIPT_ORG_PREFIX}${scriptName}`,
@@ -392,10 +408,11 @@ async function handleDeploySideEffects(
     orgId: string;
     workspaceId: string;
     hostname: string;
+    threadId?: string;
   }
 ): Promise<void> {
-  const { scriptName, orgId, workspaceId, hostname } = info;
-  const script = await registerScriptOwnership(env, scriptName, orgId, workspaceId);
+  const { scriptName, orgId, workspaceId, hostname, threadId } = info;
+  const script = await registerScriptOwnership(env, scriptName, orgId, workspaceId, threadId);
   console.log('[cf-api-proxy] registered script ownership', {
     scriptName,
     orgId,
@@ -995,6 +1012,7 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
           orgId,
           workspaceId,
           hostname: url.hostname,
+          threadId,
         }).catch(err => {
           console.error('[cf-api-proxy] failed to process deploy side effects', {
             scriptName,

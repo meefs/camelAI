@@ -1,6 +1,6 @@
 # App Page Restyle - Feedback & Iteration
 
-This document contains feedback on the initial implementation of the app page restyle. Please address these items.
+This document contains feedback on the initial implementation of the app page restyle (previous plan docs/plans/app-page-restyle-plan.md). Please address these items.
 
 ---
 

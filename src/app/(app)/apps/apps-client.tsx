@@ -117,10 +117,12 @@ export default function AppsClient({
             )}
 
             {isLoading ? (
-              <div className="mt-6 grid gap-4 md:grid-cols-2">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <AppCardSkeleton key={i} />
-                ))}
+              <div className="@container">
+                <div className="mt-6 grid gap-4 @[580px]:grid-cols-2 @[880px]:grid-cols-3">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <AppCardSkeleton key={i} />
+                  ))}
+                </div>
               </div>
             ) : apps.length === 0 ? (
               <Card className="mt-6 border-dashed p-0">
@@ -135,20 +137,22 @@ export default function AppsClient({
                 </CardHeader>
               </Card>
             ) : (
-              <div className="mt-6 grid gap-4 md:grid-cols-2">
-                {apps.map((app) => (
-                  <AppCard
-                    key={app.script_name}
-                    app={app}
-                    creator={app.creator}
-                    isAdmin={isAdmin}
-                    hostname={hostname}
-                    now={referenceTime}
-                    onOpenSettings={handleOpenSettings}
-                    onStartChat={handleStartChat}
-                    onViewSource={handleViewSource}
-                  />
-                ))}
+              <div className="@container">
+                <div className="mt-6 grid gap-4 @[580px]:grid-cols-2 @[880px]:grid-cols-3">
+                  {apps.map((app) => (
+                    <AppCard
+                      key={app.script_name}
+                      app={app}
+                      creator={app.creator}
+                      isAdmin={isAdmin}
+                      hostname={hostname}
+                      now={referenceTime}
+                      onOpenSettings={handleOpenSettings}
+                      onStartChat={handleStartChat}
+                      onViewSource={handleViewSource}
+                    />
+                  ))}
+                </div>
               </div>
             )}
           </div>
