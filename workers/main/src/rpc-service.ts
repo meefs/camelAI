@@ -2407,6 +2407,15 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     await orgStub.deleteThread(id);
   }
 
+  async touchThread(id: string, workspaceId: string): Promise<void> {
+    const info = await this.requireWorkspaceInfo(workspaceId);
+    using orgStub = asDisposable(getOrgStub(this.env, info.org_id));
+    // Verify the thread belongs to this workspace first
+    const existing = await orgStub.getThread(id);
+    if (!existing || existing.workspace_id !== workspaceId) return;
+    orgStub.touchThread(id);
+  }
+
   async generateAndUpdateThreadTitle(
     threadId: string,
     workspaceId: string,
