@@ -16,7 +16,9 @@
 		"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-local",
-		"WORKER_BASE_URL": "http://localhost:8787"
+		"WORKER_BASE_URL": "http://localhost:8787",
+		"PROXY_BASE_URL": "http://host.docker.internal:8790",
+		"WORKER_BASE_URL": "http://host.docker.internal:3100"
 	},
 	"assets": {
 		"binding": "ASSETS",
@@ -125,7 +127,8 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform",
-				"WORKER_BASE_URL": "https://chiridion.ai"
+				"WORKER_BASE_URL": "https://chiridion.ai",
+				"PROXY_BASE_URL": "https://llm-proxy.chiridion.ai"
 			},
 			"images": {
 				"binding": "IMAGES"
@@ -214,7 +217,8 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
-				"WORKER_BASE_URL": "https://staging.chiridion.ai"
+				"WORKER_BASE_URL": "https://staging.chiridion.ai",
+				"PROXY_BASE_URL": "https://llm-proxy.staging.chiridion.ai"
 			},
 			"assets": {
 				"binding": "ASSETS",
@@ -306,7 +310,8 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
-				"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai"
+				"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai",
+				"PROXY_BASE_URL": "https://llm-proxy.dev-miguel.chiridion.ai"
 			},
 			"assets": {
 				"binding": "ASSETS",
@@ -399,7 +404,8 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
-				"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai"
+				"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai",
+				"PROXY_BASE_URL": "https://llm-proxy.dev-illiana.chiridion.ai"
 			},
 			"assets": {
 				"binding": "ASSETS",

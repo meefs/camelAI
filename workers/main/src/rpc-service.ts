@@ -8,6 +8,7 @@ import type {
   OrgThread,
   WorkerScriptPreviewUpdateInput,
   WorkerScriptPreviewUpdateResult,
+  ProxyUsageInput,
 } from './auth';
 import {
   createAuthState,
@@ -2850,6 +2851,22 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   async deleteApiToken(tokenId: string): Promise<void> {
     await deleteApiToken(this.env.API_TOKENS, tokenId);
+  }
+
+  async recordProxyUsage(
+    orgId: string,
+    userId: string,
+    usage: ProxyUsageInput,
+    meta?: { provider?: string; model?: string; tokenId?: string }
+  ): Promise<void> {
+    using stub = asDisposable(getOrgStub(this.env, orgId));
+    await stub.recordProxyUsage(
+      userId,
+      usage,
+      meta?.provider ?? null,
+      meta?.model ?? null,
+      meta?.tokenId ?? null
+    );
   }
 
   async resetWorkspaceContainer(workspaceId: string): Promise<{ success: boolean; containerId: string }> {

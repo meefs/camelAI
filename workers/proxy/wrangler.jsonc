@@ -1,0 +1,91 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "chiridion-llm-proxy",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-12-01",
+	"compatibility_flags": ["nodejs_compat"],
+
+	"vars": {
+		"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+		"ANTHROPIC_VERSION": "2023-06-01"
+		// "PROXY_PROVIDERS": "[{\"name\":\"anthropic\",\"type\":\"anthropic\"},{\"name\":\"foundry\",\"type\":\"foundry\"},{\"name\":\"bedrock\",\"type\":\"bedrock\",\"modelId\":\"anthropic.claude-3-5-sonnet-20241022-v2:0\"}]"
+	},
+
+	"services": [
+		{
+			"binding": "MAIN_RPC",
+			"service": "chiridion-app",
+			"entrypoint": "DoRpcService",
+		}
+	],
+	"env": {
+		"prod": {
+			"name": "chiridion-llm-proxy",
+			"vars": {
+				"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+				"ANTHROPIC_VERSION": "2023-06-01"
+			},
+			"services": [
+				{
+					"binding": "MAIN_RPC",
+					"service": "chiridion-app",
+					"entrypoint": "DoRpcService",
+				}
+			],
+			"routes": [
+				{ "pattern": "llm-proxy.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			]
+		},
+		"staging": {
+			"name": "chiridion-llm-proxy-staging",
+			"vars": {
+				"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+				"ANTHROPIC_VERSION": "2023-06-01"
+			},
+			"services": [
+				{
+					"binding": "MAIN_RPC",
+					"service": "chiridion-app-staging",
+					"entrypoint": "DoRpcService",
+				}
+			],
+			"routes": [
+				{ "pattern": "llm-proxy.staging.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			]
+		},
+		"dev-miguel": {
+			"name": "chiridion-llm-proxy-dev-miguel",
+			"vars": {
+				"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+				"ANTHROPIC_VERSION": "2023-06-01"
+			},
+			"services": [
+				{
+					"binding": "MAIN_RPC",
+					"service": "chiridion-app-dev-miguel",
+					"entrypoint": "DoRpcService",
+				}
+			],
+			"routes": [
+				{ "pattern": "llm-proxy.dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			]
+		},
+		"dev-illiana": {
+			"name": "chiridion-llm-proxy-dev-illiana",
+			"vars": {
+				"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+				"ANTHROPIC_VERSION": "2023-06-01"
+			},
+			"services": [
+				{
+					"binding": "MAIN_RPC",
+					"service": "chiridion-app-dev-illiana",
+					"entrypoint": "DoRpcService",
+				}
+			],
+			"routes": [
+				{ "pattern": "llm-proxy.dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" }
+			]
+		}
+	}
+}

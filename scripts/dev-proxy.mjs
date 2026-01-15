@@ -27,16 +27,19 @@ function printVersions() {
 const nextPort = Number(process.env.NEXT_DEV_PORT || 3001);
 const wranglerPort = Number(process.env.WRANGLER_DEV_PORT || 8787);
 const proxyPort = Number(process.env.PROXY_DEV_PORT || 3100);
+const llmProxyPort = Number(process.env.LLM_PROXY_DEV_PORT || 8790);
 
 const nextTarget = `http://localhost:${nextPort}`;
 const wranglerTarget = `http://localhost:${wranglerPort}`;
+const llmProxyTarget = `http://localhost:${llmProxyPort}`;
 
 printVersions();
 
-function spawnCommand(command, args, { name, env = process.env }) {
+function spawnCommand(command, args, { name, env = process.env } = {}) {
+  const resolvedEnv = env;
   const child = spawn(command, args, {
     stdio: 'inherit',
-    env,
+    env: resolvedEnv,
     detached: true,
   });
   child.on('exit', (code, signal) => {
@@ -66,8 +69,28 @@ const wranglerEnv = {
 
 const wranglerProcess = spawnCommand(
   'wrangler',
-  ['dev', '-c', 'wrangler.jsonc', '--port', String(wranglerPort)],
+  [
+    'dev',
+    '-c',
+    'wrangler.jsonc',
+    '--port',
+    String(wranglerPort),
+  ],
   { name: 'wrangler dev', env: wranglerEnv }
+);
+
+const llmProxyProcess = spawnCommand(
+  'wrangler',
+  [
+    'dev',
+    '-c',
+    path.join('workers', 'proxy', 'wrangler.jsonc'),
+    '--port',
+    String(llmProxyPort),
+    '--inspector-port',
+    '9228',
+  ],
+  { name: 'llm proxy dev', env: process.env }
 );
 
 function waitForWranglerReady({ timeoutMs = 30000, intervalMs = 500 } = {}) {
@@ -190,6 +213,7 @@ server.on('clientError', (_err, socket) => {
 server.listen(proxyPort, '0.0.0.0', () => {
   console.log(`[dev-proxy] next dev -> ${nextTarget}`);
   console.log(`[dev-proxy] wrangler dev -> ${wranglerTarget}`);
+  console.log(`[dev-proxy] llm proxy dev -> ${llmProxyTarget}`);
   console.log(`[dev-proxy] proxy listening on http://0.0.0.0:${proxyPort}`);
 });
 
@@ -197,6 +221,7 @@ function shutdown() {
   server.close();
   if (nextProcess?.pid) process.kill(-nextProcess.pid, 'SIGINT');
   if (wranglerProcess?.pid) process.kill(-wranglerProcess.pid, 'SIGINT');
+  if (llmProxyProcess?.pid) process.kill(-llmProxyProcess.pid, 'SIGINT');
   if (dockerProxyProcess?.pid) process.kill(-dockerProxyProcess.pid, 'SIGINT');
 }
 
