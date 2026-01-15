@@ -9,7 +9,6 @@ import { PageHeader } from '@/components/page-header';
 import { AppCard } from './AppCard';
 import { AppSettingsDialog } from './AppSettingsDialog';
 import { AppCardSkeleton } from './AppCardSkeleton';
-import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -182,17 +181,15 @@ export default function AppsClient({
                 </div>
               </div>
             ) : apps.length === 0 ? (
-              <Card className="mt-6 border-dashed p-0">
-                <div className="aspect-video w-full bg-muted/60 flex items-center justify-center">
-                  <LayoutGrid className="size-6 text-muted-foreground" />
+              <div className="mt-32 flex flex-col items-center justify-center text-center">
+                <div className="flex size-24 items-center justify-center rounded-full bg-muted">
+                  <LayoutGrid className="size-10 text-muted-foreground" />
                 </div>
-                <CardHeader className="space-y-2 pb-4">
-                  <CardTitle>No apps deployed yet</CardTitle>
-                  <CardDescription>
-                    Deploy an app from a chat conversation to see it here.
-                  </CardDescription>
-                </CardHeader>
-              </Card>
+                <h2 className="mt-6 text-2xl font-semibold">No apps yet</h2>
+                <p className="mt-2 text-muted-foreground">
+                  Deploy an app to see your published apps here.
+                </p>
+              </div>
             ) : (
               <div className="@container">
                 <div className="mt-6 grid gap-4 @[580px]:grid-cols-2 @[880px]:grid-cols-3">
