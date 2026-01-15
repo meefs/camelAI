@@ -1118,23 +1118,36 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     const updateSpacer = () => {
       const measureUser = lastUserMessageRef.current;
       const measureAssistant = assistantMeasureRef.current;
-      if (!measureUser || !measureAssistant) {
+
+      // Need at least a user message to calculate spacer
+      if (!measureUser) {
         spacer.style.height = '0px';
         return;
       }
 
       const containerRect = container.getBoundingClientRect();
       const userRect = measureUser.getBoundingClientRect();
-      const assistantRect = measureAssistant.getBoundingClientRect();
       const userStyle = getComputedStyle(measureUser);
-      const assistantStyle = getComputedStyle(measureAssistant);
       const userMarginTopValue = parseFloat(userStyle.marginTop || '0');
-      const assistantMarginBottomValue = parseFloat(assistantStyle.marginBottom || '0');
       const userMarginTop = Number.isNaN(userMarginTopValue) ? 0 : userMarginTopValue;
-      const assistantMarginBottom = Number.isNaN(assistantMarginBottomValue) ? 0 : assistantMarginBottomValue;
-      const exchangeTop = userRect.top - userMarginTop;
-      const exchangeBottom = assistantRect.bottom + assistantMarginBottom;
-      const exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
+
+      let exchangeHeight: number;
+
+      if (measureAssistant) {
+        // Assistant message exists - calculate exchange height including both messages
+        const assistantRect = measureAssistant.getBoundingClientRect();
+        const assistantStyle = getComputedStyle(measureAssistant);
+        const assistantMarginBottomValue = parseFloat(assistantStyle.marginBottom || '0');
+        const assistantMarginBottom = Number.isNaN(assistantMarginBottomValue) ? 0 : assistantMarginBottomValue;
+        const exchangeTop = userRect.top - userMarginTop;
+        const exchangeBottom = assistantRect.bottom + assistantMarginBottom;
+        exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
+      } else {
+        // No assistant message yet (awaiting response) - just use user message height
+        const userMarginBottomValue = parseFloat(userStyle.marginBottom || '0');
+        const userMarginBottom = Number.isNaN(userMarginBottomValue) ? 0 : userMarginBottomValue;
+        exchangeHeight = userRect.height + userMarginTop + userMarginBottom;
+      }
 
       const column = messageColumnRef.current;
       const columnStyle = column ? getComputedStyle(column) : null;
