@@ -119,6 +119,12 @@ export default {
     const providers = resolveProviders(env);
 
     if (providers.length === 0) {
+      logError(env, 'proxy no providers configured', {
+        hasAnthropicKey: Boolean(env.ANTHROPIC_API_KEY),
+        hasFoundryKey: Boolean(env.ANTHROPIC_FOUNDRY_API_KEY || env.AZURE_FOUNDRY_API_KEY),
+        hasBedrockKey: Boolean(env.BEDROCK_API_KEY || env.AWS_BEARER_TOKEN_BEDROCK),
+        fallbackOrder: env.PROXY_FALLBACK_ORDER ?? null,
+      });
       return errorResponse(500, 'api_error', 'No providers configured');
     }
 
@@ -138,7 +144,9 @@ export default {
         lastResponse = result.response;
         logWarn(env, 'proxy provider failed', {
           provider: provider.name,
+          type: provider.type,
           status: result.status,
+          message: result.message,
           request_id: getRequestId(result.response.headers),
         });
         if (!shouldFallback(result.status)) {
@@ -147,6 +155,7 @@ export default {
       } catch (error) {
         logError(env, 'proxy provider exception', {
           provider: provider.name,
+          type: provider.type,
           message: error instanceof Error ? error.message : 'Unknown error',
         });
         lastResponse = errorResponse(502, 'api_error', 'Upstream error');
@@ -620,6 +629,7 @@ async function handleBedrockStream(
 
     if (!response.ok) {
       const payload = await response.arrayBuffer();
+      logUpstreamError(env, provider.name, response.status, response.headers, payload);
       return buildProxyResponse(response.status, response.headers, payload);
     }
 
