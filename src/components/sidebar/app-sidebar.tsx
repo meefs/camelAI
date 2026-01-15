@@ -1,6 +1,6 @@
 "use client"
 
-import { AppWindowMac, Boxes, Cable, Home, MessagesSquare } from "lucide-react"
+import { AppWindowMac, Cable, Home, LayoutGrid, MessagesSquare } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
@@ -76,7 +76,7 @@ export function AppSidebar(props: AppSidebarProps) {
             <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="Apps" isActive={isApps}>
                 <Link href="/apps">
-                  <Boxes />
+                  <LayoutGrid />
                   <span>Apps</span>
                 </Link>
               </SidebarMenuButton>

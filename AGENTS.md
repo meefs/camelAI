@@ -49,6 +49,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `src/app/(admin)/qaml-backdoor/apps/*` | Admin Apps list/detail pages for worker scripts |
 | `src/components/admin/app-edit-form.tsx` | Admin app visibility editor |
 | `src/components/admin/app-danger-zone.tsx` | Admin app deletion actions |
+| `src/app/(app)/apps/apps-client.tsx` | Apps list UI with workspace filter tabs and data refresh |
+| `src/app/(app)/apps/AppCard.tsx` | App card layout, URL actions, and workspace badges |
 | `src/contexts/AuthContext.tsx` | React context for auth state |
 | `src/app/login/page.tsx` | Login page |
 | `src/app/signup/page.tsx` | Signup page |

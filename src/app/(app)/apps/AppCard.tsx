@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { AppCreator, WorkerScriptWithCreator } from '@/types';
+import type { AppCreator, WorkerScriptWithCreator, WorkspaceWithAccess } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -24,6 +24,8 @@ import {
 interface AppCardProps {
   app: WorkerScriptWithCreator;
   creator?: AppCreator;
+  workspace?: WorkspaceWithAccess | null;
+  showWorkspaceBadge?: boolean;
   isAdmin: boolean;
   hostname?: string;
   now?: number;
@@ -70,6 +72,8 @@ function getRelativeTime(timestamp: number, referenceTime?: number): string {
 export function AppCard({
   app,
   creator: creatorOverride,
+  workspace,
+  showWorkspaceBadge,
   isAdmin,
   hostname,
   now,
@@ -102,6 +106,25 @@ export function AppCard({
     : null;
   const showPreview = Boolean(previewUrl) && !previewFailed;
   const previewLoading = showPreview && !previewLoaded;
+  const workspaceBadge = showWorkspaceBadge && workspace ? (
+    <Badge
+      variant="secondary"
+      className="gap-1 pl-1 pr-2 text-[10px] text-muted-foreground max-w-[140px] min-w-0 shrink justify-start"
+    >
+      <Avatar size="xs">
+        <AvatarFallback
+          content={workspace.avatar.content}
+          style={{
+            backgroundColor: workspace.avatar.color,
+            color: getContrastTextColor(workspace.avatar.color),
+          }}
+        >
+          {workspace.avatar.content}
+        </AvatarFallback>
+      </Avatar>
+      <span className="truncate min-w-0">{workspace.name}</span>
+    </Badge>
+  ) : null;
 
   useEffect(() => {
     if (!copyMessage) return;
@@ -142,6 +165,11 @@ export function AppCard({
   return (
     <Card className="gap-0 overflow-hidden p-0">
       <div className="relative aspect-video w-full">
+        {workspaceBadge ? (
+          <div className="absolute right-2 top-2 z-10">
+            {workspaceBadge}
+          </div>
+        ) : null}
         {showPreview ? (
           <>
             <img

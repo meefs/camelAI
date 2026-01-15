@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -12,8 +12,9 @@ import { AppCardSkeleton } from './AppCardSkeleton';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { AlertCircle, Boxes } from 'lucide-react';
-import { getOrgApps } from '@/lib/server-actions/apps';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { AlertCircle, LayoutGrid } from 'lucide-react';
+import { getOrgApps, getOrgAppsAllWorkspaces } from '@/lib/server-actions/apps';
 
 interface AppsClientProps {
   initialApps: WorkerScriptWithCreator[];
@@ -28,23 +29,43 @@ export default function AppsClient({
   hostname,
   initialNow,
 }: AppsClientProps) {
-  const { currentOrg, orgs, loading: authLoading } = useAuth();
+  const {
+    currentOrg,
+    currentWorkspace,
+    orgs,
+    workspaces,
+    loading: authLoading,
+  } = useAuth();
 
   const [apps, setApps] = useState<WorkerScriptWithCreator[]>(initialApps);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'this-workspace' | 'all-workspaces'>('this-workspace');
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<WorkerScriptWithCreator | null>(null);
   const [activeOrgId, setActiveOrgId] = useState(orgId);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
+    currentWorkspace?.id ?? null
+  );
   const [referenceTime, setReferenceTime] = useState(initialNow);
+  const workspaceMap = useMemo(
+    () => new Map((workspaces ?? []).map((workspace) => [workspace.id, workspace])),
+    [workspaces]
+  );
 
   const refreshApps = useCallback(
-    async (targetOrgId = activeOrgId) => {
+    async (
+      nextFilter: 'this-workspace' | 'all-workspaces' = filter,
+      targetOrgId = activeOrgId
+    ) => {
       if (!targetOrgId) return;
       try {
         setLoading(true);
         setError(null);
-        const data = await getOrgApps(targetOrgId);
+        const data =
+          nextFilter === 'all-workspaces'
+            ? await getOrgAppsAllWorkspaces(targetOrgId)
+            : await getOrgApps(targetOrgId);
         setApps(data);
         setReferenceTime(Date.now());
       } catch (err) {
@@ -53,15 +74,24 @@ export default function AppsClient({
         setLoading(false);
       }
     },
-    [activeOrgId]
+    [activeOrgId, filter]
   );
 
   useEffect(() => {
     if (currentOrg?.id && currentOrg.id !== activeOrgId) {
       setActiveOrgId(currentOrg.id);
-      refreshApps(currentOrg.id);
+      refreshApps(filter, currentOrg.id);
     }
-  }, [currentOrg?.id, activeOrgId, refreshApps]);
+  }, [currentOrg?.id, activeOrgId, filter, refreshApps]);
+
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id ?? null;
+    if (workspaceId === activeWorkspaceId) return;
+    setActiveWorkspaceId(workspaceId);
+    if (filter === 'this-workspace' && workspaceId) {
+      refreshApps('this-workspace');
+    }
+  }, [activeWorkspaceId, currentWorkspace?.id, filter, refreshApps]);
 
   const handleOpenSettings = (app: WorkerScriptWithCreator) => {
     setSelectedApp(app);
@@ -69,7 +99,7 @@ export default function AppsClient({
   };
 
   const handleSettingsSuccess = () => {
-    void refreshApps(activeOrgId);
+    void refreshApps(filter, activeOrgId);
   };
 
   const handleSettingsDialogOpenChange = (open: boolean) => {
@@ -80,6 +110,10 @@ export default function AppsClient({
   };
 
   const handleStartChat = (app: WorkerScriptWithCreator) => {
+    // FIXME: Check if app.workspace_id !== currentWorkspace?.id and prompt workspace switch.
+    if (currentWorkspace?.id && app.workspace_id !== currentWorkspace.id) {
+      console.log('Start chat with app:', app.script_name, 'workspace:', app.workspace_id);
+    }
     // FIXME: Wire to workspace chat once app context handoff is supported.
     toast(`Chat for ${app.script_name} is coming soon.`);
   };
@@ -92,6 +126,15 @@ export default function AppsClient({
   const isLoading = authLoading || loading;
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
+  const currentWorkspaceId = currentWorkspace?.id ?? null;
+
+  const handleFilterChange = useCallback(
+    (value: 'this-workspace' | 'all-workspaces') => {
+      setFilter(value);
+      refreshApps(value);
+    },
+    [refreshApps]
+  );
 
   return (
     <>
@@ -107,6 +150,20 @@ export default function AppsClient({
                   Manage your deployed applications and their access settings.
                 </p>
               </div>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between">
+              <Tabs
+                value={filter}
+                onValueChange={(value) =>
+                  handleFilterChange(value as 'this-workspace' | 'all-workspaces')
+                }
+              >
+                <TabsList variant="line">
+                  <TabsTrigger value="this-workspace">This workspace</TabsTrigger>
+                  <TabsTrigger value="all-workspaces">All workspaces</TabsTrigger>
+                </TabsList>
+              </Tabs>
             </div>
 
             {error && (
@@ -127,7 +184,7 @@ export default function AppsClient({
             ) : apps.length === 0 ? (
               <Card className="mt-6 border-dashed p-0">
                 <div className="aspect-video w-full bg-muted/60 flex items-center justify-center">
-                  <Boxes className="size-6 text-muted-foreground" />
+                  <LayoutGrid className="size-6 text-muted-foreground" />
                 </div>
                 <CardHeader className="space-y-2 pb-4">
                   <CardTitle>No apps deployed yet</CardTitle>
@@ -144,6 +201,12 @@ export default function AppsClient({
                       key={app.script_name}
                       app={app}
                       creator={app.creator}
+                      workspace={workspaceMap.get(app.workspace_id) ?? null}
+                      showWorkspaceBadge={Boolean(
+                        filter === 'all-workspaces' &&
+                          currentWorkspaceId &&
+                          app.workspace_id !== currentWorkspaceId
+                      )}
                       isAdmin={isAdmin}
                       hostname={hostname}
                       now={referenceTime}

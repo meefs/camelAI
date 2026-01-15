@@ -549,6 +549,10 @@ export async function listWorkerScripts(orgId: string): Promise<WorkerScript[]> 
   return withRpc((rpc) => rpc.listWorkerScripts(orgId));
 }
 
+export async function listWorkerScriptsByWorkspace(workspaceId: string): Promise<WorkerScript[]> {
+  return withRpc((rpc) => rpc.listWorkerScriptsByWorkspace(workspaceId));
+}
+
 export async function getWorkerScript(
   orgId: string,
   scriptName: string
