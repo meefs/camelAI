@@ -289,6 +289,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const lastUserMessageRef = useRef<HTMLDivElement>(null);
   const assistantMeasureRef = useRef<HTMLDivElement>(null);
   const assistantSpacerRef = useRef<HTMLDivElement>(null);
+  const spacerHeightRef = useRef(0);
   const initialScrollDoneRef = useRef(false);
   const stickToBottomRef = useRef(true);
   const forceScrollOnNextUpdate = useRef(false);
@@ -607,9 +608,31 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         if (sdkEvent.type === 'stream_event') {
           const evt = sdkEvent.event;
           if (evt?.type === 'message_start') {
+            const currentMsgs = messagesRef.current;
+            const existingStreamingId = streamingMessageIdRef.current;
+            const existingStreamingMsg = existingStreamingId
+              ? currentMsgs.find(msg => msg.id === existingStreamingId)
+              : undefined;
+
+            if (existingStreamingMsg) {
+              // Claude emits a new message_start after each tool call; append to the active turn.
+              setMessages(prev => prev.map(msg =>
+                msg.id === existingStreamingId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+              ));
+              return;
+            }
+
+            const fallbackStreamingMsg = currentMsgs.find(msg => msg.isStreaming);
+            if (fallbackStreamingMsg) {
+              setStreamingMessageId(fallbackStreamingMsg.id);
+              setMessages(prev => prev.map(msg =>
+                msg.id === fallbackStreamingMsg.id ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+              ));
+              return;
+            }
+
             // Add new assistant message with isStreaming: true
             const msgId = evt.message?.id || (sdkEvent as { uuid?: string }).uuid || `stream_${Date.now()}`;
-            // Start streaming message
             setStreamingMessageId(msgId);
             const newMsg: Message = {
               id: msgId,
@@ -619,7 +642,6 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
               created_at: Date.now(),
               isStreaming: true,
             };
-            const currentMsgs = messagesRef.current;
             if (!currentMsgs.some(m => m.id === msgId)) {
               setMessages([...currentMsgs, newMsg]);
             }
@@ -1103,15 +1125,19 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   }, [shouldShowChat, threadId, visibleMessages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage, lastMessage?.id]);
 
   useLayoutEffect(() => {
-    if (!shouldRenderSpacer) return;
+    if (!shouldRenderSpacer) {
+      spacerHeightRef.current = 0;
+      return;
+    }
 
     const container = scrollContainerRef.current;
     const spacer = assistantSpacerRef.current;
     const userEl = lastUserMessageRef.current;
     const assistantEl = assistantMeasureRef.current;
-    if (!container || !spacer) return;
-
-    let frameId: number | null = null;
+    if (!container || !spacer) {
+      spacerHeightRef.current = 0;
+      return;
+    }
 
     const updateSpacer = () => {
       const measureUser = lastUserMessageRef.current;
@@ -1160,7 +1186,11 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       const availableHeight = container.clientHeight - overlap;
 
       const height = Math.max(availableHeight - exchangeHeight - rowGap - paddingBottom, 0);
-      spacer.style.height = `${height}px`;
+      const nextHeight = Math.max(Math.round(height), 0);
+      if (spacerHeightRef.current !== nextHeight) {
+        spacer.style.height = `${nextHeight}px`;
+        spacerHeightRef.current = nextHeight;
+      }
     };
 
     updateSpacer();
@@ -1168,16 +1198,10 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     if (typeof ResizeObserver === 'undefined') return;
 
     const observer = new ResizeObserver(() => {
-      if (frameId !== null) {
-        cancelAnimationFrame(frameId);
-      }
-      frameId = requestAnimationFrame(updateSpacer);
+      updateSpacer();
     });
 
     observer.observe(container);
-    if (messageColumnRef.current) {
-      observer.observe(messageColumnRef.current);
-    }
     if (userEl) {
       observer.observe(userEl);
     }
@@ -1186,9 +1210,6 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     }
 
     return () => {
-      if (frameId !== null) {
-        cancelAnimationFrame(frameId);
-      }
       observer.disconnect();
     };
   }, [shouldRenderSpacer, isAwaitingAssistant, lastMessage?.id, lastUserMessage?.id, visibleMessages.length, isStreaming, loading]);
@@ -1213,6 +1234,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     let frameId: number | null = null;
     const observer = new ResizeObserver(() => {
       if (!stickToBottomRef.current) return;
+      if (shouldRenderSpacer && spacerHeightRef.current > 0) return;
       if (frameId !== null) {
         cancelAnimationFrame(frameId);
       }
@@ -1229,7 +1251,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       }
       observer.disconnect();
     };
-  }, [scrollToBottom, shouldShowChat, threadId]);
+  }, [scrollToBottom, shouldShowChat, threadId, shouldRenderSpacer]);
 
   // Auto-scroll on new messages (only if near bottom, or forced after user sends)
   useLayoutEffect(() => {
