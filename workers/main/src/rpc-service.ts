@@ -6,6 +6,8 @@ import type {
   WorkerScript,
   WorkerScriptAccess,
   OrgThread,
+  WorkerScriptPreviewUpdateInput,
+  WorkerScriptPreviewUpdateResult,
   ProxyUsageInput,
 } from './auth';
 import {
@@ -13,6 +15,7 @@ import {
   validateAndConsumeAuthState,
   createWorkerAuthToken,
   validateAndConsumeAuthToken,
+  createScreenshotToken,
   createDispatcherSession,
   getDispatcherSession,
   touchDispatcherSession,
@@ -972,6 +975,8 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         created_at: script.created_at,
         updated_at: script.updated_at,
         is_public: script.is_public,
+        preview_status: script.preview_status ?? null,
+        preview_error: script.preview_error ?? null,
       };
     };
 
@@ -1311,6 +1316,8 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         created_at: entry.script.created_at,
         updated_at: entry.script.updated_at,
         is_public: entry.script.is_public,
+        preview_status: entry.script.preview_status ?? null,
+        preview_error: entry.script.preview_error ?? null,
       };
     });
 
@@ -2093,6 +2100,22 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       );
     }
     return script;
+  }
+
+  async updateWorkerScriptPreview(
+    orgId: string,
+    scriptName: string,
+    input: WorkerScriptPreviewUpdateInput
+  ): Promise<WorkerScriptPreviewUpdateResult> {
+    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
+    return orgStub.updateWorkerScriptPreview(scriptName, input);
+  }
+
+  async createScreenshotToken(orgId: string, scriptName: string): Promise<string> {
+    return createScreenshotToken(this.env.API_TOKENS, {
+      script_name: scriptName,
+      org_id: orgId,
+    });
   }
 
   /**

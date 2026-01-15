@@ -32,6 +32,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
      - `DoRpcService` - RPC entrypoint for cross-worker calls
    - `dispatcher/` - Routes `*.chiridion.app` to user workers (WfP)
    - `admin-cli/` - Local-only admin CLI for querying live environments
+   - `screenshot/` - Queue consumer that renders app previews via Browser Rendering and stores in R2
    - `proxy/` - Multi-provider LLM proxy worker (Anthropic/OpenAI-compatible/Bedrock/Azure Foundry) with token accounting
 
 3. **Sandbox** (`sandbox/`)
@@ -49,6 +50,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `src/app/(admin)/qaml-backdoor/apps/*` | Admin Apps list/detail pages for worker scripts |
 | `src/components/admin/app-edit-form.tsx` | Admin app visibility editor |
 | `src/components/admin/app-danger-zone.tsx` | Admin app deletion actions |
+| `src/app/(app)/apps/apps-client.tsx` | Apps list UI with workspace filter tabs and data refresh |
+| `src/app/(app)/apps/AppCard.tsx` | App card layout, URL actions, and workspace badges |
 | `src/contexts/AuthContext.tsx` | React context for auth state |
 | `src/app/login/page.tsx` | Login page |
 | `src/app/signup/page.tsx` | Signup page |
@@ -59,6 +62,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/main/src/auth.ts` | UserDO, OrgDO implementations (threads stored in OrgDO) |
 | `workers/main/src/password.ts` | PBKDF2 password hashing |
 | `workers/main/src/index.ts` | Worker entry point |
+| `workers/screenshot/src/index.ts` | Queue consumer for app preview screenshots |
 | `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
@@ -69,6 +73,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/proxy/src/index.ts` | LLM proxy worker entry (multi-provider, streaming, token usage) |
 | `workers/proxy/wrangler.jsonc` | Proxy worker deployment config |
 | `src/instrumentation.ts` | Next.js SSR error logging to Analytics Engine |
+| `src/app/api/apps/[scriptName]/preview/route.ts` | Authenticated preview image endpoint for app cards |
 
 ## Configuration Files
 
@@ -76,6 +81,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 |------|---------|
 | `wrangler.jsonc` | Main production/deployment config |
 | `wrangler.build.jsonc` | OpenNext build config |
+| `workers/screenshot/wrangler.jsonc` | Screenshot worker deployment config |
 | `components.json` | shadcn/ui configuration |
 | `.mcp.json` | MCP server config (shadcn registry access) |
 
@@ -120,6 +126,14 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 3. `ChatThreadDO` handles real-time preview state for each thread
 4. History can query threads across accessible workspaces via `getThreadsAllWorkspacesPaginated` on `OrgDO`
 
+### App Previews
+1. Deploy succeeds in `workers/main/src/index.ts` and enqueues an `APP_SCREENSHOT_QUEUE` job (local dev captures inline with Browser Rendering against `LOCAL_APP_PREVIEW_URL`, defaulting to `https://hello-world-test.chiridion.app/`).
+2. Screenshot worker renders `https://{script}.apps.{env}.chiridion.ai` via Browser Rendering.
+3. For private apps, the dispatcher exchanges the single-use screenshot token for a short-lived screenshot session cookie to allow asset requests.
+4. JPEG previews are stored in R2 under `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg`.
+5. OrgDO updates `worker_scripts.preview_*` fields for status + key.
+6. Apps page loads previews through `/api/apps/[scriptName]/preview` (org membership required).
+
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization
 - `stream_event` - Real-time streaming:
@@ -159,6 +173,11 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 | `/api/chat` | POST | Send message (REST fallback) |
 | `/ws/{org}` | WebSocket | Real-time chat (one connection per org) |
 
+### Apps (auth required)
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/apps/[scriptName]/preview` | GET | Stream app preview screenshot from R2 |
+
 ### Proxy Worker (separate service)
 | Route | Method | Purpose |
 |-------|--------|---------|
@@ -192,6 +211,7 @@ ANTHROPIC_API_KEY=your_key_here
 | `ANTHROPIC_API_KEY` | Claude API key for SDK |
 | `NEXTJS_ENV` | Environment (development/production) |
 | `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
+| `LOCAL_APP_PREVIEW_URL` | Optional override for local app preview screenshots (defaults to `https://hello-world-test.chiridion.app/`) |
 | `PROXY_BASE_URL` | Base URL for the LLM proxy used by sandbox containers (sets `ANTHROPIC_BASE_URL` in containers) |
 
 ### Proxy Worker Environment Variables (`workers/proxy`)

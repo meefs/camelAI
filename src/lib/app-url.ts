@@ -31,7 +31,12 @@ function getEnvPrefix(hostname: string): string {
   }
 
   // Handle localhost - use "local" environment
-  if (hostname === 'localhost' || hostname.startsWith('localhost:') || hostname.startsWith('127.0.0.1')) {
+  if (
+    hostname === 'localhost' ||
+    hostname.startsWith('localhost:') ||
+    hostname.startsWith('127.0.0.1') ||
+    hostname.endsWith('.local')
+  ) {
     return 'local';
   }
 

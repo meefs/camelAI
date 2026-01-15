@@ -81,6 +81,8 @@ export interface OrgIntegrationRecord {
   updated_at: number;
 }
 
+export type WorkerScriptPreviewStatus = 'pending' | 'ready' | 'failed';
+
 export interface WorkerScript {
   script_name: string;
   workspace_id: string;
@@ -88,6 +90,38 @@ export interface WorkerScript {
   created_at: number;
   updated_at: number;
   is_public: boolean;
+  preview_key: string | null;
+  preview_updated_at: number | null;
+  preview_status: WorkerScriptPreviewStatus | null;
+  preview_error: string | null;
+}
+
+export interface WorkerScriptPreviewUpdateInput {
+  status: WorkerScriptPreviewStatus;
+  preview_key?: string | null;
+  preview_error?: string | null;
+  preview_updated_at?: number;
+  deploy_ts?: number;
+}
+
+export interface WorkerScriptPreviewUpdateResult {
+  script: WorkerScript | null;
+  updated: boolean;
+  stale: boolean;
+}
+
+interface WorkerScriptRow {
+  [key: string]: SqlStorageValue;
+  script_name: string;
+  workspace_id: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  is_public: number;
+  preview_key: string | null;
+  preview_updated_at: number | null;
+  preview_status: WorkerScriptPreviewStatus | null;
+  preview_error: string | null;
 }
 
 export interface WorkerScriptAccess {
@@ -412,6 +446,7 @@ export class UserDO extends DurableObject<AuthEnv> {
 // Organization Durable Object - one per org
 export class OrgDO extends DurableObject<AuthEnv> {
   private sql: SqlStorage;
+  private workerScriptsHasPreviewColumns = true;
 
   constructor(ctx: DurableObjectState, env: AuthEnv) {
     super(ctx, env);
@@ -574,7 +609,36 @@ export class OrgDO extends DurableObject<AuthEnv> {
     }
 
     if (version < 7) {
-      // V7: Proxy usage rollups per user
+      // V7: Add preview metadata fields to worker_scripts
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_key TEXT');
+      } catch {
+        // Column may already exist
+      }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_updated_at INTEGER');
+      } catch {
+        // Column may already exist
+      }
+      try {
+        this.sql.exec("ALTER TABLE worker_scripts ADD COLUMN preview_status TEXT DEFAULT 'pending'");
+      } catch {
+        // Column may already exist
+      }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_error TEXT');
+      } catch {
+        // Column may already exist
+      }
+      try {
+        this.sql.exec("UPDATE worker_scripts SET preview_status = 'pending' WHERE preview_status IS NULL");
+      } catch {
+        // Skip update if columns are unavailable (fallback queries will handle nulls)
+      }
+      this.sql.exec('UPDATE _schema_version SET version = 7');
+    }
+    if (version < 8) { 
+      // V8: Proxy usage rollups per user
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS proxy_usage (
           user_id TEXT PRIMARY KEY,
@@ -590,8 +654,55 @@ export class OrgDO extends DurableObject<AuthEnv> {
           updated_at INTEGER NOT NULL
         )
       `);
-      this.sql.exec('UPDATE _schema_version SET version = 7');
+      this.sql.exec('UPDATE _schema_version SET version = 8');
     }
+
+    this.workerScriptsHasPreviewColumns = this.detectWorkerScriptPreviewColumns();
+  }
+
+  private detectWorkerScriptPreviewColumns(): boolean {
+    try {
+      const rows = this.sql.exec<{ name: string }>('PRAGMA table_info(worker_scripts)').toArray();
+      const names = new Set(rows.map((row) => row.name));
+      return (
+        names.has('preview_key') &&
+        names.has('preview_updated_at') &&
+        names.has('preview_status') &&
+        names.has('preview_error')
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private execWorkerScriptsQuery(
+    queryWithPreview: string,
+    queryBase: string,
+    params: Array<string | number>
+  ): WorkerScriptRow[] {
+    if (this.workerScriptsHasPreviewColumns) {
+      try {
+        return this.sql.exec<WorkerScriptRow>(queryWithPreview, ...params).toArray();
+      } catch {
+        this.workerScriptsHasPreviewColumns = false;
+      }
+    }
+    return this.sql.exec<WorkerScriptRow>(queryBase, ...params).toArray();
+  }
+
+  private toWorkerScript(row: WorkerScriptRow): WorkerScript {
+    return {
+      script_name: row.script_name,
+      workspace_id: row.workspace_id,
+      created_by: row.created_by,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      is_public: row.is_public === 1,
+      preview_key: row.preview_key ?? null,
+      preview_updated_at: row.preview_updated_at ?? null,
+      preview_status: row.preview_status ?? null,
+      preview_error: row.preview_error ?? null,
+    };
   }
 
   // Org info methods
@@ -963,12 +1074,9 @@ export class OrgDO extends DurableObject<AuthEnv> {
       );
       this.log('worker_script_updated', createdBy, scriptName, { workspace_id: workspaceId });
       return {
-        script_name: scriptName,
+        ...existing,
         workspace_id: workspaceId,
-        created_by: existing.created_by,
-        created_at: existing.created_at,
         updated_at: now,
-        is_public: existing.is_public,
       };
     }
 
@@ -988,52 +1096,34 @@ export class OrgDO extends DurableObject<AuthEnv> {
       created_at: now,
       updated_at: now,
       is_public: true,
+      preview_key: null,
+      preview_updated_at: null,
+      preview_status: 'pending',
+      preview_error: null,
     };
   }
 
   async getWorkerScript(scriptName: string): Promise<WorkerScript | null> {
-    const rows = this.sql.exec(
-      'SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public FROM worker_scripts WHERE script_name = ?',
-      scriptName
-    ).toArray() as unknown as Array<{
-      script_name: string;
-      workspace_id: string;
-      created_by: string;
-      created_at: number;
-      updated_at: number;
-      is_public: number;
-    }>;
+    const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                                     preview_key, preview_updated_at, preview_status, preview_error
+                              FROM worker_scripts WHERE script_name = ?`;
+    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
+                       FROM worker_scripts WHERE script_name = ?`;
+    const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [scriptName]);
     if (rows.length === 0) return null;
-    const row = rows[0];
-    return {
-      script_name: row.script_name,
-      workspace_id: row.workspace_id,
-      created_by: row.created_by,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      is_public: row.is_public === 1,
-    };
+    return this.toWorkerScript(rows[0]);
   }
 
   async listWorkerScripts(): Promise<WorkerScript[]> {
-    const rows = this.sql.exec(
-      'SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public FROM worker_scripts ORDER BY updated_at DESC'
-    ).toArray() as unknown as Array<{
-      script_name: string;
-      workspace_id: string;
-      created_by: string;
-      created_at: number;
-      updated_at: number;
-      is_public: number;
-    }>;
-    return rows.map((row) => ({
-      script_name: row.script_name,
-      workspace_id: row.workspace_id,
-      created_by: row.created_by,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      is_public: row.is_public === 1,
-    }));
+    const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                                     preview_key, preview_updated_at, preview_status, preview_error
+                              FROM worker_scripts ORDER BY updated_at DESC`;
+    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
+                       FROM worker_scripts ORDER BY updated_at DESC`;
+    const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, []);
+    return rows.map((row) => this.toWorkerScript(row));
   }
 
   async listWorkerScriptsPaginated(
@@ -1054,52 +1144,28 @@ export class OrgDO extends DurableObject<AuthEnv> {
     ).toArray() as unknown as Array<{ count: number }>;
     const total = countRows[0]?.count ?? 0;
 
-    const rows = this.sql.exec(
-      `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
-      ...params,
-      limit,
-      offset
-    ).toArray() as unknown as Array<{
-      script_name: string;
-      workspace_id: string;
-      created_by: string;
-      created_at: number;
-      updated_at: number;
-      is_public: number;
-    }>;
+    const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                                     preview_key, preview_updated_at, preview_status, preview_error
+                              FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
+    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
+                       FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
+    const items = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [...params, limit, offset]);
     return {
-      items: rows.map((row) => ({
-        script_name: row.script_name,
-        workspace_id: row.workspace_id,
-        created_by: row.created_by,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        is_public: row.is_public === 1,
-      })),
+      items: items.map((row) => this.toWorkerScript(row)),
       total,
     };
   }
 
   async listWorkerScriptsByWorkspace(workspaceId: string): Promise<WorkerScript[]> {
-    const rows = this.sql.exec(
-      'SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC',
-      workspaceId
-    ).toArray() as unknown as Array<{
-      script_name: string;
-      workspace_id: string;
-      created_by: string;
-      created_at: number;
-      updated_at: number;
-      is_public: number;
-    }>;
-    return rows.map((row) => ({
-      script_name: row.script_name,
-      workspace_id: row.workspace_id,
-      created_by: row.created_by,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      is_public: row.is_public === 1,
-    }));
+    const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                                     preview_key, preview_updated_at, preview_status, preview_error
+                              FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC`;
+    const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
+                       FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC`;
+    const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [workspaceId]);
+    return rows.map((row) => this.toWorkerScript(row));
   }
 
   async updateWorkerScript(scriptName: string, actorId: string): Promise<WorkerScript | null> {
@@ -1128,6 +1194,39 @@ export class OrgDO extends DurableObject<AuthEnv> {
       is_public: isPublic,
       updated_at: now,
     };
+  }
+
+  async updateWorkerScriptPreview(
+    scriptName: string,
+    input: WorkerScriptPreviewUpdateInput
+  ): Promise<WorkerScriptPreviewUpdateResult> {
+    const existing = await this.getWorkerScript(scriptName);
+    if (!existing) {
+      return { script: null, updated: false, stale: false };
+    }
+
+    if (!this.workerScriptsHasPreviewColumns) {
+      return { script: existing, updated: false, stale: false };
+    }
+
+    if (input.deploy_ts && existing.updated_at > input.deploy_ts) {
+      return { script: existing, updated: false, stale: true };
+    }
+
+    const previewUpdatedAt = input.preview_updated_at ?? Date.now();
+    this.sql.exec(
+      `UPDATE worker_scripts
+       SET preview_status = ?, preview_key = ?, preview_error = ?, preview_updated_at = ?
+       WHERE script_name = ?`,
+      input.status,
+      input.preview_key ?? null,
+      input.preview_error ?? null,
+      previewUpdatedAt,
+      scriptName
+    );
+
+    const script = await this.getWorkerScript(scriptName);
+    return { script, updated: true, stale: false };
   }
 
   async deleteWorkerScript(scriptName: string, actorId: string): Promise<boolean> {

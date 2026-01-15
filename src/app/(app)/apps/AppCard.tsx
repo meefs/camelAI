@@ -1,19 +1,20 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import type { AppCreator, WorkerScriptWithCreator } from '@/types';
+import { useEffect, useRef, useState } from 'react';
+import type { AppCreator, WorkerScriptWithCreator, WorkspaceWithAccess } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Input } from '@/components/ui/input';
 import { getAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
 import {
   Check,
   Copy,
   ExternalLink,
-  FileCode,
   Globe,
   Lock,
   MessageSquare,
@@ -23,6 +24,8 @@ import {
 interface AppCardProps {
   app: WorkerScriptWithCreator;
   creator?: AppCreator;
+  workspace?: WorkspaceWithAccess | null;
+  showWorkspaceBadge?: boolean;
   isAdmin: boolean;
   hostname?: string;
   now?: number;
@@ -69,6 +72,8 @@ function getRelativeTime(timestamp: number, referenceTime?: number): string {
 export function AppCard({
   app,
   creator: creatorOverride,
+  workspace,
+  showWorkspaceBadge,
   isAdmin,
   hostname,
   now,
@@ -78,6 +83,9 @@ export function AppCard({
 }: AppCardProps) {
   const [copied, setCopied] = useState(false);
   const [copyMessage, setCopyMessage] = useState('');
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const [previewLoaded, setPreviewLoaded] = useState(false);
+  const previewRef = useRef<HTMLImageElement | null>(null);
   const appUrl = getAppUrl(app.script_name, hostname);
   const displayUrl = appUrl.replace(/^https?:\/\//, '');
   const creator = creatorOverride ?? app.creator;
@@ -92,6 +100,31 @@ export function AppCard({
     : undefined;
   // FIXME: Derive from source_path once deployment metadata is available.
   const sourceLabel = 'index.html';
+  const previewVersion = app.preview_updated_at ?? app.updated_at;
+  const previewUrl = app.preview_status === 'ready' && app.preview_key
+    ? `/api/apps/${encodeURIComponent(app.script_name)}/preview?v=${previewVersion}`
+    : null;
+  const showPreview = Boolean(previewUrl) && !previewFailed;
+  const previewLoading = showPreview && !previewLoaded;
+  const workspaceBadge = showWorkspaceBadge && workspace ? (
+    <Badge
+      variant="secondary"
+      className="gap-1 pl-1 pr-2 text-[10px] text-muted-foreground max-w-[140px] min-w-0 shrink justify-start"
+    >
+      <Avatar size="xs">
+        <AvatarFallback
+          content={workspace.avatar.content}
+          style={{
+            backgroundColor: workspace.avatar.color,
+            color: getContrastTextColor(workspace.avatar.color),
+          }}
+        >
+          {workspace.avatar.content}
+        </AvatarFallback>
+      </Avatar>
+      <span className="truncate min-w-0">{workspace.name}</span>
+    </Badge>
+  ) : null;
 
   useEffect(() => {
     if (!copyMessage) return;
@@ -101,6 +134,22 @@ export function AppCard({
     }, 2000);
     return () => window.clearTimeout(timer);
   }, [copyMessage]);
+
+  useEffect(() => {
+    setPreviewFailed(false);
+    setPreviewLoaded(false);
+  }, [previewUrl]);
+
+  useEffect(() => {
+    if (!showPreview || previewLoaded || previewFailed) return;
+    const img = previewRef.current;
+    if (!img || !img.complete) return;
+    if (img.naturalWidth > 0) {
+      setPreviewLoaded(true);
+    } else {
+      setPreviewFailed(true);
+    }
+  }, [previewFailed, previewLoaded, previewUrl, showPreview]);
 
   const handleCopy = async () => {
     try {
@@ -114,12 +163,42 @@ export function AppCard({
   };
 
   return (
-    <Card className="p-0">
-      <div className="aspect-video w-full bg-muted/80 flex items-center justify-center">
-        <Globe className="size-8 text-muted-foreground/50" />
+    <Card className="gap-0 overflow-hidden p-0">
+      <div className="relative aspect-video w-full">
+        {workspaceBadge ? (
+          <div className="absolute right-2 top-2 z-10">
+            {workspaceBadge}
+          </div>
+        ) : null}
+        {showPreview ? (
+          <>
+            <img
+              ref={previewRef}
+              src={previewUrl ?? undefined}
+              alt={`${app.script_name} preview`}
+              className={`h-full w-full object-cover transition-opacity duration-300 ${previewLoaded ? 'opacity-100' : 'opacity-0'}`}
+              loading="lazy"
+              decoding="async"
+              onLoad={() => setPreviewLoaded(true)}
+              onError={() => {
+                setPreviewFailed(true);
+                setPreviewLoaded(false);
+              }}
+            />
+            {previewLoading ? (
+              <div className="absolute inset-0" aria-hidden="true">
+                <Skeleton className="h-full w-full rounded-none" />
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-muted/80 via-muted/40 to-muted/80">
+            <Globe className="size-8 text-muted-foreground/60" />
+          </div>
+        )}
       </div>
-      <CardHeader className="space-y-3 pb-3">
-        <div className="flex items-start justify-between gap-3">
+      <CardHeader className="pb-2 pt-4">
+        <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 space-y-1">
             <CardTitle className="truncate text-base font-semibold">
               {app.script_name}
@@ -130,10 +209,9 @@ export function AppCard({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  className="h-6 px-0 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
                   onClick={() => onViewSource(app)}
                 >
-                  <FileCode className="size-3" />
                   <span>{sourceLabel}</span>
                 </Button>
               </TooltipTrigger>
@@ -154,7 +232,7 @@ export function AppCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-3 pb-4 pt-0">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2 text-xs/relaxed text-muted-foreground">
           <Avatar size="2xs">
             <AvatarFallback content={creatorContent} style={creatorFallbackStyle}>
               {creatorContent}
@@ -164,41 +242,50 @@ export function AppCard({
           <span aria-hidden="true">&middot;</span>
           <span>Updated {getRelativeTime(app.updated_at, now)}</span>
         </div>
-        <div className="flex items-center justify-between gap-2">
-          <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
-            {displayUrl}
-          </span>
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="relative">
+              <Input
+                readOnly
+                value={displayUrl}
+                aria-label="App URL"
+                className="h-9 truncate pr-16 text-xs/relaxed text-muted-foreground"
+              />
+              <div className="absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-1">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={copied ? 'Copied URL' : 'Copy URL'}
+                      onClick={handleCopy}
+                    >
+                      {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{copied ? 'Copied!' : 'Copy URL'}</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Open in new tab"
+                      onClick={() => {
+                        window.open(appUrl, '_blank', 'noopener,noreferrer');
+                      }}
+                    >
+                      <ExternalLink className="size-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Open in new tab</TooltipContent>
+                </Tooltip>
+              </div>
+            </div>
+          </div>
           <div className="flex items-center gap-1">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={copied ? 'Copied URL' : 'Copy URL'}
-                  onClick={handleCopy}
-                >
-                  {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{copied ? 'Copied!' : 'Copy URL'}</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Open in new tab"
-                  onClick={() => {
-                    window.open(appUrl, '_blank', 'noopener,noreferrer');
-                  }}
-                >
-                  <ExternalLink className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Open in new tab</TooltipContent>
-            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button

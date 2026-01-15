@@ -9,7 +9,6 @@ import {
   signup as signupAction,
   switchOrg as switchOrgAction,
   switchWorkspace as switchWorkspaceAction,
-  type AuthResult,
 } from '@/lib/server-actions/auth';
 
 interface AuthContextValue extends AuthState {

@@ -6,6 +6,8 @@ import { UserDO, OrgDO, type AuthEnv } from "./auth.js";
 import { WorkspaceContainer, handleWebSocketUpgrade, type WorkspaceContainerEnv } from './workspace-container.js';
 import { WorkspaceDO, type WorkspaceInfo } from './workspace.js';
 import { getSession as getSessionKV } from './session-kv.js';
+import { createScreenshotToken } from './worker-auth.js';
+import puppeteer, { type Page } from '@cloudflare/puppeteer';
 export { DoRpcService } from './rpc-service.js';
 
 // Export WorkspaceContainer as ThreadSandbox to match wrangler.jsonc class_name
@@ -23,6 +25,16 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
   return null;
 }
 
+interface AppScreenshotJob {
+  script_name: string;
+  org_id: string;
+  workspace_id: string;
+  deploy_ts: number;
+  env_prefix: string;
+  is_public: boolean;
+  screenshot_token?: string;
+}
+
 interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv {
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
@@ -33,6 +45,9 @@ interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv {
   CF_DISPATCH_NAMESPACE?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
+  APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
+  BROWSER?: Fetcher;
+  LOCAL_APP_PREVIEW_URL?: string;
 }
 
 const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
@@ -40,6 +55,22 @@ const CHIRIDION_THREAD_TOKEN_HEADER = 'X-Chiridion-Thread-Deploy-Token';
 
 // Token TTL (24 hours in seconds)
 const TOKEN_TTL_SECONDS = 86400;
+const PREVIEW_PREFIX = 'app-previews';
+const LOCAL_PREVIEW_URL = 'https://hello-world-test.chiridion.app/';
+const VIEWPORT = {
+  width: 1280,
+  height: 720,
+  deviceScaleFactor: 1.5,
+};
+const SCREENSHOT_CLIP = {
+  x: 0,
+  y: 0,
+  width: VIEWPORT.width,
+  height: VIEWPORT.height,
+};
+const NAVIGATION_TIMEOUT_MS = 30_000;
+const READY_TIMEOUT_MS = 1500;
+const POST_LOAD_DELAY_MS = 600;
 
 /**
  * Generate a per-thread deploy token and store in KV.
@@ -64,6 +95,33 @@ async function mintPerThreadDeployToken(
   return token;
 }
 
+function getEnvPrefix(hostname: string): string {
+  if (hostname.endsWith('.chiridion.ai') || hostname === 'chiridion.ai') {
+    const parts = hostname.split('.');
+    if (parts.length <= 2 || parts[0] === 'www') {
+      return '';
+    }
+    return parts[0] ?? '';
+  }
+
+  if (hostname === 'localhost' || hostname.startsWith('127.0.0.1') || hostname.endsWith('.local')) {
+    return 'local';
+  }
+
+  return '';
+}
+
+function resolveEnvPrefix(baseUrl: string | undefined, hostname: string): string {
+  if (baseUrl) {
+    try {
+      return getEnvPrefix(new URL(baseUrl).hostname);
+    } catch {
+      return getEnvPrefix(hostname);
+    }
+  }
+  return getEnvPrefix(hostname);
+}
+
 function json(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data), {
     ...init,
@@ -85,6 +143,184 @@ function cfApiError(code: number, message: string, status: number): Response {
     messages: [],
     result: null,
   }, { status });
+}
+
+function buildPreviewKeys(job: AppScreenshotJob): { currentKey: string; versionedKey: string } {
+  const base = `${PREVIEW_PREFIX}/${job.org_id}/${job.workspace_id}/${job.script_name}`;
+  return {
+    currentKey: `${base}/current.jpg`,
+    versionedKey: `${base}/${job.deploy_ts}.jpg`,
+  };
+}
+
+function getLocalPreviewUrl(env: Env): string {
+  const override = env.LOCAL_APP_PREVIEW_URL?.trim();
+  return override ? override : LOCAL_PREVIEW_URL;
+}
+
+function truncateError(err: unknown, maxLength = 500): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.length <= maxLength) return message;
+  return `${message.slice(0, maxLength)}...`;
+}
+
+async function navigateWithFallback(page: Page, targetUrl: string, logContext: Record<string, unknown>) {
+  try {
+    const response = await page.goto(targetUrl, {
+      waitUntil: 'networkidle0',
+      timeout: NAVIGATION_TIMEOUT_MS,
+    });
+    return { response, waitUntil: 'networkidle0' as const };
+  } catch (err) {
+    console.warn('[cf-api-proxy] local navigation fallback', {
+      ...logContext,
+      error: truncateError(err),
+      from: 'networkidle0',
+      to: 'domcontentloaded',
+    });
+    const response = await page.goto(targetUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: NAVIGATION_TIMEOUT_MS,
+    });
+    return { response, waitUntil: 'domcontentloaded' as const };
+  }
+}
+
+async function waitForReadySignal(page: Page): Promise<void> {
+  try {
+    await page.waitForFunction(
+      () => {
+        const root = document.documentElement;
+        if (root?.dataset?.chiridionReady === 'true') return true;
+        if (document.body?.dataset?.chiridionReady === 'true') return true;
+        return Boolean(document.querySelector('[data-chiridion-ready="true"]'));
+      },
+      { timeout: READY_TIMEOUT_MS }
+    );
+  } catch {
+    // Optional signal - ignore timeout.
+  }
+}
+
+async function captureLocalPreview(env: Env, job: AppScreenshotJob): Promise<void> {
+  const orgStub = env.ORG.get(env.ORG.idFromName(job.org_id));
+  if (!env.BROWSER) {
+    const errorMessage = 'Missing BROWSER binding for local screenshot capture.';
+    await orgStub.updateWorkerScriptPreview(job.script_name, {
+      status: 'failed',
+      preview_key: null,
+      preview_error: errorMessage,
+      deploy_ts: job.deploy_ts,
+    });
+    console.warn('[cf-api-proxy] local screenshot skipped (missing BROWSER)', {
+      scriptName: job.script_name,
+      orgId: job.org_id,
+    });
+    return;
+  }
+
+  const targetUrl = getLocalPreviewUrl(env);
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+  let page: Page | null = null;
+
+  try {
+    browser = await puppeteer.launch(env.BROWSER);
+    page = await browser.newPage();
+    await page.setViewport(VIEWPORT);
+    const { response, waitUntil } = await navigateWithFallback(page, targetUrl, {
+      scriptName: job.script_name,
+      orgId: job.org_id,
+    });
+    console.log('[cf-api-proxy] local navigation complete', {
+      scriptName: job.script_name,
+      orgId: job.org_id,
+      status: response?.status() ?? null,
+      waitUntil,
+    });
+    if (response && !response.ok()) {
+      const statusText = typeof response.statusText === 'function' ? response.statusText() : '';
+      throw new Error(
+        `Navigation failed with status ${response.status()}${statusText ? ` ${statusText}` : ''} for ${targetUrl}`
+      );
+    }
+    await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
+    await waitForReadySignal(page);
+    await page.waitForTimeout(POST_LOAD_DELAY_MS);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const image = (await page.screenshot({
+      type: 'jpeg',
+      quality: 80,
+      clip: SCREENSHOT_CLIP,
+    })) as Buffer;
+
+    const { currentKey, versionedKey } = buildPreviewKeys(job);
+    await env.R2_BUCKET.put(versionedKey, image, {
+      httpMetadata: {
+        contentType: 'image/jpeg',
+        cacheControl: 'public, max-age=31536000, immutable',
+      },
+      customMetadata: {
+        script_name: job.script_name,
+        org_id: job.org_id,
+        workspace_id: job.workspace_id,
+        deploy_ts: String(job.deploy_ts),
+      },
+    });
+    await env.R2_BUCKET.put(currentKey, image, {
+      httpMetadata: {
+        contentType: 'image/jpeg',
+        cacheControl: 'public, max-age=300',
+      },
+      customMetadata: {
+        script_name: job.script_name,
+        org_id: job.org_id,
+        workspace_id: job.workspace_id,
+        deploy_ts: String(job.deploy_ts),
+      },
+    });
+
+    const updateResult = await orgStub.updateWorkerScriptPreview(job.script_name, {
+      status: 'ready',
+      preview_key: currentKey,
+      preview_error: null,
+      deploy_ts: job.deploy_ts,
+    });
+
+    if (updateResult.stale) {
+      console.log('[cf-api-proxy] local preview update skipped (stale)', {
+        scriptName: job.script_name,
+        orgId: job.org_id,
+      });
+      return;
+    }
+
+    console.log('[cf-api-proxy] local preview captured', {
+      scriptName: job.script_name,
+      orgId: job.org_id,
+      targetUrl,
+    });
+  } catch (err) {
+    const errorMessage = truncateError(err);
+    console.error('[cf-api-proxy] local preview capture failed', {
+      scriptName: job.script_name,
+      orgId: job.org_id,
+      error: errorMessage,
+    });
+
+    await orgStub.updateWorkerScriptPreview(job.script_name, {
+      status: 'failed',
+      preview_key: null,
+      preview_error: errorMessage,
+      deploy_ts: job.deploy_ts,
+    });
+  } finally {
+    if (page) {
+      await page.close();
+    }
+    if (browser) {
+      await browser.close();
+    }
+  }
 }
 
 const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+$/;
@@ -135,17 +371,128 @@ async function registerScriptOwnership(
   env: Env,
   scriptName: string,
   orgId: string,
-  workspaceId: string
-): Promise<void> {
+  workspaceId: string,
+  threadId?: string
+) {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  // Use "system:deploy" as actor for automated deploys
+  let createdBy = 'system:deploy';
+  if (threadId) {
+    try {
+      const thread = await orgStub.getThread(threadId);
+      if (thread?.created_by && thread.workspace_id === workspaceId) {
+        createdBy = thread.created_by;
+      }
+    } catch (err) {
+      console.warn('[cf-api-proxy] failed to resolve deploy creator', {
+        threadId,
+        orgId,
+        workspaceId,
+        error: String(err),
+      });
+    }
+  }
   // registerWorkerScript preserves existing is_public on redeploy, or defaults to true for new scripts
-  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, 'system:deploy');
+  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy);
   // Update the denormalized KV index with the actual is_public value
   await env.API_TOKENS.put(
     `${SCRIPT_ORG_PREFIX}${scriptName}`,
     JSON.stringify({ org_id: orgId, is_public: script.is_public })
   );
+  return script;
+}
+
+async function handleDeploySideEffects(
+  env: Env,
+  info: {
+    scriptName: string;
+    orgId: string;
+    workspaceId: string;
+    hostname: string;
+    threadId?: string;
+  }
+): Promise<void> {
+  const { scriptName, orgId, workspaceId, hostname, threadId } = info;
+  const script = await registerScriptOwnership(env, scriptName, orgId, workspaceId, threadId);
+  console.log('[cf-api-proxy] registered script ownership', {
+    scriptName,
+    orgId,
+    workspaceId,
+  });
+
+  const envPrefix = resolveEnvPrefix(env.WORKER_BASE_URL, hostname);
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  const previewResult = await orgStub.updateWorkerScriptPreview(scriptName, {
+    status: 'pending',
+    preview_key: null,
+    preview_error: null,
+    deploy_ts: script.updated_at,
+  });
+
+  if (previewResult.stale) {
+    console.log('[cf-api-proxy] skipping stale screenshot request', {
+      scriptName,
+      orgId,
+      deployTs: script.updated_at,
+      updatedAt: previewResult.script?.updated_at ?? null,
+    });
+    return;
+  }
+
+  const jobBase: AppScreenshotJob = {
+    script_name: scriptName,
+    org_id: orgId,
+    workspace_id: workspaceId,
+    deploy_ts: script.updated_at,
+    env_prefix: envPrefix,
+    is_public: script.is_public,
+  };
+
+  if (envPrefix === 'local') {
+    await captureLocalPreview(env, jobBase);
+    return;
+  }
+
+  if (!env.APP_SCREENSHOT_QUEUE) {
+    return;
+  }
+
+  const screenshotToken = script.is_public
+    ? undefined
+    : await createScreenshotToken(env.API_TOKENS, {
+        script_name: scriptName,
+        org_id: orgId,
+      });
+
+  const job: AppScreenshotJob = {
+    ...jobBase,
+    ...(screenshotToken ? { screenshot_token: screenshotToken } : {}),
+  };
+
+  try {
+    await env.APP_SCREENSHOT_QUEUE.send(job, {
+      contentType: 'json',
+      messageId: `${scriptName}:${script.updated_at}`,
+    });
+    console.log('[cf-api-proxy] queued app screenshot', {
+      scriptName,
+      orgId,
+      workspaceId,
+      deployTs: script.updated_at,
+    });
+  } catch (err) {
+    console.error('[cf-api-proxy] failed to enqueue app screenshot', {
+      scriptName,
+      orgId,
+      workspaceId,
+      error: String(err),
+    });
+    await orgStub.updateWorkerScriptPreview(scriptName, {
+      status: 'failed',
+      preview_key: null,
+      preview_error: String(err),
+      deploy_ts: script.updated_at,
+    });
+  }
 }
 
 function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
@@ -658,24 +1005,22 @@ async function proxyCloudflareApi(request: Request, env: Env, ctx: ExecutionCont
       const dispatchNs = decodeURIComponent(scriptMatch[2]!);
       const scriptName = decodeURIComponent(scriptMatch[3]!);
 
-      // Register script ownership (or update last_deployed timestamp)
+      // Register script ownership and enqueue screenshots
       ctx.waitUntil(
-        registerScriptOwnership(env, scriptName, orgId, workspaceId)
-          .then(() => {
-            console.log('[cf-api-proxy] registered script ownership', {
-              scriptName,
-              orgId,
-              workspaceId,
-            });
-          })
-          .catch(err => {
-            console.error('[cf-api-proxy] failed to register script ownership', {
-              scriptName,
-              orgId,
-              workspaceId,
-              error: String(err),
-            });
-          })
+        handleDeploySideEffects(env, {
+          scriptName,
+          orgId,
+          workspaceId,
+          hostname: url.hostname,
+          threadId,
+        }).catch(err => {
+          console.error('[cf-api-proxy] failed to process deploy side effects', {
+            scriptName,
+            orgId,
+            workspaceId,
+            error: String(err),
+          });
+        })
       );
 
       // Sync integration secrets to deployed worker

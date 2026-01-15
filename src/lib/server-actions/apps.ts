@@ -13,6 +13,10 @@ function toSafeWorkerScript(script: authDO.WorkerScript): WorkerScript {
     created_at: script.created_at,
     updated_at: script.updated_at,
     is_public: script.is_public,
+    preview_key: script.preview_key,
+    preview_updated_at: script.preview_updated_at,
+    preview_status: script.preview_status,
+    preview_error: script.preview_error,
   };
 }
 
@@ -30,9 +34,7 @@ function toCreator(profile: CachedProfile): AppCreator {
   };
 }
 
-export async function getOrgApps(orgId: string): Promise<WorkerScriptWithCreator[]> {
-  await requireOrgMember(orgId, 'You must be a member of this organization');
-  const scripts = await authDO.listWorkerScripts(orgId);
+async function hydrateScripts(scripts: authDO.WorkerScript[]): Promise<WorkerScriptWithCreator[]> {
   const safeScripts = scripts.map(toSafeWorkerScript);
   const creatorIds = Array.from(
     new Set(
@@ -52,6 +54,45 @@ export async function getOrgApps(orgId: string): Promise<WorkerScriptWithCreator
     ...script,
     creator: creatorMap.get(script.created_by),
   }));
+}
+
+async function requireWorkspaceId(orgId: string) {
+  const session = await requireOrgMember(orgId, 'You must be a member of this organization');
+  const workspaceId = session.workspace_id;
+  if (!workspaceId) {
+    throw new Error('No workspace selected');
+  }
+  const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id);
+  if (access === 'none') {
+    throw new Error('Workspace not found');
+  }
+  return { session, workspaceId };
+}
+
+export async function getOrgApps(orgId: string): Promise<WorkerScriptWithCreator[]> {
+  const { workspaceId } = await requireWorkspaceId(orgId);
+  const scripts = await authDO.listWorkerScripts(orgId);
+  const filtered = scripts.filter((script) => script.workspace_id === workspaceId);
+  return hydrateScripts(filtered);
+}
+
+export async function getOrgAppsAllWorkspaces(
+  orgId: string
+): Promise<WorkerScriptWithCreator[]> {
+  const session = await requireOrgMember(orgId, 'You must be a member of this organization');
+  const workspaces = await authDO.listUserWorkspaces(session.user_id, orgId);
+  const accessibleIds = workspaces
+    .filter((workspace) => workspace.access_level !== 'none')
+    .map((workspace) => workspace.id);
+
+  if (accessibleIds.length === 0) {
+    return [];
+  }
+
+  const scripts = await authDO.listWorkerScripts(orgId);
+  const allowedIds = new Set(accessibleIds);
+  const filtered = scripts.filter((script) => allowedIds.has(script.workspace_id));
+  return hydrateScripts(filtered);
 }
 
 export async function setAppPublic(
