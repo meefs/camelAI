@@ -42,7 +42,7 @@ export async function GET(request: Request) {
     redirect(loginUrl.toString());
   }
 
-  const { session, user } = sessionWithUser;
+  const { user } = sessionWithUser;
 
   // Validate and consume the auth state
   const authState = await authDO.validateAndConsumeWorkerAuthState(state);

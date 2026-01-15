@@ -31,7 +31,7 @@ import {
   createThread as createThreadAction,
   getThreadMessages,
 } from '@/lib/server-actions/thread';
-import { getAppUrl, getAppIframeUrl, getVanityDomain, getIframeDomain } from '@/lib/app-url';
+import { getVanityDomain, getIframeDomain } from '@/lib/app-url';
 
 interface ChatProps {
   threadId?: string;
@@ -350,8 +350,6 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
   const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
-  // Queue message to send when connection becomes ready
-  const pendingMessageRef = useRef<string | null>(null);
   const resolvedWorkspaceId = currentWorkspace?.id ?? workspaceId;
   // Use static key for pending messages - threadId in payload ensures correct matching
   // This avoids issues when workspace changes between welcome screen and chat page
@@ -432,7 +430,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     } catch (e) {
       console.error('Failed to fetch messages:', e);
     }
-  }, []);
+  }, [setMessages]);
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
@@ -719,7 +717,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       }
     };
 
-    ws.onclose = (event) => {
+    ws.onclose = () => {
       // Ignore if this connection was superseded by a new one
       if (connectionIdRef.current !== thisConnectionId) {
         return;
@@ -756,7 +754,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       }
     };
 
-  }, [fetchMessages, persistSessionState, resolvedWorkspaceId, threadId, isNewThread]);
+  }, [fetchMessages, persistSessionState, resolvedWorkspaceId, isNewThread, setMessages, setPendingMessages, setStreamingMessageId]);
 
   // Keep the ref updated with the latest function
   connectWebSocketRef.current = connectWebSocket;

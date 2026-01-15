@@ -108,7 +108,7 @@ export async function GET(
 
     // Check if user exists with this OAuth provider
     let userId: string;
-    let existingOAuthUser = await authDO.getUserByOAuthProvider(provider, userInfo.providerId);
+    const existingOAuthUser = await authDO.getUserByOAuthProvider(provider, userInfo.providerId);
 
     if (existingOAuthUser) {
       // User exists with this OAuth provider - log them in
