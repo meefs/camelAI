@@ -649,6 +649,106 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return stub.verifyPassword(password);
   }
 
+  // OAuth functions
+  async getUserByOAuthProvider(
+    provider: 'google' | 'github',
+    providerId: string
+  ): Promise<{ userId: string; user: UserProfile } | null> {
+    // Look up in KV: oauth:{provider}:{providerId} -> userId
+    const kvKey = `oauth:${provider}:${providerId}`;
+    const userId = await this.env.EMAIL_TO_USER.get(kvKey);
+    if (!userId) return null;
+
+    using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+    const user = await stub.getProfile();
+    if (!user) return null;
+
+    return { userId, user };
+  }
+
+  async createUserFromOAuth(
+    email: string,
+    name: string | null,
+    provider: 'google' | 'github',
+    providerId: string
+  ): Promise<{ userId: string; user: UserProfile }> {
+    const normalizedEmail = email.toLowerCase();
+    const emailKvKey = `email:${normalizedEmail}`;
+    const oauthKvKey = `oauth:${provider}:${providerId}`;
+
+    // Check if email already exists
+    const existingUserId = await this.env.EMAIL_TO_USER.get(emailKvKey);
+    if (existingUserId) {
+      throw new Error('An account with this email already exists');
+    }
+
+    // Check if OAuth provider already linked
+    const existingOAuthUserId = await this.env.EMAIL_TO_USER.get(oauthKvKey);
+    if (existingOAuthUserId) {
+      throw new Error('This OAuth account is already linked to another user');
+    }
+
+    const userId = crypto.randomUUID();
+
+    // Claim the email and OAuth provider
+    await Promise.all([
+      this.env.EMAIL_TO_USER.put(emailKvKey, userId),
+      this.env.EMAIL_TO_USER.put(oauthKvKey, userId),
+    ]);
+
+    // Verify we still own them
+    const [verifyEmail, verifyOAuth] = await Promise.all([
+      this.env.EMAIL_TO_USER.get(emailKvKey),
+      this.env.EMAIL_TO_USER.get(oauthKvKey),
+    ]);
+
+    if (verifyEmail !== userId || verifyOAuth !== userId) {
+      // Clean up and abort
+      await Promise.all([
+        this.env.EMAIL_TO_USER.delete(emailKvKey),
+        this.env.EMAIL_TO_USER.delete(oauthKvKey),
+      ]);
+      throw new Error('An account with this email or OAuth provider already exists');
+    }
+
+    try {
+      using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+      const user = await stub.createUserFromOAuth(userId, normalizedEmail, name, provider, providerId);
+      return { userId, user };
+    } catch (error) {
+      // Clean up on failure
+      await Promise.all([
+        this.env.EMAIL_TO_USER.delete(emailKvKey),
+        this.env.EMAIL_TO_USER.delete(oauthKvKey),
+      ]);
+      throw error;
+    }
+  }
+
+  async linkOAuthProvider(
+    userId: string,
+    provider: 'google' | 'github',
+    providerId: string
+  ): Promise<void> {
+    const oauthKvKey = `oauth:${provider}:${providerId}`;
+
+    // Check if already linked to another user
+    const existingUserId = await this.env.EMAIL_TO_USER.get(oauthKvKey);
+    if (existingUserId && existingUserId !== userId) {
+      throw new Error('This OAuth account is already linked to another user');
+    }
+
+    // Link in KV and DO
+    await this.env.EMAIL_TO_USER.put(oauthKvKey, userId);
+    using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+    await stub.linkOAuthProvider(provider, providerId);
+  }
+
+  async getUserOAuthProviders(userId: string): Promise<Array<{ provider: string; provider_id: string; linked_at: number }>> {
+    using stub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
+    return stub.getOAuthProviders();
+  }
+
   async getUserOrgs(userId: string): Promise<OrgMembership[]> {
     using userStub = asDisposable(this.env.USER.get(this.env.USER.idFromName(userId)));
     const userOrgs = await userStub.getOrgs();

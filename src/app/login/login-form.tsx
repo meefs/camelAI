@@ -12,6 +12,7 @@ import { RadialGridBackground } from '@/components/ui/radial-grid-background';
 import { SlotMachinePrompt } from '@/components/ui/slot-machine-prompt';
 import { AlertCircle } from 'lucide-react';
 import { LogoIcon } from '@/components/ui/logo';
+import { OAuthButtons, OAuthDivider } from '@/components/auth/oauth-buttons';
 
 const inspirationalPrompts = [
   "Alert me in Slack whenever someone signs up with a .edu email address",
@@ -79,6 +80,10 @@ export function LoginForm({ redirectTo }: LoginFormProps) {
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
               )}
+
+              <OAuthButtons redirectUrl={redirectTo} disabled={submitting} />
+
+              <OAuthDivider text="or continue with email" />
 
               <div className="grid gap-4">
                 <div className="grid gap-1.5">

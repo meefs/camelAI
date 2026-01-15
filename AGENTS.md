@@ -57,6 +57,9 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `src/app/signup/page.tsx` | Signup page |
 | `src/lib/auth.ts` | Cookie handling, validation helpers |
 | `src/lib/auth-do.ts` | Functions to interact with auth DOs |
+| `src/lib/oauth-config.ts` | OAuth provider configuration (Google, GitHub) |
+| `src/components/auth/oauth-buttons.tsx` | OAuth sign-in buttons component |
+| `workers/main/src/oauth-state.ts` | OAuth state management for CSRF protection |
 | `workers/main/src/durable-objects.ts` | ChatThreadDO for thread preview state |
 | `workers/main/src/container.ts` | Container lifecycle and WebSocket routing |
 | `workers/main/src/auth.ts` | UserDO, OrgDO implementations (threads stored in OrgDO) |
@@ -162,6 +165,14 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 |-------|--------|---------|
 | `/api/integrations/types` | GET | List available integration types |
 
+### OAuth (public)
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/auth/google` | GET | Initiate Google OAuth flow |
+| `/api/auth/google/callback` | GET | Google OAuth callback |
+| `/api/auth/github` | GET | Initiate GitHub OAuth flow |
+| `/api/auth/github/callback` | GET | GitHub OAuth callback |
+
 ### Chat (auth required)
 | Route | Method | Purpose |
 |-------|--------|---------|
@@ -204,6 +215,10 @@ Default ports: proxy `3100`, Wrangler `8787`, Next `3001` (override with `PROXY_
 Create `.dev.vars`:
 ```
 ANTHROPIC_API_KEY=your_key_here
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+GITHUB_CLIENT_ID=your_github_client_id
+GITHUB_CLIENT_SECRET=your_github_client_secret
 ```
 
 | Variable | Description |
@@ -211,8 +226,26 @@ ANTHROPIC_API_KEY=your_key_here
 | `ANTHROPIC_API_KEY` | Claude API key for SDK |
 | `NEXTJS_ENV` | Environment (development/production) |
 | `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID (from Google Cloud Console) |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `GITHUB_CLIENT_ID` | GitHub OAuth App client ID (from GitHub Developer Settings) |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
 | `LOCAL_APP_PREVIEW_URL` | Optional override for local app preview screenshots (defaults to `https://hello-world-test.chiridion.app/`) |
 | `PROXY_BASE_URL` | Base URL for the LLM proxy used by sandbox containers (sets `ANTHROPIC_BASE_URL` in containers) |
+
+#### OAuth Setup
+
+**Google OAuth:**
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select existing
+3. Navigate to APIs & Services > Credentials
+4. Create OAuth 2.0 Client ID (Web application)
+5. Add authorized redirect URI: `https://your-domain.com/api/auth/google/callback`
+
+**GitHub OAuth:**
+1. Go to [GitHub Developer Settings](https://github.com/settings/developers)
+2. Create a new OAuth App
+3. Set Authorization callback URL: `https://your-domain.com/api/auth/github/callback`
 
 ### Proxy Worker Environment Variables (`workers/proxy`)
 

@@ -137,6 +137,37 @@ export async function verifyUserPassword(userId: string, password: string): Prom
   return withRpc((rpc) => rpc.verifyUserPassword(userId, password));
 }
 
+// OAuth functions
+export async function getUserByOAuthProvider(
+  provider: 'google' | 'github',
+  providerId: string
+): Promise<{ userId: string; user: UserProfile } | null> {
+  return withRpc((rpc) => rpc.getUserByOAuthProvider(provider, providerId));
+}
+
+export async function createUserFromOAuth(
+  email: string,
+  name: string | null,
+  provider: 'google' | 'github',
+  providerId: string
+): Promise<{ userId: string; user: UserProfile }> {
+  return withRpc((rpc) => rpc.createUserFromOAuth(email, name, provider, providerId));
+}
+
+export async function linkOAuthProvider(
+  userId: string,
+  provider: 'google' | 'github',
+  providerId: string
+): Promise<void> {
+  return withRpc((rpc) => rpc.linkOAuthProvider(userId, provider, providerId));
+}
+
+export async function getUserOAuthProviders(
+  userId: string
+): Promise<Array<{ provider: string; provider_id: string; linked_at: number }>> {
+  return withRpc((rpc) => rpc.getUserOAuthProviders(userId));
+}
+
 export async function getUserOrgs(userId: string): Promise<OrgMembership[]> {
   return withRpc((rpc) => rpc.getUserOrgs(userId));
 }

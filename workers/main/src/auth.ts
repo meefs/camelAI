@@ -41,6 +41,14 @@ export interface UserOrg {
   last_workspace_id: string | null;
 }
 
+export type OAuthProvider = 'google' | 'github';
+
+export interface UserOAuthProvider {
+  provider: OAuthProvider;
+  provider_id: string;
+  linked_at: number;
+}
+
 export interface OrgInfo {
   id: string;
   name: string;
@@ -271,6 +279,19 @@ export class UserDO extends DurableObject<AuthEnv> {
       }
       this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (5)');
     }
+
+    if (version < 6) {
+      // V6: Add oauth_providers table for OAuth sign-in support
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS oauth_providers (
+          provider TEXT NOT NULL,
+          provider_id TEXT NOT NULL,
+          linked_at INTEGER NOT NULL,
+          PRIMARY KEY (provider)
+        )
+      `);
+      this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (6)');
+    }
   }
 
   // Profile methods
@@ -440,6 +461,70 @@ export class UserDO extends DurableObject<AuthEnv> {
     const rows = this.sql.exec('SELECT role FROM orgs WHERE org_id = ?', orgId).toArray();
     if (rows.length === 0) return null;
     return (rows[0] as { role: string }).role as OrgRole;
+  }
+
+  // OAuth provider methods
+  async getOAuthProviders(): Promise<UserOAuthProvider[]> {
+    return this.sql.exec('SELECT provider, provider_id, linked_at FROM oauth_providers ORDER BY linked_at ASC')
+      .toArray() as unknown as UserOAuthProvider[];
+  }
+
+  async getOAuthProvider(provider: OAuthProvider): Promise<UserOAuthProvider | null> {
+    const rows = this.sql.exec(
+      'SELECT provider, provider_id, linked_at FROM oauth_providers WHERE provider = ?',
+      provider
+    ).toArray() as unknown as UserOAuthProvider[];
+    return rows[0] || null;
+  }
+
+  async linkOAuthProvider(provider: OAuthProvider, providerId: string): Promise<UserOAuthProvider> {
+    const now = Date.now();
+    this.sql.exec(
+      'INSERT OR REPLACE INTO oauth_providers (provider, provider_id, linked_at) VALUES (?, ?, ?)',
+      provider,
+      providerId,
+      now
+    );
+    return { provider, provider_id: providerId, linked_at: now };
+  }
+
+  async unlinkOAuthProvider(provider: OAuthProvider): Promise<void> {
+    this.sql.exec('DELETE FROM oauth_providers WHERE provider = ?', provider);
+  }
+
+  async hasOAuthProvider(provider: OAuthProvider): Promise<boolean> {
+    const rows = this.sql.exec('SELECT 1 FROM oauth_providers WHERE provider = ?', provider).toArray();
+    return rows.length > 0;
+  }
+
+  /**
+   * Create a user from OAuth sign-in (no password required).
+   */
+  async createUserFromOAuth(
+    id: string,
+    email: string,
+    name: string | null,
+    provider: OAuthProvider,
+    providerId: string
+  ): Promise<UserProfile> {
+    const now = Date.now();
+    const avatar = generateDefaultAvatar(name || email);
+    const profile: UserProfile = {
+      id,
+      email,
+      name,
+      created_at: now,
+      is_superuser: isSuperuserEmail(email),
+      avatar_color: avatar.color,
+      avatar_content: avatar.content,
+      is_orphaned: false,
+      orphaned_at: null,
+    };
+
+    await this.setProfile(profile);
+    await this.linkOAuthProvider(provider, providerId);
+
+    return profile;
   }
 }
 
