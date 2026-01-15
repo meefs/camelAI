@@ -1478,7 +1478,6 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       vanityHost: `${deployedApp}.${getVanityDomain(hostname)}`,
     };
   }, [deployedApp, hostname]);
-  const previewHost = previewDomains.iframeHost || deployedApp || '';
   const previewUrl = previewDomains.iframeHost ? `https://${previewDomains.iframeHost}` : '';
   const previewVanityUrl = previewDomains.vanityHost ? `https://${previewDomains.vanityHost}` : '';
   const showMobilePreview = Boolean(deployedApp) && mobileView === 'preview';
@@ -1488,7 +1487,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 bg-green-500 rounded-full" />
-          <span className="text-sm font-medium">{previewHost}</span>
+          <span className="text-sm font-medium">{previewDomains.vanityHost}</span>
         </div>
         <div className="flex items-center gap-1">
           <Tooltip>
