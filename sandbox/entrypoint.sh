@@ -134,6 +134,9 @@ mount_juicefs() {
   }
 
   if try_mount_juicefs; then
+    if [ "${R2_MOUNT_READONLY:-}" != "1" ] && [ "${R2_MOUNT_READONLY:-}" != "true" ] && [ "${R2_MOUNT_READONLY:-}" != "TRUE" ]; then
+      chown claude:claude "$TARGET_DIR" 2>/dev/null || true
+    fi
     return 0
   fi
 
