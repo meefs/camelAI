@@ -20,8 +20,26 @@ export interface WorkspaceContainerEnv {
   R2_MOUNT_READONLY?: string;
   R2_API_TOKEN?: string;
   R2_PARENT_ACCESS_KEY_ID?: string;
+  JUICEFS_META_DIR?: string;
+  JUICEFS_CACHE_DIR?: string;
   WORKER_BASE_URL?: string;
   PROXY_BASE_URL?: string;
+}
+
+function sanitizeVolumeSegment(value: string): string {
+  const cleaned = value.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 20);
+  return cleaned.length > 0 ? cleaned : 'x';
+}
+
+function getJuiceFsVolumeName(orgId: string, workspaceId: string): string {
+  const orgSafe = sanitizeVolumeSegment(orgId || 'org');
+  const wsSafe = sanitizeVolumeSegment(workspaceId || 'ws');
+  return `chiridion-${orgSafe}-${wsSafe}`;
+}
+
+function ensureTrailingSlash(prefix: string): string {
+  if (!prefix) return '';
+  return prefix.endsWith('/') ? prefix : `${prefix}/`;
 }
 
 // Control plane response types
@@ -194,6 +212,8 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     if (this.env.R2_ACCOUNT_ID) envVars.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
     if (this.env.R2_MOUNT_DIR) envVars.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
     if (this.env.R2_MOUNT_READONLY) envVars.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
+    if (this.env.JUICEFS_META_DIR) envVars.JUICEFS_META_DIR = this.env.JUICEFS_META_DIR;
+    if (this.env.JUICEFS_CACHE_DIR) envVars.JUICEFS_CACHE_DIR = this.env.JUICEFS_CACHE_DIR;
 
     // R2 prefix for workspace-scoped access (legacy org-id workspaces keep old prefix)
     const prefix = workspaceId === orgId ? `${orgId}/` : `${orgId}/${workspaceId}/`;
@@ -202,12 +222,14 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     // Generate temp R2 credentials
     if (this.env.R2_API_TOKEN && this.env.R2_PARENT_ACCESS_KEY_ID && this.env.R2_ACCOUNT_ID && this.env.R2_BUCKET_NAME) {
       try {
+        const volumeName = getJuiceFsVolumeName(orgId, workspaceId);
+        const volumePrefix = ensureTrailingSlash(volumeName);
         const tempCreds = await getTempR2Credentials(
           this.env.R2_ACCOUNT_ID,
           this.env.R2_BUCKET_NAME,
           this.env.R2_PARENT_ACCESS_KEY_ID,
           this.env.R2_API_TOKEN,
-          prefix,
+          [prefix, volumePrefix],
           86400
         );
         envVars.AWS_ACCESS_KEY_ID = tempCreds.accessKeyId;
@@ -293,12 +315,15 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
   async startForWorkspace(workspaceId: string, orgId: string): Promise<void> {
     this.workspaceId = workspaceId;
     this.orgId = orgId;
+    const startTs = Date.now();
 
     // Only build env vars once per container instance - they're set as class property
     // so Container class uses them for any start path (including auto-restarts)
     if (!(this as any).envVars || Object.keys((this as any).envVars).length === 0) {
       console.log('[WorkspaceContainer] Building env vars for workspace:', { workspaceId, orgId });
+      const envStart = Date.now();
       const envVars = await this.buildEnvVars(workspaceId, orgId);
+      console.log('[WorkspaceContainer] Built env vars', { workspaceId, orgId, ms: Date.now() - envStart });
       (this as any).envVars = envVars;
     }
 
@@ -315,6 +340,7 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     // Container is stopped, stopping, or still 'running' (booting) - need to wait for ports
     console.log('[WorkspaceContainer] Starting/waiting for container', { workspaceId, orgId, status: state.status });
 
+    const waitStart = Date.now();
     await this.startAndWaitForPorts({
       ports: [WS_SERVER_PORT, CONTROL_PLANE_PORT],
       cancellationOptions: {
@@ -322,8 +348,14 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
         portReadyTimeoutMS: 60000,
       },
     });
+    const waitMs = Date.now() - waitStart;
 
-    console.log('[WorkspaceContainer] Container started and ports ready for workspace:', workspaceId);
+    console.log('[WorkspaceContainer] Container started and ports ready for workspace:', {
+      workspaceId,
+      orgId,
+      waitMs,
+      totalMs: Date.now() - startTs,
+    });
   }
 
   /**

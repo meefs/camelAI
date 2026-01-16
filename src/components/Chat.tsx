@@ -35,6 +35,7 @@ import {
 import {
   createThread as createThreadAction,
   getThreadMessages,
+  touchThread as touchThreadAction,
 } from '@/lib/server-actions/thread';
 import { getVanityDomain, getIframeDomain } from '@/lib/app-url';
 
@@ -1461,6 +1462,11 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
 
     // Clear any previous error
     setError(null);
+
+    // Update thread timestamp so it appears at top of history list
+    touchThreadAction(threadId, resolvedWorkspaceId).catch(() => {
+      // Ignore errors - this is a non-critical operation
+    });
 
     // Add user message to state immediately (optimistic)
     // Display only the user's typed text (not file references)

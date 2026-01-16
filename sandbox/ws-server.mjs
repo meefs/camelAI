@@ -1,10 +1,9 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-07-sandbox-v8';
+const VERSION = '2026-01-15-sandbox-v9';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -219,26 +218,6 @@ process.on('unhandledRejection', (error) => {
 process.on('exit', () => {});
 process.on('SIGTERM', () => {});
 
-// Sync workspace to R2 after each turn (async, non-blocking)
-let syncInProgress = false;
-function syncWorkspace() {
-  if (syncInProgress) return;
-  syncInProgress = true;
-  const proc = spawn('node', ['/app/sync.mjs', 'upload', SYNC_DIR], {
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
-  proc.on('close', (code) => {
-    syncInProgress = false;
-    if (code !== 0) {
-      console.error('[ws-server] Sync failed:', code);
-    }
-  });
-  proc.on('error', (err) => {
-    syncInProgress = false;
-    console.error('[ws-server] Sync error:', err.message);
-  });
-}
-
 // Check if a session JSONL file exists
 function sessionFileExists(sessionId) {
   if (!sessionId) return false;
@@ -452,11 +431,6 @@ function startEventLoop(session) {
         trackTaskToolUse(session, event);
         persistTaskResultUpdates(session, event);
 
-        // Sync workspace when turn completes (message_delta with stop_reason)
-        if (event.type === 'stream_event' && event.event?.type === 'message_delta' && event.event.delta?.stop_reason) {
-          syncWorkspace();
-        }
-
         // Result means this turn is done - but keep loop alive if sockets connected or messages pending
         if (event.type === 'result') {
           const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
@@ -472,7 +446,7 @@ function startEventLoop(session) {
       bufferEvent(session, { type: 'error', error: String(e) });
       void writeTrace(session.threadId, { direction: 'error', error: String(e) });
       logForPersistence({ type: 'error', error: String(e) });
-      syncWorkspace();
+      // No explicit snapshot sync needed; JuiceFS persistence is continuous.
     } finally {
       session.activeQuery = null;
       session.queryIterator = null;
