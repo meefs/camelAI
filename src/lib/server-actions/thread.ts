@@ -187,6 +187,14 @@ export async function deleteThread(threadId: string, workspaceId?: string) {
   return { success: true };
 }
 
+export async function touchThread(threadId: string, workspaceId?: string) {
+  const resolvedWorkspaceId = workspaceId
+    ? (await requireWorkspaceAccess(workspaceId, true)).workspaceId
+    : (await requireWorkspaceId(true)).workspaceId;
+  await chatDO.touchThread(threadId, resolvedWorkspaceId);
+  return { success: true };
+}
+
 export async function getThread(threadId: string) {
   const { workspaceId } = await requireWorkspaceId();
   const thread = await chatDO.getThread(threadId, workspaceId);

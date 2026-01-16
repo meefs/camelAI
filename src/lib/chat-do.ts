@@ -50,6 +50,10 @@ export async function deleteThread(id: string, workspaceId: string): Promise<voi
   return withRpc((rpc) => rpc.deleteThread(id, workspaceId));
 }
 
+export async function touchThread(id: string, workspaceId: string): Promise<void> {
+  return withRpc((rpc) => rpc.touchThread(id, workspaceId));
+}
+
 export async function generateThreadTitle(
   threadId: string,
   workspaceId: string,
