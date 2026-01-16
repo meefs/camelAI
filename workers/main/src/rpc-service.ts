@@ -2626,7 +2626,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
       flushAssistantGroup();
 
-      const updatesPath = `/home/claude/.chiridion/task-results/${threadId}.jsonl`;
+      const updatesPath = resolveWorkspacePath(
+        this.getWorkspaceRoot(),
+        `/.chiridion/task-results/${threadId}.jsonl`
+      );
       const updatesExists = await container.exists(updatesPath);
       if (updatesExists.exists) {
         const updatesFile = await container.readFile(updatesPath);
