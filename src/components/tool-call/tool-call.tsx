@@ -13,9 +13,11 @@ import { getToolSummaryParts } from './tool-summary';
 export interface ToolCallProps {
   tool?: ToolUseBlock;
   result?: ToolResultBlock;
+  results?: ToolResultBlock[];
   isStreaming?: boolean;
   defaultExpanded?: boolean;
   skillSheet?: string;
+  progressCount?: number;
 }
 
 function getStatusClass(status: ToolStatus) {
@@ -72,9 +74,25 @@ function ToolCallSummary({
   );
 }
 
-export function ToolCall({ tool, result, isStreaming, defaultExpanded = false, skillSheet }: ToolCallProps) {
+export function ToolCall({
+  tool,
+  result,
+  results,
+  isStreaming,
+  defaultExpanded = false,
+  skillSheet,
+  progressCount,
+}: ToolCallProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
-  const status = getToolStatus(tool, result, isStreaming);
+  const resolvedResults = results ?? (result ? [result] : []);
+  const status = getToolStatus(tool, result, isStreaming, resolvedResults);
+  const resolvedProgressCount = typeof progressCount === 'number'
+    ? progressCount
+    : resolvedResults.length;
+  const showResultCount = tool?.name === 'Task' && resolvedProgressCount > 0;
+  const resultCountLabel = showResultCount
+    ? `${resolvedProgressCount} result${resolvedProgressCount === 1 ? '' : 's'}`
+    : null;
 
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
@@ -96,13 +114,18 @@ export function ToolCall({ tool, result, isStreaming, defaultExpanded = false, s
         >
           <span className={cn("tool-call__dot w-1.5 h-1.5 rounded-full shrink-0", getStatusClass(status))} />
           <ToolCallSummary tool={tool} result={result} isStreaming={isStreaming} />
-          <ChevronRight
-            className={cn(
-              "tool-call__chevron ml-auto h-4 w-4 text-muted-foreground/50 opacity-0 transition-all duration-150",
-              "group-hover/toolcall:opacity-100",
-              isExpanded && "opacity-100 rotate-90"
-            )}
-          />
+          <div className="ml-auto flex items-center gap-2">
+            {resultCountLabel ? (
+              <span className="text-xs text-muted-foreground/70">{resultCountLabel}</span>
+            ) : null}
+            <ChevronRight
+              className={cn(
+                "tool-call__chevron h-4 w-4 text-muted-foreground/50 opacity-0 transition-all duration-150",
+                "group-hover/toolcall:opacity-100",
+                isExpanded && "opacity-100 rotate-90"
+              )}
+            />
+          </div>
         </div>
       </CollapsibleTrigger>
       <CollapsibleContent
@@ -111,7 +134,13 @@ export function ToolCall({ tool, result, isStreaming, defaultExpanded = false, s
           "motion-reduce:animate-none"
         )}
       >
-        <ToolCallDetails tool={tool} result={result} skillSheet={skillSheet} />
+        <ToolCallDetails
+          tool={tool}
+          result={result}
+          results={results}
+          skillSheet={skillSheet}
+          progressCount={resolvedProgressCount}
+        />
       </CollapsibleContent>
     </Collapsible>
   );

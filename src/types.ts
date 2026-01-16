@@ -25,6 +25,8 @@ export interface ToolResultBlock {
   type: 'tool_result';
   tool_use_id: string;
   content: string | ContentBlock[];
+  /** Marks a Task progress update (not the final Task result). */
+  isTaskUpdate?: boolean;
 }
 
 export interface ThinkingBlock {

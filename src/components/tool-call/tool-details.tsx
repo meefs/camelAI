@@ -17,10 +17,12 @@ import { SkillDetails } from './details/skill-details';
 interface ToolCallDetailsProps {
   tool?: ToolUseBlock;
   result?: ToolResultBlock;
+  results?: ToolResultBlock[];
   skillSheet?: string;
+  progressCount?: number;
 }
 
-export function ToolCallDetails({ tool, result, skillSheet }: ToolCallDetailsProps) {
+export function ToolCallDetails({ tool, result, results, skillSheet, progressCount }: ToolCallDetailsProps) {
   const name = tool?.name;
 
   let content: ReactNode;
@@ -48,7 +50,14 @@ export function ToolCallDetails({ tool, result, skillSheet }: ToolCallDetailsPro
       break;
     case 'Task':
     case 'TaskOutput':
-      content = <TaskDetails tool={tool} result={result} />;
+      content = (
+        <TaskDetails
+          tool={tool}
+          result={result}
+          results={results}
+          progressCount={progressCount}
+        />
+      );
       break;
     case 'WebFetch':
       content = <WebDetails tool={tool} result={result} mode="fetch" />;
