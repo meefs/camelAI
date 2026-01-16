@@ -119,7 +119,7 @@ mount_juicefs() {
       --cache-dir \"$JUICEFS_CACHE_DIR\" \
       --upload-delay \"$JUICEFS_UPLOAD_DELAY\" \
       --prefix-internal \
-      -o user_id=$CLAUDE_UID,group_id=$CLAUDE_GID \
+      -o allow_other,user_id=$CLAUDE_UID,group_id=$CLAUDE_GID \
       --writeback \
       $JFS_READONLY_FLAG \
       -d" || true
