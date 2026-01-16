@@ -286,38 +286,7 @@ function asDisposable<T extends object>(value: T): RpcDisposable<T> {
   return wrapper;
 }
 
-const WORKSPACE_SYNC_DEBOUNCE_MS = 5000;
-
-type WorkspaceSyncState = {
-  nextSyncAt: number;
-  sequence: number;
-  running: boolean;
-  promise: Promise<void> | null;
-};
-
-const workspaceSyncState = new Map<string, WorkspaceSyncState>();
-
-const sleep = (ms: number) =>
-  new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
-
 export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
-  private hasR2Config(): boolean {
-    return Boolean(
-      this.env.R2_BUCKET_NAME &&
-      this.env.R2_ACCOUNT_ID &&
-      this.env.R2_API_TOKEN &&
-      this.env.R2_PARENT_ACCESS_KEY_ID
-    );
-  }
-
-  private isR2ReadOnly(): boolean {
-    const value = this.env.R2_MOUNT_READONLY;
-    if (!value) return false;
-    return ['1', 'true'].includes(String(value).toLowerCase());
-  }
-
   private getWorkspaceRoot(): string {
     return this.env.R2_MOUNT_DIR || '/home/claude';
   }
@@ -393,7 +362,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   /**
    * Ensure container is running for a workspace.
-   * R2 sync happens automatically in the container entrypoint.
+   * Workspace persistence is handled by JuiceFS in the container entrypoint.
    */
   private async ensureContainerRunning(workspaceId: string): Promise<WorkspaceInfo> {
     const info = await this.requireWorkspaceInfo(workspaceId);
@@ -403,81 +372,13 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   private async uploadWorkspaceSnapshot(workspaceId: string): Promise<void> {
-    if (!this.hasR2Config() || this.isR2ReadOnly()) return;
-
-    const info = await this.requireWorkspaceInfo(workspaceId);
-    const container = getWorkspaceContainer(this.env, workspaceId);
-    const workspaceRoot = this.getWorkspaceRoot();
-
-    // Ensure container is running before exec
-    await container.startForWorkspace(workspaceId, info.org_id);
-
-    // Container entrypoint already synced R2 on startup, just trigger upload
-    const syncResult = await container.exec(`node /app/sync.mjs upload ${workspaceRoot}`, {
-      timeout: 120000,
-    });
-
-    if (!syncResult.success) {
-      console.error(
-        `[workspace-sync] Upload failed for ${workspaceId}: ${syncResult.stderr || syncResult.stdout || 'unknown error'}`
-      );
-    }
-  }
-
-  private async runWorkspaceSyncLoop(
-    workspaceId: string,
-    state: WorkspaceSyncState
-  ): Promise<void> {
-    try {
-      while (true) {
-        const waitMs = Math.max(0, state.nextSyncAt - Date.now());
-        if (waitMs > 0) {
-          await sleep(waitMs);
-          continue;
-        }
-
-        const sequenceAtStart = state.sequence;
-        await this.uploadWorkspaceSnapshot(workspaceId);
-
-        if (state.sequence !== sequenceAtStart) {
-          continue;
-        }
-        break;
-      }
-    } catch (error) {
-      console.error('[workspace-sync] Unexpected sync error', error);
-    } finally {
-      state.running = false;
-      state.promise = null;
-      workspaceSyncState.delete(workspaceId);
-    }
+    // Legacy tar snapshot sync is disabled; JuiceFS handles persistence.
+    void workspaceId;
   }
 
   private scheduleWorkspaceUpload(workspaceId: string): void {
-    if (!this.hasR2Config() || this.isR2ReadOnly()) return;
-    const now = Date.now();
-    let state = workspaceSyncState.get(workspaceId);
-    if (!state) {
-      state = {
-        nextSyncAt: now + WORKSPACE_SYNC_DEBOUNCE_MS,
-        sequence: 0,
-        running: false,
-        promise: null,
-      };
-      workspaceSyncState.set(workspaceId, state);
-    }
-
-    state.sequence += 1;
-    state.nextSyncAt = now + WORKSPACE_SYNC_DEBOUNCE_MS;
-
-    if (!state.running) {
-      state.running = true;
-      state.promise = this.runWorkspaceSyncLoop(workspaceId, state);
-    }
-
-    if (state.promise) {
-      this.ctx.waitUntil(state.promise);
-    }
+    // Legacy tar snapshot sync is disabled; JuiceFS handles persistence.
+    void workspaceId;
   }
 
   // Session functions (using KV storage)
@@ -2445,7 +2346,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       const info = await this.requireWorkspaceInfo(workspaceId);
       const container = getWorkspaceContainer(this.env, workspaceId);
 
-      // Ensure container is running (R2 sync happens in entrypoint)
+      // Ensure container is running (JuiceFS mount happens in entrypoint)
       await container.startForWorkspace(workspaceId, info.org_id);
 
       // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl

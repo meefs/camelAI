@@ -19,7 +19,7 @@ export async function getTempR2Credentials(
   bucket: string,
   parentAccessKeyId: string,
   apiToken: string,
-  prefix: string,
+  prefixes: string[],
   ttlSeconds: number = 3600
 ): Promise<TempCredentials> {
   const response = await fetch(
@@ -35,7 +35,7 @@ export async function getTempR2Credentials(
         parentAccessKeyId,
         permission: 'object-read-write',
         ttlSeconds,
-        prefixes: [prefix],
+        prefixes,
       }),
     }
   );

@@ -36,8 +36,10 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
    - `proxy/` - Multi-provider LLM proxy worker (Anthropic/OpenAI-compatible/Bedrock/Azure Foundry) with token accounting
 
 3. **Sandbox** (`sandbox/`)
+   - `entrypoint.sh` - Mounts JuiceFS (R2 object storage + SQLite metadata) at the workspace root
    - `ws-server.mjs` - WebSocket server running inside Cloudflare Container
    - Calls Claude SDK `query()` with streaming enabled
+   - `r2-meta.mjs` - R2 helper for JuiceFS SQLite metadata snapshots
    - `control-plane.mjs` - Exec/filesystem API server for container management
 
 ## Key Files
@@ -68,6 +70,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/screenshot/src/index.ts` | Queue consumer for app preview screenshots |
 | `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
+| `sandbox/entrypoint.sh` | Container entrypoint that mounts JuiceFS and manages metadata snapshots |
+| `sandbox/r2-meta.mjs` | R2 helper for JuiceFS SQLite metadata |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
 | `src/lib/integration-crypto.ts` | Credential encryption utilities |
 | `workers/main/src/rpc-service.ts` | DoRpcService - RPC methods for cross-worker calls |
@@ -122,6 +126,13 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 5. Streaming responses sent back through WebSocket
 6. Thread ID = Claude session_id (received on first message)
 7. Frontend updates React state with streaming content
+
+### Workspace Persistence (JuiceFS)
+1. Container entrypoint downloads a JuiceFS SQLite metadata snapshot from R2 (if present)
+2. JuiceFS mounts the workspace at `R2_MOUNT_DIR` (defaults to `/home/claude`) using R2 as object storage
+3. Workspace data is stored under the workspace R2 prefix (e.g., `{orgId}/{workspaceId}/juicefs/`)
+4. The container periodically uploads SQLite metadata snapshots to R2 while running
+5. On shutdown, the container unmounts JuiceFS and uploads the SQLite metadata snapshot back to R2
 
 ### Threads
 1. Each thread belongs to a workspace
@@ -232,6 +243,10 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
 | `LOCAL_APP_PREVIEW_URL` | Optional override for local app preview screenshots (defaults to `https://hello-world-test.chiridion.app/`) |
 | `PROXY_BASE_URL` | Base URL for the LLM proxy used by sandbox containers (sets `ANTHROPIC_BASE_URL` in containers) |
+| `JUICEFS_META_DIR` | Optional directory for JuiceFS SQLite metadata in the container (default `/var/lib/juicefs`) |
+| `JUICEFS_CACHE_DIR` | Optional JuiceFS cache directory in the container (default `/tmp/juicefs-cache`) |
+| `JUICEFS_UPLOAD_DELAY` | Delay before uploading staged writeback data (default `5s`) |
+| `JUICEFS_META_UPLOAD_INTERVAL` | Periodic metadata snapshot upload interval (default `60s`, empty disables) |
 
 #### OAuth Setup
 
