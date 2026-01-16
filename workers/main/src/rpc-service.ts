@@ -2413,7 +2413,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     // Verify the thread belongs to this workspace first
     const existing = await orgStub.getThread(id);
     if (!existing || existing.workspace_id !== workspaceId) return;
-    orgStub.touchThread(id);
+    await orgStub.touchThread(id);
   }
 
   async generateAndUpdateThreadTitle(
