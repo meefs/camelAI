@@ -7,6 +7,9 @@ import httpProxy from 'http-proxy';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Track all spawned processes for cleanup
+const children = [];
+
 function getPackageVersion(pkg) {
   try {
     const output = execSync(`npm list ${pkg} --depth=0 --json`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
@@ -33,6 +36,32 @@ const nextTarget = `http://localhost:${nextPort}`;
 const wranglerTarget = `http://localhost:${wranglerPort}`;
 const llmProxyTarget = `http://localhost:${llmProxyPort}`;
 
+// Kill any zombie processes on our ports before starting
+function killZombiesOnPorts(ports) {
+  for (const port of ports) {
+    try {
+      // lsof returns PIDs listening on this port
+      const output = execSync(`lsof -ti tcp:${port}`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      const pids = output.trim().split('\n').filter(Boolean);
+      if (pids.length > 0) {
+        console.log(`[dev-proxy] killing zombie processes on port ${port}: ${pids.join(', ')}`);
+        for (const pid of pids) {
+          try {
+            process.kill(Number(pid), 'SIGKILL');
+          } catch {
+            // Process may have already exited
+          }
+        }
+      }
+    } catch {
+      // No processes on this port, which is fine
+    }
+  }
+}
+
+// Kill zombies before we start
+killZombiesOnPorts([proxyPort, nextPort, wranglerPort, llmProxyPort]);
+
 printVersions();
 
 function spawnCommand(command, args, { name, env = process.env } = {}) {
@@ -40,14 +69,18 @@ function spawnCommand(command, args, { name, env = process.env } = {}) {
   const child = spawn(command, args, {
     stdio: 'inherit',
     env: resolvedEnv,
-    detached: true,
+    // Don't detach - we want children to die with the parent
   });
   child.on('exit', (code, signal) => {
+    // Remove from tracked children
+    const idx = children.indexOf(child);
+    if (idx !== -1) children.splice(idx, 1);
     if (signal) return;
     if (code && code !== 0) {
       console.error(`[dev] ${name} exited with code ${code}`);
     }
   });
+  children.push(child);
   return child;
 }
 
@@ -217,22 +250,59 @@ server.listen(proxyPort, '0.0.0.0', () => {
   console.log(`[dev-proxy] proxy listening on http://0.0.0.0:${proxyPort}`);
 });
 
-function shutdown() {
-  server.close();
-  if (nextProcess?.pid) process.kill(-nextProcess.pid, 'SIGINT');
-  if (wranglerProcess?.pid) process.kill(-wranglerProcess.pid, 'SIGINT');
-  if (llmProxyProcess?.pid) process.kill(-llmProxyProcess.pid, 'SIGINT');
-  if (dockerProxyProcess?.pid) process.kill(-dockerProxyProcess.pid, 'SIGINT');
+let isShuttingDown = false;
+
+// Synchronous cleanup for use in 'exit' handler (can't use async/setTimeout there)
+function forceKillChildren() {
+  for (const child of children) {
+    if (child.pid && !child.killed) {
+      try {
+        process.kill(child.pid, 'SIGKILL');
+      } catch {
+        // Process may have already exited
+      }
+    }
+  }
+  killZombiesOnPorts([proxyPort, nextPort, wranglerPort, llmProxyPort]);
 }
 
-process.on('SIGINT', () => {
-  shutdown();
-  process.exit(0);
+function shutdown() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  console.log('\n[dev-proxy] shutting down...');
+
+  // Close the proxy server
+  server.close();
+
+  // First, send SIGTERM to all children
+  for (const child of children) {
+    if (child.pid && !child.killed) {
+      try {
+        process.kill(child.pid, 'SIGTERM');
+      } catch {
+        // Process may have already exited
+      }
+    }
+  }
+
+  // Give processes a moment to exit gracefully, then force kill
+  setTimeout(() => {
+    forceKillChildren();
+    process.exit(0);
+  }, 2000);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
+// Handle crashes and unexpected exits - use sync cleanup since we're exiting
+process.on('exit', forceKillChildren);
+process.on('uncaughtException', (err) => {
+  console.error('[dev-proxy] uncaught exception:', err);
+  forceKillChildren();
+  process.exit(1);
 });
-process.on('SIGTERM', () => {
-  shutdown();
-  process.exit(0);
-});
-process.on('exit', () => {
-  shutdown();
+process.on('unhandledRejection', (err) => {
+  console.error('[dev-proxy] unhandled rejection:', err);
 });
