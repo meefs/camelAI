@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-16-v1
+# Version: 2026-01-16-v2
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -111,12 +111,15 @@ mount_juicefs() {
   try_mount_juicefs() {
     echo "[entrypoint] Mounting JuiceFS at ${TARGET_DIR}..." >&2
     MOUNT_START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
+    # Get claude's UID/GID while running as root (before su)
+    CLAUDE_UID="$(id -u claude)"
+    CLAUDE_GID="$(id -g claude)"
     su -s /bin/sh claude -c "juicefs mount \"$JFS_META_URL\" \"$TARGET_DIR\" \
       --backup-meta 0 \
       --cache-dir \"$JUICEFS_CACHE_DIR\" \
       --upload-delay \"$JUICEFS_UPLOAD_DELAY\" \
       --prefix-internal \
-      -o allow_other \
+      -o user_id=$CLAUDE_UID,group_id=$CLAUDE_GID \
       --writeback \
       $JFS_READONLY_FLAG \
       -d" || true
@@ -134,9 +137,6 @@ mount_juicefs() {
   }
 
   if try_mount_juicefs; then
-    if [ "${R2_MOUNT_READONLY:-}" != "1" ] && [ "${R2_MOUNT_READONLY:-}" != "true" ] && [ "${R2_MOUNT_READONLY:-}" != "TRUE" ]; then
-      chown claude:claude "$TARGET_DIR" 2>/dev/null || true
-    fi
     return 0
   fi
 
