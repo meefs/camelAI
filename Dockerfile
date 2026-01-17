@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-11-v1
+# Version: 2026-01-17-v3
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fuse3 \
     libfuse3-3 \
     libfuse2 \
+    sqlite3 \
   && rm -rf /var/lib/apt/lists/* \
   && npm install -g bun wrangler@4.55.0 shadcn \
   && mv /usr/local/bin/wrangler /usr/local/bin/wrangler-real \

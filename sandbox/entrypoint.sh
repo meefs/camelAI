@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-17-v3
+# Version: 2026-01-17-v16
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -18,7 +18,8 @@ echo "[entrypoint] R2_BUCKET_NAME=${R2_BUCKET_NAME:-unset}" >&2
 TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
 JUICEFS_META_DIR="${JUICEFS_META_DIR:-/var/lib/juicefs}"
 JUICEFS_CACHE_DIR="${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}"
-JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-5s}"
+JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-60s}"
+JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-1024}"
 JUICEFS_META_UPLOAD_INTERVAL="${JUICEFS_META_UPLOAD_INTERVAL:-60s}"
 
 # Track PIDs for cleanup
@@ -60,16 +61,17 @@ upload_juicefs_meta() {
   ORG_SAFE="$(sanitize_name "${ORG_ID:-org}")"
   WS_SAFE="$(sanitize_name "${WORKSPACE_ID:-ws}")"
   JFS_META_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.db"
-  JFS_META_URL="sqlite3://${JFS_META_FILE}"
-  JFS_DUMP_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.json"
 
-  # Use juicefs dump to properly export metadata (handles SQLite WAL correctly)
   if [ -f "$JFS_META_FILE" ]; then
-    if juicefs dump "$JFS_META_URL" "$JFS_DUMP_FILE" --fast 2>/dev/null; then
-      node /app/r2-meta.mjs upload "$JFS_DUMP_FILE" || true
+    # Use SQLite's .backup command for a safe, consistent backup
+    # This handles WAL mode properly and works even if the database is in use
+    BACKUP_FILE="/tmp/juicefs-meta-backup.db"
+    echo "[entrypoint] Creating SQLite backup..." >&2
+    if sqlite3 "$JFS_META_FILE" ".backup '$BACKUP_FILE'" 2>/dev/null; then
+      node /app/r2-meta.mjs upload "$BACKUP_FILE" || true
+      rm -f "$BACKUP_FILE" 2>/dev/null || true
     else
-      echo "[entrypoint] WARNING: juicefs dump failed, falling back to direct SQLite copy" >&2
-      node /app/r2-meta.mjs upload "$JFS_META_FILE" || true
+      echo "[entrypoint] WARNING: SQLite backup failed" >&2
     fi
   fi
 }
@@ -111,20 +113,24 @@ mount_juicefs() {
   WS_SAFE="$(sanitize_name "${WORKSPACE_ID:-ws}")"
   VOLUME_NAME="chiridion-${ORG_SAFE}-${WS_SAFE}"
   R2_BASE="$(ensure_trailing_slash "${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}")"
-  JFS_PREFIX="${R2_BASE}juicefs/"
-  JFS_BUCKET_URL="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${R2_BUCKET_NAME}/${JFS_PREFIX}"
+  # JuiceFS stores data at {bucket}/{volume-name}/ regardless of any prefix in bucket URL
+  # Use virtual-hosted style URL for R2: https://bucket.account.r2.cloudflarestorage.com
+  JFS_BUCKET_URL="https://${R2_BUCKET_NAME}.${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
   JFS_META_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.db"
   JFS_META_URL="sqlite3://${JFS_META_FILE}"
 
   echo "[entrypoint] JuiceFS config:" >&2
   echo "[entrypoint]   volume: ${VOLUME_NAME}" >&2
   echo "[entrypoint]   bucket: ${JFS_BUCKET_URL}" >&2
+  echo "[entrypoint]   storage: ${JFS_BUCKET_URL}/${VOLUME_NAME}/" >&2
   echo "[entrypoint]   meta: ${JFS_META_FILE}" >&2
   echo "[entrypoint]   target: ${TARGET_DIR}" >&2
 
   mkdir -p "$TARGET_DIR" "$JUICEFS_META_DIR" "$JUICEFS_CACHE_DIR"
+  # Ensure claude user owns these directories and any files in them
   chown -R claude:claude "$JUICEFS_CACHE_DIR" 2>/dev/null || true
   chown -R claude:claude "$JUICEFS_META_DIR" 2>/dev/null || true
+  chmod -R u+rw "$JUICEFS_META_DIR" 2>/dev/null || true
 
   JFS_DUMP_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.json"
 
@@ -133,36 +139,25 @@ mount_juicefs() {
   META_DOWNLOAD_LOG="/tmp/meta-download.log"
   RESTORED_FROM=""
 
-  # Try JSON dump first (new format, created by juicefs dump)
-  if node /app/r2-meta.mjs download "$JFS_DUMP_FILE" >"$META_DOWNLOAD_LOG" 2>&1; then
-    if [ -s "$JFS_DUMP_FILE" ]; then
-      echo "[entrypoint] Found JSON metadata dump, restoring with juicefs load..." >&2
-      if juicefs load "$JFS_META_URL" "$JFS_DUMP_FILE" 2>/dev/null; then
-        # juicefs dump strips credentials for security, so we must reconfigure them
-        if juicefs config "$JFS_META_URL" \
-            --access-key "$AWS_ACCESS_KEY_ID" \
-            --secret-key "$AWS_SECRET_ACCESS_KEY" \
-            ${AWS_SESSION_TOKEN:+--session-token "$AWS_SESSION_TOKEN"} 2>/dev/null; then
-          echo "[entrypoint] Metadata restored from JSON dump" >&2
-          RESTORED_FROM="json"
-        else
-          echo "[entrypoint] WARNING: juicefs config failed after load" >&2
-          rm -f "$JFS_META_FILE"
-        fi
-      else
-        echo "[entrypoint] WARNING: juicefs load failed" >&2
-        rm -f "$JFS_DUMP_FILE"
-      fi
-    fi
+  # Export R2_PREFIX for r2-meta.mjs (defaults to org/workspace path)
+  export R2_PREFIX="${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}"
+  echo "[entrypoint] R2_PREFIX=$R2_PREFIX" >&2
+
+  # Unset AWS_SESSION_TOKEN if empty (AWS SDK sends invalid header if set to empty string)
+  if [ -z "${AWS_SESSION_TOKEN:-}" ]; then
+    unset AWS_SESSION_TOKEN
   fi
 
-  # Fall back to legacy SQLite file if JSON restore didn't work
-  if [ -z "$RESTORED_FROM" ]; then
-    if node /app/r2-meta.mjs download "$JFS_META_FILE" >"$META_DOWNLOAD_LOG" 2>&1; then
-      if [ -s "$JFS_META_FILE" ]; then
-        echo "[entrypoint] Metadata restored from legacy SQLite file" >&2
-        RESTORED_FROM="sqlite"
-      fi
+  # Download SQLite metadata directly (no dump/load, just the raw SQLite file)
+  # Note: We don't run `juicefs config` to update credentials - the mount command
+  # uses current credentials regardless of what's stored in metadata.
+  if node /app/r2-meta.mjs download "$JFS_META_FILE" >"$META_DOWNLOAD_LOG" 2>&1; then
+    if [ -s "$JFS_META_FILE" ]; then
+      echo "[entrypoint] Downloaded SQLite metadata ($(ls -la "$JFS_META_FILE" | awk '{print $5}') bytes)" >&2
+      # Ensure claude user can write to the metadata file
+      chown claude:claude "$JFS_META_FILE" 2>/dev/null || true
+      chmod u+rw "$JFS_META_FILE" 2>/dev/null || true
+      RESTORED_FROM="sqlite"
     fi
   fi
 
@@ -217,51 +212,64 @@ mount_juicefs() {
   CLAUDE_GID="$(id -g claude)"
   echo "[entrypoint] Mount user: claude (uid=$CLAUDE_UID, gid=$CLAUDE_GID)" >&2
 
+  # Check FUSE device availability
+  if [ ! -c /dev/fuse ]; then
+    echo "[entrypoint] ERROR: /dev/fuse device not found" >&2
+    return 1
+  fi
+  echo "[entrypoint] /dev/fuse: $(ls -la /dev/fuse)" >&2
+
   JUICEFS_MOUNT_LOG="/tmp/juicefs-mount.log"
+  JUICEFS_STDERR_LOG="/tmp/juicefs-mount-stderr.log"
+
+  # Run mount in foreground mode, backgrounded by shell
+  # This avoids JuiceFS's internal daemon forking which can fail in containers
+  #
+  # NOTE: NEVER use allow_other option with JuiceFS - it breaks file ownership.
+  # Use user_id/group_id options instead to control mount permissions.
+  echo "[entrypoint] Starting JuiceFS mount (daemon mode)..." >&2
   MOUNT_CMD="juicefs mount \"$JFS_META_URL\" \"$TARGET_DIR\" \
     --backup-meta 0 \
     --cache-dir \"$JUICEFS_CACHE_DIR\" \
     --upload-delay \"$JUICEFS_UPLOAD_DELAY\" \
+    --buffer-size \"$JUICEFS_BUFFER_SIZE\" \
     --prefix-internal \
     -o user_id=$CLAUDE_UID,group_id=$CLAUDE_GID \
     --writeback \
+    --no-syslog \
+    -v \
     $JFS_READONLY_FLAG \
     -d"
-
-  su -s /bin/sh claude -c "$MOUNT_CMD" >"$JUICEFS_MOUNT_LOG" 2>&1
+  echo "[entrypoint] Mount command: $MOUNT_CMD" >&2
+  su -s /bin/sh claude -c "$MOUNT_CMD" >"$JUICEFS_MOUNT_LOG" 2>"$JUICEFS_STDERR_LOG"
   MOUNT_EXIT=$?
+  echo "[entrypoint] JuiceFS mount exit code: $MOUNT_EXIT" >&2
 
   MOUNT_END_TS="$(date +%s%3N 2>/dev/null || date +%s)"
-  echo "[entrypoint] Mount command completed (exit=$MOUNT_EXIT, ms=$((MOUNT_END_TS - MOUNT_START_TS)))" >&2
 
-  if [ $MOUNT_EXIT -ne 0 ]; then
-    echo "[entrypoint] ERROR: JuiceFS mount command failed (exit=$MOUNT_EXIT):" >&2
-    cat "$JUICEFS_MOUNT_LOG" >&2
+  # Check if mount succeeded (daemon mode returns after mount is ready)
+  if [ "$MOUNT_EXIT" -ne 0 ]; then
+    echo "[entrypoint] ERROR: JuiceFS mount failed" >&2
+    echo "[entrypoint] === stdout ===" >&2
+    cat "$JUICEFS_MOUNT_LOG" >&2 || true
+    echo "[entrypoint] === stderr ===" >&2
+    cat "$JUICEFS_STDERR_LOG" >&2 || true
     return 1
   fi
 
-  # Wait for mount to appear (daemon mode)
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    if grep -q " $TARGET_DIR " /proc/mounts; then
-      echo "[entrypoint] JuiceFS mounted successfully" >&2
-      MOUNT_SUCCEEDED="1"
-      return 0
-    fi
-    sleep 0.2
-  done
+  # Verify mount point is actually mounted
+  if ! grep -q " $TARGET_DIR " /proc/mounts 2>/dev/null; then
+    echo "[entrypoint] ERROR: JuiceFS mount command succeeded but mount point not found" >&2
+    echo "[entrypoint] === stdout ===" >&2
+    cat "$JUICEFS_MOUNT_LOG" >&2 || true
+    echo "[entrypoint] === stderr ===" >&2
+    cat "$JUICEFS_STDERR_LOG" >&2 || true
+    return 1
+  fi
 
-  echo "[entrypoint] ERROR: JuiceFS mount failed - mount not visible in /proc/mounts after 2s" >&2
-  echo "[entrypoint] === Mount command log ===" >&2
-  cat "$JUICEFS_MOUNT_LOG" >&2 || true
-  echo "[entrypoint] === JuiceFS user log ($TARGET_DIR/.juicefs/juicefs.log) ===" >&2
-  cat "$TARGET_DIR/.juicefs/juicefs.log" >&2 2>/dev/null || echo "[entrypoint]   (not found)" >&2
-  echo "[entrypoint] === JuiceFS system log (/var/log/juicefs.log) ===" >&2
-  tail -n 100 /var/log/juicefs.log >&2 2>/dev/null || echo "[entrypoint]   (not found)" >&2
-  echo "[entrypoint] === Process check ===" >&2
-  ps aux | grep -i juicefs >&2 || echo "[entrypoint]   No JuiceFS processes found" >&2
-  echo "[entrypoint] === FUSE mounts ===" >&2
-  grep -i fuse /proc/mounts >&2 || echo "[entrypoint]   No FUSE mounts found" >&2
-  return 1
+  echo "[entrypoint] JuiceFS mounted successfully (ms: $((MOUNT_END_TS - MOUNT_START_TS)))" >&2
+  MOUNT_SUCCEEDED="1"
+  return 0
 }
 
 # Cleanup function for shutdown
