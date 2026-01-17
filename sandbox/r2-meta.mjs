@@ -22,7 +22,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
-const META_FILENAME = 'juicefs-meta.db';
+const META_DB_FILENAME = 'juicefs-meta.db';
+const META_JSON_FILENAME = 'juicefs-meta.json';
 const META_STATE_SUFFIX = '.meta-state.json';
 
 function normalizePrefix(prefix) {
@@ -64,8 +65,11 @@ function getS3Client(config) {
   });
 }
 
-function getMetaKey(config) {
-  return `${config.prefix}${META_FILENAME}`;
+function getMetaKey(config, localPath) {
+  // Determine the R2 key based on the local file extension
+  const isJson = localPath && localPath.endsWith('.json');
+  const filename = isJson ? META_JSON_FILENAME : META_DB_FILENAME;
+  return `${config.prefix}${filename}`;
 }
 
 async function download(localPath) {
@@ -76,13 +80,13 @@ async function download(localPath) {
   }
 
   const client = getS3Client(config);
-  const key = getMetaKey(config);
+  const key = getMetaKey(config, localPath);
 
   try {
     await client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: key }));
   } catch (err) {
     if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
-      console.error('[r2-meta] No metadata snapshot found');
+      console.error(`[r2-meta] No metadata snapshot found at ${key}`);
       return false;
     }
     throw err;
@@ -91,7 +95,7 @@ async function download(localPath) {
   await fs.mkdir(path.dirname(localPath), { recursive: true });
   const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
   await pipeline(response.Body, createWriteStream(localPath));
-  console.error('[r2-meta] Downloaded metadata snapshot');
+  console.error(`[r2-meta] Downloaded metadata snapshot from ${key}`);
   return true;
 }
 
@@ -121,16 +125,19 @@ async function upload(localPath) {
   }
 
   const client = getS3Client(config);
-  const key = getMetaKey(config);
+  const key = getMetaKey(config, localPath);
+  const isJson = localPath.endsWith('.json');
+  const contentType = isJson ? 'application/json' : 'application/x-sqlite3';
+
   const stream = createReadStream(localPath);
   await client.send(new PutObjectCommand({
     Bucket: config.bucket,
     Key: key,
     Body: stream,
-    ContentType: 'application/x-sqlite3',
+    ContentType: contentType,
   }));
   await fs.writeFile(statePath, JSON.stringify({ size: stat.size, mtimeMs: stat.mtimeMs }));
-  console.error('[r2-meta] Uploaded metadata snapshot');
+  console.error(`[r2-meta] Uploaded metadata snapshot to ${key}`);
   return true;
 }
 
