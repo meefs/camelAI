@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-17-v16
+# Version: 2026-01-17-v17
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -18,7 +18,8 @@ echo "[entrypoint] R2_BUCKET_NAME=${R2_BUCKET_NAME:-unset}" >&2
 TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
 JUICEFS_META_DIR="${JUICEFS_META_DIR:-/var/lib/juicefs}"
 JUICEFS_CACHE_DIR="${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}"
-JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-60s}"
+# Optimize for write-heavy workloads (writeback + kernel cache)
+JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-30s}"
 JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-1024}"
 JUICEFS_META_UPLOAD_INTERVAL="${JUICEFS_META_UPLOAD_INTERVAL:-60s}"
 
@@ -234,7 +235,7 @@ mount_juicefs() {
     --upload-delay \"$JUICEFS_UPLOAD_DELAY\" \
     --buffer-size \"$JUICEFS_BUFFER_SIZE\" \
     --prefix-internal \
-    -o user_id=$CLAUDE_UID,group_id=$CLAUDE_GID \
+    -o user_id=$CLAUDE_UID,group_id=$CLAUDE_GID,writeback_cache \
     --writeback \
     --no-syslog \
     -v \
