@@ -341,7 +341,7 @@ function startEventLoop(session) {
       bufferEvent(session, { type: 'error', error: String(e) });
       void writeTrace(session.threadId, { direction: 'error', error: String(e) });
       logForPersistence({ type: 'error', error: String(e) });
-      // No explicit snapshot sync needed; JuiceFS persistence is continuous.
+      // Snapshot sync happens on container shutdown via entrypoint cleanup.
     } finally {
       session.activeQuery = null;
       session.queryIterator = null;

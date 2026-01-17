@@ -49,15 +49,15 @@ Staging:
 npm run deploy:staging
 ```
 
-## JuiceFS Mount (Sandbox Home Dir)
+## R2 Workspace Persistence
 
-The sandbox container mounts **JuiceFS** (R2 object store + SQLite metadata) at `$HOME`
-(defaults to `/home/claude`) before starting the WebSocket server.
+The sandbox container downloads/uploads workspace tar snapshots from R2 at startup/shutdown.
+Workspace root defaults to `/home/claude`.
 
 - Bucket: `chiridion-sandbox` (created via `wrangler r2 bucket create chiridion-sandbox`)
 - Required secrets (R2 S3 API keys): `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 - Required vars: `R2_ACCOUNT_ID`, `R2_BUCKET_NAME` (set in `wrangler.jsonc`)
-- Optional: `R2_MOUNT_DIR`, `R2_MOUNT_READONLY=1`, `JUICEFS_META_DIR`, `JUICEFS_CACHE_DIR`
+- Optional: `R2_MOUNT_DIR`, `R2_MOUNT_READONLY=1`
 
 Set secrets:
 
