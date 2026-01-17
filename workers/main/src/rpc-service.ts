@@ -362,7 +362,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   /**
    * Ensure container is running for a workspace.
-   * Workspace persistence is handled by JuiceFS in the container entrypoint.
+   * Workspace persistence is handled by R2 tar snapshots in the container entrypoint.
    */
   private async ensureContainerRunning(workspaceId: string): Promise<WorkspaceInfo> {
     const info = await this.requireWorkspaceInfo(workspaceId);
@@ -372,12 +372,12 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   private async uploadWorkspaceSnapshot(workspaceId: string): Promise<void> {
-    // Legacy tar snapshot sync is disabled; JuiceFS handles persistence.
+    // R2 tar snapshot upload happens in container entrypoint on shutdown.
     void workspaceId;
   }
 
   private scheduleWorkspaceUpload(workspaceId: string): void {
-    // Legacy tar snapshot sync is disabled; JuiceFS handles persistence.
+    // R2 tar snapshot upload happens in container entrypoint on shutdown.
     void workspaceId;
   }
 
@@ -2355,7 +2355,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       const info = await this.requireWorkspaceInfo(workspaceId);
       const container = getWorkspaceContainer(this.env, workspaceId);
 
-      // Ensure container is running (JuiceFS mount happens in entrypoint)
+      // Ensure container is running (R2 restore happens in entrypoint)
       await container.startForWorkspace(workspaceId, info.org_id);
 
       // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
