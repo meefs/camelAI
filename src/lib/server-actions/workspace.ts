@@ -240,3 +240,20 @@ export async function getWorkspaceAuditLog(
   }
   return authDO.getWorkspaceAuditLog(workspaceId, limit, offset)
 }
+
+/**
+ * Warm up a workspace container asynchronously.
+ * This is a cheap, fire-and-forget call that triggers container startup
+ * in the background without blocking.
+ *
+ * Returns:
+ * - 'warm': Container is already healthy
+ * - 'warming': Container startup triggered in background
+ * - 'unauthorized': User doesn't have access
+ */
+export async function warmupWorkspace(
+  workspaceId: string
+): Promise<{ status: 'warm' | 'warming' | 'unauthorized' }> {
+  const session = await requireSession()
+  return authDO.warmupWorkspace(workspaceId, session.user_id)
+}

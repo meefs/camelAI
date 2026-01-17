@@ -1842,6 +1842,48 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return this.getWorkspaceAccessLevel(workspaceId, userId);
   }
 
+  /**
+   * Warm up a workspace container asynchronously.
+   * This is a cheap, fire-and-forget call that triggers container startup
+   * in the background without blocking the response.
+   *
+   * Returns the current container status:
+   * - 'warm': Container is already healthy and ready
+   * - 'warming': Container startup has been triggered in the background
+   * - 'unauthorized': User doesn't have access to this workspace
+   */
+  async warmupWorkspace(
+    workspaceId: string,
+    userId: string
+  ): Promise<{ status: 'warm' | 'warming' | 'unauthorized' }> {
+    // Check access first (cheap - just KV/DO lookups)
+    const accessLevel = await this.getWorkspaceAccessLevel(workspaceId, userId);
+    if (accessLevel === 'none') {
+      return { status: 'unauthorized' };
+    }
+
+    const info = await this.getWorkspaceInfo(workspaceId);
+    if (!info) {
+      return { status: 'unauthorized' };
+    }
+
+    const container = getWorkspaceContainer(this.env, workspaceId);
+    const state = await container.getState();
+
+    if (state.status === 'healthy') {
+      return { status: 'warm' };
+    }
+
+    // Trigger container startup in background - don't await it
+    this.ctx.waitUntil(
+      container.startForWorkspace(workspaceId, info.org_id).catch((err) => {
+        console.error('[warmupWorkspace] Background warmup failed:', { workspaceId, error: String(err) });
+      })
+    );
+
+    return { status: 'warming' };
+  }
+
   async setWorkspaceAccess(
     workspaceId: string,
     userId: string,

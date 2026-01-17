@@ -54,7 +54,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `src/components/admin/app-danger-zone.tsx` | Admin app deletion actions |
 | `src/app/(app)/apps/apps-client.tsx` | Apps list UI with workspace filter tabs and data refresh |
 | `src/app/(app)/apps/AppCard.tsx` | App card layout, URL actions, and workspace badges |
-| `src/contexts/AuthContext.tsx` | React context for auth state |
+| `src/contexts/AuthContext.tsx` | React context for auth state (includes auto-warmup) |
+| `src/hooks/use-workspace-warmup.ts` | Async workspace container warmup hooks |
 | `src/app/login/page.tsx` | Login page |
 | `src/app/signup/page.tsx` | Signup page |
 | `src/lib/auth.ts` | Cookie handling, validation helpers |
@@ -134,6 +135,14 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 4. On shutdown, the container uploads the workspace tar snapshot back to R2
 5. Goofys mounts `/mnt/user-uploads` and `/mnt/user-outputs` for file sharing
 
+### Async Workspace Warmup
+To reduce perceived latency from R2 restore, the app proactively warms up containers:
+1. `AuthContext` calls `useAutoWarmup(currentWorkspace?.id)` on workspace change
+2. The hook calls `warmupWorkspace` server action (fire-and-forget)
+3. Backend checks container state - if already healthy, returns `{ status: 'warm' }`
+4. If container needs starting, uses `ctx.waitUntil()` to start in background, returns `{ status: 'warming' }`
+5. Client-side deduplication prevents redundant warmup calls for the same workspace
+
 ### Threads
 1. Each thread belongs to a workspace
 2. Threads are stored in `OrgDO` (one per organization)
@@ -199,6 +208,13 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 | Route | Method | Purpose |
 |-------|--------|---------|
 | `/api/apps/[scriptName]/preview` | GET | Stream app preview screenshot from R2 |
+
+### Workspaces (auth required)
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/workspaces/[id]/fs/*` | Various | Workspace file system operations |
+| `/api/workspaces/[id]/upload` | POST | Upload files to workspace |
+| `/api/workspaces/[id]/download` | GET | Download files from workspace outputs |
 
 ### Proxy Worker (separate service)
 | Route | Method | Purpose |

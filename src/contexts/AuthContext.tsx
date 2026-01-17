@@ -10,6 +10,7 @@ import {
   switchOrg as switchOrgAction,
   switchWorkspace as switchWorkspaceAction,
 } from '@/lib/server-actions/auth';
+import { useAutoWarmup, clearWarmupCache } from '@/hooks/use-workspace-warmup';
 
 interface AuthContextValue extends AuthState {
   login: (email: string, password: string) => Promise<void>;
@@ -99,6 +100,10 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     }
   }, [initialState, refreshAuth]);
 
+  // Automatically warm up the current workspace when it changes
+  // This triggers on login, signup, workspace switch, org switch, and initial load
+  useAutoWarmup(state.currentWorkspace?.id);
+
   const login = async (email: string, password: string) => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
@@ -178,6 +183,9 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
     } catch (e) {
       error = e instanceof Error ? e.message : 'Logout failed';
     }
+
+    // Clear warmup cache so next login triggers fresh warmup
+    clearWarmupCache();
 
     // Always clear local state, even if server logout failed
     setState({
