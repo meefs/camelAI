@@ -2,6 +2,8 @@
 
 > **Note to agents:** Keep this file up to date. When you add new features, workers, API routes, or make significant architectural changes, update the relevant sections of this document.
 
+> **Server Actions vs API Routes:** Strongly prefer Next.js server actions over API routes. Always create server actions (in `src/lib/server-actions/`) instead of API endpoints when possible. Server actions provide better type safety, simpler client code, and automatic request handling. Only use API routes when you need features server actions can't provide (e.g., webhooks, OAuth callbacks, streaming binary data, or third-party integrations that require specific HTTP endpoints).
+
 ## Overview
 
 Chiridion is an AI chat application built on Cloudflare's edge infrastructure. It uses the Claude SDK running inside Cloudflare Containers to provide streaming AI responses through WebSockets. The app includes multi-tenant authentication with users and organizations.
