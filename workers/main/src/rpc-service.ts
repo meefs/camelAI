@@ -2932,7 +2932,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async resetWorkspaceContainer(workspaceId: string): Promise<{ success: boolean; containerId: string }> {
     const containerId = getContainerIdForWorkspace(workspaceId);
     using stub = asDisposable(this.env.SANDBOX.get(this.env.SANDBOX.idFromName(containerId)));
-    await stub.destroy();
+    // Use stop() instead of destroy() - stop() sends SIGTERM which triggers
+    // the cleanup trap in entrypoint.sh, allowing R2 backup to run
+    await stub.stop();
     return { success: true, containerId };
   }
 
