@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-17-v1
+# Version: 2026-01-17-v2
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -248,17 +248,17 @@ mount_juicefs() {
     sleep 0.2
   done
 
-  echo "[entrypoint] ERROR: JuiceFS mount command succeeded but mount not visible in /proc/mounts after 2s" >&2
-  echo "[entrypoint] Mount log:" >&2
-  cat "$JUICEFS_MOUNT_LOG" >&2
-  echo "[entrypoint] Checking for JuiceFS daemon..." >&2
+  echo "[entrypoint] ERROR: JuiceFS mount failed - mount not visible in /proc/mounts after 2s" >&2
+  echo "[entrypoint] === Mount command log ===" >&2
+  cat "$JUICEFS_MOUNT_LOG" >&2 || true
+  echo "[entrypoint] === JuiceFS user log ($TARGET_DIR/.juicefs/juicefs.log) ===" >&2
+  cat "$TARGET_DIR/.juicefs/juicefs.log" >&2 2>/dev/null || echo "[entrypoint]   (not found)" >&2
+  echo "[entrypoint] === JuiceFS system log (/var/log/juicefs.log) ===" >&2
+  tail -n 100 /var/log/juicefs.log >&2 2>/dev/null || echo "[entrypoint]   (not found)" >&2
+  echo "[entrypoint] === Process check ===" >&2
   ps aux | grep -i juicefs >&2 || echo "[entrypoint]   No JuiceFS processes found" >&2
-  echo "[entrypoint] /proc/mounts (fuse entries):" >&2
+  echo "[entrypoint] === FUSE mounts ===" >&2
   grep -i fuse /proc/mounts >&2 || echo "[entrypoint]   No FUSE mounts found" >&2
-  if [ -s /var/log/juicefs.log ]; then
-    echo "[entrypoint] /var/log/juicefs.log (last 50 lines):" >&2
-    tail -n 50 /var/log/juicefs.log >&2
-  fi
   return 1
 }
 
