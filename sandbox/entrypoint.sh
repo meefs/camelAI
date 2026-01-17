@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-17-v2
+# Version: 2026-01-17-v3
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -25,6 +25,7 @@ JUICEFS_META_UPLOAD_INTERVAL="${JUICEFS_META_UPLOAD_INTERVAL:-60s}"
 WS_PID=""
 CONTROL_PID=""
 META_UPLOAD_PID=""
+MOUNT_SUCCEEDED=""
 
 # Check if R2 is configured
 has_r2_config() {
@@ -243,6 +244,7 @@ mount_juicefs() {
   for i in 1 2 3 4 5 6 7 8 9 10; do
     if grep -q " $TARGET_DIR " /proc/mounts; then
       echo "[entrypoint] JuiceFS mounted successfully" >&2
+      MOUNT_SUCCEEDED="1"
       return 0
     fi
     sleep 0.2
@@ -288,7 +290,12 @@ cleanup() {
     wait "$META_UPLOAD_PID" 2>/dev/null || true
   fi
 
-  upload_juicefs_meta
+  # Only upload metadata if mount was successful (avoid overwriting good data with bad)
+  if [ "$MOUNT_SUCCEEDED" = "1" ]; then
+    upload_juicefs_meta
+  else
+    echo "[entrypoint] Skipping metadata upload (mount was not successful)" >&2
+  fi
 
   fusermount -u /mnt/user-uploads 2>/dev/null || true
   fusermount -u /mnt/user-outputs 2>/dev/null || true
