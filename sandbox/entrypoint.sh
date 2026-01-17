@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-16-v8
+# Version: 2026-01-17-v1
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -137,8 +137,17 @@ mount_juicefs() {
     if [ -s "$JFS_DUMP_FILE" ]; then
       echo "[entrypoint] Found JSON metadata dump, restoring with juicefs load..." >&2
       if juicefs load "$JFS_META_URL" "$JFS_DUMP_FILE" 2>/dev/null; then
-        echo "[entrypoint] Metadata restored from JSON dump" >&2
-        RESTORED_FROM="json"
+        # juicefs dump strips credentials for security, so we must reconfigure them
+        if juicefs config "$JFS_META_URL" \
+            --access-key "$AWS_ACCESS_KEY_ID" \
+            --secret-key "$AWS_SECRET_ACCESS_KEY" \
+            ${AWS_SESSION_TOKEN:+--session-token "$AWS_SESSION_TOKEN"} 2>/dev/null; then
+          echo "[entrypoint] Metadata restored from JSON dump" >&2
+          RESTORED_FROM="json"
+        else
+          echo "[entrypoint] WARNING: juicefs config failed after load" >&2
+          rm -f "$JFS_META_FILE"
+        fi
       else
         echo "[entrypoint] WARNING: juicefs load failed" >&2
         rm -f "$JFS_DUMP_FILE"
