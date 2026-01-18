@@ -2,6 +2,8 @@
 
 > **Note to agents:** Keep this file up to date. When you add new features, workers, API routes, or make significant architectural changes, update the relevant sections of this document.
 
+> **Server Actions vs API Routes:** Strongly prefer Next.js server actions over API routes. Always create server actions (in `src/lib/server-actions/`) instead of API endpoints when possible. Server actions provide better type safety, simpler client code, and automatic request handling. Only use API routes when you need features server actions can't provide (e.g., webhooks, OAuth callbacks, streaming binary data, or third-party integrations that require specific HTTP endpoints).
+
 ## Overview
 
 Chiridion is an AI chat application built on Cloudflare's edge infrastructure. It uses the Claude SDK running inside Cloudflare Containers to provide streaming AI responses through WebSockets. The app includes multi-tenant authentication with users and organizations.
@@ -36,10 +38,10 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
    - `proxy/` - Multi-provider LLM proxy worker (Anthropic/OpenAI-compatible/Bedrock/Azure Foundry) with token accounting
 
 3. **Sandbox** (`sandbox/`)
-   - `entrypoint.sh` - Mounts JuiceFS (R2 object storage + SQLite metadata) at the workspace root
+   - `entrypoint.sh` - Downloads/uploads workspace tar snapshots from R2, starts services
    - `ws-server.mjs` - WebSocket server running inside Cloudflare Container
    - Calls Claude SDK `query()` with streaming enabled
-   - `r2-meta.mjs` - R2 helper for JuiceFS SQLite metadata snapshots
+   - `sync.mjs` - R2 tar snapshot download/upload
    - `control-plane.mjs` - Exec/filesystem API server for container management
 
 ## Key Files
@@ -54,7 +56,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `src/components/admin/app-danger-zone.tsx` | Admin app deletion actions |
 | `src/app/(app)/apps/apps-client.tsx` | Apps list UI with workspace filter tabs and data refresh |
 | `src/app/(app)/apps/AppCard.tsx` | App card layout, URL actions, and workspace badges |
-| `src/contexts/AuthContext.tsx` | React context for auth state |
+| `src/contexts/AuthContext.tsx` | React context for auth state (includes auto-warmup) |
+| `src/hooks/use-workspace-warmup.ts` | Async workspace container warmup hooks |
 | `src/app/login/page.tsx` | Login page |
 | `src/app/signup/page.tsx` | Signup page |
 | `src/lib/auth.ts` | Cookie handling, validation helpers |
@@ -70,8 +73,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/screenshot/src/index.ts` | Queue consumer for app preview screenshots |
 | `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
-| `sandbox/entrypoint.sh` | Container entrypoint that mounts JuiceFS and manages metadata snapshots |
-| `sandbox/r2-meta.mjs` | R2 helper for JuiceFS SQLite metadata |
+| `sandbox/entrypoint.sh` | Container entrypoint that syncs R2 tar snapshots and starts services |
+| `sandbox/sync.mjs` | R2 tar snapshot download/upload |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
 | `src/lib/integration-crypto.ts` | Credential encryption utilities |
 | `workers/main/src/rpc-service.ts` | DoRpcService - RPC methods for cross-worker calls |
@@ -131,12 +134,20 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 1. Streaming Task sub-agent tool_results are persisted to `/home/claude/.chiridion/task-results/{threadId}.jsonl` inside the container.
 2. `DoRpcService.getMessages` merges these updates into assistant messages so refreshes retain Task progress history.
 
-### Workspace Persistence (JuiceFS)
-1. Container entrypoint downloads a JuiceFS SQLite metadata snapshot from R2 (if present)
-2. JuiceFS mounts the workspace at `R2_MOUNT_DIR` (defaults to `/home/claude`) using R2 as object storage
-3. Workspace data is stored under the workspace R2 prefix (e.g., `{orgId}/{workspaceId}/juicefs/`)
-4. The container periodically uploads SQLite metadata snapshots to R2 while running
-5. On shutdown, the container unmounts JuiceFS and uploads the SQLite metadata snapshot back to R2
+### Workspace Persistence (R2 Tar Snapshots)
+1. Container entrypoint downloads workspace tar snapshot from R2 (if present)
+2. Workspace is extracted to `R2_MOUNT_DIR` (defaults to `/home/claude`)
+3. Workspace data is stored under the workspace R2 prefix (e.g., `{orgId}/{workspaceId}/`)
+4. On shutdown, the container uploads the workspace tar snapshot back to R2
+5. Goofys mounts `/mnt/user-uploads` and `/mnt/user-outputs` for file sharing
+
+### Async Workspace Warmup
+To reduce perceived latency from R2 restore, the app proactively warms up containers:
+1. `AuthContext` calls `useAutoWarmup(currentWorkspace?.id)` on workspace change
+2. The hook calls `warmupWorkspace` server action (fire-and-forget)
+3. Backend checks container state - if already healthy, returns `{ status: 'warm' }`
+4. If container needs starting, uses `ctx.waitUntil()` to start in background, returns `{ status: 'warming' }`
+5. Client-side deduplication prevents redundant warmup calls for the same workspace
 
 ### Threads
 1. Each thread belongs to a workspace
@@ -204,6 +215,13 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 |-------|--------|---------|
 | `/api/apps/[scriptName]/preview` | GET | Stream app preview screenshot from R2 |
 
+### Workspaces (auth required)
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/workspaces/[id]/fs/*` | Various | Workspace file system operations |
+| `/api/workspaces/[id]/upload` | POST | Upload files to workspace |
+| `/api/workspaces/[id]/download` | GET | Download files from workspace outputs |
+
 ### Proxy Worker (separate service)
 | Route | Method | Purpose |
 |-------|--------|---------|
@@ -247,10 +265,6 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
 | `LOCAL_APP_PREVIEW_URL` | Optional override for local app preview screenshots (defaults to `https://hello-world-test.chiridion.app/`) |
 | `PROXY_BASE_URL` | Base URL for the LLM proxy used by sandbox containers (sets `ANTHROPIC_BASE_URL` in containers) |
-| `JUICEFS_META_DIR` | Optional directory for JuiceFS SQLite metadata in the container (default `/var/lib/juicefs`) |
-| `JUICEFS_CACHE_DIR` | Optional JuiceFS cache directory in the container (default `/tmp/juicefs-cache`) |
-| `JUICEFS_UPLOAD_DELAY` | Delay before uploading staged writeback data (default `5s`) |
-| `JUICEFS_META_UPLOAD_INTERVAL` | Periodic metadata snapshot upload interval (default `60s`, empty disables) |
 
 #### OAuth Setup
 

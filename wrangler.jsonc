@@ -133,6 +133,9 @@
 			"images": {
 				"binding": "IMAGES"
 			},
+			"browser": {
+				"binding": "BROWSER"
+			},
 			"ai": {
 				"binding": "AI",
 				"remote": true
@@ -227,6 +230,9 @@
 			"images": {
 				"binding": "IMAGES"
 			},
+			"browser": {
+				"binding": "BROWSER"
+			},
 			"ai": {
 				"binding": "AI",
 				"remote": true
@@ -319,6 +325,9 @@
 			},
 			"images": {
 				"binding": "IMAGES"
+			},
+			"browser": {
+				"binding": "BROWSER"
 			},
 			"ai": {
 				"binding": "AI",
@@ -413,6 +422,9 @@
 			},
 			"images": {
 				"binding": "IMAGES"
+			},
+			"browser": {
+				"binding": "BROWSER"
 			},
 			"ai": {
 				"binding": "AI",

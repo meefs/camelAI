@@ -362,7 +362,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
   /**
    * Ensure container is running for a workspace.
-   * Workspace persistence is handled by JuiceFS in the container entrypoint.
+   * Workspace persistence is handled by R2 tar snapshots in the container entrypoint.
    */
   private async ensureContainerRunning(workspaceId: string): Promise<WorkspaceInfo> {
     const info = await this.requireWorkspaceInfo(workspaceId);
@@ -372,12 +372,12 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   }
 
   private async uploadWorkspaceSnapshot(workspaceId: string): Promise<void> {
-    // Legacy tar snapshot sync is disabled; JuiceFS handles persistence.
+    // R2 tar snapshot upload happens in container entrypoint on shutdown.
     void workspaceId;
   }
 
   private scheduleWorkspaceUpload(workspaceId: string): void {
-    // Legacy tar snapshot sync is disabled; JuiceFS handles persistence.
+    // R2 tar snapshot upload happens in container entrypoint on shutdown.
     void workspaceId;
   }
 
@@ -1842,6 +1842,48 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     return this.getWorkspaceAccessLevel(workspaceId, userId);
   }
 
+  /**
+   * Warm up a workspace container asynchronously.
+   * This is a cheap, fire-and-forget call that triggers container startup
+   * in the background without blocking the response.
+   *
+   * Returns the current container status:
+   * - 'warm': Container is already healthy and ready
+   * - 'warming': Container startup has been triggered in the background
+   * - 'unauthorized': User doesn't have access to this workspace
+   */
+  async warmupWorkspace(
+    workspaceId: string,
+    userId: string
+  ): Promise<{ status: 'warm' | 'warming' | 'unauthorized' }> {
+    // Check access first (cheap - just KV/DO lookups)
+    const accessLevel = await this.getWorkspaceAccessLevel(workspaceId, userId);
+    if (accessLevel === 'none') {
+      return { status: 'unauthorized' };
+    }
+
+    const info = await this.getWorkspaceInfo(workspaceId);
+    if (!info) {
+      return { status: 'unauthorized' };
+    }
+
+    const container = getWorkspaceContainer(this.env, workspaceId);
+    const state = await container.getState();
+
+    if (state.status === 'healthy') {
+      return { status: 'warm' };
+    }
+
+    // Trigger container startup in background - don't await it
+    this.ctx.waitUntil(
+      container.startForWorkspace(workspaceId, info.org_id).catch((err) => {
+        console.error('[warmupWorkspace] Background warmup failed:', { workspaceId, error: String(err) });
+      })
+    );
+
+    return { status: 'warming' };
+  }
+
   async setWorkspaceAccess(
     workspaceId: string,
     userId: string,
@@ -2355,7 +2397,7 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       const info = await this.requireWorkspaceInfo(workspaceId);
       const container = getWorkspaceContainer(this.env, workspaceId);
 
-      // Ensure container is running (JuiceFS mount happens in entrypoint)
+      // Ensure container is running (R2 restore happens in entrypoint)
       await container.startForWorkspace(workspaceId, info.org_id);
 
       // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
@@ -3016,7 +3058,9 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
   async resetWorkspaceContainer(workspaceId: string): Promise<{ success: boolean; containerId: string }> {
     const containerId = getContainerIdForWorkspace(workspaceId);
     using stub = asDisposable(this.env.SANDBOX.get(this.env.SANDBOX.idFromName(containerId)));
-    await stub.destroy();
+    // Use stop() instead of destroy() - stop() sends SIGTERM which triggers
+    // the cleanup trap in entrypoint.sh, allowing R2 backup to run
+    await stub.stop();
     return { success: true, containerId };
   }
 

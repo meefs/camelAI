@@ -409,6 +409,18 @@ export async function getWorkspaceAccess(workspaceId: string, userId: string): P
   return withRpc((rpc) => rpc.getWorkspaceAccess(workspaceId, userId));
 }
 
+/**
+ * Warm up a workspace container asynchronously.
+ * This is a cheap, fire-and-forget call that triggers container startup
+ * in the background without blocking.
+ */
+export async function warmupWorkspace(
+  workspaceId: string,
+  userId: string
+): Promise<{ status: 'warm' | 'warming' | 'unauthorized' }> {
+  return withRpc((rpc) => rpc.warmupWorkspace(workspaceId, userId));
+}
+
 export async function setWorkspaceAccess(
   workspaceId: string,
   userId: string,

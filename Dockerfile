@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-11-v1
+# Version: 2026-01-17-v4
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -22,15 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     python3 \
     python3-pip \
-    fuse3 \
-    libfuse3-3 \
+    fuse \
     libfuse2 \
   && rm -rf /var/lib/apt/lists/* \
   && npm install -g bun wrangler@4.55.0 shadcn \
   && mv /usr/local/bin/wrangler /usr/local/bin/wrangler-real \
   && curl -L -o /usr/local/bin/goofys https://github.com/kahing/goofys/releases/download/v0.24.0/goofys \
-  && chmod +x /usr/local/bin/goofys \
-  && curl -fsSL https://d.juicefs.com/install | sh -
+  && chmod +x /usr/local/bin/goofys
 
 # Layer 3: Dependencies only - cached unless package.json changes
 WORKDIR /app
@@ -39,7 +37,7 @@ RUN bun install
 
 # Layer 4: App code (changes frequently) - copied after install for better caching
 COPY --chmod=755 sandbox/entrypoint.sh ./
-COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/r2-meta.mjs ./
+COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
 COPY sandbox/skills ./skills
 RUN chmod -R a+rX /app
 
