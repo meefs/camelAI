@@ -9,6 +9,12 @@ export interface SDKEvent {
   sourceToolUseId?: string;
   source_tool_use_id?: string;
   parent_tool_use_id?: string;
+  toolUseResult?: {
+    prompt?: unknown;
+  };
+  tool_use_result?: {
+    prompt?: unknown;
+  };
   message?: {
     content: ContentBlock[];
     stop_reason?: string | null;

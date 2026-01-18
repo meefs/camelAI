@@ -718,8 +718,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
           );
           if (toolResults.length === 0) return;
           const toolUseResultPrompt = (() => {
-            const record = sdkEvent as Record<string, unknown>;
-            const toolUseResult = record.toolUseResult as { prompt?: unknown } | undefined;
+            const toolUseResult = sdkEvent.toolUseResult ?? sdkEvent.tool_use_result;
             return typeof toolUseResult?.prompt === 'string' ? toolUseResult.prompt : undefined;
           })();
           setMessages(prev => attachToolResultsToMessages(prev, toolResults, {

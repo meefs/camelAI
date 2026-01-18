@@ -51,6 +51,8 @@ import type {
   WorkspaceAccessLevel,
   Thread,
   User,
+  ContentBlock,
+  ToolResultBlock,
   AuditLogEntry,
   Integration,
   CreateIntegrationInput,
@@ -2468,6 +2470,19 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         }
       };
 
+      const isContentBlock = (value: unknown): value is ContentBlock => {
+        if (!value || typeof value !== 'object' || !('type' in value)) return false;
+        const type = (value as { type?: string }).type;
+        return type === 'text' || type === 'tool_use' || type === 'tool_result' || type === 'thinking';
+      };
+
+      const coerceToolResultContent = (value: unknown): string | ContentBlock[] | null => {
+        if (typeof value === 'string') return value;
+        if (Array.isArray(value) && value.every(isContentBlock)) return value;
+        if (isContentBlock(value)) return [value];
+        return null;
+      };
+
       const applyTaskUpdates = (baseMessages: Message[], updates: Array<Record<string, unknown>>): Message[] => {
         if (updates.length === 0) return baseMessages;
         const toolUseIndex = new Map<string, { messageIndex: number; name: string }>();
@@ -2523,10 +2538,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
             existingKeys.add(normalizeContentString(block.content));
           });
 
-          const newBlocks = bucket
-            .map((update) => update.content)
-            .filter((content) => content !== undefined)
-            .map((content) => ({
+          const newBlocks: ToolResultBlock[] = bucket
+            .map((update) => coerceToolResultContent(update.content))
+            .filter((content): content is string | ContentBlock[] => content !== null)
+            .map((content): ToolResultBlock => ({
               type: 'tool_result',
               tool_use_id: parentId,
               content,
