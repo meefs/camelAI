@@ -79,11 +79,13 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
     return null;
   }
 
-  const toolResultsById = new Map<string, ToolResultBlock>();
+  const toolResultsById = new Map<string, ToolResultBlock[]>();
   const toolUseIds = new Set<string>();
   content.forEach(block => {
     if (block.type === 'tool_result') {
-      toolResultsById.set(block.tool_use_id, block);
+      const existing = toolResultsById.get(block.tool_use_id) ?? [];
+      existing.push(block);
+      toolResultsById.set(block.tool_use_id, existing);
     }
     if (block.type === 'tool_use') {
       toolUseIds.add(block.id);
@@ -115,12 +117,23 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
     }
 
     if (block.type === 'tool_use') {
-      const result = toolResultsById.get(block.id);
+      const results = toolResultsById.get(block.id) ?? [];
+      const latestResult = results[results.length - 1];
+      const isTaskTool = block.name === 'Task';
       const skillSheet = skillSheets?.get(block.id);
       items.push({
         kind: 'tool',
         key: `tool-${block.id || index}`,
-        node: <ToolCall tool={block} result={result} isStreaming={isStreaming} skillSheet={skillSheet} />,
+        node: (
+          <ToolCall
+            tool={block}
+            result={latestResult}
+            results={isTaskTool ? results : undefined}
+            isStreaming={isStreaming}
+            skillSheet={skillSheet}
+            progressCount={isTaskTool ? results.length : undefined}
+          />
+        ),
       });
       return;
     }

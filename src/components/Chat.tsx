@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowDown, RefreshCw, ExternalLink, X } from 'lucide-react';
-import type { Message, ContentBlock, ToolUseBlock } from '@/types';
+import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
@@ -26,7 +26,12 @@ import {
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
 import { cn } from '@/lib/utils';
-import { type SDKEvent, applyStreamingEventToMessage } from '@/lib/streaming';
+import {
+  type SDKEvent,
+  applyStreamingEventToMessage,
+  attachToolResultsToMessages,
+  normalizeToolResultMessages,
+} from '@/lib/streaming';
 import {
   createThread as createThreadAction,
   getThreadMessages,
@@ -211,9 +216,13 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [loading, setLoading] = useState(false);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
-  const visibleMessages = useMemo(
-    () => messages.filter(message => !message.isMeta && !message.sourceToolUseID),
+  const normalizedMessages = useMemo(
+    () => normalizeToolResultMessages(messages),
     [messages]
+  );
+  const visibleMessages = useMemo(
+    () => normalizedMessages.filter(message => !message.isMeta && !message.sourceToolUseID),
+    [normalizedMessages]
   );
 
   // Refs to track current state for use in callbacks (avoids stale closures)
@@ -290,6 +299,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const lastUserMessageRef = useRef<HTMLDivElement>(null);
   const assistantMeasureRef = useRef<HTMLDivElement>(null);
   const assistantSpacerRef = useRef<HTMLDivElement>(null);
+  const spacerHeightRef = useRef(0);
   const initialScrollDoneRef = useRef(false);
   const stickToBottomRef = useRef(true);
   const forceScrollOnNextUpdate = useRef(false);
@@ -608,9 +618,31 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         if (sdkEvent.type === 'stream_event') {
           const evt = sdkEvent.event;
           if (evt?.type === 'message_start') {
+            const currentMsgs = messagesRef.current;
+            const existingStreamingId = streamingMessageIdRef.current;
+            const existingStreamingMsg = existingStreamingId
+              ? currentMsgs.find(msg => msg.id === existingStreamingId)
+              : undefined;
+
+            if (existingStreamingMsg) {
+              // Claude emits a new message_start after each tool call; append to the active turn.
+              setMessages(prev => prev.map(msg =>
+                msg.id === existingStreamingId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+              ));
+              return;
+            }
+
+            const fallbackStreamingMsg = currentMsgs.find(msg => msg.isStreaming);
+            if (fallbackStreamingMsg) {
+              setStreamingMessageId(fallbackStreamingMsg.id);
+              setMessages(prev => prev.map(msg =>
+                msg.id === fallbackStreamingMsg.id ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+              ));
+              return;
+            }
+
             // Add new assistant message with isStreaming: true
             const msgId = evt.message?.id || (sdkEvent as { uuid?: string }).uuid || `stream_${Date.now()}`;
-            // Start streaming message
             setStreamingMessageId(msgId);
             const newMsg: Message = {
               id: msgId,
@@ -620,7 +652,6 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
               created_at: Date.now(),
               isStreaming: true,
             };
-            const currentMsgs = messagesRef.current;
             if (!currentMsgs.some(m => m.id === msgId)) {
               setMessages([...currentMsgs, newMsg]);
             }
@@ -682,15 +713,20 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
             return;
           }
 
-          // Regular user content (tool_result) - append to streaming message
-          const msgId = streamingMessageIdRef.current;
-          if (msgId) {
-            setMessages(prev => prev.map(msg => {
-              if (msg.id !== msgId) return msg;
-              const content = Array.isArray(msg.content) ? msg.content : [];
-              return { ...msg, content: [...content, ...contentBlocks] };
-            }));
-          }
+          const toolResults = contentBlocks.filter(
+            (block): block is ToolResultBlock => block.type === 'tool_result'
+          );
+          if (toolResults.length === 0) return;
+          const toolUseResultPrompt = (() => {
+            const record = sdkEvent as Record<string, unknown>;
+            const toolUseResult = record.toolUseResult as { prompt?: unknown } | undefined;
+            return typeof toolUseResult?.prompt === 'string' ? toolUseResult.prompt : undefined;
+          })();
+          setMessages(prev => attachToolResultsToMessages(prev, toolResults, {
+            threadId: id,
+            parentToolUseId: sourceToolUseID,
+            parentToolPrompt: toolUseResultPrompt,
+          }));
         } else if (sdkEvent.type === 'result') {
           // Query complete - mark message as not streaming
           // Finish streaming
@@ -1104,15 +1140,19 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   }, [shouldShowChat, threadId, visibleMessages.length, scrollToBottom, shouldAnchorToLastMessage, lastMessage, lastMessage?.id]);
 
   useLayoutEffect(() => {
-    if (!shouldRenderSpacer) return;
+    if (!shouldRenderSpacer) {
+      spacerHeightRef.current = 0;
+      return;
+    }
 
     const container = scrollContainerRef.current;
     const spacer = assistantSpacerRef.current;
     const userEl = lastUserMessageRef.current;
     const assistantEl = assistantMeasureRef.current;
-    if (!container || !spacer) return;
-
-    let frameId: number | null = null;
+    if (!container || !spacer) {
+      spacerHeightRef.current = 0;
+      return;
+    }
 
     const updateSpacer = () => {
       const measureUser = lastUserMessageRef.current;
@@ -1161,7 +1201,11 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       const availableHeight = container.clientHeight - overlap;
 
       const height = Math.max(availableHeight - exchangeHeight - rowGap - paddingBottom, 0);
-      spacer.style.height = `${height}px`;
+      const nextHeight = Math.max(Math.round(height), 0);
+      if (spacerHeightRef.current !== nextHeight) {
+        spacer.style.height = `${nextHeight}px`;
+        spacerHeightRef.current = nextHeight;
+      }
     };
 
     updateSpacer();
@@ -1169,16 +1213,10 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     if (typeof ResizeObserver === 'undefined') return;
 
     const observer = new ResizeObserver(() => {
-      if (frameId !== null) {
-        cancelAnimationFrame(frameId);
-      }
-      frameId = requestAnimationFrame(updateSpacer);
+      updateSpacer();
     });
 
     observer.observe(container);
-    if (messageColumnRef.current) {
-      observer.observe(messageColumnRef.current);
-    }
     if (userEl) {
       observer.observe(userEl);
     }
@@ -1187,9 +1225,6 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     }
 
     return () => {
-      if (frameId !== null) {
-        cancelAnimationFrame(frameId);
-      }
       observer.disconnect();
     };
   }, [shouldRenderSpacer, isAwaitingAssistant, lastMessage?.id, lastUserMessage?.id, visibleMessages.length, isStreaming, loading]);
@@ -1214,6 +1249,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     let frameId: number | null = null;
     const observer = new ResizeObserver(() => {
       if (!stickToBottomRef.current) return;
+      if (shouldRenderSpacer && spacerHeightRef.current > 0) return;
       if (frameId !== null) {
         cancelAnimationFrame(frameId);
       }
@@ -1230,7 +1266,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       }
       observer.disconnect();
     };
-  }, [scrollToBottom, shouldShowChat, threadId]);
+  }, [scrollToBottom, shouldShowChat, threadId, shouldRenderSpacer]);
 
   // Auto-scroll on new messages (only if near bottom, or forced after user sends)
   useLayoutEffect(() => {

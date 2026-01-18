@@ -1,4 +1,4 @@
-import type { ContentBlock, Message } from '@/types';
+import type { ContentBlock, Message, ToolResultBlock, ToolUseBlock } from '@/types';
 
 export interface SDKEvent {
   type: string;
@@ -156,4 +156,144 @@ export function applyStreamingEventToMessage(
   }
 
   return message;
+}
+
+function isToolResultBlock(block: ContentBlock): block is ToolResultBlock {
+  return block.type === 'tool_result';
+}
+
+interface ToolUseIndexEntry {
+  messageIndex: number;
+  tool: ToolUseBlock;
+}
+
+function buildToolUseIndex(messages: Message[]): Map<string, ToolUseIndexEntry> {
+  const index = new Map<string, ToolUseIndexEntry>();
+  messages.forEach((message, messageIndex) => {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) return;
+    message.content.forEach(block => {
+      if (block.type !== 'tool_use' || !block.id) return;
+      index.set(block.id, { messageIndex, tool: block });
+    });
+  });
+  return index;
+}
+
+function findTaskToolUseIdByPrompt(messages: Message[], prompt?: string): string | undefined {
+  if (!prompt) return undefined;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block.type !== 'tool_use' || block.name !== 'Task') continue;
+      const blockPrompt = typeof block.input?.prompt === 'string' ? block.input.prompt : '';
+      if (blockPrompt && blockPrompt === prompt) {
+        return block.id;
+      }
+    }
+  }
+  return undefined;
+}
+
+function coerceMessageContent(content: Message['content']): ContentBlock[] {
+  if (Array.isArray(content)) return content;
+  if (typeof content === 'string' && content.trim()) {
+    return [{ type: 'text', text: content }];
+  }
+  return [];
+}
+
+function findLastAssistantIndex(messages: Message[]): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === 'assistant') return i;
+  }
+  return -1;
+}
+
+export function attachToolResultsToMessages(
+  messages: Message[],
+  toolResults: ToolResultBlock[],
+  options: {
+    threadId?: string;
+    createdAt?: number;
+    parentToolUseId?: string;
+    parentToolPrompt?: string;
+  } = {}
+): Message[] {
+  if (toolResults.length === 0) return messages;
+
+  const next = [...messages];
+  const toolUseIndex = buildToolUseIndex(next);
+  const createdAt = options.createdAt ?? Date.now();
+  const promptMatchedId = findTaskToolUseIdByPrompt(next, options.parentToolPrompt);
+  const parentToolUseId = options.parentToolUseId ?? promptMatchedId;
+  const parentEntry = parentToolUseId ? toolUseIndex.get(parentToolUseId) : undefined;
+  const parentIsTask = parentEntry?.tool.name === 'Task';
+
+  const appendToIndex = (index: number, toolResult: ToolResultBlock) => {
+    const target = next[index];
+    const content = coerceMessageContent(target.content);
+    next[index] = {
+      ...target,
+      content: [...content, toolResult],
+    };
+  };
+
+  toolResults.forEach((toolResult, index) => {
+    const directEntry = toolUseIndex.get(toolResult.tool_use_id);
+    const resolvedToolUseId = directEntry
+      ? toolResult.tool_use_id
+      : parentIsTask && parentToolUseId
+        ? parentToolUseId
+        : toolResult.tool_use_id;
+    const resolvedEntry = directEntry ?? (resolvedToolUseId === parentToolUseId ? parentEntry : undefined);
+    const targetIndex = resolvedEntry?.messageIndex ?? findLastAssistantIndex(next);
+    const resolvedResult = resolvedToolUseId === toolResult.tool_use_id
+      ? toolResult
+      : { ...toolResult, tool_use_id: resolvedToolUseId, isTaskUpdate: true };
+
+    if (targetIndex >= 0) {
+      appendToIndex(targetIndex, resolvedResult);
+      return;
+    }
+
+    const threadId = options.threadId ?? messages[0]?.thread_id ?? '';
+    next.push({
+      id: `tool_result_${createdAt}_${index}`,
+      thread_id: threadId,
+      role: 'assistant',
+      content: [resolvedResult],
+      created_at: createdAt,
+    });
+  });
+
+  return next;
+}
+
+export function normalizeToolResultMessages(messages: Message[]): Message[] {
+  let normalized: Message[] = [];
+  let changed = false;
+
+  messages.forEach(message => {
+    const contentBlocks = Array.isArray(message.content) ? message.content : null;
+    const isToolResultMessage = message.role === 'user' &&
+      contentBlocks &&
+      contentBlocks.length > 0 &&
+      contentBlocks.every(isToolResultBlock);
+
+    if (!isToolResultMessage || !contentBlocks) {
+      normalized.push(message);
+      return;
+    }
+
+    const toolResults = contentBlocks.filter(isToolResultBlock);
+    normalized = attachToolResultsToMessages(normalized, toolResults, {
+      threadId: message.thread_id,
+      createdAt: message.created_at,
+      parentToolUseId: message.sourceToolUseID,
+    });
+    changed = true;
+  });
+
+  return changed ? normalized : messages;
 }

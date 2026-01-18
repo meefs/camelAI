@@ -2453,6 +2453,105 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
         return [...toolResults, ...incoming];
       };
 
+      const getToolUsePrompt = (input: unknown): string | null => {
+        if (!input || typeof input !== 'object') return null;
+        const prompt = (input as { prompt?: unknown }).prompt;
+        return typeof prompt === 'string' ? prompt : null;
+      };
+
+      const normalizeContentString = (value: unknown): string => {
+        if (typeof value === 'string') return value;
+        try {
+          return JSON.stringify(value);
+        } catch {
+          return String(value);
+        }
+      };
+
+      const applyTaskUpdates = (baseMessages: Message[], updates: Array<Record<string, unknown>>): Message[] => {
+        if (updates.length === 0) return baseMessages;
+        const toolUseIndex = new Map<string, { messageIndex: number; name: string }>();
+        const promptIndex = new Map<string, string>();
+
+        baseMessages.forEach((message, messageIndex) => {
+          if (message.role !== 'assistant' || !Array.isArray(message.content)) return;
+          message.content.forEach((block) => {
+            if (block?.type !== 'tool_use' || !block.id) return;
+            toolUseIndex.set(block.id, { messageIndex, name: block.name });
+            if (block.name === 'Task') {
+              const prompt = getToolUsePrompt(block.input);
+              if (prompt) {
+                promptIndex.set(prompt, block.id);
+              }
+            }
+          });
+        });
+
+        const sorted = [...updates].sort((a, b) => {
+          const left = a.timestamp ?? a.at ?? 0;
+          const right = b.timestamp ?? b.at ?? 0;
+          const leftValue = typeof left === 'string' ? new Date(left).getTime() : Number(left) || 0;
+          const rightValue = typeof right === 'string' ? new Date(right).getTime() : Number(right) || 0;
+          return leftValue - rightValue;
+        });
+
+        const updatesByParent = new Map<string, Array<Record<string, unknown>>>();
+
+        sorted.forEach((update) => {
+          const parentId = typeof update.parent_tool_use_id === 'string' ? update.parent_tool_use_id : null;
+          const parentPrompt = typeof update.parent_tool_prompt === 'string' ? update.parent_tool_prompt : null;
+          const resolvedParentId = parentId || (parentPrompt ? promptIndex.get(parentPrompt) : null);
+          if (!resolvedParentId) return;
+
+          const target = toolUseIndex.get(resolvedParentId);
+          if (!target || target.name !== 'Task') return;
+          const bucket = updatesByParent.get(resolvedParentId) ?? [];
+          bucket.push(update);
+          updatesByParent.set(resolvedParentId, bucket);
+        });
+
+        updatesByParent.forEach((bucket, parentId) => {
+          const target = toolUseIndex.get(parentId);
+          if (!target) return;
+          const message = baseMessages[target.messageIndex];
+          const messageContent = Array.isArray(message.content) ? [...message.content] : [];
+
+          const existingKeys = new Set<string>();
+          messageContent.forEach((block) => {
+            if (block?.type !== 'tool_result') return;
+            if (block.tool_use_id !== parentId) return;
+            existingKeys.add(normalizeContentString(block.content));
+          });
+
+          const newBlocks = bucket
+            .map((update) => update.content)
+            .filter((content) => content !== undefined)
+            .map((content) => ({
+              type: 'tool_result',
+              tool_use_id: parentId,
+              content,
+              isTaskUpdate: true,
+            }))
+            .filter((candidate) => {
+              const key = normalizeContentString(candidate.content);
+              if (existingKeys.has(key)) return false;
+              existingKeys.add(key);
+              return true;
+            });
+
+          if (newBlocks.length === 0) return;
+
+          const insertIndex = messageContent.findIndex((block) => (
+            block?.type === 'tool_result' && block.tool_use_id === parentId
+          ));
+          const resolvedIndex = insertIndex >= 0 ? insertIndex : messageContent.length;
+          messageContent.splice(resolvedIndex, 0, ...newBlocks);
+          message.content = messageContent;
+        });
+
+        return baseMessages;
+      };
+
       let assistantSegments: Array<{ id: string; content: Message['content']; createdAt: number }> = [];
       let assistantGroupId: string | null = null;
       let assistantGroupCreatedAt: number | null = null;
@@ -2568,6 +2667,33 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       }
 
       flushAssistantGroup();
+
+      const updatesPath = resolveWorkspacePath(
+        this.getWorkspaceRoot(),
+        `/.chiridion/task-results/${threadId}.jsonl`
+      );
+      const updatesExists = await container.exists(updatesPath);
+      if (updatesExists.exists) {
+        const updatesFile = await container.readFile(updatesPath);
+        if (updatesFile.success && updatesFile.content?.trim()) {
+          const updateLines = updatesFile.content
+            .split('\n')
+            .filter((line: string) => line.trim());
+          const updates = updateLines
+            .map((line: string) => {
+              try {
+                const entry = JSON.parse(line) as Record<string, unknown>;
+                if (entry?.type !== 'task_update') return null;
+                return entry;
+              } catch {
+                return null;
+              }
+            })
+            .filter(Boolean) as Array<Record<string, unknown>>;
+          applyTaskUpdates(messages, updates);
+        }
+      }
+
       return messages;
     } catch (e) {
       // Container may not be running - return empty

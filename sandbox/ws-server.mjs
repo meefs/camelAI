@@ -13,6 +13,7 @@ const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TRACE_EVENTS = process.env.CHIRIDION_TRACE_EVENTS !== '0';
 const TRACE_DIR = `${SYNC_DIR}/.chiridion/trace`;
 const TRACE_ALL_FILE = `${TRACE_DIR}/_all.ndjson`;
+const TASK_RESULTS_DIR = `${SYNC_DIR}/.chiridion/task-results`;
 
 if (!ANTHROPIC_API_KEY) {
   console.error('ANTHROPIC_API_KEY env var required');
@@ -23,6 +24,7 @@ if (!ANTHROPIC_API_KEY) {
 const sessions = new Map();
 const MAX_EVENT_BUFFER = 500;
 let traceDirPromise = null;
+let taskResultsDirPromise = null;
 
 function sanitizeFileSegment(value) {
   return String(value || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
@@ -35,6 +37,15 @@ function ensureTraceDir() {
     });
   }
   return traceDirPromise;
+}
+
+function ensureTaskResultsDir() {
+  if (!taskResultsDirPromise) {
+    taskResultsDirPromise = mkdir(TASK_RESULTS_DIR, { recursive: true }).catch((err) => {
+      console.error('[ws-server] Failed to create task results dir:', err?.message || String(err));
+    });
+  }
+  return taskResultsDirPromise;
 }
 
 async function writeTrace(threadId, entry) {
@@ -51,6 +62,93 @@ async function writeTrace(threadId, entry) {
   }
 }
 
+function extractParentToolUseId(event) {
+  if (!event || typeof event !== 'object') return null;
+  const record = event;
+  const message = record.message || {};
+  const parent = (
+    record.parent_tool_use_id ??
+    record.source_tool_use_id ??
+    record.parentToolUseId ??
+    record.sourceToolUseId ??
+    message.parent_tool_use_id ??
+    message.source_tool_use_id ??
+    message.parentToolUseId ??
+    message.sourceToolUseId
+  );
+  return typeof parent === 'string' ? parent : null;
+}
+
+function extractParentToolPrompt(event) {
+  if (!event || typeof event !== 'object') return null;
+  const toolUseResult = event.toolUseResult || event.tool_use_result || null;
+  const prompt = toolUseResult?.prompt;
+  return typeof prompt === 'string' ? prompt : null;
+}
+
+async function writeTaskResultUpdate(threadId, entry) {
+  if (!threadId) return;
+  try {
+    await ensureTaskResultsDir();
+    const taskPath = `${TASK_RESULTS_DIR}/${threadId || 'unknown'}.jsonl`;
+    const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
+    await appendFile(taskPath, line);
+  } catch (error) {
+    console.error('[ws-server] Task update write failed:', error?.message || String(error));
+  }
+}
+
+function persistTaskResultUpdates(session, event) {
+  if (!session?.threadId) return;
+  if (!event || event.type !== 'user') return;
+  const content = event.message?.content;
+  if (!Array.isArray(content)) return;
+  const toolResults = content.filter((block) => block?.type === 'tool_result' && block.tool_use_id);
+  if (toolResults.length === 0) return;
+  const parentToolUseId = extractParentToolUseId(event);
+  const parentToolPrompt = extractParentToolPrompt(event);
+  const parentIsTask = parentToolUseId
+    ? session.taskToolUseIds?.has(parentToolUseId)
+    : Boolean(parentToolPrompt);
+  if (!parentIsTask) return;
+  const timestamp = event.timestamp || new Date().toISOString();
+
+  toolResults.forEach((toolResult, index) => {
+    if (session.taskToolUseIds?.has(toolResult.tool_use_id)) return;
+    if (parentToolUseId && toolResult.tool_use_id === parentToolUseId) return;
+    if (!parentToolUseId && !parentToolPrompt) return;
+    void writeTaskResultUpdate(session.threadId, {
+      type: 'task_update',
+      parent_tool_use_id: parentToolUseId,
+      parent_tool_prompt: parentToolPrompt,
+      tool_use_id: toolResult.tool_use_id,
+      content: toolResult.content,
+      timestamp,
+      index,
+    });
+  });
+}
+
+function trackTaskToolUse(session, event) {
+  if (!session) return;
+  if (!event || typeof event !== 'object') return;
+
+  if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+    event.message.content.forEach((block) => {
+      if (block?.type === 'tool_use' && block.name === 'Task' && block.id) {
+        session.taskToolUseIds.add(block.id);
+      }
+    });
+  }
+
+  if (event.type === 'stream_event' && event.event?.type === 'content_block_start') {
+    const block = event.event.content_block;
+    if (block?.type === 'tool_use' && block.name === 'Task' && block.id) {
+      session.taskToolUseIds.add(block.id);
+    }
+  }
+}
+
 function createSession(threadId, threadDeployToken = null) {
   const session = {
     threadId,
@@ -63,6 +161,7 @@ function createSession(threadId, threadDeployToken = null) {
     attachedSockets: new Set(),
     eventBuffer: [],
     nextEventId: 1,
+    taskToolUseIds: new Set(),
   };
   sessions.set(threadId, session);
   return session;
@@ -77,6 +176,9 @@ function getOrCreateSession(threadId, threadDeployToken = null) {
     // Update token if provided (new connection for existing session)
     if (threadDeployToken && !session.threadDeployToken) {
       session.threadDeployToken = threadDeployToken;
+    }
+    if (!session.taskToolUseIds) {
+      session.taskToolUseIds = new Set();
     }
     return session;
   }
@@ -325,6 +427,8 @@ function startEventLoop(session) {
 
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
+        trackTaskToolUse(session, event);
+        persistTaskResultUpdates(session, event);
 
         // Result means this turn is done - but keep loop alive if sockets connected or messages pending
         if (event.type === 'result') {

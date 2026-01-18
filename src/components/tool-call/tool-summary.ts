@@ -118,9 +118,9 @@ export function getToolSummaryParts(
       return { action: `Searching for "${truncate(pattern || 'pattern', 20)}"...` };
     }
     case 'Task': {
-      if (result) return { action: 'Agent completed task' };
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
-      return { action: `Agent: ${description || 'working...'}` };
+      const summary = description || (isStreaming ? 'working...' : 'task');
+      return { action: `Agent: ${summary}` };
     }
     case 'Skill': {
       const skill = typeof inputRecord.skill === 'string' ? inputRecord.skill : '';

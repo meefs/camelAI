@@ -130,6 +130,10 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 6. Thread ID = Claude session_id (received on first message)
 7. Frontend updates React state with streaming content
 
+### Task Tool Updates
+1. Streaming Task sub-agent tool_results are persisted to `/home/claude/.chiridion/task-results/{threadId}.jsonl` inside the container.
+2. `DoRpcService.getMessages` merges these updates into assistant messages so refreshes retain Task progress history.
+
 ### Workspace Persistence (R2 Tar Snapshots)
 1. Container entrypoint downloads workspace tar snapshot from R2 (if present)
 2. Workspace is extracted to `R2_MOUNT_DIR` (defaults to `/home/claude`)

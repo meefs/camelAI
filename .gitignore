@@ -54,15 +54,6 @@ next-env.d.ts
 test-results/
 playwright-report/
 
-# Images
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.webp
-*.ico
-*.svg
-
 # Swap files
 *.swp
 *.swo
