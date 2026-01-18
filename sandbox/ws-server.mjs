@@ -90,8 +90,7 @@ async function writeTaskResultUpdate(threadId, entry) {
   if (!threadId) return;
   try {
     await ensureTaskResultsDir();
-    const safeThread = sanitizeFileSegment(threadId);
-    const taskPath = `${TASK_RESULTS_DIR}/${safeThread}.jsonl`;
+    const taskPath = `${TASK_RESULTS_DIR}/${threadId || 'unknown'}.jsonl`;
     const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
     await appendFile(taskPath, line);
   } catch (error) {
