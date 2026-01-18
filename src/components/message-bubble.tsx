@@ -74,6 +74,40 @@ function parseMessageAuthor(content: string): ParsedMessage {
   return { author: null, content };
 }
 
+/**
+ * Strip author prefix from ContentBlock array.
+ * Returns { author, blocks } where blocks has the prefix removed from the first text block.
+ */
+function stripAuthorFromBlocks(blocks: ContentBlock[]): { author: ParsedAuthor | null; blocks: ContentBlock[] } {
+  if (blocks.length === 0) {
+    return { author: null, blocks };
+  }
+
+  // Find the first text block
+  const firstTextIndex = blocks.findIndex(block => block.type === 'text');
+  if (firstTextIndex === -1) {
+    return { author: null, blocks };
+  }
+
+  const firstTextBlock = blocks[firstTextIndex];
+  if (firstTextBlock.type !== 'text') {
+    return { author: null, blocks };
+  }
+
+  // Parse author from the first text block
+  const { author, content: strippedText } = parseMessageAuthor(firstTextBlock.text);
+
+  if (!author) {
+    return { author: null, blocks };
+  }
+
+  // Create new blocks array with stripped first text block
+  const newBlocks = [...blocks];
+  newBlocks[firstTextIndex] = { type: 'text', text: strippedText };
+
+  return { author, blocks: newBlocks };
+}
+
 function safeJsonStringify(value: unknown): string {
   if (typeof value === 'string') return value;
   try {
@@ -263,10 +297,19 @@ export function MessageBubble({
     : message.content.length > 0;
 
   if (message.role === 'user') {
-    // Parse author attribution from content
-    const rawContent = typeof message.content === 'string' ? message.content : contentToString(message.content);
-    const { author, content: strippedContent } = parseMessageAuthor(rawContent);
-    const displayContent = typeof message.content === 'string' ? strippedContent : message.content;
+    // Parse author attribution from content and strip prefix for display
+    let author: ParsedAuthor | null = null;
+    let displayContent: string | ContentBlock[];
+
+    if (typeof message.content === 'string') {
+      const parsed = parseMessageAuthor(message.content);
+      author = parsed.author;
+      displayContent = parsed.content;
+    } else {
+      const stripped = stripAuthorFromBlocks(message.content);
+      author = stripped.author;
+      displayContent = stripped.blocks;
+    }
 
     return (
       <div className="flex flex-col items-end gap-1">
