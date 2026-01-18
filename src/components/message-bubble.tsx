@@ -279,14 +279,14 @@ export function MessageBubble({
           role="group"
           aria-label="Message actions"
         >
+          {author && (
+            <span className="text-muted-foreground text-xs mr-1">
+              Sent by {author.displayName} at 
+            </span>
+          )}
           <span className="text-muted-foreground text-xs mr-1">
             {formatMessageTime(message.created_at)}
           </span>
-          {author && (
-            <span className="text-muted-foreground text-xs mr-1">
-              · Sent by {author.displayName}
-            </span>
-          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
