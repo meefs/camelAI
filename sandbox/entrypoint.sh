@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-17-v1
+# Version: 2026-01-18-v1
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -27,7 +27,7 @@ has_r2_config() {
   [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]
 }
 
-# Cleanup function for shutdown
+# Cleanup function for shutdown (runs on EXIT, which fires for all termination paths)
 cleanup() {
   echo "[entrypoint] Shutting down..." >&2
 
@@ -59,8 +59,11 @@ cleanup() {
   echo "[entrypoint] Shutdown complete." >&2
 }
 
-# Trap signals for graceful shutdown
-trap cleanup EXIT TERM INT
+# Trap EXIT for cleanup, and TERM/INT to convert signals into normal exits.
+# In dash (Debian's /bin/sh), EXIT trap doesn't fire on untrapped signals,
+# so we must trap TERM/INT to ensure cleanup runs on container shutdown.
+trap cleanup EXIT
+trap 'exit 0' TERM INT
 
 # R2 download on first run (if configured)
 if has_r2_config; then
