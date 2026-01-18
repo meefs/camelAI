@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-18-sandbox-v10-user-info';
+const VERSION = '2026-01-18-sandbox-v11-multi-user';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -250,16 +250,6 @@ function getQueryOptions(session) {
     envVars.CLOUDFLARE_API_TOKEN = session.threadDeployToken;
   }
 
-  // Build user context line for system prompt
-  let userContextLine = '';
-  if (session.userName && session.userEmail) {
-    userContextLine = `\n\n## Current User\n\nYou are talking to ${session.userName} (${session.userEmail}).`;
-  } else if (session.userName) {
-    userContextLine = `\n\n## Current User\n\nYou are talking to ${session.userName}.`;
-  } else if (session.userEmail) {
-    userContextLine = `\n\n## Current User\n\nYou are talking to a user with email ${session.userEmail}.`;
-  }
-
   const options = {
     model: 'opus',
     fallbackModel: 'sonnet',
@@ -269,8 +259,7 @@ function getQueryOptions(session) {
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',
-      append: `${userContextLine}
-
+      append: `
 ## About This Environment
 
 You are running inside **Chiridion**, a web application that brings Claude Code to the browser. Users interact through a chat interface - they cannot see your terminal, localhost servers, or file system directly.
@@ -279,6 +268,10 @@ You are running inside **Chiridion**, a web application that brings Claude Code 
 - **localhost is not accessible** - Users cannot open localhost URLs. If you need to show something, deploy it or output the content directly.
 - **Don't assume technical ability** - Users may not be developers. Explain what you're doing in plain language. Avoid jargon unless the user demonstrates familiarity.
 - **Show results, not processes** - Instead of saying "run npm start and open localhost:3000", deploy the app or show the output directly.
+
+## Multi-User Threads
+
+Threads in Chiridion can have multiple users. Each user message is prefixed with the sender's identity in the format \`[Name (email)]: message\` or \`[email]: message\`. Pay attention to who is sending each message - different team members may have different questions or instructions.
 
 ## File Sharing with User
 
@@ -474,9 +467,28 @@ function startEventLoop(session) {
   })();
 }
 
+/**
+ * Format author prefix for message attribution.
+ * Format: [Name (email)]: or [email]: if no name
+ */
+function formatAuthorPrefix(userName, userEmail) {
+  if (userName && userEmail) {
+    return `[${userName} (${userEmail})]: `;
+  } else if (userName) {
+    return `[${userName}]: `;
+  } else if (userEmail) {
+    return `[${userEmail}]: `;
+  }
+  return '';
+}
+
 // Handle a user message
-function handleUserMessage(session, content) {
-  void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content });
+function handleUserMessage(session, content, userInfo = null) {
+  // Prepend author attribution to message content
+  const authorPrefix = formatAuthorPrefix(userInfo?.userName, userInfo?.userEmail);
+  const attributedContent = authorPrefix + content;
+
+  void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content: attributedContent, author: userInfo });
   // Initialize session if needed
   initSession(session);
 
@@ -488,10 +500,10 @@ function handleUserMessage(session, content) {
   if (session.messageResolver) {
     const resolver = session.messageResolver;
     session.messageResolver = null;
-    resolver(content);
+    resolver(attributedContent);
   } else {
     // Queue message - will be picked up when generator pulls
-    session.messageQueue.push(content);
+    session.messageQueue.push(attributedContent);
   }
 }
 
@@ -586,7 +598,12 @@ Bun.serve({
             return;
           }
           const session = sessions.get(threadId);
-          handleUserMessage(session, data.content);
+          // Get user info from the socket (set during WebSocket upgrade)
+          const userInfo = {
+            userName: ws.data?.userName || null,
+            userEmail: ws.data?.userEmail || null,
+          };
+          handleUserMessage(session, data.content, userInfo);
 
         } else if (data.type === 'stop') {
           const threadId = ws.data?.threadId;

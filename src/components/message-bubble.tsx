@@ -22,6 +22,58 @@ function formatMessageTime(timestamp: number): string {
   });
 }
 
+/**
+ * Parse author attribution from message content.
+ * Messages are prefixed with [Name (email)]: or [email]:
+ * Returns { author, content } where author has { name, email, displayName }
+ */
+interface ParsedAuthor {
+  name: string | null;
+  email: string | null;
+  displayName: string; // Name if available, otherwise email
+}
+
+interface ParsedMessage {
+  author: ParsedAuthor | null;
+  content: string;
+}
+
+function parseMessageAuthor(content: string): ParsedMessage {
+  // Match [Name (email)]: or [email]: at the start of the message
+  // Pattern: [Name (email)]: or [Name]: or [email]:
+  const matchWithEmail = content.match(/^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/);
+  if (matchWithEmail) {
+    const name = matchWithEmail[1]?.trim() || null;
+    const email = matchWithEmail[2]?.trim() || null;
+    return {
+      author: {
+        name,
+        email,
+        displayName: name || email || 'Unknown',
+      },
+      content: content.slice(matchWithEmail[0].length),
+    };
+  }
+
+  // Match [Name]: or [email]: (no parentheses)
+  const matchSimple = content.match(/^\[([^\]]+)\]:\s*/);
+  if (matchSimple) {
+    const value = matchSimple[1]?.trim() || '';
+    // Check if it looks like an email
+    const isEmail = value.includes('@');
+    return {
+      author: {
+        name: isEmail ? null : value,
+        email: isEmail ? value : null,
+        displayName: value || 'Unknown',
+      },
+      content: content.slice(matchSimple[0].length),
+    };
+  }
+
+  return { author: null, content };
+}
+
 function safeJsonStringify(value: unknown): string {
   if (typeof value === 'string') return value;
   try {
@@ -211,10 +263,15 @@ export function MessageBubble({
     : message.content.length > 0;
 
   if (message.role === 'user') {
+    // Parse author attribution from content
+    const rawContent = typeof message.content === 'string' ? message.content : contentToString(message.content);
+    const { author, content: strippedContent } = parseMessageAuthor(rawContent);
+    const displayContent = typeof message.content === 'string' ? strippedContent : message.content;
+
     return (
       <div className="flex flex-col items-end gap-1">
         <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
-          <ContentBlockRenderer content={message.content} skillSheets={skillSheets} />
+          <ContentBlockRenderer content={displayContent} skillSheets={skillSheets} />
         </div>
         {/* Hover action row */}
         <div
@@ -225,6 +282,11 @@ export function MessageBubble({
           <span className="text-muted-foreground text-xs mr-1">
             {formatMessageTime(message.created_at)}
           </span>
+          {author && (
+            <span className="text-muted-foreground text-xs mr-1">
+              · Sent by {author.displayName}
+            </span>
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
