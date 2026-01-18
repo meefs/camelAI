@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-15-sandbox-v9';
+const VERSION = '2026-01-18-sandbox-v10-user-info';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -149,10 +149,12 @@ function trackTaskToolUse(session, event) {
   }
 }
 
-function createSession(threadId, threadDeployToken = null) {
+function createSession(threadId, threadDeployToken = null, userInfo = null) {
   const session = {
     threadId,
     threadDeployToken, // Per-thread token for auto-preview after deploys
+    userName: userInfo?.userName || null,
+    userEmail: userInfo?.userEmail || null,
     activeQuery: null,
     queryIterator: null,
     eventLoopRunning: false,
@@ -167,7 +169,7 @@ function createSession(threadId, threadDeployToken = null) {
   return session;
 }
 
-function getOrCreateSession(threadId, threadDeployToken = null) {
+function getOrCreateSession(threadId, threadDeployToken = null, userInfo = null) {
   if (!threadId) {
     threadId = crypto.randomUUID();
   }
@@ -177,12 +179,19 @@ function getOrCreateSession(threadId, threadDeployToken = null) {
     if (threadDeployToken && !session.threadDeployToken) {
       session.threadDeployToken = threadDeployToken;
     }
+    // Update user info if provided (new connection for existing session)
+    if (userInfo?.userName && !session.userName) {
+      session.userName = userInfo.userName;
+    }
+    if (userInfo?.userEmail && !session.userEmail) {
+      session.userEmail = userInfo.userEmail;
+    }
     if (!session.taskToolUseIds) {
       session.taskToolUseIds = new Set();
     }
     return session;
   }
-  return createSession(threadId, threadDeployToken);
+  return createSession(threadId, threadDeployToken, userInfo);
 }
 
 // Log for DO persistence (NDJSON format)
@@ -241,6 +250,16 @@ function getQueryOptions(session) {
     envVars.CLOUDFLARE_API_TOKEN = session.threadDeployToken;
   }
 
+  // Build user context line for system prompt
+  let userContextLine = '';
+  if (session.userName && session.userEmail) {
+    userContextLine = `\n\n## Current User\n\nYou are talking to ${session.userName} (${session.userEmail}).`;
+  } else if (session.userName) {
+    userContextLine = `\n\n## Current User\n\nYou are talking to ${session.userName}.`;
+  } else if (session.userEmail) {
+    userContextLine = `\n\n## Current User\n\nYou are talking to a user with email ${session.userEmail}.`;
+  }
+
   const options = {
     model: 'opus',
     fallbackModel: 'sonnet',
@@ -250,7 +269,8 @@ function getQueryOptions(session) {
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',
-      append: `
+      append: `${userContextLine}
+
 ## About This Environment
 
 You are running inside **Chiridion**, a web application that brings Claude Code to the browser. Users interact through a chat interface - they cannot see your terminal, localhost servers, or file system directly.
@@ -515,9 +535,12 @@ Bun.serve({
       // Extract per-thread deploy token from header (minted by worker during upgrade)
       // This token stores {orgId, threadId} for auto-preview after deploys
       const threadDeployToken = req.headers.get('x-chiridion-thread-deploy-token');
+      // Extract user info headers for personalization
+      const userName = req.headers.get('x-chiridion-user-name');
+      const userEmail = req.headers.get('x-chiridion-user-email');
 
       const success = server.upgrade(req, {
-        data: { threadDeployToken },
+        data: { threadDeployToken, userName, userEmail },
       });
       if (success) {
         return undefined; // Bun handles the upgrade
@@ -544,11 +567,15 @@ Bun.serve({
             return;
           }
 
-          // Get per-thread deploy token from WebSocket upgrade (set by worker)
+          // Get per-thread deploy token and user info from WebSocket upgrade (set by worker)
           const threadDeployToken = ws.data?.threadDeployToken || null;
+          const userInfo = {
+            userName: ws.data?.userName || null,
+            userEmail: ws.data?.userEmail || null,
+          };
 
-          const session = getOrCreateSession(threadId, threadDeployToken);
-          void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken } });
+          const session = getOrCreateSession(threadId, threadDeployToken, userInfo);
+          void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken, userName: userInfo.userName } });
           attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {
