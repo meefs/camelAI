@@ -1204,25 +1204,28 @@ export default {
       // Extract threadId from query param for per-thread deploy token
       const threadIdFromUrl = url.searchParams.get('threadId');
 
-      // Look up user info for personalization
+      // Look up user info for message attribution (required for multi-user threads)
       let userName: string | null = null;
-      let userEmail: string | null = null;
+      let userEmail: string;
       try {
         const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
         try {
           const userProfile = await rpc.getUserById(session.user_id);
-          if (userProfile) {
-            userName = userProfile.name;
-            userEmail = userProfile.email;
+          if (!userProfile) {
+            console.error('[ws] User profile not found', { userId: session.user_id });
+            return new Response('User not found', { status: 404 });
           }
+          userName = userProfile.name;
+          userEmail = userProfile.email;
         } finally {
           rpc[Symbol.dispose]?.();
         }
       } catch (err) {
-        console.warn('[ws] Failed to fetch user info', {
+        console.error('[ws] Failed to fetch user info', {
           userId: session.user_id,
           error: String(err),
         });
+        return new Response('Failed to fetch user info', { status: 500 });
       }
 
       console.log('[ws] Authenticated, forwarding to container', {
@@ -1235,15 +1238,14 @@ export default {
       });
 
       // Create modified request with user info and optional deploy token headers
+      // Always set headers from authenticated session - never trust client-supplied values
       const headers = new Headers(request.headers);
-
-      // Add user info headers for personalization in the system prompt
+      headers.delete('X-Chiridion-User-Name');
+      headers.delete('X-Chiridion-User-Email');
       if (userName) {
         headers.set('X-Chiridion-User-Name', userName);
       }
-      if (userEmail) {
-        headers.set('X-Chiridion-User-Email', userEmail);
-      }
+      headers.set('X-Chiridion-User-Email', userEmail);
 
       // Mint per-thread deploy token if threadId provided
       // This token stores {workspaceId, threadId} so the proxy can auto-set preview after deploys
