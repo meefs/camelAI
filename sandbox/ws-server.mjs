@@ -397,7 +397,8 @@ function attachSession(ws, session, lastEventId) {
     session.attachedSockets = new Set();
   }
   session.attachedSockets.add(ws);
-  ws.data = { threadId: session.threadId };
+  // Preserve existing ws.data (userName, userEmail, threadDeployToken) and add threadId
+  ws.data = { ...ws.data, threadId: session.threadId };
 
   // Send the threadId to the client - they may have provided it or we generated it
   if (session.threadId) {
