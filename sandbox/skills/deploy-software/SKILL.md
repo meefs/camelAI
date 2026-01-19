@@ -55,10 +55,9 @@ wrangler deploy --env staging
 
 # View logs
 wrangler tail
-
-# Local development
-wrangler dev
 ```
+
+> **Note:** `wrangler dev` is not available. Deployments are fast - just deploy and iterate in the cloud.
 
 ## Durable Objects with SQLite Storage
 

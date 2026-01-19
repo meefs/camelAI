@@ -17,7 +17,7 @@ echo "[entrypoint] R2_BUCKET_NAME=${R2_BUCKET_NAME:-unset}" >&2
 TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
 FIRST_RUN_MARKER="/tmp/.r2-synced"
 
-# Track PIDs for cleanup
+# Track PIDs for cleanup (Verdaccio managed by pm2)
 WS_PID=""
 CONTROL_PID=""
 
@@ -45,6 +45,10 @@ cleanup() {
     wait "$CONTROL_PID" 2>/dev/null || true
   fi
 
+  # Stop Verdaccio via pm2
+  echo "[entrypoint] Stopping Verdaccio (pm2)..." >&2
+  pm2 stop verdaccio 2>/dev/null || true
+
   # Unmount R2 goofys mounts
   fusermount -u /mnt/user-uploads 2>/dev/null || true
   fusermount -u /mnt/user-outputs 2>/dev/null || true
@@ -64,6 +68,11 @@ cleanup() {
 # so we must trap TERM/INT to ensure cleanup runs on container shutdown.
 trap cleanup EXIT
 trap 'exit 0' TERM INT
+
+# Start Verdaccio npm registry via pm2 (async - don't wait, it'll be ready by the time it's needed)
+# This runs in parallel with R2 download and other startup tasks
+echo "[entrypoint] Starting Verdaccio npm registry (async)..." >&2
+pm2 start verdaccio --name verdaccio -- --config /verdaccio/config.yaml >/dev/null 2>&1
 
 # R2 download on first run (if configured)
 if has_r2_config; then

@@ -64,3 +64,6 @@ sandbox/bun.lock
 
 # Integration test temp files
 tests/integration/.server-url
+sandbox/.r2-creds
+packages/chiridion-wrangler/node_modules
+packages/chiridion-wrangler/dist

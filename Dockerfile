@@ -1,17 +1,15 @@
 FROM node:22-slim
 
-# Version: 2026-01-17-v4
+# Version: 2026-01-18-v3
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
-EXPOSE 8080 9000
+EXPOSE 8080 9000 4873
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Layer 1: Create claude user (separate from node user)
 RUN useradd -m -s /bin/bash claude
 
-# Layer 2: System deps + Bun + Wrangler (changes rarely)
-# The globally installed wrangler is wrapped to auto-add --dispatch-namespace.
-# Users must use this global wrangler (not npx or local installs).
+# Layer 2: System deps + Bun + Verdaccio (changes rarely)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -25,34 +23,60 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fuse \
     libfuse2 \
   && rm -rf /var/lib/apt/lists/* \
-  && npm install -g bun wrangler@4.55.0 shadcn \
-  && mv /usr/local/bin/wrangler /usr/local/bin/wrangler-real \
+  && npm install -g bun shadcn verdaccio pm2 \
   && curl -L -o /usr/local/bin/goofys https://github.com/kahing/goofys/releases/download/v0.24.0/goofys \
   && chmod +x /usr/local/bin/goofys
 
-# Layer 3: Dependencies only - cached unless package.json changes
+# Layer 3: Chiridion Wrangler + Verdaccio local registry
+# Pre-publish chiridion-wrangler as "wrangler" so all npm/bun installs get our version
+WORKDIR /chiridion-wrangler
+COPY packages/chiridion-wrangler/package.json ./
+COPY packages/chiridion-wrangler/bin ./bin
+COPY packages/chiridion-wrangler/verdaccio ./verdaccio
+RUN mkdir -p wrangler-dist
+COPY packages/chiridion-wrangler/wrangler-dist/cli.js ./wrangler-dist/
+
+# Set up Verdaccio storage and config
+RUN mkdir -p /verdaccio/storage /verdaccio/plugins \
+  && cp verdaccio/config.yaml /verdaccio/config.yaml \
+  && touch /verdaccio/htpasswd
+
+# Install wrangler deps and publish to local registry
+RUN npm install --omit=dev \
+  && chmod +x bin/wrangler.js verdaccio/publish-wrangler.sh \
+  && ln -s /chiridion-wrangler/bin/wrangler.js /usr/local/bin/wrangler
+
+# Start verdaccio temporarily, publish our wrangler package, then stop it
+RUN bash -c '\
+  verdaccio --config /verdaccio/config.yaml & \
+  sleep 2 && \
+  ./verdaccio/publish-wrangler.sh && \
+  pkill -f verdaccio || true \
+'
+
+# Layer 4: Sandbox dependencies - cached unless package.json changes
 WORKDIR /app
 COPY sandbox/package.json ./
 RUN bun install
 
-# Layer 4: App code (changes frequently) - copied after install for better caching
+# Layer 5: App code (changes frequently) - copied after install for better caching
 COPY --chmod=755 sandbox/entrypoint.sh ./
 COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
 COPY sandbox/skills ./skills
 RUN chmod -R a+rX /app
 
-# Layer 5: Wrangler wrapper (intercepts deploy to add --dispatch-namespace)
-COPY --chmod=755 sandbox/wrangler-wrapper.sh /usr/local/bin/wrangler
-
-# Layer 6: deploy-worker CLI (explicit dispatch namespace deploy, avoids PATH issues)
-COPY --chmod=755 sandbox/deploy-worker.sh /usr/local/bin/deploy-worker
-
-# Layer 7: create-worker CLI (scaffolds projects from templates)
+# Layer 6: create-worker CLI (scaffolds projects from templates)
 RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker
 
-# Layer 8: Alias npm to bun for faster package operations
-# Bun is npm-compatible and already used for dependencies in this container
-RUN ln -sf $(which bun) /usr/local/bin/npm
+# Layer 7: Configure bun/npm to use local Verdaccio registry
+# This ensures all wrangler installs get our chiridion-wrangler
+# Must configure for both root (build time) and claude user (runtime)
+RUN echo 'registry = "http://localhost:4873"' > /root/.bunfig.toml \
+  && cp /root/.bunfig.toml /home/claude/.bunfig.toml \
+  && chown claude:claude /home/claude/.bunfig.toml \
+  && npm config set registry http://localhost:4873 \
+  && echo 'registry=http://localhost:4873' > /home/claude/.npmrc \
+  && chown claude:claude /home/claude/.npmrc
 
 WORKDIR /home/claude
 ENTRYPOINT ["/app/entrypoint.sh"]
