@@ -30,14 +30,16 @@
 		"admin:dev-miguel": "wrangler dev --config workers/admin-cli/wrangler.jsonc --env dev-miguel"
 	},
 	"dependencies": {
-		"@cloudflare/containers": "^0.0.31",
 		"@anthropic-ai/bedrock-sdk": "^0.26.0",
 		"@anthropic-ai/foundry-sdk": "^0.2.0",
 		"@anthropic-ai/sdk": "^0.71.2",
+		"@cloudflare/containers": "^0.0.31",
 		"@hookform/resolvers": "^5.2.2",
+		"@modelcontextprotocol/sdk": "^1.25.2",
 		"@monaco-editor/react": "^4.7.0",
 		"@opennextjs/cloudflare": "^1.14.4",
 		"@shikijs/rehype": "^3.20.0",
+		"agents": "^0.3.6",
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
 		"lucide-react": "^0.562.0",

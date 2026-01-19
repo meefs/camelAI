@@ -5,7 +5,8 @@
 	"compatibility_date": "2025-12-01",
 	"compatibility_flags": ["nodejs_compat"],
 	"vars": {
-		"PROXY_BASE_URL": "http://proxy.test.local"
+		"PROXY_BASE_URL": "http://proxy.test.local",
+		"TOKEN_SIGNING_SECRET": "test-signing-secret-for-unit-tests-only"
 	},
 	"kv_namespaces": [
 		{

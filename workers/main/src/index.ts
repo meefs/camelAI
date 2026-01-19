@@ -11,13 +11,15 @@ import puppeteer, { type Page } from '@cloudflare/puppeteer';
 import {
   proxyCloudflareApi,
   cfApiError,
-  resolveWorkspaceContext,
   resolveEnvPrefix,
   CHIRIDION_DEPLOY_TOKEN_HEADER,
   type CfApiProxyEnv,
   type DeploySideEffectsInfo,
 } from './cf-api-proxy.js';
+import { handleMcpRequest, ChiridionMcp, type McpEnv } from './mcp-handler.js';
+import { isSignedToken, validateSignedToken } from './signed-tokens.js';
 export { DoRpcService } from './rpc-service.js';
+export { ChiridionMcp } from './mcp-handler.js';
 
 // Export WorkspaceContainer as ThreadSandbox to match wrangler.jsonc class_name
 export { WorkspaceContainer as ThreadSandbox };
@@ -44,7 +46,7 @@ interface AppScreenshotJob {
   screenshot_token?: string;
 }
 
-interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv, CfApiProxyEnv {
+interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv, CfApiProxyEnv, McpEnv {
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   SESSIONS: KVNamespace;
@@ -418,6 +420,11 @@ export default {
       }
     }
 
+    // MCP protocol handler at /mcp
+    if (url.pathname.startsWith('/mcp')) {
+      return handleMcpRequest(request, env, ctx);
+    }
+
     // Handle WebSocket upgrade for thread preview state at /ws/thread/{threadId}
     const threadWsMatch = url.pathname.match(/^\/ws\/thread\/([^\/]+)$/);
     if (threadWsMatch && request.headers.get('Upgrade') === 'websocket') {
@@ -618,17 +625,18 @@ export default {
       }
 
       const token = authHeader.slice(7);
-      const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-      const previewTokenValue = await tokenKv.get(`platform_script_token:${token}`);
-      if (!previewTokenValue) {
-        return new Response(JSON.stringify({ error: 'Invalid token' }), {
+
+      // Validate signed deploy token
+      if (!isSignedToken(token)) {
+        return new Response(JSON.stringify({ error: 'Invalid token format' }), {
           status: 401,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      const previewWorkspaceContext = await resolveWorkspaceContext(env, previewTokenValue);
-      if (!previewWorkspaceContext) {
-        return new Response(JSON.stringify({ error: 'Invalid workspace' }), {
+
+      const tokenPayload = await validateSignedToken(env.TOKEN_SIGNING_SECRET, token);
+      if (!tokenPayload || !tokenPayload.scopes.includes('deploy') || !tokenPayload.workspace_id) {
+        return new Response(JSON.stringify({ error: 'Invalid token' }), {
           status: 401,
           headers: { 'Content-Type': 'application/json' },
         });

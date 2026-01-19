@@ -5,7 +5,7 @@
  * Provides auth, path rewriting, and post-deploy side effects.
  */
 
-import { WorkspaceInfo } from './workspace.js';
+import { isSignedToken, validateSignedToken } from './signed-tokens.js';
 
 // Re-export for index.ts to use
 export const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
@@ -20,7 +20,7 @@ export interface CfApiProxyEnv {
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
-  PLATFORM_SCRIPT_TOKENS?: KVNamespace;
+  TOKEN_SIGNING_SECRET: string;
   EMAIL_TO_USER: KVNamespace;
   API_TOKENS: KVNamespace;
   WORKSPACE: DurableObjectNamespace;
@@ -35,11 +35,6 @@ export interface DeploySideEffectsInfo {
   orgId: string;
   workspaceId: string;
   hostname: string;
-  threadId?: string;
-}
-
-interface TokenData {
-  workspaceId: string;
   threadId?: string;
 }
 
@@ -257,39 +252,6 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
   return { files, wranglerConfigs, formParts };
 }
 
-export async function resolveWorkspaceContext(
-  env: CfApiProxyEnv,
-  tokenValue: string
-): Promise<{ workspaceId: string; orgId: string; threadId?: string } | null> {
-  // Token value can be either:
-  // - Legacy format: just the workspaceId string
-  // - New format: JSON object { workspaceId, threadId }
-  let workspaceId: string;
-  let threadId: string | undefined;
-
-  if (tokenValue.startsWith('{')) {
-    try {
-      const data = JSON.parse(tokenValue) as TokenData;
-      workspaceId = data.workspaceId;
-      threadId = data.threadId;
-    } catch {
-      // Malformed JSON - treat as workspaceId
-      workspaceId = tokenValue;
-    }
-  } else {
-    workspaceId = tokenValue;
-  }
-
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await workspaceStub.getInfo() as WorkspaceInfo | null;
-  if (!info || info.archived) return null;
-  return {
-    workspaceId,
-    orgId: info.org_id,
-    threadId,
-  };
-}
-
 async function callCloudflareApi<T>(
   url: string,
   init: RequestInit,
@@ -483,28 +445,47 @@ export async function proxyCloudflareApi(
     return cfApiError(10001, 'Authentication error: Missing deploy token', 401);
   }
 
-  // Token -> workspace mapping (stored in KV). If PLATFORM_SCRIPT_TOKENS isn't bound yet, fall back
-  // to EMAIL_TO_USER for the proof-of-concept (prefix-isolated).
-  const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-  const tokenValue = await tokenKv.get(`platform_script_token:${proxyToken}`);
-  if (!tokenValue) {
-    console.warn('[cf-api-proxy] invalid deploy token', {
+  // Validate signed deploy token (no KV lookup needed)
+  if (!isSignedToken(proxyToken)) {
+    console.warn('[cf-api-proxy] invalid deploy token format', {
+      method: request.method,
+      path: url.pathname,
+      tokenPrefix: proxyToken.slice(0, 8),
+    });
+    return cfApiError(10002, 'Authentication error: Invalid deploy token format', 401);
+  }
+
+  const tokenPayload = await validateSignedToken(env.TOKEN_SIGNING_SECRET, proxyToken);
+  if (!tokenPayload) {
+    console.warn('[cf-api-proxy] invalid deploy token signature', {
       method: request.method,
       path: url.pathname,
       tokenPrefix: proxyToken.slice(0, 8),
     });
     return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
   }
-  const workspaceContext = await resolveWorkspaceContext(env, tokenValue);
-  if (!workspaceContext) {
-    console.warn('[cf-api-proxy] invalid deploy token workspace', {
+
+  // Check for deploy scope
+  if (!tokenPayload.scopes.includes('deploy')) {
+    console.warn('[cf-api-proxy] deploy token lacks deploy scope', {
       method: request.method,
       path: url.pathname,
-      tokenValue: tokenValue.slice(0, 20),
+      scopes: tokenPayload.scopes,
+    });
+    return cfApiError(10002, 'Authentication error: Token lacks deploy scope', 401);
+  }
+
+  if (!tokenPayload.workspace_id) {
+    console.warn('[cf-api-proxy] deploy token missing workspace_id', {
+      method: request.method,
+      path: url.pathname,
     });
     return cfApiError(10003, 'Authentication error: Invalid workspace', 401);
   }
-  const { orgId, workspaceId, threadId } = workspaceContext;
+
+  const orgId = tokenPayload.org_id;
+  const workspaceId = tokenPayload.workspace_id;
+  const threadId: string | undefined = undefined; // No longer stored in token
 
   let pathname = url.pathname;
 

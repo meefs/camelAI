@@ -3,11 +3,13 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-18-sandbox-v11-multi-user';
+const VERSION = '2026-01-19-sandbox-v14-mcp';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const WORKER_BASE_URL = process.env.WORKER_BASE_URL;
+const MCP_SERVER_URL = process.env.MCP_SERVER_URL; // e.g., https://worker.chiridion.ai/mcp
+const MCP_API_KEY = process.env.MCP_API_KEY; // API key with 'mcp' scope
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TRACE_EVENTS = process.env.CHIRIDION_TRACE_EVENTS !== '0';
@@ -250,12 +252,29 @@ function getQueryOptions(session) {
     envVars.CLOUDFLARE_API_TOKEN = session.threadDeployToken;
   }
 
+  // Build MCP servers configuration if MCP_SERVER_URL is set
+  const mcpServers = {};
+  if (MCP_SERVER_URL && MCP_API_KEY) {
+    mcpServers['chiridion'] = {
+      type: 'http',
+      url: MCP_SERVER_URL,
+      headers: {
+        Authorization: `Bearer ${MCP_API_KEY}`,
+      },
+    };
+  }
+
   const options = {
     model: 'opus',
     fallbackModel: 'sonnet',
     includePartialMessages: true,
     permissionMode: 'bypassPermissions',
     allowUnsandboxedCommands: true,
+    // MCP server configuration
+    ...(Object.keys(mcpServers).length > 0 && {
+      mcpServers,
+      allowedTools: ['mcp__chiridion__*'], // Allow all tools from chiridion MCP server
+    }),
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',

@@ -188,6 +188,10 @@ function shouldRouteToWrangler(req) {
   if (req.url.startsWith('/ws/') || req.url.startsWith('/client/v4/')) {
     return true;
   }
+  // MCP protocol endpoint
+  if (req.url.startsWith('/mcp')) {
+    return true;
+  }
   // Preview API POST - handled by worker with deploy token auth
   if (req.method === 'POST' && /^\/api\/threads\/[^/]+\/preview/.test(req.url)) {
     return true;

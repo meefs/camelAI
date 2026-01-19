@@ -4,6 +4,7 @@
  */
 import { Container } from '@cloudflare/containers';
 import { getTempR2Credentials } from './r2-credentials';
+import { createSignedToken } from './signed-tokens';
 import type { DoRpcService } from './rpc-service';
 
 export interface WorkspaceContainerEnv {
@@ -12,6 +13,7 @@ export interface WorkspaceContainerEnv {
   R2_BUCKET: R2Bucket;
   EMAIL_TO_USER: KVNamespace;
   ANTHROPIC_API_KEY: string;
+  TOKEN_SIGNING_SECRET: string;
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
   R2_BUCKET_NAME?: string;
@@ -106,34 +108,27 @@ interface ControlPlaneDeleteResponse {
 const WS_SERVER_PORT = 8080;
 const CONTROL_PLANE_PORT = 9000;
 
-/**
- * Generate a secure token for container API access.
- */
-function generateContainerToken(): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  const base64 = btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
-  return `ctok_${base64}`;
-}
-
-// TTL for deploy tokens (24 hours in seconds)
-const TOKEN_TTL_SECONDS = 86400;
+// TTL for signed tokens (24 hours)
+const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Create a deploy token for a workspace container.
- * Always generates a fresh token with TTL - no reuse of existing tokens.
- * Stores token → workspaceId mapping; prefix is derived at deploy time.
+ * Create a signed deploy token for a workspace container.
+ * Token is self-validating (no KV storage needed).
  */
-async function createContainerToken(
-  kv: KVNamespace,
-  workspaceId: string
+async function createDeployToken(
+  secret: string,
+  workspaceId: string,
+  orgId: string,
+  userId: string
 ): Promise<string> {
-  const token = generateContainerToken();
-  await kv.put(`platform_script_token:${token}`, workspaceId, { expirationTtl: TOKEN_TTL_SECONDS });
-  return token;
+  return createSignedToken(secret, {
+    org_id: orgId,
+    user_id: userId,
+    scopes: ['deploy'],
+    exp: Date.now() + TOKEN_TTL_MS,
+    workspace_id: workspaceId,
+    name: `deploy-${workspaceId}`,
+  });
 }
 
 /**
@@ -231,39 +226,66 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     envVars.WRANGLER_SEND_METRICS = 'false';
     envVars.CI = '1';
 
+    // Validate required config
+    const proxyBaseUrl = this.env.PROXY_BASE_URL;
+    if (!proxyBaseUrl) {
+      throw new Error('PROXY_BASE_URL is required for sandbox LLM access');
+    }
+    if (!this.env.TOKEN_SIGNING_SECRET) {
+      throw new Error('TOKEN_SIGNING_SECRET is required for sandbox token signing');
+    }
+
+    // Get org info for user_id (needed for all signed tokens)
+    const rpc = this.env.DO_RPC as typeof this.env.DO_RPC & { [Symbol.dispose]?: () => void };
+    let userId: string;
+    try {
+      const orgInfo = await rpc.getOrg(orgId);
+      userId = orgInfo?.created_by || 'system';
+    } finally {
+      rpc[Symbol.dispose]?.();
+    }
+
     // Cloudflare API proxy config
     // Create a workspace-scoped deploy token for container to use with Cloudflare API
     if (this.env.WORKER_BASE_URL) {
       envVars.WORKER_BASE_URL = this.env.WORKER_BASE_URL;
       envVars.CLOUDFLARE_API_BASE_URL = `${this.env.WORKER_BASE_URL}/client/v4`;
 
-      const containerToken = await createContainerToken(this.env.EMAIL_TO_USER, workspaceId);
-      envVars.CLOUDFLARE_API_TOKEN = containerToken;
+      const deployToken = await createDeployToken(this.env.TOKEN_SIGNING_SECRET, workspaceId, orgId, userId);
+      envVars.CLOUDFLARE_API_TOKEN = deployToken;
+      console.log('[WorkspaceContainer] Created signed deploy token for workspace', { workspaceId, orgId });
     }
 
-    // LLM proxy config (mint per-org API key for sandbox container)
-    const proxyBaseUrl = this.env.PROXY_BASE_URL;
-    if (!proxyBaseUrl) {
-      throw new Error('PROXY_BASE_URL is required for sandbox LLM access');
-    }
-    try {
-      const rpc = this.env.DO_RPC as typeof this.env.DO_RPC & { [Symbol.dispose]?: () => void };
-      try {
-        const orgInfo = await rpc.getOrg(orgId);
-        const actorId = orgInfo?.created_by || 'system';
-        const { tokenId } = await rpc.createOrgApiToken(orgId, actorId, {
-          name: `sandbox-${workspaceId}`,
-          scopes: ['proxy'],
-        });
-        envVars.ANTHROPIC_BASE_URL = proxyBaseUrl;
-        envVars.ANTHROPIC_API_KEY = tokenId;
-        console.log('[WorkspaceContainer] Minted proxy API key for workspace', { workspaceId, orgId });
-      } finally {
-        rpc[Symbol.dispose]?.();
-      }
-    } catch (e) {
-      console.error('[WorkspaceContainer] Failed to mint proxy API key:', e);
-      throw e;
+    // Token expires in 24 hours
+    const tokenExpiry = Date.now() + TOKEN_TTL_MS;
+
+    // Create signed proxy token for LLM access
+    const proxyToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
+      org_id: orgId,
+      user_id: userId,
+      scopes: ['proxy'],
+      exp: tokenExpiry,
+      workspace_id: workspaceId,
+      name: `sandbox-${workspaceId}`,
+    });
+    envVars.ANTHROPIC_BASE_URL = proxyBaseUrl;
+    envVars.ANTHROPIC_API_KEY = proxyToken;
+    console.log('[WorkspaceContainer] Created signed proxy token for workspace', { workspaceId, orgId });
+
+    // MCP server config (create signed token for MCP access)
+    // MCP endpoint is on the main worker at /mcp
+    if (this.env.WORKER_BASE_URL) {
+      const mcpToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
+        org_id: orgId,
+        user_id: userId,
+        scopes: ['mcp'],
+        exp: tokenExpiry,
+        workspace_id: workspaceId,
+        name: `sandbox-mcp-${workspaceId}`,
+      });
+      envVars.MCP_SERVER_URL = `${this.env.WORKER_BASE_URL}/mcp`;
+      envVars.MCP_API_KEY = mcpToken;
+      console.log('[WorkspaceContainer] Created signed MCP token for workspace', { workspaceId, orgId });
     }
 
     // Fetch integration credentials and pass as ENV vars

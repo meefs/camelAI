@@ -9,10 +9,10 @@ import type { WorkspaceContainerEnv } from '../src/workspace-container';
 function buildEnvVarsForTest(workspaceId: string, orgId: string) {
   const fakeEnv = {
     PROXY_BASE_URL: 'http://proxy.test.local',
+    TOKEN_SIGNING_SECRET: 'test-signing-secret-for-unit-tests-only',
     DO_RPC: {
       getWorkspaceIntegrationEnvVars: async () => ({}),
       getOrg: async () => ({ created_by: 'user-1' }),
-      createOrgApiToken: async () => ({ tokenId: 'tok_test', tokenData: {} }),
       [Symbol.dispose]: () => {},
     },
   } as unknown as WorkspaceContainerEnv;

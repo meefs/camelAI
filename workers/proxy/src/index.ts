@@ -3,6 +3,7 @@ import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import AnthropicFoundry from '@anthropic-ai/foundry-sdk';
 import type { DoRpcService } from '../../main/src/rpc-service';
 import type { ApiTokenData } from '../../main/src/api-tokens';
+import { isSignedToken, validateSignedToken } from '../../main/src/signed-tokens';
 
 type ProviderType = 'anthropic' | 'foundry' | 'bedrock';
 
@@ -25,6 +26,7 @@ interface Env {
   PROXY_MODEL_ALIASES?: string;
   PROXY_BEDROCK_MODEL_MAP?: string;
   MAIN_RPC?: DoRpcService;
+  TOKEN_SIGNING_SECRET?: string;
   ANTHROPIC_API_KEY?: string;
   ANTHROPIC_API_URL?: string;
   ANTHROPIC_VERSION?: string;
@@ -185,21 +187,33 @@ async function authorizeClient(
   env: Env
 ): Promise<{ ok: boolean; error?: string; auth?: AuthContext }> {
   if (!clientKey) return { ok: false, error: 'Missing API key' };
-  if (!env.MAIN_RPC) return { ok: false, error: 'Auth service unavailable' };
+  if (!env.TOKEN_SIGNING_SECRET) return { ok: false, error: 'Token signing not configured' };
 
-  try {
-    const token = await env.MAIN_RPC.validateApiToken(clientKey);
-    if (!token) return { ok: false, error: 'Invalid API key' };
-    if (!hasProxyScope(token.scopes)) {
-      return { ok: false, error: 'API key lacks proxy scope' };
-    }
-    return { ok: true, auth: { tokenId: clientKey, token } };
-  } catch (error) {
-    logError(env, 'proxy auth failure', {
-      message: error instanceof Error ? error.message : 'Unknown error',
-    });
-    return { ok: false, error: 'Auth service unavailable' };
+  // Validate signed token (no KV/RPC needed)
+  if (!isSignedToken(clientKey)) {
+    return { ok: false, error: 'Invalid API key format' };
   }
+
+  const payload = await validateSignedToken(env.TOKEN_SIGNING_SECRET, clientKey);
+  if (!payload) {
+    return { ok: false, error: 'Invalid API key' };
+  }
+
+  if (!hasProxyScope(payload.scopes)) {
+    return { ok: false, error: 'API key lacks proxy scope' };
+  }
+
+  // Convert SignedTokenPayload to ApiTokenData format for compatibility
+  const token: ApiTokenData = {
+    org_id: payload.org_id,
+    user_id: payload.user_id,
+    integration_id: null,
+    name: payload.name || 'signed-token',
+    scopes: payload.scopes,
+    created_at: payload.iat,
+    expires_at: payload.exp,
+  };
+  return { ok: true, auth: { tokenId: clientKey, token } };
 }
 
 function hasProxyScope(scopes: string[] | undefined): boolean {

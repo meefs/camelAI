@@ -36,6 +36,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
    - `admin-cli/` - Local-only admin CLI for querying live environments
    - `screenshot/` - Queue consumer that renders app previews via Browser Rendering and stores in R2
    - `proxy/` - Multi-provider LLM proxy worker (Anthropic/OpenAI-compatible/Bedrock/Azure Foundry) with token accounting
+     - MCP server endpoint (`/mcp`) with API key auth for sandbox containers (streamable HTTP transport)
 
 3. **Sandbox** (`sandbox/`)
    - `entrypoint.sh` - Downloads/uploads workspace tar snapshots from R2, starts services
@@ -82,6 +83,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/admin-cli/src/index.ts` | Admin CLI worker (local-only) |
 | `workers/proxy/src/index.ts` | LLM proxy worker entry (multi-provider, streaming, token usage) |
 | `workers/proxy/wrangler.jsonc` | Proxy worker deployment config |
+| `workers/main/src/mcp-handler.ts` | MCP server handler with ChiridionMcp class and API key auth |
 | `src/instrumentation.ts` | Next.js SSR error logging to Analytics Engine |
 | `src/app/api/apps/[scriptName]/preview/route.ts` | Authenticated preview image endpoint for app cards |
 
@@ -226,6 +228,14 @@ To reduce perceived latency from R2 restore, the app proactively warms up contai
 | Route | Method | Purpose |
 |-------|--------|---------|
 | `/v1/messages` | POST | LLM proxy (Anthropic-style request/response, streaming supported) |
+
+### MCP (main worker)
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/mcp/health` | GET | Health check endpoint |
+| `/mcp` | POST | MCP protocol endpoint (streamable HTTP transport) |
+
+MCP auth uses API tokens with `mcp` scope. Requests must include `Authorization: Bearer <token>` or `x-api-key`. Sandbox containers receive a per-org MCP token via `MCP_API_KEY` env var, with the endpoint at `${WORKER_BASE_URL}/mcp`.
 
 ## Development
 
@@ -453,6 +463,7 @@ chiridion-app/
 │   │       ├── durable-objects.ts # Chat DOs
 │   │       ├── auth.ts          # Auth DOs
 │   │       ├── rpc-service.ts   # DoRpcService RPC entrypoint
+│   │       ├── mcp-handler.ts   # MCP server handler
 │   │       └── password.ts      # Password hashing
 │   ├── dispatcher/          # WfP subdomain router
 │   │   └── src/
