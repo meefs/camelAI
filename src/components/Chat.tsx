@@ -1559,18 +1559,6 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
             </TooltipTrigger>
             <TooltipContent>Open in new tab</TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => setDeployedApp(null)}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Close preview</TooltipContent>
-          </Tooltip>
         </div>
       </div>
       <div className="flex-1 min-h-0">
