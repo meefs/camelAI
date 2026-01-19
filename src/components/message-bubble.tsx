@@ -22,6 +22,92 @@ function formatMessageTime(timestamp: number): string {
   });
 }
 
+/**
+ * Parse author attribution from message content.
+ * Messages are prefixed with [Name (email)]: or [email]:
+ * Returns { author, content } where author has { name, email, displayName }
+ */
+interface ParsedAuthor {
+  name: string | null;
+  email: string | null;
+  displayName: string; // Name if available, otherwise email
+}
+
+interface ParsedMessage {
+  author: ParsedAuthor | null;
+  content: string;
+}
+
+function parseMessageAuthor(content: string): ParsedMessage {
+  // Match [Name (email)]: or [email]: at the start of the message
+  // Pattern: [Name (email)]: or [Name]: or [email]:
+  const matchWithEmail = content.match(/^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/);
+  if (matchWithEmail) {
+    const name = matchWithEmail[1]?.trim() || null;
+    const email = matchWithEmail[2]?.trim() || null;
+    return {
+      author: {
+        name,
+        email,
+        displayName: name || email || 'Unknown',
+      },
+      content: content.slice(matchWithEmail[0].length),
+    };
+  }
+
+  // Match [Name]: or [email]: (no parentheses)
+  const matchSimple = content.match(/^\[([^\]]+)\]:\s*/);
+  if (matchSimple) {
+    const value = matchSimple[1]?.trim() || '';
+    // Check if it looks like an email
+    const isEmail = value.includes('@');
+    return {
+      author: {
+        name: isEmail ? null : value,
+        email: isEmail ? value : null,
+        displayName: value || 'Unknown',
+      },
+      content: content.slice(matchSimple[0].length),
+    };
+  }
+
+  return { author: null, content };
+}
+
+/**
+ * Strip author prefix from ContentBlock array.
+ * Returns { author, blocks } where blocks has the prefix removed from the first text block.
+ */
+function stripAuthorFromBlocks(blocks: ContentBlock[]): { author: ParsedAuthor | null; blocks: ContentBlock[] } {
+  if (blocks.length === 0) {
+    return { author: null, blocks };
+  }
+
+  // Find the first text block
+  const firstTextIndex = blocks.findIndex(block => block.type === 'text');
+  if (firstTextIndex === -1) {
+    return { author: null, blocks };
+  }
+
+  const firstTextBlock = blocks[firstTextIndex];
+  if (firstTextBlock.type !== 'text') {
+    return { author: null, blocks };
+  }
+
+  // Parse author from the first text block
+  const { author, content: strippedText } = parseMessageAuthor(firstTextBlock.text);
+
+  if (!author) {
+    return { author: null, blocks };
+  }
+
+  // Create new blocks array with stripped first text block
+  const newBlocks = [...blocks];
+  newBlocks[firstTextIndex] = { type: 'text', text: strippedText };
+
+  return { author, blocks: newBlocks };
+}
+
 function safeJsonStringify(value: unknown): string {
   if (typeof value === 'string') return value;
   try {
@@ -211,10 +297,24 @@ export function MessageBubble({
     : message.content.length > 0;
 
   if (message.role === 'user') {
+    // Parse author attribution from content and strip prefix for display
+    let author: ParsedAuthor | null = null;
+    let displayContent: string | ContentBlock[];
+
+    if (typeof message.content === 'string') {
+      const parsed = parseMessageAuthor(message.content);
+      author = parsed.author;
+      displayContent = parsed.content;
+    } else {
+      const stripped = stripAuthorFromBlocks(message.content);
+      author = stripped.author;
+      displayContent = stripped.blocks;
+    }
+
     return (
       <div className="flex flex-col items-end gap-1">
         <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
-          <ContentBlockRenderer content={message.content} skillSheets={skillSheets} />
+          <ContentBlockRenderer content={displayContent} skillSheets={skillSheets} />
         </div>
         {/* Hover action row */}
         <div
@@ -222,6 +322,11 @@ export function MessageBubble({
           role="group"
           aria-label="Message actions"
         >
+          {author && (
+            <span className="text-muted-foreground text-xs mr-1">
+              Sent by {author.displayName} at 
+            </span>
+          )}
           <span className="text-muted-foreground text-xs mr-1">
             {formatMessageTime(message.created_at)}
           </span>

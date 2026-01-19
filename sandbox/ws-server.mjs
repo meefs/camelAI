@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-15-sandbox-v9';
+const VERSION = '2026-01-18-sandbox-v11-multi-user';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -149,10 +149,12 @@ function trackTaskToolUse(session, event) {
   }
 }
 
-function createSession(threadId, threadDeployToken = null) {
+function createSession(threadId, threadDeployToken = null, userInfo = null) {
   const session = {
     threadId,
     threadDeployToken, // Per-thread token for auto-preview after deploys
+    userName: userInfo?.userName || null,
+    userEmail: userInfo?.userEmail || null,
     activeQuery: null,
     queryIterator: null,
     eventLoopRunning: false,
@@ -167,7 +169,7 @@ function createSession(threadId, threadDeployToken = null) {
   return session;
 }
 
-function getOrCreateSession(threadId, threadDeployToken = null) {
+function getOrCreateSession(threadId, threadDeployToken = null, userInfo = null) {
   if (!threadId) {
     threadId = crypto.randomUUID();
   }
@@ -177,12 +179,19 @@ function getOrCreateSession(threadId, threadDeployToken = null) {
     if (threadDeployToken && !session.threadDeployToken) {
       session.threadDeployToken = threadDeployToken;
     }
+    // Update user info if provided (new connection for existing session)
+    if (userInfo?.userName && !session.userName) {
+      session.userName = userInfo.userName;
+    }
+    if (userInfo?.userEmail && !session.userEmail) {
+      session.userEmail = userInfo.userEmail;
+    }
     if (!session.taskToolUseIds) {
       session.taskToolUseIds = new Set();
     }
     return session;
   }
-  return createSession(threadId, threadDeployToken);
+  return createSession(threadId, threadDeployToken, userInfo);
 }
 
 // Log for DO persistence (NDJSON format)
@@ -259,6 +268,10 @@ You are running inside **Chiridion**, a web application that brings Claude Code 
 - **localhost is not accessible** - Users cannot open localhost URLs. If you need to show something, deploy it or output the content directly.
 - **Don't assume technical ability** - Users may not be developers. Explain what you're doing in plain language. Avoid jargon unless the user demonstrates familiarity.
 - **Show results, not processes** - Instead of saying "run npm start and open localhost:3000", deploy the app or show the output directly.
+
+## Multi-User Threads
+
+Threads in Chiridion can have multiple users. Each user message is prefixed with the sender's identity in the format \`[Name (email)]: message\` or \`[email]: message\`. Pay attention to who is sending each message - different team members may have different questions or instructions.
 
 ## File Sharing with User
 
@@ -384,7 +397,8 @@ function attachSession(ws, session, lastEventId) {
     session.attachedSockets = new Set();
   }
   session.attachedSockets.add(ws);
-  ws.data = { threadId: session.threadId };
+  // Preserve existing ws.data (userName, userEmail, threadDeployToken) and add threadId
+  ws.data = { ...ws.data, threadId: session.threadId };
 
   // Send the threadId to the client - they may have provided it or we generated it
   if (session.threadId) {
@@ -454,9 +468,28 @@ function startEventLoop(session) {
   })();
 }
 
+/**
+ * Format author prefix for message attribution.
+ * Format: [Name (email)]: or [email]: if no name
+ */
+function formatAuthorPrefix(userName, userEmail) {
+  if (userName && userEmail) {
+    return `[${userName} (${userEmail})]: `;
+  } else if (userName) {
+    return `[${userName}]: `;
+  } else if (userEmail) {
+    return `[${userEmail}]: `;
+  }
+  return '';
+}
+
 // Handle a user message
-function handleUserMessage(session, content) {
-  void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content });
+function handleUserMessage(session, content, userInfo = null) {
+  // Prepend author attribution to message content
+  const authorPrefix = formatAuthorPrefix(userInfo?.userName, userInfo?.userEmail);
+  const attributedContent = authorPrefix + content;
+
+  void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content: attributedContent, author: userInfo });
   // Initialize session if needed
   initSession(session);
 
@@ -468,10 +501,10 @@ function handleUserMessage(session, content) {
   if (session.messageResolver) {
     const resolver = session.messageResolver;
     session.messageResolver = null;
-    resolver(content);
+    resolver(attributedContent);
   } else {
     // Queue message - will be picked up when generator pulls
-    session.messageQueue.push(content);
+    session.messageQueue.push(attributedContent);
   }
 }
 
@@ -515,9 +548,12 @@ Bun.serve({
       // Extract per-thread deploy token from header (minted by worker during upgrade)
       // This token stores {orgId, threadId} for auto-preview after deploys
       const threadDeployToken = req.headers.get('x-chiridion-thread-deploy-token');
+      // Extract user info headers for personalization
+      const userName = req.headers.get('x-chiridion-user-name');
+      const userEmail = req.headers.get('x-chiridion-user-email');
 
       const success = server.upgrade(req, {
-        data: { threadDeployToken },
+        data: { threadDeployToken, userName, userEmail },
       });
       if (success) {
         return undefined; // Bun handles the upgrade
@@ -544,11 +580,15 @@ Bun.serve({
             return;
           }
 
-          // Get per-thread deploy token from WebSocket upgrade (set by worker)
+          // Get per-thread deploy token and user info from WebSocket upgrade (set by worker)
           const threadDeployToken = ws.data?.threadDeployToken || null;
+          const userInfo = {
+            userName: ws.data?.userName || null,
+            userEmail: ws.data?.userEmail || null,
+          };
 
-          const session = getOrCreateSession(threadId, threadDeployToken);
-          void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken } });
+          const session = getOrCreateSession(threadId, threadDeployToken, userInfo);
+          void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken, userName: userInfo.userName } });
           attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {
@@ -559,7 +599,12 @@ Bun.serve({
             return;
           }
           const session = sessions.get(threadId);
-          handleUserMessage(session, data.content);
+          // Get user info from the socket (set during WebSocket upgrade)
+          const userInfo = {
+            userName: ws.data?.userName || null,
+            userEmail: ws.data?.userEmail || null,
+          };
+          handleUserMessage(session, data.content, userInfo);
 
         } else if (data.type === 'stop') {
           const threadId = ws.data?.threadId;

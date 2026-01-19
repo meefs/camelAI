@@ -1204,17 +1204,51 @@ export default {
       // Extract threadId from query param for per-thread deploy token
       const threadIdFromUrl = url.searchParams.get('threadId');
 
+      // Look up user info for message attribution (required for multi-user threads)
+      let userName: string | null = null;
+      let userEmail: string;
+      try {
+        const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
+        try {
+          const userProfile = await rpc.getUserById(session.user_id);
+          if (!userProfile) {
+            console.error('[ws] User profile not found', { userId: session.user_id });
+            return new Response('User not found', { status: 404 });
+          }
+          userName = userProfile.name;
+          userEmail = userProfile.email;
+        } finally {
+          rpc[Symbol.dispose]?.();
+        }
+      } catch (err) {
+        console.error('[ws] Failed to fetch user info', {
+          userId: session.user_id,
+          error: String(err),
+        });
+        return new Response('Failed to fetch user info', { status: 500 });
+      }
+
       console.log('[ws] Authenticated, forwarding to container', {
         sessionId,
         orgId,
         workspaceId,
         userId: session.user_id,
+        userName,
         threadId: threadIdFromUrl,
       });
 
+      // Create modified request with user info and optional deploy token headers
+      // Always set headers from authenticated session - never trust client-supplied values
+      const headers = new Headers(request.headers);
+      headers.delete('X-Chiridion-User-Name');
+      headers.delete('X-Chiridion-User-Email');
+      if (userName) {
+        headers.set('X-Chiridion-User-Name', userName);
+      }
+      headers.set('X-Chiridion-User-Email', userEmail);
+
       // Mint per-thread deploy token if threadId provided
       // This token stores {workspaceId, threadId} so the proxy can auto-set preview after deploys
-      let modifiedRequest = request;
       if (threadIdFromUrl) {
         const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
         const threadToken = await mintPerThreadDeployToken(tokenKv, workspaceId, threadIdFromUrl);
@@ -1222,16 +1256,14 @@ export default {
           threadId: threadIdFromUrl,
           tokenPrefix: threadToken.slice(0, 12),
         });
-
-        // Create new request with deploy token header
-        const headers = new Headers(request.headers);
         headers.set(CHIRIDION_THREAD_TOKEN_HEADER, threadToken);
-        modifiedRequest = new Request(request.url, {
-          method: request.method,
-          headers,
-          body: request.body,
-        });
       }
+
+      const modifiedRequest = new Request(request.url, {
+        method: request.method,
+        headers,
+        body: request.body,
+      });
 
       // Handle WebSocket upgrade with container management
       return handleWebSocketUpgrade(modifiedRequest, env, workspaceId, orgId);
