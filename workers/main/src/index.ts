@@ -17,7 +17,7 @@ import {
   type DeploySideEffectsInfo,
 } from './cf-api-proxy.js';
 import { handleMcpRequest, ChiridionMcp, type McpEnv } from './mcp-handler.js';
-import { isSignedToken, validateSignedToken } from './signed-tokens.js';
+import { isSignedToken, validateSignedToken, createSignedToken } from './signed-tokens.js';
 export { DoRpcService } from './rpc-service.js';
 export { ChiridionMcp } from './mcp-handler.js';
 
@@ -59,8 +59,6 @@ interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv, CfApiProxyEnv, Mc
 
 const CHIRIDION_THREAD_TOKEN_HEADER = 'X-Chiridion-Thread-Deploy-Token';
 
-// Token TTL (24 hours in seconds)
-const TOKEN_TTL_SECONDS = 86400;
 const PREVIEW_PREFIX = 'app-previews';
 const LOCAL_PREVIEW_URL = 'https://hello-world-test.chiridion.app/';
 const VIEWPORT = {
@@ -78,29 +76,6 @@ const NAVIGATION_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 1500;
 const POST_LOAD_DELAY_MS = 600;
 const SCRIPT_ORG_PREFIX = 'script_org:';
-
-/**
- * Generate a per-thread deploy token and store in KV.
- * This token includes both workspaceId and threadId for auto-preview after deploys.
- */
-async function mintPerThreadDeployToken(
-  kv: KVNamespace,
-  workspaceId: string,
-  threadId: string
-): Promise<string> {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  const base64 = btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
-  const token = `ctok_${base64}`;
-
-  const tokenData = JSON.stringify({ workspaceId, threadId });
-  await kv.put(`platform_script_token:${token}`, tokenData, { expirationTtl: TOKEN_TTL_SECONDS });
-
-  return token;
-}
 
 function buildPreviewKeys(job: AppScreenshotJob): { currentKey: string; versionedKey: string } {
   const base = `${PREVIEW_PREFIX}/${job.org_id}/${job.workspace_id}/${job.script_name}`;
@@ -546,8 +521,10 @@ export default {
       const threadIdFromUrl = url.searchParams.get('threadId');
 
       // Look up user info for message attribution (required for multi-user threads)
+      // Also validate threadId ownership if provided (prevents cross-tenant state writes)
       let userName: string | null = null;
       let userEmail: string;
+      let validatedThreadId: string | null = null;
       try {
         const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
         try {
@@ -558,6 +535,20 @@ export default {
           }
           userName = userProfile.name;
           userEmail = userProfile.email;
+
+          // Validate threadId belongs to this workspace before including in deploy token
+          if (threadIdFromUrl) {
+            const thread = await rpc.getThread(threadIdFromUrl, workspaceId);
+            if (thread) {
+              validatedThreadId = threadIdFromUrl;
+            } else {
+              console.warn('[ws] Thread not found or not in workspace, skipping thread token', {
+                threadId: threadIdFromUrl,
+                workspaceId,
+                orgId,
+              });
+            }
+          }
         } finally {
           rpc[Symbol.dispose]?.();
         }
@@ -588,13 +579,19 @@ export default {
       }
       headers.set('X-Chiridion-User-Email', userEmail);
 
-      // Mint per-thread deploy token if threadId provided
-      // This token stores {workspaceId, threadId} so the proxy can auto-set preview after deploys
-      if (threadIdFromUrl) {
-        const tokenKv = env.PLATFORM_SCRIPT_TOKENS ?? env.EMAIL_TO_USER;
-        const threadToken = await mintPerThreadDeployToken(tokenKv, workspaceId, threadIdFromUrl);
-        console.log('[ws] Minted per-thread deploy token', {
-          threadId: threadIdFromUrl,
+      // Create signed deploy token with validated threadId for auto-preview after deploys
+      if (validatedThreadId) {
+        const threadToken = await createSignedToken(env.TOKEN_SIGNING_SECRET, {
+          org_id: orgId,
+          user_id: session.user_id,
+          scopes: ['deploy'],
+          exp: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
+          workspace_id: workspaceId,
+          thread_id: validatedThreadId,
+          name: `deploy-thread-${validatedThreadId}`,
+        });
+        console.log('[ws] Created signed deploy token with threadId', {
+          threadId: validatedThreadId,
           tokenPrefix: threadToken.slice(0, 12),
         });
         headers.set(CHIRIDION_THREAD_TOKEN_HEADER, threadToken);

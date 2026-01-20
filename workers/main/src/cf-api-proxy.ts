@@ -485,7 +485,7 @@ export async function proxyCloudflareApi(
 
   const orgId = tokenPayload.org_id;
   const workspaceId = tokenPayload.workspace_id;
-  const threadId: string | undefined = undefined; // No longer stored in token
+  const threadId = tokenPayload.thread_id;
 
   let pathname = url.pathname;
 
