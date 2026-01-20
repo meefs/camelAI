@@ -68,6 +68,11 @@
 				"binding": "APP_SCREENSHOT_QUEUE",
 				"queue": "chiridion-app-screenshots-local"
 			}
+		],
+		"consumers": [
+			{
+				"queue": "chiridion-app-screenshots-local"
+			}
 		]
 	},
 	"containers": [
@@ -167,6 +172,11 @@
 				"producers": [
 					{
 						"binding": "APP_SCREENSHOT_QUEUE",
+						"queue": "chiridion-app-screenshots"
+					}
+				],
+				"consumers": [
+					{
 						"queue": "chiridion-app-screenshots"
 					}
 				]
@@ -272,6 +282,11 @@
 						"binding": "APP_SCREENSHOT_QUEUE",
 						"queue": "chiridion-app-screenshots-staging"
 					}
+				],
+				"consumers": [
+					{
+						"queue": "chiridion-app-screenshots-staging"
+					}
 				]
 			},
 			"services": [
@@ -370,6 +385,11 @@
 						"binding": "APP_SCREENSHOT_QUEUE",
 						"queue": "chiridion-app-screenshots-dev-miguel"
 					}
+				],
+				"consumers": [
+					{
+						"queue": "chiridion-app-screenshots-dev-miguel"
+					}
 				]
 			},
 			"services": [
@@ -466,6 +486,11 @@
 				"producers": [
 					{
 						"binding": "APP_SCREENSHOT_QUEUE",
+						"queue": "chiridion-app-screenshots-dev-illiana"
+					}
+				],
+				"consumers": [
+					{
 						"queue": "chiridion-app-screenshots-dev-illiana"
 					}
 				]

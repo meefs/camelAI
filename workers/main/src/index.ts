@@ -18,6 +18,7 @@ import {
 } from './cf-api-proxy.js';
 import { handleMcpRequest, ChiridionMcp, type McpEnv } from './mcp-handler.js';
 import { isSignedToken, validateSignedToken, createSignedToken } from './signed-tokens.js';
+import { handleScreenshotQueue, type AppScreenshotJob } from './screenshot-queue.js';
 export { DoRpcService } from './rpc-service.js';
 export { ChiridionMcp } from './mcp-handler.js';
 
@@ -34,16 +35,6 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
     if (k === name) return rest.join('=') || '';
   }
   return null;
-}
-
-interface AppScreenshotJob {
-  script_name: string;
-  org_id: string;
-  workspace_id: string;
-  deploy_ts: number;
-  env_prefix: string;
-  is_public: boolean;
-  screenshot_token?: string;
 }
 
 interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv, CfApiProxyEnv, McpEnv {
@@ -686,6 +677,10 @@ export default {
 	  return new Response('Not Found', { status: 404 });
 	}
     return openNextHandler.fetch(request, env, ctx);
+  },
+
+  async queue(batch: MessageBatch<AppScreenshotJob>, env: Env): Promise<void> {
+    return handleScreenshotQueue(batch, env);
   },
 } satisfies ExportedHandler<Env>;
 

@@ -34,7 +34,6 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
      - `DoRpcService` - RPC entrypoint for cross-worker calls
    - `dispatcher/` - Routes `*.chiridion.app` to user workers (WfP)
    - `admin-cli/` - Local-only admin CLI for querying live environments
-   - `screenshot/` - Queue consumer that renders app previews via Browser Rendering and stores in R2
    - `proxy/` - Multi-provider LLM proxy worker (Anthropic/OpenAI-compatible/Bedrock/Azure Foundry) with token accounting
      - MCP server endpoint (`/mcp`) with API key auth for sandbox containers (streamable HTTP transport)
 
@@ -70,8 +69,8 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/main/src/container.ts` | Container lifecycle and WebSocket routing |
 | `workers/main/src/auth.ts` | UserDO, OrgDO implementations (threads stored in OrgDO) |
 | `workers/main/src/password.ts` | PBKDF2 password hashing |
-| `workers/main/src/index.ts` | Worker entry point |
-| `workers/screenshot/src/index.ts` | Queue consumer for app preview screenshots |
+| `workers/main/src/index.ts` | Worker entry point (includes queue consumer for app preview screenshots) |
+| `workers/main/src/screenshot-queue.ts` | Screenshot queue handler for app previews |
 | `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
 | `sandbox/entrypoint.sh` | Container entrypoint that syncs R2 tar snapshots and starts services |
@@ -93,7 +92,6 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 |------|---------|
 | `wrangler.jsonc` | Main production/deployment config |
 | `wrangler.build.jsonc` | OpenNext build config |
-| `workers/screenshot/wrangler.jsonc` | Screenshot worker deployment config |
 | `components.json` | shadcn/ui configuration |
 | `.mcp.json` | MCP server config (shadcn registry access) |
 
@@ -159,7 +157,7 @@ To reduce perceived latency from R2 restore, the app proactively warms up contai
 
 ### App Previews
 1. Deploy succeeds in `workers/main/src/index.ts` and enqueues an `APP_SCREENSHOT_QUEUE` job (local dev captures inline with Browser Rendering against `LOCAL_APP_PREVIEW_URL`, defaulting to `https://hello-world-test.chiridion.app/`).
-2. Screenshot worker renders `https://{script}.apps.{env}.chiridion.ai` via Browser Rendering.
+2. The main worker's queue consumer (`screenshot-queue.ts`) renders `https://{script}.apps.{env}.chiridion.ai` via Browser Rendering.
 3. For private apps, the dispatcher exchanges the single-use screenshot token for a short-lived screenshot session cookie to allow asset requests.
 4. JPEG previews are stored in R2 under `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg`.
 5. OrgDO updates `worker_scripts.preview_*` fields for status + key.
