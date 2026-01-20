@@ -383,6 +383,20 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     void workspaceId;
   }
 
+  /**
+   * Push integration env vars to running container.
+   * Fire-and-forget - doesn't throw on failure (container may not be running).
+   */
+  private async pushIntegrationEnvVarsToContainer(workspaceId: string): Promise<void> {
+    try {
+      const envVars = await this.getWorkspaceIntegrationEnvVars(workspaceId);
+      const container = getWorkspaceContainer(this.env, workspaceId);
+      await container.pushIntegrationEnvVars(envVars);
+    } catch (e) {
+      console.error('[DoRpcService] Failed to push integration env vars:', e);
+    }
+  }
+
   // Session functions (using KV storage)
   async getSession(sessionId: string): Promise<SessionData | null> {
     const session = await getSessionKV(this.env.SESSIONS, sessionId);
@@ -2963,6 +2977,10 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
     if (!record) {
       throw new Error('Failed to create integration');
     }
+
+    // Push updated env vars to running container (fire-and-forget)
+    this.ctx.waitUntil(this.pushIntegrationEnvVarsToContainer(workspaceId));
+
     return this.recordToIntegration(record);
   }
 
@@ -3003,12 +3021,19 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
 
     const record = await stub.getIntegration(integrationId);
     if (!record) return null;
+
+    // Push updated env vars to running container (fire-and-forget)
+    this.ctx.waitUntil(this.pushIntegrationEnvVarsToContainer(workspaceId));
+
     return this.recordToIntegration(record);
   }
 
   async deleteWorkspaceIntegration(workspaceId: string, integrationId: string, actorId: string): Promise<void> {
     using stub = asDisposable(this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)));
     await stub.deleteIntegration(integrationId, actorId);
+
+    // Push updated env vars to running container (fire-and-forget)
+    this.ctx.waitUntil(this.pushIntegrationEnvVarsToContainer(workspaceId));
   }
 
   async getWorkspaceIntegrationEnvVars(workspaceId: string): Promise<Record<string, string>> {

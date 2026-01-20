@@ -104,6 +104,13 @@ interface ControlPlaneDeleteResponse {
   code?: string;
 }
 
+// ws-server response types
+interface WsServerUpdateEnvResponse {
+  success: boolean;
+  keys?: string[];
+  error?: string;
+}
+
 // Port configuration
 const WS_SERVER_PORT = 8080;
 const CONTROL_PLANE_PORT = 9000;
@@ -456,6 +463,42 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
    */
   async deleteFile(path: string): Promise<ControlPlaneDeleteResponse> {
     return this.controlPlane<ControlPlaneDeleteResponse>('/fs/delete', { path });
+  }
+
+  /**
+   * Push integration env vars to ws-server.
+   * Called when integrations are created/updated/deleted to update the running container.
+   * Returns true if successful, false if container is not running or push failed.
+   */
+  async pushIntegrationEnvVars(envVars: Record<string, string>): Promise<boolean> {
+    try {
+      // Check if container is running/healthy before pushing
+      const state = await this.getState();
+      if (state.status !== 'healthy' && state.status !== 'running') {
+        console.log('[WorkspaceContainer] Container not running, skipping env push', { status: state.status });
+        return false;
+      }
+
+      const response = await this.containerFetch('http://container/update-env', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ env: envVars }),
+      }, WS_SERVER_PORT);
+
+      if (!response.ok) {
+        const text = await response.text();
+        console.error('[WorkspaceContainer] Failed to push env vars:', response.status, text);
+        return false;
+      }
+
+      const result = await response.json() as WsServerUpdateEnvResponse;
+      console.log('[WorkspaceContainer] Pushed integration env vars:', result.keys?.length ?? 0, 'keys');
+      return result.success;
+    } catch (e) {
+      // Container may not be running or ws-server may not be ready
+      console.error('[WorkspaceContainer] Error pushing env vars:', e);
+      return false;
+    }
   }
 }
 

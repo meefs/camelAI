@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-19-sandbox-v14-mcp';
+const VERSION = '2026-01-19-sandbox-v15-integration-refresh';
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -27,6 +27,10 @@ const sessions = new Map();
 const MAX_EVENT_BUFFER = 500;
 let traceDirPromise = null;
 let taskResultsDirPromise = null;
+
+// Integration env vars cache - pushed by worker when integrations change
+// Keys are INT_* prefixed env var names, values are the credential values
+let integrationEnvVars = {};
 
 function sanitizeFileSegment(value) {
   return String(value || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
@@ -238,11 +242,13 @@ function sessionFileExists(sessionId) {
 
 // Query options for Claude SDK
 function getQueryOptions(session) {
-  // Build env vars, using per-thread deploy token if available
-  // This replaces the container's org-level token with a thread-specific one
-  // that includes threadId for auto-preview after deploys
+  // Build env vars, merging:
+  // 1. Base process.env (set at container startup)
+  // 2. Integration env vars (pushed by worker when integrations change)
+  // 3. Per-thread overrides (deploy token, thread ID)
   const envVars = {
     ...process.env,
+    ...integrationEnvVars, // INT_* vars pushed by worker
     THREAD_ID: session.threadId || '',
   };
 
@@ -559,6 +565,29 @@ Bun.serve({
         return new Response('No active WebSocket connection', { status: 503 });
       } catch (e) {
         return new Response(String(e), { status: 400 });
+      }
+    }
+
+    // Update integration env vars - pushed by worker when integrations change
+    if (url.pathname === '/update-env' && req.method === 'POST') {
+      try {
+        const data = await req.json();
+        if (data.env && typeof data.env === 'object') {
+          integrationEnvVars = data.env;
+          console.log('[ws-server] Updated integration env vars:', Object.keys(integrationEnvVars).length, 'keys');
+          return new Response(JSON.stringify({ success: true, keys: Object.keys(integrationEnvVars) }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        return new Response(JSON.stringify({ success: false, error: 'Missing env object' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ success: false, error: String(e) }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
       }
     }
 
