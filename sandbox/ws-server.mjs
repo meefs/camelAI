@@ -3,7 +3,24 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-19-sandbox-v15-integration-refresh';
+const VERSION = '2026-01-19-sandbox-v17-single-line-logs';
+
+// Single-line logging helpers (CF treats each line as separate log entry)
+function log(prefix, message, data) {
+  if (data !== undefined) {
+    console.log(`${prefix} ${message} ${JSON.stringify(data)}`);
+  } else {
+    console.log(`${prefix} ${message}`);
+  }
+}
+
+function logError(prefix, message, data) {
+  if (data !== undefined) {
+    console.error(`${prefix} ${message} ${JSON.stringify(data)}`);
+  } else {
+    console.error(`${prefix} ${message}`);
+  }
+}
 
 // Configuration from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -39,7 +56,7 @@ function sanitizeFileSegment(value) {
 function ensureTraceDir() {
   if (!traceDirPromise) {
     traceDirPromise = mkdir(TRACE_DIR, { recursive: true }).catch((err) => {
-      console.error('[ws-server] Failed to create trace dir:', err?.message || String(err));
+      logError('[ws-server]', 'Failed to create trace dir:', err?.message || String(err));
     });
   }
   return traceDirPromise;
@@ -48,7 +65,7 @@ function ensureTraceDir() {
 function ensureTaskResultsDir() {
   if (!taskResultsDirPromise) {
     taskResultsDirPromise = mkdir(TASK_RESULTS_DIR, { recursive: true }).catch((err) => {
-      console.error('[ws-server] Failed to create task results dir:', err?.message || String(err));
+      logError('[ws-server]', 'Failed to create task results dir:', err?.message || String(err));
     });
   }
   return taskResultsDirPromise;
@@ -64,7 +81,7 @@ async function writeTrace(threadId, entry) {
     await appendFile(tracePath, line);
     await appendFile(TRACE_ALL_FILE, line);
   } catch (error) {
-    console.error('[ws-server] Trace write failed:', error?.message || String(error));
+    logError('[ws-server]', 'Trace write failed:', error?.message || String(error));
   }
 }
 
@@ -100,7 +117,7 @@ async function writeTaskResultUpdate(threadId, entry) {
     const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
     await appendFile(taskPath, line);
   } catch (error) {
-    console.error('[ws-server] Task update write failed:', error?.message || String(error));
+    logError('[ws-server]', 'Task update write failed:', error?.message || String(error));
   }
 }
 
@@ -222,15 +239,49 @@ function summarizeError(error) {
 }
 
 process.on('uncaughtException', (error) => {
-  console.error('[ws-server] Uncaught exception:', summarizeError(error));
+  logError('[ws-server]', 'Uncaught exception:', summarizeError(error));
 });
 
 process.on('unhandledRejection', (error) => {
-  console.error('[ws-server] Unhandled rejection:', summarizeError(error));
+  logError('[ws-server]', 'Unhandled rejection:', summarizeError(error));
 });
 
-process.on('exit', () => {});
-process.on('SIGTERM', () => {});
+// Track total connection count for lifecycle logging
+let totalConnections = 0;
+let serverStartTime = Date.now();
+
+// Periodic status logging (every 5 minutes)
+const STATUS_LOG_INTERVAL = 5 * 60 * 1000;
+setInterval(() => {
+  const uptimeMs = Date.now() - serverStartTime;
+  const uptimeMins = Math.floor(uptimeMs / 60000);
+  const sessionCount = sessions.size;
+  let activeSocketCount = 0;
+  for (const session of sessions.values()) {
+    activeSocketCount += session.attachedSockets?.size || 0;
+  }
+  log('[ws-server]', 'STATUS', {
+    uptimeMins,
+    sessions: sessionCount,
+    activeSockets: activeSocketCount,
+    totalConnectionsEver: totalConnections,
+  });
+}, STATUS_LOG_INTERVAL);
+
+process.on('exit', (code) => {
+  log('[ws-server]', `Process exiting code=${code}`, {
+    uptimeSecs: Math.floor((Date.now() - serverStartTime) / 1000),
+    sessions: sessions.size,
+  });
+});
+
+process.on('SIGTERM', () => {
+  log('[ws-server]', 'Received SIGTERM signal');
+});
+
+process.on('SIGINT', () => {
+  log('[ws-server]', 'Received SIGINT signal');
+});
 
 // Check if a session JSONL file exists
 function sessionFileExists(sessionId) {
@@ -390,7 +441,7 @@ function bufferEvent(session, payload) {
       try {
         socket.send(JSON.stringify(envelope));
       } catch (e) {
-        console.error('[ws-server] Failed to send event:', e);
+        logError('[ws-server]', 'Failed to send event:', String(e));
         session.attachedSockets.delete(socket);
       }
     }
@@ -407,7 +458,7 @@ function replayBufferedEvents(session, ws, lastEventId) {
         ws.send(JSON.stringify(envelope));
         replayed++;
       } catch (e) {
-        console.error('[ws-server] Failed to replay event:', e);
+        logError('[ws-server]', 'Failed to replay event:', String(e));
         break;
       }
     }
@@ -445,7 +496,7 @@ function initSession(session) {
     session.activeQuery = query({ prompt: messageStream, options });
     session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
   } catch (error) {
-    console.error('[ws-server] Failed to init:', summarizeError(error));
+    logError('[ws-server]', 'Failed to init:', summarizeError(error));
     bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
   }
 }
@@ -454,13 +505,16 @@ function initSession(session) {
 function startEventLoop(session) {
   if (session.eventLoopRunning || !session.queryIterator) return;
   session.eventLoopRunning = true;
+  log('[ws-server]', 'Event loop starting', { threadId: session.threadId });
 
   (async () => {
+    let exitReason = 'unknown';
     try {
       while (true) {
         const { value: event, done } = await session.queryIterator.next();
 
         if (done) {
+          exitReason = 'iterator_done';
           break;
         }
 
@@ -474,18 +528,26 @@ function startEventLoop(session) {
           const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
           const hasPendingMessages = session.messageQueue.length > 0;
           if (!hasConnections && !hasPendingMessages) {
+            exitReason = 'no_connections_or_messages';
             break;
           }
           // Continue looping - generator will yield queued message or wait for new one
         }
       }
     } catch (e) {
-      console.error('[ws-server] Query error:', summarizeError(e));
+      exitReason = 'error';
+      logError('[ws-server]', 'Query error:', summarizeError(e));
       bufferEvent(session, { type: 'error', error: String(e) });
       void writeTrace(session.threadId, { direction: 'error', error: String(e) });
       logForPersistence({ type: 'error', error: String(e) });
       // Snapshot sync happens on container shutdown via entrypoint cleanup.
     } finally {
+      log('[ws-server]', 'Event loop stopped', {
+        threadId: session.threadId,
+        exitReason,
+        sockets: session.attachedSockets?.size || 0,
+        pendingMessages: session.messageQueue?.length || 0,
+      });
       session.activeQuery = null;
       session.queryIterator = null;
       session.eventLoopRunning = false;
@@ -574,7 +636,7 @@ Bun.serve({
         const data = await req.json();
         if (data.env && typeof data.env === 'object') {
           integrationEnvVars = data.env;
-          console.log('[ws-server] Updated integration env vars:', Object.keys(integrationEnvVars).length, 'keys');
+          log('[ws-server]', 'Updated integration env vars', { keys: Object.keys(integrationEnvVars).length });
           return new Response(JSON.stringify({ success: true, keys: Object.keys(integrationEnvVars) }), {
             headers: { 'Content-Type': 'application/json' }
           });
@@ -613,7 +675,10 @@ Bun.serve({
   },
 
   websocket: {
-    open(ws) {},
+    open(ws) {
+      totalConnections++;
+      log('[ws-server]', 'WebSocket opened', { totalConnections, sessionsCount: sessions.size });
+    },
 
     async message(ws, message) {
       try {
@@ -663,23 +728,30 @@ Bun.serve({
               try {
                 await session.activeQuery.interrupt();
               } catch (e) {
-                console.error('[ws-server] Interrupt error:', e);
+                logError('[ws-server]', 'Interrupt error:', String(e));
               }
             }
           }
         }
       } catch (e) {
-        console.error('[ws-server] Message handling error:', e);
+        logError('[ws-server]', 'Message handling error:', String(e));
         ws.send(JSON.stringify({ type: 'error', error: String(e) }));
       }
     },
 
     close(ws, code, reason) {
       const threadId = ws?.data?.threadId;
-      console.log('[ws-server] WebSocket closed', {
+      // Count remaining sockets before removing this one
+      let remainingSockets = 0;
+      for (const session of sessions.values()) {
+        remainingSockets += session.attachedSockets?.size || 0;
+      }
+      log('[ws-server]', 'WebSocket closed', {
         threadId,
         code,
         reason: typeof reason === 'string' ? reason : reason?.toString?.(),
+        remainingSockets: remainingSockets - 1,
+        sessionsCount: sessions.size,
       });
       if (threadId && sessions.has(threadId)) {
         const session = sessions.get(threadId);
@@ -690,7 +762,7 @@ Bun.serve({
     },
 
     error(ws, error) {
-      console.error('[ws-server] WebSocket error:', error);
+      logError('[ws-server]', 'WebSocket error:', String(error));
     },
   },
 });

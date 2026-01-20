@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-18-v1
+# Version: 2026-01-19-v2-shutdown-logging
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -29,7 +29,7 @@ has_r2_config() {
 
 # Cleanup function for shutdown (runs on EXIT, which fires for all termination paths)
 cleanup() {
-  echo "[entrypoint] Shutting down..." >&2
+  echo "[entrypoint] Shutting down... (reason: ${SHUTDOWN_REASON:-unknown})" >&2
 
   # Kill ws-server if running
   if [ -n "${WS_PID:-}" ] && kill -0 "$WS_PID" 2>/dev/null; then
@@ -63,11 +63,15 @@ cleanup() {
   echo "[entrypoint] Shutdown complete." >&2
 }
 
+# Track shutdown reason for debugging
+SHUTDOWN_REASON="unknown"
+
 # Trap EXIT for cleanup, and TERM/INT to convert signals into normal exits.
 # In dash (Debian's /bin/sh), EXIT trap doesn't fire on untrapped signals,
 # so we must trap TERM/INT to ensure cleanup runs on container shutdown.
 trap cleanup EXIT
-trap 'exit 0' TERM INT
+trap 'SHUTDOWN_REASON="SIGTERM"; echo "[entrypoint] Received SIGTERM (from CF runtime)" >&2; exit 0' TERM
+trap 'SHUTDOWN_REASON="SIGINT"; echo "[entrypoint] Received SIGINT" >&2; exit 0' INT
 
 # Start Verdaccio npm registry via pm2 (async - don't wait, it'll be ready by the time it's needed)
 # This runs in parallel with R2 download and other startup tasks
@@ -175,6 +179,7 @@ echo "[entrypoint] ws-server PID: $WS_PID" >&2
 # Wait for ws-server - when it exits, the cleanup trap will run
 wait "$WS_PID"
 WS_EXIT=$?
+SHUTDOWN_REASON="ws-server-exit-$WS_EXIT"
 echo "[entrypoint] ws-server exited with code: $WS_EXIT" >&2
 
 # Exit with ws-server's exit code (cleanup runs via EXIT trap)
