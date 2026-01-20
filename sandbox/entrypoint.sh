@@ -33,16 +33,15 @@ cleanup() {
 
   # CRITICAL: Upload workspace to R2 FIRST - this is the most important step
   # CF may send SIGKILL shortly after SIGTERM, so we need to prioritize the backup
-  # Services will die when container dies anyway
-  if has_r2_config && [ "${R2_MOUNT_READONLY:-}" != "1" ] && [ "${R2_MOUNT_READONLY:-}" != "true" ]; then
-    echo "[entrypoint] Uploading snapshot to R2 (priority)..." >&2
+  if has_r2_config; then
+    echo "[entrypoint] Uploading snapshot to R2..." >&2
     if node /app/sync.mjs upload "$TARGET_DIR"; then
       echo "[entrypoint] Upload complete." >&2
     else
       echo "[entrypoint] Upload FAILED!" >&2
     fi
   else
-    echo "[entrypoint] Skipping R2 upload (readonly=${R2_MOUNT_READONLY:-unset}, has_config=$(has_r2_config && echo yes || echo no))" >&2
+    echo "[entrypoint] Skipping R2 upload (no credentials configured)" >&2
   fi
 
   # Now clean up services (less critical - they die with the container anyway)

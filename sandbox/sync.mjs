@@ -266,12 +266,6 @@ async function upload(sourceDir) {
     return false;
   }
 
-  const readonly = process.env.R2_MOUNT_READONLY;
-  if (readonly === '1' || readonly === 'true' || readonly === 'TRUE') {
-    console.error('[sync] R2_MOUNT_READONLY set, skipping upload');
-    return true;
-  }
-
   const startTime = Date.now();
 
   // Pipe: tar --zstd -> multipart upload
