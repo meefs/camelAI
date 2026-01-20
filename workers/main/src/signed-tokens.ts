@@ -119,7 +119,13 @@ export async function validateSignedToken(
 
     // Verify signature
     const key = await importKey(secret);
-    const valid = await crypto.subtle.verify('HMAC', key, signatureBytes, payloadBytes);
+    // Create fresh Uint8Arrays to satisfy TypeScript's strict BufferSource typing
+    const valid = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      new Uint8Array(signatureBytes),
+      new Uint8Array(payloadBytes)
+    );
     if (!valid) {
       return null;
     }
