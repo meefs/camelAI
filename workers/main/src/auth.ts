@@ -722,7 +722,7 @@ export class OrgDO extends DurableObject<AuthEnv> {
       }
       this.sql.exec('UPDATE _schema_version SET version = 7');
     }
-    if (version < 8) { 
+    if (version < 8) {
       // V8: Proxy usage rollups per user
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS proxy_usage (
@@ -740,6 +740,135 @@ export class OrgDO extends DurableObject<AuthEnv> {
         )
       `);
       this.sql.exec('UPDATE _schema_version SET version = 8');
+    }
+
+    if (version < 9) {
+      // V9: Schema consistency fix - ensure all tables and columns exist
+      // This fixes DOs that may have skipped migrations due to version conflicts
+
+      // Ensure all core tables exist
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS org_info (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS members (
+          user_id TEXT PRIMARY KEY,
+          role TEXT NOT NULL,
+          joined_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS invitations (
+          id TEXT PRIMARY KEY,
+          email TEXT NOT NULL,
+          role TEXT NOT NULL,
+          invited_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS integrations (
+          id TEXT PRIMARY KEY,
+          integration_type TEXT NOT NULL,
+          name TEXT NOT NULL,
+          category TEXT NOT NULL,
+          auth_method TEXT NOT NULL,
+          config TEXT NOT NULL,
+          credentials_encrypted TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS workspaces (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          archived INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS audit_log (
+          id TEXT PRIMARY KEY,
+          action TEXT NOT NULL,
+          actor_id TEXT NOT NULL,
+          target_id TEXT,
+          details TEXT,
+          created_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS worker_scripts (
+          script_name TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec('CREATE INDEX IF NOT EXISTS worker_scripts_workspace_id ON worker_scripts(workspace_id)');
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS threads (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.sql.exec('CREATE INDEX IF NOT EXISTS threads_workspace_id ON threads(workspace_id)');
+      this.sql.exec('CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)');
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS proxy_usage (
+          user_id TEXT PRIMARY KEY,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          total_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+          requests INTEGER NOT NULL DEFAULT 0,
+          last_provider TEXT,
+          last_model TEXT,
+          last_token_id TEXT,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+
+      // Ensure all columns exist on worker_scripts
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0');
+      } catch {
+        // Column already exists
+      }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_key TEXT');
+      } catch {
+        // Column already exists
+      }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_updated_at INTEGER');
+      } catch {
+        // Column already exists
+      }
+      try {
+        this.sql.exec("ALTER TABLE worker_scripts ADD COLUMN preview_status TEXT DEFAULT 'pending'");
+      } catch {
+        // Column already exists
+      }
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN preview_error TEXT');
+      } catch {
+        // Column already exists
+      }
+
+      this.sql.exec('UPDATE _schema_version SET version = 9');
     }
 
     this.workerScriptsHasPreviewColumns = this.detectWorkerScriptPreviewColumns();
