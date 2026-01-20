@@ -209,6 +209,12 @@ export async function captureScreenshot(
         scriptName: job.script_name,
         orgId: job.org_id,
       });
+    } else if (!updateResult.updated) {
+      console.warn('[app-screenshot] preview update skipped (columns missing or script not found)', {
+        scriptName: job.script_name,
+        orgId: job.org_id,
+        scriptExists: !!updateResult.script,
+      });
     }
 
     console.log('[app-screenshot] captured preview', {

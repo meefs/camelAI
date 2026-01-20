@@ -743,6 +743,9 @@ export class OrgDO extends DurableObject<AuthEnv> {
     }
 
     this.workerScriptsHasPreviewColumns = this.detectWorkerScriptPreviewColumns();
+    if (!this.workerScriptsHasPreviewColumns) {
+      console.warn('[OrgDO] worker_scripts missing preview columns - preview updates will be skipped');
+    }
   }
 
   private detectWorkerScriptPreviewColumns(): boolean {
