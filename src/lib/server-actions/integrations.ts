@@ -12,6 +12,23 @@ import {
 import { requireSession } from "@/lib/server-guards";
 import type { Integration, IntegrationCategory } from "@/types";
 
+function toSafeIntegration(integration: Integration): Integration {
+  // JSON round-trip ensures nested objects (like config) are plain objects for RSC
+  return JSON.parse(JSON.stringify({
+    id: integration.id,
+    integration_type: integration.integration_type,
+    name: integration.name,
+    category: integration.category,
+    auth_method: integration.auth_method,
+    config: integration.config ?? {},
+    enabled: integration.enabled,
+    created_by: integration.created_by,
+    created_at: integration.created_at,
+    updated_at: integration.updated_at,
+    has_credentials: integration.has_credentials,
+  }));
+}
+
 export async function getIntegrationTypes(category?: IntegrationCategory | null) {
   if (category) {
     return { integrations: getIntegrationsByCategory(category) };
@@ -37,7 +54,8 @@ async function requireWorkspaceAccess(workspaceId: string) {
 
 export async function getWorkspaceIntegrations(workspaceId: string): Promise<Integration[]> {
   await requireWorkspaceAccess(workspaceId);
-  return authDO.getWorkspaceIntegrations(workspaceId);
+  const integrations = await authDO.getWorkspaceIntegrations(workspaceId);
+  return integrations.map(toSafeIntegration);
 }
 
 export async function getWorkspaceIntegration(
@@ -45,7 +63,8 @@ export async function getWorkspaceIntegration(
   integrationId: string
 ): Promise<Integration | null> {
   await requireWorkspaceAccess(workspaceId);
-  return authDO.getWorkspaceIntegration(workspaceId, integrationId);
+  const integration = await authDO.getWorkspaceIntegration(workspaceId, integrationId);
+  return integration ? toSafeIntegration(integration) : null;
 }
 
 export async function createWorkspaceIntegration(
@@ -88,12 +107,13 @@ export async function createWorkspaceIntegration(
     throw new Error(credentialErrors.join(", "));
   }
 
-  return authDO.createWorkspaceIntegration(workspaceId, session.user_id, {
+  const created = await authDO.createWorkspaceIntegration(workspaceId, session.user_id, {
     integration_type: data.integration_type,
     name,
     config,
     credentials,
   });
+  return toSafeIntegration(created);
 }
 
 export async function updateWorkspaceIntegration(
@@ -142,12 +162,13 @@ export async function updateWorkspaceIntegration(
     }
   }
 
-  return authDO.updateWorkspaceIntegration(workspaceId, integrationId, session.user_id, {
+  const updated = await authDO.updateWorkspaceIntegration(workspaceId, integrationId, session.user_id, {
     name: data.name?.trim(),
     config: data.config,
     credentials: data.credentials,
     enabled: data.enabled,
   });
+  return updated ? toSafeIntegration(updated) : null;
 }
 
 export async function deleteWorkspaceIntegration(

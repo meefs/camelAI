@@ -7,7 +7,8 @@ import { requireSession } from "@/lib/server-guards"
 import type { Workspace, WorkspaceAccessLevel, WorkspaceWithAccess, AuditLogEntry } from "@/types"
 
 function toSafeWorkspace(workspace: Workspace) {
-  return {
+  // JSON round-trip ensures nested objects (like avatar) are plain objects for RSC
+  return JSON.parse(JSON.stringify({
     id: workspace.id,
     org_id: workspace.org_id,
     name: workspace.name,
@@ -20,7 +21,7 @@ function toSafeWorkspace(workspace: Workspace) {
     },
     archived: workspace.archived,
     archived_at: workspace.archived_at,
-  }
+  }))
 }
 
 export async function createWorkspace(name: string, description?: string | null) {
@@ -255,5 +256,7 @@ export async function warmupWorkspace(
   workspaceId: string
 ): Promise<{ status: 'warm' | 'warming' | 'unauthorized' }> {
   const session = await requireSession()
-  return authDO.warmupWorkspace(workspaceId, session.user_id)
+  const result = await authDO.warmupWorkspace(workspaceId, session.user_id)
+  // JSON round-trip ensures plain object for RSC serialization
+  return { status: result.status }
 }

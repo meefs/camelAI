@@ -76,13 +76,23 @@ function toSafeOrgMembership(membership: OrgMembership): OrgMembership {
 }
 
 function toSafeWorkspace(workspace: WorkspaceWithAccess): WorkspaceWithAccess {
-  return {
-    ...workspace,
+  // Explicitly list fields to control what's exposed
+  // JSON round-trip ensures nested objects (like avatar) are plain objects for RSC
+  return JSON.parse(JSON.stringify({
+    id: workspace.id,
+    org_id: workspace.org_id,
+    name: workspace.name,
+    description: workspace.description,
+    created_by: workspace.created_by,
+    created_at: workspace.created_at,
     avatar: {
       color: workspace.avatar.color,
       content: workspace.avatar.content,
     },
-  };
+    archived: workspace.archived,
+    archived_at: workspace.archived_at ?? null,
+    access_level: workspace.access_level,
+  }));
 }
 
 export async function login(

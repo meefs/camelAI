@@ -43,10 +43,21 @@ function toSafeOrg(org: Organization): Organization {
 }
 
 function toSafeIntegration(integration: Integration): Integration {
-  return {
-    ...integration,
-    config: integration.config ? JSON.parse(JSON.stringify(integration.config)) : {},
-  };
+  // Explicitly list fields to avoid leaking internal data (e.g., credentials_encrypted)
+  // JSON round-trip ensures nested objects (like config) are plain objects for RSC
+  return JSON.parse(JSON.stringify({
+    id: integration.id,
+    integration_type: integration.integration_type,
+    name: integration.name,
+    category: integration.category,
+    auth_method: integration.auth_method,
+    config: integration.config ?? {},
+    enabled: integration.enabled,
+    created_by: integration.created_by,
+    created_at: integration.created_at,
+    updated_at: integration.updated_at,
+    has_credentials: integration.has_credentials,
+  }));
 }
 
 export async function createOrg(name: string) {
@@ -237,6 +248,7 @@ export async function createIntegration(
     config: config || {},
     credentials: credentials || {},
   });
+
   return toSafeIntegration(created);
 }
 
