@@ -6,7 +6,7 @@
 	"compatibility_flags": ["nodejs_compat"],
 
 	"vars": {
-		"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+		"PROXY_FALLBACK_ORDER": "bedrock-api-key,foundry,anthropic",
 		"ANTHROPIC_VERSION": "2023-06-01"
 		// "PROXY_PROVIDERS": "[{\"name\":\"anthropic\",\"type\":\"anthropic\"},{\"name\":\"foundry\",\"type\":\"foundry\"},{\"name\":\"bedrock\",\"type\":\"bedrock\",\"modelId\":\"anthropic.claude-3-5-sonnet-20241022-v2:0\"}]"
 	},
@@ -22,7 +22,7 @@
 		"prod": {
 			"name": "chiridion-llm-proxy",
 			"vars": {
-				"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+				"PROXY_FALLBACK_ORDER": "bedrock-api-key,foundry,anthropic",
 				"ANTHROPIC_VERSION": "2023-06-01"
 			},
 			"services": [
@@ -39,7 +39,7 @@
 		"staging": {
 			"name": "chiridion-llm-proxy-staging",
 			"vars": {
-				"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+				"PROXY_FALLBACK_ORDER": "bedrock-api-key,foundry,anthropic",
 				"ANTHROPIC_VERSION": "2023-06-01"
 			},
 			"services": [
@@ -56,7 +56,7 @@
 		"dev-miguel": {
 			"name": "chiridion-llm-proxy-dev-miguel",
 			"vars": {
-				"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+				"PROXY_FALLBACK_ORDER": "bedrock-api-key,foundry,anthropic",
 				"ANTHROPIC_VERSION": "2023-06-01"
 			},
 			"services": [
@@ -73,7 +73,7 @@
 		"dev-illiana": {
 			"name": "chiridion-llm-proxy-dev-illiana",
 			"vars": {
-				"PROXY_FALLBACK_ORDER": "foundry,bedrock-api-key,anthropic",
+				"PROXY_FALLBACK_ORDER": "bedrock-api-key,foundry,anthropic",
 				"ANTHROPIC_VERSION": "2023-06-01"
 			},
 			"services": [
