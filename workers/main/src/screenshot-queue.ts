@@ -1,5 +1,6 @@
 import puppeteer, { type Page } from '@cloudflare/puppeteer';
 import { createScreenshotToken } from './worker-auth.js';
+import type { OrgDO } from './auth.js';
 
 export interface AppScreenshotJob {
   script_name: string;
@@ -11,12 +12,12 @@ export interface AppScreenshotJob {
   screenshot_token?: string;
 }
 
-interface ScreenshotEnv {
+export interface ScreenshotEnv {
   BROWSER?: Fetcher;
   R2_BUCKET: R2Bucket;
   API_TOKENS: KVNamespace;
   LOCAL_APP_PREVIEW_URL?: string;
-  ORG: DurableObjectNamespace;
+  ORG: DurableObjectNamespace<OrgDO>;
 }
 
 const VIEWPORT = {
@@ -103,7 +104,7 @@ async function waitForReadySignal(page: Page): Promise<void> {
   }
 }
 
-async function captureScreenshot(
+export async function captureScreenshot(
   env: ScreenshotEnv,
   job: AppScreenshotJob,
   screenshotToken?: string
@@ -112,7 +113,7 @@ async function captureScreenshot(
 
   if (!env.BROWSER) {
     const errorMessage = 'Missing BROWSER binding for screenshot capture.';
-    await (orgStub as any).updateWorkerScriptPreview(job.script_name, {
+    await orgStub.updateWorkerScriptPreview(job.script_name, {
       status: 'failed',
       preview_key: null,
       preview_error: errorMessage,
@@ -196,7 +197,7 @@ async function captureScreenshot(
       },
     });
 
-    const updateResult = await (orgStub as any).updateWorkerScriptPreview(job.script_name, {
+    const updateResult = await orgStub.updateWorkerScriptPreview(job.script_name, {
       status: 'ready',
       preview_key: currentKey,
       preview_error: null,
@@ -225,7 +226,7 @@ async function captureScreenshot(
       error: errorMessage,
     });
 
-    await (orgStub as any).updateWorkerScriptPreview(job.script_name, {
+    await orgStub.updateWorkerScriptPreview(job.script_name, {
       status: 'failed',
       preview_key: null,
       preview_error: errorMessage,
@@ -259,7 +260,7 @@ export async function handleScreenshotQueue(
 
     try {
       const orgStub = env.ORG.get(env.ORG.idFromName(job.org_id));
-      const script = await (orgStub as any).getWorkerScript(job.script_name);
+      const script = await orgStub.getWorkerScript(job.script_name);
 
       if (!script) {
         console.warn('[app-screenshot] script not found, skipping', {

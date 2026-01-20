@@ -6,8 +6,6 @@ import type {
   WorkerScript,
   WorkerScriptAccess,
   OrgThread,
-  WorkerScriptPreviewUpdateInput,
-  WorkerScriptPreviewUpdateResult,
   ProxyUsageInput,
 } from './auth';
 import {
@@ -15,7 +13,6 @@ import {
   validateAndConsumeAuthState,
   createWorkerAuthToken,
   validateAndConsumeAuthToken,
-  createScreenshotToken,
   createDispatcherSession,
   getDispatcherSession,
   touchDispatcherSession,
@@ -2159,22 +2156,6 @@ export class DoRpcService extends WorkerEntrypoint<DoRpcEnv> {
       );
     }
     return script;
-  }
-
-  async updateWorkerScriptPreview(
-    orgId: string,
-    scriptName: string,
-    input: WorkerScriptPreviewUpdateInput
-  ): Promise<WorkerScriptPreviewUpdateResult> {
-    using orgStub = asDisposable(this.env.ORG.get(this.env.ORG.idFromName(orgId)));
-    return orgStub.updateWorkerScriptPreview(scriptName, input);
-  }
-
-  async createScreenshotToken(orgId: string, scriptName: string): Promise<string> {
-    return createScreenshotToken(this.env.API_TOKENS, {
-      script_name: scriptName,
-      org_id: orgId,
-    });
   }
 
   /**
