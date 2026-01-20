@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-19-v2-shutdown-logging
+# Version: 2026-01-19-v3-r2-upload-first
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -31,6 +31,21 @@ has_r2_config() {
 cleanup() {
   echo "[entrypoint] Shutting down... (reason: ${SHUTDOWN_REASON:-unknown})" >&2
 
+  # CRITICAL: Upload workspace to R2 FIRST - this is the most important step
+  # CF may send SIGKILL shortly after SIGTERM, so we need to prioritize the backup
+  # Services will die when container dies anyway
+  if has_r2_config && [ "${R2_MOUNT_READONLY:-}" != "1" ] && [ "${R2_MOUNT_READONLY:-}" != "true" ]; then
+    echo "[entrypoint] Uploading snapshot to R2 (priority)..." >&2
+    if node /app/sync.mjs upload "$TARGET_DIR"; then
+      echo "[entrypoint] Upload complete." >&2
+    else
+      echo "[entrypoint] Upload FAILED!" >&2
+    fi
+  else
+    echo "[entrypoint] Skipping R2 upload (readonly=${R2_MOUNT_READONLY:-unset}, has_config=$(has_r2_config && echo yes || echo no))" >&2
+  fi
+
+  # Now clean up services (less critical - they die with the container anyway)
   # Kill ws-server if running
   if [ -n "${WS_PID:-}" ] && kill -0 "$WS_PID" 2>/dev/null; then
     echo "[entrypoint] Stopping ws-server (PID: $WS_PID)..." >&2
@@ -52,13 +67,6 @@ cleanup() {
   # Unmount R2 goofys mounts
   fusermount -u /mnt/user-uploads 2>/dev/null || true
   fusermount -u /mnt/user-outputs 2>/dev/null || true
-
-  # Upload workspace to R2
-  if has_r2_config && [ "${R2_MOUNT_READONLY:-}" != "1" ] && [ "${R2_MOUNT_READONLY:-}" != "true" ]; then
-    echo "[entrypoint] Uploading snapshot to R2..." >&2
-    node /app/sync.mjs upload "$TARGET_DIR" || true
-    echo "[entrypoint] Upload complete." >&2
-  fi
 
   echo "[entrypoint] Shutdown complete." >&2
 }
