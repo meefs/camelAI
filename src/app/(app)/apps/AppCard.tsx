@@ -177,7 +177,7 @@ export function AppCard({
               ref={previewRef}
               src={previewUrl ?? undefined}
               alt={`${app.script_name} preview`}
-              className={`h-full w-full object-cover transition-opacity duration-300 ${previewLoaded ? 'opacity-100' : 'opacity-0'}`}
+              className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${previewLoaded ? 'opacity-100' : 'opacity-0'}`}
               loading="lazy"
               decoding="async"
               onLoad={() => setPreviewLoaded(true)}
