@@ -214,160 +214,180 @@ export default function ConnectionsClient({
                 </CardContent>
               </Card>
             ) : (
-              <Tabs defaultValue={categories[0]} className="mt-6">
-                <TabsList>
-                  {categories.map((category) => (
-                    <TabsTrigger key={category} value={category}>
-                      {categoryLabels[category] || category}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-                {categories.map((category) => {
-                  const filteredConnections = connections.filter(
-                    (connection) =>
-                      getTypeDefinition(connection.integration_type)?.category === category
-                  );
-
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
+                {connections.map((connection) => {
+                  const typeDef = getTypeDefinition(connection.integration_type);
+                  const hasIcon = hasIntegrationIcon(connection.integration_type);
                   return (
-                    <TabsContent key={category} value={category} className="mt-4 space-y-4">
-                      {filteredConnections.length === 0 ? (
-                        <Card className="border-dashed">
-                          <CardHeader>
-                            <CardTitle>No connections</CardTitle>
-                            <CardDescription>
-                              Add a {categoryLabels[category] || category} connection to get started.
-                            </CardDescription>
-                          </CardHeader>
-                          <CardContent>
-                            {isAdmin ? (
-                              <Button onClick={() => setPickerOpen(true)}>
-                                <Plus className="mr-2 size-4" />
-                                Add connection
-                              </Button>
+                    <Card key={connection.id}>
+                      <CardHeader className="flex flex-row items-start justify-between gap-4">
+                        <div className="flex items-start gap-3">
+                          <div className="flex size-10 items-center justify-center rounded-lg border">
+                            {hasIcon ? (
+                              <IntegrationIcon
+                                type={connection.integration_type}
+                                className="size-5"
+                              />
                             ) : (
-                              <p className="text-sm text-muted-foreground">
-                                Only admins can add connections.
-                              </p>
+                              <Settings className="size-5" />
                             )}
-                          </CardContent>
-                        </Card>
-                      ) : (
-                        <div className="grid gap-4 md:grid-cols-2">
-                          {filteredConnections.map((connection) => {
-                            const typeDef = getTypeDefinition(connection.integration_type);
-                            const hasIcon = hasIntegrationIcon(connection.integration_type);
-                            return (
-                              <Card key={connection.id}>
-                                <CardHeader className="flex flex-row items-start justify-between gap-4">
-                                  <div className="flex items-start gap-3">
-                                    <div className="flex size-10 items-center justify-center rounded-lg border">
-                                      {hasIcon ? (
-                                        <IntegrationIcon
-                                          type={connection.integration_type}
-                                          className="size-5"
-                                        />
-                                      ) : (
-                                        <Settings className="size-5" />
-                                      )}
-                                    </div>
-                                    <div>
-                                      <CardTitle>{connection.name}</CardTitle>
-                                      <CardDescription>
-                                        {typeDef?.displayName || connection.integration_type}
-                                      </CardDescription>
-                                    </div>
-                                  </div>
-                                  <Badge variant={connection.enabled ? 'default' : 'outline'}>
-                                    {connection.enabled ? 'Enabled' : 'Disabled'}
-                                  </Badge>
-                                </CardHeader>
-                                <CardContent className="space-y-4">
-                                  <div className="flex items-center justify-between text-sm text-muted-foreground">
-                                    <span>Last updated</span>
-                                    <span>
-                                      {new Date(connection.updated_at).toLocaleDateString()}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-2 text-sm">
-                                      <span>Enabled</span>
-                                      <Switch
-                                        checked={connection.enabled}
-                                        onCheckedChange={() => handleToggleEnabled(connection)}
-                                        disabled={!isAdmin}
-                                      />
-                                    </div>
-                                    {isAdmin && (
-                                      <div className="flex items-center gap-2">
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          onClick={() => handleEditClick(connection)}
-                                        >
-                                          <Settings className="mr-2 size-3.5" />
-                                          Configure
-                                        </Button>
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          className="text-destructive hover:text-destructive"
-                                          onClick={() => setDeleteTarget(connection)}
-                                        >
-                                          <Trash2 className="size-4" />
-                                        </Button>
-                                      </div>
-                                    )}
-                                  </div>
-                                </CardContent>
-                              </Card>
-                            );
-                          })}
+                          </div>
+                          <div>
+                            <CardTitle>{connection.name}</CardTitle>
+                            <CardDescription>
+                              {typeDef?.displayName || connection.integration_type}
+                            </CardDescription>
+                          </div>
                         </div>
-                      )}
-                    </TabsContent>
+                        <Badge variant={connection.enabled ? 'default' : 'outline'}>
+                          {connection.enabled ? 'Enabled' : 'Disabled'}
+                        </Badge>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="flex items-center justify-between text-sm text-muted-foreground">
+                          <span>Last updated</span>
+                          <span>
+                            {new Date(connection.updated_at).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-sm">
+                            <span>Enabled</span>
+                            <Switch
+                              checked={connection.enabled}
+                              onCheckedChange={() => handleToggleEnabled(connection)}
+                              disabled={!isAdmin}
+                            />
+                          </div>
+                          {isAdmin && (
+                            <div className="flex items-center gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleEditClick(connection)}
+                              >
+                                <Settings className="mr-2 size-3.5" />
+                                Configure
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="text-destructive hover:text-destructive"
+                                onClick={() => setDeleteTarget(connection)}
+                              >
+                                <Trash2 className="size-4" />
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
                   );
                 })}
-              </Tabs>
+              </div>
             )}
           </div>
         </ScrollArea>
       </div>
 
       <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-4xl">
           <DialogHeader>
-            <DialogTitle>Choose a connection</DialogTitle>
+            <DialogTitle>Add a connection</DialogTitle>
             <DialogDescription>
-              Pick a service to connect with Chiridion.
+              Choose a service to connect. You&apos;ll configure credentials next.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {connectionTypes.map((type) => {
-              const hasIcon = hasIntegrationIcon(type.type);
-              return (
-                <button
-                  key={type.type}
-                  type="button"
-                  className="flex items-center gap-3 rounded-lg border border-border p-3 text-left transition hover:border-primary/50"
-                  onClick={() => handleAddClick(type.type)}
-                >
-                  <div className="flex size-10 items-center justify-center rounded-lg bg-muted">
-                    {hasIcon ? (
-                      <IntegrationIcon type={type.type} className="size-5" />
-                    ) : (
-                      <Settings className="size-5" />
-                    )}
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium">{type.displayName}</p>
-                    <p className="text-xs text-muted-foreground line-clamp-2">
-                      {type.description}
-                    </p>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+          {connectionTypes.length === 0 ? (
+            <div className="py-6 text-sm text-muted-foreground">
+              No connection types are available right now.
+            </div>
+          ) : (
+            <Tabs defaultValue="all" className="w-full min-w-0">
+              <div className="mb-4 w-full min-w-0 overflow-x-auto overflow-y-hidden">
+                <TabsList className="w-max justify-start">
+                  <TabsTrigger value="all" className="flex-none">
+                    All
+                  </TabsTrigger>
+                  {categories.map((category) => (
+                    <TabsTrigger key={category} value={category} className="flex-none">
+                      {categoryLabels[category] || category}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
+              <ScrollArea className="max-h-[60vh] pr-4 overflow-x-hidden">
+                <div className="min-w-0 p-1">
+                  <TabsContent value="all" className="mt-0">
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {connectionTypes.map((type) => {
+                        const hasIcon = hasIntegrationIcon(type.type);
+                        return (
+                          <button
+                            key={type.type}
+                            onClick={() => handleAddClick(type.type)}
+                            className="flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
+                          >
+                            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                              {hasIcon ? (
+                                <IntegrationIcon type={type.type} className="size-5" />
+                              ) : (
+                                <Settings className="size-5" />
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm font-medium">
+                                {type.displayName}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {type.authMethod === 'oauth2' ? 'OAuth' : 'API Key'}
+                              </div>
+                            </div>
+                            <Plus className="size-4 shrink-0 text-muted-foreground" />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </TabsContent>
+                  {categories.map((category) => (
+                    <TabsContent key={category} value={category} className="mt-0">
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        {connectionTypes
+                          .filter((type) => type.category === category)
+                          .map((type) => {
+                            const hasIcon = hasIntegrationIcon(type.type);
+                            return (
+                              <button
+                                key={type.type}
+                                onClick={() => handleAddClick(type.type)}
+                                className="flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
+                              >
+                                <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                                  {hasIcon ? (
+                                    <IntegrationIcon type={type.type} className="size-5" />
+                                  ) : (
+                                    <Settings className="size-5" />
+                                  )}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-sm font-medium">
+                                    {type.displayName}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {type.authMethod === 'oauth2' ? 'OAuth' : 'API Key'}
+                                  </div>
+                                </div>
+                                <Plus className="size-4 shrink-0 text-muted-foreground" />
+                              </button>
+                            );
+                          })}
+                      </div>
+                    </TabsContent>
+                  ))}
+                </div>
+              </ScrollArea>
+            </Tabs>
+          )}
         </DialogContent>
       </Dialog>
 
