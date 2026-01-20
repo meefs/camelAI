@@ -6,7 +6,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-19-v3-r2-upload-first
+# Version: 2026-01-19-v4-r2-debug-logging
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -33,15 +33,16 @@ cleanup() {
 
   # CRITICAL: Upload workspace to R2 FIRST - this is the most important step
   # CF may send SIGKILL shortly after SIGTERM, so we need to prioritize the backup
+  echo "[entrypoint] R2 config check: BUCKET=${R2_BUCKET_NAME:-unset} ACCOUNT=${R2_ACCOUNT_ID:-unset} KEY=${AWS_ACCESS_KEY_ID:+set} SECRET=${AWS_SECRET_ACCESS_KEY:+set}" >&2
   if has_r2_config; then
     echo "[entrypoint] Uploading snapshot to R2..." >&2
     if node /app/sync.mjs upload "$TARGET_DIR"; then
       echo "[entrypoint] Upload complete." >&2
     else
-      echo "[entrypoint] Upload FAILED!" >&2
+      echo "[entrypoint] Upload FAILED (exit code: $?)!" >&2
     fi
   else
-    echo "[entrypoint] Skipping R2 upload (no credentials configured)" >&2
+    echo "[entrypoint] Skipping R2 upload (missing credentials)" >&2
   fi
 
   # Now clean up services (less critical - they die with the container anyway)
