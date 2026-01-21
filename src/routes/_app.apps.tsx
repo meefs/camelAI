@@ -10,6 +10,7 @@ import {
   type AuthEnv,
 } from '@/lib/auth-do';
 import AppsClient from '@/components/pages/apps/apps-client';
+import { AppsLoadingSkeleton } from '@/components/pages/apps/apps-loading';
 import type { WorkerScriptWithCreator } from '@/types';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
@@ -165,4 +166,8 @@ export default function AppsPage() {
       initialNow={renderedAt}
     />
   );
+}
+
+export function HydrateFallback() {
+  return <AppsLoadingSkeleton />;
 }

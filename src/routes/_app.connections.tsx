@@ -6,6 +6,7 @@ import { INTEGRATION_REGISTRY, getIntegrationDefinition } from '@/lib/integratio
 import { encryptCredentials } from '@/lib/integration-crypto';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
 import ConnectionsClient from '@/components/pages/connections/connections-client';
+import { ConnectionsLoadingSkeleton } from '@/components/pages/connections/connections-loading';
 import type { Integration } from '@/types';
 
 function getWorkspaceStub(env: CloudflareEnv, workspaceId: string): WorkspaceDO {
@@ -202,4 +203,8 @@ export default function ConnectionsPage() {
       orgId={orgId}
     />
   );
+}
+
+export function HydrateFallback() {
+  return <ConnectionsLoadingSkeleton />;
 }

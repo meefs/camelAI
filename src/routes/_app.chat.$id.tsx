@@ -3,6 +3,7 @@ import type { Route } from './+types/_app.chat.$id';
 import { requireAuthContext } from '@/lib/auth.server';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
+import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || 'Chat';
@@ -100,4 +101,8 @@ export default function ChatPage() {
       hostname={hostname}
     />
   );
+}
+
+export function HydrateFallback() {
+  return <ChatLoadingSkeleton />;
 }

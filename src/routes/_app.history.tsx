@@ -5,6 +5,7 @@ import * as chatDO from '@/lib/chat-do.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { getUserById, type AuthEnv } from '@/lib/auth-do';
 import HistoryClient from '@/components/pages/history/history-client';
+import { HistoryLoadingSkeleton } from '@/components/history/history-loading';
 import type { User } from '@/types';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
@@ -156,4 +157,8 @@ export default function HistoryPage() {
       initialOrgId={orgId}
     />
   );
+}
+
+export function HydrateFallback() {
+  return <HistoryLoadingSkeleton />;
 }
