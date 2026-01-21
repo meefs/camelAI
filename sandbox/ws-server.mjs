@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-19-sandbox-v17-single-line-logs';
+const VERSION = '2026-01-21-sandbox-v18-event-debug';
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {
@@ -395,24 +395,30 @@ The infrastructure is already configured for Worker deployments. For fullstack a
 
 // Async generator that yields user messages on demand
 async function* createMessageStream(session) {
+  log('[ws-server]', 'Message stream generator started', { threadId: session.threadId });
   while (true) {
     // Check queue first for any buffered messages
     let message;
     if (session.messageQueue.length > 0) {
       message = session.messageQueue.shift();
+      log('[ws-server]', 'Message stream: dequeued message', { threadId: session.threadId, remainingQueue: session.messageQueue.length });
     } else {
       // Wait for next message
+      log('[ws-server]', 'Message stream: waiting for message', { threadId: session.threadId });
       message = await new Promise((resolve) => {
         session.messageResolver = resolve;
       });
+      log('[ws-server]', 'Message stream: received message', { threadId: session.threadId });
     }
 
     if (message === null) {
       // Signal to stop
+      log('[ws-server]', 'Message stream: received null, stopping', { threadId: session.threadId });
       return;
     }
 
     // Yield the user message
+    log('[ws-server]', 'Message stream: yielding user message', { threadId: session.threadId, messageLength: message?.length });
     yield {
       type: 'user',
       session_id: session.threadId || '',
@@ -487,14 +493,28 @@ function attachSession(ws, session, lastEventId) {
 
 // Initialize the stateful query session
 function initSession(session) {
-  if (session.activeQuery) return;
+  if (session.activeQuery) {
+    log('[ws-server]', 'Session already initialized', { threadId: session.threadId });
+    return;
+  }
+
+  log('[ws-server]', 'Initializing session', { threadId: session.threadId });
 
   try {
     const options = getQueryOptions(session);
+    log('[ws-server]', 'Query options', {
+      threadId: session.threadId,
+      hasResume: !!options.resume,
+      hasSessionId: !!options.extraArgs?.['session-id'],
+      model: options.model,
+      fallbackModel: options.fallbackModel,
+    });
     const messageStream = createMessageStream(session);
 
+    log('[ws-server]', 'Calling SDK query()', { threadId: session.threadId });
     session.activeQuery = query({ prompt: messageStream, options });
     session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
+    log('[ws-server]', 'SDK query() returned, iterator ready', { threadId: session.threadId });
   } catch (error) {
     logError('[ws-server]', 'Failed to init:', summarizeError(error));
     bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
@@ -509,14 +529,30 @@ function startEventLoop(session) {
 
   (async () => {
     let exitReason = 'unknown';
+    let eventCount = 0;
     try {
       while (true) {
+        log('[ws-server]', 'Awaiting next SDK event', { threadId: session.threadId, eventCount });
         const { value: event, done } = await session.queryIterator.next();
+        eventCount++;
 
         if (done) {
           exitReason = 'iterator_done';
+          log('[ws-server]', 'SDK iterator done', { threadId: session.threadId, eventCount });
           break;
         }
+
+        // Log detailed event info for debugging
+        const eventSummary = {
+          type: event?.type,
+          subtype: event?.subtype,
+          eventType: event?.event?.type,
+          hasMessage: !!event?.message,
+          messageRole: event?.message?.role,
+          contentLength: Array.isArray(event?.message?.content) ? event.message.content.length : undefined,
+          contentTypes: Array.isArray(event?.message?.content) ? event.message.content.map(c => c?.type) : undefined,
+        };
+        log('[ws-server]', 'SDK event received', { threadId: session.threadId, eventCount, ...eventSummary });
 
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
@@ -576,6 +612,14 @@ function handleUserMessage(session, content, userInfo = null) {
   const authorPrefix = formatAuthorPrefix(userInfo?.userName, userInfo?.userEmail);
   const attributedContent = authorPrefix + content;
 
+  log('[ws-server]', 'handleUserMessage', {
+    threadId: session.threadId,
+    contentLength: content?.length,
+    hasResolver: !!session.messageResolver,
+    queueLength: session.messageQueue?.length || 0,
+    eventLoopRunning: session.eventLoopRunning,
+  });
+
   void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content: attributedContent, author: userInfo });
   // Initialize session if needed
   initSession(session);
@@ -586,11 +630,13 @@ function handleUserMessage(session, content, userInfo = null) {
   // Feed message to the generator
   // Messages are persisted by Claude SDK in ~/.claude/projects/.../session.jsonl
   if (session.messageResolver) {
+    log('[ws-server]', 'Resolving message immediately', { threadId: session.threadId });
     const resolver = session.messageResolver;
     session.messageResolver = null;
     resolver(attributedContent);
   } else {
     // Queue message - will be picked up when generator pulls
+    log('[ws-server]', 'Queueing message', { threadId: session.threadId, newQueueLength: session.messageQueue.length + 1 });
     session.messageQueue.push(attributedContent);
   }
 }
