@@ -65,10 +65,19 @@ COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
 COPY sandbox/skills ./skills
 RUN chmod -R a+rX /app
 
-# Layer 6: create-worker CLI (scaffolds projects from templates)
+# Layer 6: Pre-install template dependencies (with Verdaccio for custom wrangler)
+RUN bash -c '\
+  verdaccio --config /verdaccio/config.yaml & \
+  sleep 2 && \
+  cd /app/skills/deploy-software/templates/react-router && \
+  npm install && \
+  pkill -f verdaccio || true \
+'
+
+# Layer 7: create-worker CLI (scaffolds projects from templates)
 RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker
 
-# Layer 7: Configure bun/npm to use local Verdaccio registry
+# Layer 8: Configure bun/npm to use local Verdaccio registry
 # This ensures all wrangler installs get our chiridion-wrangler
 # Must configure for both root (build time) and claude user (runtime)
 RUN echo 'registry = "http://localhost:4873"' > /root/.bunfig.toml \

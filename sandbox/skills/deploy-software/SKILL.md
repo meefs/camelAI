@@ -22,27 +22,35 @@ This skill guides deployment of production software to Cloudflare's edge network
 Use the `create-worker` command to scaffold new projects. Do NOT use `wrangler init` or `npm create cloudflare`.
 
 ```bash
-# Create a fullstack React app (recommended)
-create-worker react-vite my-app
+# Create a fullstack React app with defaults
+create-worker my-app
+
+# Customize the UI style and theme
+create-worker my-app --style nova --theme blue
 
 # Create with authentication boilerplate
-create-worker react-vite my-app --auth
+create-worker my-app --auth
 
-# See available templates
+# Full customization example
+create-worker my-app --style lyra --theme emerald --icons tabler --font figtree --radius large
+
+# See all options
 create-worker --help
 ```
 
-### Available Templates
+### Style Options
 
-| Template | Description |
-|----------|-------------|
-| `react-vite` | React app with Vite, React Router, Tailwind CSS v4, and shadcn/ui pre-configured |
-
-### Template Options
-
-| Option | Description |
-|--------|-------------|
-| `--auth` | Add session-based authentication with login page and auth API routes |
+| Option | Values | Default | Description |
+|--------|--------|---------|-------------|
+| `--style` | vega, nova, maia, lyra, mira | mira | UI style preset |
+| `--theme` | neutral, amber, blue, cyan, emerald, fuchsia, green, indigo, lime, orange, pink, purple, red, rose, sky, teal, violet, yellow, zinc, gray, stone | neutral | Theme color |
+| `--base-color` | neutral, zinc, gray, stone | neutral | Base gray color (must match theme if theme is zinc/gray/stone) |
+| `--icons` | lucide, tabler, hugeicons, phosphor, remixicon | lucide | Icon library |
+| `--font` | inter, noto-sans, nunito-sans, figtree | inter | Font family |
+| `--radius` | default, none, small, medium, large | default | Border radius |
+| `--menu-color` | default, inverted | default | Menu color style |
+| `--menu-accent` | subtle, bold | subtle | Menu accent style |
+| `--auth` | - | - | Add session-based authentication with login page and auth API routes |
 
 ## Deployment Commands
 
@@ -285,11 +293,14 @@ for (const socket of roomSockets) {
 For fullstack applications, use the `create-worker` command:
 
 ```bash
-# Create React app with Vite (recommended)
-create-worker react-vite my-app
+# Create React app with Vite
+create-worker my-app
+
+# Or with custom styling
+create-worker my-app --style nova --theme blue
 
 # Or with authentication
-create-worker react-vite my-app --auth
+create-worker my-app --auth
 
 cd my-app
 npm install
