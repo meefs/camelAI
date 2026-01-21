@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 import type { Organization } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,7 +14,7 @@ interface OrgEditFormProps {
 }
 
 export function OrgEditForm({ org }: OrgEditFormProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [name, setName] = useState(org.name);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +30,7 @@ export function OrgEditForm({ org }: OrgEditFormProps) {
       await updateAdminOrg(org.id, { name });
 
       setSuccess(true);
-      router.refresh();
+      // TODO: implement refresh;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

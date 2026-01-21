@@ -1,11 +1,20 @@
-// Custom worker that wraps OpenNext and handles WebSocket + Durable Objects
-// @ts-ignore - .open-next/worker.js is generated at build time
-import openNextHandler from "../../../.open-next/worker.js";
+// Custom worker that wraps React Router SSR and handles WebSocket + Durable Objects
+import { createRequestHandler } from 'react-router';
 import { ChatThreadDO, type ChatEnv } from "./durable-objects.js";
-import { UserDO, OrgDO, type AuthEnv } from "./auth.js";
+
+// Extend React Router's AppLoadContext with Cloudflare bindings
+declare module "react-router" {
+  export interface AppLoadContext {
+    cloudflare: {
+      env: Env;
+      ctx: ExecutionContext;
+    };
+  }
+}
+import { UserDO, OrgDO, type AuthEnv, type OAuthProvider as AuthOAuthProvider } from "./auth.js";
 import { WorkspaceContainer, handleWebSocketUpgrade, type WorkspaceContainerEnv } from './workspace-container.js';
-import { WorkspaceDO } from './workspace.js';
-import { getSession as getSessionKV } from './session-kv.js';
+import { WorkspaceDO, type WorkspaceInfo } from './workspace.js';
+import { getSession as getSessionKV, createSession } from './session-kv.js';
 import { createScreenshotToken } from './worker-auth.js';
 import {
   proxyCloudflareApi,
@@ -18,7 +27,15 @@ import {
 import { handleMcpRequest, ChiridionMcp, type McpEnv } from './mcp-handler.js';
 import { isSignedToken, validateSignedToken, createSignedToken } from './signed-tokens.js';
 import { handleScreenshotQueue, captureScreenshot, type AppScreenshotJob } from './screenshot-queue.js';
-export { DoRpcService } from './rpc-service.js';
+import { createOAuthState, validateAndConsumeOAuthState } from './oauth-state.js';
+import {
+  isValidOAuthProvider,
+  buildAuthorizationUrl,
+  exchangeCodeForTokens,
+  fetchUserInfo,
+  OAUTH_PROVIDERS,
+  type OAuthProvider,
+} from '../../../src/lib/oauth-config.js';
 export { ChiridionMcp } from './mcp-handler.js';
 
 // Export WorkspaceContainer as ThreadSandbox to match wrangler.jsonc class_name
@@ -40,11 +57,16 @@ interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv, CfApiProxyEnv, Mc
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   SESSIONS: KVNamespace;
-  NEXTJS_ENV?: string;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
   BROWSER?: Fetcher;
   LOCAL_APP_PREVIEW_URL?: string;
+  PROXY?: Fetcher;
+  // OAuth
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
 }
 
 const CHIRIDION_THREAD_TOKEN_HEADER = 'X-Chiridion-Thread-Deploy-Token';
@@ -195,6 +217,39 @@ export default {
       return handleMcpRequest(request, env, ctx);
     }
 
+    // LLM Proxy passthrough at /v1/messages (forwards to PROXY service binding)
+    // This allows sandbox containers to use PROXY_BASE_URL pointing to the main worker
+    if (url.pathname === '/v1/messages' || url.pathname === '/v1/messages/') {
+      if (!env.PROXY) {
+        return new Response(JSON.stringify({ error: 'Proxy service not configured' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      // Forward the request to the proxy worker
+      const proxyUrl = new URL('/v1/messages', 'https://proxy.internal');
+      return env.PROXY.fetch(new Request(proxyUrl, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+      }));
+    }
+
+    // Proxy health check passthrough
+    if (url.pathname === '/proxy/health') {
+      if (!env.PROXY) {
+        return new Response(JSON.stringify({ ok: false, error: 'Proxy service not configured' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const proxyUrl = new URL('/health', 'https://proxy.internal');
+      return env.PROXY.fetch(new Request(proxyUrl, {
+        method: 'GET',
+        headers: request.headers,
+      }));
+    }
+
     // Handle WebSocket upgrade for thread preview state at /ws/thread/{threadId}
     const threadWsMatch = url.pathname.match(/^\/ws\/thread\/([^\/]+)$/);
     if (threadWsMatch && request.headers.get('Upgrade') === 'websocket') {
@@ -220,15 +275,16 @@ export default {
       }
 
       // Verify thread belongs to user's workspace (prevents cross-tenant leak)
-      // Use RPC service since threads are now stored in OrgDO
-      const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
-      let thread;
-      try {
-        thread = await (rpc as any).getThread(threadId, workspaceId);
-      } finally {
-        rpc[Symbol.dispose]?.();
+      // Get workspace info to find org_id, then check thread in OrgDO
+      const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as unknown as WorkspaceDO;
+      const workspaceInfo = await workspaceStub.getInfo();
+      if (!workspaceInfo || workspaceInfo.archived) {
+        return new Response('Workspace not found', { status: 404 });
       }
-      if (!thread) {
+
+      const orgStub = env.ORG.get(env.ORG.idFromName(workspaceInfo.org_id)) as unknown as OrgDO;
+      const thread = orgStub.getThread(threadId);
+      if (!thread || thread.workspace_id !== workspaceId) {
         return new Response('Thread not found', { status: 404 });
       }
 
@@ -284,11 +340,18 @@ export default {
 
       let accessLevel: 'full' | 'read_only' | 'none' = 'none';
       try {
-        const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
-        try {
-          accessLevel = await (rpc as any).getWorkspaceAccess(workspaceId, session.user_id);
-        } finally {
-          rpc[Symbol.dispose]?.();
+        // Get workspace info and check access directly
+        const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as unknown as WorkspaceDO;
+        const wsInfo = await workspaceStub.getInfo();
+        if (wsInfo && !wsInfo.archived) {
+          // Check if user is a member of the org
+          const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id)) as unknown as OrgDO;
+          const orgInfo = await orgStub.getInfo();
+          if (orgInfo && !orgInfo.archived && orgStub.isMember(session.user_id)) {
+            // Get workspace-specific access level
+            const memberAccess = await workspaceStub.getMemberAccess(session.user_id);
+            accessLevel = memberAccess?.access_level ?? 'full';
+          }
         }
       } catch (err) {
         console.warn('[ws] Failed to resolve workspace access', {
@@ -321,20 +384,25 @@ export default {
       let userEmail: string;
       let validatedThreadId: string | null = null;
       try {
-        const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
-        try {
-          const userProfile = await rpc.getUserById(session.user_id);
-          if (!userProfile) {
-            console.error('[ws] User profile not found', { userId: session.user_id });
-            return new Response('User not found', { status: 404 });
-          }
-          userName = userProfile.name;
-          userEmail = userProfile.email;
+        // Get user profile directly from UserDO
+        const userStub = env.USER.get(env.USER.idFromName(session.user_id)) as unknown as UserDO;
+        const userProfile = await userStub.getProfile();
+        if (!userProfile) {
+          console.error('[ws] User profile not found', { userId: session.user_id });
+          return new Response('User not found', { status: 404 });
+        }
+        userName = userProfile.name;
+        userEmail = userProfile.email;
 
-          // Validate threadId belongs to this workspace before including in deploy token
-          if (threadIdFromUrl) {
-            const thread = await rpc.getThread(threadIdFromUrl, workspaceId);
-            if (thread) {
+        // Validate threadId belongs to this workspace before including in deploy token
+        if (threadIdFromUrl) {
+          // Get workspace info to find org_id
+          const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as unknown as WorkspaceDO;
+          const wsInfo = await workspaceStub.getInfo();
+          if (wsInfo && !wsInfo.archived) {
+            const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id)) as unknown as OrgDO;
+            const thread = orgStub.getThread(threadIdFromUrl);
+            if (thread && thread.workspace_id === workspaceId) {
               validatedThreadId = threadIdFromUrl;
             } else {
               console.warn('[ws] Thread not found or not in workspace, skipping thread token', {
@@ -344,8 +412,6 @@ export default {
               });
             }
           }
-        } finally {
-          rpc[Symbol.dispose]?.();
         }
       } catch (err) {
         console.error('[ws] Failed to fetch user info', {
@@ -476,11 +542,245 @@ export default {
       }
     }
 
-    // Pass all other requests to OpenNext/Next.js if dev env var is not set
-	if (env.NEXTJS_ENV == 'development') {
-	  return new Response('Not Found', { status: 404 });
-	}
-    return openNextHandler.fetch(request, env, ctx);
+    // OAuth initiation: /api/auth/{provider}
+    const oauthInitMatch = url.pathname.match(/^\/api\/auth\/(google|github)$/);
+    if (oauthInitMatch && request.method === 'GET') {
+      const provider = oauthInitMatch[1] as OAuthProvider;
+
+      if (!isValidOAuthProvider(provider)) {
+        return new Response('Invalid OAuth provider', { status: 400 });
+      }
+
+      const config = OAUTH_PROVIDERS[provider];
+      const clientId = env[config.clientIdEnvVar as keyof Env] as string | undefined;
+
+      if (!clientId) {
+        console.error(`[oauth] Missing ${config.clientIdEnvVar} env var`);
+        return new Response(`${config.displayName} OAuth is not configured`, { status: 500 });
+      }
+
+      // Get redirect URL from query param (where to send user after auth)
+      const redirectTo = url.searchParams.get('redirect') || '/';
+
+      // Build callback URL
+      const callbackUrl = `${url.origin}/api/auth/${provider}/callback`;
+
+      // Create state for CSRF protection
+      const state = await createOAuthState(env.SESSIONS, provider, redirectTo);
+
+      // Build authorization URL and redirect
+      const authUrl = buildAuthorizationUrl(provider, clientId, callbackUrl, state);
+
+      return new Response(null, {
+        status: 302,
+        headers: { Location: authUrl },
+      });
+    }
+
+    // OAuth callback: /api/auth/{provider}/callback
+    const oauthCallbackMatch = url.pathname.match(/^\/api\/auth\/(google|github)\/callback$/);
+    if (oauthCallbackMatch && request.method === 'GET') {
+      const provider = oauthCallbackMatch[1] as OAuthProvider;
+
+      if (!isValidOAuthProvider(provider)) {
+        return new Response('Invalid OAuth provider', { status: 400 });
+      }
+
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      const error = url.searchParams.get('error');
+
+      if (error) {
+        console.error(`[oauth] Provider returned error: ${error}`);
+        return Response.redirect(`${url.origin}/login?error=oauth_denied`, 302);
+      }
+
+      if (!code || !state) {
+        return Response.redirect(`${url.origin}/login?error=oauth_invalid`, 302);
+      }
+
+      // Validate and consume state
+      const stateData = await validateAndConsumeOAuthState(env.SESSIONS, state);
+      if (!stateData || stateData.provider !== provider) {
+        return Response.redirect(`${url.origin}/login?error=oauth_state_invalid`, 302);
+      }
+
+      const config = OAUTH_PROVIDERS[provider];
+      const clientId = env[config.clientIdEnvVar as keyof Env] as string | undefined;
+      const clientSecret = env[config.clientSecretEnvVar as keyof Env] as string | undefined;
+
+      if (!clientId || !clientSecret) {
+        console.error(`[oauth] Missing OAuth credentials for ${provider}`);
+        return Response.redirect(`${url.origin}/login?error=oauth_config`, 302);
+      }
+
+      const callbackUrl = `${url.origin}/api/auth/${provider}/callback`;
+
+      try {
+        // Exchange code for tokens
+        const tokens = await exchangeCodeForTokens(provider, code, clientId, clientSecret, callbackUrl);
+
+        // Fetch user info
+        const userInfo = await fetchUserInfo(provider, tokens.access_token);
+
+        // Find or create user using direct DO calls
+        const normalizedEmail = userInfo.email.toLowerCase();
+        const emailKvKey = `email:${normalizedEmail}`;
+        const oauthKvKey = `oauth:${provider}:${userInfo.providerId}`;
+        let userId: string;
+
+        // Try to find existing user by email
+        const existingUserId = await env.EMAIL_TO_USER.get(emailKvKey);
+
+        if (existingUserId) {
+          userId = existingUserId;
+          // Update OAuth provider info if needed (link if not already linked)
+          const existingOAuthUserId = await env.EMAIL_TO_USER.get(oauthKvKey);
+          if (!existingOAuthUserId || existingOAuthUserId === userId) {
+            await env.EMAIL_TO_USER.put(oauthKvKey, userId);
+            const userStub = env.USER.get(env.USER.idFromName(userId)) as unknown as UserDO;
+            await userStub.linkOAuthProvider(provider, userInfo.providerId);
+          }
+        } else {
+          // Create new user - claim email and OAuth provider in KV first
+          userId = crypto.randomUUID();
+
+          // Check if OAuth provider already linked to another user
+          const existingOAuthUser = await env.EMAIL_TO_USER.get(oauthKvKey);
+          if (existingOAuthUser) {
+            return Response.redirect(`${url.origin}/login?error=oauth_already_linked`, 302);
+          }
+
+          // Claim the email and OAuth provider
+          await Promise.all([
+            env.EMAIL_TO_USER.put(emailKvKey, userId),
+            env.EMAIL_TO_USER.put(oauthKvKey, userId),
+          ]);
+
+          // Verify we still own them (handle race condition)
+          const [verifyEmail, verifyOAuth] = await Promise.all([
+            env.EMAIL_TO_USER.get(emailKvKey),
+            env.EMAIL_TO_USER.get(oauthKvKey),
+          ]);
+
+          if (verifyEmail !== userId || verifyOAuth !== userId) {
+            // Clean up and abort - another request won the race
+            await Promise.all([
+              env.EMAIL_TO_USER.delete(emailKvKey),
+              env.EMAIL_TO_USER.delete(oauthKvKey),
+            ]);
+            return Response.redirect(`${url.origin}/login?error=oauth_race_condition`, 302);
+          }
+
+          // Create user in DO
+          const userStub = env.USER.get(env.USER.idFromName(userId)) as unknown as UserDO;
+          await userStub.createUserFromOAuth(
+            userId,
+            normalizedEmail,
+            userInfo.name || userInfo.email.split('@')[0],
+            provider,
+            userInfo.providerId
+          );
+        }
+
+        // Create session - get user's orgs
+        const sessionId = crypto.randomUUID();
+        let sessionOrgId: string;
+        let sessionWorkspaceId: string | null = null;
+
+        const userStub = env.USER.get(env.USER.idFromName(userId)) as unknown as UserDO;
+        const userOrgs = await userStub.getOrgs();
+
+        if (userOrgs.length === 0) {
+          // Create default org for new user (also creates default workspace)
+          const orgId = crypto.randomUUID();
+          const orgStub = env.ORG.get(env.ORG.idFromName(orgId)) as unknown as OrgDO;
+          const { defaultWorkspaceId } = await orgStub.createOrg(
+            orgId,
+            `${userInfo.name || userInfo.email}'s Workspace`,
+            userId
+          );
+          sessionOrgId = orgId;
+          sessionWorkspaceId = defaultWorkspaceId;
+
+          // Add user to org with workspace
+          await userStub.addOrg(orgId, 'owner', defaultWorkspaceId);
+        } else {
+          sessionOrgId = userOrgs[0].org_id;
+          sessionWorkspaceId = userOrgs[0].last_workspace_id ?? null;
+
+          // If no last workspace, get the first available one
+          if (!sessionWorkspaceId) {
+            const orgStub = env.ORG.get(env.ORG.idFromName(sessionOrgId)) as unknown as OrgDO;
+            const workspaces = await orgStub.getWorkspaces();
+            const existingWorkspace = workspaces.find(w => !w.archived);
+
+            if (existingWorkspace) {
+              sessionWorkspaceId = existingWorkspace.id;
+            } else {
+              // Create default workspace for existing org that has none
+              const workspaceId = crypto.randomUUID();
+              const workspaceStub = env.WORKSPACE.get(
+                env.WORKSPACE.idFromName(workspaceId)
+              ) as unknown as WorkspaceDO;
+              await workspaceStub.createWorkspace(
+                workspaceId,
+                sessionOrgId,
+                'Default Workspace',
+                userId,
+                null
+              );
+              sessionWorkspaceId = workspaceId;
+
+              // Update user's last workspace for this org
+              await userStub.setOrgLastWorkspace(sessionOrgId, workspaceId);
+            }
+          }
+        }
+
+        // Store session in KV using the session-kv module for consistent key format
+        await createSession(env.SESSIONS, sessionId, {
+          user_id: userId,
+          org_id: sessionOrgId,
+          workspace_id: sessionWorkspaceId,
+          created_at: Date.now(),
+          last_accessed: Date.now(),
+        });
+
+        // Set session cookie and redirect
+        const redirectTo = stateData.redirect_url || '/';
+        const cookieOptions = [
+          `${SESSION_COOKIE_NAME}=${sessionId}`,
+          'Path=/',
+          'HttpOnly',
+          'SameSite=Lax',
+          'Max-Age=2592000', // 30 days
+        ];
+
+        // Add Secure flag in production
+        if (url.protocol === 'https:') {
+          cookieOptions.push('Secure');
+        }
+
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: redirectTo,
+            'Set-Cookie': cookieOptions.join('; '),
+          },
+        });
+      } catch (err) {
+        console.error('[oauth] OAuth flow failed:', err);
+        return Response.redirect(`${url.origin}/login?error=oauth_failed`, 302);
+      }
+    }
+
+    // Pass all other requests to React Router SSR
+    // @ts-ignore - virtual module provided by @react-router/dev
+    const handler = createRequestHandler(() => import('virtual:react-router/server-build'), import.meta.env.MODE);
+    return handler(request, {
+      cloudflare: { env, ctx },
+    });
   },
 
   async queue(batch: MessageBatch<AppScreenshotJob>, env: Env): Promise<void> {

@@ -1,9 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import AnthropicFoundry from '@anthropic-ai/foundry-sdk';
-import type { DoRpcService } from '../../main/src/rpc-service';
 import type { ApiTokenData } from '../../main/src/api-tokens';
 import { isSignedToken, validateSignedToken } from '../../main/src/signed-tokens';
+import type { OrgDO, ProxyUsageInput } from '../../main/src/auth';
 
 type ProviderType = 'anthropic' | 'foundry' | 'bedrock';
 
@@ -25,7 +25,7 @@ interface Env {
   PROXY_LOG_LEVEL?: string;
   PROXY_MODEL_ALIASES?: string;
   PROXY_BEDROCK_MODEL_MAP?: string;
-  MAIN_RPC?: DoRpcService;
+  ORG?: DurableObjectNamespace<OrgDO>;
   TOKEN_SIGNING_SECRET?: string;
   ANTHROPIC_API_KEY?: string;
   ANTHROPIC_API_URL?: string;
@@ -1243,13 +1243,16 @@ async function recordUsage(
   provider: string,
   model?: string | null
 ): Promise<void> {
-  if (!usageContext || !env.MAIN_RPC) return;
+  if (!usageContext || !env.ORG) return;
   try {
-    await env.MAIN_RPC.recordProxyUsage(usageContext.orgId, usageContext.userId, usage, {
+    const stub = env.ORG.get(env.ORG.idFromName(usageContext.orgId)) as DurableObjectStub<OrgDO>;
+    stub.recordProxyUsage(
+      usageContext.userId,
+      usage as ProxyUsageInput,
       provider,
-      model: model ?? undefined,
-      tokenId: usageContext.tokenId,
-    });
+      model ?? null,
+      usageContext.tokenId
+    );
   } catch (error) {
     logWarn(env, 'proxy usage write failed', {
       provider,

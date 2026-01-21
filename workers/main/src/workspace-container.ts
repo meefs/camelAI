@@ -5,15 +5,20 @@
 import { Container } from '@cloudflare/containers';
 import { getTempR2Credentials } from './r2-credentials';
 import { createSignedToken } from './signed-tokens';
-import type { DoRpcService } from './rpc-service';
+import { mapCredentialsToEnvVars } from './integration-env';
+import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import type { OrgDO } from './auth';
+import type { WorkspaceDO } from './workspace';
 
 export interface WorkspaceContainerEnv {
   SANDBOX: DurableObjectNamespace<WorkspaceContainer>;
-  DO_RPC: Service<DoRpcService>;
+  ORG: DurableObjectNamespace<OrgDO>;
+  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   R2_BUCKET: R2Bucket;
   EMAIL_TO_USER: KVNamespace;
   ANTHROPIC_API_KEY: string;
   TOKEN_SIGNING_SECRET: string;
+  INTEGRATION_SECRET_KEY: string;
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
   R2_BUCKET_NAME?: string;
@@ -243,14 +248,9 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     }
 
     // Get org info for user_id (needed for all signed tokens)
-    const rpc = this.env.DO_RPC as typeof this.env.DO_RPC & { [Symbol.dispose]?: () => void };
-    let userId: string;
-    try {
-      const orgInfo = await rpc.getOrg(orgId);
-      userId = orgInfo?.created_by || 'system';
-    } finally {
-      rpc[Symbol.dispose]?.();
-    }
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
+    const orgInfo = await orgStub.getInfo();
+    const userId = orgInfo?.created_by || 'system';
 
     // Cloudflare API proxy config
     // Create a workspace-scoped deploy token for container to use with Cloudflare API
@@ -297,13 +297,17 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
 
     // Fetch integration credentials and pass as ENV vars
     try {
-      const rpc = this.env.DO_RPC as typeof this.env.DO_RPC & { [Symbol.dispose]?: () => void };
-      let integrationEnvVars: Record<string, string>;
-      try {
-        integrationEnvVars = await rpc.getWorkspaceIntegrationEnvVars(workspaceId);
-      } finally {
-        rpc[Symbol.dispose]?.();
+      const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
+      const records = await workspaceStub.getIntegrations();
+      const integrationEnvVars: Record<string, string> = {};
+
+      for (const record of records) {
+        if (record.enabled !== 1) continue;
+        const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
+        const config = JSON.parse(record.config) as Record<string, unknown>;
+        Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.integration_type, credentials, config));
       }
+
       console.log('[WorkspaceContainer] Integration env vars:', Object.entries(integrationEnvVars).map(
         ([k, v]) => `${k}=${v.length} chars`
       ));

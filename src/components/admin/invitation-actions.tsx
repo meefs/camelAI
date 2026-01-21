@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { Copy, MoreHorizontal, Trash2 } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
@@ -33,7 +33,7 @@ export function InvitationActions({
   invitationId,
   inviteeEmail,
 }: InvitationActionsProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -64,7 +64,7 @@ export function InvitationActions({
       await deleteAdminInvitation(orgId, invitationId);
       toast.success('Invitation deleted');
       setConfirmOpen(false);
-      router.refresh();
+      // TODO: implement refresh;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to delete invitation');
     } finally {

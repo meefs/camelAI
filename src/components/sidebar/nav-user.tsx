@@ -1,7 +1,6 @@
 "use client"
 
-import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { Link, useNavigate } from "react-router"
 import { ChevronsUpDown, LogOut, Settings } from "lucide-react"
 
 import {
@@ -57,13 +56,13 @@ function NavUserSkeleton() {
 }
 
 export function NavUser() {
-  const router = useRouter()
+  const navigate = useNavigate()
   const { isMobile } = useSidebar()
   const { user, logout, loading } = useAuth()
 
   const handleLogout = async () => {
     await logout()
-    router.push('/login')
+    navigate('/login')
   }
 
   if (loading && !user) {
@@ -128,7 +127,7 @@ export function NavUser() {
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
-              <Link href="/settings/profile">
+              <Link to="/settings/profile">
                 <Settings />
                 Settings
               </Link>

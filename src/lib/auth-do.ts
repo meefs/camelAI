@@ -25,92 +25,64 @@ import type {
   Message,
   AppPreviewStatus,
 } from '@/types';
-import { getCloudflareContext } from '@opennextjs/cloudflare';
-import { withDoRpc } from '@/lib/do-rpc';
-import type { UserProfile } from '../../workers/main/src/auth';
+import {
+  type UserProfile,
+  type OrgInfo,
+  type OrgThread,
+  UserDO,
+  OrgDO,
+} from '../../workers/main/src/auth';
+import { WorkspaceDO, type WorkspaceInfo } from '../../workers/main/src/workspace';
 import {
   type SessionData,
   getSession as getSessionKV,
   destroySession as destroySessionKV,
   createNewSession as createNewSessionKV,
+  updateSession as updateSessionKV,
 } from '../../workers/main/src/session-kv';
 import type { ApiTokenData } from '../../workers/main/src/api-tokens';
-import type { DoRpcService } from '../../workers/main/src/rpc-service';
+import {
+  createApiToken,
+  validateApiToken as validateApiTokenKV,
+  deleteApiToken as deleteApiTokenKV,
+} from '../../workers/main/src/api-tokens';
+import { getWorkspaceContainer } from '../../workers/main/src/workspace-container';
+import {
+  validateAndConsumeAuthState,
+  createWorkerAuthToken,
+  type WorkerAuthState as WorkerAuthStateKV,
+} from '../../workers/main/src/worker-auth';
 
-interface AuthEnv {
-  DO_RPC: DoRpcService;
+/**
+ * Auth environment bindings required by this module.
+ * This interface provides direct access to DOs without RPC.
+ */
+export interface AuthEnv {
+  USER: DurableObjectNamespace<UserDO>;
+  ORG: DurableObjectNamespace<OrgDO>;
+  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   SESSIONS: KVNamespace;
+  EMAIL_TO_USER: KVNamespace;
+  API_TOKENS: KVNamespace;
 }
 
-async function withRpc<T>(fn: (rpc: DoRpcService) => Promise<T>): Promise<T> {
-  const { env } = getCloudflareContext() as unknown as { env: AuthEnv };
-  return withDoRpc(env.DO_RPC, fn);
+// Helper to get UserDO stub
+function getUserStub(env: AuthEnv, userId: string): UserDO {
+  return env.USER.get(env.USER.idFromName(userId)) as unknown as UserDO;
 }
 
-function getSessionsKV(): KVNamespace {
-  const { env } = getCloudflareContext() as unknown as { env: AuthEnv };
-  return env.SESSIONS;
+// Helper to get OrgDO stub
+function getOrgStub(env: AuthEnv, orgId: string): OrgDO {
+  return env.ORG.get(env.ORG.idFromName(orgId)) as unknown as OrgDO;
 }
 
-// Session functions - getSession and destroySession call KV directly (no RPC needed)
-export async function getSession(sessionId: string): Promise<SessionData | null> {
-  return getSessionKV(getSessionsKV(), sessionId);
+// Helper to get WorkspaceDO stub
+function getWorkspaceStub(env: AuthEnv, workspaceId: string): WorkspaceDO {
+  return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as unknown as WorkspaceDO;
 }
 
-export async function getSessionWithUser(
-  sessionId: string
-): Promise<{ session: SessionData; user: UserProfile } | null> {
-  return withRpc((rpc) => rpc.getSessionWithUser(sessionId));
-}
-
-export async function createSession(
-  userId: string,
-  orgId: string,
-  workspaceId: string | null = null
-): Promise<{ sessionId: string; sessionData: SessionData }> {
-  return createNewSessionKV(getSessionsKV(), userId, orgId, workspaceId);
-}
-
-export async function destroySession(sessionId: string): Promise<void> {
-  return destroySessionKV(getSessionsKV(), sessionId);
-}
-
-export async function switchSessionOrg(
-  sessionId: string,
-  orgId: string,
-  workspaceId: string | null = null
-): Promise<void> {
-  return withRpc((rpc) => rpc.switchSessionOrg(sessionId, orgId, workspaceId));
-}
-
-export async function switchSessionWorkspace(sessionId: string, workspaceId: string | null): Promise<void> {
-  return withRpc((rpc) => rpc.switchSessionWorkspace(sessionId, workspaceId));
-}
-
-// User functions
-export async function getUserByEmail(email: string): Promise<{ userId: string; user: UserProfile } | null> {
-  return withRpc((rpc) => rpc.getUserByEmail(email));
-}
-
-export async function getUserById(userId: string): Promise<UserProfile | null> {
-  return withRpc((rpc) => rpc.getUserById(userId));
-}
-
-export async function getUsersByIds(userIds: string[]): Promise<UserProfile[]> {
-  return withRpc((rpc) => rpc.getUsersByIds(userIds));
-}
-
-export async function updateUserProfile(
-  userId: string,
-  updates: { name?: string | null; avatar?: { color: string; content: string } }
-): Promise<User | null> {
-  const profile = await withRpc((rpc) =>
-    rpc.updateUserProfile(userId, {
-      name: updates.name,
-      avatar: updates.avatar,
-    })
-  );
-  if (!profile) return null;
+// Convert UserProfile to User
+function profileToUser(profile: UserProfile): User {
   return {
     id: profile.id,
     email: profile.email,
@@ -125,95 +97,350 @@ export async function updateUserProfile(
   };
 }
 
+// Convert OrgInfo to Organization
+function orgInfoToOrg(info: OrgInfo): Organization {
+  return {
+    id: info.id,
+    name: info.name,
+    created_at: info.created_at,
+    created_by: info.created_by,
+    billing_status: info.billing_status,
+    archived: info.archived,
+    archived_at: info.archived_at,
+    archived_by: info.archived_by,
+  };
+}
+
+// Convert WorkspaceInfo to Workspace
+function wsInfoToWorkspace(info: WorkspaceInfo): Workspace {
+  return {
+    id: info.id,
+    org_id: info.org_id,
+    name: info.name,
+    description: info.description,
+    created_by: info.created_by,
+    created_at: info.created_at,
+    avatar: {
+      color: info.avatar_color,
+      content: info.avatar_content,
+    },
+    archived: info.archived,
+    archived_at: info.archived_at,
+    archived_by: info.archived_by,
+  };
+}
+
+// Session functions
+export async function getSession(env: AuthEnv, sessionId: string): Promise<SessionData | null> {
+  return getSessionKV(env.SESSIONS, sessionId);
+}
+
+export async function getSessionWithUser(
+  env: AuthEnv,
+  sessionId: string
+): Promise<{ session: SessionData; user: UserProfile } | null> {
+  const session = await getSessionKV(env.SESSIONS, sessionId);
+  if (!session) return null;
+  const stub = getUserStub(env, session.user_id);
+  const user = await stub.getProfile();
+  if (!user) return null;
+  return { session, user };
+}
+
+export async function createSession(
+  env: AuthEnv,
+  userId: string,
+  orgId: string,
+  workspaceId: string | null = null
+): Promise<{ sessionId: string; sessionData: SessionData }> {
+  return createNewSessionKV(env.SESSIONS, userId, orgId, workspaceId);
+}
+
+export async function destroySession(env: AuthEnv, sessionId: string): Promise<void> {
+  return destroySessionKV(env.SESSIONS, sessionId);
+}
+
+export async function switchSessionOrg(
+  env: AuthEnv,
+  sessionId: string,
+  orgId: string,
+  workspaceId: string | null = null
+): Promise<void> {
+  const session = await getSessionKV(env.SESSIONS, sessionId);
+  if (!session) throw new Error('Session not found');
+  session.org_id = orgId;
+  session.workspace_id = workspaceId;
+  await updateSessionKV(env.SESSIONS, sessionId, session);
+  // Update user's last workspace for this org
+  if (workspaceId) {
+    const stub = getUserStub(env, session.user_id);
+    await stub.setOrgLastWorkspace(orgId, workspaceId);
+  }
+}
+
+export async function switchSessionWorkspace(env: AuthEnv, sessionId: string, workspaceId: string | null): Promise<void> {
+  const session = await getSessionKV(env.SESSIONS, sessionId);
+  if (!session) throw new Error('Session not found');
+  session.workspace_id = workspaceId;
+  await updateSessionKV(env.SESSIONS, sessionId, session);
+  // Update user's last workspace for this org
+  if (workspaceId && session.org_id) {
+    const stub = getUserStub(env, session.user_id);
+    await stub.setOrgLastWorkspace(session.org_id, workspaceId);
+  }
+}
+
+// User functions
+export async function getUserByEmail(env: AuthEnv, email: string): Promise<{ userId: string; user: UserProfile } | null> {
+  const normalizedEmail = email.toLowerCase();
+  const userId = await env.EMAIL_TO_USER.get(`email:${normalizedEmail}`);
+  if (!userId) return null;
+  const stub = getUserStub(env, userId);
+  const user = await stub.getProfile();
+  if (!user) return null;
+  return { userId, user };
+}
+
+export async function getUserById(env: AuthEnv, userId: string): Promise<UserProfile | null> {
+  const stub = getUserStub(env, userId);
+  return stub.getProfile();
+}
+
+export async function getUsersByIds(env: AuthEnv, userIds: string[]): Promise<UserProfile[]> {
+  const results = await Promise.all(
+    userIds.map(async (userId) => {
+      const stub = getUserStub(env, userId);
+      return stub.getProfile();
+    })
+  );
+  return results.filter((p): p is UserProfile => p !== null);
+}
+
+export async function updateUserProfile(
+  env: AuthEnv,
+  userId: string,
+  updates: { name?: string | null; avatar?: { color: string; content: string } }
+): Promise<User | null> {
+  const stub = getUserStub(env, userId);
+  const profile = await stub.updateProfile({
+    name: updates.name,
+    avatar_color: updates.avatar?.color,
+    avatar_content: updates.avatar?.content,
+  });
+  if (!profile) return null;
+  return profileToUser(profile);
+}
+
 export async function createUser(
+  env: AuthEnv,
   email: string,
   password: string,
   name: string | null
 ): Promise<{ userId: string; user: UserProfile }> {
-  return withRpc((rpc) => rpc.createUser(email, password, name));
+  const normalizedEmail = email.toLowerCase();
+  const emailKvKey = `email:${normalizedEmail}`;
+
+  // Check if email already exists
+  const existingUserId = await env.EMAIL_TO_USER.get(emailKvKey);
+  if (existingUserId) {
+    throw new Error('An account with this email already exists');
+  }
+
+  const userId = crypto.randomUUID();
+
+  // Claim the email
+  await env.EMAIL_TO_USER.put(emailKvKey, userId);
+
+  // Verify we still own it
+  const verifyEmail = await env.EMAIL_TO_USER.get(emailKvKey);
+  if (verifyEmail !== userId) {
+    throw new Error('An account with this email already exists');
+  }
+
+  try {
+    const stub = getUserStub(env, userId);
+    const user = await stub.createUser(userId, normalizedEmail, password, name);
+    return { userId, user };
+  } catch (error) {
+    // Clean up on failure
+    await env.EMAIL_TO_USER.delete(emailKvKey);
+    throw error;
+  }
 }
 
-export async function verifyUserPassword(userId: string, password: string): Promise<boolean> {
-  return withRpc((rpc) => rpc.verifyUserPassword(userId, password));
+export async function verifyUserPassword(env: AuthEnv, userId: string, password: string): Promise<boolean> {
+  const stub = getUserStub(env, userId);
+  return stub.verifyPassword(password);
 }
 
 // OAuth functions
 export async function getUserByOAuthProvider(
+  env: AuthEnv,
   provider: 'google' | 'github',
   providerId: string
 ): Promise<{ userId: string; user: UserProfile } | null> {
-  return withRpc((rpc) => rpc.getUserByOAuthProvider(provider, providerId));
+  const oauthKvKey = `oauth:${provider}:${providerId}`;
+  const userId = await env.EMAIL_TO_USER.get(oauthKvKey);
+  if (!userId) return null;
+  const stub = getUserStub(env, userId);
+  const user = await stub.getProfile();
+  if (!user) return null;
+  return { userId, user };
 }
 
 export async function createUserFromOAuth(
+  env: AuthEnv,
   email: string,
   name: string | null,
   provider: 'google' | 'github',
   providerId: string
 ): Promise<{ userId: string; user: UserProfile }> {
-  return withRpc((rpc) => rpc.createUserFromOAuth(email, name, provider, providerId));
+  const normalizedEmail = email.toLowerCase();
+  const emailKvKey = `email:${normalizedEmail}`;
+  const oauthKvKey = `oauth:${provider}:${providerId}`;
+
+  // Check if email already exists
+  const existingUserId = await env.EMAIL_TO_USER.get(emailKvKey);
+  if (existingUserId) {
+    throw new Error('An account with this email already exists');
+  }
+
+  // Check if OAuth provider already linked
+  const existingOAuthUserId = await env.EMAIL_TO_USER.get(oauthKvKey);
+  if (existingOAuthUserId) {
+    throw new Error('This OAuth account is already linked to another user');
+  }
+
+  const userId = crypto.randomUUID();
+
+  // Claim the email and OAuth provider
+  await Promise.all([
+    env.EMAIL_TO_USER.put(emailKvKey, userId),
+    env.EMAIL_TO_USER.put(oauthKvKey, userId),
+  ]);
+
+  // Verify we still own them
+  const [verifyEmail, verifyOAuth] = await Promise.all([
+    env.EMAIL_TO_USER.get(emailKvKey),
+    env.EMAIL_TO_USER.get(oauthKvKey),
+  ]);
+
+  if (verifyEmail !== userId || verifyOAuth !== userId) {
+    // Clean up and abort
+    await Promise.all([
+      env.EMAIL_TO_USER.delete(emailKvKey),
+      env.EMAIL_TO_USER.delete(oauthKvKey),
+    ]);
+    throw new Error('An account with this email or OAuth provider already exists');
+  }
+
+  try {
+    const stub = getUserStub(env, userId);
+    const user = await stub.createUserFromOAuth(userId, normalizedEmail, name, provider, providerId);
+    return { userId, user };
+  } catch (error) {
+    // Clean up on failure
+    await Promise.all([
+      env.EMAIL_TO_USER.delete(emailKvKey),
+      env.EMAIL_TO_USER.delete(oauthKvKey),
+    ]);
+    throw error;
+  }
 }
 
 export async function linkOAuthProvider(
+  env: AuthEnv,
   userId: string,
   provider: 'google' | 'github',
   providerId: string
 ): Promise<void> {
-  return withRpc((rpc) => rpc.linkOAuthProvider(userId, provider, providerId));
+  const oauthKvKey = `oauth:${provider}:${providerId}`;
+
+  // Check if already linked to another user
+  const existingUserId = await env.EMAIL_TO_USER.get(oauthKvKey);
+  if (existingUserId && existingUserId !== userId) {
+    throw new Error('This OAuth account is already linked to another user');
+  }
+
+  // Link in KV and DO
+  await env.EMAIL_TO_USER.put(oauthKvKey, userId);
+  const stub = getUserStub(env, userId);
+  await stub.linkOAuthProvider(provider, providerId);
 }
 
 export async function getUserOAuthProviders(
+  env: AuthEnv,
   userId: string
 ): Promise<Array<{ provider: string; provider_id: string; linked_at: number }>> {
-  return withRpc((rpc) => rpc.getUserOAuthProviders(userId));
+  const stub = getUserStub(env, userId);
+  return stub.getOAuthProviders();
 }
 
-export async function getUserOrgs(userId: string): Promise<OrgMembership[]> {
-  return withRpc((rpc) => rpc.getUserOrgs(userId));
+export async function getUserOrgs(env: AuthEnv, userId: string): Promise<OrgMembership[]> {
+  const userStub = getUserStub(env, userId);
+  const userOrgs = await userStub.getOrgs();
+
+  const memberships: OrgMembership[] = [];
+  for (const uo of userOrgs) {
+    const orgStub = getOrgStub(env, uo.org_id);
+    const orgInfo = await orgStub.getInfo();
+    if (orgInfo && !orgInfo.archived) {
+      memberships.push({
+        org_id: uo.org_id,
+        org_name: orgInfo.name,
+        role: uo.role,
+        joined_at: uo.joined_at,
+        last_workspace_id: uo.last_workspace_id ?? null,
+      });
+    }
+  }
+
+  return memberships;
 }
 
-export async function addUserToOrg(userId: string, orgId: string, role: OrgRole): Promise<void> {
-  return withRpc((rpc) => rpc.addUserToOrg(userId, orgId, role));
+export async function addUserToOrg(env: AuthEnv, userId: string, orgId: string, role: OrgRole): Promise<void> {
+  const workspaces = await listOrgWorkspaces(env, orgId);
+  const lastWorkspaceId = workspaces[0]?.id ?? null;
+  const userStub = getUserStub(env, userId);
+  await userStub.addOrg(orgId, role, lastWorkspaceId);
 }
 
-export async function removeUserFromOrg(userId: string, orgId: string): Promise<void> {
-  return withRpc((rpc) => rpc.removeUserFromOrg(userId, orgId));
+export async function removeUserFromOrg(env: AuthEnv, userId: string, orgId: string): Promise<void> {
+  const userStub = getUserStub(env, userId);
+  await userStub.removeOrg(orgId);
 }
 
-// Admin functions
-export async function getAdminOverview(): Promise<AdminOverview> {
-  return withRpc((rpc) => rpc.getAdminOverview());
+// Admin functions - these require complex cross-DO iteration
+// TODO: Implement these with direct DO calls or use a different pattern
+export async function getAdminOverview(_env: AuthEnv): Promise<AdminOverview> {
+  throw new Error('getAdminOverview not yet implemented - requires admin DO service');
 }
 
 export async function adminUpdateUser(
+  env: AuthEnv,
   userId: string,
-  updates: { name?: string | null; is_superuser?: boolean; avatar?: { color: string; content: string } }
+  updates: { name?: string | null; avatar?: { color: string; content: string } }
 ): Promise<User | null> {
-  const profile = await withRpc((rpc) => rpc.adminUpdateUser(userId, updates));
+  const stub = getUserStub(env, userId);
+  // Note: is_superuser is determined by email domain, not manually set
+  const profile = await stub.updateProfile({
+    name: updates.name,
+    avatar_color: updates.avatar?.color,
+    avatar_content: updates.avatar?.content,
+  });
   if (!profile) return null;
-  return {
-    id: profile.id,
-    email: profile.email,
-    name: profile.name,
-    created_at: profile.created_at,
-    is_superuser: profile.is_superuser,
-    avatar: {
-      color: profile.avatar_color,
-      content: profile.avatar_content,
-    },
-    is_orphaned: profile.is_orphaned,
-  };
+  return profileToUser(profile);
 }
 
-export async function adminGetAllOrgs(): Promise<Array<Organization & { member_count: number; workspace_count: number }>> {
-  return withRpc((rpc) => rpc.adminGetAllOrgs());
+export async function adminGetAllOrgs(_env: AuthEnv): Promise<Array<Organization & { member_count: number; workspace_count: number }>> {
+  throw new Error('adminGetAllOrgs not yet implemented - requires admin DO service');
 }
 
-export async function adminGetAllThreads(): Promise<AdminThreadWithContext[]> {
-  return withRpc((rpc) => rpc.adminGetAllThreads());
+export async function adminGetAllThreads(_env: AuthEnv): Promise<AdminThreadWithContext[]> {
+  throw new Error('adminGetAllThreads not yet implemented - requires admin DO service');
 }
 
-export async function adminGetThreadWithMessages(threadId: string): Promise<{
+export async function adminGetThreadWithMessages(_env: AuthEnv, _threadId: string): Promise<{
   thread: { id: string; title: string; created_by: string; created_at: number; updated_at: number };
   messages: Message[];
   org_id: string;
@@ -222,345 +449,623 @@ export async function adminGetThreadWithMessages(threadId: string): Promise<{
   workspace_name: string;
   preview_workers: string[];
 } | null> {
-  return withRpc((rpc) => rpc.adminGetThreadWithMessages(threadId));
+  throw new Error('adminGetThreadWithMessages not yet implemented - requires admin DO service');
 }
 
 export async function adminUpdateThread(
-  threadId: string,
-  updates: { title?: string }
+  _env: AuthEnv,
+  _threadId: string,
+  _updates: { title?: string }
 ): Promise<{ id: string; title: string; created_by: string; created_at: number; updated_at: number } | null> {
-  return withRpc((rpc) => rpc.adminUpdateThread(threadId, updates));
+  throw new Error('adminUpdateThread not yet implemented - requires admin DO service');
 }
 
 // Paginated admin functions
 export async function adminGetUsersPaginated(
-  params: PaginationParams = {}
+  _env: AuthEnv,
+  _params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminUserSummary>> {
-  return withRpc((rpc) => rpc.adminGetUsersPaginated(params));
+  throw new Error('adminGetUsersPaginated not yet implemented - requires admin DO service');
 }
 
 export async function adminGetOrgsPaginated(
-  params: PaginationParams = {}
+  _env: AuthEnv,
+  _params: PaginationParams = {}
 ): Promise<PaginatedResult<Organization & { member_count: number; workspace_count: number }>> {
-  return withRpc((rpc) => rpc.adminGetOrgsPaginated(params));
+  throw new Error('adminGetOrgsPaginated not yet implemented - requires admin DO service');
 }
 
 export async function adminGetWorkspacesPaginated(
-  params: PaginationParams = {}
+  _env: AuthEnv,
+  _params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminWorkspaceSummary>> {
-  return withRpc((rpc) => rpc.adminGetWorkspacesPaginated(params));
+  throw new Error('adminGetWorkspacesPaginated not yet implemented - requires admin DO service');
 }
 
 export async function adminGetThreadsPaginated(
-  params: PaginationParams = {}
+  _env: AuthEnv,
+  _params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminThreadWithContext>> {
-  return withRpc((rpc) => rpc.adminGetThreadsPaginated(params));
+  throw new Error('adminGetThreadsPaginated not yet implemented - requires admin DO service');
 }
 
 export async function adminGetAppsPaginated(
-  params: PaginationParams = {}
+  _env: AuthEnv,
+  _params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminAppSummary>> {
-  return withRpc((rpc) => rpc.adminGetAppsPaginated(params));
+  throw new Error('adminGetAppsPaginated not yet implemented - requires admin DO service');
 }
 
-export async function adminGetAppDetail(scriptName: string): Promise<AdminAppDetail | null> {
-  return withRpc((rpc) => rpc.adminGetAppDetail(scriptName));
+export async function adminGetAppDetail(_env: AuthEnv, _scriptName: string): Promise<AdminAppDetail | null> {
+  throw new Error('adminGetAppDetail not yet implemented - requires admin DO service');
 }
 
-export async function adminGetAppCount(): Promise<number> {
-  return withRpc((rpc) => rpc.adminGetAppCount());
+export async function adminGetAppCount(_env: AuthEnv): Promise<number> {
+  throw new Error('adminGetAppCount not yet implemented - requires admin DO service');
 }
 
 export async function adminGetInvitationsPaginated(
-  params: PaginationParams = {}
+  _env: AuthEnv,
+  _params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminInvitation>> {
-  return withRpc((rpc) => rpc.adminGetInvitationsPaginated(params));
+  throw new Error('adminGetInvitationsPaginated not yet implemented - requires admin DO service');
 }
 
-export async function adminGetWorkspaceDetail(workspaceId: string): Promise<AdminWorkspaceDetail | null> {
-  return withRpc((rpc) => rpc.adminGetWorkspaceDetail(workspaceId));
+export async function adminGetWorkspaceDetail(_env: AuthEnv, _workspaceId: string): Promise<AdminWorkspaceDetail | null> {
+  throw new Error('adminGetWorkspaceDetail not yet implemented - requires admin DO service');
 }
 
 export async function adminUpdateWorkspace(
+  env: AuthEnv,
   workspaceId: string,
   updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } },
   actorId: string
 ): Promise<Workspace | null> {
-  return withRpc((rpc) => rpc.adminUpdateWorkspace(workspaceId, updates, actorId));
+  const stub = getWorkspaceStub(env, workspaceId);
+  const info = await stub.updateWorkspace({
+    name: updates.name,
+    description: updates.description,
+    avatar_color: updates.avatar?.color,
+    avatar_content: updates.avatar?.content,
+  }, actorId);
+  if (!info) return null;
+  return wsInfoToWorkspace(info);
 }
 
-export async function adminArchiveWorkspace(workspaceId: string, actorId: string): Promise<Workspace | null> {
-  return withRpc((rpc) => rpc.adminArchiveWorkspace(workspaceId, actorId));
+export async function adminArchiveWorkspace(env: AuthEnv, workspaceId: string, actorId: string): Promise<Workspace | null> {
+  const stub = getWorkspaceStub(env, workspaceId);
+  const info = await stub.archive(actorId);
+  if (!info) return null;
+  return wsInfoToWorkspace(info);
 }
 
 export async function adminTransferOrgOwnership(
+  env: AuthEnv,
   orgId: string,
   newOwnerId: string,
   actorId: string
 ): Promise<void> {
-  return withRpc((rpc) => rpc.adminTransferOrgOwnership(orgId, newOwnerId, actorId));
+  const orgStub = getOrgStub(env, orgId);
+  const members = await orgStub.getMembers();
+  const currentOwner = members.find((member) => member.role === 'owner');
+  if (!currentOwner) {
+    throw new Error('Organization has no owner');
+  }
+
+  await orgStub.adminTransferOwnership(actorId, newOwnerId);
+
+  const newOwnerStub = getUserStub(env, newOwnerId);
+  await newOwnerStub.updateOrgRole(orgId, 'owner');
+
+  const oldOwnerStub = getUserStub(env, currentOwner.user_id);
+  await oldOwnerStub.updateOrgRole(orgId, 'admin');
 }
 
 export async function adminAddOrgMember(
+  env: AuthEnv,
   orgId: string,
   userId: string,
   role: 'admin' | 'member',
   actorId: string
 ): Promise<void> {
-  return withRpc((rpc) => rpc.adminAddOrgMember(orgId, userId, role, actorId));
+  const orgStub = getOrgStub(env, orgId);
+  await orgStub.addMember(userId, role, actorId);
+  const workspaces = await listOrgWorkspaces(env, orgId);
+  const lastWorkspaceId = workspaces[0]?.id ?? null;
+  const userStub = getUserStub(env, userId);
+  await userStub.addOrg(orgId, role, lastWorkspaceId);
+  await userStub.setOrphaned(false);
 }
 
-export async function adminForceOrphanUser(userId: string, actorId: string): Promise<void> {
-  return withRpc((rpc) => rpc.adminForceOrphanUser(userId, actorId));
+export async function adminForceOrphanUser(env: AuthEnv, userId: string, _actorId: string): Promise<void> {
+  const userStub = getUserStub(env, userId);
+  const orgs = await userStub.getOrgs();
+  // Remove from all orgs
+  for (const org of orgs) {
+    const orgStub = getOrgStub(env, org.org_id);
+    await orgStub.removeMember(userId, userId);
+    await userStub.removeOrg(org.org_id);
+  }
+  await userStub.setOrphaned(true);
 }
 
-export async function adminDeleteInvitation(orgId: string, invitationId: string): Promise<void> {
-  return withRpc((rpc) => rpc.adminDeleteInvitation(orgId, invitationId));
+export async function adminDeleteInvitation(env: AuthEnv, orgId: string, invitationId: string): Promise<void> {
+  const stub = getOrgStub(env, orgId);
+  await stub.deleteInvitation(invitationId);
 }
 
 // Organization functions
-export async function getOrg(orgId: string): Promise<Organization | null> {
-  return withRpc((rpc) => rpc.getOrg(orgId));
+export async function getOrg(env: AuthEnv, orgId: string): Promise<Organization | null> {
+  const stub = getOrgStub(env, orgId);
+  const info = await stub.getInfo();
+  if (!info) return null;
+  return orgInfoToOrg(info);
 }
 
-export async function createOrg(name: string, createdBy: string): Promise<Organization> {
-  return withRpc((rpc) => rpc.createOrg(name, createdBy));
+export async function createOrg(env: AuthEnv, name: string, createdBy: string): Promise<Organization> {
+  const orgId = crypto.randomUUID();
+  const orgStub = getOrgStub(env, orgId);
+  // createOrg now creates the default workspace internally
+  const { org: info, defaultWorkspaceId } = await orgStub.createOrg(orgId, name, createdBy);
+
+  // Add to user's orgs with the default workspace
+  const userStub = getUserStub(env, createdBy);
+  await userStub.addOrg(orgId, 'owner', defaultWorkspaceId);
+
+  return orgInfoToOrg(info);
 }
 
-export async function updateOrgName(orgId: string, name: string, actorId: string): Promise<void> {
-  return withRpc((rpc) => rpc.updateOrgName(orgId, name, actorId));
+export async function updateOrgName(env: AuthEnv, orgId: string, name: string, actorId: string): Promise<void> {
+  const stub = getOrgStub(env, orgId);
+  await stub.updateName(name, actorId);
 }
 
-export async function getOrgMembers(orgId: string): Promise<Array<{ user: User; role: OrgRole; joined_at: number }>> {
-  return withRpc((rpc) => rpc.getOrgMembers(orgId));
+export async function getOrgMembers(env: AuthEnv, orgId: string): Promise<Array<{ user: User; role: OrgRole; joined_at: number }>> {
+  const stub = getOrgStub(env, orgId);
+  const members = await stub.getMembers();
+  const results: Array<{ user: User; role: OrgRole; joined_at: number }> = [];
+  for (const member of members) {
+    const userStub = getUserStub(env, member.user_id);
+    const profile = await userStub.getProfile();
+    if (profile) {
+      results.push({
+        user: profileToUser(profile),
+        role: member.role,
+        joined_at: member.joined_at,
+      });
+    }
+  }
+  return results;
 }
 
-export async function isOrgMember(userId: string, orgId: string): Promise<boolean> {
-  return withRpc((rpc) => rpc.isOrgMember(userId, orgId));
+export async function isOrgMember(env: AuthEnv, userId: string, orgId: string): Promise<boolean> {
+  const stub = getOrgStub(env, orgId);
+  const info = await stub.getInfo();
+  if (!info || info.archived) return false;
+  return stub.isMember(userId);
 }
 
-export async function isOrgAdmin(userId: string, orgId: string): Promise<boolean> {
-  return withRpc((rpc) => rpc.isOrgAdmin(userId, orgId));
+export async function isOrgAdmin(env: AuthEnv, userId: string, orgId: string): Promise<boolean> {
+  const stub = getOrgStub(env, orgId);
+  const info = await stub.getInfo();
+  if (!info || info.archived) return false;
+  const member = await stub.getMember(userId);
+  return member?.role === 'owner' || member?.role === 'admin';
 }
 
-export async function removeOrgMember(orgId: string, userId: string, actorId: string): Promise<void> {
-  return withRpc((rpc) => rpc.removeOrgMember(orgId, userId, actorId));
+export async function removeOrgMember(env: AuthEnv, orgId: string, userId: string, actorId: string): Promise<void> {
+  const stub = getOrgStub(env, orgId);
+  await stub.removeMember(userId, actorId);
+  // Also remove from user's org list
+  const userStub = getUserStub(env, userId);
+  await userStub.removeOrg(orgId);
 }
 
-export async function updateOrgMemberRole(orgId: string, userId: string, role: OrgRole, actorId: string): Promise<void> {
-  return withRpc((rpc) => rpc.updateOrgMemberRole(orgId, userId, role, actorId));
+export async function updateOrgMemberRole(env: AuthEnv, orgId: string, userId: string, role: OrgRole, actorId: string): Promise<void> {
+  const stub = getOrgStub(env, orgId);
+  await stub.updateMemberRole(userId, role, actorId);
 }
 
-export async function transferOrgOwnership(orgId: string, newOwnerId: string, actorId: string): Promise<void> {
-  return withRpc((rpc) => rpc.transferOrgOwnership(orgId, newOwnerId, actorId));
+export async function transferOrgOwnership(env: AuthEnv, orgId: string, newOwnerId: string, actorId: string): Promise<void> {
+  const stub = getOrgStub(env, orgId);
+  await stub.transferOwnership(newOwnerId, actorId);
+  // Update user roles
+  const newOwnerStub = getUserStub(env, newOwnerId);
+  await newOwnerStub.updateOrgRole(orgId, 'owner');
+  const oldOwnerStub = getUserStub(env, actorId);
+  await oldOwnerStub.updateOrgRole(orgId, 'admin');
 }
 
-export async function archiveOrg(orgId: string, actorId: string): Promise<void> {
-  return withRpc((rpc) => rpc.archiveOrg(orgId, actorId));
+export async function archiveOrg(env: AuthEnv, orgId: string, actorId: string): Promise<void> {
+  const stub = getOrgStub(env, orgId);
+  await stub.archiveOrg(actorId);
 }
 
-export async function listOrgWorkspaces(orgId: string): Promise<Workspace[]> {
-  return withRpc((rpc) => rpc.listOrgWorkspaces(orgId));
+export async function listOrgWorkspaces(env: AuthEnv, orgId: string): Promise<Workspace[]> {
+  const stub = getOrgStub(env, orgId);
+  const workspaceIds = await stub.getWorkspaces();
+  const results: Workspace[] = [];
+  for (const ws of workspaceIds) {
+    if (ws.archived) continue;
+    const wsStub = getWorkspaceStub(env, ws.id);
+    const info = await wsStub.getInfo();
+    if (info && !info.archived) {
+      results.push(wsInfoToWorkspace(info));
+    }
+  }
+  return results;
 }
 
-export async function listUserWorkspaces(userId: string, orgId: string): Promise<WorkspaceWithAccess[]> {
-  return withRpc((rpc) => rpc.listUserWorkspaces(userId, orgId));
+export async function listUserWorkspaces(env: AuthEnv, userId: string, orgId: string): Promise<WorkspaceWithAccess[]> {
+  const isMember = await isOrgMember(env, userId, orgId);
+  if (!isMember) return [];
+
+  const workspaces = await listOrgWorkspaces(env, orgId);
+  const results: WorkspaceWithAccess[] = [];
+  for (const workspace of workspaces) {
+    const wsStub = getWorkspaceStub(env, workspace.id);
+    const memberAccess = await wsStub.getMemberAccess(userId);
+    const accessLevel = memberAccess?.access_level ?? 'full';
+    if (accessLevel !== 'none') {
+      results.push({ ...workspace, access_level: accessLevel });
+    }
+  }
+  return results;
 }
 
 export async function listUserWorkspacesAcrossOrgs(
+  env: AuthEnv,
   userId: string,
   orgs?: OrgMembership[]
 ): Promise<WorkspaceWithAccess[]> {
-  const memberships = orgs ?? (await getUserOrgs(userId));
+  const memberships = orgs ?? (await getUserOrgs(env, userId));
   if (memberships.length === 0) return [];
 
   const workspaces = await Promise.all(
-    memberships.map((membership) => listUserWorkspaces(userId, membership.org_id))
+    memberships.map((membership) => listUserWorkspaces(env, userId, membership.org_id))
   );
   return workspaces.flat();
 }
 
-export async function getWorkspace(workspaceId: string): Promise<Workspace | null> {
-  return withRpc((rpc) => rpc.getWorkspace(workspaceId));
+export async function getWorkspace(env: AuthEnv, workspaceId: string): Promise<Workspace | null> {
+  const stub = getWorkspaceStub(env, workspaceId);
+  const info = await stub.getInfo();
+  if (!info || info.archived) return null;
+  return wsInfoToWorkspace(info);
 }
 
 export async function createWorkspace(
+  env: AuthEnv,
   orgId: string,
   name: string,
   createdBy: string,
   description?: string | null
 ): Promise<Workspace> {
-  return withRpc((rpc) => rpc.createWorkspace(orgId, name, createdBy, description ?? null));
+  const workspaceId = crypto.randomUUID();
+  const stub = getWorkspaceStub(env, workspaceId);
+  const info = await stub.createWorkspace(workspaceId, orgId, name, createdBy, description ?? null);
+  return wsInfoToWorkspace(info);
 }
 
 export async function updateWorkspace(
+  env: AuthEnv,
   workspaceId: string,
   updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } },
   actorId: string
 ): Promise<Workspace | null> {
-  return withRpc((rpc) => rpc.updateWorkspace(workspaceId, updates, actorId));
+  const stub = getWorkspaceStub(env, workspaceId);
+  const info = await stub.updateWorkspace({
+    name: updates.name,
+    description: updates.description,
+    avatar_color: updates.avatar?.color,
+    avatar_content: updates.avatar?.content,
+  }, actorId);
+  if (!info) return null;
+  return wsInfoToWorkspace(info);
 }
 
-export async function archiveWorkspace(workspaceId: string, actorId: string): Promise<Workspace | null> {
-  return withRpc((rpc) => rpc.archiveWorkspace(workspaceId, actorId));
+export async function archiveWorkspace(env: AuthEnv, workspaceId: string, actorId: string): Promise<Workspace | null> {
+  const stub = getWorkspaceStub(env, workspaceId);
+  const info = await stub.archive(actorId);
+  if (!info) return null;
+  return wsInfoToWorkspace(info);
 }
 
-export async function getWorkspaceAccess(workspaceId: string, userId: string): Promise<WorkspaceAccessLevel> {
-  return withRpc((rpc) => rpc.getWorkspaceAccess(workspaceId, userId));
+export async function getWorkspaceAccess(env: AuthEnv, workspaceId: string, userId: string): Promise<WorkspaceAccessLevel> {
+  const wsStub = getWorkspaceStub(env, workspaceId);
+  const info = await wsStub.getInfo();
+  if (!info || info.archived) return 'none';
+
+  const isMember = await isOrgMember(env, userId, info.org_id);
+  if (!isMember) return 'none';
+
+  const access = await wsStub.getMemberAccess(userId);
+  return access?.access_level ?? 'full';
 }
 
 /**
  * Warm up a workspace container asynchronously.
- * This is a cheap, fire-and-forget call that triggers container startup
- * in the background without blocking.
+ * Note: This simplified version doesn't background the warmup.
+ * For full background warmup support, use the worker-level implementation.
  */
 export async function warmupWorkspace(
+  env: AuthEnv,
   workspaceId: string,
   userId: string
 ): Promise<{ status: 'warm' | 'warming' | 'unauthorized' }> {
-  return withRpc((rpc) => rpc.warmupWorkspace(workspaceId, userId));
+  // Check access first (cheap - just KV/DO lookups)
+  const accessLevel = await getWorkspaceAccess(env, workspaceId, userId);
+  if (accessLevel === 'none') {
+    return { status: 'unauthorized' };
+  }
+
+  const wsStub = getWorkspaceStub(env, workspaceId);
+  const info = await wsStub.getInfo();
+  if (!info) {
+    return { status: 'unauthorized' };
+  }
+
+  // Return warming status - actual warmup happens when the container is accessed
+  // Full background warmup requires ExecutionContext.waitUntil which isn't available here
+  return { status: 'warming' };
 }
 
 export async function setWorkspaceAccess(
+  env: AuthEnv,
   workspaceId: string,
   userId: string,
   accessLevel: WorkspaceAccessLevel,
   actorId: string
 ): Promise<void> {
-  return withRpc((rpc) => rpc.setWorkspaceAccess(workspaceId, userId, accessLevel, actorId));
+  const stub = getWorkspaceStub(env, workspaceId);
+  await stub.setMemberAccess(userId, accessLevel, actorId);
 }
 
-export async function listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
-  return withRpc((rpc) => rpc.listWorkspaceMembers(workspaceId));
+export async function listWorkspaceMembers(env: AuthEnv, workspaceId: string): Promise<WorkspaceMember[]> {
+  const stub = getWorkspaceStub(env, workspaceId);
+  return stub.listMembers();
 }
 
-export async function checkUserOrphaned(userId: string): Promise<boolean> {
-  return withRpc((rpc) => rpc.checkUserOrphaned(userId));
+export async function checkUserOrphaned(env: AuthEnv, userId: string): Promise<boolean> {
+  const userStub = getUserStub(env, userId);
+  const profile = await userStub.getProfile();
+  if (!profile) return false;
+
+  const orgs = await userStub.getOrgs();
+  const hasMemberships = orgs.length > 0;
+  if (!hasMemberships && !profile.is_orphaned) {
+    await userStub.setOrphaned(true);
+    return true;
+  }
+  if (hasMemberships && profile.is_orphaned) {
+    await userStub.setOrphaned(false);
+    return false;
+  }
+  return profile.is_orphaned;
 }
 
 export async function handleOrphanedUserLogin(
+  env: AuthEnv,
   userId: string
 ): Promise<{ org: Organization; workspace: WorkspaceWithAccess } | null> {
-  return withRpc((rpc) => rpc.handleOrphanedUserLogin(userId));
+  const userStub = getUserStub(env, userId);
+  const profile = await userStub.getProfile();
+  if (!profile?.is_orphaned) return null;
+
+  const baseName = profile.name?.trim() || 'My';
+  const orgName = `${baseName}'s Organization`;
+  const org = await createOrg(env, orgName, userId);
+
+  const workspaces = await listUserWorkspaces(env, userId, org.id);
+  const workspace = workspaces[0];
+  if (!workspace) {
+    throw new Error('Failed to create default workspace');
+  }
+
+  await userStub.setOrphaned(false);
+
+  return { org, workspace };
 }
 
 export async function getOrgAuditLog(
+  env: AuthEnv,
   orgId: string,
-  limit?: number,
-  offset?: number
+  limit = 100,
+  offset = 0
 ): Promise<AuditLogEntry[]> {
-  return withRpc((rpc) => rpc.getOrgAuditLog(orgId, limit, offset));
+  const stub = getOrgStub(env, orgId);
+  const entries = await stub.getAuditLog(limit, offset);
+  return entries.map((entry) => ({
+    id: entry.id,
+    action: entry.action,
+    actor_id: entry.actor_id,
+    target_id: entry.target_id,
+    details: entry.details ? JSON.parse(entry.details) : null,
+    created_at: entry.created_at,
+  }));
 }
 
 export async function getWorkspaceAuditLog(
+  env: AuthEnv,
   workspaceId: string,
-  limit?: number,
-  offset?: number
+  limit = 100,
+  offset = 0
 ): Promise<AuditLogEntry[]> {
-  return withRpc((rpc) => rpc.getWorkspaceAuditLog(workspaceId, limit, offset));
+  const stub = getWorkspaceStub(env, workspaceId);
+  const entries = await stub.getAuditLog(limit, offset);
+  return entries.map((entry) => ({
+    id: entry.id,
+    action: entry.action,
+    actor_id: entry.actor_id,
+    target_id: entry.target_id,
+    details: entry.details ? JSON.parse(entry.details) : null,
+    created_at: entry.created_at,
+  }));
 }
 
 // Invitation functions
 export async function createInvitation(
+  env: AuthEnv,
   orgId: string,
   email: string,
   role: OrgRole,
   invitedBy: string
 ): Promise<{ id: string; expires_at: number }> {
-  return withRpc((rpc) => rpc.createInvitation(orgId, email, role, invitedBy));
+  if (role === 'owner') {
+    throw new Error('Cannot invite as owner');
+  }
+  const stub = getOrgStub(env, orgId);
+  const invitation = await stub.createInvitation(email, role, invitedBy);
+  return { id: invitation.id, expires_at: invitation.expires_at };
 }
 
-export async function getInvitation(orgId: string, invitationId: string): Promise<{
+export async function getInvitation(env: AuthEnv, orgId: string, invitationId: string): Promise<{
   id: string;
   email: string;
   role: OrgRole;
   org: Organization;
 } | null> {
-  return withRpc((rpc) => rpc.getInvitation(orgId, invitationId));
+  const orgStub = getOrgStub(env, orgId);
+  const invitation = await orgStub.getInvitation(invitationId);
+  if (!invitation) return null;
+
+  const orgInfo = await orgStub.getInfo();
+  if (!orgInfo) return null;
+
+  return {
+    id: invitation.id,
+    email: invitation.email,
+    role: invitation.role,
+    org: orgInfoToOrg(orgInfo),
+  };
 }
 
-export async function acceptInvitation(orgId: string, invitationId: string, userId: string): Promise<boolean> {
-  return withRpc((rpc) => rpc.acceptInvitation(orgId, invitationId, userId));
+export async function acceptInvitation(env: AuthEnv, orgId: string, invitationId: string, userId: string): Promise<boolean> {
+  const orgStub = getOrgStub(env, orgId);
+  const invitation = await orgStub.getInvitation(invitationId);
+  if (!invitation) return false;
+
+  const accepted = await orgStub.acceptInvitation(invitationId, userId);
+  if (!accepted) return false;
+
+  const workspaces = await listOrgWorkspaces(env, orgId);
+  const lastWorkspaceId = workspaces[0]?.id ?? null;
+  const userStub = getUserStub(env, userId);
+  await userStub.addOrg(orgId, invitation.role, lastWorkspaceId);
+  await userStub.setOrphaned(false);
+
+  return true;
 }
 
-export async function getOrgInvitations(orgId: string): Promise<Array<{
+export async function getOrgInvitations(env: AuthEnv, orgId: string): Promise<Array<{
   id: string;
   email: string;
   role: OrgRole;
   created_at: number;
   expires_at: number;
 }>> {
-  return withRpc((rpc) => rpc.getOrgInvitations(orgId));
+  const stub = getOrgStub(env, orgId);
+  const invitations = await stub.getInvitations();
+  const now = Date.now();
+  return invitations.filter((inv) => inv.expires_at > now).map((inv) => ({
+    id: inv.id,
+    email: inv.email,
+    role: inv.role,
+    created_at: inv.created_at,
+    expires_at: inv.expires_at,
+  }));
 }
 
-export async function deleteInvitation(orgId: string, invitationId: string): Promise<void> {
-  return withRpc((rpc) => rpc.deleteInvitation(orgId, invitationId));
+export async function deleteInvitation(env: AuthEnv, orgId: string, invitationId: string): Promise<void> {
+  const stub = getOrgStub(env, orgId);
+  await stub.deleteInvitation(invitationId);
 }
 
 // Integration functions
-export async function getWorkspaceIntegrations(workspaceId: string): Promise<Integration[]> {
-  return withRpc((rpc) => rpc.getWorkspaceIntegrations(workspaceId));
+// Note: These require INTEGRATION_SECRET_KEY for encryption which isn't in AuthEnv
+// TODO: Either expand AuthEnv or implement these in a different module
+export async function getWorkspaceIntegrations(_env: AuthEnv, _workspaceId: string): Promise<Integration[]> {
+  throw new Error('getWorkspaceIntegrations not yet implemented - requires encryption key');
 }
 
 export async function getWorkspaceIntegration(
-  workspaceId: string,
-  integrationId: string
+  _env: AuthEnv,
+  _workspaceId: string,
+  _integrationId: string
 ): Promise<Integration | null> {
-  return withRpc((rpc) => rpc.getWorkspaceIntegration(workspaceId, integrationId));
+  throw new Error('getWorkspaceIntegration not yet implemented - requires encryption key');
 }
 
 export async function createWorkspaceIntegration(
-  workspaceId: string,
-  userId: string,
-  input: CreateIntegrationInput
+  _env: AuthEnv,
+  _workspaceId: string,
+  _userId: string,
+  _input: CreateIntegrationInput
 ): Promise<Integration> {
-  return withRpc((rpc) => rpc.createWorkspaceIntegration(workspaceId, userId, input));
+  throw new Error('createWorkspaceIntegration not yet implemented - requires encryption key');
 }
 
 export async function updateWorkspaceIntegration(
-  workspaceId: string,
-  integrationId: string,
-  actorId: string,
-  input: UpdateIntegrationInput
+  _env: AuthEnv,
+  _workspaceId: string,
+  _integrationId: string,
+  _actorId: string,
+  _input: UpdateIntegrationInput
 ): Promise<Integration | null> {
-  return withRpc((rpc) => rpc.updateWorkspaceIntegration(workspaceId, integrationId, actorId, input));
+  throw new Error('updateWorkspaceIntegration not yet implemented - requires encryption key');
 }
 
 export async function deleteWorkspaceIntegration(
-  workspaceId: string,
-  integrationId: string,
-  actorId: string
+  _env: AuthEnv,
+  _workspaceId: string,
+  _integrationId: string,
+  _actorId: string
 ): Promise<void> {
-  return withRpc((rpc) => rpc.deleteWorkspaceIntegration(workspaceId, integrationId, actorId));
+  throw new Error('deleteWorkspaceIntegration not yet implemented - requires encryption key');
 }
 
 export async function resetWorkspaceContainer(
-  workspaceId: string
+  _env: AuthEnv,
+  _workspaceId: string
 ): Promise<{ success: boolean; containerId: string }> {
-  return withRpc((rpc) => rpc.resetWorkspaceContainer(workspaceId));
+  throw new Error('resetWorkspaceContainer not yet implemented - requires container bindings');
 }
 
 export async function restartOrgContainers(
-  orgId: string
+  _env: AuthEnv,
+  _orgId: string
 ): Promise<{ restarted: number; failed: number }> {
-  return withRpc((rpc) => rpc.restartOrgContainers(orgId));
+  throw new Error('restartOrgContainers not yet implemented - requires container bindings');
 }
 
 // API Token functions
 export async function createOrgApiToken(
+  env: AuthEnv,
   orgId: string,
   userId: string,
   input: CreateApiTokenInput
 ): Promise<{ tokenId: string; tokenData: ApiTokenData }> {
-  return withRpc((rpc) => rpc.createOrgApiToken(orgId, userId, input));
+  const scopes = input.scopes || ['proxy'];
+  const expiresAt = input.expires_in_days
+    ? Date.now() + input.expires_in_days * 24 * 60 * 60 * 1000
+    : null;
+
+  return createApiToken(env.API_TOKENS, {
+    orgId,
+    userId,
+    name: input.name,
+    scopes,
+    integrationId: input.integration_id || null,
+    expiresAt,
+  });
 }
 
-export async function validateApiToken(tokenId: string): Promise<ApiTokenData | null> {
-  return withRpc((rpc) => rpc.validateApiToken(tokenId));
+export async function validateApiToken(env: AuthEnv, tokenId: string): Promise<ApiTokenData | null> {
+  return validateApiTokenKV(env.API_TOKENS, tokenId);
 }
 
-export async function deleteApiToken(tokenId: string): Promise<void> {
-  return withRpc((rpc) => rpc.deleteApiToken(tokenId));
+export async function deleteOrgApiToken(env: AuthEnv, tokenId: string): Promise<void> {
+  await deleteApiTokenKV(env.API_TOKENS, tokenId);
 }
 
 // Worker script functions
@@ -571,8 +1076,18 @@ export interface WorkerScriptAccess {
   is_public: boolean;
 }
 
-export async function getWorkerAccessInfo(scriptName: string): Promise<WorkerScriptAccess | null> {
-  return withRpc((rpc) => rpc.getWorkerAccessInfo(scriptName));
+export async function getWorkerAccessInfo(env: AuthEnv, scriptName: string): Promise<WorkerScriptAccess | null> {
+  // Look up from denormalized global index (single KV read, no DO query)
+  const data = await env.API_TOKENS.get(`script_org:${scriptName}`);
+  if (!data) return null;
+
+  const { org_id, is_public } = JSON.parse(data) as { org_id: string; is_public: boolean };
+  return {
+    script_name: scriptName,
+    workspace_id: '', // Not needed for access check, avoids DO lookup
+    org_id,
+    is_public,
+  };
 }
 
 export interface WorkerScript {
@@ -588,53 +1103,79 @@ export interface WorkerScript {
   preview_error: string | null;
 }
 
-export async function listWorkerScripts(orgId: string): Promise<WorkerScript[]> {
-  return withRpc((rpc) => rpc.listWorkerScripts(orgId));
+export async function listWorkerScripts(env: AuthEnv, orgId: string): Promise<WorkerScript[]> {
+  const stub = getOrgStub(env, orgId);
+  return stub.listWorkerScripts();
 }
 
-export async function listWorkerScriptsByWorkspace(workspaceId: string): Promise<WorkerScript[]> {
-  return withRpc((rpc) => rpc.listWorkerScriptsByWorkspace(workspaceId));
+export async function listWorkerScriptsByWorkspace(env: AuthEnv, workspaceId: string): Promise<WorkerScript[]> {
+  const wsStub = getWorkspaceStub(env, workspaceId);
+  const info = await wsStub.getInfo();
+  if (!info) return [];
+  const orgStub = getOrgStub(env, info.org_id);
+  return orgStub.listWorkerScriptsByWorkspace(workspaceId);
 }
 
 export async function getWorkerScript(
+  env: AuthEnv,
   orgId: string,
   scriptName: string
 ): Promise<WorkerScript | null> {
-  return withRpc((rpc) => rpc.getWorkerScript(orgId, scriptName));
+  const stub = getOrgStub(env, orgId);
+  return stub.getWorkerScript(scriptName);
 }
 
 export async function deleteWorkerScript(
+  env: AuthEnv,
   orgId: string,
   scriptName: string,
   actorId: string
 ): Promise<boolean> {
-  return withRpc((rpc) => rpc.deleteWorkerScript(orgId, scriptName, actorId));
+  const stub = getOrgStub(env, orgId);
+  const result = await stub.deleteWorkerScript(scriptName, actorId);
+  if (result) {
+    // Remove from global script→org index
+    await env.API_TOKENS.delete(`script_org:${scriptName}`);
+  }
+  return result;
 }
 
 export async function setWorkerScriptPublic(
+  env: AuthEnv,
   orgId: string,
   scriptName: string,
   isPublic: boolean,
   actorId: string
 ): Promise<WorkerScript | null> {
-  return withRpc((rpc) => rpc.setWorkerScriptPublic(orgId, scriptName, isPublic, actorId));
+  const stub = getOrgStub(env, orgId);
+  const script = await stub.setWorkerScriptPublic(scriptName, isPublic, actorId);
+  if (script) {
+    // Update the denormalized KV index
+    await env.API_TOKENS.put(
+      `script_org:${scriptName}`,
+      JSON.stringify({ org_id: orgId, is_public: script.is_public })
+    );
+  }
+  return script;
 }
 
 export async function adminSetAppPublic(
+  env: AuthEnv,
   orgId: string,
   scriptName: string,
   isPublic: boolean,
   actorId: string
 ): Promise<WorkerScript | null> {
-  return withRpc((rpc) => rpc.setWorkerScriptPublic(orgId, scriptName, isPublic, actorId));
+  return setWorkerScriptPublic(env, orgId, scriptName, isPublic, actorId);
 }
 
 export async function adminDeleteApp(
+  env: AuthEnv,
   orgId: string,
   scriptName: string,
   actorId: string
 ): Promise<boolean> {
-  return withRpc((rpc) => rpc.deleteWorkerScript(orgId, scriptName, actorId));
+  return deleteWorkerScript(env, orgId, scriptName, actorId);
 }
 
 // Worker cross-domain auth functions
@@ -660,15 +1201,21 @@ export interface DispatcherSession {
   last_accessed: number;
 }
 
-export async function validateAndConsumeWorkerAuthState(state: string): Promise<WorkerAuthState | null> {
-  return withRpc((rpc) => rpc.validateAndConsumeAuthStateRpc(state));
+export async function validateAndConsumeWorkerAuthState(env: AuthEnv, state: string): Promise<WorkerAuthState | null> {
+  return validateAndConsumeAuthState(env.API_TOKENS, state);
 }
 
-export async function createWorkerAuthToken(
+export async function createWorkerAuthTokenFn(
+  env: AuthEnv,
   userId: string,
   orgId: string,
   state: string,
   scriptName: string
 ): Promise<string> {
-  return withRpc((rpc) => rpc.createWorkerAuthTokenRpc(userId, orgId, state, scriptName));
+  return createWorkerAuthToken(env.API_TOKENS, {
+    user_id: userId,
+    org_id: orgId,
+    state,
+    script_name: scriptName,
+  });
 }

@@ -11,13 +11,12 @@
 		// "PROXY_PROVIDERS": "[{\"name\":\"anthropic\",\"type\":\"anthropic\"},{\"name\":\"foundry\",\"type\":\"foundry\"},{\"name\":\"bedrock\",\"type\":\"bedrock\",\"modelId\":\"anthropic.claude-3-5-sonnet-20241022-v2:0\"}]"
 	},
 
-	"services": [
-		{
-			"binding": "MAIN_RPC",
-			"service": "chiridion-app",
-			"entrypoint": "DoRpcService",
-		}
-	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app" }
+		]
+	},
+
 	"env": {
 		"prod": {
 			"name": "chiridion-llm-proxy",
@@ -25,13 +24,11 @@
 				"PROXY_FALLBACK_ORDER": "bedrock-api-key,foundry,anthropic",
 				"ANTHROPIC_VERSION": "2023-06-01"
 			},
-			"services": [
-				{
-					"binding": "MAIN_RPC",
-					"service": "chiridion-app",
-					"entrypoint": "DoRpcService",
-				}
-			],
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app" }
+				]
+			},
 			"routes": [
 				{ "pattern": "llm-proxy.chiridion.ai/*", "zone_name": "chiridion.ai" }
 			]
@@ -42,13 +39,11 @@
 				"PROXY_FALLBACK_ORDER": "bedrock-api-key,foundry,anthropic",
 				"ANTHROPIC_VERSION": "2023-06-01"
 			},
-			"services": [
-				{
-					"binding": "MAIN_RPC",
-					"service": "chiridion-app-staging",
-					"entrypoint": "DoRpcService",
-				}
-			],
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-staging" }
+				]
+			},
 			"routes": [
 				{ "pattern": "llm-proxy.staging.chiridion.ai/*", "zone_name": "chiridion.ai" }
 			]
@@ -59,13 +54,11 @@
 				"PROXY_FALLBACK_ORDER": "bedrock-api-key,foundry,anthropic",
 				"ANTHROPIC_VERSION": "2023-06-01"
 			},
-			"services": [
-				{
-					"binding": "MAIN_RPC",
-					"service": "chiridion-app-dev-miguel",
-					"entrypoint": "DoRpcService",
-				}
-			],
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-dev-miguel" }
+				]
+			},
 			"routes": [
 				{ "pattern": "llm-proxy.dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" }
 			]
@@ -76,13 +69,11 @@
 				"PROXY_FALLBACK_ORDER": "bedrock-api-key,foundry,anthropic",
 				"ANTHROPIC_VERSION": "2023-06-01"
 			},
-			"services": [
-				{
-					"binding": "MAIN_RPC",
-					"service": "chiridion-app-dev-illiana",
-					"entrypoint": "DoRpcService",
-				}
-			],
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-dev-illiana" }
+				]
+			},
 			"routes": [
 				{ "pattern": "llm-proxy.dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" }
 			]

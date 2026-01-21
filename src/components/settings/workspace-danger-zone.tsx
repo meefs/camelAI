@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 
 import { Button } from "@/components/ui/button"
 import { ArchiveWorkspaceDialog } from "@/components/settings/archive-workspace-dialog"
@@ -20,7 +20,7 @@ export function WorkspaceDangerZone({
   isAdmin,
   isLastWorkspace,
 }: WorkspaceDangerZoneProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const { currentOrg, workspaces, switchWorkspace, refreshAuth } = useAuth()
   const [archiveOpen, setArchiveOpen] = useState(false)
 
@@ -40,7 +40,7 @@ export function WorkspaceDangerZone({
     } else {
       await refreshAuth()
     }
-    router.push("/settings/workspace/general")
+    navigate("/settings/workspace/general")
   }
 
   return (

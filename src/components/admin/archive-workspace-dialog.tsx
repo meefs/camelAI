@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 
 import {
   AlertDialog,
@@ -29,7 +29,7 @@ export function ArchiveWorkspaceDialog({
   workspaceName,
   disabled = false,
 }: ArchiveWorkspaceDialogProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [confirmText, setConfirmText] = useState("")
   const [loading, setLoading] = useState(false)
@@ -42,7 +42,7 @@ export function ArchiveWorkspaceDialog({
       await archiveAdminWorkspace(workspaceId)
       setOpen(false)
       setConfirmText("")
-      router.refresh()
+      // TODO: implement refresh
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to archive workspace")
     } finally {

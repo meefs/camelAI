@@ -1,7 +1,6 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import Image from 'next/image';
 import { useTheme } from 'next-themes';
 import { Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -70,7 +69,7 @@ export function IntegrationIcon({
       : `/logos/${type}.svg`;
 
   return (
-    <Image
+    <img
       src={src}
       alt={type}
       width={size}

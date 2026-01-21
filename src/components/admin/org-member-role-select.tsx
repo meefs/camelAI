@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 
 import {
   Select,
@@ -28,7 +28,7 @@ export function OrgMemberRoleSelect({
   currentRole,
   disabled = false,
 }: OrgMemberRoleSelectProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const [value, setValue] = useState<OrgRole>(currentRole)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -45,7 +45,7 @@ export function OrgMemberRoleSelect({
     startTransition(async () => {
       try {
         await updateAdminOrgMemberRole(orgId, userId, role)
-        router.refresh()
+        // TODO: implement refresh
       } catch (err) {
         setValue(currentRole)
         setError(err instanceof Error ? err.message : "Failed to update role")

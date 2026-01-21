@@ -7,12 +7,5 @@
 	"assets": {
 		"binding": "ASSETS",
 		"directory": ".open-next/assets"
-	},
-	"services": [
-		{
-			"binding": "DO_RPC",
-			"service": "chiridion-app",
-			"entrypoint": "DoRpcService"
-		}
-	]
+	}
 }

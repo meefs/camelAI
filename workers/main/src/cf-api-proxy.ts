@@ -6,6 +6,9 @@
  */
 
 import { isSignedToken, validateSignedToken } from './signed-tokens.js';
+import { mapCredentialsToEnvVars } from './integration-env.js';
+import { decryptCredentials } from '../../../src/lib/integration-crypto.js';
+import type { WorkspaceDO } from './workspace.js';
 
 // Re-export for index.ts to use
 export const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
@@ -21,12 +24,12 @@ export interface CfApiProxyEnv {
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
   TOKEN_SIGNING_SECRET: string;
+  INTEGRATION_SECRET_KEY: string;
   EMAIL_TO_USER: KVNamespace;
   API_TOKENS: KVNamespace;
-  WORKSPACE: DurableObjectNamespace;
+  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   ORG: DurableObjectNamespace;
   CHAT_THREAD: DurableObjectNamespace;
-  DO_RPC: Service;
   WORKER_BASE_URL?: string;
 }
 
@@ -341,13 +344,18 @@ async function syncDispatchScriptSecrets(
   scriptName: string,
   apiToken: string
 ): Promise<void> {
-  const rpc = env.DO_RPC as typeof env.DO_RPC & { [Symbol.dispose]?: () => void };
-  let integrationEnvVars: Record<string, string>;
-  try {
-    integrationEnvVars = await (rpc as any).getWorkspaceIntegrationEnvVars(workspaceId);
-  } finally {
-    rpc[Symbol.dispose]?.();
+  // Get integration env vars directly from WorkspaceDO
+  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  const records = await workspaceStub.getIntegrations();
+  const integrationEnvVars: Record<string, string> = {};
+
+  for (const record of records) {
+    if (record.enabled !== 1) continue;
+    const credentials = await decryptCredentials(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY);
+    const config = JSON.parse(record.config) as Record<string, unknown>;
+    Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.integration_type, credentials, config));
   }
+
   const secretEntries = Object.entries(integrationEnvVars);
 
   if (secretEntries.length === 0) {

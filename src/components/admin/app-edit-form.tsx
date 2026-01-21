@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -17,7 +17,7 @@ interface AppEditFormProps {
 }
 
 export function AppEditForm({ app }: AppEditFormProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [isPublic, setIsPublic] = useState(app.is_public);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +32,7 @@ export function AppEditForm({ app }: AppEditFormProps) {
     try {
       await updateAdminApp(app.org_id, app.script_name, { is_public: isPublic });
       setSuccess(true);
-      router.refresh();
+      // TODO: implement refresh;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

@@ -26,14 +26,14 @@
 			"remote": true
 		}
 	],
-	"services": [
-		{
-			"binding": "RPC",
-			"service": "chiridion-app-staging",
-			"entrypoint": "DoRpcService",
-			"remote": true
-		}
-	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-staging", "remote": true },
+			{ "name": "USER", "class_name": "UserDO", "script_name": "chiridion-app-staging", "remote": true },
+			{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app-staging", "remote": true },
+			{ "name": "SANDBOX", "class_name": "ThreadSandbox", "script_name": "chiridion-app-staging", "remote": true }
+		]
+	},
 
 	"env": {
 		// Query production environment
@@ -55,14 +55,14 @@
 					"remote": true
 				}
 			],
-			"services": [
-				{
-					"binding": "RPC",
-					"service": "chiridion-app",
-					"entrypoint": "DoRpcService",
-					"remote": true
-				}
-			]
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app", "remote": true },
+					{ "name": "USER", "class_name": "UserDO", "script_name": "chiridion-app", "remote": true },
+					{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app", "remote": true },
+					{ "name": "SANDBOX", "class_name": "ThreadSandbox", "script_name": "chiridion-app", "remote": true }
+				]
+			}
 		},
 
 		// Query dev-illiana environment
@@ -84,14 +84,14 @@
 					"remote": true
 				}
 			],
-			"services": [
-				{
-					"binding": "RPC",
-					"service": "chiridion-app-dev-illiana",
-					"entrypoint": "DoRpcService",
-					"remote": true
-				}
-			]
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-dev-illiana", "remote": true },
+					{ "name": "USER", "class_name": "UserDO", "script_name": "chiridion-app-dev-illiana", "remote": true },
+					{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app-dev-illiana", "remote": true },
+					{ "name": "SANDBOX", "class_name": "ThreadSandbox", "script_name": "chiridion-app-dev-illiana", "remote": true }
+				]
+			}
 		},
 
 		// Query dev-miguel environment
@@ -113,14 +113,14 @@
 					"remote": true
 				}
 			],
-			"services": [
-				{
-					"binding": "RPC",
-					"service": "chiridion-app-dev-miguel",
-					"entrypoint": "DoRpcService",
-					"remote": true
-				}
-			]
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-dev-miguel", "remote": true },
+					{ "name": "USER", "class_name": "UserDO", "script_name": "chiridion-app-dev-miguel", "remote": true },
+					{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app-dev-miguel", "remote": true },
+					{ "name": "SANDBOX", "class_name": "ThreadSandbox", "script_name": "chiridion-app-dev-miguel", "remote": true }
+				]
+			}
 		}
 	}
 }

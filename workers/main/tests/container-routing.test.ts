@@ -5,16 +5,26 @@
 import { describe, it, expect, vi } from 'vitest';
 import { WorkspaceContainer, getContainerIdForWorkspace, getWorkspaceContainer } from '../src/workspace-container';
 import type { WorkspaceContainerEnv } from '../src/workspace-container';
+import type { OrgDO } from '../src/auth';
+import type { WorkspaceDO } from '../src/workspace';
 
 function buildEnvVarsForTest(workspaceId: string, orgId: string) {
   const fakeEnv = {
     PROXY_BASE_URL: 'http://proxy.test.local',
     TOKEN_SIGNING_SECRET: 'test-signing-secret-for-unit-tests-only',
-    DO_RPC: {
-      getWorkspaceIntegrationEnvVars: async () => ({}),
-      getOrg: async () => ({ created_by: 'user-1' }),
-      [Symbol.dispose]: () => {},
-    },
+    INTEGRATION_SECRET_KEY: 'test-integration-secret-key',
+    ORG: {
+      get: () => ({
+        getInfo: async () => ({ created_by: 'user-1' }),
+      }),
+      idFromName: (name: string) => name,
+    } as unknown as DurableObjectNamespace<OrgDO>,
+    WORKSPACE: {
+      get: () => ({
+        getIntegrations: async () => [],
+      }),
+      idFromName: (name: string) => name,
+    } as unknown as DurableObjectNamespace<WorkspaceDO>,
   } as unknown as WorkspaceContainerEnv;
 
   const container = {

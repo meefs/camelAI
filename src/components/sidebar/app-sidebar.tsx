@@ -1,8 +1,7 @@
 "use client"
 
 import { AppWindowMac, Cable, Home, LayoutGrid, MessagesSquare } from "lucide-react"
-import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { Link, useLocation } from "react-router"
 
 import { useAuth } from "@/contexts/AuthContext"
 import { NavUser } from "@/components/sidebar/nav-user"
@@ -22,7 +21,7 @@ import {
 type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
 
 export function AppSidebar(props: AppSidebarProps) {
-  const pathname = usePathname()
+  const { pathname } = useLocation()
   const { currentWorkspace } = useAuth()
   const isHome = pathname === "/"
   const isHistory = pathname === "/history"
@@ -43,7 +42,7 @@ export function AppSidebar(props: AppSidebarProps) {
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="New Chat" isActive={isHome}>
-                <Link href="/">
+                <Link to="/">
                   <Home />
                   <span>New Chat</span>
                 </Link>
@@ -51,7 +50,7 @@ export function AppSidebar(props: AppSidebarProps) {
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="Computer" isActive={isComputer}>
-                <Link href={computerHref}>
+                <Link to={computerHref}>
                   <AppWindowMac />
                   <span>Computer</span>
                 </Link>
@@ -59,7 +58,7 @@ export function AppSidebar(props: AppSidebarProps) {
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="Chat History" isActive={isHistory}>
-                <Link href="/history">
+                <Link to="/history">
                   <MessagesSquare />
                   <span>Chat History</span>
                 </Link>
@@ -67,7 +66,7 @@ export function AppSidebar(props: AppSidebarProps) {
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="Connections" isActive={isConnections}>
-                <Link href="/connections">
+                <Link to="/connections">
                   <Cable />
                   <span>Connections</span>
                 </Link>
@@ -75,7 +74,7 @@ export function AppSidebar(props: AppSidebarProps) {
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="Apps" isActive={isApps}>
-                <Link href="/apps">
+                <Link to="/apps">
                   <LayoutGrid />
                   <span>Apps</span>
                 </Link>

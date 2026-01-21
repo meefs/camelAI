@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Search } from 'lucide-react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useLocation, useNavigate, useSearchParams } from 'react-router';
 
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
 import { cn } from '@/lib/utils';
@@ -18,9 +18,9 @@ export function AdminSearch({
   className,
   inputClassName,
 }: AdminSearchProps) {
-  const searchParams = useSearchParams();
-  const pathname = usePathname();
-  const router = useRouter();
+  const [searchParams] = useSearchParams();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
   const currentSearch = searchParams.get('search') ?? '';
   const [query, setQuery] = useState(currentSearch);
 
@@ -41,11 +41,11 @@ export function AdminSearch({
       }
       params.delete('offset');
       const queryString = params.toString();
-      router.replace(queryString ? `${pathname}?${queryString}` : pathname);
+      navigate(queryString ? `${pathname}?${queryString}` : pathname);
     }, 300);
 
     return () => clearTimeout(timeout);
-  }, [query, currentSearch, pathname, router, searchParams]);
+  }, [query, currentSearch, pathname, navigate, searchParams]);
 
   return (
     <InputGroup className={cn("h-8", className)}>

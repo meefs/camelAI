@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 
 import {
   Dialog,
@@ -41,7 +41,7 @@ export function TransferOwnershipDialog({
   orgName,
   members,
 }: TransferOwnershipDialogProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [selectedId, setSelectedId] = useState("")
   const [loading, setLoading] = useState(false)
@@ -60,7 +60,7 @@ export function TransferOwnershipDialog({
       await transferAdminOrgOwnership(orgId, selectedId)
       setOpen(false)
       setSelectedId("")
-      router.refresh()
+      // TODO: implement refresh
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to transfer ownership")
     } finally {

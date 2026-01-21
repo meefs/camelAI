@@ -1,7 +1,6 @@
 "use client"
 
-import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { Link, useLocation } from "react-router"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -50,13 +49,13 @@ function NavLink({
         isActive && "bg-muted text-foreground"
       )}
     >
-      <Link href={href}>{label}</Link>
+      <Link to={href}>{label}</Link>
     </Button>
   )
 }
 
 export function SettingsNav() {
-  const pathname = usePathname()
+  const { pathname } = useLocation()
 
   return (
     <nav className="md:w-56 shrink-0">
@@ -72,7 +71,7 @@ export function SettingsNav() {
                   variant={isActive ? "secondary" : "ghost"}
                   className="shrink-0"
                 >
-                  <Link href={item.href}>{item.label}</Link>
+                  <Link to={item.href}>{item.label}</Link>
                 </Button>
               )
             })

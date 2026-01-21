@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import { Link } from 'react-router';
 import { useMemo, useState } from 'react';
 import { Building2, FolderKanban, MessageSquare, Plug, Rocket, UserX, Users } from 'lucide-react';
 import type { AdminOverview } from '@/types';
@@ -58,7 +58,7 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <Link href="/qaml-backdoor/users">
+            <Link to="/qaml-backdoor/users">
               <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
                 <CardHeader>
                   <div className="flex items-center justify-between">
@@ -70,7 +70,7 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
                 <CardContent className="text-2xl font-semibold">{overview.total_users}</CardContent>
               </Card>
             </Link>
-            <Link href="/qaml-backdoor/orgs">
+            <Link to="/qaml-backdoor/orgs">
               <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
                 <CardHeader>
                   <div className="flex items-center justify-between">
@@ -82,7 +82,7 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
                 <CardContent className="text-2xl font-semibold">{overview.total_orgs}</CardContent>
               </Card>
             </Link>
-            <Link href="/qaml-backdoor/workspaces">
+            <Link to="/qaml-backdoor/workspaces">
               <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
                 <CardHeader>
                   <div className="flex items-center justify-between">
@@ -94,7 +94,7 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
                 <CardContent className="text-2xl font-semibold">{overview.total_workspaces}</CardContent>
               </Card>
             </Link>
-            <Link href="/qaml-backdoor/threads">
+            <Link to="/qaml-backdoor/threads">
               <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
                 <CardHeader>
                   <div className="flex items-center justify-between">
@@ -106,7 +106,7 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
                 <CardContent className="text-2xl font-semibold">{threadCount}</CardContent>
               </Card>
             </Link>
-            <Link href="/qaml-backdoor/apps">
+            <Link to="/qaml-backdoor/apps">
               <Card size="sm" className="hover:border-primary/50 transition-colors cursor-pointer">
                 <CardHeader>
                   <div className="flex items-center justify-between">
@@ -166,7 +166,7 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">Recent Users</span>
                 <Link
-                  href="/qaml-backdoor/users"
+                  to="/qaml-backdoor/users"
                   className="text-xs text-muted-foreground hover:underline"
                 >
                   View all
@@ -200,7 +200,7 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
                       <tr key={user.id} className="border-b border-border last:border-b-0 hover:bg-muted/30">
                         <td className="px-4 py-3">
                           <Link
-                            href={`/qaml-backdoor/users/${user.id}`}
+                            to={`/qaml-backdoor/users/${user.id}`}
                             className="flex items-center gap-3 hover:underline"
                           >
                             <Avatar size="default">

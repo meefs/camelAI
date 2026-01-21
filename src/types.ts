@@ -175,6 +175,7 @@ export interface Workspace {
   avatar: Avatar;
   archived: boolean;
   archived_at?: number | null;
+  archived_by?: string | null;
 }
 
 export interface WorkspaceWithAccess extends Workspace {

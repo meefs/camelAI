@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,7 +21,7 @@ interface ThreadEditFormProps {
 }
 
 export function ThreadEditForm({ thread }: ThreadEditFormProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [title, setTitle] = useState(thread.title);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +37,7 @@ export function ThreadEditForm({ thread }: ThreadEditFormProps) {
       await updateAdminThread(thread.id, { title });
 
       setSuccess(true);
-      router.refresh();
+      // TODO: implement refresh;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

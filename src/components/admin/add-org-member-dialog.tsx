@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -30,7 +30,7 @@ interface AddOrgMemberDialogProps {
 }
 
 export function AddOrgMemberDialog({ orgId }: AddOrgMemberDialogProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [userId, setUserId] = useState("")
   const [role, setRole] = useState<"admin" | "member">("member")
@@ -50,7 +50,7 @@ export function AddOrgMemberDialog({ orgId }: AddOrgMemberDialogProps) {
         setOpen(false)
         setUserId("")
         setRole("member")
-        router.refresh()
+        // TODO: implement refresh
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Failed to add member")
       }

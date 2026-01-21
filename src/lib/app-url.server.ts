@@ -1,39 +1,47 @@
 /**
  * Server-side environment-aware app URL generation utilities.
- * Use this in Server Components and Route Handlers.
+ * Use this in React Router loaders and actions.
  */
-import { headers } from 'next/headers';
+import type { AppLoadContext } from 'react-router';
 import { getAppUrl as getAppUrlBase, getAppIframeUrl as getAppIframeUrlBase, getVanityDomain as getVanityDomainBase } from './app-url';
 
 /**
- * Get hostname from request headers (for Server Components).
+ * Get hostname from request or context.
  */
-async function getHostname(): Promise<string> {
-  const headerStore = await headers();
-  const host = headerStore.get('host');
-  return host?.split(':')[0] ?? 'chiridion.ai';
+function getHostnameFromRequest(request: Request): string {
+  const url = new URL(request.url);
+  return url.hostname;
 }
 
 /**
  * Get the vanity URL domain for deployed apps (server-side).
+ * Can accept either a Request, AppLoadContext with request, or nothing (defaults to chiridion.ai).
  */
-export async function getVanityDomain(): Promise<string> {
-  const hostname = await getHostname();
+export async function getVanityDomain(contextOrRequest?: AppLoadContext | Request): Promise<string> {
+  let hostname = 'chiridion.ai';
+
+  if (contextOrRequest instanceof Request) {
+    hostname = getHostnameFromRequest(contextOrRequest);
+  } else if (contextOrRequest && 'cloudflare' in contextOrRequest) {
+    // AppLoadContext doesn't have direct request access, use default
+    // The caller should pass the request if hostname matters
+  }
+
   return getVanityDomainBase(hostname);
 }
 
 /**
  * Get the full vanity URL for a deployed app (server-side).
  */
-export async function getAppUrl(scriptName: string): Promise<string> {
-  const hostname = await getHostname();
+export async function getAppUrl(scriptName: string, request?: Request): Promise<string> {
+  const hostname = request ? getHostnameFromRequest(request) : 'chiridion.ai';
   return getAppUrlBase(scriptName, hostname);
 }
 
 /**
  * Get the full iframe URL for a deployed app (server-side).
  */
-export async function getAppIframeUrl(scriptName: string): Promise<string> {
-  const hostname = await getHostname();
+export async function getAppIframeUrl(scriptName: string, request?: Request): Promise<string> {
+  const hostname = request ? getHostnameFromRequest(request) : 'chiridion.ai';
   return getAppIframeUrlBase(scriptName, hostname);
 }

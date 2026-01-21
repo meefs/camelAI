@@ -22,13 +22,6 @@
       "remote": true
 		}
 	],
-	"services": [
-		{
-			"binding": "DO_RPC",
-			"service": "chiridion-app",
-			"entrypoint": "DoRpcService"
-		}
-	],
 	"kv_namespaces": [
 		{
 			"binding": "EMAIL_TO_USER",

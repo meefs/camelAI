@@ -6,7 +6,7 @@ import {
   MoreHorizontal,
   Plus,
 } from "lucide-react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -94,7 +94,7 @@ export function TeamTable({
   invitations,
   workspaces,
 }: TeamTableProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const { logout } = useAuth()
   const [inviteOpen, setInviteOpen] = useState(false)
   const [editingWorkspaceAccess, setEditingWorkspaceAccess] = useState(false)
@@ -174,7 +174,7 @@ export function TeamTable({
     try {
       await removeOrgMember(orgId, currentUserId)
       await logout()
-      router.push("/login")
+      navigate("/login")
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to leave organization"

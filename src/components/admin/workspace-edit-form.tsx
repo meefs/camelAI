@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -19,7 +19,7 @@ interface WorkspaceEditFormProps {
 }
 
 export function WorkspaceEditForm({ workspace }: WorkspaceEditFormProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const [name, setName] = useState(workspace.name)
   const [description, setDescription] = useState(workspace.description ?? "")
   const [avatar, setAvatar] = useState(workspace.avatar)
@@ -41,7 +41,7 @@ export function WorkspaceEditForm({ workspace }: WorkspaceEditFormProps) {
         avatar,
       })
       setSuccess(true)
-      router.refresh()
+      // TODO: implement refresh
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred")
     } finally {

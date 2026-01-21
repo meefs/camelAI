@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 import { toast } from "sonner"
 import { MoreHorizontal, Plus } from "lucide-react"
 
@@ -72,7 +72,7 @@ export function WorkspacesList({
   canManage,
   currentWorkspaceId,
 }: WorkspacesListProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const { refreshAuth, switchWorkspace } = useAuth()
   const [createOpen, setCreateOpen] = useState(false)
   const [archiveTarget, setArchiveTarget] = useState<WorkspaceSummary | null>(null)
@@ -85,7 +85,7 @@ export function WorkspacesList({
   const handleSwitch = async (workspaceId: string) => {
     try {
       await switchWorkspace(workspaceId)
-      router.refresh()
+      // TODO: implement refresh
       toast.success("Switched workspace")
     } catch (error) {
       toast.error(
@@ -111,7 +111,7 @@ export function WorkspacesList({
       }
 
       await refreshAuth()
-      router.refresh()
+      // TODO: implement refresh
       toast.success("Workspace archived")
     } catch (error) {
       toast.error(
@@ -287,7 +287,7 @@ export function WorkspacesList({
         onOpenChange={setCreateOpen}
         onCreated={() => {
           refreshAuth()
-          router.refresh()
+          // TODO: implement refresh
         }}
       />
       <ConfirmDialog

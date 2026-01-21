@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 import { z } from "zod"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
@@ -58,7 +58,7 @@ export function CreateOrgDialog({
   switchToNewOrg = true,
 }: CreateOrgDialogProps) {
   const isMobile = useIsMobile()
-  const router = useRouter()
+  const navigate = useNavigate()
   const { refreshAuth, switchOrg } = useAuth()
   const [saving, setSaving] = useState(false)
 
@@ -82,7 +82,7 @@ export function CreateOrgDialog({
       } else {
         await refreshAuth()
       }
-      router.refresh()
+      // TODO: implement refresh
       toast.success("Organization created")
       onCreated?.(org)
       form.reset({ name: "" })

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 import { toast } from "sonner"
 import { MoreHorizontal, Plus } from "lucide-react"
 
@@ -56,7 +56,7 @@ export function OrgMembershipsList({
   orgs,
   currentUserId,
 }: OrgMembershipsListProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const { currentOrg, switchOrg, refreshAuth } = useAuth()
   const [createOpen, setCreateOpen] = useState(false)
   const [leaveTargetId, setLeaveTargetId] = useState<string | null>(null)
@@ -69,7 +69,7 @@ export function OrgMembershipsList({
   const handleSwitchOrg = async (orgId: string) => {
     try {
       await switchOrg(orgId)
-      router.refresh()
+      // TODO: implement refresh
       toast.success("Switched organization")
     } catch (error) {
       toast.error(
@@ -83,7 +83,7 @@ export function OrgMembershipsList({
       await removeOrgMember(orgId, currentUserId)
       setOrgList((prev) => prev.filter((org) => org.org_id !== orgId))
       await refreshAuth()
-      router.refresh()
+      // TODO: implement refresh
       toast.success("Left organization")
     } catch (error) {
       toast.error(

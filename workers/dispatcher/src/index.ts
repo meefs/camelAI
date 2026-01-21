@@ -23,7 +23,6 @@
  * 5. Dispatcher validates token and creates session cookie
  */
 
-import type { DoRpcService } from '../../main/src/rpc-service';
 import {
   getDispatcherSession,
   createDispatcherSession,
@@ -37,6 +36,8 @@ import {
   DISPATCHER_SESSION_COOKIE,
   type DispatcherSession,
 } from '../../main/src/worker-auth';
+import { getSession as getSessionKV, type SessionData } from '../../main/src/session-kv';
+import type { OrgDO } from '../../main/src/auth';
 
 interface Env {
   DISPATCHER: {
@@ -46,9 +47,35 @@ interface Env {
   };
   API_TOKENS: KVNamespace;
   SESSIONS: KVNamespace;
-  MAIN_RPC: DoRpcService;
+  ORG: DurableObjectNamespace<OrgDO>;
   // Set to "true" to skip all auth checks (local development only)
   SKIP_AUTH?: string;
+}
+
+// Helper functions to replace RPC calls
+
+/**
+ * Get worker script access info from KV index
+ */
+async function getWorkerAccessInfo(
+  kv: KVNamespace,
+  scriptName: string
+): Promise<{ is_public: boolean; org_id: string } | null> {
+  const data = await kv.get(`script_org:${scriptName}`);
+  if (!data) return null;
+  return JSON.parse(data) as { org_id: string; is_public: boolean };
+}
+
+/**
+ * Check if user is a member of an org
+ */
+async function isOrgMember(
+  orgNamespace: DurableObjectNamespace<OrgDO>,
+  userId: string,
+  orgId: string
+): Promise<boolean> {
+  const stub = orgNamespace.get(orgNamespace.idFromName(orgId)) as DurableObjectStub<OrgDO>;
+  return stub.isMember(userId);
 }
 
 // Cookie settings for dispatcher session
@@ -283,12 +310,12 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
     return new Response('Invalid screenshot token', { status: 401 });
   }
 
-  // Get worker access info via RPC
+  // Get worker access info from KV index
   let accessInfo: { is_public: boolean; org_id: string } | null = null;
   try {
-    accessInfo = await env.MAIN_RPC.getWorkerAccessInfo(scriptName);
+    accessInfo = await getWorkerAccessInfo(env.API_TOKENS, scriptName);
   } catch (e) {
-    // Fail closed on RPC errors - don't bypass auth
+    // Fail closed on errors - don't bypass auth
     console.error(`[dispatcher] Error getting worker access info: ${e}`);
     return new Response('Service temporarily unavailable', { status: 503 });
   }
@@ -328,15 +355,15 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
     }
 
     try {
-      const session = await env.MAIN_RPC.getSession(mainSessionId);
+      const session = await getSessionKV(env.SESSIONS, mainSessionId);
       if (!session) {
         // Invalid/expired session
         return new Response('Unauthorized', { status: 401 });
       }
 
       // Check if user is a member of the org that owns this worker
-      const isMember = await env.MAIN_RPC.isOrgMember(session.user_id, accessInfo.org_id);
-      if (!isMember) {
+      const memberCheck = await isOrgMember(env.ORG, session.user_id, accessInfo.org_id);
+      if (!memberCheck) {
         // User is logged in but not a member of this workspace
         return new Response('Forbidden', { status: 403 });
       }

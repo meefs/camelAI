@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate, useFetcher } from 'react-router';
 import { ArrowDown, RefreshCw, ExternalLink, X } from 'lucide-react';
 import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -33,7 +33,6 @@ import {
   normalizeToolResultMessages,
 } from '@/lib/streaming';
 import {
-  createThread as createThreadAction,
   getThreadMessages,
   touchThread as touchThreadAction,
 } from '@/lib/server-actions/thread';
@@ -198,7 +197,8 @@ function MobileViewSwitcher({
 
 
 export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false, hostname }: ChatProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
+  const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
   const { user, currentWorkspace, loading: authLoading } = useAuth();
   const isMobile = useIsMobile();
   // Anchor to last message for existing threads with messages (not new threads)
@@ -401,9 +401,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   // Redirect to login if not authenticated
   useEffect(() => {
     if (!authLoading && !user) {
-      router.push('/login');
+      navigate('/login');
     }
-  }, [authLoading, user, router]);
+  }, [authLoading, user, navigate]);
 
   useEffect(() => {
     if (!threadId) {
@@ -819,9 +819,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     // 2. Workspace actually changed
     // 3. We're currently viewing a thread
     if (prevWorkspaceId && nextWorkspaceId && prevWorkspaceId !== nextWorkspaceId && threadId) {
-      router.push('/chat');
+      navigate('/chat');
     }
-  }, [currentWorkspace?.id, threadId, router]);
+  }, [currentWorkspace?.id, threadId, navigate]);
 
   // Cleanup on unmount to avoid orphaned WebSockets or reconnect timers
   useEffect(() => {
@@ -1392,7 +1392,31 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     }
   }, [resolvedWorkspaceId, handleFilesSelected]);
 
-  async function startNewChat() {
+  // Track pending message for new thread creation (used by effect that handles fetcher response)
+  const pendingNewChatRef = useRef<{ finalContent: string } | null>(null);
+
+  // Handle fetcher response for thread creation
+  useEffect(() => {
+    if (createThreadFetcher.state === 'idle' && createThreadFetcher.data) {
+      const data = createThreadFetcher.data;
+      if (data.thread && pendingNewChatRef.current) {
+        // Thread created successfully - store message and navigate
+        const { finalContent } = pendingNewChatRef.current;
+        sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: finalContent, threadId: data.thread.id }));
+        pendingNewChatRef.current = null;
+        navigate(`/chat/${data.thread.id}?newThread=1`);
+      } else if (data.error) {
+        // Thread creation failed
+        sessionStorage.removeItem(pendingMessageKey);
+        setIsCreatingThread(false);
+        setError('Failed to start a new chat');
+        console.error('Failed to create thread:', data.error);
+        pendingNewChatRef.current = null;
+      }
+    }
+  }, [createThreadFetcher.state, createThreadFetcher.data, navigate]);
+
+  function startNewChat() {
     if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId) return;
 
     // Don't allow sending while uploads are in progress
@@ -1416,19 +1440,14 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     // Clear attachments
     setAttachments([]);
 
-    try {
-      const thread = await createThreadAction({ firstMessage: userMessage });
-      // Store in sessionStorage to survive component remount during navigation
-      // Use finalContent (with file refs) for the actual message, userMessage for display
-      // Only store threadId for matching - workspace is determined by where thread was created
-      sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: finalContent, threadId: thread.id }));
-      router.push(`/chat/${thread.id}?newThread=1`);
-    } catch (err) {
-      sessionStorage.removeItem(pendingMessageKey);
-      setIsCreatingThread(false);
-      setError('Failed to start a new chat');
-      console.error('Failed to create thread:', err);
-    }
+    // Store pending message info for the effect to use after thread creation
+    pendingNewChatRef.current = { finalContent };
+
+    // Submit to route action to create thread
+    createThreadFetcher.submit(
+      { intent: 'createThread', firstMessage: userMessage },
+      { method: 'post', action: '/chat' }
+    );
   }
 
   function stopGeneration() {

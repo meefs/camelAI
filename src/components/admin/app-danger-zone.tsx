@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 import { Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -28,7 +28,7 @@ interface AppDangerZoneProps {
 }
 
 export function AppDangerZone({ app }: AppDangerZoneProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [isPending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
 
@@ -37,7 +37,7 @@ export function AppDangerZone({ app }: AppDangerZoneProps) {
       try {
         await deleteAdminApp(app.org_id, app.script_name);
         toast.success('App deleted successfully');
-        router.push('/qaml-backdoor/apps');
+        navigate('/qaml-backdoor/apps');
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to delete app');
         setOpen(false);

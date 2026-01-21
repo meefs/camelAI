@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -35,7 +35,7 @@ export function OrgDangerZone({
   members,
   isOwner,
 }: OrgDangerZoneProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const { logout, refreshAuth } = useAuth()
   const [selectedNewOwner, setSelectedNewOwner] = useState<string | null>(null)
   const [transferOpen, setTransferOpen] = useState(false)
@@ -129,7 +129,7 @@ export function OrgDangerZone({
         onOpenChange={setDeleteOpen}
         onDeleted={async () => {
           await logout()
-          router.push("/login")
+          navigate("/login")
         }}
       />
     </div>

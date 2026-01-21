@@ -2,7 +2,7 @@
  * Admin CLI Worker
  *
  * Local-only worker for querying environment data.
- * Uses service bindings to call DoRpcService methods directly (no HTTP routes).
+ * Uses direct Durable Object bindings (no DoRpcService).
  *
  * Usage:
  *   npm run admin:staging     # Query staging
@@ -16,18 +16,223 @@
  *   curl http://localhost:8787/users
  */
 
-import type { KVNamespace, R2Bucket } from '@cloudflare/workers-types';
-import type { DoRpcService } from '../../main/src/rpc-service';
+import type { KVNamespace, R2Bucket, DurableObjectNamespace, DurableObjectStub } from '@cloudflare/workers-types';
+import type {
+	OrgDO,
+	UserDO,
+	UserProfile,
+	UserOrg,
+	OrgInfo,
+	OrgMember,
+	OrgThread,
+} from '../../main/src/auth';
+import type { WorkspaceDO, WorkspaceInfo } from '../../main/src/workspace';
+import type { WorkspaceContainer } from '../../main/src/workspace-container';
 
 interface Env {
 	EMAIL_TO_USER: KVNamespace;
 	R2: R2Bucket;
-	RPC: Service<DoRpcService>;
+	ORG: DurableObjectNamespace<OrgDO>;
+	USER: DurableObjectNamespace<UserDO>;
+	WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+	SANDBOX: DurableObjectNamespace<WorkspaceContainer>;
 	TARGET_HOST: string;
 }
 
-// Service binding with entrypoint gives us direct RPC access
-type Service<T> = T;
+// Helper to get typed DO stubs
+function getOrgStub(env: Env, orgId: string): DurableObjectStub<OrgDO> {
+	return env.ORG.get(env.ORG.idFromName(orgId)) as DurableObjectStub<OrgDO>;
+}
+
+function getUserStub(env: Env, userId: string): DurableObjectStub<UserDO> {
+	return env.USER.get(env.USER.idFromName(userId)) as DurableObjectStub<UserDO>;
+}
+
+function getWorkspaceStub(env: Env, workspaceId: string): DurableObjectStub<WorkspaceDO> {
+	return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as DurableObjectStub<WorkspaceDO>;
+}
+
+function getSandboxStub(env: Env, workspaceId: string): DurableObjectStub<WorkspaceContainer> {
+	return env.SANDBOX.get(env.SANDBOX.idFromName(workspaceId)) as DurableObjectStub<WorkspaceContainer>;
+}
+
+// Types for admin responses
+interface AdminUserSummary {
+	id: string;
+	email: string;
+	name: string | null;
+	created_at: number;
+	org_count: number;
+	is_superuser: boolean;
+}
+
+interface AdminOrgSummary extends OrgInfo {
+	member_count: number;
+	workspace_count: number;
+}
+
+interface AdminThreadWithContext extends OrgThread {
+	org_id: string;
+	org_name: string;
+	workspace_name: string;
+}
+
+interface AdminOverview {
+	user_count: number;
+	org_count: number;
+	membership_count: number;
+	users: AdminUserSummary[];
+}
+
+// Helper: Collect all user IDs from KV
+async function collectAllUserIds(env: Env): Promise<string[]> {
+	const allKeys: string[] = [];
+	let cursor: string | undefined;
+
+	while (true) {
+		const list = await env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
+		for (const key of list.keys) {
+			allKeys.push(key.name);
+		}
+		if (list.list_complete || !list.cursor) break;
+		cursor = list.cursor;
+	}
+
+	const userIdResults = await Promise.all(allKeys.map((key) => env.EMAIL_TO_USER.get(key)));
+	return userIdResults.filter((id): id is string => id !== null && !id.startsWith('{'));
+}
+
+// Helper: Collect all org IDs from user memberships
+async function collectAllOrgIds(env: Env): Promise<Set<string>> {
+	const userIds = await collectAllUserIds(env);
+	const orgIds = new Set<string>();
+
+	await Promise.all(
+		userIds.map(async (userId) => {
+			try {
+				const userStub = getUserStub(env, userId);
+				const orgs = await userStub.getOrgs();
+				for (const org of orgs) {
+					orgIds.add(org.org_id);
+				}
+			} catch {
+				// User may not exist
+			}
+		})
+	);
+
+	return orgIds;
+}
+
+// Admin helper: Get overview (aggregated counts)
+async function getAdminOverview(env: Env): Promise<AdminOverview> {
+	const userIds = await collectAllUserIds(env);
+	const seenOrgIds = new Set<string>();
+	let membershipCount = 0;
+
+	const users: AdminUserSummary[] = [];
+
+	await Promise.all(
+		userIds.map(async (userId) => {
+			try {
+				const userStub = getUserStub(env, userId);
+				const [profile, orgs] = await Promise.all([userStub.getProfile(), userStub.getOrgs()]);
+
+				if (profile) {
+					users.push({
+						id: profile.id,
+						email: profile.email,
+						name: profile.name,
+						created_at: profile.created_at,
+						org_count: orgs.length,
+						is_superuser: profile.is_superuser,
+					});
+
+					membershipCount += orgs.length;
+					for (const org of orgs) {
+						seenOrgIds.add(org.org_id);
+					}
+				}
+			} catch {
+				// User may not exist
+			}
+		})
+	);
+
+	return {
+		user_count: users.length,
+		org_count: seenOrgIds.size,
+		membership_count: membershipCount,
+		users,
+	};
+}
+
+// Admin helper: Get all orgs with member/workspace counts
+async function getAllOrgs(env: Env): Promise<AdminOrgSummary[]> {
+	const orgIds = await collectAllOrgIds(env);
+	const orgs: AdminOrgSummary[] = [];
+
+	await Promise.all(
+		Array.from(orgIds).map(async (orgId) => {
+			try {
+				const orgStub = getOrgStub(env, orgId);
+				const [info, members, workspaces] = await Promise.all([
+					orgStub.getInfo(),
+					orgStub.getMembers(),
+					orgStub.getWorkspaces(),
+				]);
+
+				if (info) {
+					orgs.push({
+						...info,
+						member_count: members.length,
+						workspace_count: workspaces.length,
+					});
+				}
+			} catch {
+				// Org may not exist
+			}
+		})
+	);
+
+	return orgs;
+}
+
+// Admin helper: Get all threads across all orgs
+async function getAllThreads(env: Env): Promise<AdminThreadWithContext[]> {
+	const orgIds = await collectAllOrgIds(env);
+	const threads: AdminThreadWithContext[] = [];
+
+	await Promise.all(
+		Array.from(orgIds).map(async (orgId) => {
+			try {
+				const orgStub = getOrgStub(env, orgId);
+				const [info, orgThreads, workspaces] = await Promise.all([
+					orgStub.getInfo(),
+					orgStub.getThreads(),
+					orgStub.getWorkspaces(),
+				]);
+
+				if (info) {
+					const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
+
+					for (const thread of orgThreads) {
+						threads.push({
+							...thread,
+							org_id: orgId,
+							org_name: info.name,
+							workspace_name: workspaceMap.get(thread.workspace_id) || 'unknown',
+						});
+					}
+				}
+			} catch {
+				// Org may not exist
+			}
+		})
+	);
+
+	return threads;
+}
 
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
@@ -38,7 +243,7 @@ export default {
 			if (path === '/' || path === '/help') {
 				return jsonResponse({
 					name: 'Chiridion Admin CLI',
-					description: 'Local worker for querying live data via RPC service bindings',
+					description: 'Local worker for querying live data via direct DO bindings',
 					targetHost: env.TARGET_HOST,
 					usage: [
 						'npm run admin:staging',
@@ -56,62 +261,81 @@ export default {
 						'/r2/list': 'List R2 objects (with optional ?prefix=)',
 						'/r2/info/{key}': 'Get R2 object metadata',
 						'/r2/backup/{orgId}': 'Get backup info for an org',
-						'/container/{orgId}/ls': 'List container workspace files (optional ?path=, ?recursive=)',
-						'/container/{orgId}/read/{path}': 'Read a file from container workspace',
-						'/container/{orgId}/write': 'Write a file to container (POST: {path, content})',
-						'/container/{orgId}/mkdir': 'Create directory in container (POST: {path})',
-						'/container/{orgId}/delete': 'Delete file/dir in container (POST: {path})',
-						'/container/{orgId}/reset': 'Reset container (destroys and recreates)',
 						'/orgs/{orgId}/add-member': 'Add member to org (POST: {userId, role?, actorId?})',
 						'/threads/{threadId}/update': 'Update thread (POST: {created_by?, title?})',
 					},
 				});
 			}
 
-			// RPC-based endpoints (call DoRpcService directly via entrypoint binding)
+			// Overview endpoint
 			if (path === '/overview') {
-				const overview = await env.RPC.getAdminOverview();
+				const overview = await getAdminOverview(env);
 				return jsonResponse({
 					targetHost: env.TARGET_HOST,
 					...overview,
 				});
 			}
 
+			// Orgs endpoint
 			if (path === '/orgs') {
-				const { items: orgs, total } = await env.RPC.adminGetOrgsPaginated({ limit: 1000 });
+				const orgs = await getAllOrgs(env);
+
 				// Enrich with member details
 				const enrichedOrgs = await Promise.all(
 					orgs.map(async (org) => {
-						const members = await env.RPC.getOrgMembers(org.id);
+						const orgStub = getOrgStub(env, org.id);
+						const members = await orgStub.getMembers();
+
+						// Get user details for each member
+						const memberDetails = await Promise.all(
+							members.map(async (m) => {
+								try {
+									const userStub = getUserStub(env, m.user_id);
+									const profile = await userStub.getProfile();
+									return {
+										user_id: m.user_id,
+										email: profile?.email || 'unknown',
+										name: profile?.name || null,
+										role: m.role,
+										joined_at: m.joined_at,
+									};
+								} catch {
+									return {
+										user_id: m.user_id,
+										email: 'unknown',
+										name: null,
+										role: m.role,
+										joined_at: m.joined_at,
+									};
+								}
+							})
+						);
+
 						return {
 							id: org.id,
 							name: org.name,
 							created_by: org.created_by,
 							created_at: org.created_at,
 							member_count: org.member_count,
-							members: members.map((m) => ({
-								user_id: m.user.id,
-								email: m.user.email,
-								name: m.user.name,
-								role: m.role,
-								joined_at: m.joined_at,
-							})),
+							members: memberDetails,
 						};
 					})
 				);
+
 				return jsonResponse({
 					targetHost: env.TARGET_HOST,
-					count: total,
+					count: orgs.length,
 					orgs: enrichedOrgs,
 				});
 			}
 
+			// Users endpoint
 			if (path === '/users') {
-				const { items: users, total } = await env.RPC.adminGetUsersPaginated({ limit: 1000 });
+				const overview = await getAdminOverview(env);
 				return jsonResponse({
 					targetHost: env.TARGET_HOST,
-					count: total,
-					users,
+					count: overview.users.length,
+					users: overview.users,
 				});
 			}
 
@@ -119,18 +343,20 @@ export default {
 			const userOrgsMatch = path.match(/^\/users\/([^\/]+)\/orgs$/);
 			if (userOrgsMatch) {
 				const userId = decodeURIComponent(userOrgsMatch[1]!);
-				const orgs = await env.RPC.getUserOrgs(userId);
+				const userStub = getUserStub(env, userId);
+				const orgs = await userStub.getOrgs();
 				return jsonResponse({
 					userId,
 					orgs,
 				});
 			}
 
+			// Threads endpoint
 			if (path === '/threads') {
-				const { items: threads, total } = await env.RPC.adminGetThreadsPaginated({ limit: 1000 });
+				const threads = await getAllThreads(env);
 				return jsonResponse({
 					targetHost: env.TARGET_HOST,
-					count: total,
+					count: threads.length,
 					threads,
 				});
 			}
@@ -143,9 +369,24 @@ export default {
 				if (!body.userId) {
 					return jsonResponse({ error: 'userId required' }, 400);
 				}
+
+				// Validate user exists
+				const userStub = getUserStub(env, body.userId);
+				const profile = await userStub.getProfile();
+				if (!profile) {
+					return jsonResponse({ error: 'User not found' }, 404);
+				}
+
 				const role = (body.role || 'member') as 'admin' | 'member';
 				const actorId = body.actorId || 'admin-cli';
-				await env.RPC.adminAddOrgMember(orgId, body.userId, role, actorId);
+
+				// Add to org
+				const orgStub = getOrgStub(env, orgId);
+				await orgStub.addMember(body.userId, role, actorId);
+
+				// Add org membership to user
+				await userStub.addOrg(orgId, role, null);
+
 				return jsonResponse({
 					success: true,
 					orgId,
@@ -162,10 +403,25 @@ export default {
 				if (!body.title && !body.created_by) {
 					return jsonResponse({ error: 'At least one of title or created_by required' }, 400);
 				}
-				const result = await env.RPC.adminUpdateThread(threadId, body);
+
+				// Search for thread in all orgs
+				const orgIds = await collectAllOrgIds(env);
+				let result: OrgThread | null = null;
+
+				for (const orgId of orgIds) {
+					const orgStub = getOrgStub(env, orgId);
+					const thread = await orgStub.getThread(threadId);
+					if (thread) {
+						const updated = await orgStub.adminUpdateThread(threadId, body, 'admin-cli');
+						result = updated;
+						break;
+					}
+				}
+
 				if (!result) {
 					return jsonResponse({ error: 'Thread not found', threadId }, 404);
 				}
+
 				return jsonResponse({
 					success: true,
 					thread: result,
@@ -197,16 +453,6 @@ export default {
 			if (path.startsWith('/kv/')) {
 				const key = decodeURIComponent(path.slice(4));
 				return await getKVValue(env, key);
-			}
-
-			// Container filesystem endpoints
-			const containerMatch = path.match(/^\/container\/([^\/]+)\/(ls|read|write|mkdir|delete|reset)(\/.*)?$/);
-			if (containerMatch) {
-				const orgId = decodeURIComponent(containerMatch[1]!);
-				const action = containerMatch[2]!;
-				const pathArg = containerMatch[3] ? decodeURIComponent(containerMatch[3]) : undefined;
-
-				return await handleContainerAction(env, request, url, orgId, action, pathArg);
 			}
 
 			return jsonResponse({ error: 'Not found', path }, 404);
@@ -317,12 +563,15 @@ async function getOrgBackupInfo(env: Env, orgId: string): Promise<Response> {
 	const obj = await env.R2.head(backupKey);
 
 	if (!obj) {
-		return jsonResponse({
-			orgId,
-			backupKey,
-			exists: false,
-			message: 'No backup found for this org',
-		}, 404);
+		return jsonResponse(
+			{
+				orgId,
+				backupKey,
+				exists: false,
+				message: 'No backup found for this org',
+			},
+			404
+		);
 	}
 
 	return jsonResponse({
@@ -342,134 +591,4 @@ function formatBytes(bytes: number): string {
 	const sizes = ['Bytes', 'KB', 'MB', 'GB'];
 	const i = Math.floor(Math.log(bytes) / Math.log(k));
 	return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
-
-// Handle container filesystem actions
-async function handleContainerAction(
-	env: Env,
-	request: Request,
-	url: URL,
-	orgId: string,
-	action: string,
-	pathArg?: string
-): Promise<Response> {
-	try {
-		switch (action) {
-			case 'ls': {
-				const listPath = url.searchParams.get('path') || pathArg || '/';
-				const recursive = url.searchParams.get('recursive') === 'true';
-				const includeHidden = url.searchParams.get('includeHidden') !== 'false';
-
-				const result = await env.RPC.listWorkspaceEntries(orgId, {
-					path: listPath,
-					recursive,
-					includeHidden,
-				});
-
-				return jsonResponse({
-					orgId,
-					...result,
-				});
-			}
-
-			case 'read': {
-				if (!pathArg) {
-					return jsonResponse({ error: 'Path required for read action' }, 400);
-				}
-
-				const result = await env.RPC.readWorkspaceFile(orgId, pathArg);
-				if (!result) {
-					return jsonResponse({ error: 'File not found', path: pathArg }, 404);
-				}
-
-				return jsonResponse({
-					orgId,
-					path: result.workspacePath,
-					content: result.result.content,
-					size: result.result.size,
-					mimeType: result.result.mimeType,
-					isBinary: result.result.isBinary,
-					encoding: result.result.encoding,
-				});
-			}
-
-			case 'write': {
-				if (request.method !== 'POST') {
-					return jsonResponse({ error: 'POST required for write action' }, 405);
-				}
-
-				const body = (await request.json()) as { path?: string; content?: string };
-				const writePath = body.path || pathArg;
-				if (!writePath) {
-					return jsonResponse({ error: 'Path required for write action' }, 400);
-				}
-				if (body.content === undefined) {
-					return jsonResponse({ error: 'Content required for write action' }, 400);
-				}
-
-				const result = await env.RPC.writeWorkspaceFile(orgId, writePath, body.content);
-				return jsonResponse({
-					orgId,
-					path: result.workspacePath,
-					success: result.result.success,
-				});
-			}
-
-			case 'mkdir': {
-				if (request.method !== 'POST') {
-					return jsonResponse({ error: 'POST required for mkdir action' }, 405);
-				}
-
-				const body = (await request.json()) as { path?: string };
-				const mkdirPath = body.path || pathArg;
-				if (!mkdirPath) {
-					return jsonResponse({ error: 'Path required for mkdir action' }, 400);
-				}
-
-				const result = await env.RPC.mkdirWorkspacePath(orgId, mkdirPath);
-				return jsonResponse({
-					orgId,
-					path: result.workspacePath,
-					success: result.result.success,
-				});
-			}
-
-			case 'delete': {
-				if (request.method !== 'POST') {
-					return jsonResponse({ error: 'POST required for delete action' }, 405);
-				}
-
-				const body = (await request.json()) as { path?: string };
-				const deletePath = body.path || pathArg;
-				if (!deletePath) {
-					return jsonResponse({ error: 'Path required for delete action' }, 400);
-				}
-
-				const result = await env.RPC.deleteWorkspacePath(orgId, deletePath);
-				return jsonResponse({
-					orgId,
-					path: result.workspacePath,
-					success: result.result.success,
-				});
-			}
-
-			case 'reset': {
-				if (request.method !== 'POST') {
-					return jsonResponse({ error: 'POST required for reset action' }, 405);
-				}
-
-				const result = await env.RPC.resetOrgContainer(orgId);
-				return jsonResponse({
-					orgId,
-					...result,
-				});
-			}
-
-			default:
-				return jsonResponse({ error: `Unknown container action: ${action}` }, 400);
-		}
-	} catch (error) {
-		const message = error instanceof Error ? error.message : 'Unknown error';
-		return jsonResponse({ error: message, orgId, action }, 500);
-	}
 }

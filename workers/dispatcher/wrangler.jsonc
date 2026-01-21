@@ -24,14 +24,11 @@
 			"id": "f5ab08fdb1d7404fbc45a171217b4a27"
 		}
 	],
-	"services": [
-		{
-			"binding": "MAIN_RPC",
-			"service": "chiridion-app",
-			"entrypoint": "DoRpcService",
-			"remote": true
-		}
-	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app" }
+		]
+	},
 	"env": {
 		"prod": {
 			"name": "chiridion-dispatcher",
@@ -55,14 +52,11 @@
 					"id": "67958a5b0d104621bd93c91c802ccd1c"
 				}
 			],
-			"services": [
-				{
-					"binding": "MAIN_RPC",
-					"service": "chiridion-app",
-					"entrypoint": "DoRpcService",
-					"remote": true
-				}
-			]
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app" }
+				]
+			}
 		},
 		"staging": {
 			"name": "chiridion-dispatcher-staging",
@@ -86,14 +80,11 @@
 					"id": "f5ab08fdb1d7404fbc45a171217b4a27"
 				}
 			],
-			"services": [
-				{
-					"binding": "MAIN_RPC",
-					"service": "chiridion-app-staging",
-					"entrypoint": "DoRpcService",
-					"remote": true
-				}
-			]
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-staging" }
+				]
+			}
 		},
 		"dev-miguel": {
 			"name": "chiridion-dispatcher-dev-miguel",
@@ -117,14 +108,11 @@
 					"id": "a38773869d2e465fbf705c81fa2e01eb"
 				}
 			],
-			"services": [
-				{
-					"binding": "MAIN_RPC",
-					"service": "chiridion-app-dev-miguel",
-					"entrypoint": "DoRpcService",
-					"remote": true
-				}
-			]
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-dev-miguel" }
+				]
+			}
 		},
 		"dev-illiana": {
 			"name": "chiridion-dispatcher-dev-illiana",
@@ -148,14 +136,11 @@
 					"id": "c632a963433e4949b6dea43728034b36"
 				}
 			],
-			"services": [
-				{
-					"binding": "MAIN_RPC",
-					"service": "chiridion-app-dev-illiana",
-					"entrypoint": "DoRpcService",
-					"remote": true
-				}
-			]
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-dev-illiana" }
+				]
+			}
 		},
 		"local": {
 			"name": "chiridion-dispatcher-local",
@@ -182,14 +167,11 @@
 					"id": "f5ab08fdb1d7404fbc45a171217b4a27"
 				}
 			],
-			"services": [
-				{
-					"binding": "MAIN_RPC",
-					"service": "chiridion-app",
-					"entrypoint": "DoRpcService",
-					"remote": true
-				}
-			]
+			"durable_objects": {
+				"bindings": [
+					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app" }
+				]
+			}
 		}
 	}
 }

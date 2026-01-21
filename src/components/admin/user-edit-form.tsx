@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router';
 import type { User } from '@/types';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -18,7 +18,7 @@ interface UserEditFormProps {
 }
 
 export function UserEditForm({ user }: UserEditFormProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [name, setName] = useState(user.name || '');
   const [isSuperuser, setIsSuperuser] = useState(user.is_superuser);
   const [avatar, setAvatar] = useState(user.avatar);
@@ -41,7 +41,7 @@ export function UserEditForm({ user }: UserEditFormProps) {
       });
 
       setSuccess(true);
-      router.refresh();
+      // TODO: implement refresh;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
