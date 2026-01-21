@@ -16,13 +16,13 @@ import { spawn, execSync } from 'child_process';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { pipeline } from 'stream/promises';
-import os from 'os';
 
 // Optimized for R2 parallel performance based on benchmarks:
 // - Sweet spot: 48-64 parallel connections with 10-25MB chunks
 // - Linear scaling up to ~32 connections, diminishing returns after
 const PART_SIZE = 16 * 1024 * 1024; // 16MB parts (sweet spot for parallel transfers)
-const MAX_CONCURRENT = 48; // Parallel connections for both upload and download
+const MAX_CONCURRENT_UPLOAD = 48; // Parallel connections for upload
+const MAX_CONCURRENT_DOWNLOAD = 24; // Parallel connections for download (bounds memory buffer to ~384MB)
 
 const SNAPSHOT_KEY = 'workspace.tar.zst';
 
@@ -152,84 +152,109 @@ async function download(targetDir) {
     return true;
   }
 
-  // Parallel download using range requests
-  // Download to temp file first, then extract (simpler than streaming reassembly)
-  const tempFile = path.join(os.tmpdir(), `workspace-${Date.now()}.tar.zst`);
+  // Parallel download with streaming reassembly
+  // Downloads chunks in parallel, buffers out-of-order chunks in memory,
+  // and streams them to tar in order. No temp file needed.
+  const tar = spawn('tar', ['--zstd', '-xf', '-', '-C', targetDir], { stdio: ['pipe', 'inherit', 'inherit'] });
+
+  // Calculate chunks
+  const chunks = [];
+  for (let start = 0; start < fileSize; start += PART_SIZE) {
+    const end = Math.min(start + PART_SIZE - 1, fileSize - 1);
+    chunks.push({ start, end, index: chunks.length });
+  }
+
+  const numChunks = chunks.length;
+  console.error(`[sync] Streaming ${numChunks} chunks with ${MAX_CONCURRENT_DOWNLOAD} parallel connections...`);
+
+  // State for streaming reassembly
+  const chunkBuffer = new Map(); // chunkIndex -> Buffer (for out-of-order chunks)
+  let nextChunkToWrite = 0; // next chunk index tar is waiting for
+  let completedDownloads = 0;
+  let activeDownloads = 0;
+  const errors = [];
+  let tarError = null;
+
+  // Handle tar errors
+  tar.on('error', (err) => {
+    tarError = err;
+  });
+
+  // Write buffered chunks to tar in order
+  const writeChunksInOrder = async () => {
+    while (chunkBuffer.has(nextChunkToWrite)) {
+      if (tarError) throw tarError;
+
+      const data = chunkBuffer.get(nextChunkToWrite);
+      chunkBuffer.delete(nextChunkToWrite);
+
+      // Write to tar stdin with backpressure handling
+      const canContinue = tar.stdin.write(data);
+      if (!canContinue) {
+        await new Promise(resolve => tar.stdin.once('drain', resolve));
+      }
+
+      nextChunkToWrite++;
+    }
+  };
+
+  // Download a single chunk
+  const downloadChunk = async (chunk) => {
+    // Concurrency limiting
+    while (activeDownloads >= MAX_CONCURRENT_DOWNLOAD) {
+      await new Promise(r => setTimeout(r, 5));
+    }
+    activeDownloads++;
+
+    try {
+      const response = await client.send(new GetObjectCommand({
+        Bucket: config.bucket,
+        Key: key,
+        Range: `bytes=${chunk.start}-${chunk.end}`,
+      }));
+
+      // Read chunk into memory
+      const dataChunks = [];
+      for await (const data of response.Body) {
+        dataChunks.push(data);
+      }
+      const buffer = Buffer.concat(dataChunks);
+
+      // Store in buffer (will be written to tar in order)
+      chunkBuffer.set(chunk.index, buffer);
+      completedDownloads++;
+
+      // Try to write any chunks that are now in order
+      await writeChunksInOrder();
+
+      // Progress logging
+      if (completedDownloads % 10 === 0 || completedDownloads === numChunks) {
+        const pct = Math.round((completedDownloads / numChunks) * 100);
+        const bufferedMB = (chunkBuffer.size * PART_SIZE / 1024 / 1024).toFixed(0);
+        console.error(`[sync] Download progress: ${pct}% (${completedDownloads}/${numChunks} chunks, ~${bufferedMB}MB buffered)`);
+      }
+    } catch (err) {
+      errors.push({ chunk, error: err });
+    } finally {
+      activeDownloads--;
+    }
+  };
 
   try {
-    // Calculate chunks
-    const chunks = [];
-    for (let start = 0; start < fileSize; start += PART_SIZE) {
-      const end = Math.min(start + PART_SIZE - 1, fileSize - 1);
-      chunks.push({ start, end, index: chunks.length });
-    }
-
-    const numChunks = chunks.length;
-    console.error(`[sync] Downloading ${numChunks} chunks with ${MAX_CONCURRENT} parallel connections...`);
-
-    // Pre-allocate the file
-    const fd = await fs.open(tempFile, 'w');
-    await fd.truncate(fileSize);
-    await fd.close();
-
-    // Download chunks in parallel with concurrency limit
-    let completed = 0;
-    let activeDownloads = 0;
-    const errors = [];
-
-    const downloadChunk = async (chunk) => {
-      while (activeDownloads >= MAX_CONCURRENT) {
-        await new Promise(r => setTimeout(r, 5));
-      }
-      activeDownloads++;
-
-      try {
-        const response = await client.send(new GetObjectCommand({
-          Bucket: config.bucket,
-          Key: key,
-          Range: `bytes=${chunk.start}-${chunk.end}`,
-        }));
-
-        // Read the entire chunk into memory then write at correct offset
-        const dataChunks = [];
-        for await (const data of response.Body) {
-          dataChunks.push(data);
-        }
-        const buffer = Buffer.concat(dataChunks);
-
-        // Write at the correct offset
-        const handle = await fs.open(tempFile, 'r+');
-        await handle.write(buffer, 0, buffer.length, chunk.start);
-        await handle.close();
-
-        completed++;
-        if (completed % 10 === 0 || completed === numChunks) {
-          const pct = Math.round((completed / numChunks) * 100);
-          console.error(`[sync] Download progress: ${pct}% (${completed}/${numChunks} chunks)`);
-        }
-      } catch (err) {
-        errors.push({ chunk, error: err });
-      } finally {
-        activeDownloads--;
-      }
-    };
-
-    // Start all downloads
+    // Start all downloads in parallel
     await Promise.all(chunks.map(chunk => downloadChunk(chunk)));
 
     if (errors.length > 0) {
       throw new Error(`Failed to download ${errors.length} chunks: ${errors[0].error.message}`);
     }
 
-    const downloadElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    const elapsedSecs = Math.max(0.1, (Date.now() - startTime) / 1000);
-    const speed = (fileSize / 1024 / 1024 / elapsedSecs).toFixed(0);
-    console.error(`[sync] Download finished in ${downloadElapsed}s (${speed}MB/s), extracting...`);
+    // All chunks downloaded, write any remaining buffered chunks
+    await writeChunksInOrder();
 
-    // Extract from temp file
-    const extractStart = Date.now();
-    const tar = spawn('tar', ['--zstd', '-xf', tempFile, '-C', targetDir], { stdio: ['inherit', 'inherit', 'inherit'] });
+    // Signal end of data to tar
+    tar.stdin.end();
 
+    // Wait for tar to finish
     await new Promise((resolve, reject) => {
       tar.on('close', (code) => {
         if (code === 0 || code === 1) return resolve();
@@ -238,14 +263,16 @@ async function download(targetDir) {
       tar.on('error', reject);
     });
 
-    const extractElapsed = ((Date.now() - extractStart) / 1000).toFixed(1);
-    const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.error(`[sync] Extract complete in ${extractElapsed}s (total: ${totalElapsed}s)`);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const elapsedSecs = Math.max(0.1, (Date.now() - startTime) / 1000);
+    const speed = (fileSize / 1024 / 1024 / elapsedSecs).toFixed(0);
+    console.error(`[sync] Download + extract complete in ${elapsed}s (${speed}MB/s)`);
 
     return true;
-  } finally {
-    // Clean up temp file
-    await fs.rm(tempFile, { force: true }).catch(() => {});
+  } catch (err) {
+    // Kill tar on error
+    tar.kill('SIGTERM');
+    throw err;
   }
 }
 
@@ -306,7 +333,7 @@ async function upload(sourceDir) {
 
   // Upload a part with concurrency limiting
   const uploadPart = async (partNum, data) => {
-    while (activeUploads >= MAX_CONCURRENT) {
+    while (activeUploads >= MAX_CONCURRENT_UPLOAD) {
       await new Promise(r => setTimeout(r, 5));
     }
     activeUploads++;
