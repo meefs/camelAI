@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-21-sandbox-v18-event-debug';
+const VERSION = '2026-01-21-sandbox-v19-full-event-log';
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {
@@ -542,17 +542,8 @@ function startEventLoop(session) {
           break;
         }
 
-        // Log detailed event info for debugging
-        const eventSummary = {
-          type: event?.type,
-          subtype: event?.subtype,
-          eventType: event?.event?.type,
-          hasMessage: !!event?.message,
-          messageRole: event?.message?.role,
-          contentLength: Array.isArray(event?.message?.content) ? event.message.content.length : undefined,
-          contentTypes: Array.isArray(event?.message?.content) ? event.message.content.map(c => c?.type) : undefined,
-        };
-        log('[ws-server]', 'SDK event received', { threadId: session.threadId, eventCount, ...eventSummary });
+        // Log full event for debugging
+        log('[ws-server]', 'SDK event received', { threadId: session.threadId, eventCount, event });
 
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
