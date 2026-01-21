@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-18-v3
+# Version: 2026-01-21-v1
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Layer 1: Create claude user (separate from node user)
 RUN useradd -m -s /bin/bash claude
 
-# Layer 2: System deps + Bun + Verdaccio (changes rarely)
+# Layer 2: System deps + Bun + Verdaccio + JuiceFS (changes rarely)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -21,11 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     fuse \
+    fuse3 \
     libfuse2 \
+    libfuse3-3 \
+    sqlite3 \
   && rm -rf /var/lib/apt/lists/* \
   && npm install -g bun shadcn verdaccio pm2 \
   && curl -L -o /usr/local/bin/goofys https://github.com/kahing/goofys/releases/download/v0.24.0/goofys \
-  && chmod +x /usr/local/bin/goofys
+  && chmod +x /usr/local/bin/goofys \
+  && curl -fsSL https://d.juicefs.com/install | sh -
 
 # Layer 3: Chiridion Wrangler + Verdaccio local registry
 # Pre-publish chiridion-wrangler as "wrangler" so all npm/bun installs get our version
@@ -61,7 +65,7 @@ RUN bun install
 
 # Layer 5: App code (changes frequently) - copied after install for better caching
 COPY --chmod=755 sandbox/entrypoint.sh ./
-COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
+COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/r2-meta.mjs ./
 COPY sandbox/skills ./skills
 RUN chmod -R a+rX /app
 

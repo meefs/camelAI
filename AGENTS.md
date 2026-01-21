@@ -38,10 +38,11 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
      - MCP server endpoint (`/mcp`) with API key auth for sandbox containers (streamable HTTP transport)
 
 3. **Sandbox** (`sandbox/`)
-   - `entrypoint.sh` - Downloads/uploads workspace tar snapshots from R2, starts services
+   - `entrypoint.sh` - Mounts JuiceFS (R2 + SQLite metadata), handles tar migration, starts services
    - `ws-server.mjs` - WebSocket server running inside Cloudflare Container
    - Calls Claude SDK `query()` with streaming enabled
-   - `sync.mjs` - R2 tar snapshot download/upload
+   - `r2-meta.mjs` - JuiceFS SQLite metadata backup/restore to R2
+   - `sync.mjs` - R2 tar snapshot download (used for migration from old backups)
    - `control-plane.mjs` - Exec/filesystem API server for container management
 
 ## Key Files
@@ -73,8 +74,9 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/main/src/screenshot-queue.ts` | Screenshot queue handler for app previews |
 | `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
-| `sandbox/entrypoint.sh` | Container entrypoint that syncs R2 tar snapshots and starts services |
-| `sandbox/sync.mjs` | R2 tar snapshot download/upload |
+| `sandbox/entrypoint.sh` | Container entrypoint that mounts JuiceFS, handles tar migration, starts services |
+| `sandbox/r2-meta.mjs` | JuiceFS SQLite metadata backup/restore helper |
+| `sandbox/sync.mjs` | R2 tar snapshot download (used for migration) |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
 | `src/lib/integration-crypto.ts` | Credential encryption utilities |
 | `workers/main/src/rpc-service.ts` | DoRpcService - RPC methods for cross-worker calls |
@@ -134,15 +136,23 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 1. Streaming Task sub-agent tool_results are persisted to `/home/claude/.chiridion/task-results/{threadId}.jsonl` inside the container.
 2. `DoRpcService.getMessages` merges these updates into assistant messages so refreshes retain Task progress history.
 
-### Workspace Persistence (R2 Tar Snapshots)
-1. Container entrypoint downloads workspace tar snapshot from R2 (if present)
-2. Workspace is extracted to `R2_MOUNT_DIR` (defaults to `/home/claude`)
-3. Workspace data is stored under the workspace R2 prefix (e.g., `{orgId}/{workspaceId}/`)
-4. On shutdown, the container uploads the workspace tar snapshot back to R2
-5. Goofys mounts `/mnt/user-uploads` and `/mnt/user-outputs` for file sharing
+### Workspace Persistence (JuiceFS)
+JuiceFS provides a FUSE-based distributed filesystem with SQLite metadata and R2 data storage:
+
+1. Container entrypoint downloads JuiceFS SQLite metadata from R2 (stored as `juicefs-meta.db`)
+2. If no JuiceFS metadata exists but an old tar backup is found, the system migrates:
+   - Downloads and extracts the tar backup to a temp directory
+   - Formats a new JuiceFS volume
+   - Copies data to the JuiceFS mount
+   - Deletes the old tar backup from R2
+3. JuiceFS mounts at `R2_MOUNT_DIR` (defaults to `/home/claude`) with writeback caching
+4. Data is stored in R2 at `{bucket}/chiridion-{org}-{workspace}/`
+5. On shutdown, SQLite metadata is backed up to R2 using `.backup` command
+6. Background metadata upload loop runs every 60s during container lifetime
+7. Goofys mounts `/mnt/user-uploads` and `/mnt/user-outputs` for file sharing
 
 ### Async Workspace Warmup
-To reduce perceived latency from R2 restore, the app proactively warms up containers:
+To reduce perceived latency from JuiceFS mount, the app proactively warms up containers:
 1. `AuthContext` calls `useAutoWarmup(currentWorkspace?.id)` on workspace change
 2. The hook calls `warmupWorkspace` server action (fire-and-forget)
 3. Backend checks container state - if already healthy, returns `{ status: 'warm' }`
@@ -273,6 +283,16 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
 | `LOCAL_APP_PREVIEW_URL` | Optional override for local app preview screenshots (defaults to `https://hello-world-test.chiridion.app/`) |
 | `PROXY_BASE_URL` | Base URL for the LLM proxy used by sandbox containers (sets `ANTHROPIC_BASE_URL` in containers) |
+
+#### JuiceFS Container Variables (set automatically by worker)
+
+| Variable | Description |
+|----------|-------------|
+| `JUICEFS_META_DIR` | Directory for JuiceFS SQLite metadata (default: `/var/lib/juicefs`) |
+| `JUICEFS_CACHE_DIR` | Directory for JuiceFS FUSE cache (default: `/tmp/juicefs-cache`) |
+| `JUICEFS_UPLOAD_DELAY` | Delay before uploading dirty data to R2 (default: `60s`) |
+| `JUICEFS_BUFFER_SIZE` | Read/write buffer size in MB (default: `1024`) |
+| `JUICEFS_META_UPLOAD_INTERVAL` | Background metadata backup interval (default: `60s`) |
 
 #### OAuth Setup
 
@@ -493,8 +513,10 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 1. **Durable Objects not working locally**: Use `npm run dev` (wrangler-based dev) rather than `next dev`
 2. **Streaming not working**: Ensure `includePartialMessages: true` is set in ws-server.mjs
 3. **API key not found**: Check `.dev.vars` has `ANTHROPIC_API_KEY` set
-4. **Docker cache stale**: Add version comment to `ws-server.mjs` to invalidate cache
+4. **Docker cache stale**: Add version comment to `entrypoint.sh` or Dockerfile to invalidate cache
 5. **Session not persisting**: Ensure cookies are set with correct domain and the DO worker is running
+6. **JuiceFS mount fails**: Check `/dev/fuse` exists in container, verify R2 credentials are valid
+7. **JuiceFS performance issues**: JuiceFS FUSE has overhead; enable writeback caching in mount options
 
 ## Testing Strategy
 
