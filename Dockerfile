@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-21-v1
+# Version: 2026-01-21-v2
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -10,6 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN useradd -m -s /bin/bash claude
 
 # Layer 2: System deps + Bun + Verdaccio + JuiceFS (changes rarely)
+# Note: fuse3 replaces fuse (they conflict). libfuse2 provides compat for older tools.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -20,7 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     python3 \
     python3-pip \
-    fuse \
     fuse3 \
     libfuse2 \
     libfuse3-3 \
