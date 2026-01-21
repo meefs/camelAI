@@ -1,6 +1,7 @@
 import type { AppLoadContext } from 'react-router';
 import type { UserDO, OrgDO } from '../../workers/main/src/auth';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
+import type { ChatThreadDO } from '../../workers/main/src/durable-objects';
 
 /**
  * Cloudflare environment bindings available in React Router loaders/actions.
@@ -8,7 +9,7 @@ import type { WorkspaceDO } from '../../workers/main/src/workspace';
  */
 export interface CloudflareEnv {
   // Durable Objects
-  CHAT_THREAD: DurableObjectNamespace;
+  CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   SANDBOX: DurableObjectNamespace;
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
@@ -44,7 +45,7 @@ export interface CloudflareEnv {
   WORKER_BASE_URL: string;
   PROXY_BASE_URL: string;
   TOKEN_SIGNING_SECRET: string;
-  INTEGRATION_SECRET_KEY?: string;
+  INTEGRATION_SECRET_KEY: string;
 }
 
 /**

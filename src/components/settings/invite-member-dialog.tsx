@@ -1,9 +1,9 @@
 "use client"
 
-import { useState } from "react"
-import { z } from "zod"
-import { zodResolver } from "@hookform/resolvers/zod"
-import { useForm } from "react-hook-form"
+import { useEffect } from "react"
+import { useFetcher } from "react-router"
+import { useForm, getFormProps, getInputProps, getSelectProps, type SubmissionResult } from "@conform-to/react"
+import { parseWithZod } from "@conform-to/zod/v4"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -23,15 +23,8 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -39,115 +32,91 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { createInvitation } from "@/lib/server-actions/org"
 import { useIsMobile } from "@/hooks/use-mobile"
-import type { Invitation, OrgRole } from "@/types"
-
-const inviteSchema = z.object({
-  email: z.string().email("Enter a valid email"),
-  role: z.enum(["admin", "member", "viewer"]),
-})
-
-type InviteFormValues = z.infer<typeof inviteSchema>
+import { inviteMemberFormSchema } from "@/lib/schemas"
 
 interface InviteMemberDialogProps {
-  orgId: string
   open: boolean
   onOpenChange: (open: boolean) => void
-  onInvited?: (invitation: Pick<Invitation, "id" | "email" | "role" | "expires_at">) => void
 }
 
 export function InviteMemberDialog({
-  orgId,
   open,
   onOpenChange,
-  onInvited,
 }: InviteMemberDialogProps) {
   const isMobile = useIsMobile()
-  const [saving, setSaving] = useState(false)
+  const fetcher = useFetcher<{ result?: SubmissionResult<string[]>; success?: boolean; error?: string }>()
+  const saving = fetcher.state !== "idle"
 
-  const form = useForm<InviteFormValues>({
-    resolver: zodResolver(inviteSchema),
-    defaultValues: {
+  const [form, fields] = useForm({
+    lastResult: fetcher.data?.result,
+    onValidate({ formData }) {
+      return parseWithZod(formData, { schema: inviteMemberFormSchema })
+    },
+    defaultValue: {
       email: "",
       role: "member",
     },
+    shouldValidate: "onBlur",
+    shouldRevalidate: "onInput",
   })
 
-  const onSubmit = async (values: InviteFormValues) => {
-    setSaving(true)
-    try {
-      const invitation = await createInvitation(
-        orgId,
-        values.email.trim(),
-        values.role as OrgRole
-      )
-      toast.success("Invitation sent")
-      onInvited?.({
-        id: invitation.id,
-        email: values.email.trim(),
-        role: values.role as OrgRole,
-        expires_at: invitation.expires_at,
-      })
-      form.reset({ email: "", role: "member" })
-      onOpenChange(false)
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to send invitation"
-      )
-    } finally {
-      setSaving(false)
+  // Handle response
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data) {
+      if (fetcher.data.success) {
+        toast.success("Invitation sent")
+        onOpenChange(false)
+      } else if (fetcher.data.error) {
+        toast.error(fetcher.data.error)
+      }
     }
-  }
+  }, [fetcher.state, fetcher.data, onOpenChange])
 
-  const body = (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-        <FormField
-          control={form.control}
-          name="email"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Email</FormLabel>
-              <FormControl>
-                <Input placeholder="name@example.com" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+  const formContent = (
+    <fetcher.Form method="post" {...getFormProps(form)} className="space-y-4">
+      <input type="hidden" name="intent" value="createInvitation" />
+
+      <div className="space-y-2">
+        <Label htmlFor={fields.email.id}>Email</Label>
+        <Input
+          {...getInputProps(fields.email, { type: "email" })}
+          placeholder="name@example.com"
         />
-        <FormField
-          control={form.control}
-          name="role"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Role</FormLabel>
-              <FormControl>
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select role" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="admin">Admin</SelectItem>
-                    <SelectItem value="member">Member</SelectItem>
-                    <SelectItem value="viewer">Viewer</SelectItem>
-                  </SelectContent>
-                </Select>
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <div className="hidden md:flex items-center justify-end gap-2">
-          <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={saving}>
-            {saving ? "Sending..." : "Send invite"}
-          </Button>
-        </div>
-      </form>
-    </Form>
+        {fields.email.errors && fields.email.errors.length > 0 && (
+          <p className="text-sm text-destructive">{fields.email.errors[0]}</p>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor={fields.role.id}>Role</Label>
+        <Select
+          name={fields.role.name}
+          defaultValue={fields.role.initialValue}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Select role" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="admin">Admin</SelectItem>
+            <SelectItem value="member">Member</SelectItem>
+            <SelectItem value="viewer">Viewer</SelectItem>
+          </SelectContent>
+        </Select>
+        {fields.role.errors && fields.role.errors.length > 0 && (
+          <p className="text-sm text-destructive">{fields.role.errors[0]}</p>
+        )}
+      </div>
+
+      <div className="hidden md:flex items-center justify-end gap-2">
+        <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={saving}>
+          {saving ? "Sending..." : "Send invite"}
+        </Button>
+      </div>
+    </fetcher.Form>
   )
 
   if (isMobile) {
@@ -160,12 +129,12 @@ export function InviteMemberDialog({
               Add someone to your organization and assign a role.
             </SheetDescription>
           </SheetHeader>
-          <div className="py-6">{body}</div>
+          <div className="py-6">{formContent}</div>
           <SheetFooter>
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button onClick={form.handleSubmit(onSubmit)} disabled={saving}>
+            <Button type="submit" form={form.id} disabled={saving}>
               {saving ? "Sending..." : "Send"}
             </Button>
           </SheetFooter>
@@ -183,12 +152,12 @@ export function InviteMemberDialog({
             Add someone to your organization and assign a role.
           </DialogDescription>
         </DialogHeader>
-        {body}
+        {formContent}
         <DialogFooter className="md:hidden">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={form.handleSubmit(onSubmit)} disabled={saving}>
+          <Button type="submit" form={form.id} disabled={saving}>
             {saving ? "Sending..." : "Send"}
           </Button>
         </DialogFooter>

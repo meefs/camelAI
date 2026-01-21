@@ -2,7 +2,13 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.apps';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { listWorkerScripts, getUserById, type AuthEnv } from '@/lib/auth-do';
+import {
+  listWorkerScripts,
+  getUserById,
+  setWorkerScriptPublic,
+  deleteWorkerScript,
+  type AuthEnv,
+} from '@/lib/auth-do';
 import AppsClient from '@/components/pages/apps/apps-client';
 import type { WorkerScriptWithCreator } from '@/types';
 
@@ -24,6 +30,59 @@ export function meta() {
   ];
 }
 
+export async function action({ request, context }: Route.ActionArgs) {
+  const authContext = await requireAuthContext(request, context);
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+
+  const formData = await request.formData();
+  const intent = formData.get('intent');
+
+  if (intent === 'setAppPublic') {
+    const scriptName = formData.get('scriptName') as string;
+    const isPublic = formData.get('isPublic') === 'true';
+
+    if (!scriptName) {
+      return { error: 'Script name is required' };
+    }
+
+    try {
+      await setWorkerScriptPublic(
+        authEnv,
+        authContext.currentOrg.id,
+        scriptName,
+        isPublic,
+        authContext.user.id
+      );
+      return { success: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Failed to update app' };
+    }
+  }
+
+  if (intent === 'deleteApp') {
+    const scriptName = formData.get('scriptName') as string;
+
+    if (!scriptName) {
+      return { error: 'Script name is required' };
+    }
+
+    try {
+      await deleteWorkerScript(
+        authEnv,
+        authContext.currentOrg.id,
+        scriptName,
+        authContext.user.id
+      );
+      return { success: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Failed to delete app' };
+    }
+  }
+
+  return { error: 'Unknown action' };
+}
+
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
@@ -31,57 +90,61 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const hostname = request.headers.get('host')?.split(':')[0] ?? 'chiridion.ai';
   const renderedAt = Date.now();
 
+  // Check filter from URL params
+  const url = new URL(request.url);
+  const filter = url.searchParams.get('filter') || 'this-workspace';
+
   // Get apps for the current org/workspace
   const workspaceId = authContext.currentWorkspace?.id;
   let apps: WorkerScriptWithCreator[] = [];
 
-  if (workspaceId) {
-    const scripts = await listWorkerScripts(authEnv, authContext.currentOrg.id);
+  const scripts = await listWorkerScripts(authEnv, authContext.currentOrg.id);
 
-    // Filter to current workspace and hydrate with creator info
-    const filteredScripts = scripts.filter(
-      (script) => script.workspace_id === workspaceId
-    );
+  // Filter based on filter param
+  const filteredScripts = filter === 'all-workspaces'
+    ? scripts
+    : workspaceId
+      ? scripts.filter((script) => script.workspace_id === workspaceId)
+      : [];
 
-    // Get creator profiles
-    const creatorIds = Array.from(
-      new Set(filteredScripts.map((s) => s.created_by).filter(Boolean))
-    );
-    const creatorProfiles = await Promise.all(
-      creatorIds.map(async (id) => {
-        const profile = await getUserById(authEnv, id);
-        return [id, profile] as const;
-      })
-    );
-    const creatorMap = new Map(creatorProfiles.filter(([, p]) => p !== null));
+  // Get creator profiles
+  const creatorIds = Array.from(
+    new Set(filteredScripts.map((s) => s.created_by).filter(Boolean))
+  );
+  const creatorProfiles = await Promise.all(
+    creatorIds.map(async (id) => {
+      const profile = await getUserById(authEnv, id);
+      return [id, profile] as const;
+    })
+  );
+  const creatorMap = new Map(creatorProfiles.filter(([, p]) => p !== null));
 
-    apps = filteredScripts.map((script) => {
-      const creator = creatorMap.get(script.created_by);
-      return {
-        script_name: script.script_name,
-        workspace_id: script.workspace_id,
-        created_by: script.created_by,
-        created_at: script.created_at,
-        updated_at: script.updated_at,
-        is_public: script.is_public,
-        preview_key: script.preview_key,
-        preview_updated_at: script.preview_updated_at,
-        preview_status: script.preview_status,
-        preview_error: script.preview_error,
-        creator: creator
-          ? {
-              id: creator.id,
-              name: creator.name,
-              email: creator.email,
-              avatar: {
-                color: creator.avatar_color,
-                content: creator.avatar_content,
-              },
-            }
-          : undefined,
-      };
-    });
-  }
+  apps = filteredScripts.map((script) => {
+    const creator = creatorMap.get(script.created_by);
+    return {
+      script_name: script.script_name,
+      workspace_id: script.workspace_id,
+      created_by: script.created_by,
+      created_at: script.created_at,
+      updated_at: script.updated_at,
+      is_public: script.is_public,
+      preview_key: script.preview_key,
+      preview_updated_at: script.preview_updated_at,
+      preview_status: script.preview_status,
+      preview_error: script.preview_error,
+      creator: creator
+        ? {
+            id: creator.id,
+            name: creator.name,
+            email: creator.email,
+            avatar: {
+              color: creator.avatar_color,
+              content: creator.avatar_content,
+            },
+          }
+        : undefined,
+    };
+  });
 
   return {
     apps,

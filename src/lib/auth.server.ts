@@ -61,7 +61,7 @@ function toUser(profile: UserProfile): User {
 /**
  * Get auth env from CloudflareEnv
  */
-function getAuthEnv(env: CloudflareEnv): AuthEnv {
+export function getAuthEnv(env: CloudflareEnv): AuthEnv {
   return {
     USER: env.USER as AuthEnv['USER'],
     ORG: env.ORG as AuthEnv['ORG'],

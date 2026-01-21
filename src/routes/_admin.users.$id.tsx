@@ -43,6 +43,31 @@ export function meta({ data }: Route.MetaArgs) {
   ];
 }
 
+export async function action({ request, context, params }: Route.ActionArgs) {
+  await requireSuperuser(request, context);
+
+  const formData = await request.formData();
+  const intent = formData.get('intent');
+  const { id: userId } = params;
+
+  if (intent === 'forceOrphan') {
+    // TODO: Implement forceOrphanUser in auth-do.server.ts
+    // This would remove the user from all organizations
+    return { error: 'Force orphan not yet implemented' };
+  }
+
+  if (intent === 'updateUser') {
+    const name = formData.get('name') as string;
+    const isSuperuser = formData.get('isSuperuser') === 'true';
+    const avatarColor = formData.get('avatarColor') as string;
+    const avatarContent = formData.get('avatarContent') as string;
+    // TODO: Implement adminUpdateUser in auth-do.server.ts
+    return { error: 'Update user not yet implemented' };
+  }
+
+  return { error: 'Unknown action' };
+}
+
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
 

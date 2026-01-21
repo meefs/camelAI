@@ -70,7 +70,7 @@ export function getEnvPrefix(hostname: string): string {
     return parts[0] ?? '';
   }
 
-  if (hostname === 'localhost' || hostname.startsWith('127.0.0.1') || hostname.endsWith('.local')) {
+  if (hostname === 'localhost' || hostname.startsWith('127.0.0.1') || hostname.endsWith('.local') || hostname === 'host.docker.internal') {
     return 'local';
   }
 

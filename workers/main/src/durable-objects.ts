@@ -117,6 +117,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return new Response('Not found', { status: 404 });
   }
 
+  // Get preview workers
+  getPreviewWorkers(): string[] {
+    return this.previewWorkers;
+  }
+
   // Set preview workers and broadcast to all connected clients
   async setPreviewWorkers(workers: string[]): Promise<void> {
     this.previewWorkers = workers;

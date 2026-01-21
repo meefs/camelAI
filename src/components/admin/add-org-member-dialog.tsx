@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useTransition } from "react"
-import { useNavigate } from 'react-router';
+import { useEffect, useState } from "react"
+import { useFetcher } from "react-router"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -23,18 +23,31 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { addAdminOrgMember } from "@/lib/server-actions/admin"
 
 interface AddOrgMemberDialogProps {
   orgId: string
 }
 
 export function AddOrgMemberDialog({ orgId }: AddOrgMemberDialogProps) {
-  const navigate = useNavigate()
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [open, setOpen] = useState(false)
   const [userId, setUserId] = useState("")
   const [role, setRole] = useState<"admin" | "member">("member")
-  const [isPending, startTransition] = useTransition()
+  const isPending = fetcher.state !== "idle"
+
+  // Handle response
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data) {
+      if (fetcher.data.success) {
+        toast.success("Member added successfully")
+        setOpen(false)
+        setUserId("")
+        setRole("member")
+      } else if (fetcher.data.error) {
+        toast.error(fetcher.data.error)
+      }
+    }
+  }, [fetcher.state, fetcher.data])
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -42,19 +55,10 @@ export function AddOrgMemberDialog({ orgId }: AddOrgMemberDialogProps) {
       toast.error("User ID is required")
       return
     }
-
-    startTransition(async () => {
-      try {
-        await addAdminOrgMember(orgId, userId.trim(), role)
-        toast.success("Member added successfully")
-        setOpen(false)
-        setUserId("")
-        setRole("member")
-        // TODO: implement refresh
-      } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Failed to add member")
-      }
-    })
+    fetcher.submit(
+      { intent: "addMember", orgId, userId: userId.trim(), role },
+      { method: "POST" }
+    )
   }
 
   return (

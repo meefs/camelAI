@@ -1,7 +1,8 @@
 "use client"
 
-import { useMemo, useState } from "react"
-import { useNavigate } from 'react-router';
+import { useEffect, useMemo, useState } from "react"
+import { useFetcher } from "react-router"
+import { toast } from "sonner"
 
 import {
   Dialog,
@@ -20,7 +21,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { transferAdminOrgOwnership } from "@/lib/server-actions/admin"
 import type { OrgRole } from "@/types"
 
 interface MemberOption {
@@ -41,31 +41,38 @@ export function TransferOwnershipDialog({
   orgName,
   members,
 }: TransferOwnershipDialogProps) {
-  const navigate = useNavigate()
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [open, setOpen] = useState(false)
   const [selectedId, setSelectedId] = useState("")
-  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const loading = fetcher.state !== "idle"
 
   const eligibleMembers = useMemo(
     () => members.filter((member) => member.role !== "owner"),
     [members]
   )
 
-  const handleTransfer = async () => {
-    if (!selectedId) return
-    setLoading(true)
-    setError(null)
-    try {
-      await transferAdminOrgOwnership(orgId, selectedId)
-      setOpen(false)
-      setSelectedId("")
-      // TODO: implement refresh
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to transfer ownership")
-    } finally {
-      setLoading(false)
+  // Handle response
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data) {
+      if (fetcher.data.success) {
+        toast.success("Ownership transferred")
+        setOpen(false)
+        setSelectedId("")
+        setError(null)
+      } else if (fetcher.data.error) {
+        setError(fetcher.data.error)
+      }
     }
+  }, [fetcher.state, fetcher.data])
+
+  const handleTransfer = () => {
+    if (!selectedId) return
+    setError(null)
+    fetcher.submit(
+      { intent: "transferOwnership", newOwnerId: selectedId },
+      { method: "POST" }
+    )
   }
 
   return (

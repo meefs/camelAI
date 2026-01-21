@@ -68,14 +68,37 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
   const formData = await request.formData();
   const intent = formData.get('intent');
+  const { id: workspaceId } = params;
 
   if (intent === 'reset-container') {
-    const { id } = params;
-    await authDO.resetAdminWorkspaceContainer(context, id);
+    await authDO.resetAdminWorkspaceContainer(context, workspaceId);
     return { success: true };
   }
 
-  return { success: false };
+  if (intent === 'updateWorkspace') {
+    const name = formData.get('name') as string;
+    const description = formData.get('description') as string | null;
+    const avatarColor = formData.get('avatarColor') as string;
+    const avatarContent = formData.get('avatarContent') as string;
+
+    if (!name?.trim()) {
+      return { error: 'Workspace name is required' };
+    }
+
+    await authDO.adminUpdateWorkspace(context, workspaceId, {
+      name: name.trim(),
+      description: description?.trim() || null,
+      avatar: { color: avatarColor, content: avatarContent },
+    });
+    return { success: true };
+  }
+
+  if (intent === 'archiveWorkspace') {
+    await authDO.adminArchiveWorkspace(context, workspaceId);
+    return { success: true };
+  }
+
+  return { error: 'Unknown action' };
 }
 
 export default function AdminWorkspaceDetailPage() {

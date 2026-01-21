@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useFetcher, useRevalidator } from 'react-router';
 import { useAuth } from '@/contexts/AuthContext';
 
 // Note: Auth is handled by the (app) layout - no need to check here
@@ -26,7 +27,6 @@ import {
   Settings,
   Trash2,
 } from 'lucide-react';
-import { deleteIntegration, getOrgIntegrations, updateIntegration } from '@/lib/server-actions/org';
 
 const categoryLabels: Record<string, string> = {
   databases: 'Databases',
@@ -50,63 +50,59 @@ export default function ConnectionsClient({
   orgId,
 }: ConnectionsClientProps) {
   const { currentOrg, orgs, loading: authLoading } = useAuth();
+  const revalidator = useRevalidator();
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
 
-  const [connections, setConnections] = useState<Integration[]>(initialConnections);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState<Integration | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
-  const [activeOrgId, setActiveOrgId] = useState(orgId);
   const [deleteTarget, setDeleteTarget] = useState<Integration | null>(null);
 
-  const refreshConnections = useCallback(
-    async (targetOrgId = activeOrgId) => {
-      if (!targetOrgId) return;
-      try {
-        setLoading(true);
-        const data = await getOrgIntegrations(targetOrgId);
-        setConnections(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load connections');
-      } finally {
-        setLoading(false);
-      }
-    },
-    [activeOrgId]
-  );
+  const connections = initialConnections;
+  const loading = revalidator.state === 'loading';
 
+  // Revalidate when org changes
   useEffect(() => {
-    if (currentOrg?.id && currentOrg.id !== activeOrgId) {
-      setActiveOrgId(currentOrg.id);
-      refreshConnections(currentOrg.id);
+    if (revalidator.state === 'idle') {
+      revalidator.revalidate();
     }
-  }, [currentOrg?.id, activeOrgId, refreshConnections]);
+  }, [currentOrg?.id]);
 
-  const handleToggleEnabled = async (connection: Integration) => {
-    if (!activeOrgId) return;
-
-    try {
-      await updateIntegration(activeOrgId, connection.id, {
-        enabled: !connection.enabled,
-      });
-      await refreshConnections(activeOrgId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update connection');
+  // Handle fetcher responses
+  useEffect(() => {
+    if (fetcher.state === 'idle' && fetcher.data) {
+      if (fetcher.data.error) {
+        setError(fetcher.data.error);
+      } else if (fetcher.data.success) {
+        setDeleteTarget(null);
+      }
     }
+  }, [fetcher.state, fetcher.data]);
+
+  const handleToggleEnabled = (connection: Integration) => {
+    fetcher.submit(
+      {
+        intent: 'toggleIntegration',
+        integrationId: connection.id,
+        enabled: String(!connection.enabled),
+      },
+      { method: 'POST' }
+    );
   };
 
-  const handleDelete = async () => {
-    if (!activeOrgId || !deleteTarget) return;
+  const handleDelete = () => {
+    if (!deleteTarget) return;
 
-    try {
-      await deleteIntegration(activeOrgId, deleteTarget.id);
-      await refreshConnections(activeOrgId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete connection');
-    }
+    fetcher.submit(
+      {
+        intent: 'deleteIntegration',
+        integrationId: deleteTarget.id,
+      },
+      { method: 'POST' }
+    );
   };
 
   const handleAddClick = (type: string) => {
@@ -123,13 +119,17 @@ export default function ConnectionsClient({
   const handleAddSuccess = () => {
     setAddDialogOpen(false);
     setSelectedType(null);
-    refreshConnections(activeOrgId);
+    if (revalidator.state === 'idle') {
+      revalidator.revalidate();
+    }
   };
 
   const handleEditSuccess = () => {
     setEditDialogOpen(false);
     setSelectedConnection(null);
-    refreshConnections(activeOrgId);
+    if (revalidator.state === 'idle') {
+      revalidator.revalidate();
+    }
   };
 
   const handleAddDialogOpenChange = (open: boolean) => {
@@ -397,7 +397,7 @@ export default function ConnectionsClient({
           onOpenChange={handleAddDialogOpenChange}
           connectionType={selectedType}
           connectionTypes={connectionTypes}
-          orgId={activeOrgId}
+          orgId={orgId}
           onSuccess={handleAddSuccess}
         />
       )}
@@ -408,7 +408,7 @@ export default function ConnectionsClient({
           onOpenChange={handleEditDialogOpenChange}
           connection={selectedConnection}
           connectionTypes={connectionTypes}
-          orgId={activeOrgId}
+          orgId={orgId}
           onSuccess={handleEditSuccess}
         />
       )}

@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { useNavigate } from 'react-router';
+import { useEffect, useRef, useState } from "react"
+import { useFetcher } from "react-router"
 import { toast } from "sonner"
 import { MoreHorizontal, Plus } from "lucide-react"
 
@@ -30,7 +30,6 @@ import {
 } from "@/components/ui/table"
 import { useAuth } from "@/contexts/AuthContext"
 import { CreateOrgDialog } from "@/components/settings/create-org-dialog"
-import { removeOrgMember } from "@/lib/server-actions/org"
 import type { BillingStatus, OrgRole } from "@/types"
 
 interface OrgMembershipSummary {
@@ -56,20 +55,30 @@ export function OrgMembershipsList({
   orgs,
   currentUserId,
 }: OrgMembershipsListProps) {
-  const navigate = useNavigate()
   const { currentOrg, switchOrg, refreshAuth } = useAuth()
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [createOpen, setCreateOpen] = useState(false)
   const [leaveTargetId, setLeaveTargetId] = useState<string | null>(null)
-  const [orgList, setOrgList] = useState(orgs)
+  const pendingLeaveRef = useRef<string | null>(null)
 
+  // Handle fetcher response for leave
   useEffect(() => {
-    setOrgList(orgs)
-  }, [orgs])
+    if (fetcher.state === "idle" && fetcher.data) {
+      if (fetcher.data.success && pendingLeaveRef.current) {
+        pendingLeaveRef.current = null
+        setLeaveTargetId(null)
+        toast.success("Left organization")
+        refreshAuth()
+      } else if (fetcher.data.error) {
+        pendingLeaveRef.current = null
+        toast.error(fetcher.data.error)
+      }
+    }
+  }, [fetcher.state, fetcher.data, refreshAuth])
 
   const handleSwitchOrg = async (orgId: string) => {
     try {
       await switchOrg(orgId)
-      // TODO: implement refresh
       toast.success("Switched organization")
     } catch (error) {
       toast.error(
@@ -78,18 +87,12 @@ export function OrgMembershipsList({
     }
   }
 
-  const handleLeaveOrg = async (orgId: string) => {
-    try {
-      await removeOrgMember(orgId, currentUserId)
-      setOrgList((prev) => prev.filter((org) => org.org_id !== orgId))
-      await refreshAuth()
-      // TODO: implement refresh
-      toast.success("Left organization")
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to leave organization"
-      )
-    }
+  const handleLeaveOrg = (orgId: string) => {
+    pendingLeaveRef.current = orgId
+    fetcher.submit(
+      { intent: "leaveOrg", orgId },
+      { method: "POST" }
+    )
   }
 
   return (
@@ -114,7 +117,7 @@ export function OrgMembershipsList({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {orgList.map((org) => (
+            {orgs.map((org) => (
               <TableRow
                 key={org.org_id}
                 className={org.org_id === currentOrg?.id ? "bg-muted/50" : ""}
@@ -172,7 +175,7 @@ export function OrgMembershipsList({
       </div>
 
       <div className="space-y-3 md:hidden">
-        {orgList.map((org) => (
+        {orgs.map((org) => (
           <Card key={org.org_id}>
             <CardHeader className="space-y-2">
               <div className="flex items-start justify-between gap-2">

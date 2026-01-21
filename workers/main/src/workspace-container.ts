@@ -206,15 +206,21 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     const prefix = workspaceId === orgId ? `${orgId}/` : `${orgId}/${workspaceId}/`;
     envVars.R2_PREFIX = prefix;
 
-    // Generate temp R2 credentials scoped to workspace prefix
+    // Generate temp R2 credentials scoped to workspace prefix + JuiceFS volume prefix
     if (this.env.R2_API_TOKEN && this.env.R2_PARENT_ACCESS_KEY_ID && this.env.R2_ACCOUNT_ID && this.env.R2_BUCKET_NAME) {
       try {
+        // JuiceFS volume name uses sanitized org/workspace IDs (matches entrypoint.sh logic)
+        const sanitizeName = (s: string) => s.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 20) || 'x';
+        const orgSafe = sanitizeName(orgId);
+        const wsSafe = sanitizeName(workspaceId);
+        const juicefsVolumeName = `chiridion-${orgSafe}-${wsSafe}`;
+
         const tempCreds = await getTempR2Credentials(
           this.env.R2_ACCOUNT_ID,
           this.env.R2_BUCKET_NAME,
           this.env.R2_PARENT_ACCESS_KEY_ID,
           this.env.R2_API_TOKEN,
-          [prefix],
+          [prefix, `${juicefsVolumeName}/`],  // Include both workspace prefix and JuiceFS volume prefix
           86400
         );
         envVars.AWS_ACCESS_KEY_ID = tempCreds.accessKeyId;

@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-21-v1-juicefs-restore
+# Version: 2026-01-21-v8-yarn-pnp-working
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -459,11 +459,19 @@ if has_r2_config; then
 fi
 
 # Install skills to claude's config directory
+# Only copy SKILL.md files - templates stay in /app and are accessed via create-worker script
 echo "[entrypoint] Installing skills..." >&2
 SKILLS_START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
 
 su -s /bin/sh claude -c "mkdir -p \"$TARGET_DIR/.claude/skills\"" >/dev/null 2>&1 || true
-su -s /bin/sh claude -c "cp -r /app/skills/. \"$TARGET_DIR/.claude/skills/\"" >/dev/null 2>&1 || true
+# Copy only SKILL.md files (preserving directory structure) - templates don't need to be on JuiceFS
+for skill_dir in /app/skills/*/; do
+  skill_name="$(basename "$skill_dir")"
+  if [ -f "${skill_dir}SKILL.md" ]; then
+    su -s /bin/sh claude -c "mkdir -p \"$TARGET_DIR/.claude/skills/$skill_name\"" >/dev/null 2>&1 || true
+    su -s /bin/sh claude -c "cp \"${skill_dir}SKILL.md\" \"$TARGET_DIR/.claude/skills/$skill_name/\"" >/dev/null 2>&1 || true
+  fi
+done
 
 SKILLS_END_TS="$(date +%s%3N 2>/dev/null || date +%s)"
 echo "[entrypoint] Skills installed (ms: $((SKILLS_END_TS - SKILLS_START_TS)))" >&2

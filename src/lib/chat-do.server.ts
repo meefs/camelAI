@@ -1,8 +1,9 @@
 import type { AppLoadContext } from 'react-router';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
-import type { Thread, Message, PaginatedResult, PaginationParams } from '@/types';
+import type { Thread, Message, PaginatedResult, PaginationParams, ContentBlock } from '@/types';
 import { OrgDO, type OrgThread } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
+import { getWorkspaceContainer } from '../../workers/main/src/workspace-container';
 
 // Helper to convert OrgThread to Thread
 function toThread(orgThread: OrgThread): Thread {
@@ -174,42 +175,246 @@ export async function touchThread(
 }
 
 export async function generateThreadTitle(
-  _context: AppLoadContext,
-  _threadId: string,
-  _workspaceId: string,
-  _message: string
+  context: AppLoadContext,
+  threadId: string,
+  workspaceId: string,
+  message: string
 ): Promise<void> {
-  // TODO: Implement with AI binding
-  // For now, this is a no-op - title generation requires the AI binding
-  console.warn('generateThreadTitle not yet implemented - requires AI binding');
+  try {
+    const env = getEnv(context);
+
+    // Use AI binding to generate title
+    const ai = env.AI as {
+      run: (model: string, options: { messages: { role: string; content: string }[]; temperature?: number; max_tokens?: number }) => Promise<{ response?: string }>;
+    };
+
+    const response = await ai.run('@cf/google/gemma-3-12b-it', {
+      messages: [
+        { role: 'system', content: 'Summarize the message into a simple chat thread topic title. Respond with only the title, no quotes or extra punctuation.' },
+        { role: 'user', content: message },
+      ],
+      temperature: 1,
+      max_tokens: 50,
+    });
+
+    const title = response?.response?.trim()?.slice(0, 100);
+    if (!title) return;
+
+    // Update title in OrgDO
+    const wsInfo = await getWorkspaceInfo(env, workspaceId);
+    if (!wsInfo) return;
+
+    const orgStub = getOrgStub(env, wsInfo.org_id);
+    await orgStub.updateThread(threadId, title);
+
+    // Broadcast via ChatThreadDO
+    const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+    await threadStub.setTitle(title);
+  } catch (e) {
+    console.error('[generateThreadTitle] Error:', e);
+  }
 }
 
 export async function getMessages(
-  _context: AppLoadContext,
-  _threadId: string,
-  _workspaceId: string
+  context: AppLoadContext,
+  threadId: string,
+  workspaceId: string
 ): Promise<Message[]> {
-  // TODO: Implement - requires reading from container JSONL files
-  // For now, return empty array - messages are read from container
-  console.warn('getMessages not yet implemented - requires container access');
-  return [];
+  // Messages are read from container's Claude JSONL file
+  // threadId is the Claude session_id
+  try {
+    const env = getEnv(context);
+    const wsInfo = await getWorkspaceInfo(env, workspaceId);
+    if (!wsInfo) return [];
+
+    const container = getWorkspaceContainer(env as any, workspaceId);
+
+    // Ensure container is running (R2 restore happens in entrypoint)
+    await container.startForWorkspace(workspaceId, wsInfo.org_id);
+
+    // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
+    const jsonlPath = `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`;
+
+    // Check if file exists
+    const exists = await container.exists(jsonlPath);
+    if (!exists.exists) {
+      return [];
+    }
+
+    // Read the JSONL file
+    const file = await container.readFile(jsonlPath);
+    if (!file.success || !file.content?.trim()) {
+      return [];
+    }
+
+    const lines = file.content.split('\n').filter((line: string) => line.trim());
+    const messages: Message[] = [];
+
+    const hasTextBlocks = (content: unknown) =>
+      Array.isArray(content) && content.some(block => block?.type === 'text' && block.text);
+
+    const mergeContentBlocks = (existing: unknown, incoming: unknown): unknown => {
+      if (!Array.isArray(existing) || !Array.isArray(incoming)) return incoming;
+
+      const incomingHasText = hasTextBlocks(incoming);
+      if (!incomingHasText) {
+        const merged = [...existing];
+        const existingKeys = new Map<string, number>();
+        existing.forEach((block, index) => {
+          const key = block?.type === 'tool_use'
+            ? `tool_use:${block.id || block.name || index}`
+            : `${block?.type}:${index}`;
+          existingKeys.set(key, index);
+        });
+        incoming.forEach((block, index) => {
+          const key = block?.type === 'tool_use'
+            ? `tool_use:${block.id || block.name || index}`
+            : `${block?.type}:${index}`;
+          const existingIndex = existingKeys.get(key);
+          if (existingIndex === undefined) {
+            merged.push(block);
+          } else {
+            merged[existingIndex] = block;
+          }
+        });
+        return merged;
+      }
+
+      const toolResults = existing.filter(block => block?.type === 'tool_result');
+      if (toolResults.length === 0) return incoming;
+      return [...toolResults, ...incoming];
+    };
+
+    for (const line of lines) {
+      try {
+        const event = JSON.parse(line);
+        if (!event || typeof event !== 'object') continue;
+
+        // Handle user messages
+        if (event.type === 'user' && event.message?.role === 'user') {
+          // Extract meta info for Skill tool prompts and other injected content
+          const isMeta = Boolean(
+            event.isMeta ??
+            event.is_meta ??
+            event.message?.isMeta ??
+            event.message?.is_meta
+          );
+          const sourceToolUseID = (
+            event.sourceToolUseID ??
+            event.sourceToolUseId ??
+            event.source_tool_use_id ??
+            event.parent_tool_use_id ??
+            event.message?.sourceToolUseID ??
+            event.message?.sourceToolUseId ??
+            event.message?.source_tool_use_id ??
+            event.message?.parent_tool_use_id
+          );
+          const resolvedToolUseId = typeof sourceToolUseID === 'string' ? sourceToolUseID : undefined;
+
+          // Check if this is a tool_result message
+          const firstContent = Array.isArray(event.message.content) ? event.message.content[0] : null;
+          const isToolResult = firstContent?.type === 'tool_result';
+
+          if (isToolResult) {
+            // Tool results get attached to the assistant message that contains the tool_use
+            const toolResults = event.message.content.filter(
+              (block: ContentBlock) => block.type === 'tool_result'
+            );
+            for (const toolResult of toolResults) {
+              // Find the assistant message with the matching tool_use
+              for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+                const hasMatchingToolUse = msg.content.some(
+                  (block: ContentBlock) => block.type === 'tool_use' && block.id === toolResult.tool_use_id
+                );
+                if (hasMatchingToolUse) {
+                  messages[i] = {
+                    ...msg,
+                    content: [...msg.content, toolResult],
+                  };
+                  break;
+                }
+              }
+            }
+          } else if (isMeta || resolvedToolUseId) {
+            // Meta messages (like Skill prompts) are hidden but stored for skill sheet display
+            messages.push({
+              id: event.uuid || `meta_${resolvedToolUseId || messages.length}`,
+              thread_id: threadId,
+              role: 'user',
+              content: event.message.content,
+              created_at: event.timestamp || Date.now(),
+              isMeta: true,
+              sourceToolUseID: resolvedToolUseId,
+            });
+          } else {
+            // Regular user message
+            messages.push({
+              id: event.uuid || crypto.randomUUID(),
+              thread_id: threadId,
+              role: 'user',
+              content: event.message.content,
+              created_at: event.timestamp || Date.now(),
+            });
+          }
+        }
+
+        // Handle assistant messages
+        if (event.type === 'assistant' && event.message?.role === 'assistant') {
+          const existingIndex = messages.findIndex(
+            (m) => m.role === 'assistant' && m.id === event.uuid
+          );
+
+          if (existingIndex >= 0) {
+            // Merge with existing message
+            messages[existingIndex] = {
+              ...messages[existingIndex],
+              content: mergeContentBlocks(
+                messages[existingIndex].content,
+                event.message.content
+              ) as ContentBlock[],
+            };
+          } else {
+            // Add new message
+            messages.push({
+              id: event.uuid || crypto.randomUUID(),
+              thread_id: threadId,
+              role: 'assistant',
+              content: event.message.content,
+              created_at: event.timestamp || Date.now(),
+            });
+          }
+        }
+      } catch {
+        // Skip malformed lines
+        continue;
+      }
+    }
+
+    return messages;
+  } catch (e) {
+    console.error('[getMessages] Error:', e);
+    return [];
+  }
 }
 
 export async function setThreadPreview(
-  _context: AppLoadContext,
-  _threadId: string,
-  _workers: string[]
+  context: AppLoadContext,
+  threadId: string,
+  workers: string[]
 ): Promise<string[]> {
-  // TODO: Implement with ChatThreadDO
-  console.warn('setThreadPreview not yet implemented');
-  return [];
+  const env = getEnv(context);
+  const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  await stub.setPreviewWorkers(workers);
+  return stub.getPreviewWorkers();
 }
 
 export async function getThreadPreview(
-  _context: AppLoadContext,
-  _threadId: string
+  context: AppLoadContext,
+  threadId: string
 ): Promise<string[]> {
-  // TODO: Implement with ChatThreadDO
-  console.warn('getThreadPreview not yet implemented');
-  return [];
+  const env = getEnv(context);
+  const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  return stub.getPreviewWorkers();
 }

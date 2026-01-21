@@ -5,7 +5,14 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 
 export default defineConfig({
   plugins: [
-    cloudflare({ viteEnvironment: { name: 'ssr' } }),
+    cloudflare({
+      viteEnvironment: { name: 'ssr' },
+      auxiliaryWorkers: [
+        {
+          configPath: './workers/proxy/wrangler.jsonc',
+        },
+      ],
+    }),
     reactRouter(),
     tsconfigPaths({ ignoreConfigErrors: true }),
   ],
@@ -24,6 +31,8 @@ export default defineConfig({
   server: {
     port: 3001,
     strictPort: false,
+    host: true, // Bind to 0.0.0.0 so Docker containers can reach via host.docker.internal
+    allowedHosts: ['host.docker.internal'], // Allow requests from Docker containers
     watch: {
       ignored: ['**/packages/**', '**/workers/**', '**/sandbox/**'],
     },

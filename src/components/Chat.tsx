@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
-import { useNavigate, useFetcher } from 'react-router';
+import { useNavigate, useFetcher, useRevalidator } from 'react-router';
 import { ArrowDown, RefreshCw, ExternalLink, X } from 'lucide-react';
 import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -32,10 +32,6 @@ import {
   attachToolResultsToMessages,
   normalizeToolResultMessages,
 } from '@/lib/streaming';
-import {
-  getThreadMessages,
-  touchThread as touchThreadAction,
-} from '@/lib/server-actions/thread';
 import { getVanityDomain, getIframeDomain } from '@/lib/app-url';
 
 interface ChatProps {
@@ -198,7 +194,9 @@ function MobileViewSwitcher({
 
 export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false, hostname }: ChatProps) {
   const navigate = useNavigate();
+  const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
+  const touchFetcher = useFetcher();
   const { user, currentWorkspace, loading: authLoading } = useAuth();
   const isMobile = useIsMobile();
   // Anchor to last message for existing threads with messages (not new threads)
@@ -238,6 +236,27 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       return next;
     });
   }, []);
+
+  // Sync messages from loader revalidation when not streaming
+  // Only sync on initial mount or explicit refresh, not during active chat
+  const prevInitialMessagesRef = useRef(initialMessages);
+  const hasHadUserInteraction = useRef(false);
+  useEffect(() => {
+    // Skip sync if user has interacted (sent messages) - streaming state is authoritative
+    if (hasHadUserInteraction.current) {
+      prevInitialMessagesRef.current = initialMessages;
+      return;
+    }
+    // Only sync if initialMessages actually changed and we're not streaming
+    if (
+      initialMessages !== prevInitialMessagesRef.current &&
+      !streamingMessageIdRef.current &&
+      revalidator.state === 'idle'
+    ) {
+      prevInitialMessagesRef.current = initialMessages;
+      setMessages(parsedInitialMessages);
+    }
+  }, [initialMessages, parsedInitialMessages, setMessages, revalidator.state]);
 
   const setStreamingMessageId = useCallback((id: string | null) => {
     streamingMessageIdRef.current = id;
@@ -422,26 +441,12 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     window.history.replaceState(null, '', url.toString());
   }, [isNewThread, threadId]);
 
-  // Fetch messages from REST API
-  const fetchMessages = useCallback(async (id: string) => {
-    try {
-      const data = await getThreadMessages(id);
-      const fetchedMsgs = Array.isArray(data) ? (data as Message[]) : [];
-
-      // Parse content for each message (handles JSON-encoded ContentBlock[])
-      const parsedMsgs = fetchedMsgs.map(msg => ({
-        ...msg,
-        content: parseMessageContent(msg.content),
-      }));
-
-      // Always replace with server state - local-only messages (local_*, turn_*)
-      // that weren't persisted are stale. Pending messages will be re-added
-      // when the ready event fires.
-      setMessages(parsedMsgs);
-    } catch (e) {
-      console.error('Failed to fetch messages:', e);
-    }
-  }, [setMessages]);
+  // Fetch messages by revalidating the loader
+  const fetchMessages = useCallback(async (_id: string) => {
+    // Revalidate the route loader to get fresh messages
+    // The new messages will flow in via initialMessages prop
+    revalidator.revalidate();
+  }, [revalidator]);
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
@@ -1462,6 +1467,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       return;
     }
 
+    // Mark that user has interacted - prevents loader sync from overwriting streaming state
+    hasHadUserInteraction.current = true;
+
     const userMessage = input.trim();
     setInput('');
 
@@ -1482,9 +1490,10 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     setError(null);
 
     // Update thread timestamp so it appears at top of history list
-    touchThreadAction(threadId, resolvedWorkspaceId).catch(() => {
-      // Ignore errors - this is a non-critical operation
-    });
+    touchFetcher.submit(
+      { intent: 'touch' },
+      { method: 'POST' }
+    );
 
     // Add user message to state immediately (optimistic)
     // Display only the user's typed text (not file references)

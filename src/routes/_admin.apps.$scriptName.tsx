@@ -26,6 +26,26 @@ export function meta({ data }: Route.MetaArgs) {
   ];
 }
 
+export async function action({ request, context, params }: Route.ActionArgs) {
+  await requireSuperuser(request, context);
+
+  const formData = await request.formData();
+  const intent = formData.get('intent');
+
+  if (intent === 'updateApp') {
+    const isPublic = formData.get('isPublic') === 'true';
+    // TODO: Implement adminUpdateApp in auth-do.server.ts
+    return { error: 'Update app not yet implemented' };
+  }
+
+  if (intent === 'deleteApp') {
+    // TODO: Implement adminDeleteApp in auth-do.server.ts
+    return { error: 'Delete app not yet implemented' };
+  }
+
+  return { error: 'Unknown action' };
+}
+
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
 

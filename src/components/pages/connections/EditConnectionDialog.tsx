@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useFetcher } from 'react-router';
 import type { Integration } from '@/types';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
 import {
@@ -23,7 +24,6 @@ import {
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle, Key } from 'lucide-react';
-import { updateIntegration } from '@/lib/server-actions/org';
 
 interface EditConnectionDialogProps {
   open: boolean;
@@ -42,13 +42,14 @@ export function EditConnectionDialog({
   orgId,
   onSuccess,
 }: EditConnectionDialogProps) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [name, setName] = useState(connection.name);
   const [config, setConfig] = useState<Record<string, unknown>>(connection.config);
   const [credentials, setCredentials] = useState<Record<string, unknown>>({});
-  const [updateCredentials, setUpdateCredentials] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [shouldUpdateCredentials, setShouldUpdateCredentials] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const submitting = fetcher.state !== 'idle';
   const typeDef = connectionTypes.find((t) => t.type === connection.integration_type);
 
   // Reset form when connection changes
@@ -56,44 +57,41 @@ export function EditConnectionDialog({
     setName(connection.name);
     setConfig(connection.config);
     setCredentials({});
-    setUpdateCredentials(false);
+    setShouldUpdateCredentials(false);
     setError(null);
   }, [connection]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  useEffect(() => {
+    if (fetcher.state === 'idle' && fetcher.data) {
+      if (fetcher.data.success) {
+        onSuccess();
+      } else if (fetcher.data.error) {
+        setError(fetcher.data.error);
+      }
+    }
+  }, [fetcher.state, fetcher.data, onSuccess]);
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSubmitting(true);
 
-    try {
-      const payload: {
-        name?: string;
-        config?: Record<string, unknown>;
-        credentials?: Record<string, unknown>;
-      } = {
+    fetcher.submit(
+      {
+        intent: 'updateIntegration',
+        integrationId: connection.id,
         name: name.trim(),
-        config,
-      };
-
-      if (updateCredentials) {
-        payload.credentials = credentials;
-      }
-
-      await updateIntegration(orgId, connection.id, payload);
-
-      onSuccess();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update connection');
-    } finally {
-      setSubmitting(false);
-    }
+        config: JSON.stringify(config),
+        ...(shouldUpdateCredentials ? { credentials: JSON.stringify(credentials) } : {}),
+      },
+      { method: 'POST' }
+    );
   };
 
   const handleClose = () => {
     setName(connection.name);
     setConfig(connection.config);
     setCredentials({});
-    setUpdateCredentials(false);
+    setShouldUpdateCredentials(false);
     setError(null);
     onOpenChange(false);
   };
@@ -186,12 +184,12 @@ export function EditConnectionDialog({
                 <div className="mt-2 border-t pt-4">
                   <div className="mb-3 flex items-center justify-between">
                     <p className="text-sm font-medium">Credentials</p>
-                    {connection.has_credentials && !updateCredentials && (
+                    {connection.has_credentials && !shouldUpdateCredentials && (
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        onClick={() => setUpdateCredentials(true)}
+                        onClick={() => setShouldUpdateCredentials(true)}
                       >
                         <Key className="mr-2 size-3" />
                         Update Credentials
@@ -199,7 +197,7 @@ export function EditConnectionDialog({
                     )}
                   </div>
 
-                  {connection.has_credentials && !updateCredentials ? (
+                  {connection.has_credentials && !shouldUpdateCredentials ? (
                     <Alert>
                       <AlertDescription>
                         Credentials are stored securely. Click &quot;Update Credentials&quot; to replace
@@ -223,7 +221,7 @@ export function EditConnectionDialog({
                             handleCredentialChange(field.name, e.target.value)
                           }
                           placeholder={field.placeholder}
-                          required={updateCredentials && field.required}
+                          required={shouldUpdateCredentials && field.required}
                         />
                       </div>
                     ))

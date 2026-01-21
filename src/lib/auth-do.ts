@@ -8,9 +8,6 @@ import type {
   WorkspaceAccessLevel,
   WorkspaceMember,
   AuditLogEntry,
-  Integration,
-  CreateIntegrationInput,
-  UpdateIntegrationInput,
   CreateApiTokenInput,
   AdminOverview,
   AdminUserSummary,
@@ -979,49 +976,6 @@ export async function getOrgInvitations(env: AuthEnv, orgId: string): Promise<Ar
 export async function deleteInvitation(env: AuthEnv, orgId: string, invitationId: string): Promise<void> {
   const stub = getOrgStub(env, orgId);
   await stub.deleteInvitation(invitationId);
-}
-
-// Integration functions
-// Note: These require INTEGRATION_SECRET_KEY for encryption which isn't in AuthEnv
-// TODO: Either expand AuthEnv or implement these in a different module
-export async function getWorkspaceIntegrations(_env: AuthEnv, _workspaceId: string): Promise<Integration[]> {
-  throw new Error('getWorkspaceIntegrations not yet implemented - requires encryption key');
-}
-
-export async function getWorkspaceIntegration(
-  _env: AuthEnv,
-  _workspaceId: string,
-  _integrationId: string
-): Promise<Integration | null> {
-  throw new Error('getWorkspaceIntegration not yet implemented - requires encryption key');
-}
-
-export async function createWorkspaceIntegration(
-  _env: AuthEnv,
-  _workspaceId: string,
-  _userId: string,
-  _input: CreateIntegrationInput
-): Promise<Integration> {
-  throw new Error('createWorkspaceIntegration not yet implemented - requires encryption key');
-}
-
-export async function updateWorkspaceIntegration(
-  _env: AuthEnv,
-  _workspaceId: string,
-  _integrationId: string,
-  _actorId: string,
-  _input: UpdateIntegrationInput
-): Promise<Integration | null> {
-  throw new Error('updateWorkspaceIntegration not yet implemented - requires encryption key');
-}
-
-export async function deleteWorkspaceIntegration(
-  _env: AuthEnv,
-  _workspaceId: string,
-  _integrationId: string,
-  _actorId: string
-): Promise<void> {
-  throw new Error('deleteWorkspaceIntegration not yet implemented - requires encryption key');
 }
 
 export async function resetWorkspaceContainer(

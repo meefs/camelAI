@@ -27,11 +27,55 @@ export function meta() {
   ];
 }
 
+export async function action({ request, context }: Route.ActionArgs) {
+  await requireAuthContext(request, context);
+
+  const formData = await request.formData();
+  const intent = formData.get('intent');
+
+  if (intent === 'renameThread') {
+    const threadId = formData.get('threadId') as string;
+    const workspaceId = formData.get('workspaceId') as string;
+    const title = formData.get('title') as string;
+
+    if (!threadId || !workspaceId || !title) {
+      return { error: 'Missing required fields' };
+    }
+
+    try {
+      await chatDO.updateThread(context, threadId, title, workspaceId);
+      return { success: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Failed to rename thread' };
+    }
+  }
+
+  if (intent === 'deleteThread') {
+    const threadId = formData.get('threadId') as string;
+    const workspaceId = formData.get('workspaceId') as string;
+
+    if (!threadId || !workspaceId) {
+      return { error: 'Missing required fields' };
+    }
+
+    try {
+      await chatDO.deleteThread(context, threadId, workspaceId);
+      return { success: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Failed to delete thread' };
+    }
+  }
+
+  return { error: 'Unknown action' };
+}
+
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
+  const url = new URL(request.url);
+  const filter = url.searchParams.get('filter') || 'this-workspace';
   const workspaceId = authContext.currentWorkspace?.id;
 
   if (!workspaceId) {
@@ -44,10 +88,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     };
   }
 
-  const page = await chatDO.getThreadsPaginated(context, workspaceId, {
-    offset: 0,
-    limit: PAGE_SIZE,
-  });
+  // Get accessible workspace IDs for all-workspaces filter
+  const accessibleWorkspaceIds = authContext.workspaces.map((w) => w.id);
+
+  const page = filter === 'all-workspaces'
+    ? await chatDO.getThreadsPaginatedAllWorkspaces(context, accessibleWorkspaceIds, {
+        offset: 0,
+        limit: PAGE_SIZE,
+      })
+    : await chatDO.getThreadsPaginated(context, workspaceId, {
+        offset: 0,
+        limit: PAGE_SIZE,
+      });
 
   // Hydrate threads with creator info
   const creatorIds = Array.from(

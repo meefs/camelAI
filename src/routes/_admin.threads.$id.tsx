@@ -35,6 +35,24 @@ export function meta({ data }: Route.MetaArgs) {
   ];
 }
 
+export async function action({ request, context, params }: Route.ActionArgs) {
+  await requireSuperuser(request, context);
+
+  const formData = await request.formData();
+  const intent = formData.get('intent');
+
+  if (intent === 'updateThread') {
+    const title = formData.get('title') as string;
+    if (!title?.trim()) {
+      return { error: 'Thread title is required' };
+    }
+    // TODO: Implement adminUpdateThread in auth-do.server.ts
+    return { error: 'Update thread not yet implemented' };
+  }
+
+  return { error: 'Unknown action' };
+}
+
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
 

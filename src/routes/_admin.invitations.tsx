@@ -57,6 +57,24 @@ export function meta() {
   ];
 }
 
+export async function action({ request, context }: Route.ActionArgs) {
+  await requireSuperuser(request, context);
+
+  const formData = await request.formData();
+  const intent = formData.get('intent');
+
+  if (intent === 'deleteInvitation') {
+    const invitationId = formData.get('invitationId') as string;
+    if (!invitationId) {
+      return { error: 'Invitation ID is required' };
+    }
+    // TODO: Implement adminDeleteInvitation in auth-do.server.ts
+    return { error: 'Delete invitation not yet implemented' };
+  }
+
+  return { error: 'Unknown action' };
+}
+
 export async function loader({ request, context }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
 

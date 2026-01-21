@@ -96,15 +96,57 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
   const formData = await request.formData();
   const intent = formData.get('intent');
+  const { id: orgId } = params;
 
   if (intent === 'reset-containers') {
-    const { id } = params;
-    // Call the admin reset containers function
-    await authDO.resetAdminOrgContainers(context, id);
+    await authDO.resetAdminOrgContainers(context, orgId);
     return { success: true };
   }
 
-  return { success: false };
+  if (intent === 'addMember') {
+    const userId = formData.get('userId') as string;
+    const role = formData.get('role') as 'admin' | 'member';
+    if (!userId || !role) {
+      return { error: 'User ID and role are required' };
+    }
+    await authDO.addAdminOrgMember(context, orgId, userId, role);
+    return { success: true };
+  }
+
+  if (intent === 'updateMemberRole') {
+    const userId = formData.get('userId') as string;
+    const role = formData.get('role') as 'admin' | 'member' | 'viewer' | 'owner';
+    if (!userId || !role) {
+      return { error: 'User ID and role are required' };
+    }
+    await authDO.updateAdminOrgMemberRole(context, orgId, userId, role);
+    return { success: true };
+  }
+
+  if (intent === 'transferOwnership') {
+    const newOwnerId = formData.get('newOwnerId') as string;
+    if (!newOwnerId) {
+      return { error: 'New owner ID is required' };
+    }
+    await authDO.adminTransferOrgOwnership(context, orgId, newOwnerId);
+    return { success: true };
+  }
+
+  if (intent === 'archiveOrg') {
+    await authDO.adminArchiveOrg(context, orgId);
+    return { success: true };
+  }
+
+  if (intent === 'updateOrg') {
+    const name = formData.get('name') as string;
+    if (!name?.trim()) {
+      return { error: 'Organization name is required' };
+    }
+    // TODO: Implement adminUpdateOrg in auth-do.server.ts
+    return { error: 'Update org not yet implemented' };
+  }
+
+  return { error: 'Unknown action' };
 }
 
 export default function AdminOrgDetailPage() {

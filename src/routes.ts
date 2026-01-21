@@ -113,6 +113,9 @@ export default [
   route('api/workspaces/:id/fs/move', 'routes/api/workspaces.$id.fs.move.ts'),
   route('api/workspaces/:id/fs/create', 'routes/api/workspaces.$id.fs.create.ts'),
 
+  // Apps API routes
+  route('api/apps/:scriptName/preview', 'routes/api/apps.$scriptName.preview.ts'),
+
   // API resource routes (to be created)
   // route('api/orgs/:id', 'routes/api/orgs.$id.ts'),
   // route('api/orgs/:id/members', 'routes/api/orgs.$id.members.ts'),

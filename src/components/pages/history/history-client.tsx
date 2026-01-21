@@ -1,19 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate, useSearchParams, useRevalidator, useFetcher } from 'react-router';
 import type { Thread, WorkspaceWithAccess } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { PageHeader } from '@/components/page-header';
 import { ChatsToolbar } from '@/components/history/chats-toolbar';
 import { ChatsList } from '@/components/history/chats-list';
 import { SwitchWorkspaceDialog } from '@/components/history/switch-workspace-dialog';
-import {
-  deleteThread,
-  getThreadsPage,
-  getThreadsPageAllWorkspaces,
-  updateThreadTitle,
-} from '@/lib/server-actions/thread';
 
 // Note: Auth is handled by the (app) layout - no need to check here
 
@@ -33,6 +27,9 @@ export default function HistoryClient({
   initialLimit,
 }: HistoryClientProps) {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const revalidator = useRevalidator();
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const {
     currentOrg,
     currentWorkspace,
@@ -40,20 +37,16 @@ export default function HistoryClient({
     switchWorkspace,
     loading: authLoading,
   } = useAuth();
-  const [threads, setThreads] = useState<Thread[]>(initialThreads);
-  const [loading, setLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
+
+  const filter = (searchParams.get('filter') as 'this-workspace' | 'all-workspaces') || 'this-workspace';
+  const threads = initialThreads;
+  const total = initialTotal;
+  const offset = initialOffset;
+  const limit = initialLimit;
+
   const [searchQuery, setSearchQuery] = useState('');
-  const [filter, setFilter] = useState<'this-workspace' | 'all-workspaces'>('this-workspace');
   const [selectMode, setSelectMode] = useState<'off' | 'manual' | 'implicit'>('off');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [activeOrgId, setActiveOrgId] = useState(initialOrgId);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
-    currentWorkspace?.id ?? null
-  );
-  const [total, setTotal] = useState(initialTotal);
-  const [offset, setOffset] = useState(initialOffset);
-  const [limit, setLimit] = useState(initialLimit);
   const [switchDialog, setSwitchDialog] = useState<{
     open: boolean;
     threadId: string | null;
@@ -64,68 +57,23 @@ export default function HistoryClient({
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const isSelecting = selectMode !== 'off';
   const hasMore = threads.length < total;
+  const loading = revalidator.state === 'loading';
+  const loadingMore = false; // TODO: Implement load more with URL params
   const workspaceMap = useMemo(
     () => new Map((workspaces ?? []).map((workspace) => [workspace.id, workspace])),
     [workspaces]
   );
 
-  const fetchThreadsPage = useCallback(
-    async (nextFilter: 'this-workspace' | 'all-workspaces', nextOffset: number, nextLimit: number) => {
-      if (nextFilter === 'all-workspaces') {
-        return getThreadsPageAllWorkspaces({ offset: nextOffset, limit: nextLimit });
-      }
-      return getThreadsPage({ offset: nextOffset, limit: nextLimit });
-    },
-    []
-  );
-
-  const refreshThreads = useCallback(async (nextFilter: 'this-workspace' | 'all-workspaces' = filter) => {
-    try {
-      setLoading(true);
-      const page = await fetchThreadsPage(nextFilter, 0, limit);
-      setThreads(Array.isArray(page.items) ? (page.items as Thread[]) : []);
-      setTotal(page.total);
-      setOffset(page.offset);
-      setLimit(page.limit);
-    } catch (error) {
-      console.error('Failed to fetch threads:', error);
-    } finally {
-      setLoading(false);
-    }
-  }, [fetchThreadsPage, filter, limit]);
-
+  // Revalidate when org or workspace changes
   useEffect(() => {
-    if (currentOrg?.id && currentOrg.id !== activeOrgId) {
-      setActiveOrgId(currentOrg.id);
-      refreshThreads();
+    if (revalidator.state === 'idle') {
+      revalidator.revalidate();
     }
-  }, [currentOrg?.id, activeOrgId, refreshThreads]);
+  }, [currentOrg?.id, currentWorkspace?.id]);
 
-  useEffect(() => {
-    const workspaceId = currentWorkspace?.id ?? null;
-    if (workspaceId === activeWorkspaceId) return;
-    setActiveWorkspaceId(workspaceId);
-    if (filter === 'this-workspace' && workspaceId) {
-      refreshThreads();
-    }
-  }, [activeWorkspaceId, currentWorkspace?.id, filter, refreshThreads]);
-
-  const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore) return;
-    try {
-      setLoadingMore(true);
-      const nextOffset = offset + limit;
-      const page = await fetchThreadsPage(filter, nextOffset, limit);
-      setThreads((prev) => [...prev, ...(page.items as Thread[])]);
-      setTotal(page.total);
-      setOffset(page.offset);
-      setLimit(page.limit);
-    } catch (error) {
-      console.error('Failed to load more threads:', error);
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [fetchThreadsPage, filter, hasMore, limit, loadingMore, offset]);
+  const loadMore = useCallback(() => {
+    // TODO: Implement pagination with URL params
+  }, []);
 
   useEffect(() => {
     const target = loadMoreRef.current;
@@ -151,12 +99,11 @@ export default function HistoryClient({
 
   const handleFilterChange = useCallback(
     (value: 'this-workspace' | 'all-workspaces') => {
-      setFilter(value);
+      setSearchParams({ filter: value });
       setSelectedIds(new Set());
       setSelectMode('off');
-      refreshThreads(value);
     },
-    [refreshThreads]
+    [setSearchParams]
   );
 
   const enterSelectMode = useCallback((mode: 'manual' | 'implicit') => {
@@ -202,36 +149,41 @@ export default function HistoryClient({
   };
 
   // Thread actions
-  const handleRenameThread = async (id: string, newTitle: string) => {
+  const handleRenameThread = (id: string, newTitle: string) => {
     const thread = threads.find((entry) => entry.id === id);
     if (!thread) return;
-    try {
-      await updateThreadTitle(id, newTitle, thread.workspace_id);
-      setThreads(prev => prev.map(t => t.id === id ? { ...t, title: newTitle } : t));
-    } catch (error) {
-      console.error('Failed to rename thread:', error);
-    }
+    fetcher.submit(
+      {
+        intent: 'renameThread',
+        threadId: id,
+        workspaceId: thread.workspace_id,
+        title: newTitle,
+      },
+      { method: 'POST' }
+    );
   };
 
-  const handleDeleteThread = async (id: string) => {
+  const handleDeleteThread = (id: string) => {
     const thread = threads.find((entry) => entry.id === id);
     if (!thread) return;
-    try {
-      await deleteThread(id, thread.workspace_id);
-      setThreads(prev => prev.filter(t => t.id !== id));
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    } catch (error) {
-      console.error('Failed to delete thread:', error);
-    }
+    fetcher.submit(
+      {
+        intent: 'deleteThread',
+        threadId: id,
+        workspaceId: thread.workspace_id,
+      },
+      { method: 'POST' }
+    );
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   };
 
-  const handleDeleteSelected = async () => {
+  const handleDeleteSelected = () => {
     const idsToDelete = Array.from(selectedIds);
-    await Promise.all(idsToDelete.map(id => handleDeleteThread(id)));
+    idsToDelete.forEach(id => handleDeleteThread(id));
     handleClearSelection();
   };
 

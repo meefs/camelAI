@@ -122,6 +122,12 @@ async function handleDeploySideEffects(
   });
 
   const envPrefix = resolveEnvPrefix(env.WORKER_BASE_URL, hostname);
+  console.log('[cf-api-proxy] resolved env prefix for screenshot', {
+    scriptName,
+    envPrefix,
+    workerBaseUrl: env.WORKER_BASE_URL,
+    hostname,
+  });
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const previewResult = await orgStub.updateWorkerScriptPreview(scriptName, {
     status: 'pending',
@@ -283,7 +289,7 @@ export default {
       }
 
       const orgStub = env.ORG.get(env.ORG.idFromName(workspaceInfo.org_id)) as unknown as OrgDO;
-      const thread = orgStub.getThread(threadId);
+      const thread = await orgStub.getThread(threadId);
       if (!thread || thread.workspace_id !== workspaceId) {
         return new Response('Thread not found', { status: 404 });
       }
@@ -401,7 +407,7 @@ export default {
           const wsInfo = await workspaceStub.getInfo();
           if (wsInfo && !wsInfo.archived) {
             const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id)) as unknown as OrgDO;
-            const thread = orgStub.getThread(threadIdFromUrl);
+            const thread = await orgStub.getThread(threadIdFromUrl);
             if (thread && thread.workspace_id === workspaceId) {
               validatedThreadId = threadIdFromUrl;
             } else {

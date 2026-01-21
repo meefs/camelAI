@@ -229,3 +229,74 @@ export async function resetAdminWorkspaceContainer(
 ): Promise<{ success: boolean; containerId: string }> {
   throw new Error('resetAdminWorkspaceContainer not yet implemented - requires container bindings');
 }
+
+// Admin org member functions
+export async function addAdminOrgMember(
+  context: AppLoadContext,
+  orgId: string,
+  userId: string,
+  role: 'admin' | 'member'
+): Promise<void> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  // Use a system actor ID for admin operations
+  const actorId = 'system-admin';
+  await authDO.adminAddOrgMember(authEnv, orgId, userId, role, actorId);
+}
+
+export async function updateAdminOrgMemberRole(
+  context: AppLoadContext,
+  orgId: string,
+  userId: string,
+  role: OrgRole
+): Promise<void> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  // Use a system actor ID for admin operations
+  const actorId = 'system-admin';
+  await authDO.updateOrgMemberRole(authEnv, orgId, userId, role, actorId);
+}
+
+// Admin workspace functions
+export async function adminUpdateWorkspace(
+  context: AppLoadContext,
+  workspaceId: string,
+  updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } }
+): Promise<void> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const actorId = 'system-admin';
+  await authDO.adminUpdateWorkspace(authEnv, workspaceId, updates, actorId);
+}
+
+export async function adminArchiveWorkspace(
+  context: AppLoadContext,
+  workspaceId: string
+): Promise<void> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const actorId = 'system-admin';
+  await authDO.adminArchiveWorkspace(authEnv, workspaceId, actorId);
+}
+
+// Admin org functions
+export async function adminArchiveOrg(
+  context: AppLoadContext,
+  orgId: string
+): Promise<void> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const actorId = 'system-admin';
+  await authDO.archiveOrg(authEnv, orgId, actorId);
+}
+
+export async function adminTransferOrgOwnership(
+  context: AppLoadContext,
+  orgId: string,
+  newOwnerId: string
+): Promise<void> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const actorId = 'system-admin';
+  await authDO.adminTransferOrgOwnership(authEnv, orgId, newOwnerId, actorId);
+}

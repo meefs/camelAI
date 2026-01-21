@@ -1,9 +1,9 @@
 "use client"
 
-import { useState } from "react"
-import { z } from "zod"
-import { zodResolver } from "@hookform/resolvers/zod"
-import { useForm } from "react-hook-form"
+import { useEffect } from "react"
+import { useFetcher } from "react-router"
+import { useForm, getFormProps, getInputProps, getTextareaProps, type SubmissionResult } from "@conform-to/react"
+import { parseWithZod } from "@conform-to/zod/v4"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -23,112 +23,86 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { createWorkspace } from "@/lib/server-actions/workspace"
 import { useIsMobile } from "@/hooks/use-mobile"
-import type { Workspace } from "@/types"
-
-const workspaceSchema = z.object({
-  name: z.string().min(1, "Workspace name is required").max(100),
-  description: z.string().max(200).optional(),
-})
-
-type WorkspaceFormValues = z.infer<typeof workspaceSchema>
+import { createWorkspaceFormSchema } from "@/lib/schemas"
 
 interface CreateWorkspaceDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onCreated?: (workspace: Workspace) => void
 }
 
 export function CreateWorkspaceDialog({
   open,
   onOpenChange,
-  onCreated,
 }: CreateWorkspaceDialogProps) {
   const isMobile = useIsMobile()
-  const [saving, setSaving] = useState(false)
+  const fetcher = useFetcher<{ result?: SubmissionResult<string[]>; success?: boolean; error?: string }>()
+  const saving = fetcher.state !== "idle"
 
-  const form = useForm<WorkspaceFormValues>({
-    resolver: zodResolver(workspaceSchema),
-    defaultValues: {
+  const [form, fields] = useForm({
+    lastResult: fetcher.data?.result,
+    onValidate({ formData }) {
+      return parseWithZod(formData, { schema: createWorkspaceFormSchema })
+    },
+    defaultValue: {
       name: "",
       description: "",
     },
+    shouldValidate: "onBlur",
+    shouldRevalidate: "onInput",
   })
 
-  const onSubmit = async (values: WorkspaceFormValues) => {
-    setSaving(true)
-    try {
-      const workspace = await createWorkspace(
-        values.name.trim(),
-        values.description?.trim() || null
-      )
-      toast.success("Workspace created")
-      onCreated?.(workspace)
-      form.reset({ name: "", description: "" })
-      onOpenChange(false)
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to create workspace"
-      )
-    } finally {
-      setSaving(false)
+  // Handle response
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data) {
+      if (fetcher.data.success) {
+        toast.success("Workspace created")
+        onOpenChange(false)
+      } else if (fetcher.data.error) {
+        toast.error(fetcher.data.error)
+      }
     }
-  }
+  }, [fetcher.state, fetcher.data, onOpenChange])
 
-  const body = (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-        <FormField
-          control={form.control}
-          name="name"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Workspace name</FormLabel>
-              <FormControl>
-                <Input placeholder="New workspace" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+  const formContent = (
+    <fetcher.Form method="post" {...getFormProps(form)} className="space-y-4">
+      <input type="hidden" name="intent" value="createWorkspace" />
+
+      <div className="space-y-2">
+        <Label htmlFor={fields.name.id}>Workspace name</Label>
+        <Input
+          {...getInputProps(fields.name, { type: "text" })}
+          placeholder="New workspace"
         />
-        <FormField
-          control={form.control}
-          name="description"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Description</FormLabel>
-              <FormControl>
-                <Textarea
-                  placeholder="Optional description"
-                  className="min-h-[96px]"
-                  {...field}
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+        {fields.name.errors && fields.name.errors.length > 0 && (
+          <p className="text-sm text-destructive">{fields.name.errors[0]}</p>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor={fields.description.id}>Description</Label>
+        <Textarea
+          {...getTextareaProps(fields.description)}
+          placeholder="Optional description"
+          className="min-h-[96px]"
         />
-        <div className="hidden md:flex items-center justify-end gap-2">
-          <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={saving}>
-            {saving ? "Creating..." : "Create workspace"}
-          </Button>
-        </div>
-      </form>
-    </Form>
+        {fields.description.errors && fields.description.errors.length > 0 && (
+          <p className="text-sm text-destructive">{fields.description.errors[0]}</p>
+        )}
+      </div>
+
+      <div className="hidden md:flex items-center justify-end gap-2">
+        <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={saving}>
+          {saving ? "Creating..." : "Create workspace"}
+        </Button>
+      </div>
+    </fetcher.Form>
   )
 
   if (isMobile) {
@@ -141,12 +115,12 @@ export function CreateWorkspaceDialog({
               Add a new workspace to this organization.
             </SheetDescription>
           </SheetHeader>
-          <div className="py-6">{body}</div>
+          <div className="py-6">{formContent}</div>
           <SheetFooter>
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button onClick={form.handleSubmit(onSubmit)} disabled={saving}>
+            <Button type="submit" form={form.id} disabled={saving}>
               {saving ? "Creating..." : "Create"}
             </Button>
           </SheetFooter>
@@ -164,12 +138,12 @@ export function CreateWorkspaceDialog({
             Add a new workspace to this organization.
           </DialogDescription>
         </DialogHeader>
-        {body}
+        {formContent}
         <DialogFooter className="md:hidden">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={form.handleSubmit(onSubmit)} disabled={saving}>
+          <Button type="submit" form={form.id} disabled={saving}>
             {saving ? "Creating..." : "Create"}
           </Button>
         </DialogFooter>

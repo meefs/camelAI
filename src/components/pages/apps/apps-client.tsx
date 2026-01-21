@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams, useRevalidator } from 'react-router';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -9,11 +10,9 @@ import { PageHeader } from '@/components/page-header';
 import { AppCard } from './AppCard';
 import { AppSettingsDialog } from './AppSettingsDialog';
 import { AppCardSkeleton } from './AppCardSkeleton';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { AlertCircle, LayoutGrid } from 'lucide-react';
-import { getOrgApps, getOrgAppsAllWorkspaces } from '@/lib/server-actions/apps';
+import { LayoutGrid } from 'lucide-react';
 
 interface AppsClientProps {
   initialApps: WorkerScriptWithCreator[];
@@ -36,61 +35,28 @@ export default function AppsClient({
     loading: authLoading,
   } = useAuth();
 
-  const [apps, setApps] = useState<WorkerScriptWithCreator[]>(initialApps);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'this-workspace' | 'all-workspaces'>('this-workspace');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const revalidator = useRevalidator();
+  const filter = (searchParams.get('filter') as 'this-workspace' | 'all-workspaces') || 'this-workspace';
+
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<WorkerScriptWithCreator | null>(null);
-  const [activeOrgId, setActiveOrgId] = useState(orgId);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
-    currentWorkspace?.id ?? null
-  );
   const [referenceTime, setReferenceTime] = useState(initialNow);
   const workspaceMap = useMemo(
     () => new Map((workspaces ?? []).map((workspace) => [workspace.id, workspace])),
     [workspaces]
   );
 
-  const refreshApps = useCallback(
-    async (
-      nextFilter: 'this-workspace' | 'all-workspaces' = filter,
-      targetOrgId = activeOrgId
-    ) => {
-      if (!targetOrgId) return;
-      try {
-        setLoading(true);
-        setError(null);
-        const data =
-          nextFilter === 'all-workspaces'
-            ? await getOrgAppsAllWorkspaces(targetOrgId)
-            : await getOrgApps(targetOrgId);
-        setApps(data);
-        setReferenceTime(Date.now());
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load apps');
-      } finally {
-        setLoading(false);
-      }
-    },
-    [activeOrgId, filter]
-  );
-
+  // Revalidate when org or workspace changes
   useEffect(() => {
-    if (currentOrg?.id && currentOrg.id !== activeOrgId) {
-      setActiveOrgId(currentOrg.id);
-      refreshApps(filter, currentOrg.id);
+    if (revalidator.state === 'idle') {
+      revalidator.revalidate();
+      setReferenceTime(Date.now());
     }
-  }, [currentOrg?.id, activeOrgId, filter, refreshApps]);
+  }, [currentOrg?.id, currentWorkspace?.id]);
 
-  useEffect(() => {
-    const workspaceId = currentWorkspace?.id ?? null;
-    if (workspaceId === activeWorkspaceId) return;
-    setActiveWorkspaceId(workspaceId);
-    if (filter === 'this-workspace' && workspaceId) {
-      refreshApps('this-workspace');
-    }
-  }, [activeWorkspaceId, currentWorkspace?.id, filter, refreshApps]);
+  const loading = authLoading || revalidator.state === 'loading';
+  const apps = initialApps;
 
   const handleOpenSettings = (app: WorkerScriptWithCreator) => {
     setSelectedApp(app);
@@ -98,7 +64,10 @@ export default function AppsClient({
   };
 
   const handleSettingsSuccess = () => {
-    void refreshApps(filter, activeOrgId);
+    if (revalidator.state === 'idle') {
+      revalidator.revalidate();
+      setReferenceTime(Date.now());
+    }
   };
 
   const handleSettingsDialogOpenChange = (open: boolean) => {
@@ -122,17 +91,15 @@ export default function AppsClient({
     toast(`Source view for ${app.script_name} is coming soon.`);
   };
 
-  const isLoading = authLoading || loading;
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
   const currentWorkspaceId = currentWorkspace?.id ?? null;
 
   const handleFilterChange = useCallback(
     (value: 'this-workspace' | 'all-workspaces') => {
-      setFilter(value);
-      refreshApps(value);
+      setSearchParams({ filter: value });
     },
-    [refreshApps]
+    [setSearchParams]
   );
 
   return (
@@ -165,14 +132,8 @@ export default function AppsClient({
               </Tabs>
             </div>
 
-            {error && (
-              <Alert variant="destructive" className="mt-4">
-                <AlertCircle className="size-4" />
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-
-            {isLoading ? (
+            
+            {loading ? (
               <div className="@container">
                 <div className="mt-6 grid gap-4 @[580px]:grid-cols-2 @[880px]:grid-cols-3">
                   {Array.from({ length: 4 }).map((_, i) => (
@@ -224,7 +185,7 @@ export default function AppsClient({
           open={settingsDialogOpen}
           onOpenChange={handleSettingsDialogOpenChange}
           app={selectedApp}
-          orgId={activeOrgId}
+          orgId={orgId}
           isAdmin={isAdmin}
           hostname={hostname}
           onSuccess={handleSettingsSuccess}

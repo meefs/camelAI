@@ -1,12 +1,11 @@
 'use client';
 
-import { useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useEffect, useState } from 'react';
+import { useFetcher } from 'react-router';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { updateAdminThread } from '@/lib/server-actions/admin';
 
 interface Thread {
   id: string;
@@ -21,44 +20,31 @@ interface ThreadEditFormProps {
 }
 
 export function ThreadEditForm({ thread }: ThreadEditFormProps) {
-  const navigate = useNavigate();
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [title, setTitle] = useState(thread.title);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
+  const saving = fetcher.state !== 'idle';
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    setSuccess(false);
-
-    try {
-      await updateAdminThread(thread.id, { title });
-
-      setSuccess(true);
-      // TODO: implement refresh;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setLoading(false);
+  // Handle response
+  useEffect(() => {
+    if (fetcher.state === 'idle' && fetcher.data) {
+      if (fetcher.data.success) {
+        toast.success('Thread updated');
+      } else if (fetcher.data.error) {
+        toast.error(fetcher.data.error);
+      }
     }
+  }, [fetcher.state, fetcher.data]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    fetcher.submit(
+      { intent: 'updateThread', title: title.trim() },
+      { method: 'POST' }
+    );
   };
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {success && (
-        <Alert>
-          <AlertDescription>Thread updated successfully</AlertDescription>
-        </Alert>
-      )}
-
       <div className="space-y-2">
         <Label htmlFor="title">Thread Title</Label>
         <Input
@@ -70,8 +56,8 @@ export function ThreadEditForm({ thread }: ThreadEditFormProps) {
         />
       </div>
 
-      <Button type="submit" disabled={loading}>
-        {loading ? 'Saving...' : 'Save Changes'}
+      <Button type="submit" disabled={saving}>
+        {saving ? 'Saving...' : 'Save Changes'}
       </Button>
     </form>
   );

@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-19-sandbox-v17-single-line-logs';
+const VERSION = '2026-01-21-sandbox-v18-query-debug';
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {
@@ -33,6 +33,19 @@ const TRACE_EVENTS = process.env.CHIRIDION_TRACE_EVENTS !== '0';
 const TRACE_DIR = `${SYNC_DIR}/.chiridion/trace`;
 const TRACE_ALL_FILE = `${TRACE_DIR}/_all.ndjson`;
 const TASK_RESULTS_DIR = `${SYNC_DIR}/.chiridion/task-results`;
+
+log('[ws-server]', 'Starting ws-server', {
+  version: VERSION,
+  port: PORT,
+  syncDir: SYNC_DIR,
+  hasAnthropicKey: !!ANTHROPIC_API_KEY,
+  anthropicKeyLength: ANTHROPIC_API_KEY?.length || 0,
+  anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || 'not set',
+  workerBaseUrl: WORKER_BASE_URL || 'not set',
+  mcpServerUrl: MCP_SERVER_URL || 'not set',
+  hasMcpApiKey: !!MCP_API_KEY,
+  traceEvents: TRACE_EVENTS,
+});
 
 if (!ANTHROPIC_API_KEY) {
   console.error('ANTHROPIC_API_KEY env var required');
@@ -395,22 +408,43 @@ The infrastructure is already configured for Worker deployments. For fullstack a
 
 // Async generator that yields user messages on demand
 async function* createMessageStream(session) {
+  log('[ws-server]', 'createMessageStream: generator started', { threadId: session.threadId });
+  let messageCount = 0;
+
   while (true) {
     // Check queue first for any buffered messages
     let message;
     if (session.messageQueue.length > 0) {
       message = session.messageQueue.shift();
+      log('[ws-server]', 'createMessageStream: got message from queue', {
+        threadId: session.threadId,
+        messageLength: message?.length,
+        remainingInQueue: session.messageQueue.length,
+      });
     } else {
       // Wait for next message
+      log('[ws-server]', 'createMessageStream: waiting for message', { threadId: session.threadId });
       message = await new Promise((resolve) => {
         session.messageResolver = resolve;
+      });
+      log('[ws-server]', 'createMessageStream: received message from resolver', {
+        threadId: session.threadId,
+        messageLength: message?.length,
       });
     }
 
     if (message === null) {
       // Signal to stop
+      log('[ws-server]', 'createMessageStream: null message, stopping', { threadId: session.threadId });
       return;
     }
+
+    messageCount++;
+    log('[ws-server]', 'createMessageStream: yielding message', {
+      threadId: session.threadId,
+      messageCount,
+      messagePreview: message?.substring(0, 100),
+    });
 
     // Yield the user message
     yield {
@@ -487,14 +521,33 @@ function attachSession(ws, session, lastEventId) {
 
 // Initialize the stateful query session
 function initSession(session) {
-  if (session.activeQuery) return;
+  if (session.activeQuery) {
+    log('[ws-server]', 'initSession: already active', { threadId: session.threadId });
+    return;
+  }
+
+  log('[ws-server]', 'initSession: starting', { threadId: session.threadId });
 
   try {
     const options = getQueryOptions(session);
+    log('[ws-server]', 'initSession: query options', {
+      threadId: session.threadId,
+      model: options.model,
+      fallbackModel: options.fallbackModel,
+      hasResume: !!options.resume,
+      hasSessionId: !!options.extraArgs?.['session-id'],
+      hasMcpServers: Object.keys(options.mcpServers || {}).length > 0,
+      anthropicBaseUrl: options.env?.ANTHROPIC_BASE_URL || 'not set',
+      hasAnthropicKey: !!options.env?.ANTHROPIC_API_KEY,
+    });
+
     const messageStream = createMessageStream(session);
+    log('[ws-server]', 'initSession: calling query()', { threadId: session.threadId });
 
     session.activeQuery = query({ prompt: messageStream, options });
     session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
+
+    log('[ws-server]', 'initSession: query initialized successfully', { threadId: session.threadId });
   } catch (error) {
     logError('[ws-server]', 'Failed to init:', summarizeError(error));
     bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
@@ -503,20 +556,43 @@ function initSession(session) {
 
 // Start continuous event loop - runs until query ends or error
 function startEventLoop(session) {
-  if (session.eventLoopRunning || !session.queryIterator) return;
+  if (session.eventLoopRunning) {
+    log('[ws-server]', 'startEventLoop: already running', { threadId: session.threadId });
+    return;
+  }
+  if (!session.queryIterator) {
+    log('[ws-server]', 'startEventLoop: no queryIterator', { threadId: session.threadId });
+    return;
+  }
   session.eventLoopRunning = true;
   log('[ws-server]', 'Event loop starting', { threadId: session.threadId });
 
   (async () => {
     let exitReason = 'unknown';
+    let eventCount = 0;
     try {
+      log('[ws-server]', 'Event loop: waiting for first event', { threadId: session.threadId });
+
       while (true) {
-        const { value: event, done } = await session.queryIterator.next();
+        const iterResult = await session.queryIterator.next();
+        const { value: event, done } = iterResult;
 
         if (done) {
           exitReason = 'iterator_done';
+          log('[ws-server]', 'Event loop: iterator done', { threadId: session.threadId, eventCount });
           break;
         }
+
+        eventCount++;
+        // Log every event type for debugging
+        log('[ws-server]', 'Event received', {
+          threadId: session.threadId,
+          eventCount,
+          eventType: event?.type,
+          eventSubtype: event?.event?.type,
+          hasMessage: !!event?.message,
+          messageRole: event?.message?.role,
+        });
 
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
@@ -525,12 +601,22 @@ function startEventLoop(session) {
 
         // Result means this turn is done - but keep loop alive if sockets connected or messages pending
         if (event.type === 'result') {
+          log('[ws-server]', 'Event loop: result event received', {
+            threadId: session.threadId,
+            eventCount,
+            result: event.result ? 'present' : 'absent',
+          });
           const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
           const hasPendingMessages = session.messageQueue.length > 0;
           if (!hasConnections && !hasPendingMessages) {
             exitReason = 'no_connections_or_messages';
             break;
           }
+          log('[ws-server]', 'Event loop: continuing after result', {
+            threadId: session.threadId,
+            hasConnections,
+            hasPendingMessages,
+          });
           // Continue looping - generator will yield queued message or wait for new one
         }
       }
@@ -545,6 +631,7 @@ function startEventLoop(session) {
       log('[ws-server]', 'Event loop stopped', {
         threadId: session.threadId,
         exitReason,
+        eventCount,
         sockets: session.attachedSockets?.size || 0,
         pendingMessages: session.messageQueue?.length || 0,
       });
@@ -576,6 +663,15 @@ function handleUserMessage(session, content, userInfo = null) {
   const authorPrefix = formatAuthorPrefix(userInfo?.userName, userInfo?.userEmail);
   const attributedContent = authorPrefix + content;
 
+  log('[ws-server]', 'handleUserMessage', {
+    threadId: session.threadId,
+    contentLength: content?.length,
+    hasResolver: !!session.messageResolver,
+    queueLength: session.messageQueue?.length || 0,
+    eventLoopRunning: session.eventLoopRunning,
+    hasActiveQuery: !!session.activeQuery,
+  });
+
   void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content: attributedContent, author: userInfo });
   // Initialize session if needed
   initSession(session);
@@ -586,11 +682,16 @@ function handleUserMessage(session, content, userInfo = null) {
   // Feed message to the generator
   // Messages are persisted by Claude SDK in ~/.claude/projects/.../session.jsonl
   if (session.messageResolver) {
+    log('[ws-server]', 'handleUserMessage: resolving waiting generator', { threadId: session.threadId });
     const resolver = session.messageResolver;
     session.messageResolver = null;
     resolver(attributedContent);
   } else {
     // Queue message - will be picked up when generator pulls
+    log('[ws-server]', 'handleUserMessage: queueing message', {
+      threadId: session.threadId,
+      newQueueLength: session.messageQueue.length + 1,
+    });
     session.messageQueue.push(attributedContent);
   }
 }

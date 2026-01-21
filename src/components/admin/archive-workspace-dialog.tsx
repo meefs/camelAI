@@ -1,7 +1,8 @@
 "use client"
 
-import { useState } from "react"
-import { useNavigate } from 'react-router';
+import { useEffect, useState } from "react"
+import { useFetcher } from "react-router"
+import { toast } from "sonner"
 
 import {
   AlertDialog,
@@ -16,7 +17,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { archiveAdminWorkspace } from "@/lib/server-actions/admin"
 
 interface ArchiveWorkspaceDialogProps {
   workspaceId: string
@@ -29,25 +29,32 @@ export function ArchiveWorkspaceDialog({
   workspaceName,
   disabled = false,
 }: ArchiveWorkspaceDialogProps) {
-  const navigate = useNavigate()
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [open, setOpen] = useState(false)
   const [confirmText, setConfirmText] = useState("")
-  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const loading = fetcher.state !== "idle"
 
-  const handleArchive = async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      await archiveAdminWorkspace(workspaceId)
-      setOpen(false)
-      setConfirmText("")
-      // TODO: implement refresh
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to archive workspace")
-    } finally {
-      setLoading(false)
+  // Handle response
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data) {
+      if (fetcher.data.success) {
+        toast.success("Workspace archived")
+        setOpen(false)
+        setConfirmText("")
+        setError(null)
+      } else if (fetcher.data.error) {
+        setError(fetcher.data.error)
+      }
     }
+  }, [fetcher.state, fetcher.data])
+
+  const handleArchive = () => {
+    setError(null)
+    fetcher.submit(
+      { intent: "archiveWorkspace" },
+      { method: "POST" }
+    )
   }
 
   return (

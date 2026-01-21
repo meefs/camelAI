@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useFetcher } from 'react-router';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
 import {
   Dialog,
@@ -22,7 +23,6 @@ import {
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle } from 'lucide-react';
-import { createIntegration } from '@/lib/server-actions/org';
 
 interface AddConnectionDialogProps {
   open: boolean;
@@ -41,37 +41,43 @@ export function AddConnectionDialog({
   orgId,
   onSuccess,
 }: AddConnectionDialogProps) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [name, setName] = useState('');
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [credentials, setCredentials] = useState<Record<string, unknown>>({});
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const submitting = fetcher.state !== 'idle';
   const typeDef = connectionTypes.find((t) => t.type === connectionType);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  useEffect(() => {
+    if (fetcher.state === 'idle' && fetcher.data) {
+      if (fetcher.data.success) {
+        setName('');
+        setConfig({});
+        setCredentials({});
+        setError(null);
+        onSuccess();
+      } else if (fetcher.data.error) {
+        setError(fetcher.data.error);
+      }
+    }
+  }, [fetcher.state, fetcher.data, onSuccess]);
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSubmitting(true);
 
-    try {
-      await createIntegration(orgId, {
+    fetcher.submit(
+      {
+        intent: 'createIntegration',
         integration_type: connectionType,
         name: name.trim() || typeDef?.displayName || connectionType,
-        config,
-        credentials,
-      });
-
-      // Reset form
-      setName('');
-      setConfig({});
-      setCredentials({});
-      onSuccess();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create connection');
-    } finally {
-      setSubmitting(false);
-    }
+        config: JSON.stringify(config),
+        credentials: JSON.stringify(credentials),
+      },
+      { method: 'POST' }
+    );
   };
 
   const handleClose = () => {

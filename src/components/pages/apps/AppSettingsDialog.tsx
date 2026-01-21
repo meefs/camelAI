@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useFetcher } from 'react-router';
 import type { AppCreator, WorkerScriptWithCreator } from '@/types';
 import {
   Dialog,
@@ -19,7 +20,6 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AlertCircle, ExternalLink, Trash2 } from 'lucide-react';
 import { getAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
-import { deleteApp, setAppPublic } from '@/lib/server-actions/apps';
 
 interface AppSettingsDialogProps {
   open: boolean;
@@ -66,11 +66,15 @@ export function AppSettingsDialog({
   hostname,
   onSuccess,
 }: AppSettingsDialogProps) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [isPublic, setIsPublic] = useState(app.is_public);
-  const [submitting, setSubmitting] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<'save' | 'delete' | null>(null);
+
+  const submitting = fetcher.state !== 'idle' && pendingAction === 'save';
+  const deleting = fetcher.state !== 'idle' && pendingAction === 'delete';
+
   const appUrl = getAppUrl(app.script_name, hostname);
   const creator = app.creator;
   const creatorLabel = getCreatorLabel(creator, app.created_by);
@@ -86,16 +90,26 @@ export function AppSettingsDialog({
   useEffect(() => {
     setIsPublic(app.is_public);
     setError(null);
-    setSubmitting(false);
-    setDeleting(false);
+    setPendingAction(null);
     setConfirmDeleteOpen(false);
   }, [app]);
+
+  useEffect(() => {
+    if (fetcher.state === 'idle' && fetcher.data && pendingAction) {
+      if (fetcher.data.success) {
+        onSuccess();
+        handleClose();
+      } else if (fetcher.data.error) {
+        setError(fetcher.data.error);
+      }
+      setPendingAction(null);
+    }
+  }, [fetcher.state, fetcher.data, pendingAction, onSuccess]);
 
   const handleClose = () => {
     setIsPublic(app.is_public);
     setError(null);
-    setSubmitting(false);
-    setDeleting(false);
+    setPendingAction(null);
     setConfirmDeleteOpen(false);
     onOpenChange(false);
   };
@@ -106,7 +120,7 @@ export function AppSettingsDialog({
     }
   };
 
-  const handleSave = async (event: React.FormEvent) => {
+  const handleSave = (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
 
@@ -116,32 +130,27 @@ export function AppSettingsDialog({
       return;
     }
 
-    setSubmitting(true);
-
-    try {
-      await setAppPublic(orgId, app.script_name, isPublic);
-      onSuccess();
-      handleClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update app');
-    } finally {
-      setSubmitting(false);
-    }
+    setPendingAction('save');
+    fetcher.submit(
+      {
+        intent: 'setAppPublic',
+        scriptName: app.script_name,
+        isPublic: String(isPublic),
+      },
+      { method: 'POST', action: '/apps' }
+    );
   };
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     setError(null);
-    setDeleting(true);
-
-    try {
-      await deleteApp(orgId, app.script_name);
-      onSuccess();
-      handleClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete app');
-    } finally {
-      setDeleting(false);
-    }
+    setPendingAction('delete');
+    fetcher.submit(
+      {
+        intent: 'deleteApp',
+        scriptName: app.script_name,
+      },
+      { method: 'POST', action: '/apps' }
+    );
   };
 
   return (
