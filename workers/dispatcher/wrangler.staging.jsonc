@@ -1,0 +1,26 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "chiridion-dispatcher-staging",
+	"main": "src/index.ts",
+	"compatibility_date": "2024-12-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"routes": [
+		{ "pattern": "*.apps.staging.chiridion.ai/*", "zone_name": "chiridion.ai" },
+		{ "pattern": "*.staging.chiridion.app/*", "zone_name": "chiridion.app" }
+	],
+	"dispatch_namespaces": [
+		{
+			"binding": "DISPATCHER",
+			"namespace": "chiridion-platform-staging"
+		}
+	],
+	"kv_namespaces": [
+		{ "binding": "API_TOKENS", "id": "e894eb2caf1641ad8870da994b992fce" },
+		{ "binding": "SESSIONS", "id": "f5ab08fdb1d7404fbc45a171217b4a27" }
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-staging" }
+		]
+	}
+}

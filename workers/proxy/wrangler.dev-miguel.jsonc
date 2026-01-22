@@ -1,0 +1,19 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "chiridion-llm-proxy-dev-miguel",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-12-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"vars": {
+		"PROXY_FALLBACK_ORDER": "bedrock-api-key,foundry,anthropic",
+		"ANTHROPIC_VERSION": "2023-06-01"
+	},
+	"durable_objects": {
+		"bindings": [
+			{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-dev-miguel" }
+		]
+	},
+	"routes": [
+		{ "pattern": "llm-proxy.dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" }
+	]
+}
