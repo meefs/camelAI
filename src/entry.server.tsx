@@ -3,6 +3,10 @@ import { ServerRouter } from 'react-router';
 import { renderToReadableStream } from 'react-dom/server';
 import { isbot } from 'isbot';
 
+// Increase stream timeout for deferred data (default is 4950ms)
+// Container boot can take 10+ seconds on cold start
+export const streamTimeout = 60_000;
+
 export default async function handleRequest(
   request: Request,
   responseStatusCode: number,

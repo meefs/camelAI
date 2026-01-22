@@ -4,17 +4,12 @@ export default {
   // Enable SSR for Cloudflare Workers
   ssr: true,
 
-  // Build configuration
-  buildDirectory: 'build',
-
   // App directory contains routes
   appDirectory: 'src',
 
-  // Server module mode for Cloudflare Workers
-  serverModuleFormat: 'esm',
-
-  // Use flat routes convention
+  // Enable Vite environment API for proper Cloudflare Workers SSR
   future: {
     unstable_optimizeDeps: true,
+    v8_viteEnvironmentApi: true,
   },
 } satisfies Config;

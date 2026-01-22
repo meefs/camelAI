@@ -1,5 +1,5 @@
-import { Suspense } from 'react';
-import { useLoaderData, Await } from 'react-router';
+import { Suspense, use } from 'react';
+import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
 import { requireAuthContext } from '@/lib/auth.server';
 import * as chatDO from '@/lib/chat-do.server';
@@ -8,9 +8,7 @@ import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
 import type { Message } from '@/types';
 
 export function meta({ data }: Route.MetaArgs) {
-  // Handle both regular and deferred data
-  const resolvedData = data as { threadTitle?: string | null } | undefined;
-  const title = resolvedData?.threadTitle || 'Chat';
+  const title = data?.threadTitle || 'Chat';
   return [
     { title: `${title} - Chiridion` },
     { name: 'description', content: 'AI Chat' },
@@ -35,6 +33,12 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   return { success: false };
 }
 
+// Type for the combined data promise
+interface ChatData {
+  messages: Message[];
+  deployedApp: string | null;
+}
+
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
 
@@ -42,9 +46,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return {
       threadId: params.id,
       workspaceId: null,
-      messagesPromise: Promise.resolve([]),
+      chatDataPromise: Promise.resolve({ messages: [], deployedApp: null }),
       threadTitle: null,
-      initialDeployedApp: null,
       isNewThread: false,
       hostname: undefined,
     };
@@ -55,48 +58,61 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const isNewThread = url.searchParams.get('newThread') === '1';
   const hostname = request.headers.get('host')?.split(':')[0] || undefined;
 
-  // Get thread metadata immediately (fast - from OrgDO)
+  // Get thread metadata synchronously (fast - from OrgDO)
   const thread = await chatDO.getThread(context, params.id, workspaceId);
 
-  // Return promises directly - React Router v7 streams them automatically
-  const messagesPromise = isNewThread
-    ? Promise.resolve([])
-    : chatDO.getMessages(context, params.id, workspaceId);
+  // Create promise for slower data - NOT awaited, will be streamed
+  const chatDataPromise: Promise<ChatData> = isNewThread
+    ? Promise.resolve({ messages: [], deployedApp: null })
+    : (async () => {
+        const [messages, previewWorkers] = await Promise.all([
+          chatDO.getMessages(context, params.id, workspaceId),
+          chatDO.getThreadPreview(context, params.id).catch(() => []),
+        ]);
+        return {
+          messages,
+          deployedApp: previewWorkers[0] ?? null,
+        };
+      })();
 
-  const previewPromise = isNewThread
-    ? Promise.resolve([])
-    : chatDO.getThreadPreview(context, params.id).catch(() => []);
-
-  // Return immediately - promises will be streamed
   return {
     threadId: params.id,
     workspaceId,
-    messagesPromise,
-    previewPromise,
+    chatDataPromise,
     threadTitle: thread?.title ?? null,
     isNewThread,
     hostname,
   };
 }
 
-// Loading state shown while messages load
-function ChatLoading({ threadId, workspaceId, threadTitle, isNewThread, hostname }: {
+// Component that uses React 19's use() hook to consume the promise
+// Must be a child component to trigger Suspense properly
+function ChatWithData({
+  chatDataPromise,
+  threadId,
+  workspaceId,
+  threadTitle,
+  isNewThread,
+  hostname,
+}: {
+  chatDataPromise: Promise<ChatData>;
   threadId: string;
   workspaceId: string;
   threadTitle: string | null;
   isNewThread: boolean;
   hostname: string | undefined;
 }) {
+  const chatData = use(chatDataPromise);
+
   return (
     <Chat
       threadId={threadId}
       workspaceId={workspaceId}
-      initialMessages={[]}
+      initialMessages={chatData?.messages ?? []}
       threadTitle={threadTitle}
-      initialDeployedApp={null}
+      initialDeployedApp={chatData?.deployedApp ?? null}
       isNewThread={isNewThread}
       hostname={hostname}
-      isLoadingMessages
     />
   );
 }
@@ -105,8 +121,7 @@ export default function ChatPage() {
   const {
     threadId,
     workspaceId,
-    messagesPromise,
-    previewPromise,
+    chatDataPromise,
     threadTitle,
     isNewThread,
     hostname,
@@ -117,30 +132,15 @@ export default function ChatPage() {
   }
 
   return (
-    <Suspense
-      fallback={
-        <ChatLoading
-          threadId={threadId}
-          workspaceId={workspaceId}
-          threadTitle={threadTitle}
-          isNewThread={isNewThread}
-          hostname={hostname}
-        />
-      }
-    >
-      <Await resolve={Promise.all([messagesPromise, previewPromise])}>
-        {([messages, previewWorkers]: [Message[], string[]]) => (
-          <Chat
-            threadId={threadId}
-            workspaceId={workspaceId}
-            initialMessages={messages}
-            threadTitle={threadTitle}
-            initialDeployedApp={previewWorkers[0] ?? null}
-            isNewThread={isNewThread}
-            hostname={hostname}
-          />
-        )}
-      </Await>
+    <Suspense fallback={<ChatLoadingSkeleton />}>
+      <ChatWithData
+        chatDataPromise={chatDataPromise}
+        threadId={threadId}
+        workspaceId={workspaceId}
+        threadTitle={threadTitle}
+        isNewThread={isNewThread}
+        hostname={hostname}
+      />
     </Suspense>
   );
 }
