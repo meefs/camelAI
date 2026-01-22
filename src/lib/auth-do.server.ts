@@ -25,6 +25,10 @@ import type {
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import type { UserProfile } from '../../workers/main/src/auth';
 import * as authDO from './auth-do';
+import {
+  getWorkspaceContainer,
+  type WorkspaceContainerEnv,
+} from '../../workers/main/src/workspace-container';
 
 function getAuthEnv(env: CloudflareEnv): authDO.AuthEnv {
   return {
@@ -217,17 +221,45 @@ export async function getWorkspaceAuditLog(
 
 // Admin container reset functions
 export async function resetAdminOrgContainers(
-  _context: AppLoadContext,
-  _orgId: string
+  context: AppLoadContext,
+  orgId: string
 ): Promise<{ restarted: number; failed: number }> {
-  throw new Error('resetAdminOrgContainers not yet implemented - requires container bindings');
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const containerEnv = env as unknown as WorkspaceContainerEnv;
+
+  // Get all workspaces for this org
+  const workspaces = await authDO.listOrgWorkspaces(authEnv, orgId);
+
+  let restarted = 0;
+  let failed = 0;
+
+  // Reset each workspace's container
+  for (const workspace of workspaces) {
+    try {
+      const container = getWorkspaceContainer(containerEnv, workspace.id);
+      await container.destroy();
+      restarted++;
+    } catch (error) {
+      console.error(`Failed to reset container for workspace ${workspace.id}:`, error);
+      failed++;
+    }
+  }
+
+  return { restarted, failed };
 }
 
 export async function resetAdminWorkspaceContainer(
-  _context: AppLoadContext,
-  _workspaceId: string
+  context: AppLoadContext,
+  workspaceId: string
 ): Promise<{ success: boolean; containerId: string }> {
-  throw new Error('resetAdminWorkspaceContainer not yet implemented - requires container bindings');
+  const env = getEnv(context);
+  const containerEnv = env as unknown as WorkspaceContainerEnv;
+
+  const container = getWorkspaceContainer(containerEnv, workspaceId);
+  await container.destroy();
+
+  return { success: true, containerId: workspaceId };
 }
 
 // Admin org member functions

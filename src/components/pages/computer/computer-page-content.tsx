@@ -11,7 +11,7 @@ import {
   useState,
   type ComponentType,
 } from 'react';
-import { useNavigate, useSearchParams } from 'react-router';
+import { useFetcher, useNavigate, useSearchParams } from 'react-router';
 import { useTheme } from 'next-themes';
 import type { Monaco } from '@monaco-editor/react';
 import { loader } from '@monaco-editor/react';
@@ -87,7 +87,6 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Separator } from '@/components/ui/separator';
-import { resetSandboxContainerAction } from './actions';
 
 loader.config({ paths: { vs: '/monaco/vs' } });
 
@@ -343,7 +342,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const pendingModelsRef = useRef<Map<string, { content: string; language: string }>>(
     new Map()
   );
-  const resetFormRef = useRef<HTMLFormElement | null>(null);
+  const resetContainerFetcher = useFetcher();
   const activePathRef = useRef<string | null>(null);
   const dragSourcePathRef = useRef<string | null>(null);
   const dragOverPathRef = useRef<string | null>(null);
@@ -1924,20 +1923,16 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                     }}
                   />
                 </div>
-                <form
-                  ref={resetFormRef}
-                  action={resetSandboxContainerAction.bind(null, workspaceId)}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  className="h-8"
+                  disabled={resetContainerFetcher.state !== 'idle'}
+                  onClick={() => setResetConfirmOpen(true)}
                 >
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="destructive"
-                    className="h-8"
-                    onClick={() => setResetConfirmOpen(true)}
-                  >
-                    Reset Container
-                  </Button>
-                </form>
+                  {resetContainerFetcher.state !== 'idle' ? 'Resetting...' : 'Reset Container'}
+                </Button>
                 <ConfirmDialog
                   open={resetConfirmOpen}
                   onOpenChange={setResetConfirmOpen}
@@ -1946,7 +1941,10 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                   confirmLabel="Reset container"
                   variant="destructive"
                   onConfirm={() => {
-                    resetFormRef.current?.requestSubmit();
+                    resetContainerFetcher.submit(
+                      { intent: 'reset-container' },
+                      { method: 'POST' }
+                    );
                   }}
                 />
                 <Button
