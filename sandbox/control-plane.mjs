@@ -13,7 +13,7 @@ import path from 'node:path';
 
 const exec = promisify(execCallback);
 const PORT = parseInt(process.env.CONTROL_PLANE_PORT || '9000', 10);
-const VERSION = '2026-01-03-v2';
+const VERSION = '2026-01-22-v3-graceful-list';
 
 // No auth required - control plane is only accessible from within the container
 // or via containerFetch from the WorkspaceContainer DO. Container isolation is the security boundary.
@@ -232,6 +232,20 @@ async function handleFsList(res, body) {
   }
 
   try {
+    // Check if directory exists first - return empty list if not
+    try {
+      const stat = await fs.stat(dirPath);
+      if (!stat.isDirectory()) {
+        return json(res, { success: false, error: 'path is not a directory', code: 'ENOTDIR' }, 400);
+      }
+    } catch (e) {
+      if (e.code === 'ENOENT') {
+        // Directory doesn't exist - return empty list
+        return json(res, { success: true, files: [], count: 0, path: dirPath });
+      }
+      throw e;
+    }
+
     const files = [];
 
     const listDir = async (dir, relativeTo) => {
