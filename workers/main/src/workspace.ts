@@ -165,7 +165,24 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   async getInfo(): Promise<WorkspaceInfo | null> {
     const rows = this.sql.exec('SELECT value FROM workspace_info WHERE key = ?', 'data').toArray();
     if (rows.length === 0) return null;
-    return JSON.parse((rows[0] as { value: string }).value) as WorkspaceInfo;
+    const info = JSON.parse((rows[0] as { value: string }).value) as WorkspaceInfo;
+    let changed = false;
+
+    // Normalize avatar for old data that may not have it
+    if (!info.avatar) {
+      info.avatar = generateDefaultAvatar(info.name);
+      changed = true;
+    }
+    // Normalize compute_tier for old data
+    if (!info.compute_tier) {
+      info.compute_tier = 'standard';
+      changed = true;
+    }
+
+    if (changed) {
+      await this.setInfo(info);
+    }
+    return info;
   }
 
   async setInfo(info: WorkspaceInfo): Promise<void> {
