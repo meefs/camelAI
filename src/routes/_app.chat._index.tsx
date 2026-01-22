@@ -1,6 +1,7 @@
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat._index';
 import { requireAuthContext } from '@/lib/auth.server';
+import { getCtx } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 
@@ -33,12 +34,26 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   if (intent === 'createThread') {
     try {
+      const firstMessage = formData.get('firstMessage') as string | null;
       const thread = await chatDO.createThread(
         context,
         authContext.currentWorkspace.id,
-        undefined, // title will be generated later
+        undefined, // title will be generated asynchronously
         authContext.user?.id
       );
+
+      // Generate title in background if we have a first message
+      if (firstMessage) {
+        const ctx = getCtx(context);
+        ctx.waitUntil(
+          chatDO.generateThreadTitle(
+            context,
+            thread.id,
+            authContext.currentWorkspace.id,
+            firstMessage
+          )
+        );
+      }
 
       return Response.json({ thread });
     } catch (error) {
