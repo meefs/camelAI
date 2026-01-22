@@ -41,66 +41,467 @@ function getAuthEnv(env: CloudflareEnv): authDO.AuthEnv {
   };
 }
 
-// Admin overview functions - these require complex iteration and are not yet fully implemented
-export async function getAdminOverview(_context: AppLoadContext): Promise<AdminOverview> {
-  throw new Error('getAdminOverview not yet implemented - requires admin DO service');
+// Helper: Collect all user IDs from KV
+async function collectAllUserIds(env: CloudflareEnv): Promise<string[]> {
+  const allKeys: string[] = [];
+  let cursor: string | undefined;
+
+  while (true) {
+    const list = await env.EMAIL_TO_USER.list({ prefix: 'email:', cursor });
+    for (const key of list.keys) {
+      allKeys.push(key.name);
+    }
+    if (list.list_complete || !list.cursor) break;
+    cursor = list.cursor;
+  }
+
+  const userIdResults = await Promise.all(allKeys.map((key) => env.EMAIL_TO_USER.get(key)));
+  return userIdResults.filter((id): id is string => id !== null && !id.startsWith('{'));
 }
 
-export async function adminGetAllThreads(_context: AppLoadContext): Promise<AdminThreadWithContext[]> {
-  throw new Error('adminGetAllThreads not yet implemented - requires admin DO service');
+// Helper: Collect all org IDs from user memberships
+async function collectAllOrgIds(env: CloudflareEnv): Promise<Set<string>> {
+  const authEnv = getAuthEnv(env);
+  const userIds = await collectAllUserIds(env);
+  const orgIds = new Set<string>();
+
+  await Promise.all(
+    userIds.map(async (userId) => {
+      try {
+        const orgs = await authDO.getUserOrgs(authEnv, userId);
+        for (const org of orgs) {
+          orgIds.add(org.org_id);
+        }
+      } catch {
+        // User may not exist
+      }
+    })
+  );
+
+  return orgIds;
 }
 
-export async function adminGetAppCount(_context: AppLoadContext): Promise<number> {
-  throw new Error('adminGetAppCount not yet implemented - requires admin DO service');
+// Admin overview functions
+export async function getAdminOverview(context: AppLoadContext): Promise<AdminOverview> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const userIds = await collectAllUserIds(env);
+  const seenOrgIds = new Set<string>();
+  let membershipCount = 0;
+  let orphanedUsers = 0;
+
+  const users: AdminUserSummary[] = [];
+
+  await Promise.all(
+    userIds.map(async (userId) => {
+      try {
+        const [profile, orgs] = await Promise.all([
+          authDO.getUserById(authEnv, userId),
+          authDO.getUserOrgs(authEnv, userId),
+        ]);
+
+        if (profile) {
+          const isOrphaned = profile.is_orphaned || false;
+          if (isOrphaned) orphanedUsers++;
+
+          users.push({
+            id: profile.id,
+            email: profile.email,
+            name: profile.name,
+            avatar: { color: profile.avatar_color || '#666', content: profile.avatar_content || profile.email[0].toUpperCase() },
+            created_at: profile.created_at,
+            org_count: orgs.length,
+            is_superuser: profile.is_superuser,
+            is_orphaned: isOrphaned,
+          });
+
+          membershipCount += orgs.length;
+          for (const org of orgs) {
+            seenOrgIds.add(org.org_id);
+          }
+        }
+      } catch {
+        // User may not exist
+      }
+    })
+  );
+
+  // Count workspaces and integrations across all orgs
+  let totalWorkspaces = 0;
+  let totalIntegrations = 0;
+
+  await Promise.all(
+    Array.from(seenOrgIds).map(async (orgId) => {
+      try {
+        const workspaces = await authDO.listOrgWorkspaces(authEnv, orgId);
+        totalWorkspaces += workspaces.length;
+
+        // Count integrations per workspace
+        for (const ws of workspaces) {
+          try {
+            const integrations = await authDO.listWorkspaceIntegrations(authEnv, ws.id);
+            totalIntegrations += integrations.length;
+          } catch {
+            // Workspace may not have integrations
+          }
+        }
+      } catch {
+        // Org may not exist
+      }
+    })
+  );
+
+  return {
+    users,
+    total_users: users.length,
+    total_orgs: seenOrgIds.size,
+    total_memberships: membershipCount,
+    total_workspaces: totalWorkspaces,
+    total_integrations: totalIntegrations,
+    orphaned_users: orphanedUsers,
+  };
+}
+
+export async function adminGetAllThreads(context: AppLoadContext): Promise<AdminThreadWithContext[]> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgIds = await collectAllOrgIds(env);
+  const threads: AdminThreadWithContext[] = [];
+
+  await Promise.all(
+    Array.from(orgIds).map(async (orgId) => {
+      try {
+        const [info, orgThreads, workspaces] = await Promise.all([
+          authDO.getOrgById(authEnv, orgId),
+          authDO.getOrgThreads(authEnv, orgId),
+          authDO.listOrgWorkspaces(authEnv, orgId),
+        ]);
+
+        if (info) {
+          const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
+
+          for (const thread of orgThreads) {
+            threads.push({
+              ...thread,
+              org_id: orgId,
+              org_name: info.name,
+              workspace_name: workspaceMap.get(thread.workspace_id) || 'unknown',
+            });
+          }
+        }
+      } catch {
+        // Org may not exist
+      }
+    })
+  );
+
+  return threads;
+}
+
+export async function adminGetAppCount(context: AppLoadContext): Promise<number> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgIds = await collectAllOrgIds(env);
+  let count = 0;
+
+  await Promise.all(
+    Array.from(orgIds).map(async (orgId) => {
+      try {
+        const scripts = await authDO.listWorkerScripts(authEnv, orgId);
+        count += scripts.length;
+      } catch {
+        // Org may not exist
+      }
+    })
+  );
+
+  return count;
 }
 
 // Paginated admin functions
 export async function adminGetUsersPaginated(
-  _context: AppLoadContext,
-  _params: PaginationParams = {}
+  context: AppLoadContext,
+  params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminUserSummary>> {
-  throw new Error('adminGetUsersPaginated not yet implemented - requires admin DO service');
+  const overview = await getAdminOverview(context);
+  const { offset = 0, limit = 50, search } = params;
+
+  let items = overview.users;
+
+  // Apply search filter
+  if (search) {
+    const lowerSearch = search.toLowerCase();
+    items = items.filter(
+      (u) =>
+        u.email.toLowerCase().includes(lowerSearch) ||
+        u.name?.toLowerCase().includes(lowerSearch)
+    );
+  }
+
+  // Sort by created_at descending
+  items.sort((a, b) => b.created_at - a.created_at);
+
+  const total = items.length;
+  const paged = items.slice(offset, offset + limit);
+
+  return { items: paged, total };
 }
 
 export async function adminGetOrgsPaginated(
-  _context: AppLoadContext,
-  _params: PaginationParams = {}
+  context: AppLoadContext,
+  params: PaginationParams = {}
 ): Promise<PaginatedResult<Organization & { member_count: number; workspace_count: number }>> {
-  throw new Error('adminGetOrgsPaginated not yet implemented - requires admin DO service');
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgIds = await collectAllOrgIds(env);
+  const { offset = 0, limit = 50, search } = params;
+
+  const orgs: Array<Organization & { member_count: number; workspace_count: number }> = [];
+
+  await Promise.all(
+    Array.from(orgIds).map(async (orgId) => {
+      try {
+        const [info, members, workspaces] = await Promise.all([
+          authDO.getOrgById(authEnv, orgId),
+          authDO.getOrgMembers(authEnv, orgId),
+          authDO.listOrgWorkspaces(authEnv, orgId),
+        ]);
+
+        if (info) {
+          orgs.push({
+            ...info,
+            member_count: members.length,
+            workspace_count: workspaces.length,
+          });
+        }
+      } catch {
+        // Org may not exist
+      }
+    })
+  );
+
+  // Apply search filter
+  let items = orgs;
+  if (search) {
+    const lowerSearch = search.toLowerCase();
+    items = items.filter((o) => o.name.toLowerCase().includes(lowerSearch));
+  }
+
+  // Sort by created_at descending
+  items.sort((a, b) => b.created_at - a.created_at);
+
+  const total = items.length;
+  const paged = items.slice(offset, offset + limit);
+
+  return { items: paged, total };
 }
 
 export async function adminGetWorkspacesPaginated(
-  _context: AppLoadContext,
-  _params: PaginationParams = {}
+  context: AppLoadContext,
+  params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminWorkspaceSummary>> {
-  throw new Error('adminGetWorkspacesPaginated not yet implemented - requires admin DO service');
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgIds = await collectAllOrgIds(env);
+  const { offset = 0, limit = 50, search } = params;
+
+  const workspaces: AdminWorkspaceSummary[] = [];
+
+  await Promise.all(
+    Array.from(orgIds).map(async (orgId) => {
+      try {
+        const [orgInfo, orgWorkspaces] = await Promise.all([
+          authDO.getOrgById(authEnv, orgId),
+          authDO.listOrgWorkspaces(authEnv, orgId),
+        ]);
+
+        if (orgInfo) {
+          for (const ws of orgWorkspaces) {
+            workspaces.push({
+              ...ws,
+              org_id: orgId,
+              org_name: orgInfo.name,
+              thread_count: 0, // Would require additional queries
+              integration_count: 0, // Would require additional queries
+            });
+          }
+        }
+      } catch {
+        // Org may not exist
+      }
+    })
+  );
+
+  // Apply search filter
+  let items = workspaces;
+  if (search) {
+    const lowerSearch = search.toLowerCase();
+    items = items.filter(
+      (w) =>
+        w.name.toLowerCase().includes(lowerSearch) ||
+        w.org_name.toLowerCase().includes(lowerSearch)
+    );
+  }
+
+  // Sort by created_at descending
+  items.sort((a, b) => b.created_at - a.created_at);
+
+  const total = items.length;
+  const paged = items.slice(offset, offset + limit);
+
+  return { items: paged, total };
 }
 
 export async function adminGetThreadsPaginated(
-  _context: AppLoadContext,
-  _params: PaginationParams = {}
+  context: AppLoadContext,
+  params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminThreadWithContext>> {
-  throw new Error('adminGetThreadsPaginated not yet implemented - requires admin DO service');
+  const threads = await adminGetAllThreads(context);
+  const { offset = 0, limit = 50, search } = params;
+
+  // Apply search filter
+  let items = threads;
+  if (search) {
+    const lowerSearch = search.toLowerCase();
+    items = items.filter(
+      (t) =>
+        t.title?.toLowerCase().includes(lowerSearch) ||
+        t.org_name.toLowerCase().includes(lowerSearch) ||
+        t.workspace_name.toLowerCase().includes(lowerSearch)
+    );
+  }
+
+  // Sort by updated_at descending
+  items.sort((a, b) => b.updated_at - a.updated_at);
+
+  const total = items.length;
+  const paged = items.slice(offset, offset + limit);
+
+  return { items: paged, total };
 }
 
 export async function adminGetAppsPaginated(
-  _context: AppLoadContext,
-  _params: PaginationParams = {}
+  context: AppLoadContext,
+  params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminAppSummary>> {
-  throw new Error('adminGetAppsPaginated not yet implemented - requires admin DO service');
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgIds = await collectAllOrgIds(env);
+  const { offset = 0, limit = 50, search } = params;
+
+  const apps: AdminAppSummary[] = [];
+
+  await Promise.all(
+    Array.from(orgIds).map(async (orgId) => {
+      try {
+        const [orgInfo, scripts, workspaces] = await Promise.all([
+          authDO.getOrgById(authEnv, orgId),
+          authDO.listWorkerScripts(authEnv, orgId),
+          authDO.listOrgWorkspaces(authEnv, orgId),
+        ]);
+
+        if (orgInfo) {
+          const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
+
+          for (const script of scripts) {
+            apps.push({
+              script_name: script.script_name,
+              org_id: orgId,
+              org_name: orgInfo.name,
+              workspace_id: script.workspace_id,
+              workspace_name: workspaceMap.get(script.workspace_id) || 'unknown',
+              created_by: script.created_by,
+              created_at: script.created_at,
+              updated_at: script.updated_at,
+              is_public: script.is_public,
+            });
+          }
+        }
+      } catch {
+        // Org may not exist
+      }
+    })
+  );
+
+  // Apply search filter
+  let items = apps;
+  if (search) {
+    const lowerSearch = search.toLowerCase();
+    items = items.filter(
+      (a) =>
+        a.script_name.toLowerCase().includes(lowerSearch) ||
+        a.org_name.toLowerCase().includes(lowerSearch) ||
+        a.workspace_name.toLowerCase().includes(lowerSearch)
+    );
+  }
+
+  // Sort by updated_at descending
+  items.sort((a, b) => b.updated_at - a.updated_at);
+
+  const total = items.length;
+  const paged = items.slice(offset, offset + limit);
+
+  return { items: paged, total };
 }
 
 export async function adminGetInvitationsPaginated(
-  _context: AppLoadContext,
-  _params: PaginationParams = {}
+  context: AppLoadContext,
+  params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminInvitation>> {
-  throw new Error('adminGetInvitationsPaginated not yet implemented - requires admin DO service');
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgIds = await collectAllOrgIds(env);
+  const { offset = 0, limit = 50, search } = params;
+
+  const invitations: AdminInvitation[] = [];
+
+  await Promise.all(
+    Array.from(orgIds).map(async (orgId) => {
+      try {
+        const [orgInfo, orgInvitations] = await Promise.all([
+          authDO.getOrgById(authEnv, orgId),
+          authDO.getOrgInvitations(authEnv, orgId),
+        ]);
+
+        if (orgInfo) {
+          for (const inv of orgInvitations) {
+            invitations.push({
+              ...inv,
+              org_id: orgId,
+              org_name: orgInfo.name,
+            });
+          }
+        }
+      } catch {
+        // Org may not exist
+      }
+    })
+  );
+
+  // Apply search filter
+  let items = invitations;
+  if (search) {
+    const lowerSearch = search.toLowerCase();
+    items = items.filter(
+      (i) =>
+        i.email.toLowerCase().includes(lowerSearch) ||
+        i.org_name.toLowerCase().includes(lowerSearch)
+    );
+  }
+
+  // Sort by created_at descending
+  items.sort((a, b) => b.created_at - a.created_at);
+
+  const total = items.length;
+  const paged = items.slice(offset, offset + limit);
+
+  return { items: paged, total };
 }
 
 // Admin detail functions
 export async function adminGetThreadWithMessages(
-  _context: AppLoadContext,
-  _threadId: string
+  context: AppLoadContext,
+  threadId: string
 ): Promise<{
   thread: { id: string; title: string; created_by: string; created_at: number; updated_at: number };
   messages: Message[];
@@ -110,21 +511,108 @@ export async function adminGetThreadWithMessages(
   workspace_name: string;
   preview_workers: string[];
 } | null> {
-  throw new Error('adminGetThreadWithMessages not yet implemented - requires admin DO service');
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgIds = await collectAllOrgIds(env);
+
+  for (const orgId of orgIds) {
+    try {
+      const thread = await authDO.getOrgThread(authEnv, orgId, threadId);
+      if (thread) {
+        const [orgInfo, workspaces, messages] = await Promise.all([
+          authDO.getOrgById(authEnv, orgId),
+          authDO.listOrgWorkspaces(authEnv, orgId),
+          authDO.getOrgThreadMessages(authEnv, orgId, threadId),
+        ]);
+
+        const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
+
+        return {
+          thread: {
+            id: thread.id,
+            title: thread.title || 'Untitled',
+            created_by: thread.created_by,
+            created_at: thread.created_at,
+            updated_at: thread.updated_at,
+          },
+          messages,
+          org_id: orgId,
+          workspace_id: thread.workspace_id,
+          org_name: orgInfo?.name || 'Unknown',
+          workspace_name: workspaceMap.get(thread.workspace_id) || 'Unknown',
+          preview_workers: [], // Would require ChatThreadDO query
+        };
+      }
+    } catch {
+      // Continue searching
+    }
+  }
+
+  return null;
 }
 
 export async function adminGetWorkspaceDetail(
-  _context: AppLoadContext,
-  _workspaceId: string
+  context: AppLoadContext,
+  workspaceId: string
 ): Promise<AdminWorkspaceDetail | null> {
-  throw new Error('adminGetWorkspaceDetail not yet implemented - requires admin DO service');
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+
+  const workspace = await authDO.getWorkspace(authEnv, workspaceId);
+  if (!workspace) return null;
+
+  const [orgInfo, threads, integrations, members] = await Promise.all([
+    authDO.getOrgById(authEnv, workspace.org_id),
+    authDO.getOrgThreads(authEnv, workspace.org_id).then((t) =>
+      t.filter((thread) => thread.workspace_id === workspaceId)
+    ),
+    authDO.listWorkspaceIntegrations(authEnv, workspaceId),
+    authDO.listWorkspaceMembers(authEnv, workspaceId),
+  ]);
+
+  return {
+    ...workspace,
+    org_name: orgInfo?.name || 'Unknown',
+    thread_count: threads.length,
+    integration_count: integrations.length,
+    member_count: members.length,
+  };
 }
 
 export async function adminGetAppDetail(
-  _context: AppLoadContext,
-  _scriptName: string
+  context: AppLoadContext,
+  scriptName: string
 ): Promise<AdminAppDetail | null> {
-  throw new Error('adminGetAppDetail not yet implemented - requires admin DO service');
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgIds = await collectAllOrgIds(env);
+
+  for (const orgId of orgIds) {
+    try {
+      const scripts = await authDO.listWorkerScripts(authEnv, orgId);
+      const script = scripts.find((s) => s.script_name === scriptName);
+
+      if (script) {
+        const [orgInfo, workspaces] = await Promise.all([
+          authDO.getOrgById(authEnv, orgId),
+          authDO.listOrgWorkspaces(authEnv, orgId),
+        ]);
+
+        const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
+
+        return {
+          ...script,
+          org_id: orgId,
+          org_name: orgInfo?.name || 'Unknown',
+          workspace_name: workspaceMap.get(script.workspace_id) || 'Unknown',
+        };
+      }
+    } catch {
+      // Continue searching
+    }
+  }
+
+  return null;
 }
 
 // User functions
