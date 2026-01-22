@@ -1,26 +1,20 @@
 import { redirect, type AppLoadContext } from 'react-router';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import { getSessionIdFromRequest } from './cookies.server';
+import { getSession as getSessionKV } from '../../workers/main/src/session-kv';
+import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import {
-  type SessionData,
-  getSession as getSessionKV,
-} from '../../workers/main/src/session-kv';
-import type {
-  User,
-  Organization,
-  OrgMembership,
-  WorkspaceWithAccess,
-} from '@/types';
-import type { UserProfile } from '../../workers/main/src/auth';
-import {
-  getUserById,
-  getOrg,
-  getUserOrgs,
-  listUserWorkspaces,
-  isOrgAdmin,
-  getWorkspaceAccess,
   type AuthEnv,
-} from './auth-do';
+  type SessionData,
+  getUserStub,
+  getOrgStub,
+  profileToUser,
+  orgInfoToOrg,
+} from './auth-helpers';
+import { getUserOrgs, listUserWorkspaces, isOrgAdmin, getWorkspaceAccess } from './auth-do';
+
+// Re-export AuthEnv for routes that need it
+export type { AuthEnv } from './auth-helpers';
 
 export type Session = SessionData;
 
@@ -30,7 +24,7 @@ export interface SessionContext {
 }
 
 export interface UserContext extends SessionContext {
-  user: User;
+  user: ReturnType<typeof profileToUser>;
 }
 
 export interface AuthContext extends UserContext {
@@ -38,24 +32,6 @@ export interface AuthContext extends UserContext {
   currentWorkspace: WorkspaceWithAccess | null;
   orgs: OrgMembership[];
   workspaces: WorkspaceWithAccess[];
-}
-
-/**
- * Convert UserProfile to User type for frontend consumption
- */
-function toUser(profile: UserProfile): User {
-  return {
-    id: profile.id,
-    email: profile.email,
-    name: profile.name,
-    created_at: profile.created_at,
-    is_superuser: profile.is_superuser,
-    avatar: {
-      color: profile.avatar_color,
-      content: profile.avatar_content,
-    },
-    is_orphaned: profile.is_orphaned,
-  };
 }
 
 /**
@@ -119,12 +95,12 @@ export async function getUserContext(
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const profile = await getUserById(authEnv, sessionContext.session.user_id);
+  const profile = await getUserStub(authEnv, sessionContext.session.user_id).getProfile();
   if (!profile) return null;
 
   return {
     ...sessionContext,
-    user: toUser(profile),
+    user: profileToUser(profile),
   };
 }
 
@@ -159,9 +135,10 @@ export async function getAuthContext(
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
-  // Get current org
-  const currentOrg = await getOrg(authEnv, userContext.session.org_id);
-  if (!currentOrg) return null;
+  // Get current org info directly from DO
+  const orgInfo = await getOrgStub(authEnv, userContext.session.org_id).getInfo();
+  if (!orgInfo) return null;
+  const currentOrg = orgInfoToOrg(orgInfo);
 
   // Get user's org memberships
   const orgs = await getUserOrgs(authEnv, userContext.session.user_id);

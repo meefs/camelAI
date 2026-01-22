@@ -9,125 +9,57 @@ import type {
   WorkspaceMember,
   AuditLogEntry,
   CreateApiTokenInput,
-  AdminOverview,
-  AdminUserSummary,
-  AdminWorkspaceSummary,
-  AdminWorkspaceDetail,
-  AdminThreadWithContext,
-  AdminAppSummary,
-  AdminAppDetail,
-  AdminInvitation,
-  PaginatedResult,
-  PaginationParams,
-  Message,
   AppPreviewStatus,
   Integration,
-  Thread,
 } from '@/types';
 import {
-  type UserProfile,
-  type OrgInfo,
-  type OrgThread,
-  UserDO,
-  OrgDO,
-} from '../../workers/main/src/auth';
-import { WorkspaceDO, type WorkspaceInfo } from '../../workers/main/src/workspace';
-import {
-  type SessionData,
   getSession as getSessionKV,
   destroySession as destroySessionKV,
   createNewSession as createNewSessionKV,
   updateSession as updateSessionKV,
 } from '../../workers/main/src/session-kv';
-import type { ApiTokenData } from '../../workers/main/src/api-tokens';
 import {
   createApiToken,
   validateApiToken as validateApiTokenKV,
   deleteApiToken as deleteApiTokenKV,
 } from '../../workers/main/src/api-tokens';
-import { getWorkspaceContainer } from '../../workers/main/src/workspace-container';
 import {
   validateAndConsumeAuthState,
   createWorkerAuthToken,
-  type WorkerAuthState as WorkerAuthStateKV,
 } from '../../workers/main/src/worker-auth';
 
-/**
- * Auth environment bindings required by this module.
- * This interface provides direct access to DOs without RPC.
- */
-export interface AuthEnv {
-  USER: DurableObjectNamespace<UserDO>;
-  ORG: DurableObjectNamespace<OrgDO>;
-  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
-  SESSIONS: KVNamespace;
-  EMAIL_TO_USER: KVNamespace;
-  API_TOKENS: KVNamespace;
-}
+// Re-export core types and helpers from auth-helpers
+export {
+  type AuthEnv,
+  type UserProfile,
+  type OrgInfo,
+  type OrgThread,
+  type WorkspaceInfo,
+  type SessionData,
+  type ApiTokenData,
+  getUserStub,
+  getOrgStub,
+  getWorkspaceStub,
+  profileToUser,
+  orgInfoToOrg,
+  wsInfoToWorkspace,
+  integrationRecordToIntegration,
+} from './auth-helpers';
 
-// Helper to get UserDO stub (exported for direct DO access in routes)
-export function getUserStub(env: AuthEnv, userId: string): UserDO {
-  return env.USER.get(env.USER.idFromName(userId)) as unknown as UserDO;
-}
-
-// Helper to get OrgDO stub (exported for direct DO access in routes)
-export function getOrgStub(env: AuthEnv, orgId: string): OrgDO {
-  return env.ORG.get(env.ORG.idFromName(orgId)) as unknown as OrgDO;
-}
-
-// Helper to get WorkspaceDO stub (exported for direct DO access in routes)
-export function getWorkspaceStub(env: AuthEnv, workspaceId: string): WorkspaceDO {
-  return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as unknown as WorkspaceDO;
-}
-
-// Convert UserProfile to User
-function profileToUser(profile: UserProfile): User {
-  return {
-    id: profile.id,
-    email: profile.email,
-    name: profile.name,
-    created_at: profile.created_at,
-    is_superuser: profile.is_superuser,
-    avatar: {
-      color: profile.avatar_color,
-      content: profile.avatar_content,
-    },
-    is_orphaned: profile.is_orphaned,
-  };
-}
-
-// Convert OrgInfo to Organization
-function orgInfoToOrg(info: OrgInfo): Organization {
-  return {
-    id: info.id,
-    name: info.name,
-    created_at: info.created_at,
-    created_by: info.created_by,
-    billing_status: info.billing_status,
-    archived: info.archived,
-    archived_at: info.archived_at,
-    archived_by: info.archived_by,
-  };
-}
-
-// Convert WorkspaceInfo to Workspace
-function wsInfoToWorkspace(info: WorkspaceInfo): Workspace {
-  return {
-    id: info.id,
-    org_id: info.org_id,
-    name: info.name,
-    description: info.description,
-    created_by: info.created_by,
-    created_at: info.created_at,
-    avatar: {
-      color: info.avatar_color,
-      content: info.avatar_content,
-    },
-    archived: info.archived,
-    archived_at: info.archived_at,
-    archived_by: info.archived_by,
-  };
-}
+import {
+  type AuthEnv,
+  type UserProfile,
+  type OrgInfo,
+  type OrgThread,
+  type SessionData,
+  type ApiTokenData,
+  getUserStub,
+  getOrgStub,
+  getWorkspaceStub,
+  profileToUser,
+  orgInfoToOrg,
+  wsInfoToWorkspace,
+} from './auth-helpers';
 
 // Session functions
 export async function getSession(env: AuthEnv, sessionId: string): Promise<SessionData | null> {
