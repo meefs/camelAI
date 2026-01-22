@@ -33,4 +33,5 @@ echo "[dev] docker proxy ready"
 echo "[dev] react-router dev (HMR) -> http://localhost:$VITE_PORT"
 
 # Run react-router dev with DOCKER_HOST pointing to our proxy
-DOCKER_HOST="unix://$SOCKET" exec react-router dev --port "$VITE_PORT"
+# Use dev config which includes auxiliary workers (proxy)
+DOCKER_HOST="unix://$SOCKET" exec react-router dev --port "$VITE_PORT" --config vite.config.dev.ts
