@@ -1,0 +1,84 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "chiridion-app-dev-illiana",
+	"main": "build/server/index.js",
+	"no_bundle": true,
+	"compatibility_date": "2025-12-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"upload_source_maps": true,
+	"observability": { "enabled": true },
+	"rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
+	"routes": [
+		{ "pattern": "dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" }
+	],
+	"vars": {
+		"R2_BUCKET_NAME": "chiridion-sandbox",
+		"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+		"R2_MOUNT_DIR": "/home/claude",
+		"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
+		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+		"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
+		"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai",
+		"PROXY_BASE_URL": "https://dev-illiana.chiridion.ai"
+	},
+	"assets": {
+		"binding": "ASSETS",
+		"directory": "build/client"
+	},
+	"images": { "binding": "IMAGES" },
+	"browser": { "binding": "BROWSER" },
+	"ai": { "binding": "AI", "remote": true },
+	"r2_buckets": [
+		{ "binding": "R2_BUCKET", "bucket_name": "chiridion-sandbox" }
+	],
+	"analytics_engine_datasets": [
+		{ "binding": "ERROR_ANALYTICS", "dataset": "chiridion_errors_dev_illiana" }
+	],
+	"kv_namespaces": [
+		{ "binding": "EMAIL_TO_USER", "id": "b5d67155aac54d208f00fc5d51f2d080" },
+		{ "binding": "API_TOKENS", "id": "e894eb2caf1641ad8870da994b992fce" },
+		{ "binding": "SESSIONS", "id": "c632a963433e4949b6dea43728034b36" }
+	],
+	"queues": {
+		"producers": [
+			{ "binding": "APP_SCREENSHOT_QUEUE", "queue": "chiridion-app-screenshots-dev-illiana" }
+		],
+		"consumers": [
+			{ "queue": "chiridion-app-screenshots-dev-illiana" }
+		]
+	},
+	"services": [
+		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app-dev-illiana" },
+		{ "binding": "PROXY", "service": "chiridion-llm-proxy-dev-illiana" }
+	],
+	"containers": [
+		{
+			"name": "chiridion-app-dev-illiana-threadsandbox-dev-illiana",
+			"class_name": "ThreadSandbox",
+			"image": "./Dockerfile",
+			"instance_type": { "vcpu": 1, "memory_mib": 4096, "disk_mb": 8000 },
+			"max_instances": 5
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
+			{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
+			{ "name": "USER", "class_name": "UserDO" },
+			{ "name": "ORG", "class_name": "OrgDO" },
+			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
+			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["ChatDurableObject"] },
+		{ "tag": "v2", "deleted_classes": ["ChatDurableObject"] },
+		{ "tag": "v3", "new_sqlite_classes": ["ChatThreadDO", "ChatIndexDO"] },
+		{ "tag": "v4", "new_sqlite_classes": ["ThreadSandbox"] },
+		{ "tag": "v5", "new_sqlite_classes": ["SessionDO", "UserDO", "OrgDO"] },
+		{ "tag": "v6", "new_sqlite_classes": ["WorkspaceDO"] },
+		{ "tag": "v7", "deleted_classes": ["SessionDO"] },
+		{ "tag": "v8", "deleted_classes": ["ChatIndexDO"] },
+		{ "tag": "v9", "new_sqlite_classes": ["ChiridionMcp"] }
+	]
+}

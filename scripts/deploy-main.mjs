@@ -20,8 +20,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 
 const env = process.argv[2];
-if (!env || !['staging', 'prod'].includes(env)) {
-  console.error('Usage: node scripts/deploy-main.mjs [staging|prod]');
+const validEnvs = ['staging', 'prod', 'dev-miguel', 'dev-illiana'];
+if (!env || !validEnvs.includes(env)) {
+  console.error('Usage: node scripts/deploy-main.mjs [staging|prod|dev-miguel|dev-illiana]');
   process.exit(1);
 }
 
