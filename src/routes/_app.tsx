@@ -43,7 +43,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 function GlobalLoadingBar() {
   const navigation = useNavigation();
   const isNavigating = navigation.state === 'loading';
+  const [mounted, setMounted] = useState(false);
   const [showBar, setShowBar] = useState(false);
+
+  // Only render after hydration to avoid mismatch
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Only show loading bar if navigation takes longer than 150ms
   // This prevents flash on fast navigations
@@ -55,6 +61,9 @@ function GlobalLoadingBar() {
       setShowBar(false);
     }
   }, [isNavigating]);
+
+  // Don't render during SSR to avoid hydration mismatch
+  if (!mounted) return null;
 
   return (
     <div
