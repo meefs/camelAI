@@ -24,7 +24,7 @@ import type {
 } from '@/types';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import type { UserProfile } from '../../workers/main/src/auth';
-import { type AuthEnv } from './auth-helpers';
+import { type AuthEnv, getUserStub, getOrgStub, getWorkspaceStub } from './auth-helpers';
 import * as authDO from './auth-do';
 import { getMessages as getThreadMessages, getThreadPreview } from './chat-do.server';
 import {
@@ -98,7 +98,7 @@ export async function getAdminOverview(context: AppLoadContext): Promise<AdminOv
     userIds.map(async (userId) => {
       try {
         const [profile, orgs] = await Promise.all([
-          authDO.getUserById(authEnv, userId),
+          getUserStub(authEnv, userId).getProfile(),
           authDO.getUserOrgs(authEnv, userId),
         ]);
 
@@ -175,7 +175,7 @@ export async function adminGetAllThreads(context: AppLoadContext): Promise<Admin
       try {
         const [info, orgThreads, workspaces] = await Promise.all([
           authDO.getOrg(authEnv, orgId),
-          authDO.getOrgThreads(authEnv, orgId),
+          getOrgStub(authEnv, orgId).getThreads(),
           authDO.listOrgWorkspaces(authEnv, orgId),
         ]);
 
@@ -209,7 +209,7 @@ export async function adminGetAppCount(context: AppLoadContext): Promise<number>
   await Promise.all(
     Array.from(orgIds).map(async (orgId) => {
       try {
-        const scripts = await authDO.listWorkerScripts(authEnv, orgId);
+        const scripts = await getOrgStub(authEnv, orgId).listWorkerScripts();
         count += scripts.length;
       } catch {
         // Org may not exist
@@ -324,7 +324,7 @@ export async function adminGetWorkspacesPaginated(
         const [orgInfo, orgWorkspaces, threads] = await Promise.all([
           authDO.getOrg(authEnv, orgId),
           authDO.listOrgWorkspaces(authEnv, orgId),
-          authDO.getOrgThreads(authEnv, orgId),
+          getOrgStub(authEnv, orgId).getThreads(),
         ]);
 
         if (orgInfo) {
@@ -428,7 +428,7 @@ export async function adminGetAppsPaginated(
 
   // First pass: collect all scripts with org/workspace info
   const entries: Array<{
-    script: Awaited<ReturnType<typeof authDO.listWorkerScripts>>[0];
+    script: authDO.WorkerScript;
     org_id: string;
     org_name: string;
     workspace_name: string;
@@ -439,7 +439,7 @@ export async function adminGetAppsPaginated(
       try {
         const [orgInfo, scripts, workspaces] = await Promise.all([
           authDO.getOrg(authEnv, orgId),
-          authDO.listWorkerScripts(authEnv, orgId),
+          getOrgStub(authEnv, orgId).listWorkerScripts(),
           authDO.listOrgWorkspaces(authEnv, orgId),
         ]);
 
@@ -603,7 +603,7 @@ export async function adminGetThreadWithMessages(
 
   for (const orgId of orgIds) {
     try {
-      const thread = await authDO.getOrgThread(authEnv, orgId, threadId);
+      const thread = await getOrgStub(authEnv, orgId).getThread(threadId);
       if (thread) {
         const [orgInfo, workspaces, messages, preview_workers] = await Promise.all([
           authDO.getOrg(authEnv, orgId),
@@ -650,9 +650,9 @@ export async function adminGetWorkspaceDetail(
 
   const [org, orgThreads, integrations, members] = await Promise.all([
     authDO.getOrg(authEnv, workspace.org_id),
-    authDO.getOrgThreads(authEnv, workspace.org_id),
+    getOrgStub(authEnv, workspace.org_id).getThreads(),
     authDO.listWorkspaceIntegrations(authEnv, workspaceId),
-    authDO.listWorkspaceMembers(authEnv, workspaceId),
+    getWorkspaceStub(authEnv, workspaceId).listMembers(),
   ]);
 
   if (!org) return null;
@@ -688,14 +688,14 @@ export async function adminGetAppDetail(
 
   for (const orgId of orgIds) {
     try {
-      const scripts = await authDO.listWorkerScripts(authEnv, orgId);
+      const scripts = await getOrgStub(authEnv, orgId).listWorkerScripts();
       const script = scripts.find((s) => s.script_name === scriptName);
 
       if (script) {
         const [orgInfo, workspaces, creator] = await Promise.all([
           authDO.getOrg(authEnv, orgId),
           authDO.listOrgWorkspaces(authEnv, orgId),
-          authDO.getUserById(authEnv, script.created_by),
+          getUserStub(authEnv, script.created_by).getProfile(),
         ]);
 
         const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
@@ -721,7 +721,7 @@ export async function adminGetAppDetail(
 export async function getUserById(context: AppLoadContext, userId: string): Promise<UserProfile | null> {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  return authDO.getUserById(authEnv, userId);
+  return getUserStub(authEnv, userId).getProfile();
 }
 
 export async function getUsersByIds(context: AppLoadContext, userIds: string[]): Promise<UserProfile[]> {

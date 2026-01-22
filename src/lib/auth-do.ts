@@ -114,11 +114,6 @@ export async function getUserByEmail(env: AuthEnv, email: string): Promise<{ use
   return { userId, user };
 }
 
-export async function getUserById(env: AuthEnv, userId: string): Promise<UserProfile | null> {
-  const stub = getUserStub(env, userId);
-  return stub.getProfile();
-}
-
 export async function getUsersByIds(env: AuthEnv, userIds: string[]): Promise<UserProfile[]> {
   const results = await Promise.all(
     userIds.map(async (userId) => {
@@ -179,11 +174,6 @@ export async function createUser(
     await env.EMAIL_TO_USER.delete(emailKvKey);
     throw error;
   }
-}
-
-export async function verifyUserPassword(env: AuthEnv, userId: string, password: string): Promise<boolean> {
-  const stub = getUserStub(env, userId);
-  return stub.verifyPassword(password);
 }
 
 // OAuth functions
@@ -402,28 +392,6 @@ export async function getOrg(env: AuthEnv, orgId: string): Promise<Organization 
 }
 
 
-// Thread functions (used by admin pages)
-export async function getOrgThreads(env: AuthEnv, orgId: string): Promise<OrgThread[]> {
-  const stub = getOrgStub(env, orgId);
-  return stub.getThreads();
-}
-
-export async function getOrgThread(env: AuthEnv, orgId: string, threadId: string): Promise<OrgThread | null> {
-  const stub = getOrgStub(env, orgId);
-  return stub.getThread(threadId);
-}
-
-// Messages are stored in container filesystem, not in DOs - return empty for admin view
-export async function getOrgThreadMessages(
-  _env: AuthEnv,
-  _orgId: string,
-  _threadId: string
-): Promise<Message[]> {
-  // Messages are stored in the container's session.jsonl files
-  // For admin purposes, we don't fetch them from the container
-  return [];
-}
-
 export async function createOrg(env: AuthEnv, name: string, createdBy: string): Promise<Organization> {
   const orgId = crypto.randomUUID();
   const orgStub = getOrgStub(env, orgId);
@@ -627,11 +595,6 @@ export async function setWorkspaceAccess(
 ): Promise<void> {
   const stub = getWorkspaceStub(env, workspaceId);
   await stub.setMemberAccess(userId, accessLevel, actorId);
-}
-
-export async function listWorkspaceMembers(env: AuthEnv, workspaceId: string): Promise<WorkspaceMember[]> {
-  const stub = getWorkspaceStub(env, workspaceId);
-  return stub.listMembers();
 }
 
 export async function listWorkspaceIntegrations(env: AuthEnv, workspaceId: string): Promise<Integration[]> {
@@ -870,26 +833,12 @@ export interface WorkerScript {
   preview_error: string | null;
 }
 
-export async function listWorkerScripts(env: AuthEnv, orgId: string): Promise<WorkerScript[]> {
-  const stub = getOrgStub(env, orgId);
-  return stub.listWorkerScripts();
-}
-
 export async function listWorkerScriptsByWorkspace(env: AuthEnv, workspaceId: string): Promise<WorkerScript[]> {
   const wsStub = getWorkspaceStub(env, workspaceId);
   const info = await wsStub.getInfo();
   if (!info) return [];
   const orgStub = getOrgStub(env, info.org_id);
   return orgStub.listWorkerScriptsByWorkspace(workspaceId);
-}
-
-export async function getWorkerScript(
-  env: AuthEnv,
-  orgId: string,
-  scriptName: string
-): Promise<WorkerScript | null> {
-  const stub = getOrgStub(env, orgId);
-  return stub.getWorkerScript(scriptName);
 }
 
 export async function deleteWorkerScript(

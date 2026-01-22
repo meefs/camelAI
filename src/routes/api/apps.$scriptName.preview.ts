@@ -1,7 +1,7 @@
 import type { Route } from './+types/apps.$scriptName.preview';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { type AuthEnv } from '@/lib/auth-helpers';
-import { getSession, isOrgMember, getWorkerAccessInfo, getWorkerScript } from '@/lib/auth-do';
+import { type AuthEnv, getOrgStub } from '@/lib/auth-helpers';
+import { getSession, isOrgMember, getWorkerAccessInfo } from '@/lib/auth-do';
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 
@@ -59,7 +59,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const script = await getWorkerScript(env, accessInfo.org_id, normalized);
+    const script = await getOrgStub(env, accessInfo.org_id).getWorkerScript(normalized);
     if (!script || script.preview_status !== 'ready' || !script.preview_key) {
       return Response.json({ error: 'Preview not available' }, { status: 404 });
     }

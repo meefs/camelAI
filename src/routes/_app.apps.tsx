@@ -2,9 +2,8 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.apps';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { type AuthEnv, getUserStub } from '@/lib/auth-helpers';
+import { type AuthEnv, getUserStub, getOrgStub } from '@/lib/auth-helpers';
 import {
-  listWorkerScripts,
   setWorkerScriptPublic,
   deleteWorkerScript,
 } from '@/lib/auth-do';
@@ -98,7 +97,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const workspaceId = authContext.currentWorkspace?.id;
   let apps: WorkerScriptWithCreator[] = [];
 
-  const scripts = await listWorkerScripts(authEnv, authContext.currentOrg.id);
+  const scripts = await getOrgStub(authEnv, authContext.currentOrg.id).listWorkerScripts();
 
   // Filter based on filter param
   const filteredScripts = filter === 'all-workspaces'
