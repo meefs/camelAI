@@ -1,5 +1,5 @@
 import type { Route } from './+types/workspaces.$id.fs.read';
-import { requireWorkspaceAuth, getPathParam } from './workspaces.utils';
+import { requireWorkspaceAuth, getPathParam, toContainerPath } from './workspaces.utils';
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
@@ -12,8 +12,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
     const url = new URL(request.url);
     const path = getPathParam(url);
+    const containerPath = toContainerPath(path);
 
-    const result = await container.readFile(path);
+    const result = await container.readFile(containerPath);
 
     return Response.json(result);
   } catch (error) {

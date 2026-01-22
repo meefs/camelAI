@@ -1,5 +1,5 @@
 import type { Route } from './+types/workspaces.$id.fs.create';
-import { requireWorkspaceAuth } from './workspaces.utils';
+import { requireWorkspaceAuth, toContainerPath, normalizeWorkspacePath } from './workspaces.utils';
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   try {
@@ -18,7 +18,8 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     }
 
     // Create file with optional content (defaults to empty)
-    const result = await container.writeFile(body.path, body.content ?? '');
+    const containerPath = toContainerPath(normalizeWorkspacePath(body.path));
+    const result = await container.writeFile(containerPath, body.content ?? '');
 
     return Response.json(result);
   } catch (error) {

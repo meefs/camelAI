@@ -4,6 +4,7 @@ import {
   requireWorkspaceAuth,
   getPathParam,
   parseBooleanParam,
+  toContainerPath,
 } from './workspaces.utils';
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -17,10 +18,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
     const url = new URL(request.url);
     const path = getPathParam(url);
+    const containerPath = toContainerPath(path);
     const recursive = parseBooleanParam(url.searchParams.get('recursive'), false);
     const includeHidden = parseBooleanParam(url.searchParams.get('includeHidden'), true);
 
-    const listing = await container.listFiles(path, { recursive, includeHidden });
+    const listing = await container.listFiles(containerPath, { recursive, includeHidden });
 
     // Transform backend response to frontend expected format
     const response: WorkspaceListResponse = {

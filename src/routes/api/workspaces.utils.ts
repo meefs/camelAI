@@ -66,6 +66,9 @@ export async function requireWorkspaceAuth(
   };
 }
 
+/** Workspace root directory inside the container */
+const WORKSPACE_ROOT = '/home/claude';
+
 /**
  * Normalize a workspace path, preventing directory traversal attacks.
  */
@@ -87,6 +90,16 @@ export function normalizeWorkspacePath(input?: string | null): string {
     segments.push(part);
   }
   return `/${segments.join('/')}`;
+}
+
+/**
+ * Convert a workspace-relative path to an absolute container path.
+ * Workspace path '/' maps to '/home/claude', '/foo' maps to '/home/claude/foo'.
+ */
+export function toContainerPath(workspacePath: string): string {
+  const normalized = normalizeWorkspacePath(workspacePath);
+  if (normalized === '/') return WORKSPACE_ROOT;
+  return `${WORKSPACE_ROOT}${normalized}`;
 }
 
 /**
