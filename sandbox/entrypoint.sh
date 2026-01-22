@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-22-v9-fix-claude-dir-perms
+# Version: 2026-01-22-v10-fix-all-dir-perms
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -358,6 +358,47 @@ mount_juicefs() {
     migrate_from_tar
   fi
 
+  # Fix ownership of key directories that may have stale root ownership
+  # This is needed because:
+  # 1. Old migrations may have created files as root
+  # 2. Previous container runs may have created directories as root
+  # 3. JuiceFS metadata may have stored incorrect ownership
+  echo "[entrypoint] Fixing ownership of key directories..." >&2
+  OWNERSHIP_START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
+
+  # Fix .claude directory (Claude SDK config and session files)
+  if [ -d "$TARGET_DIR/.claude" ]; then
+    chown -R claude:claude "$TARGET_DIR/.claude" 2>/dev/null || true
+  fi
+
+  # Fix .chiridion directory (trace files, task results)
+  if [ -d "$TARGET_DIR/.chiridion" ]; then
+    chown -R claude:claude "$TARGET_DIR/.chiridion" 2>/dev/null || true
+  fi
+
+  # Fix .npm directory (npm cache)
+  if [ -d "$TARGET_DIR/.npm" ]; then
+    chown -R claude:claude "$TARGET_DIR/.npm" 2>/dev/null || true
+  fi
+
+  # Fix .config directory (various tool configs)
+  if [ -d "$TARGET_DIR/.config" ]; then
+    chown -R claude:claude "$TARGET_DIR/.config" 2>/dev/null || true
+  fi
+
+  # Fix .local directory (local binaries and data)
+  if [ -d "$TARGET_DIR/.local" ]; then
+    chown -R claude:claude "$TARGET_DIR/.local" 2>/dev/null || true
+  fi
+
+  # Fix .cache directory (various caches)
+  if [ -d "$TARGET_DIR/.cache" ]; then
+    chown -R claude:claude "$TARGET_DIR/.cache" 2>/dev/null || true
+  fi
+
+  OWNERSHIP_END_TS="$(date +%s%3N 2>/dev/null || date +%s)"
+  echo "[entrypoint] Ownership fix done (ms: $((OWNERSHIP_END_TS - OWNERSHIP_START_TS)))" >&2
+
   return 0
 }
 
@@ -465,11 +506,6 @@ fi
 # Only copy SKILL.md files - templates stay in /app and are accessed via create-worker script
 echo "[entrypoint] Installing skills..." >&2
 SKILLS_START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
-
-# Ensure .claude directory has correct ownership (fixes migrated workspaces with root-owned files)
-if [ -d "$TARGET_DIR/.claude" ]; then
-  chown -R claude:claude "$TARGET_DIR/.claude" 2>/dev/null || true
-fi
 
 su -s /bin/sh claude -c "mkdir -p \"$TARGET_DIR/.claude/skills\"" >/dev/null 2>&1 || true
 # Copy only SKILL.md files (preserving directory structure) - templates don't need to be on JuiceFS
