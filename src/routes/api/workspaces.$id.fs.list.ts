@@ -25,10 +25,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const listing = await container.listFiles(containerPath, { recursive, includeHidden });
 
     // Transform backend response to frontend expected format
+    // Entry paths must be workspace-relative (e.g., '/.claude/projects' not just 'projects')
     const response: WorkspaceListResponse = {
       path,
       entries: (listing.files || []).map((file) => ({
-        path: file.relativePath || file.absolutePath,
+        path: path === '/' ? `/${file.name}` : `${path}/${file.name}`,
         name: file.name,
         type: file.type,
         size: file.size,
