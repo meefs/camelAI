@@ -43,6 +43,8 @@ interface ChatProps {
   isNewThread?: boolean;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
   hostname?: string;
+  /** True when messages are still loading (deferred data) */
+  isLoadingMessages?: boolean;
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -192,7 +194,7 @@ function MobileViewSwitcher({
 }
 
 
-export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false, hostname }: ChatProps) {
+export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false, hostname, isLoadingMessages = false }: ChatProps) {
   const navigate = useNavigate();
   const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
@@ -211,7 +213,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   // Local state for messages, streaming, and loading
   const [messages, setMessagesState] = useState<Message[]>(parsedInitialMessages);
   const [streamingMessageId, setStreamingMessageIdState] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(isLoadingMessages);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
   const normalizedMessages = useMemo(
