@@ -1,20 +1,8 @@
 import { DurableObject } from 'cloudflare:workers';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
+import type { Workspace } from '../../../src/types';
 import type { OrgDO } from './auth';
 
-export interface WorkspaceInfo {
-  id: string;
-  org_id: string;
-  name: string;
-  description: string | null;
-  created_by: string;
-  created_at: number;
-  avatar: { color: string; content: string };
-  archived: boolean;
-  archived_at: number | null;
-  archived_by: string | null;
-  compute_tier: 'standard';
-}
 
 export type WorkspaceAccessLevel = 'full' | 'read_only' | 'none';
 
@@ -162,10 +150,10 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     );
   }
 
-  async getInfo(): Promise<WorkspaceInfo | null> {
+  async getInfo(): Promise<Workspace | null> {
     const rows = this.sql.exec('SELECT value FROM workspace_info WHERE key = ?', 'data').toArray();
     if (rows.length === 0) return null;
-    const info = JSON.parse((rows[0] as { value: string }).value) as WorkspaceInfo;
+    const info = JSON.parse((rows[0] as { value: string }).value) as Workspace;
     let changed = false;
 
     // Normalize avatar for old data that may not have it
@@ -185,7 +173,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return info;
   }
 
-  async setInfo(info: WorkspaceInfo): Promise<void> {
+  async setInfo(info: Workspace): Promise<void> {
     this.sql.exec(
       'INSERT OR REPLACE INTO workspace_info (key, value) VALUES (?, ?)',
       'data',
@@ -199,10 +187,10 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     name: string,
     createdBy: string,
     description?: string | null
-  ): Promise<WorkspaceInfo> {
+  ): Promise<Workspace> {
     const now = Date.now();
     const avatar = generateDefaultAvatar(name);
-    const info: WorkspaceInfo = {
+    const info: Workspace = {
       id,
       org_id: orgId,
       name,
@@ -234,7 +222,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       avatar?: { color?: string; content?: string };
     },
     actorId: string
-  ): Promise<WorkspaceInfo | null> {
+  ): Promise<Workspace | null> {
     const info = await this.getInfo();
     if (!info) return null;
 
@@ -267,7 +255,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return info;
   }
 
-  async archive(archivedBy: string): Promise<WorkspaceInfo | null> {
+  async archive(archivedBy: string): Promise<Workspace | null> {
     const info = await this.getInfo();
     if (!info) return null;
     if (info.archived) return info;

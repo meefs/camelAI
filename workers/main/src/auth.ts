@@ -1,7 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
 import { hashPassword, verifyPassword } from './password';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
+import type { OrgRole, BillingStatus, User, Organization, Workspace } from '../../../src/types';
 import { WorkspaceDO } from './workspace';
+
+// Re-export for consumers that import from this module
+export type { OrgRole, BillingStatus } from '../../../src/types';
 
 // Auth-specific environment bindings
 export interface AuthEnv {
@@ -10,9 +14,6 @@ export interface AuthEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   EMAIL_TO_USER: KVNamespace;
 }
-
-export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer';
-export type BillingStatus = 'free' | 'paying';
 
 const SUPERUSER_EMAILS = new Set([
   'admin@example.com',
@@ -24,16 +25,6 @@ function isSuperuserEmail(email: string | null): boolean {
   return SUPERUSER_EMAILS.has(email.toLowerCase());
 }
 
-export interface UserProfile {
-  id: string;
-  email: string;
-  name: string | null;
-  created_at: number;
-  is_superuser: boolean;
-  avatar: { color: string; content: string };
-  is_orphaned: boolean;
-  orphaned_at: number | null;
-}
 
 export interface UserOrg {
   org_id: string;
@@ -50,16 +41,6 @@ export interface UserOAuthProvider {
   linked_at: number;
 }
 
-export interface OrgInfo {
-  id: string;
-  name: string;
-  created_at: number;
-  created_by: string;
-  billing_status: BillingStatus;
-  archived: boolean;
-  archived_at: number | null;
-  archived_by: string | null;
-}
 
 export interface OrgMember {
   user_id: string;
@@ -234,7 +215,7 @@ export class UserDO extends DurableObject<AuthEnv> {
     if (version < 2) {
       const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
       if (rows.length > 0) {
-        const profile = JSON.parse((rows[0] as { value: string }).value) as UserProfile;
+        const profile = JSON.parse((rows[0] as { value: string }).value) as User;
         const shouldBeSuperuser = isSuperuserEmail(profile.email);
         if (profile.is_superuser !== shouldBeSuperuser) {
           profile.is_superuser = shouldBeSuperuser;
@@ -257,7 +238,7 @@ export class UserDO extends DurableObject<AuthEnv> {
     if (version < 4) {
       const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
       if (rows.length > 0) {
-        const profile = JSON.parse((rows[0] as { value: string }).value) as UserProfile;
+        const profile = JSON.parse((rows[0] as { value: string }).value) as User;
         if (!profile.avatar) {
           profile.avatar = generateDefaultAvatar(profile.name || profile.email);
         }
@@ -296,10 +277,10 @@ export class UserDO extends DurableObject<AuthEnv> {
   }
 
   // Profile methods
-  async getProfile(): Promise<UserProfile | null> {
+  async getProfile(): Promise<User | null> {
     const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
     if (rows.length === 0) return null;
-    const profile = JSON.parse((rows[0] as { value: string }).value) as UserProfile;
+    const profile = JSON.parse((rows[0] as { value: string }).value) as User;
     let changed = false;
 
     if (typeof profile.is_superuser !== 'boolean') {
@@ -325,7 +306,7 @@ export class UserDO extends DurableObject<AuthEnv> {
     return profile;
   }
 
-  async setProfile(profile: UserProfile): Promise<void> {
+  async setProfile(profile: User): Promise<void> {
     this.sql.exec(
       'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
       'data',
@@ -358,10 +339,10 @@ export class UserDO extends DurableObject<AuthEnv> {
     email: string,
     password: string,
     name: string | null
-  ): Promise<UserProfile> {
+  ): Promise<User> {
     const now = Date.now();
     const avatar = generateDefaultAvatar(name || email);
-    const profile: UserProfile = {
+    const profile: User = {
       id,
       email,
       name,
@@ -390,7 +371,7 @@ export class UserDO extends DurableObject<AuthEnv> {
   async updateProfile(updates: {
     name?: string | null;
     avatar?: { color?: string; content?: string };
-  }): Promise<UserProfile | null> {
+  }): Promise<User | null> {
     const profile = await this.getProfile();
     if (!profile) return null;
 
@@ -505,10 +486,10 @@ export class UserDO extends DurableObject<AuthEnv> {
     name: string | null,
     provider: OAuthProvider,
     providerId: string
-  ): Promise<UserProfile> {
+  ): Promise<User> {
     const now = Date.now();
     const avatar = generateDefaultAvatar(name || email);
-    const profile: UserProfile = {
+    const profile: User = {
       id,
       email,
       name,
@@ -620,7 +601,7 @@ export class OrgDO extends DurableObject<AuthEnv> {
       `);
       const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
       if (rows.length > 0) {
-        const info = JSON.parse((rows[0] as { value: string }).value) as OrgInfo;
+        const info = JSON.parse((rows[0] as { value: string }).value) as Organization;
         if (!info.billing_status) info.billing_status = 'free';
         if (typeof info.archived !== 'boolean') info.archived = false;
         if (info.archived_at === undefined) info.archived_at = null;
@@ -921,10 +902,10 @@ export class OrgDO extends DurableObject<AuthEnv> {
   }
 
   // Org info methods
-  async getInfo(): Promise<OrgInfo | null> {
+  async getInfo(): Promise<Organization | null> {
     const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
     if (rows.length === 0) return null;
-    const info = JSON.parse((rows[0] as { value: string }).value) as OrgInfo;
+    const info = JSON.parse((rows[0] as { value: string }).value) as Organization;
     let changed = false;
     if (!info.billing_status) {
       info.billing_status = 'free';
@@ -948,7 +929,7 @@ export class OrgDO extends DurableObject<AuthEnv> {
     return info;
   }
 
-  async setInfo(info: OrgInfo): Promise<void> {
+  async setInfo(info: Organization): Promise<void> {
     this.sql.exec(
       'INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)',
       'data',
@@ -956,9 +937,9 @@ export class OrgDO extends DurableObject<AuthEnv> {
     );
   }
 
-  async createOrg(id: string, name: string, createdBy: string): Promise<{ org: OrgInfo; defaultWorkspaceId: string }> {
+  async createOrg(id: string, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
     const now = Date.now();
-    const info: OrgInfo = {
+    const info: Organization = {
       id,
       name,
       created_at: now,

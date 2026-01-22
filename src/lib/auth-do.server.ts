@@ -23,7 +23,6 @@ import type {
   Message,
 } from '@/types';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
-import type { UserProfile } from '../../workers/main/src/auth';
 import { type AuthEnv } from './auth-helpers';
 import * as authDO from './auth-do';
 import { getMessages as getThreadMessages, getThreadPreview } from './chat-do.server';
@@ -718,13 +717,13 @@ export async function adminGetAppDetail(
 }
 
 // User functions
-export async function getUserById(context: AppLoadContext, userId: string): Promise<UserProfile | null> {
+export async function getUserById(context: AppLoadContext, userId: string): Promise<User | null> {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   return authEnv.USER.get(authEnv.USER.idFromName(userId)).getProfile();
 }
 
-export async function getUsersByIds(context: AppLoadContext, userIds: string[]): Promise<UserProfile[]> {
+export async function getUsersByIds(context: AppLoadContext, userIds: string[]): Promise<User[]> {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   return authDO.getUsersByIds(authEnv, userIds);

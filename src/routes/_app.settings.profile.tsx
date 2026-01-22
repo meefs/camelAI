@@ -38,7 +38,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  await authDO.updateUserProfile(authEnv, authContext.user!.id, updates);
+  await authDO.updateUser(authEnv, authContext.user!.id, updates);
 
   return { result: submission.reply(), success: true };
 }

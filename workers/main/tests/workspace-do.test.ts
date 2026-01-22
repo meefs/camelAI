@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createNewSession, type SessionData } from '../src/session-kv';
-import type { WorkspaceInfo, WorkspaceIntegrationRecord } from '../src/workspace';
+import type { Workspace, WorkspaceIntegrationRecord } from '../src/workspace';
 import {
   createUser,
   createOrg,
@@ -108,7 +108,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
     expect(orgWorkspaces.some((entry) => entry.id === workspace.id)).toBe(false);
 
     const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspace.id)) as DurableObjectStub<{
-      getInfo: () => Promise<WorkspaceInfo | null>;
+      getInfo: () => Promise<Workspace | null>;
     }>;
     const info = await workspaceStub.getInfo();
     expect(info?.archived).toBe(true);

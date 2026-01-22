@@ -30,8 +30,6 @@ import {
 
 import {
   type AuthEnv,
-  type UserProfile,
-  type OrgInfo,
   type OrgThread,
   type SessionData,
   type ApiTokenData,
@@ -45,7 +43,7 @@ export async function getSession(env: AuthEnv, sessionId: string): Promise<Sessi
 export async function getSessionWithUser(
   env: AuthEnv,
   sessionId: string
-): Promise<{ session: SessionData; user: UserProfile } | null> {
+): Promise<{ session: SessionData; user: User } | null> {
   const session = await getSessionKV(env.SESSIONS, sessionId);
   if (!session) return null;
   const stub = env.USER.get(env.USER.idFromName(session.user_id));
@@ -98,7 +96,7 @@ export async function switchSessionWorkspace(env: AuthEnv, sessionId: string, wo
 }
 
 // User functions
-export async function getUserByEmail(env: AuthEnv, email: string): Promise<{ userId: string; user: UserProfile } | null> {
+export async function getUserByEmail(env: AuthEnv, email: string): Promise<{ userId: string; user: User } | null> {
   const normalizedEmail = email.toLowerCase();
   const userId = await env.EMAIL_TO_USER.get(`email:${normalizedEmail}`);
   if (!userId) return null;
@@ -108,17 +106,17 @@ export async function getUserByEmail(env: AuthEnv, email: string): Promise<{ use
   return { userId, user };
 }
 
-export async function getUsersByIds(env: AuthEnv, userIds: string[]): Promise<(UserProfile & Disposable)[]> {
+export async function getUsersByIds(env: AuthEnv, userIds: string[]): Promise<(User & Disposable)[]> {
   const results = await Promise.all(
     userIds.map(async (userId) => {
       const stub = env.USER.get(env.USER.idFromName(userId));
       return stub.getProfile();
     })
   );
-  return results.filter((p): p is UserProfile & Disposable => p !== null);
+  return results.filter((p): p is User & Disposable => p !== null);
 }
 
-export async function updateUserProfile(
+export async function updateUser(
   env: AuthEnv,
   userId: string,
   updates: { name?: string | null; avatar?: { color: string; content: string } }
@@ -137,7 +135,7 @@ export async function createUser(
   email: string,
   password: string,
   name: string | null
-): Promise<{ userId: string; user: UserProfile }> {
+): Promise<{ userId: string; user: User }> {
   const normalizedEmail = email.toLowerCase();
   const emailKvKey = `email:${normalizedEmail}`;
 
@@ -174,7 +172,7 @@ export async function getUserByOAuthProvider(
   env: AuthEnv,
   provider: 'google' | 'github',
   providerId: string
-): Promise<{ userId: string; user: UserProfile } | null> {
+): Promise<{ userId: string; user: User } | null> {
   const oauthKvKey = `oauth:${provider}:${providerId}`;
   const userId = await env.EMAIL_TO_USER.get(oauthKvKey);
   if (!userId) return null;
@@ -190,7 +188,7 @@ export async function createUserFromOAuth(
   name: string | null,
   provider: 'google' | 'github',
   providerId: string
-): Promise<{ userId: string; user: UserProfile }> {
+): Promise<{ userId: string; user: User }> {
   const normalizedEmail = email.toLowerCase();
   const emailKvKey = `email:${normalizedEmail}`;
   const oauthKvKey = `oauth:${provider}:${providerId}`;

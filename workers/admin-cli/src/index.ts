@@ -20,13 +20,13 @@ import type { KVNamespace, R2Bucket, DurableObjectNamespace, DurableObjectStub }
 import type {
 	OrgDO,
 	UserDO,
-	UserProfile,
+	User,
 	UserOrg,
-	OrgInfo,
+	Organization,
 	OrgMember,
 	OrgThread,
 } from '../../main/src/auth';
-import type { WorkspaceDO, WorkspaceInfo } from '../../main/src/workspace';
+import type { WorkspaceDO, Workspace } from '../../main/src/workspace';
 import type { WorkspaceContainer } from '../../main/src/workspace-container';
 
 interface Env {
@@ -66,7 +66,7 @@ interface AdminUserSummary {
 	is_superuser: boolean;
 }
 
-interface AdminOrgSummary extends OrgInfo {
+interface AdminOrgSummary extends Organization {
 	member_count: number;
 	workspace_count: number;
 }

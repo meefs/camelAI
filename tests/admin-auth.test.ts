@@ -19,7 +19,7 @@ interface SessionData {
   expires_at: number;
 }
 
-interface UserProfile {
+interface User {
   id: string;
   email: string;
   name: string | null;
@@ -30,7 +30,7 @@ interface UserProfile {
 // Mock functions representing the auth layer
 const mockGetSessionId = vi.fn<() => Promise<string | null>>();
 const mockGetSession = vi.fn<(sessionId: string) => Promise<SessionData | null>>();
-const mockGetUserById = vi.fn<(userId: string) => Promise<UserProfile | null>>();
+const mockGetUserById = vi.fn<(userId: string) => Promise<User | null>>();
 
 /**
  * Reimplementation of requireSuperuser logic for testing

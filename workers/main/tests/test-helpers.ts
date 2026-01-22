@@ -4,8 +4,8 @@
  * These helpers replace the DoRpcService for tests, using direct DO namespace bindings.
  */
 
-import type { UserDO, OrgDO, OrgRole, UserProfile } from '../src/auth';
-import type { WorkspaceDO, WorkspaceInfo, WorkspaceAccessLevel as WorkspaceAccessLevelDO } from '../src/workspace';
+import type { UserDO, OrgDO, OrgRole, User } from '../src/auth';
+import type { WorkspaceDO, Workspace, WorkspaceAccessLevel as WorkspaceAccessLevelDO } from '../src/workspace';
 import { hashPassword, verifyPassword } from '../src/password';
 import { getSession, updateSession, destroySession, type SessionData } from '../src/session-kv';
 import { encryptCredentials, decryptCredentials } from '../../../src/lib/integration-crypto';
@@ -33,7 +33,7 @@ export async function createUser(
   email: string,
   password: string,
   name: string
-): Promise<{ userId: string; user: UserProfile }> {
+): Promise<{ userId: string; user: User }> {
   const userId = generateId();
   const userStub = env.USER.get(env.USER.idFromName(userId));
 
@@ -48,7 +48,7 @@ export async function createUser(
 export async function getUserByEmail(
   env: TestEnv,
   email: string
-): Promise<{ userId: string; user: UserProfile } | null> {
+): Promise<{ userId: string; user: User } | null> {
   const userId = await env.EMAIL_TO_USER.get(email.toLowerCase());
   if (!userId) return null;
 
@@ -62,7 +62,7 @@ export async function getUserByEmail(
 export async function getUserById(
   env: TestEnv,
   userId: string
-): Promise<UserProfile | null> {
+): Promise<User | null> {
   const userStub = env.USER.get(env.USER.idFromName(userId));
   return userStub.getProfile();
 }
@@ -469,7 +469,7 @@ export async function createWorkspace(
 export async function getWorkspace(
   env: TestEnv,
   workspaceId: string
-): Promise<WorkspaceInfo | null> {
+): Promise<Workspace | null> {
   const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await workspaceStub.getInfo();
   if (!info || info.archived) return null;
@@ -481,7 +481,7 @@ export async function updateWorkspace(
   workspaceId: string,
   updates: { name?: string; description?: string },
   actorId: string
-): Promise<WorkspaceInfo | null> {
+): Promise<Workspace | null> {
   const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   return workspaceStub.updateWorkspace(updates, actorId);
 }

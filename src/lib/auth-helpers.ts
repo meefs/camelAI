@@ -6,11 +6,12 @@ import type { Integration } from '@/types';
 import { UserDO, OrgDO } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
 
-// Re-export types that consumers need
-export type { UserProfile, OrgInfo, OrgThread } from '../../workers/main/src/auth';
-export type { WorkspaceInfo } from '../../workers/main/src/workspace';
+// Re-export types that are only defined in worker modules
+export type { OrgThread } from '../../workers/main/src/auth';
 export type { SessionData } from '../../workers/main/src/session-kv';
 export type { ApiTokenData } from '../../workers/main/src/api-tokens';
+
+// User, Organization, Workspace types should be imported from @/types directly
 
 /**
  * Auth environment bindings required for DO access.
