@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-21-v8-yarn-pnp-working
+# Version: 2026-01-22-v9-fix-claude-dir-perms
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873

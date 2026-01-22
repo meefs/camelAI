@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { appendFile, mkdir } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-21-sandbox-v20-minimal-logging';
+const VERSION = '2026-01-22-sandbox-v21-fix-claude-dir-perms';
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {

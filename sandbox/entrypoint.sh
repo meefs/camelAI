@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-21-v8-yarn-pnp-working
+# Version: 2026-01-22-v9-fix-claude-dir-perms
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -177,6 +177,9 @@ migrate_from_tar() {
   if [ -d "$TEMP_EXTRACT_DIR" ] && [ "$(ls -A "$TEMP_EXTRACT_DIR" 2>/dev/null)" ]; then
     # Use cp with archive mode to preserve permissions and timestamps
     cp -a "$TEMP_EXTRACT_DIR"/. "$TARGET_DIR"/ 2>/dev/null || true
+    # Fix ownership - cp -a runs as root so files may have wrong ownership
+    # This ensures claude user can write to all migrated files/directories
+    chown -R claude:claude "$TARGET_DIR" 2>/dev/null || true
     echo "[entrypoint] Data migration complete." >&2
   fi
 
@@ -462,6 +465,11 @@ fi
 # Only copy SKILL.md files - templates stay in /app and are accessed via create-worker script
 echo "[entrypoint] Installing skills..." >&2
 SKILLS_START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
+
+# Ensure .claude directory has correct ownership (fixes migrated workspaces with root-owned files)
+if [ -d "$TARGET_DIR/.claude" ]; then
+  chown -R claude:claude "$TARGET_DIR/.claude" 2>/dev/null || true
+fi
 
 su -s /bin/sh claude -c "mkdir -p \"$TARGET_DIR/.claude/skills\"" >/dev/null 2>&1 || true
 # Copy only SKILL.md files (preserving directory structure) - templates don't need to be on JuiceFS
