@@ -353,7 +353,7 @@ export default {
           // Check if user is a member of the org
           const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id)) as unknown as OrgDO;
           const orgInfo = await orgStub.getInfo();
-          if (orgInfo && !orgInfo.archived && orgStub.isMember(session.user_id)) {
+          if (orgInfo && !orgInfo.archived && await orgStub.isMember(session.user_id)) {
             // Get workspace-specific access level
             const memberAccess = await workspaceStub.getMemberAccess(session.user_id);
             accessLevel = memberAccess?.access_level ?? 'full';

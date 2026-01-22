@@ -92,7 +92,6 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | File | Purpose |
 |------|---------|
 | `wrangler.jsonc` | Main production/deployment config |
-| `wrangler.build.jsonc` | OpenNext build config |
 | `components.json` | shadcn/ui configuration |
 | `.mcp.json` | MCP server config (shadcn registry access) |
 
@@ -490,7 +489,6 @@ chiridion-app/
 ├── e2e/                     # Playwright E2E tests
 ├── tests/                   # Vitest unit tests
 ├── wrangler.jsonc           # Production config
-├── wrangler.build.jsonc     # OpenNext build config
 ├── components.json          # shadcn/ui config
 ├── .mcp.json                # MCP server config
 └── package.json

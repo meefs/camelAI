@@ -1246,7 +1246,7 @@ async function recordUsage(
   if (!usageContext || !env.ORG) return;
   try {
     const stub = env.ORG.get(env.ORG.idFromName(usageContext.orgId)) as DurableObjectStub<OrgDO>;
-    stub.recordProxyUsage(
+    await stub.recordProxyUsage(
       usageContext.userId,
       usage as ProxyUsageInput,
       provider,
