@@ -54,6 +54,9 @@ export async function requireWorkspaceAuth(
   const containerEnv = env as unknown as WorkspaceContainerEnv;
   const container = getWorkspaceContainer(containerEnv, workspaceId);
 
+  // Ensure container is initialized with env vars before any operations
+  await container.startForWorkspace(workspaceId, workspace.org_id);
+
   return {
     userId: sessionContext.session.user_id,
     orgId: sessionContext.session.org_id,

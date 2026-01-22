@@ -161,6 +161,24 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
   private workspaceId: string | null = null;
   private orgId: string | null = null;
 
+  /**
+   * Override fetch to ensure env vars are always set before container starts.
+   * This prevents the container from auto-starting without proper configuration.
+   */
+  override async fetch(request: Request): Promise<Response> {
+    if (!this.envVars || Object.keys(this.envVars).length === 0) {
+      console.error('[WorkspaceContainer] fetch() called without env vars - container not initialized');
+      return new Response(JSON.stringify({
+        error: 'Container not initialized',
+        message: 'Call startForWorkspace() before accessing container'
+      }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    return super.fetch(request);
+  }
+
   // Lifecycle hooks
   override onStart(): void {
     console.log(
@@ -336,12 +354,12 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
 
     // Only build env vars once per container instance - they're set as class property
     // so Container class uses them for any start path (including auto-restarts)
-    if (!(this as any).envVars || Object.keys((this as any).envVars).length === 0) {
+    if (!this.envVars || Object.keys(this.envVars).length === 0) {
       console.log('[WorkspaceContainer] Building env vars for workspace:', { workspaceId, orgId });
       const envStart = Date.now();
       const envVars = await this.buildEnvVars(workspaceId, orgId);
       console.log('[WorkspaceContainer] Built env vars', { workspaceId, orgId, ms: Date.now() - envStart });
-      (this as any).envVars = envVars;
+      this.envVars = envVars;
     }
 
     const state = await this.getState();
