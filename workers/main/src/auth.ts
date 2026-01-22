@@ -7,8 +7,8 @@ import { WorkspaceDO } from './workspace';
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from '../../../src/types';
 
-// Auth-specific environment bindings
-export interface AuthEnv {
+// Environment bindings needed by auth Durable Objects
+export interface DOEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
@@ -160,10 +160,10 @@ export interface ProxyUsageInput {
  */
 
 // User Durable Object - one per user
-export class UserDO extends DurableObject<AuthEnv> {
+export class UserDO extends DurableObject<DOEnv> {
   private sql: SqlStorage;
 
-  constructor(ctx: DurableObjectState, env: AuthEnv) {
+  constructor(ctx: DurableObjectState, env: DOEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
 
@@ -508,11 +508,11 @@ export class UserDO extends DurableObject<AuthEnv> {
 }
 
 // Organization Durable Object - one per org
-export class OrgDO extends DurableObject<AuthEnv> {
+export class OrgDO extends DurableObject<DOEnv> {
   private sql: SqlStorage;
   private workerScriptsHasPreviewColumns = true;
 
-  constructor(ctx: DurableObjectState, env: AuthEnv) {
+  constructor(ctx: DurableObjectState, env: DOEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
 

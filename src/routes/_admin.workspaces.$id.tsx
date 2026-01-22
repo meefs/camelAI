@@ -2,7 +2,8 @@ import { Link, useLoaderData, redirect, useFetcher } from 'react-router';
 import type { Route } from './+types/_admin.workspaces.$id';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import * as authDO from '@/lib/auth-do.server';
+import * as adminDO from '@/lib/auth-do.server';
+import { getUsersByIds } from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { WorkspaceEditForm } from '@/components/admin/workspace-edit-form';
 import { WorkspaceDangerZone } from '@/components/admin/workspace-danger-zone';
@@ -40,7 +41,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
 
   const { id } = params;
-  const detail = await authDO.adminGetWorkspaceDetail(context, id);
+  const authEnv = getAuthEnv(getEnv(context));
+  const detail = await adminDO.adminGetWorkspaceDetail(context, id);
   if (!detail) {
     throw redirect('/qaml-backdoor/workspaces');
   }
@@ -51,7 +53,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     userIds.add(member.user_id);
     userIds.add(member.granted_by);
   }
-  const users = userIds.size > 0 ? await authDO.getUsersByIds(context, Array.from(userIds)) : [];
+  const users = userIds.size > 0 ? await getUsersByIds(authEnv, Array.from(userIds)) : [];
   const userById = Object.fromEntries(users.map((user) => [user.id, user]));
 
   return {
@@ -73,7 +75,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const authEnv = getAuthEnv(getEnv(context));
 
   if (intent === 'reset-container') {
-    await authDO.resetAdminWorkspaceContainer(context, workspaceId);
+    await adminDO.resetAdminWorkspaceContainer(context, workspaceId);
     return { success: true };
   }
 

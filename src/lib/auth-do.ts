@@ -6,9 +6,7 @@ import type {
   Workspace,
   WorkspaceWithAccess,
   WorkspaceAccessLevel,
-  WorkspaceMember,
   AuditLogEntry,
-  CreateApiTokenInput,
   AppPreviewStatus,
   Integration,
 } from '@/types';
@@ -18,15 +16,7 @@ import {
   createNewSession as createNewSessionKV,
   updateSession as updateSessionKV,
 } from '../../workers/main/src/session-kv';
-import {
-  createApiToken,
-  validateApiToken as validateApiTokenKV,
-  deleteApiToken as deleteApiTokenKV,
-} from '../../workers/main/src/api-tokens';
-import {
-  validateAndConsumeAuthState,
-  createWorkerAuthToken,
-} from '../../workers/main/src/worker-auth';
+import { validateApiToken as validateApiTokenKV } from '../../workers/main/src/api-tokens';
 
 import {
   type AuthEnv,
@@ -38,18 +28,6 @@ import {
 // Session functions
 export async function getSession(env: AuthEnv, sessionId: string): Promise<SessionData | null> {
   return getSessionKV(env.SESSIONS, sessionId);
-}
-
-export async function getSessionWithUser(
-  env: AuthEnv,
-  sessionId: string
-): Promise<{ session: SessionData; user: User } | null> {
-  const session = await getSessionKV(env.SESSIONS, sessionId);
-  if (!session) return null;
-  const stub = env.USER.get(env.USER.idFromName(session.user_id));
-  const user = await stub.getProfile();
-  if (!user) return null;
-  return { session, user };
 }
 
 export async function createSession(
@@ -168,20 +146,6 @@ export async function createUser(
 }
 
 // OAuth functions
-export async function getUserByOAuthProvider(
-  env: AuthEnv,
-  provider: 'google' | 'github',
-  providerId: string
-): Promise<{ userId: string; user: User } | null> {
-  const oauthKvKey = `oauth:${provider}:${providerId}`;
-  const userId = await env.EMAIL_TO_USER.get(oauthKvKey);
-  if (!userId) return null;
-  const stub = env.USER.get(env.USER.idFromName(userId));
-  const user = await stub.getProfile();
-  if (!user) return null;
-  return { userId, user };
-}
-
 export async function createUserFromOAuth(
   env: AuthEnv,
   email: string,
@@ -262,14 +226,6 @@ export async function linkOAuthProvider(
   await stub.linkOAuthProvider(provider, providerId);
 }
 
-export async function getUserOAuthProviders(
-  env: AuthEnv,
-  userId: string
-): Promise<Array<{ provider: string; provider_id: string; linked_at: number }>> {
-  const stub = env.USER.get(env.USER.idFromName(userId));
-  return stub.getOAuthProviders();
-}
-
 export async function getUserOrgs(env: AuthEnv, userId: string): Promise<OrgMembership[]> {
   const userStub = env.USER.get(env.USER.idFromName(userId));
   const userOrgs = await userStub.getOrgs();
@@ -290,18 +246,6 @@ export async function getUserOrgs(env: AuthEnv, userId: string): Promise<OrgMemb
   }
 
   return memberships;
-}
-
-export async function addUserToOrg(env: AuthEnv, userId: string, orgId: string, role: OrgRole): Promise<void> {
-  const workspaces = await listOrgWorkspaces(env, orgId);
-  const lastWorkspaceId = workspaces[0]?.id ?? null;
-  const userStub = env.USER.get(env.USER.idFromName(userId));
-  await userStub.addOrg(orgId, role, lastWorkspaceId);
-}
-
-export async function removeUserFromOrg(env: AuthEnv, userId: string, orgId: string): Promise<void> {
-  const userStub = env.USER.get(env.USER.idFromName(userId));
-  await userStub.removeOrg(orgId);
 }
 
 // Admin functions that operate on single DOs (real implementations)
@@ -758,33 +702,8 @@ export async function getOrgInvitations(env: AuthEnv, orgId: string): Promise<Ar
 
 
 // API Token functions
-export async function createOrgApiToken(
-  env: AuthEnv,
-  orgId: string,
-  userId: string,
-  input: CreateApiTokenInput
-): Promise<{ tokenId: string; tokenData: ApiTokenData }> {
-  const scopes = input.scopes || ['proxy'];
-  const expiresAt = input.expires_in_days
-    ? Date.now() + input.expires_in_days * 24 * 60 * 60 * 1000
-    : null;
-
-  return createApiToken(env.API_TOKENS, {
-    orgId,
-    userId,
-    name: input.name,
-    scopes,
-    integrationId: input.integration_id || null,
-    expiresAt,
-  });
-}
-
 export async function validateApiToken(env: AuthEnv, tokenId: string): Promise<ApiTokenData | null> {
   return validateApiTokenKV(env.API_TOKENS, tokenId);
-}
-
-export async function deleteOrgApiToken(env: AuthEnv, tokenId: string): Promise<void> {
-  await deleteApiTokenKV(env.API_TOKENS, tokenId);
 }
 
 // Worker script functions
@@ -865,44 +784,3 @@ export async function setWorkerScriptPublic(
 }
 
 
-// Worker cross-domain auth functions
-export interface WorkerAuthState {
-  return_url: string;
-  script_name: string;
-  required_org_id: string;
-  created_at: number;
-}
-
-export interface WorkerAuthToken {
-  user_id: string;
-  org_id: string;
-  state: string;
-  script_name: string;
-  created_at: number;
-}
-
-export interface DispatcherSession {
-  user_id: string;
-  org_id: string;
-  created_at: number;
-  last_accessed: number;
-}
-
-export async function validateAndConsumeWorkerAuthState(env: AuthEnv, state: string): Promise<WorkerAuthState | null> {
-  return validateAndConsumeAuthState(env.API_TOKENS, state);
-}
-
-export async function createWorkerAuthTokenFn(
-  env: AuthEnv,
-  userId: string,
-  orgId: string,
-  state: string,
-  scriptName: string
-): Promise<string> {
-  return createWorkerAuthToken(env.API_TOKENS, {
-    user_id: userId,
-    org_id: orgId,
-    state,
-    script_name: scriptName,
-  });
-}

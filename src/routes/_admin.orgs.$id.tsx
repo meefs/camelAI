@@ -2,8 +2,8 @@ import { Link, useLoaderData, redirect, useFetcher } from 'react-router';
 import type { Route } from './+types/_admin.orgs.$id';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import * as authDO from '@/lib/auth-do.server';
-import { adminTransferOrgOwnership, updateOrgMemberRole } from '@/lib/auth-do';
+import * as adminDO from '@/lib/auth-do.server';
+import { adminTransferOrgOwnership, updateOrgMemberRole, getOrg, getOrgMembers, getOrgInvitations } from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AddOrgMemberDialog } from '@/components/admin/add-org-member-dialog';
 import { OrgDangerZone } from '@/components/admin/org-danger-zone';
@@ -51,17 +51,18 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
 
   const { id } = params;
+  const authEnv = getAuthEnv(getEnv(context));
 
   // Fetch org first to check existence, then fetch related data in parallel
-  const org = await authDO.getOrg(context, id);
+  const org = await getOrg(authEnv, id);
   if (!org) {
     throw redirect('/qaml-backdoor/orgs');
   }
 
   const [members, invitations, workspacePage] = await Promise.all([
-    authDO.getOrgMembers(context, id),
-    authDO.getOrgInvitations(context, id),
-    authDO.adminGetWorkspacesPaginated(context, { offset: 0, limit: 500 }),
+    getOrgMembers(authEnv, id),
+    getOrgInvitations(authEnv, id),
+    adminDO.adminGetWorkspacesPaginated(context, { offset: 0, limit: 500 }),
   ]);
   const workspaces = workspacePage.items.filter((workspace) => workspace.org_id === id);
 
@@ -102,7 +103,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const authEnv = getAuthEnv(getEnv(context));
 
   if (intent === 'reset-containers') {
-    await authDO.resetAdminOrgContainers(context, orgId);
+    await adminDO.resetAdminOrgContainers(context, orgId);
     return { success: true };
   }
 
@@ -112,7 +113,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (!userId || !role) {
       return { error: 'User ID and role are required' };
     }
-    await authDO.addAdminOrgMember(context, orgId, userId, role);
+    await adminDO.addAdminOrgMember(context, orgId, userId, role);
     return { success: true };
   }
 

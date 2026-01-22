@@ -1,8 +1,9 @@
 /**
- * Core auth helpers: AuthEnv interface and integration record converter.
+ * Core auth helpers: AuthEnv interface, getAuthEnv, and integration record converter.
  * Keep this file minimal - only pure helpers with no business logic.
  */
 import type { Integration } from '@/types';
+import type { CloudflareEnv } from './cloudflare.server';
 import { UserDO, OrgDO } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
 
@@ -23,6 +24,20 @@ export interface AuthEnv {
   SESSIONS: KVNamespace;
   EMAIL_TO_USER: KVNamespace;
   API_TOKENS: KVNamespace;
+}
+
+/**
+ * Extract AuthEnv bindings from CloudflareEnv.
+ */
+export function getAuthEnv(env: CloudflareEnv): AuthEnv {
+  return {
+    USER: env.USER as AuthEnv['USER'],
+    ORG: env.ORG as AuthEnv['ORG'],
+    WORKSPACE: env.WORKSPACE as AuthEnv['WORKSPACE'],
+    SESSIONS: env.SESSIONS,
+    EMAIL_TO_USER: env.EMAIL_TO_USER,
+    API_TOKENS: env.API_TOKENS,
+  };
 }
 
 // ============================================================================

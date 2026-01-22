@@ -23,24 +23,13 @@ import type {
   Message,
 } from '@/types';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
-import { type AuthEnv } from './auth-helpers';
+import { type AuthEnv, getAuthEnv } from './auth-helpers';
 import * as authDO from './auth-do';
 import { getMessages as getThreadMessages, getThreadPreview } from './chat-do.server';
 import {
   getWorkspaceContainer,
   type WorkspaceContainerEnv,
 } from '../../workers/main/src/workspace-container';
-
-function getAuthEnv(env: CloudflareEnv): AuthEnv {
-  return {
-    USER: env.USER as AuthEnv['USER'],
-    ORG: env.ORG as AuthEnv['ORG'],
-    WORKSPACE: env.WORKSPACE as AuthEnv['WORKSPACE'],
-    SESSIONS: env.SESSIONS,
-    EMAIL_TO_USER: env.EMAIL_TO_USER,
-    API_TOKENS: env.API_TOKENS,
-  };
-}
 
 // Helper: Collect all user IDs from KV
 async function collectAllUserIds(env: CloudflareEnv): Promise<string[]> {
@@ -714,98 +703,6 @@ export async function adminGetAppDetail(
   }
 
   return null;
-}
-
-// User functions
-export async function getUserById(context: AppLoadContext, userId: string): Promise<User | null> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  return authEnv.USER.get(authEnv.USER.idFromName(userId)).getProfile();
-}
-
-export async function getUsersByIds(context: AppLoadContext, userIds: string[]): Promise<User[]> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  return authDO.getUsersByIds(authEnv, userIds);
-}
-
-export async function getUserOrgs(context: AppLoadContext, userId: string): Promise<OrgMembership[]> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  return authDO.getUserOrgs(authEnv, userId);
-}
-
-export async function listUserWorkspaces(
-  context: AppLoadContext,
-  userId: string,
-  orgId: string
-): Promise<WorkspaceWithAccess[]> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  return authDO.listUserWorkspaces(authEnv, userId, orgId);
-}
-
-export async function listUserWorkspacesAcrossOrgs(
-  context: AppLoadContext,
-  userId: string,
-  orgs?: OrgMembership[]
-): Promise<WorkspaceWithAccess[]> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  return authDO.listUserWorkspacesAcrossOrgs(authEnv, userId, orgs);
-}
-
-// Organization functions
-export async function getOrg(context: AppLoadContext, orgId: string): Promise<Organization | null> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  return authDO.getOrg(authEnv, orgId);
-}
-
-export async function getOrgMembers(
-  context: AppLoadContext,
-  orgId: string
-): Promise<Array<{ user: User; role: OrgRole; joined_at: number }>> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  return authDO.getOrgMembers(authEnv, orgId);
-}
-
-export async function getOrgInvitations(
-  context: AppLoadContext,
-  orgId: string
-): Promise<Array<{
-  id: string;
-  email: string;
-  role: OrgRole;
-  created_at: number;
-  expires_at: number;
-}>> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  return authDO.getOrgInvitations(authEnv, orgId);
-}
-
-export async function getOrgAuditLog(
-  context: AppLoadContext,
-  orgId: string,
-  limit?: number,
-  offset?: number
-): Promise<AuditLogEntry[]> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  return authDO.getOrgAuditLog(authEnv, orgId, limit, offset);
-}
-
-export async function getWorkspaceAuditLog(
-  context: AppLoadContext,
-  workspaceId: string,
-  limit?: number,
-  offset?: number
-): Promise<AuditLogEntry[]> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  return authDO.getWorkspaceAuditLog(authEnv, workspaceId, limit, offset);
 }
 
 // Admin container reset functions

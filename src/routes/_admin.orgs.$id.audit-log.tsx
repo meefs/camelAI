@@ -1,7 +1,8 @@
 import { useLoaderData, redirect } from 'react-router';
 import type { Route } from './+types/_admin.orgs.$id.audit-log';
-import { requireSuperuser } from '@/lib/auth.server';
-import * as authDO from '@/lib/auth-do.server';
+import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
+import { getOrg, getOrgAuditLog, getUsersByIds } from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AuditLogTable } from '@/components/admin/audit-log-table';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -17,12 +18,13 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
 
   const { id } = params;
-  const org = await authDO.getOrg(context, id);
+  const authEnv = getAuthEnv(getEnv(context));
+  const org = await getOrg(authEnv, id);
   if (!org) {
     throw redirect('/qaml-backdoor/orgs');
   }
 
-  const entries = await authDO.getOrgAuditLog(context, id, 100, 0);
+  const entries = await getOrgAuditLog(authEnv, id, 100, 0);
   const userIds = new Set<string>();
   for (const entry of entries) {
     userIds.add(entry.actor_id);
@@ -30,7 +32,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       userIds.add(entry.target_id);
     }
   }
-  const users = userIds.size > 0 ? await authDO.getUsersByIds(context, Array.from(userIds)) : [];
+  const users = userIds.size > 0 ? await getUsersByIds(authEnv, Array.from(userIds)) : [];
 
   return { org, entries, users };
 }

@@ -3,8 +3,8 @@ import { redirect } from 'react-router';
 import type { Route } from './+types/_admin.users.$id';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import * as authDO from '@/lib/auth-do.server';
-import { adminForceOrphanUser, adminUpdateUser } from '@/lib/auth-do';
+import * as adminDO from '@/lib/auth-do.server';
+import { adminForceOrphanUser, adminUpdateUser, getUserOrgs, listUserWorkspacesAcrossOrgs } from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { UserAdminActions } from '@/components/admin/user-admin-actions';
 import { UserEditForm } from '@/components/admin/user-edit-form';
@@ -77,11 +77,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   await requireSuperuser(request, context);
 
   const { id } = params;
+  const authEnv = getAuthEnv(getEnv(context));
 
   // Fetch user and orgs in parallel
   const [user, orgs] = await Promise.all([
-    authDO.getUserById(context, id),
-    authDO.getUserOrgs(context, id),
+    authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile(),
+    getUserOrgs(authEnv, id),
   ]);
 
   if (!user) {
@@ -100,7 +101,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     orphaned_at: user.orphaned_at,
   };
 
-  const workspaces = await authDO.listUserWorkspacesAcrossOrgs(context, id, orgs);
+  const workspaces = await listUserWorkspacesAcrossOrgs(authEnv, id, orgs);
   const workspacesByOrg = new Map<string, typeof workspaces>();
   for (const workspace of workspaces) {
     const list = workspacesByOrg.get(workspace.org_id) ?? [];

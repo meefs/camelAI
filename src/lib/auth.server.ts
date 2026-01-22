@@ -1,14 +1,14 @@
 import { redirect, type AppLoadContext } from 'react-router';
-import { getEnv, type CloudflareEnv } from './cloudflare.server';
+import { getEnv } from './cloudflare.server';
 import { getSessionIdFromRequest } from './cookies.server';
 import { getSession as getSessionKV } from '../../workers/main/src/session-kv';
 import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
-import { type AuthEnv, type SessionData } from './auth-helpers';
+import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
 import { getUserOrgs, listUserWorkspaces, isOrgAdmin, getWorkspaceAccess } from './auth-do';
 
-// Re-export AuthEnv for routes that need it
-export type { AuthEnv } from './auth-helpers';
+// Re-export AuthEnv and getAuthEnv for routes that need them
+export { getAuthEnv, type AuthEnv } from './auth-helpers';
 
 export type Session = SessionData;
 
@@ -26,20 +26,6 @@ export interface AuthContext extends UserContext {
   currentWorkspace: WorkspaceWithAccess | null;
   orgs: OrgMembership[];
   workspaces: WorkspaceWithAccess[];
-}
-
-/**
- * Get auth env from CloudflareEnv
- */
-export function getAuthEnv(env: CloudflareEnv): AuthEnv {
-  return {
-    USER: env.USER as AuthEnv['USER'],
-    ORG: env.ORG as AuthEnv['ORG'],
-    WORKSPACE: env.WORKSPACE as AuthEnv['WORKSPACE'],
-    SESSIONS: env.SESSIONS,
-    EMAIL_TO_USER: env.EMAIL_TO_USER,
-    API_TOKENS: env.API_TOKENS,
-  };
 }
 
 /**

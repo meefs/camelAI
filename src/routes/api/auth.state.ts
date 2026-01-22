@@ -1,21 +1,9 @@
 import type { Route } from './+types/auth.state';
 import { getSession, getSessionId } from '@/lib/cookies.server';
-import * as authDO from '@/lib/auth-do.server';
-import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { type AuthEnv } from '@/lib/auth-helpers';
-import { getOrg } from '@/lib/auth-do';
+import { getEnv } from '@/lib/cloudflare.server';
+import { getAuthEnv } from '@/lib/auth-helpers';
+import { getOrg, getUserOrgs, listUserWorkspaces } from '@/lib/auth-do';
 import type { AuthState } from '@/types';
-
-function getAuthEnv(env: CloudflareEnv): AuthEnv {
-  return {
-    USER: env.USER as AuthEnv['USER'],
-    ORG: env.ORG as AuthEnv['ORG'],
-    WORKSPACE: env.WORKSPACE as AuthEnv['WORKSPACE'],
-    SESSIONS: env.SESSIONS,
-    EMAIL_TO_USER: env.EMAIL_TO_USER,
-    API_TOKENS: env.API_TOKENS,
-  };
-}
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sessionId = getSessionId(request);
@@ -32,8 +20,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   // Fetch user and org data in parallel
   const [user, orgs] = await Promise.all([
-    authDO.getUserById(context, session.user_id),
-    authDO.getUserOrgs(context, session.user_id),
+    authEnv.USER.get(authEnv.USER.idFromName(session.user_id)).getProfile(),
+    getUserOrgs(authEnv, session.user_id),
   ]);
 
   if (!user) {
@@ -46,7 +34,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     ? await getOrg(authEnv, currentOrgMembership.org_id)
     : null;
   const workspaces = currentOrgMembership
-    ? await authDO.listUserWorkspaces(context, session.user_id, currentOrgMembership.org_id)
+    ? await listUserWorkspaces(authEnv, session.user_id, currentOrgMembership.org_id)
     : [];
   const currentWorkspace = session.workspace_id
     ? workspaces.find(w => w.id === session.workspace_id)

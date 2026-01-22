@@ -11,9 +11,9 @@ declare module "react-router" {
     };
   }
 }
-import { UserDO, OrgDO, type AuthEnv, type OAuthProvider as AuthOAuthProvider } from "./auth.js";
+import { UserDO, OrgDO, type DOEnv, type OAuthProvider as AuthOAuthProvider } from "./auth.js";
 import { WorkspaceContainer, handleWebSocketUpgrade, type WorkspaceContainerEnv } from './workspace-container.js';
-import { WorkspaceDO, type WorkspaceInfo } from './workspace.js';
+import { WorkspaceDO, type Workspace } from './workspace.js';
 import { getSession as getSessionKV, createSession } from './session-kv.js';
 import { createScreenshotToken } from './worker-auth.js';
 import {
@@ -53,7 +53,7 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
   return null;
 }
 
-interface Env extends ChatEnv, AuthEnv, WorkspaceContainerEnv, CfApiProxyEnv, McpEnv {
+interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, CfApiProxyEnv, McpEnv {
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   SESSIONS: KVNamespace;
