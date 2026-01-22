@@ -9,7 +9,6 @@ export default {
 
   // Enable Vite environment API for proper Cloudflare Workers SSR
   future: {
-    unstable_optimizeDeps: true,
     v8_viteEnvironmentApi: true,
   },
 } satisfies Config;
