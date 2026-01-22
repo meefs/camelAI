@@ -9,8 +9,8 @@ import {
   Rocket,
   Users,
 } from 'lucide-react';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { Link } from 'react-router';
+import { useLocation } from 'react-router';
 
 import {
   Sidebar,
@@ -69,7 +69,7 @@ const modelRoutes = [
 type AdminSidebarProps = React.ComponentProps<typeof Sidebar>;
 
 export function AdminSidebar(props: AdminSidebarProps) {
-  const pathname = usePathname();
+  const { pathname } = useLocation();
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -94,7 +94,7 @@ export function AdminSidebar(props: AdminSidebarProps) {
                   tooltip={route.label}
                   isActive={pathname === route.href}
                 >
-                  <Link href={route.href}>
+                  <Link to={route.href}>
                     <route.icon />
                     <span>{route.label}</span>
                   </Link>
@@ -114,7 +114,7 @@ export function AdminSidebar(props: AdminSidebarProps) {
                     tooltip={route.label}
                     isActive={pathname.startsWith(route.href)}
                   >
-                    <Link href={route.href}>
+                    <Link to={route.href}>
                       <route.icon />
                       <span>{route.label}</span>
                     </Link>

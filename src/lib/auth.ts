@@ -1,10 +1,14 @@
-import { cookies, headers } from 'next/headers';
-import type { NextRequest } from 'next/server';
 import type { User, Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
+import {
+  SESSION_COOKIE_NAME,
+  SESSION_MAX_AGE,
+  getSessionIdFromRequest,
+  createSessionCookieHeader,
+  createDeleteSessionCookieHeader,
+} from './cookies.server';
 
-// Cookie configuration
-export const SESSION_COOKIE_NAME = 'chiridion_session';
-export const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days in seconds
+// Re-export cookie configuration for convenience
+export { SESSION_COOKIE_NAME, SESSION_MAX_AGE } from './cookies.server';
 
 export interface SessionCookieOptions {
   httpOnly: boolean;
@@ -21,85 +25,28 @@ export const SESSION_COOKIE_OPTIONS: SessionCookieOptions = {
   maxAge: SESSION_MAX_AGE,
 };
 
-function getRequestScheme(request?: NextRequest): 'http' | 'https' | null {
-  if (!request) return null;
-
-  const forwardedProto = request.headers.get('x-forwarded-proto');
-  if (forwardedProto) {
-    const scheme = forwardedProto.split(',')[0]?.trim().toLowerCase();
-    if (scheme === 'https' || scheme === 'http') return scheme;
-  }
-
-  const cfVisitor = request.headers.get('cf-visitor');
-  if (cfVisitor) {
-    try {
-      const parsed = JSON.parse(cfVisitor) as { scheme?: unknown };
-      const scheme = typeof parsed.scheme === 'string' ? parsed.scheme.toLowerCase() : null;
-      if (scheme === 'https' || scheme === 'http') return scheme;
-    } catch {
-      // ignore
-    }
-  }
-
-  const protocol = request.nextUrl?.protocol;
-  if (protocol === 'https:' || protocol === 'http:') return protocol.slice(0, -1) as 'https' | 'http';
-
-  return null;
+/**
+ * Get session ID from request cookies.
+ * Use this in loaders/actions where you have access to the request.
+ */
+export function getSessionId(request: Request): string | null {
+  return getSessionIdFromRequest(request);
 }
 
-function shouldUseSecureCookie(request?: NextRequest): boolean {
-  const scheme = getRequestScheme(request);
-  if (scheme) return scheme === 'https';
-  return (process.env.NEXTJS_ENV ?? process.env.NODE_ENV) === 'production';
+/**
+ * Create a Set-Cookie header to set the session cookie.
+ * Add this to your response headers.
+ */
+export function setSessionCookie(sessionId: string, request: Request): string {
+  return createSessionCookieHeader(sessionId, request);
 }
 
-// Get the cookie domain from the request hostname
-// Returns undefined for localhost (host-only cookie), or the parent domain for chiridion.ai
-async function getCookieDomain(request?: NextRequest): Promise<string | undefined> {
-  let hostname: string | undefined;
-
-  if (request) {
-    hostname = request.headers.get('host')?.split(':')[0] || request.nextUrl?.hostname;
-  } else {
-    // In server actions, use headers() to get the host
-    const headerStore = await headers();
-    hostname = headerStore.get('host')?.split(':')[0] || undefined;
-  }
-
-  if (!hostname) return undefined;
-
-  // For chiridion.ai domains, set domain to .chiridion.ai to include all subdomains
-  // This allows the cookie to be sent to *.apps.chiridion.ai for iframe previews
-  if (hostname.endsWith('.chiridion.ai') || hostname === 'chiridion.ai') {
-    return '.chiridion.ai';
-  }
-
-  // For localhost or other domains, don't set domain (host-only cookie)
-  return undefined;
-}
-
-// Get session ID from cookie
-export async function getSessionId(): Promise<string | null> {
-  const cookieStore = await cookies();
-  const cookie = cookieStore.get(SESSION_COOKIE_NAME);
-  return cookie?.value || null;
-}
-
-// Set session cookie
-export async function setSessionCookie(sessionId: string, request?: NextRequest): Promise<void> {
-  const cookieStore = await cookies();
-  const domain = await getCookieDomain(request);
-  cookieStore.set(SESSION_COOKIE_NAME, sessionId, {
-    ...SESSION_COOKIE_OPTIONS,
-    secure: shouldUseSecureCookie(request),
-    ...(domain && { domain }),
-  });
-}
-
-// Delete session cookie
-export async function deleteSessionCookie(): Promise<void> {
-  const cookieStore = await cookies();
-  cookieStore.delete(SESSION_COOKIE_NAME);
+/**
+ * Create a Set-Cookie header to delete the session cookie.
+ * Add this to your response headers.
+ */
+export function deleteSessionCookie(request: Request): string {
+  return createDeleteSessionCookieHeader(request);
 }
 
 // Response helpers for API routes

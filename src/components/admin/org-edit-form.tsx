@@ -1,57 +1,43 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { useFetcher } from 'react-router';
+import { toast } from 'sonner';
 import type { Organization } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { updateAdminOrg } from '@/lib/server-actions/admin';
 
 interface OrgEditFormProps {
   org: Organization;
 }
 
 export function OrgEditForm({ org }: OrgEditFormProps) {
-  const router = useRouter();
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [name, setName] = useState(org.name);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
+  const saving = fetcher.state !== 'idle';
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    setSuccess(false);
-
-    try {
-      await updateAdminOrg(org.id, { name });
-
-      setSuccess(true);
-      router.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setLoading(false);
+  // Handle response
+  useEffect(() => {
+    if (fetcher.state === 'idle' && fetcher.data) {
+      if (fetcher.data.success) {
+        toast.success('Organization updated');
+      } else if (fetcher.data.error) {
+        toast.error(fetcher.data.error);
+      }
     }
+  }, [fetcher.state, fetcher.data]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    fetcher.submit(
+      { intent: 'updateOrg', name: name.trim() },
+      { method: 'POST' }
+    );
   };
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {success && (
-        <Alert>
-          <AlertDescription>Organization updated successfully</AlertDescription>
-        </Alert>
-      )}
-
       <div className="space-y-2">
         <Label htmlFor="name">Organization Name</Label>
         <Input
@@ -63,8 +49,8 @@ export function OrgEditForm({ org }: OrgEditFormProps) {
         />
       </div>
 
-      <Button type="submit" disabled={loading}>
-        {loading ? 'Saving...' : 'Save Changes'}
+      <Button type="submit" disabled={saving}>
+        {saving ? 'Saving...' : 'Save Changes'}
       </Button>
     </form>
   );

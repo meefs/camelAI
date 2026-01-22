@@ -22,13 +22,6 @@
 			"id": "test-sessions"
 		}
 	],
-	"services": [
-		{
-			"binding": "DO_RPC",
-			"service": "chiridion-app-test",
-			"entrypoint": "DoRpcService"
-		}
-	],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "USER", "class_name": "UserDO" },

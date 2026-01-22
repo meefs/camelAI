@@ -28,10 +28,9 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 2. **Workers** (`workers/`)
    - `main/` - Main Chiridion app worker
      - Cloudflare Workers with Durable Objects
-    - **Auth DOs:** `UserDO`, `OrgDO` (OrgDO stores threads per workspace + proxy usage rollups)
+     - **Auth DOs:** `UserDO`, `OrgDO` (OrgDO stores threads per workspace + proxy usage rollups)
      - `ThreadSandbox` - Executes Claude SDK in containers
      - WebSocket routing at worker level (one container per org)
-     - `DoRpcService` - RPC entrypoint for cross-worker calls
    - `dispatcher/` - Routes `*.chiridion.app` to user workers (WfP)
    - `admin-cli/` - Local-only admin CLI for querying live environments
    - `proxy/` - Multi-provider LLM proxy worker (Anthropic/OpenAI-compatible/Bedrock/Azure Foundry) with token accounting
@@ -79,7 +78,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `sandbox/sync.mjs` | R2 tar snapshot download (used for migration) |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
 | `src/lib/integration-crypto.ts` | Credential encryption utilities |
-| `workers/main/src/rpc-service.ts` | DoRpcService - RPC methods for cross-worker calls |
+| `workers/main/src/integration-env.ts` | Maps integration credentials to environment variables |
 | `workers/admin-cli/cli.mjs` | Admin CLI wrapper script |
 | `workers/admin-cli/src/index.ts` | Admin CLI worker (local-only) |
 | `workers/proxy/src/index.ts` | LLM proxy worker entry (multi-provider, streaming, token usage) |
@@ -93,7 +92,6 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | File | Purpose |
 |------|---------|
 | `wrangler.jsonc` | Main production/deployment config |
-| `wrangler.build.jsonc` | OpenNext build config |
 | `components.json` | shadcn/ui configuration |
 | `.mcp.json` | MCP server config (shadcn registry access) |
 
@@ -134,7 +132,7 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 
 ### Task Tool Updates
 1. Streaming Task sub-agent tool_results are persisted to `/home/claude/.chiridion/task-results/{threadId}.jsonl` inside the container.
-2. `DoRpcService.getMessages` merges these updates into assistant messages so refreshes retain Task progress history.
+2. The `getMessages` method on `OrgDO` merges these updates into assistant messages so refreshes retain Task progress history.
 
 ### Workspace Persistence (JuiceFS)
 JuiceFS provides a FUSE-based distributed filesystem with SQLite metadata and R2 data storage:
@@ -333,7 +331,7 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `BEDROCK_API_KEY` | Bedrock Runtime API key (uses bearer token auth) |
 | `AWS_BEARER_TOKEN_BEDROCK` | Alternate Bedrock API key env var (bearer token auth) |
 
-Proxy auth uses API tokens minted via `DoRpcService.createOrgApiToken` (stored in `API_TOKENS` KV on the main worker). Requests must include `Authorization: Bearer <token>` or `x-api-key`. The proxy relies on the `MAIN_RPC` service binding to validate tokens and record usage.
+Proxy auth uses API tokens minted via `OrgDO.createApiToken` (stored in `API_TOKENS` KV on the main worker). Requests must include `Authorization: Bearer <token>` or `x-api-key`. The proxy uses direct DO calls via remote namespace bindings to validate tokens and record usage.
 
 Sandbox containers require `PROXY_BASE_URL` on the main worker; the container mints a per-org proxy token and exports `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` (no upstream key fallback).
 
@@ -400,7 +398,7 @@ npm run deploy:staging
 
 ### Admin CLI
 
-Query live environments locally using RPC service bindings to call `DoRpcService` methods directly on deployed workers.
+Query live environments locally using remote DO namespace bindings to call methods directly on deployed Durable Objects.
 
 ```bash
 # Quick CLI (starts wrangler, queries, exits)
@@ -428,26 +426,19 @@ npm run admin:prod
 | `dev-illiana` | dev-illiana.chiridion.ai |
 | `dev-miguel` | dev-miguel.chiridion.ai |
 
-| Endpoint | RPC Method | Description |
-|----------|------------|-------------|
-| `/overview` | `getAdminOverview()` | Users, orgs, membership counts |
-| `/orgs` | `adminGetOrgsPaginated()` + `getOrgMembers()` | All orgs with member details |
-| `/users` | `adminGetUsersPaginated()` | All users with org counts |
-| `/threads` | `adminGetThreadsPaginated()` | All threads across all orgs |
+| Endpoint | DO Method | Description |
+|----------|-----------|-------------|
+| `/overview` | Aggregated from UserDO/OrgDO | Users, orgs, membership counts |
+| `/orgs` | `OrgDO.getInfo()` + `OrgDO.getMembers()` | All orgs with member details |
+| `/users` | `UserDO.getInfo()` | All users with org counts |
+| `/threads` | `OrgDO.getThreads()` | All threads across all orgs |
 | `/kv-keys` | Direct KV access | List KV keys (optional `?prefix=`) |
 | `/r2/list` | Direct R2 access | List R2 objects (optional `?prefix=`) |
 | `/r2/info/{key}` | Direct R2 access | Get R2 object metadata |
 | `/r2/backup/{orgId}` | Direct R2 access | Get backup info for an org |
 | `/workers` | Direct API (no wrangler) | List all user workers in dispatch namespace |
-| `/workers/{orgId}` | Direct API (no wrangler) | Deprecated: script names are no longer org-prefixed; use `/workers` |
-| `/container/{orgId}/ls` | RPC → Container | List workspace files (optional `?path=`, `?recursive=true`) |
-| `/container/{orgId}/read/{path}` | RPC → Container | Read a file from container workspace |
-| `/container/{orgId}/write` | RPC → Container | Write a file (POST: `{path, content}`) |
-| `/container/{orgId}/mkdir` | RPC → Container | Create directory (POST: `{path}`) |
-| `/container/{orgId}/delete` | RPC → Container | Delete file/dir (POST: `{path}`) |
-| `/container/{orgId}/reset` | RPC → Container | Reset container (POST, destroys and recreates) |
 
-**How it works:** Most endpoints use Cloudflare service bindings with `entrypoint: "DoRpcService"` and `remote: true` to call RPC methods on deployed workers. No HTTP routes needed - direct RPC over the Cloudflare network.
+**How it works:** The admin CLI uses remote DO namespace bindings to call methods directly on deployed Durable Objects. No HTTP routes needed - direct RPC over the Cloudflare network.
 
 **Workers endpoint:** The `/workers` endpoint uses direct Cloudflare API calls (no wrangler needed), reading the OAuth token automatically from `~/Library/Preferences/.wrangler/config/default.toml`. Run `npx wrangler login` if not already authenticated.
 
@@ -480,8 +471,8 @@ chiridion-app/
 │   │       ├── index.ts         # Worker entry point
 │   │       ├── durable-objects.ts # Chat DOs
 │   │       ├── auth.ts          # Auth DOs
-│   │       ├── rpc-service.ts   # DoRpcService RPC entrypoint
 │   │       ├── mcp-handler.ts   # MCP server handler
+│   │       ├── integration-env.ts # Integration credential mapping
 │   │       └── password.ts      # Password hashing
 │   ├── dispatcher/          # WfP subdomain router
 │   │   └── src/
@@ -491,14 +482,13 @@ chiridion-app/
 │   └── admin-cli/           # Local-only admin CLI
 │       ├── cli.mjs          # CLI wrapper script
 │       ├── src/index.ts     # Worker code
-│       └── wrangler.jsonc   # Config with remote bindings
+│       └── wrangler.jsonc   # Config with remote DO namespace bindings
 ├── sandbox/                 # Container sandbox code
 ├── scripts/                 # Dev scripts
 │   └── dev-proxy.mjs        # Wrangler + Next dev + proxy
 ├── e2e/                     # Playwright E2E tests
 ├── tests/                   # Vitest unit tests
 ├── wrangler.jsonc           # Production config
-├── wrangler.build.jsonc     # OpenNext build config
 ├── components.json          # shadcn/ui config
 ├── .mcp.json                # MCP server config
 └── package.json

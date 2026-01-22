@@ -8,15 +8,16 @@
 import { McpAgent } from 'agents/mcp';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import type { DoRpcService } from './rpc-service';
 import type { ApiTokenData } from './api-tokens';
-import type { WorkerScript } from './auth';
+import type { OrgDO, WorkerScript } from './auth';
+import type { WorkspaceDO } from './workspace';
 import type { Integration } from '../../../src/types';
 import { getAllIntegrations, getIntegrationsByCategory } from '../../../src/lib/integration-registry';
 import { isSignedToken, validateSignedToken } from './signed-tokens';
 
 export interface McpEnv {
-  DO_RPC: Service<DoRpcService>;
+  ORG: DurableObjectNamespace<OrgDO>;
+  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
   API_TOKENS: KVNamespace;
   TOKEN_SIGNING_SECRET: string;
@@ -65,10 +66,18 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
   }
 
   /**
-   * Get RPC service stub with proper disposal
+   * Get OrgDO stub for the current org
    */
-  private getRpc(): DoRpcService & { [Symbol.dispose]?: () => void } {
-    return this.env.DO_RPC as DoRpcService & { [Symbol.dispose]?: () => void };
+  private getOrgStub(): DurableObjectStub<OrgDO> {
+    if (!this.orgId) throw new Error('No org context');
+    return this.env.ORG.get(this.env.ORG.idFromName(this.orgId)) as DurableObjectStub<OrgDO>;
+  }
+
+  /**
+   * Get WorkspaceDO stub for a workspace
+   */
+  private getWorkspaceStub(workspaceId: string): DurableObjectStub<WorkspaceDO> {
+    return this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId)) as DurableObjectStub<WorkspaceDO>;
   }
 
   /**
@@ -106,23 +115,19 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           return this.textResponse({ error: 'No workspace context available' });
         }
 
-        const rpc = this.getRpc();
-        try {
-          const scripts: WorkerScript[] = await (rpc as any).listWorkerScriptsByWorkspace(workspaceId);
+        const orgStub = this.getOrgStub();
+        const scripts: WorkerScript[] = await orgStub.listWorkerScriptsByWorkspace(workspaceId);
 
-          const apps = scripts.map((s: WorkerScript) => ({
-            name: s.script_name,
-            is_public: s.is_public,
-            created_by: s.created_by,
-            created_at: new Date(s.created_at).toISOString(),
-            updated_at: new Date(s.updated_at).toISOString(),
-            preview_status: s.preview_status,
-          }));
+        const apps = scripts.map((s: WorkerScript) => ({
+          name: s.script_name,
+          is_public: s.is_public,
+          created_by: s.created_by,
+          created_at: new Date(s.created_at).toISOString(),
+          updated_at: new Date(s.updated_at).toISOString(),
+          preview_status: s.preview_status,
+        }));
 
-          return this.textResponse({ count: apps.length, apps });
-        } finally {
-          rpc[Symbol.dispose]?.();
-        }
+        return this.textResponse({ count: apps.length, apps });
       }
     );
 
@@ -140,34 +145,31 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           return this.textResponse({ error: 'No workspace context available' });
         }
 
-        const rpc = this.getRpc();
-        try {
-          // Verify script belongs to current workspace
-          const script: WorkerScript | null = await (rpc as any).getWorkerScript(orgId, script_name);
-          if (!script) {
-            return this.textResponse({ success: false, error: `App '${script_name}' not found` });
-          }
-          if (script.workspace_id !== workspaceId) {
-            return this.textResponse({ success: false, error: `App '${script_name}' belongs to a different workspace` });
-          }
+        const orgStub = this.getOrgStub();
 
-          const result = await (rpc as any).setWorkerScriptPublic(orgId, script_name, is_public, userId);
-          if (!result) {
-            return this.textResponse({ success: false, error: `Failed to update app '${script_name}'` });
-          }
-
-          return this.textResponse({
-            success: true,
-            app: {
-              name: result.script_name,
-              is_public: result.is_public,
-              updated_at: new Date(result.updated_at).toISOString(),
-            },
-            message: `App '${script_name}' is now ${is_public ? 'public' : 'private'}`,
-          });
-        } finally {
-          rpc[Symbol.dispose]?.();
+        // Verify script belongs to current workspace
+        const script: WorkerScript | null = await orgStub.getWorkerScript(script_name);
+        if (!script) {
+          return this.textResponse({ success: false, error: `App '${script_name}' not found` });
         }
+        if (script.workspace_id !== workspaceId) {
+          return this.textResponse({ success: false, error: `App '${script_name}' belongs to a different workspace` });
+        }
+
+        const result = await orgStub.setWorkerScriptPublic(script_name, is_public, userId);
+        if (!result) {
+          return this.textResponse({ success: false, error: `Failed to update app '${script_name}'` });
+        }
+
+        return this.textResponse({
+          success: true,
+          app: {
+            name: result.script_name,
+            is_public: result.is_public,
+            updated_at: new Date(result.updated_at).toISOString(),
+          },
+          message: `App '${script_name}' is now ${is_public ? 'public' : 'private'}`,
+        });
       }
     );
 
@@ -229,34 +231,43 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           return this.textResponse({ error: 'No workspace context available' });
         }
 
-        const rpc = this.getRpc();
-        try {
-          const integrations: Integration[] = await (rpc as any).getWorkspaceIntegrations(workspaceId);
+        const workspaceStub = this.getWorkspaceStub(workspaceId);
+        const rawIntegrations = await workspaceStub.getIntegrations();
 
-          let filtered = integrations;
-          if (category) {
-            filtered = filtered.filter((i) => i.category === category);
-          }
-          if (enabled_only) {
-            filtered = filtered.filter((i) => i.enabled);
-          }
+        // Map from DO format to Integration type
+        const integrations = rawIntegrations.map(r => ({
+          id: r.id,
+          integration_type: r.integration_type,
+          name: r.name,
+          category: r.category,
+          auth_method: r.auth_method,
+          enabled: Boolean(r.enabled),
+          has_credentials: Boolean(r.credentials_encrypted),
+          created_at: r.created_at,
+          updated_at: r.updated_at,
+        }));
 
-          const result = filtered.map((i) => ({
-            id: i.id,
-            type: i.integration_type,
-            name: i.name,
-            category: i.category,
-            auth_method: i.auth_method,
-            enabled: i.enabled,
-            has_credentials: i.has_credentials,
-            created_at: new Date(i.created_at).toISOString(),
-            updated_at: new Date(i.updated_at).toISOString(),
-          }));
-
-          return this.textResponse({ count: result.length, integrations: result });
-        } finally {
-          rpc[Symbol.dispose]?.();
+        let filtered = integrations;
+        if (category) {
+          filtered = filtered.filter((i) => i.category === category);
         }
+        if (enabled_only) {
+          filtered = filtered.filter((i) => i.enabled);
+        }
+
+        const result = filtered.map((i) => ({
+          id: i.id,
+          type: i.integration_type,
+          name: i.name,
+          category: i.category,
+          auth_method: i.auth_method,
+          enabled: i.enabled,
+          has_credentials: i.has_credentials,
+          created_at: new Date(i.created_at).toISOString(),
+          updated_at: new Date(i.updated_at).toISOString(),
+        }));
+
+        return this.textResponse({ count: result.length, integrations: result });
       }
     );
 

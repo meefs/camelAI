@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment } from 'react';
-import Link from 'next/link';
+import { Link } from 'react-router';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -41,7 +41,7 @@ export function PageHeader({ breadcrumbs, className }: PageHeaderProps) {
                 <BreadcrumbItem>
                   {crumb.href ? (
                     <BreadcrumbLink asChild>
-                      <Link href={crumb.href}>{crumb.label}</Link>
+                      <Link to={crumb.href}>{crumb.label}</Link>
                     </BreadcrumbLink>
                   ) : (
                     <BreadcrumbPage>{crumb.label}</BreadcrumbPage>

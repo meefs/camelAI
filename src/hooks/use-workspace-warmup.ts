@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useRef, useEffect } from 'react';
-import { warmupWorkspace as warmupAction } from '@/lib/server-actions/workspace';
 
 type WarmupStatus = 'idle' | 'warming' | 'warm' | 'error';
 
@@ -11,6 +10,25 @@ const warmedWorkspaces = new Set<string>();
 
 // In-flight warmup requests to prevent duplicate calls
 const pendingWarmups = new Map<string, Promise<WarmupStatus>>();
+
+/**
+ * Call the warmup API endpoint.
+ */
+async function callWarmupApi(workspaceId: string): Promise<{ status: 'warm' | 'warming' | 'unauthorized' | 'error' }> {
+  try {
+    const response = await fetch('/api/workspace/warmup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId }),
+    });
+    if (!response.ok) {
+      return { status: 'error' };
+    }
+    return response.json();
+  } catch {
+    return { status: 'error' };
+  }
+}
 
 /**
  * Trigger a workspace warmup request.
@@ -32,7 +50,7 @@ async function triggerWarmup(workspaceId: string): Promise<WarmupStatus> {
   // Create new warmup request
   const warmupPromise = (async (): Promise<WarmupStatus> => {
     try {
-      const result = await warmupAction(workspaceId);
+      const result = await callWarmupApi(workspaceId);
 
       // Mark as warmed if container is now starting or already warm
       if (result.status === 'warm' || result.status === 'warming') {

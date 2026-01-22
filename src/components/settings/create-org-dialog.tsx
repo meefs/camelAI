@@ -1,10 +1,9 @@
 "use client"
 
-import { useState } from "react"
-import { useRouter } from "next/navigation"
-import { z } from "zod"
-import { zodResolver } from "@hookform/resolvers/zod"
-import { useForm } from "react-hook-form"
+import { useEffect } from "react"
+import { useFetcher } from "react-router"
+import { useForm, getFormProps, getInputProps, type SubmissionResult } from "@conform-to/react"
+import { parseWithZod } from "@conform-to/zod/v4"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -24,104 +23,82 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
-import { createOrg } from "@/lib/server-actions/org"
+import { Label } from "@/components/ui/label"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useAuth } from "@/contexts/AuthContext"
-import type { Organization } from "@/types"
-
-const orgSchema = z.object({
-  name: z.string().min(1, "Organization name is required").max(100),
-})
-
-type OrgFormValues = z.infer<typeof orgSchema>
+import { createOrgFormSchema } from "@/lib/schemas"
 
 interface CreateOrgDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onCreated?: (org: Organization) => void
   switchToNewOrg?: boolean
 }
 
 export function CreateOrgDialog({
   open,
   onOpenChange,
-  onCreated,
   switchToNewOrg = true,
 }: CreateOrgDialogProps) {
   const isMobile = useIsMobile()
-  const router = useRouter()
   const { refreshAuth, switchOrg } = useAuth()
-  const [saving, setSaving] = useState(false)
+  const fetcher = useFetcher<{ result?: SubmissionResult<string[]>; success?: boolean; error?: string; orgId?: string }>()
+  const saving = fetcher.state !== "idle"
 
-  const form = useForm<OrgFormValues>({
-    resolver: zodResolver(orgSchema),
-    defaultValues: {
+  const [form, fields] = useForm({
+    lastResult: fetcher.data?.result,
+    onValidate({ formData }) {
+      return parseWithZod(formData, { schema: createOrgFormSchema })
+    },
+    defaultValue: {
       name: "",
     },
+    shouldValidate: "onBlur",
+    shouldRevalidate: "onInput",
   })
 
-  const onSubmit = async (values: OrgFormValues) => {
-    setSaving(true)
-    try {
-      const org = await createOrg(values.name.trim())
-      if (switchToNewOrg) {
-        try {
-          await switchOrg(org.id)
-        } catch {
-          await refreshAuth()
+  // Handle response
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data) {
+      if (fetcher.data.success) {
+        toast.success("Organization created")
+        onOpenChange(false)
+        // Switch to new org if requested
+        if (switchToNewOrg && fetcher.data.orgId) {
+          switchOrg(fetcher.data.orgId).catch(() => refreshAuth())
+        } else {
+          refreshAuth()
         }
-      } else {
-        await refreshAuth()
+      } else if (fetcher.data.error) {
+        toast.error(fetcher.data.error)
       }
-      router.refresh()
-      toast.success("Organization created")
-      onCreated?.(org)
-      form.reset({ name: "" })
-      onOpenChange(false)
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to create organization"
-      )
-    } finally {
-      setSaving(false)
     }
-  }
+  }, [fetcher.state, fetcher.data, onOpenChange, switchToNewOrg, switchOrg, refreshAuth])
 
-  const body = (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-        <FormField
-          control={form.control}
-          name="name"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Organization name</FormLabel>
-              <FormControl>
-                <Input placeholder="New organization" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+  const formContent = (
+    <fetcher.Form method="post" {...getFormProps(form)} className="space-y-4">
+      <input type="hidden" name="intent" value="createOrg" />
+
+      <div className="space-y-2">
+        <Label htmlFor={fields.name.id}>Organization name</Label>
+        <Input
+          {...getInputProps(fields.name, { type: "text" })}
+          placeholder="New organization"
         />
-        <div className="hidden md:flex items-center justify-end gap-2">
-          <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={saving}>
-            {saving ? "Creating..." : "Create organization"}
-          </Button>
-        </div>
-      </form>
-    </Form>
+        {fields.name.errors && fields.name.errors.length > 0 && (
+          <p className="text-sm text-destructive">{fields.name.errors[0]}</p>
+        )}
+      </div>
+
+      <div className="hidden md:flex items-center justify-end gap-2">
+        <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={saving}>
+          {saving ? "Creating..." : "Create organization"}
+        </Button>
+      </div>
+    </fetcher.Form>
   )
 
   if (isMobile) {
@@ -134,12 +111,12 @@ export function CreateOrgDialog({
               Start a new organization with its own workspaces.
             </SheetDescription>
           </SheetHeader>
-          <div className="py-6">{body}</div>
+          <div className="py-6">{formContent}</div>
           <SheetFooter>
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button onClick={form.handleSubmit(onSubmit)} disabled={saving}>
+            <Button type="submit" form={form.id} disabled={saving}>
               {saving ? "Creating..." : "Create"}
             </Button>
           </SheetFooter>
@@ -157,12 +134,12 @@ export function CreateOrgDialog({
             Start a new organization with its own workspaces.
           </DialogDescription>
         </DialogHeader>
-        {body}
+        {formContent}
         <DialogFooter className="md:hidden">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={form.handleSubmit(onSubmit)} disabled={saving}>
+          <Button type="submit" form={form.id} disabled={saving}>
             {saving ? "Creating..." : "Create"}
           </Button>
         </DialogFooter>

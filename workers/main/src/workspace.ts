@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
+import type { OrgDO } from './auth';
 
 export interface WorkspaceInfo {
   id: string;
@@ -51,6 +52,7 @@ export interface WorkspaceAuditLogEntry {
 
 export interface WorkspaceEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  ORG: DurableObjectNamespace<OrgDO>;
 }
 
 /**
@@ -200,6 +202,13 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     };
     await this.setInfo(info);
     this.log('workspace_created', createdBy, undefined, { workspace_id: id, name });
+
+    // Register workspace with the org
+    const orgStub = this.env.ORG.get(
+      this.env.ORG.idFromName(orgId)
+    ) as unknown as OrgDO;
+    await orgStub.addWorkspace(id, name, now, createdBy);
+
     return info;
   }
 

@@ -5,6 +5,9 @@
 	"overrides": {
 		"wrangler": "*"
 	},
+	"resolutions": {
+		"wrangler": "4.999.0"
+	},
 	"scripts": {
 		"build": "react-router build",
 		"cf-typegen": "wrangler types",

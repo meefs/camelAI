@@ -1,4 +1,4 @@
-import Link from "next/link"
+import { Link } from 'react-router';
 
 import { Badge } from "@/components/ui/badge"
 import {
@@ -59,7 +59,7 @@ export function AuditLogTable({ entries, users = [] }: AuditLogTableProps) {
                 </TableCell>
                 <TableCell>
                   <Link
-                    href={`/qaml-backdoor/users/${entry.actor_id}`}
+                    to={`/qaml-backdoor/users/${entry.actor_id}`}
                     className="hover:underline"
                   >
                     <div className="text-sm font-medium">
@@ -74,7 +74,7 @@ export function AuditLogTable({ entries, users = [] }: AuditLogTableProps) {
                   {entry.target_id ? (
                     target ? (
                       <Link
-                        href={`/qaml-backdoor/users/${entry.target_id}`}
+                        to={`/qaml-backdoor/users/${entry.target_id}`}
                         className="hover:underline"
                       >
                         <div className="text-sm font-medium">

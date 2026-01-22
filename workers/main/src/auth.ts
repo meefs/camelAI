@@ -1,11 +1,13 @@
 import { DurableObject } from 'cloudflare:workers';
 import { hashPassword, verifyPassword } from './password';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
+import { WorkspaceDO } from './workspace';
 
 // Auth-specific environment bindings
 export interface AuthEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
+  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   EMAIL_TO_USER: KVNamespace;
 }
 
@@ -958,7 +960,7 @@ export class OrgDO extends DurableObject<AuthEnv> {
     );
   }
 
-  async createOrg(id: string, name: string, createdBy: string): Promise<OrgInfo> {
+  async createOrg(id: string, name: string, createdBy: string): Promise<{ org: OrgInfo; defaultWorkspaceId: string }> {
     const now = Date.now();
     const info: OrgInfo = {
       id,
@@ -976,7 +978,20 @@ export class OrgDO extends DurableObject<AuthEnv> {
     await this.addMember(createdBy, 'owner', createdBy);
     this.log('org_created', createdBy, id, { name });
 
-    return info;
+    // Create default workspace (WorkspaceDO.createWorkspace registers with org automatically)
+    const workspaceId = crypto.randomUUID();
+    const workspaceStub = this.env.WORKSPACE.get(
+      this.env.WORKSPACE.idFromName(workspaceId)
+    ) as unknown as WorkspaceDO;
+    await workspaceStub.createWorkspace(
+      workspaceId,
+      id,
+      'Default Workspace',
+      createdBy,
+      null
+    );
+
+    return { org: info, defaultWorkspaceId: workspaceId };
   }
 
   async updateName(name: string, actorId: string): Promise<void> {

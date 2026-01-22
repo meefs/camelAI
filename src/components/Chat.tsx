@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate, useFetcher, useRevalidator } from 'react-router';
 import { ArrowDown, RefreshCw, ExternalLink, X } from 'lucide-react';
 import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -32,11 +32,6 @@ import {
   attachToolResultsToMessages,
   normalizeToolResultMessages,
 } from '@/lib/streaming';
-import {
-  createThread as createThreadAction,
-  getThreadMessages,
-  touchThread as touchThreadAction,
-} from '@/lib/server-actions/thread';
 import { getVanityDomain, getIframeDomain } from '@/lib/app-url';
 
 interface ChatProps {
@@ -48,6 +43,8 @@ interface ChatProps {
   isNewThread?: boolean;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
   hostname?: string;
+  /** True when messages are still loading (deferred data) */
+  isLoadingMessages?: boolean;
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -197,8 +194,11 @@ function MobileViewSwitcher({
 }
 
 
-export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false, hostname }: ChatProps) {
-  const router = useRouter();
+export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false, hostname, isLoadingMessages = false }: ChatProps) {
+  const navigate = useNavigate();
+  const revalidator = useRevalidator();
+  const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
+  const touchFetcher = useFetcher();
   const { user, currentWorkspace, loading: authLoading } = useAuth();
   const isMobile = useIsMobile();
   // Anchor to last message for existing threads with messages (not new threads)
@@ -213,7 +213,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   // Local state for messages, streaming, and loading
   const [messages, setMessagesState] = useState<Message[]>(parsedInitialMessages);
   const [streamingMessageId, setStreamingMessageIdState] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(isLoadingMessages);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
   const normalizedMessages = useMemo(
@@ -238,6 +238,27 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       return next;
     });
   }, []);
+
+  // Sync messages from loader revalidation when not streaming
+  // Only sync on initial mount or explicit refresh, not during active chat
+  const prevInitialMessagesRef = useRef(initialMessages);
+  const hasHadUserInteraction = useRef(false);
+  useEffect(() => {
+    // Skip sync if user has interacted (sent messages) - streaming state is authoritative
+    if (hasHadUserInteraction.current) {
+      prevInitialMessagesRef.current = initialMessages;
+      return;
+    }
+    // Only sync if initialMessages actually changed and we're not streaming
+    if (
+      initialMessages !== prevInitialMessagesRef.current &&
+      !streamingMessageIdRef.current &&
+      revalidator.state === 'idle'
+    ) {
+      prevInitialMessagesRef.current = initialMessages;
+      setMessages(parsedInitialMessages);
+    }
+  }, [initialMessages, parsedInitialMessages, setMessages, revalidator.state]);
 
   const setStreamingMessageId = useCallback((id: string | null) => {
     streamingMessageIdRef.current = id;
@@ -401,9 +422,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   // Redirect to login if not authenticated
   useEffect(() => {
     if (!authLoading && !user) {
-      router.push('/login');
+      navigate('/login');
     }
-  }, [authLoading, user, router]);
+  }, [authLoading, user, navigate]);
 
   useEffect(() => {
     if (!threadId) {
@@ -422,26 +443,12 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     window.history.replaceState(null, '', url.toString());
   }, [isNewThread, threadId]);
 
-  // Fetch messages from REST API
-  const fetchMessages = useCallback(async (id: string) => {
-    try {
-      const data = await getThreadMessages(id);
-      const fetchedMsgs = Array.isArray(data) ? (data as Message[]) : [];
-
-      // Parse content for each message (handles JSON-encoded ContentBlock[])
-      const parsedMsgs = fetchedMsgs.map(msg => ({
-        ...msg,
-        content: parseMessageContent(msg.content),
-      }));
-
-      // Always replace with server state - local-only messages (local_*, turn_*)
-      // that weren't persisted are stale. Pending messages will be re-added
-      // when the ready event fires.
-      setMessages(parsedMsgs);
-    } catch (e) {
-      console.error('Failed to fetch messages:', e);
-    }
-  }, [setMessages]);
+  // Fetch messages by revalidating the loader
+  const fetchMessages = useCallback(async (_id: string) => {
+    // Revalidate the route loader to get fresh messages
+    // The new messages will flow in via initialMessages prop
+    revalidator.revalidate();
+  }, [revalidator]);
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
@@ -819,9 +826,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     // 2. Workspace actually changed
     // 3. We're currently viewing a thread
     if (prevWorkspaceId && nextWorkspaceId && prevWorkspaceId !== nextWorkspaceId && threadId) {
-      router.push('/chat');
+      navigate('/chat');
     }
-  }, [currentWorkspace?.id, threadId, router]);
+  }, [currentWorkspace?.id, threadId, navigate]);
 
   // Cleanup on unmount to avoid orphaned WebSockets or reconnect timers
   useEffect(() => {
@@ -1392,7 +1399,31 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     }
   }, [resolvedWorkspaceId, handleFilesSelected]);
 
-  async function startNewChat() {
+  // Track pending message for new thread creation (used by effect that handles fetcher response)
+  const pendingNewChatRef = useRef<{ finalContent: string } | null>(null);
+
+  // Handle fetcher response for thread creation
+  useEffect(() => {
+    if (createThreadFetcher.state === 'idle' && createThreadFetcher.data) {
+      const data = createThreadFetcher.data;
+      if (data.thread && pendingNewChatRef.current) {
+        // Thread created successfully - store message and navigate
+        const { finalContent } = pendingNewChatRef.current;
+        sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: finalContent, threadId: data.thread.id }));
+        pendingNewChatRef.current = null;
+        navigate(`/chat/${data.thread.id}?newThread=1`);
+      } else if (data.error) {
+        // Thread creation failed
+        sessionStorage.removeItem(pendingMessageKey);
+        setIsCreatingThread(false);
+        setError('Failed to start a new chat');
+        console.error('Failed to create thread:', data.error);
+        pendingNewChatRef.current = null;
+      }
+    }
+  }, [createThreadFetcher.state, createThreadFetcher.data, navigate]);
+
+  function startNewChat() {
     if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId) return;
 
     // Don't allow sending while uploads are in progress
@@ -1416,19 +1447,14 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     // Clear attachments
     setAttachments([]);
 
-    try {
-      const thread = await createThreadAction({ firstMessage: userMessage });
-      // Store in sessionStorage to survive component remount during navigation
-      // Use finalContent (with file refs) for the actual message, userMessage for display
-      // Only store threadId for matching - workspace is determined by where thread was created
-      sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: finalContent, threadId: thread.id }));
-      router.push(`/chat/${thread.id}?newThread=1`);
-    } catch (err) {
-      sessionStorage.removeItem(pendingMessageKey);
-      setIsCreatingThread(false);
-      setError('Failed to start a new chat');
-      console.error('Failed to create thread:', err);
-    }
+    // Store pending message info for the effect to use after thread creation
+    pendingNewChatRef.current = { finalContent };
+
+    // Submit to route action to create thread
+    createThreadFetcher.submit(
+      { intent: 'createThread', firstMessage: userMessage },
+      { method: 'post', action: '/chat' }
+    );
   }
 
   function stopGeneration() {
@@ -1442,6 +1468,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     if (!input.trim() || !shouldShowChat || !resolvedWorkspaceId || !threadId) {
       return;
     }
+
+    // Mark that user has interacted - prevents loader sync from overwriting streaming state
+    hasHadUserInteraction.current = true;
 
     const userMessage = input.trim();
     setInput('');
@@ -1463,9 +1492,10 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     setError(null);
 
     // Update thread timestamp so it appears at top of history list
-    touchThreadAction(threadId, resolvedWorkspaceId).catch(() => {
-      // Ignore errors - this is a non-critical operation
-    });
+    touchFetcher.submit(
+      { intent: 'touch' },
+      { method: 'POST' }
+    );
 
     // Add user message to state immediately (optimistic)
     // Display only the user's typed text (not file references)

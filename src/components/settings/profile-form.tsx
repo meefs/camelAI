@@ -1,34 +1,20 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { z } from "zod"
-import { zodResolver } from "@hookform/resolvers/zod"
-import { useForm } from "react-hook-form"
+import { useEffect, useState } from "react"
+import { Form, useActionData, useNavigation } from "react-router"
+import { useForm, getFormProps, getInputProps, type SubmissionResult } from "@conform-to/react"
+import { parseWithZod } from "@conform-to/zod/v4"
 import { toast } from "sonner"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/contexts/AuthContext"
-import { updateUserProfile } from "@/lib/server-actions/user"
 import { AvatarPicker } from "@/components/settings/avatar-picker"
 import { getContrastTextColor } from "@/lib/avatar"
+import { profileFormSchema } from "@/lib/schemas"
 import type { User } from "@/types"
-
-const profileSchema = z.object({
-  name: z.string().max(100, "Name must be 100 characters or less").optional(),
-})
-
-type ProfileFormValues = z.infer<typeof profileSchema>
 
 interface ProfileFormProps {
   user: User
@@ -36,45 +22,38 @@ interface ProfileFormProps {
 
 export function ProfileForm({ user }: ProfileFormProps) {
   const { refreshAuth } = useAuth()
+  const actionData = useActionData<{ result?: SubmissionResult<string[]>; success?: boolean }>()
+  const navigation = useNavigation()
   const [avatarOpen, setAvatarOpen] = useState(false)
   const [avatar, setAvatar] = useState(user.avatar)
-  const [saving, setSaving] = useState(false)
+  const saving = navigation.state === "submitting"
 
-  const defaultValues = useMemo(
-    () => ({
+  const [form, fields] = useForm({
+    lastResult: actionData?.result,
+    onValidate({ formData }) {
+      return parseWithZod(formData, { schema: profileFormSchema })
+    },
+    defaultValue: {
       name: user.name ?? "",
-    }),
-    [user.name]
-  )
-
-  const form = useForm<ProfileFormValues>({
-    resolver: zodResolver(profileSchema),
-    defaultValues,
+    },
+    shouldValidate: "onBlur",
+    shouldRevalidate: "onInput",
   })
 
+  // Reset avatar when user changes
   useEffect(() => {
-    form.reset(defaultValues)
     setAvatar(user.avatar)
-  }, [defaultValues, form, user.avatar])
+  }, [user.avatar])
 
-  const onSubmit = async (values: ProfileFormValues) => {
-    setSaving(true)
-    try {
-      const nextName = values.name?.trim() || null
-      await updateUserProfile({
-        name: nextName,
-        avatar,
-      })
+  // Handle success
+  useEffect(() => {
+    if (actionData?.success && navigation.state === "idle") {
       toast.success("Profile updated")
-      await refreshAuth()
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to update profile"
-      )
-    } finally {
-      setSaving(false)
+      refreshAuth()
     }
-  }
+  }, [actionData?.success, navigation.state, refreshAuth])
+
+  const nameErrors = fields.name.errors
 
   return (
     <div className="space-y-8 max-w-2xl">
@@ -95,34 +74,33 @@ export function ProfileForm({ user }: ProfileFormProps) {
         </Button>
       </div>
 
-      <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-          <FormField
-            control={form.control}
-            name="name"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Display name</FormLabel>
-                <FormControl>
-                  <Input placeholder="Your name" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
+      <Form method="post" {...getFormProps(form)} className="space-y-6">
+        <input type="hidden" name="intent" value="updateProfile" />
+        <input type="hidden" name="avatarColor" value={avatar.color} />
+        <input type="hidden" name="avatarContent" value={avatar.content} />
+
+        <div className="space-y-2">
+          <Label htmlFor={fields.name.id}>Display name</Label>
+          <Input
+            {...getInputProps(fields.name, { type: "text" })}
+            placeholder="Your name"
           />
+          {nameErrors && nameErrors.length > 0 && (
+            <p className="text-sm text-destructive">{nameErrors[0]}</p>
+          )}
+        </div>
 
-          <div className="space-y-2">
-            <Label>Email</Label>
-            <Input value={user.email} disabled readOnly />
-            <p className="text-xs text-muted-foreground">
-              Email cannot be changed.
-            </p>
-          </div>
+        <div className="space-y-2">
+          <Label>Email</Label>
+          <Input value={user.email} disabled readOnly />
+          <p className="text-xs text-muted-foreground">
+            Email cannot be changed.
+          </p>
+        </div>
 
-          <Button type="submit" disabled={saving}>
-            {saving ? "Saving..." : "Save changes"}
-          </Button>
-        </form>
+        <Button type="submit" disabled={saving}>
+          {saving ? "Saving..." : "Save changes"}
+        </Button>
       </Form>
 
       <AvatarPicker

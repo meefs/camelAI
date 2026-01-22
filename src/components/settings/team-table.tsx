@@ -1,12 +1,12 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import {
   MoreHorizontal,
   Plus,
 } from "lucide-react"
-import { useRouter } from "next/navigation"
+import { useNavigate, useFetcher } from 'react-router';
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -39,11 +39,6 @@ import {
 } from "@/components/ui/card"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { useAuth } from "@/contexts/AuthContext"
-import {
-  deleteInvitation,
-  removeOrgMember,
-  updateOrgMemberRole,
-} from "@/lib/server-actions/org"
 import { InviteMemberDialog } from "@/components/settings/invite-member-dialog"
 import { WorkspaceAccessTags } from "@/components/settings/workspace-access-tags"
 import { getContrastTextColor } from "@/lib/avatar"
@@ -74,7 +69,6 @@ type TeamTableRow =
   | { type: "invitation"; invitation: TeamInvitation }
 
 interface TeamTableProps {
-  orgId: string
   currentUserId: string
   canManageMembers: boolean
   members: MemberWithAccess[]
@@ -87,117 +81,103 @@ function formatDate(value: number) {
 }
 
 export function TeamTable({
-  orgId,
   currentUserId,
   canManageMembers,
   members,
   invitations,
   workspaces,
 }: TeamTableProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const { logout } = useAuth()
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [inviteOpen, setInviteOpen] = useState(false)
   const [editingWorkspaceAccess, setEditingWorkspaceAccess] = useState(false)
   const [pendingRemoveMemberId, setPendingRemoveMemberId] = useState<string | null>(null)
   const [leaveOrgOpen, setLeaveOrgOpen] = useState(false)
-  const [memberList, setMemberList] = useState<MemberWithAccess[]>(members)
-  const [inviteList, setInviteList] = useState<TeamInvitation[]>(invitations)
+  const lastActionRef = useRef<string | null>(null)
 
+  // Handle fetcher response - show toasts and handle special cases
   useEffect(() => {
-    setMemberList(members)
-  }, [members])
+    if (fetcher.state === "idle" && fetcher.data) {
+      if (fetcher.data.success) {
+        const action = lastActionRef.current
+        if (action === "cancelInvite") {
+          toast.success("Invitation cancelled")
+        } else if (action === "roleChange") {
+          toast.success("Role updated")
+        } else if (action === "removeMember") {
+          toast.success("Member removed")
+        } else if (action === "leaveOrg") {
+          logout().then(() => navigate("/login"))
+        }
+        lastActionRef.current = null
+      } else if (fetcher.data.error) {
+        toast.error(fetcher.data.error)
+        lastActionRef.current = null
+      }
+    }
+  }, [fetcher.state, fetcher.data, logout, navigate])
 
-  useEffect(() => {
-    setInviteList(invitations)
-  }, [invitations])
-
+  // Use loader data directly - revalidation handles refresh
   const rows = useMemo<TeamTableRow[]>(() => {
-    const memberRows = memberList.map((member) => ({
+    const memberRows = members.map((member) => ({
       type: "member" as const,
       member,
     }))
-    const invitationRows = inviteList.map((invitation) => ({
+    const invitationRows = invitations.map((invitation) => ({
       type: "invitation" as const,
       invitation,
     }))
     return [...memberRows, ...invitationRows]
-  }, [inviteList, memberList])
+  }, [members, invitations])
 
   const canEditWorkspaceAccess = canManageMembers && workspaces.length > 0
 
   const isOwner = useMemo(() => {
-    const self = memberList.find((member) => member.user.id === currentUserId)
+    const self = members.find((member) => member.user.id === currentUserId)
     return self?.role === "owner"
-  }, [currentUserId, memberList])
+  }, [currentUserId, members])
 
-  const handleCancelInvite = async (invitationId: string) => {
-    try {
-      await deleteInvitation(orgId, invitationId)
-      setInviteList((prev) => prev.filter((inv) => inv.id !== invitationId))
-      toast.success("Invitation cancelled")
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to cancel invitation"
-      )
-    }
+  const handleCancelInvite = (invitationId: string) => {
+    lastActionRef.current = "cancelInvite"
+    fetcher.submit(
+      { intent: "deleteInvitation", invitationId },
+      { method: "POST" }
+    )
   }
 
-  const handleRoleChange = async (userId: string, role: OrgRole) => {
-    try {
-      await updateOrgMemberRole(orgId, userId, role)
-      setMemberList((prev) =>
-        prev.map((member) =>
-          member.user.id === userId ? { ...member, role } : member
-        )
-      )
-      toast.success("Role updated")
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to update role"
-      )
-    }
+  const handleRoleChange = (userId: string, role: OrgRole) => {
+    lastActionRef.current = "roleChange"
+    fetcher.submit(
+      { intent: "updateOrgMemberRole", userId, role },
+      { method: "POST" }
+    )
   }
 
-  const handleRemoveMember = async (userId: string) => {
-    try {
-      await removeOrgMember(orgId, userId)
-      setMemberList((prev) => prev.filter((member) => member.user.id !== userId))
-      toast.success("Member removed")
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to remove member"
-      )
-    }
+  const handleRemoveMember = (userId: string) => {
+    lastActionRef.current = "removeMember"
+    fetcher.submit(
+      { intent: "removeOrgMember", userId },
+      { method: "POST" }
+    )
   }
 
-  const handleLeaveOrg = async () => {
-    try {
-      await removeOrgMember(orgId, currentUserId)
-      await logout()
-      router.push("/login")
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to leave organization"
-      )
-    }
+  const handleLeaveOrg = () => {
+    lastActionRef.current = "leaveOrg"
+    fetcher.submit(
+      { intent: "removeOrgMember", userId: currentUserId },
+      { method: "POST" }
+    )
   }
 
-  const updateWorkspaceAccess = (
+  const handleWorkspaceAccessChange = (
     userId: string,
     workspaceId: string,
     access: WorkspaceAccessLevel
   ) => {
-    setMemberList((prev) =>
-      prev.map((member) => {
-        if (member.user.id !== userId) return member
-        return {
-          ...member,
-          workspaceAccess: {
-            ...member.workspaceAccess,
-            [workspaceId]: access,
-          },
-        }
-      })
+    fetcher.submit(
+      { intent: "updateWorkspaceAccess", userId, workspaceId, access },
+      { method: "POST" }
     )
   }
 
@@ -309,7 +289,7 @@ export function TeamTable({
                         canEdit={canManageMembers}
                         editing={editingWorkspaceAccess}
                         onAccessChange={(workspaceId, access) =>
-                          updateWorkspaceAccess(
+                          handleWorkspaceAccessChange(
                             member.user.id,
                             workspaceId,
                             access
@@ -484,7 +464,7 @@ export function TeamTable({
                       canEdit={canManageMembers}
                       editing={editingWorkspaceAccess}
                       onAccessChange={(workspaceId, access) =>
-                        updateWorkspaceAccess(
+                        handleWorkspaceAccessChange(
                           member.user.id,
                           workspaceId,
                           access
@@ -554,21 +534,8 @@ export function TeamTable({
       </div>
 
       <InviteMemberDialog
-        orgId={orgId}
         open={inviteOpen}
         onOpenChange={setInviteOpen}
-        onInvited={(invitation) => {
-          setInviteList((prev) => [
-            {
-              id: invitation.id,
-              email: invitation.email,
-              role: invitation.role,
-              created_at: Date.now(),
-              expires_at: invitation.expires_at,
-            },
-            ...prev,
-          ])
-        }}
       />
       <ConfirmDialog
         open={Boolean(pendingRemoveMemberId)}

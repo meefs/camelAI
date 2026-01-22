@@ -11,21 +11,21 @@
 		"moduleResolution": "bundler",
 		"resolveJsonModule": true,
 		"isolatedModules": true,
-		"jsx": "preserve",
-		"incremental": true,
-		"plugins": [
-			{
-				"name": "next"
-			}
-		],
+		"jsx": "react-jsx",
 		"paths": {
 			"@/*": ["./src/*"]
 		},
 		"types": [
 			"./cloudflare-env.d.ts",
-			"node"
-		]
+			"node",
+			"vite/client"
+		],
+		"rootDirs": [".", "./.react-router/types"]
 	},
-	"include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-	"exclude": ["node_modules", "chat-do", "scripts", "workers", "sandbox", "packages"]
+	"include": [
+		"**/*.ts",
+		"**/*.tsx",
+		".react-router/types/**/*"
+	],
+	"exclude": ["node_modules", "chat-do", "scripts", "workers", "sandbox", "packages", "packages/**/*", "build", "dist"]
 }

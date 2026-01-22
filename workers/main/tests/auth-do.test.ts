@@ -2,19 +2,41 @@
  * Full-stack auth tests using Cloudflare Vitest pool
  *
  * These tests run in the Workers runtime with real Durable Objects,
- * testing the complete auth flow through RPC → DOs.
+ * testing the complete auth flow through direct DO calls.
  *
  * Run with: npm run test:workers
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
-import type { DoRpcService } from '../src/rpc-service';
 import { createNewSession, type SessionData } from '../src/session-kv';
+import {
+  createUser,
+  getUserByEmail,
+  verifyUserPassword,
+  createOrg,
+  isOrgMember,
+  isOrgAdmin,
+  getUserOrgs,
+  tryRemoveOrgMember,
+  getOrgMembers,
+  tryUpdateOrgMemberRole,
+  createInvitation,
+  getOrgInvitations,
+  getInvitation,
+  acceptInvitation,
+  deleteInvitation,
+  listOrgWorkspaces,
+  createWorkspace,
+  getSessionData,
+  destroySessionData,
+  switchSessionOrg,
+  switchSessionWorkspace,
+  type TestEnv,
+} from './test-helpers';
 
 describe('Auth flow (full-stack with DOs)', () => {
-  // Get the RPC service binding
-  const rpc = env.DO_RPC as unknown as DoRpcService;
+  const testEnv = env as unknown as TestEnv;
   const sessionsKV = env.SESSIONS as KVNamespace;
 
   // Helper to create a session with the org's default workspace
@@ -22,7 +44,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     userId: string,
     orgId: string
   ): Promise<{ sessionId: string; sessionData: SessionData }> {
-    const workspaces = await rpc.listOrgWorkspaces(orgId);
+    const workspaces = await listOrgWorkspaces(testEnv, orgId);
     const workspaceId = workspaces[0]?.id ?? null;
     return createNewSession(sessionsKV, userId, orgId, workspaceId);
   }
@@ -33,7 +55,7 @@ describe('Auth flow (full-stack with DOs)', () => {
   describe('User creation and retrieval', () => {
     it('should create a new user', async () => {
       const email = testEmail();
-      const result = await rpc.createUser(email, 'password123', 'Test User');
+      const result = await createUser(testEnv, email, 'password123', 'Test User');
 
       expect(result.userId).toBeDefined();
       expect(result.user.email).toBe(email);
@@ -43,32 +65,32 @@ describe('Auth flow (full-stack with DOs)', () => {
 
     it('should retrieve user by email', async () => {
       const email = testEmail();
-      await rpc.createUser(email, 'password123', 'Test User');
+      await createUser(testEnv, email, 'password123', 'Test User');
 
-      const result = await rpc.getUserByEmail(email);
+      const result = await getUserByEmail(testEnv, email);
 
       expect(result).not.toBeNull();
       expect(result!.user.email).toBe(email);
     });
 
     it('should return null for non-existent email', async () => {
-      const result = await rpc.getUserByEmail('nonexistent@example.com');
+      const result = await getUserByEmail(testEnv, 'nonexistent@example.com');
       expect(result).toBeNull();
     });
 
     it('should verify correct password', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'correctPassword', 'Test');
+      const { userId } = await createUser(testEnv, email, 'correctPassword', 'Test');
 
-      const isValid = await rpc.verifyUserPassword(userId, 'correctPassword');
+      const isValid = await verifyUserPassword(testEnv, userId, 'correctPassword');
       expect(isValid).toBe(true);
     });
 
     it('should reject incorrect password', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'correctPassword', 'Test');
+      const { userId } = await createUser(testEnv, email, 'correctPassword', 'Test');
 
-      const isValid = await rpc.verifyUserPassword(userId, 'wrongPassword');
+      const isValid = await verifyUserPassword(testEnv, userId, 'wrongPassword');
       expect(isValid).toBe(false);
     });
   });
@@ -76,29 +98,29 @@ describe('Auth flow (full-stack with DOs)', () => {
   describe('Organization creation and membership', () => {
     it('should create an org and add creator as owner', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
+      const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
 
-      const org = await rpc.createOrg('Test Workspace', userId);
+      const org = await createOrg(testEnv, 'Test Workspace', userId);
 
       expect(org.id).toBeDefined();
       expect(org.name).toBe('Test Workspace');
       expect(org.created_by).toBe(userId);
 
       // Creator should be a member
-      const isMember = await rpc.isOrgMember(userId, org.id);
+      const isMember = await isOrgMember(testEnv, userId, org.id);
       expect(isMember).toBe(true);
 
       // Creator should be an admin (owners are admins)
-      const isAdmin = await rpc.isOrgAdmin(userId, org.id);
+      const isAdmin = await isOrgAdmin(testEnv, userId, org.id);
       expect(isAdmin).toBe(true);
     });
 
     it('should list user orgs', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
-      const org = await rpc.createOrg('My Workspace', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
+      const org = await createOrg(testEnv, 'My Workspace', userId);
 
-      const orgs = await rpc.getUserOrgs(userId);
+      const orgs = await getUserOrgs(testEnv, userId);
 
       expect(orgs).toHaveLength(1);
       expect(orgs[0].org_id).toBe(org.id);
@@ -111,15 +133,15 @@ describe('Auth flow (full-stack with DOs)', () => {
   describe('Organization ownership invariants', () => {
     it('prevents removing the org owner', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Owner');
-      const org = await rpc.createOrg('Owner Org', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Owner');
+      const org = await createOrg(testEnv, 'Owner Org', userId);
 
-      const result = await rpc.tryRemoveOrgMember(org.id, userId, userId);
+      const result = await tryRemoveOrgMember(testEnv, org.id, userId, userId);
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error).toBe('Cannot remove organization owner');
 
-      const members = await rpc.getOrgMembers(org.id);
+      const members = await getOrgMembers(testEnv, org.id);
       expect(members.some((member) => member.user.id === userId && member.role === 'owner')).toBe(
         true
       );
@@ -127,15 +149,15 @@ describe('Auth flow (full-stack with DOs)', () => {
 
     it('prevents demoting the org owner without transfer', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Owner');
-      const org = await rpc.createOrg('Owner Org', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Owner');
+      const org = await createOrg(testEnv, 'Owner Org', userId);
 
-      const result = await rpc.tryUpdateOrgMemberRole(org.id, userId, 'member', userId);
+      const result = await tryUpdateOrgMemberRole(testEnv, org.id, userId, 'member', userId);
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error).toBe('Cannot change the owner role. Transfer ownership first.');
 
-      const members = await rpc.getOrgMembers(org.id);
+      const members = await getOrgMembers(testEnv, org.id);
       const owner = members.find((member) => member.user.id === userId);
       expect(owner?.role).toBe('owner');
     });
@@ -144,10 +166,11 @@ describe('Auth flow (full-stack with DOs)', () => {
   describe('Invitations', () => {
     it('should create an invitation', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
-      const org = await rpc.createOrg('Test Org', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
+      const org = await createOrg(testEnv, 'Test Org', userId);
 
-      const invitation = await rpc.createInvitation(
+      const invitation = await createInvitation(
+        testEnv,
         org.id,
         'invitee@example.com',
         'member',
@@ -160,12 +183,12 @@ describe('Auth flow (full-stack with DOs)', () => {
 
     it('should persist invitations across requests', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
-      const org = await rpc.createOrg('Test Org', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
+      const org = await createOrg(testEnv, 'Test Org', userId);
 
-      await rpc.createInvitation(org.id, 'invitee@example.com', 'member', userId);
+      await createInvitation(testEnv, org.id, 'invitee@example.com', 'member', userId);
 
-      const invitations = await rpc.getOrgInvitations(org.id);
+      const invitations = await getOrgInvitations(testEnv, org.id);
 
       expect(invitations).toHaveLength(1);
       expect(invitations[0].email).toBe('invitee@example.com');
@@ -173,17 +196,18 @@ describe('Auth flow (full-stack with DOs)', () => {
 
     it('should retrieve invitation details', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
-      const org = await rpc.createOrg('Test Org', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
+      const org = await createOrg(testEnv, 'Test Org', userId);
 
-      const { id } = await rpc.createInvitation(
+      const { id } = await createInvitation(
+        testEnv,
         org.id,
         'invitee@example.com',
         'admin',
         userId
       );
 
-      const invitation = await rpc.getInvitation(org.id, id);
+      const invitation = await getInvitation(testEnv, org.id, id);
 
       expect(invitation).not.toBeNull();
       expect(invitation!.email).toBe('invitee@example.com');
@@ -193,49 +217,53 @@ describe('Auth flow (full-stack with DOs)', () => {
 
     it('should accept invitation and add user to org', async () => {
       const inviterEmail = testEmail();
-      const { userId: inviterId } = await rpc.createUser(
+      const { userId: inviterId } = await createUser(
+        testEnv,
         inviterEmail,
         'password123',
         'Inviter'
       );
-      const org = await rpc.createOrg('Test Org', inviterId);
+      const org = await createOrg(testEnv, 'Test Org', inviterId);
 
       const inviteeEmail = testEmail();
-      const { id: invitationId } = await rpc.createInvitation(
+      const { id: invitationId } = await createInvitation(
+        testEnv,
         org.id,
         inviteeEmail,
         'member',
         inviterId
       );
 
-      const { userId: inviteeId } = await rpc.createUser(
+      const { userId: inviteeId } = await createUser(
+        testEnv,
         inviteeEmail,
         'password123',
         'Invitee'
       );
 
-      const accepted = await rpc.acceptInvitation(org.id, invitationId, inviteeId);
+      const accepted = await acceptInvitation(testEnv, org.id, invitationId, inviteeId);
 
       expect(accepted).toBe(true);
 
-      const isMember = await rpc.isOrgMember(inviteeId, org.id);
+      const isMember = await isOrgMember(testEnv, inviteeId, org.id);
       expect(isMember).toBe(true);
     });
 
     it('should delete an invitation', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
-      const org = await rpc.createOrg('Test Org', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
+      const org = await createOrg(testEnv, 'Test Org', userId);
 
-      const { id } = await rpc.createInvitation(
+      const { id } = await createInvitation(
+        testEnv,
         org.id,
         'invitee@example.com',
         'member',
         userId
       );
-      await rpc.deleteInvitation(org.id, id);
+      await deleteInvitation(testEnv, org.id, id);
 
-      const invitations = await rpc.getOrgInvitations(org.id);
+      const invitations = await getOrgInvitations(testEnv, org.id);
       expect(invitations).toHaveLength(0);
     });
   });
@@ -243,8 +271,8 @@ describe('Auth flow (full-stack with DOs)', () => {
   describe('Session management', () => {
     it('should create and retrieve a session', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
-      const org = await rpc.createOrg('Workspace', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
+      const org = await createOrg(testEnv, 'Workspace', userId);
 
       const { sessionId, sessionData } = await createTestSession(userId, org.id);
 
@@ -254,7 +282,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(sessionData.workspace_id).toBeTypeOf('string');
 
       // Should be able to retrieve session
-      const retrieved = await rpc.getSession(sessionId);
+      const retrieved = await getSessionData(testEnv, sessionId);
       expect(retrieved).not.toBeNull();
       expect(retrieved!.user_id).toBe(userId);
       expect(retrieved!.workspace_id).toBeTypeOf('string');
@@ -262,40 +290,40 @@ describe('Auth flow (full-stack with DOs)', () => {
 
     it('should destroy a session', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
-      const org = await rpc.createOrg('Workspace', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
+      const org = await createOrg(testEnv, 'Workspace', userId);
       const { sessionId } = await createTestSession(userId, org.id);
 
-      await rpc.destroySession(sessionId);
+      await destroySessionData(testEnv, sessionId);
 
-      const retrieved = await rpc.getSession(sessionId);
+      const retrieved = await getSessionData(testEnv, sessionId);
       expect(retrieved).toBeNull();
     });
 
     it('should switch session org', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
-      const org1 = await rpc.createOrg('Workspace 1', userId);
-      const org2 = await rpc.createOrg('Workspace 2', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
+      const org1 = await createOrg(testEnv, 'Workspace 1', userId);
+      const org2 = await createOrg(testEnv, 'Workspace 2', userId);
       const { sessionId } = await createTestSession(userId, org1.id);
 
-      await rpc.switchSessionOrg(sessionId, org2.id);
+      await switchSessionOrg(testEnv, sessionId, org2.id);
 
-      const session = await rpc.getSession(sessionId);
+      const session = await getSessionData(testEnv, sessionId);
       expect(session!.org_id).toBe(org2.id);
       expect(session!.workspace_id).toBeTypeOf('string');
     });
 
     it('persists last workspace per org when switching workspace', async () => {
       const email = testEmail();
-      const { userId } = await rpc.createUser(email, 'password123', 'Test User');
-      const org = await rpc.createOrg('Workspace Org', userId);
+      const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
+      const org = await createOrg(testEnv, 'Workspace Org', userId);
       const { sessionId } = await createTestSession(userId, org.id);
 
-      const workspace = await rpc.createWorkspace(org.id, 'Secondary', userId);
-      await rpc.switchSessionWorkspace(sessionId, workspace.id);
+      const workspace = await createWorkspace(testEnv, org.id, 'Secondary', userId);
+      await switchSessionWorkspace(testEnv, sessionId, workspace.id);
 
-      const orgs = await rpc.getUserOrgs(userId);
+      const orgs = await getUserOrgs(testEnv, userId);
       const membership = orgs.find((entry) => entry.org_id === org.id);
       expect(membership?.last_workspace_id).toBe(workspace.id);
     });
@@ -306,11 +334,11 @@ describe('Auth flow (full-stack with DOs)', () => {
       const email = testEmail();
 
       // 1. Create user
-      const { userId, user } = await rpc.createUser(email, 'password123', 'New User');
+      const { userId, user } = await createUser(testEnv, email, 'password123', 'New User');
       expect(user.email).toBe(email);
 
       // 2. Create org
-      const org = await rpc.createOrg(`New User's Workspace`, userId);
+      const org = await createOrg(testEnv, `New User's Workspace`, userId);
       expect(org.created_by).toBe(userId);
 
       // 3. Create session
@@ -319,7 +347,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(sessionData.org_id).toBe(org.id);
 
       // 4. Get user orgs
-      const orgs = await rpc.getUserOrgs(userId);
+      const orgs = await getUserOrgs(testEnv, userId);
       expect(orgs).toHaveLength(1);
 
       // All objects should be serializable (plain objects)

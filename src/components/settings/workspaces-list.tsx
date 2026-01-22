@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useEffect, useRef, useState } from "react"
+import { useFetcher } from "react-router"
 import { toast } from "sonner"
 import { MoreHorizontal, Plus } from "lucide-react"
 
@@ -31,7 +31,6 @@ import {
 } from "@/components/ui/table"
 import { CreateWorkspaceDialog } from "@/components/settings/create-workspace-dialog"
 import { useAuth } from "@/contexts/AuthContext"
-import { archiveWorkspace } from "@/lib/server-actions/workspace"
 import { getContrastTextColor } from "@/lib/avatar"
 
 type ComputeTier = "standard" | "pro" | "enterprise"
@@ -72,20 +71,39 @@ export function WorkspacesList({
   canManage,
   currentWorkspaceId,
 }: WorkspacesListProps) {
-  const router = useRouter()
   const { refreshAuth, switchWorkspace } = useAuth()
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [createOpen, setCreateOpen] = useState(false)
   const [archiveTarget, setArchiveTarget] = useState<WorkspaceSummary | null>(null)
-  const [workspaceList, setWorkspaceList] = useState(workspaces)
+  const pendingArchiveRef = useRef<string | null>(null)
 
+  // Handle fetcher response for archive
   useEffect(() => {
-    setWorkspaceList(workspaces)
-  }, [workspaces])
+    if (fetcher.state === "idle" && fetcher.data) {
+      if (fetcher.data.success && pendingArchiveRef.current) {
+        const archivedId = pendingArchiveRef.current
+        pendingArchiveRef.current = null
+        setArchiveTarget(null)
+        toast.success("Workspace archived")
+        // Switch to another workspace if the current one was archived
+        if (archivedId === currentWorkspaceId) {
+          const fallback = workspaces.find((ws) => ws.id !== archivedId)
+          if (fallback) {
+            switchWorkspace(fallback.id).catch(() => refreshAuth())
+          } else {
+            refreshAuth()
+          }
+        }
+      } else if (fetcher.data.error) {
+        pendingArchiveRef.current = null
+        toast.error(fetcher.data.error)
+      }
+    }
+  }, [fetcher.state, fetcher.data, currentWorkspaceId, workspaces, switchWorkspace, refreshAuth])
 
   const handleSwitch = async (workspaceId: string) => {
     try {
       await switchWorkspace(workspaceId)
-      router.refresh()
       toast.success("Switched workspace")
     } catch (error) {
       toast.error(
@@ -94,30 +112,12 @@ export function WorkspacesList({
     }
   }
 
-  const handleArchive = async (workspaceId: string) => {
-    const fallback = workspaceList.find((workspace) => workspace.id !== workspaceId)
-
-    try {
-      await archiveWorkspace(workspaceId)
-      setArchiveTarget(null)
-      setWorkspaceList((prev) =>
-        prev.filter((workspace) => workspace.id !== workspaceId)
-      )
-
-      if (workspaceId === currentWorkspaceId) {
-        if (fallback) {
-          await switchWorkspace(fallback.id)
-        }
-      }
-
-      await refreshAuth()
-      router.refresh()
-      toast.success("Workspace archived")
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to archive workspace"
-      )
-    }
+  const handleArchive = (workspaceId: string) => {
+    pendingArchiveRef.current = workspaceId
+    fetcher.submit(
+      { intent: "archiveWorkspace", workspaceId },
+      { method: "POST" }
+    )
   }
 
   return (
@@ -144,7 +144,7 @@ export function WorkspacesList({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {workspaceList.map((workspace) => (
+            {workspaces.map((workspace) => (
               <TableRow
                 key={workspace.id}
                 className={workspace.id === currentWorkspaceId ? "bg-muted/50" : ""}
@@ -218,7 +218,7 @@ export function WorkspacesList({
       </div>
 
       <div className="space-y-3 md:hidden">
-        {workspaceList.map((workspace) => (
+        {workspaces.map((workspace) => (
           <Card key={workspace.id}>
             <CardHeader className="space-y-3">
               <div className="flex items-start justify-between gap-2">
@@ -285,10 +285,6 @@ export function WorkspacesList({
       <CreateWorkspaceDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        onCreated={() => {
-          refreshAuth()
-          router.refresh()
-        }}
       />
       <ConfirmDialog
         open={Boolean(archiveTarget)}

@@ -1,34 +1,21 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { z } from "zod"
-import { zodResolver } from "@hookform/resolvers/zod"
-import { useForm } from "react-hook-form"
+import { useEffect, useState } from "react"
+import { Form, useActionData, useNavigation } from "react-router"
+import { useForm, getFormProps, getInputProps, getTextareaProps, type SubmissionResult } from "@conform-to/react"
+import { parseWithZod } from "@conform-to/zod/v4"
 import { toast } from "sonner"
+
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { updateWorkspaceInfo } from "@/lib/server-actions/workspace"
 import { AvatarPicker } from "@/components/settings/avatar-picker"
 import { useAuth } from "@/contexts/AuthContext"
 import { getContrastTextColor } from "@/lib/avatar"
+import { workspaceFormSchema } from "@/lib/schemas"
 import type { Workspace } from "@/types"
-
-const workspaceSchema = z.object({
-  name: z.string().min(1, "Workspace name is required").max(100),
-  description: z.string().max(200).optional(),
-})
-
-type WorkspaceFormValues = z.infer<typeof workspaceSchema>
 
 interface WorkspaceGeneralFormProps {
   workspace: Workspace
@@ -40,47 +27,40 @@ export function WorkspaceGeneralForm({
   canEdit,
 }: WorkspaceGeneralFormProps) {
   const { refreshAuth } = useAuth()
+  const actionData = useActionData<{ result?: SubmissionResult<string[]>; success?: boolean }>()
+  const navigation = useNavigation()
   const [avatarOpen, setAvatarOpen] = useState(false)
   const [avatar, setAvatar] = useState(workspace.avatar)
-  const [saving, setSaving] = useState(false)
+  const saving = navigation.state === "submitting"
 
-  const defaultValues = useMemo(
-    () => ({
+  const [form, fields] = useForm({
+    lastResult: actionData?.result,
+    onValidate({ formData }) {
+      return parseWithZod(formData, { schema: workspaceFormSchema })
+    },
+    defaultValue: {
       name: workspace.name,
       description: workspace.description ?? "",
-    }),
-    [workspace.name, workspace.description]
-  )
-
-  const form = useForm<WorkspaceFormValues>({
-    resolver: zodResolver(workspaceSchema),
-    defaultValues,
+    },
+    shouldValidate: "onBlur",
+    shouldRevalidate: "onInput",
   })
 
+  // Reset avatar when workspace changes
   useEffect(() => {
-    form.reset(defaultValues)
     setAvatar(workspace.avatar)
-  }, [defaultValues, form, workspace.avatar])
+  }, [workspace.avatar])
 
-  const onSubmit = async (values: WorkspaceFormValues) => {
-    if (!canEdit) return
-    setSaving(true)
-    try {
-      await updateWorkspaceInfo(workspace.id, {
-        name: values.name.trim(),
-        description: values.description?.trim() || null,
-        avatar,
-      })
+  // Handle success
+  useEffect(() => {
+    if (actionData?.success && navigation.state === "idle") {
       toast.success("Workspace updated")
-      await refreshAuth()
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to update workspace"
-      )
-    } finally {
-      setSaving(false)
+      refreshAuth()
     }
-  }
+  }, [actionData?.success, navigation.state, refreshAuth])
+
+  const nameErrors = fields.name.errors
+  const descriptionErrors = fields.description.errors
 
   return (
     <div className="space-y-8">
@@ -103,47 +83,40 @@ export function WorkspaceGeneralForm({
         ) : null}
       </div>
 
-      <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 max-w-2xl">
-          <FormField
-            control={form.control}
-            name="name"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Workspace name</FormLabel>
-                <FormControl>
-                  <Input {...field} disabled={!canEdit} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+      <Form method="post" {...getFormProps(form)} className="space-y-6 max-w-2xl">
+        <input type="hidden" name="intent" value="updateWorkspace" />
+        <input type="hidden" name="avatarColor" value={avatar.color} />
+        <input type="hidden" name="avatarContent" value={avatar.content} />
 
-          <FormField
-            control={form.control}
-            name="description"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Description</FormLabel>
-                <FormControl>
-                  <Textarea
-                    placeholder="Optional description"
-                    className="min-h-[120px]"
-                    {...field}
-                    disabled={!canEdit}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
+        <div className="space-y-2">
+          <Label htmlFor={fields.name.id}>Workspace name</Label>
+          <Input
+            {...getInputProps(fields.name, { type: "text" })}
+            disabled={!canEdit}
           />
+          {nameErrors && nameErrors.length > 0 && (
+            <p className="text-sm text-destructive">{nameErrors[0]}</p>
+          )}
+        </div>
 
-          {canEdit ? (
-            <Button type="submit" disabled={saving}>
-              {saving ? "Saving..." : "Save changes"}
-            </Button>
-          ) : null}
-        </form>
+        <div className="space-y-2">
+          <Label htmlFor={fields.description.id}>Description</Label>
+          <Textarea
+            {...getTextareaProps(fields.description)}
+            placeholder="Optional description"
+            className="min-h-[120px]"
+            disabled={!canEdit}
+          />
+          {descriptionErrors && descriptionErrors.length > 0 && (
+            <p className="text-sm text-destructive">{descriptionErrors[0]}</p>
+          )}
+        </div>
+
+        {canEdit ? (
+          <Button type="submit" disabled={saving}>
+            {saving ? "Saving..." : "Save changes"}
+          </Button>
+        ) : null}
       </Form>
 
       <AvatarPicker

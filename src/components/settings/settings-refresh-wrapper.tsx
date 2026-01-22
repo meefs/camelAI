@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react"
 import { useEffect, useRef } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from 'react-router';
 
 import { useAuth } from "@/contexts/AuthContext"
 
@@ -11,7 +11,7 @@ interface SettingsRefreshWrapperProps {
 }
 
 export function SettingsRefreshWrapper({ children }: SettingsRefreshWrapperProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const { currentOrg, currentWorkspace } = useAuth()
   const prevOrgRef = useRef<string | undefined>(currentOrg?.id)
   const prevWorkspaceRef = useRef<string | undefined>(currentWorkspace?.id)
@@ -29,13 +29,13 @@ export function SettingsRefreshWrapper({ children }: SettingsRefreshWrapperProps
     if (orgChanged || workspaceChanged) {
       prevOrgRef.current = nextOrgId
       prevWorkspaceRef.current = nextWorkspaceId
-      router.refresh()
+      // TODO: implement refresh
       return
     }
 
     prevOrgRef.current = nextOrgId
     prevWorkspaceRef.current = nextWorkspaceId
-  }, [currentOrg?.id, currentWorkspace?.id, router])
+  }, [currentOrg?.id, currentWorkspace?.id, navigate])
 
   return <>{children}</>
 }

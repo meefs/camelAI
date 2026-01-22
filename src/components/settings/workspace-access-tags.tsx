@@ -1,7 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { toast } from "sonner"
+import { useMemo } from "react"
 import { Pencil, PencilOff, X } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -15,7 +14,6 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { getContrastTextColor } from "@/lib/avatar"
 import { cn } from "@/lib/utils"
-import { setWorkspaceAccess } from "@/lib/server-actions/workspace"
 import type { Workspace, WorkspaceAccessLevel } from "@/types"
 
 interface WorkspaceAccessTagsProps {
@@ -28,25 +26,18 @@ interface WorkspaceAccessTagsProps {
 }
 
 export function WorkspaceAccessTags({
-  memberId,
   workspaces,
   accessByWorkspace,
   canEdit,
   editing = false,
   onAccessChange,
 }: WorkspaceAccessTagsProps) {
-  const [accessState, setAccessState] = useState(accessByWorkspace)
-
-  useEffect(() => {
-    setAccessState(accessByWorkspace)
-  }, [accessByWorkspace])
-
   const { memberWorkspaces, hiddenWorkspaces } = useMemo(() => {
     const memberVisible: Array<{ workspace: Workspace; access: WorkspaceAccessLevel }> = []
     const hidden: Workspace[] = []
 
     for (const workspace of workspaces) {
-      const access = accessState[workspace.id] ?? "full"
+      const access = accessByWorkspace[workspace.id] ?? "full"
       if (access === "none") {
         hidden.push(workspace)
       } else {
@@ -55,33 +46,19 @@ export function WorkspaceAccessTags({
     }
 
     return { memberWorkspaces: memberVisible, hiddenWorkspaces: hidden }
-  }, [accessState, workspaces])
-
-  const updateAccess = async (workspaceId: string, next: WorkspaceAccessLevel) => {
-    const previous = accessState[workspaceId] ?? "full"
-    setAccessState((prev) => ({ ...prev, [workspaceId]: next }))
-    try {
-      await setWorkspaceAccess(workspaceId, memberId, next)
-      onAccessChange?.(workspaceId, next)
-    } catch (error) {
-      setAccessState((prev) => ({ ...prev, [workspaceId]: previous }))
-      toast.error(
-        error instanceof Error ? error.message : "Failed to update workspace access"
-      )
-    }
-  }
+  }, [accessByWorkspace, workspaces])
 
   const handleToggle = (workspaceId: string, current: WorkspaceAccessLevel) => {
     const next = current === "full" ? "read_only" : "full"
-    void updateAccess(workspaceId, next)
+    onAccessChange?.(workspaceId, next)
   }
 
   const handleRemove = (workspaceId: string) => {
-    void updateAccess(workspaceId, "none")
+    onAccessChange?.(workspaceId, "none")
   }
 
   const handleAdd = (workspaceId: string) => {
-    void updateAccess(workspaceId, "full")
+    onAccessChange?.(workspaceId, "full")
   }
 
   const showControls = canEdit && editing

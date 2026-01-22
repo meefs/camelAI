@@ -1,7 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { WorkspaceContainer } from './workspace-container';
 import type { OrgDO } from './auth';
-import type { DoRpcService } from './rpc-service';
 
 // Preview state for a thread
 export interface PreviewState {
@@ -28,7 +27,6 @@ export interface ChatEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   SANDBOX: DurableObjectNamespace<WorkspaceContainer>;
   ORG: DurableObjectNamespace<OrgDO>;
-  DO_RPC: Service<DoRpcService>;
   API_TOKENS: KVNamespace;
   R2_BUCKET: R2Bucket;
   AI: Ai;
@@ -117,6 +115,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     return new Response('Not found', { status: 404 });
+  }
+
+  // Get preview workers
+  getPreviewWorkers(): string[] {
+    return this.previewWorkers;
   }
 
   // Set preview workers and broadcast to all connected clients

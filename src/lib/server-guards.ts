@@ -1,94 +1,73 @@
-import { headers } from 'next/headers';
-import { redirect } from 'next/navigation';
-import * as authDO from '@/lib/auth-do';
-import { getSessionContext, getUserContext, getAuthContextLite, type AuthContextLite } from '@/lib/auth-context';
+/**
+ * @deprecated This file is deprecated during the Next.js → React Router migration.
+ * Use auth.server.ts instead, which provides the same functionality with proper
+ * request/context parameters for React Router loaders and actions.
+ *
+ * Migration guide:
+ * - Import { requireSession, requireAuthContext, requireSuperuser, ... } from '@/lib/auth.server'
+ * - These functions require (request, context) parameters
+ * - Call them from route loaders/actions, not from server actions
+ */
 
-type Session = NonNullable<Awaited<ReturnType<typeof authDO.getSession>>>;
+import type { SessionData } from '../../workers/main/src/session-kv';
+import type { AuthContext } from '@/lib/auth-context';
 
-async function getLoginRedirectUrl(): Promise<string> {
-  // Try to get the current path from headers to preserve redirect
-  const headersList = await headers();
-  const pathname = headersList.get('x-invoke-path') || headersList.get('x-pathname');
+type Session = SessionData;
 
-  if (pathname && pathname !== '/' && pathname !== '/login') {
-    return `/login?redirect=${encodeURIComponent(pathname)}`;
-  }
-  return '/login';
-}
+// Re-export types for compatibility
+export type { Session };
+export type { AuthContextLite } from '@/lib/auth-context';
+
+// These functions are stubs that throw errors directing developers to use auth.server.ts
+// They exist only to prevent import errors during migration
 
 export async function requireSession(): Promise<Session> {
-  const sessionContext = await getSessionContext();
-  if (!sessionContext) {
-    redirect(await getLoginRedirectUrl());
-  }
-
-  return sessionContext.session;
+  throw new Error(
+    'requireSession() is deprecated. Use requireSession(request, context) from auth.server.ts.'
+  );
 }
 
 export async function requireUser() {
-  const userContext = await getUserContext();
-  if (!userContext) {
-    redirect(await getLoginRedirectUrl());
-  }
-  return { session: userContext.session, user: userContext.user };
+  throw new Error(
+    'requireUser() is deprecated. Use requireUserContext(request, context) from auth.server.ts.'
+  );
 }
 
 export async function requireSuperuser(message = 'Forbidden') {
-  const { session, user } = await requireUser();
-  if (!user.is_superuser) {
-    throw new Error(message);
-  }
-  return { session, user };
+  throw new Error(
+    'requireSuperuser() is deprecated. Use requireSuperuser(request, context) from auth.server.ts.'
+  );
 }
 
 export async function requireOrgMember(
   orgId: string,
   message = 'You are not a member of this organization'
 ): Promise<Session> {
-  const session = await requireSession();
-  const isMember = await authDO.isOrgMember(session.user_id, orgId);
-  if (!isMember) {
-    throw new Error(message);
-  }
-  return session;
+  throw new Error(
+    'requireOrgMember() is deprecated. Use requireAuthContext(request, context) and check membership manually.'
+  );
 }
 
 export async function requireOrgAdmin(
   orgId: string,
   message = 'Only admins can perform this action'
 ): Promise<Session> {
-  const session = await requireSession();
-  const isAdmin = await authDO.isOrgAdmin(session.user_id, orgId);
-  if (!isAdmin) {
-    throw new Error(message);
-  }
-  return session;
+  throw new Error(
+    'requireOrgAdmin() is deprecated. Use requireOrgAdmin(request, context, orgId) from auth.server.ts.'
+  );
 }
 
-export async function requireAuthContextLite(): Promise<AuthContextLite> {
-  const authContext = await getAuthContextLite();
-  if (!authContext) {
-    redirect(await getLoginRedirectUrl());
-  }
-  return authContext;
+export async function requireAuthContextLite(): Promise<AuthContext> {
+  throw new Error(
+    'requireAuthContextLite() is deprecated. Use requireAuthContext(request, context) from auth.server.ts.'
+  );
 }
 
 export async function requireWorkspaceAccess(
   workspaceId: string,
   options: { requireWrite?: boolean } = {}
 ): Promise<{ session: Session; access: 'full' | 'read_only' }> {
-  const session = await requireSession();
-  const workspace = await authDO.getWorkspace(workspaceId);
-  if (!workspace || workspace.org_id !== session.org_id) {
-    throw new Error('Workspace not found');
-  }
-
-  const access = await authDO.getWorkspaceAccess(workspaceId, session.user_id);
-  if (access === 'none') {
-    throw new Error('Workspace not found');
-  }
-  if (options.requireWrite && access !== 'full') {
-    throw new Error('Read-only workspace access');
-  }
-  return { session, access };
+  throw new Error(
+    'requireWorkspaceAccess() is deprecated. Use requireWorkspaceAccess(request, context, workspaceId) from auth.server.ts.'
+  );
 }

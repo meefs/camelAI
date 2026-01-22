@@ -248,6 +248,9 @@ function updatePackageJson(projectDir, projectName, options) {
   // Update name
   pkg.name = projectName;
 
+  // Remove resolutions (only needed for Docker build with local Verdaccio)
+  delete pkg.resolutions;
+
   // Get the font package based on selected font
   const fontConfig = FONT_CONFIG[options.font] || FONT_CONFIG['inter'];
   const fontPackage = fontConfig.package;
@@ -456,12 +459,23 @@ async function createProject(projectName, options) {
   // Update tsconfig for ~ alias
   updateTsConfig(projectDir);
 
-  // Install new dependencies
-  console.log('\nInstalling shadcn dependencies...');
+  // Update .yarnrc.yml to remove Verdaccio registry (only needed for Docker build)
+  const yarnrcPath = join(projectDir, '.yarnrc.yml');
+  if (existsSync(yarnrcPath)) {
+    const yarnrcContent = `nodeLinker: pnp
+
+# Store cache locally for portability
+enableGlobalCache: false
+`;
+    writeFileSync(yarnrcPath, yarnrcContent);
+  }
+
+  // Install dependencies with Yarn PnP
+  console.log('\nInstalling dependencies with Yarn...');
   try {
-    await runCommand('npm', ['install'], { cwd: projectDir });
+    await runCommand('yarn', ['install'], { cwd: projectDir });
   } catch (error) {
-    console.warn('Note: Run `npm install` in your project directory to install dependencies');
+    console.warn('Note: Run `yarn install` in your project directory to install dependencies');
   }
 
   console.log(`
@@ -469,11 +483,11 @@ Project created successfully!
 
 Next steps:
   cd ${projectName}
-  npm run dev         # Start development server
-  npm run deploy      # Deploy to Cloudflare
+  yarn dev            # Start development server
+  yarn deploy         # Deploy to Cloudflare
 
 Add shadcn components:
-  npx shadcn@latest add button card input
+  yarn dlx shadcn@latest add button card input
 `);
 }
 

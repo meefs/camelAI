@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-21-v2
+# Version: 2026-01-21-v8-yarn-pnp-working
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -69,13 +69,32 @@ COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/r2
 COPY sandbox/skills ./skills
 RUN chmod -R a+rX /app
 
-# Layer 6: Pre-install template dependencies (with Verdaccio for custom wrangler)
+# Layer 6: Pre-install template dependencies with Yarn PnP (minimal files for fast JuiceFS copy)
+# Yarn PnP stores deps as ~400 zip files instead of ~8000 files in node_modules
+# Must enable corepack to get Yarn 4+ (Node includes Yarn 1.x which doesn't support PnP)
+# YARN_IGNORE_PATH=1 prevents Yarn from detecting parent /app/package.json
+RUN corepack enable && corepack prepare yarn@stable --activate
+
+# Install template deps in a temp location first (avoids /app workspace detection)
+# Then copy PnP files back to template
 RUN bash -c '\
   verdaccio --config /verdaccio/config.yaml & \
   sleep 2 && \
-  cd /app/skills/deploy-software/templates/react-router && \
-  npm install && \
-  pkill -f verdaccio || true \
+  mkdir -p /tmp/template-build && \
+  cp -r /app/skills/deploy-software/templates/react-router/* /tmp/template-build/ && \
+  cp -r /app/skills/deploy-software/templates/react-router/.* /tmp/template-build/ 2>/dev/null || true && \
+  cd /tmp/template-build && \
+  echo "Installing in isolated /tmp/template-build..." && \
+  yarn install 2>&1 && \
+  echo "=== Yarn install complete ===" && \
+  echo "=== PnP files created ===" && \
+  ls -la .pnp.* 2>/dev/null || echo "No PnP files" && \
+  echo "=== Copying PnP files back ===" && \
+  cp -r .pnp.* /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
+  cp -r .yarn /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
+  cp yarn.lock /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
+  rm -rf /tmp/template-build && \
+  kill $(pgrep -f verdaccio) 2>/dev/null || true \
 '
 
 # Layer 7: create-worker CLI (scaffolds projects from templates)

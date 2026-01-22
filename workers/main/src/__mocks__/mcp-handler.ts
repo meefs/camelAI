@@ -8,7 +8,8 @@
 import { DurableObject } from 'cloudflare:workers';
 
 export interface McpEnv {
-  DO_RPC: unknown;
+  ORG: DurableObjectNamespace;
+  WORKSPACE: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
   API_TOKENS: KVNamespace;
   TOKEN_SIGNING_SECRET: string;

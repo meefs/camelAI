@@ -1,14 +1,13 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useFetcher } from 'react-router';
 import { toast } from 'sonner';
 import { Copy, MoreHorizontal, Trash2 } from 'lucide-react';
-import { useRouter } from 'next/navigation';
 
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { deleteAdminInvitation } from '@/lib/server-actions/admin';
 
 interface InvitationActionsProps {
   orgId: string;
@@ -17,12 +16,7 @@ interface InvitationActionsProps {
 }
 
 function buildInviteUrl(orgId: string, invitationId: string) {
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  const baseUrl = appUrl && appUrl.length > 0
-    ? appUrl.replace(/\/$/, '')
-    : typeof window !== 'undefined'
-      ? window.location.origin
-      : '';
+  const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
   return baseUrl
     ? `${baseUrl}/invitations/${orgId}/${invitationId}`
     : `/invitations/${orgId}/${invitationId}`;
@@ -33,9 +27,21 @@ export function InvitationActions({
   invitationId,
   inviteeEmail,
 }: InvitationActionsProps) {
-  const router = useRouter();
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const loading = fetcher.state !== 'idle';
+
+  // Handle response
+  useEffect(() => {
+    if (fetcher.state === 'idle' && fetcher.data) {
+      if (fetcher.data.success) {
+        toast.success('Invitation deleted');
+        setConfirmOpen(false);
+      } else if (fetcher.data.error) {
+        toast.error(fetcher.data.error);
+      }
+    }
+  }, [fetcher.state, fetcher.data]);
 
   const handleCopy = async () => {
     const inviteUrl = buildInviteUrl(orgId, invitationId);
@@ -58,18 +64,11 @@ export function InvitationActions({
     }
   };
 
-  const handleDelete = async () => {
-    setLoading(true);
-    try {
-      await deleteAdminInvitation(orgId, invitationId);
-      toast.success('Invitation deleted');
-      setConfirmOpen(false);
-      router.refresh();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to delete invitation');
-    } finally {
-      setLoading(false);
-    }
+  const handleDelete = () => {
+    fetcher.submit(
+      { intent: 'deleteInvitation', invitationId },
+      { method: 'POST' }
+    );
   };
 
   return (

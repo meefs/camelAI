@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { useNavigate, useFetcher } from 'react-router';
 import { Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -18,7 +18,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { deleteAdminApp } from '@/lib/server-actions/admin';
 
 interface AppDangerZoneProps {
   app: {
@@ -28,21 +27,29 @@ interface AppDangerZoneProps {
 }
 
 export function AppDangerZone({ app }: AppDangerZoneProps) {
-  const router = useRouter();
-  const [isPending, startTransition] = useTransition();
+  const navigate = useNavigate();
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [open, setOpen] = useState(false);
+  const isPending = fetcher.state !== 'idle';
 
-  const handleDelete = () => {
-    startTransition(async () => {
-      try {
-        await deleteAdminApp(app.org_id, app.script_name);
-        toast.success('App deleted successfully');
-        router.push('/qaml-backdoor/apps');
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to delete app');
+  // Handle response
+  useEffect(() => {
+    if (fetcher.state === 'idle' && fetcher.data) {
+      if (fetcher.data.success) {
+        toast.success('App deleted');
+        navigate('/qaml-backdoor/apps');
+      } else if (fetcher.data.error) {
+        toast.error(fetcher.data.error);
         setOpen(false);
       }
-    });
+    }
+  }, [fetcher.state, fetcher.data, navigate]);
+
+  const handleDelete = () => {
+    fetcher.submit(
+      { intent: 'deleteApp' },
+      { method: 'POST' }
+    );
   };
 
   return (

@@ -1,9 +1,18 @@
-import { cache } from 'react';
-import { getSessionId } from '@/lib/auth';
-import * as authDO from '@/lib/auth-do';
-import type { Organization, OrgMembership, User, WorkspaceWithAccess } from '@/types';
+/**
+ * @deprecated This file is deprecated during the Next.js → React Router migration.
+ * Use auth.server.ts instead, which provides the same functionality with proper
+ * request/context parameters for React Router loaders and actions.
+ *
+ * Migration guide:
+ * - Import { getAuthContext, requireAuthContext, ... } from '@/lib/auth.server'
+ * - These functions require (request, context) parameters
+ * - Call them from route loaders/actions, not from server actions
+ */
 
-type Session = NonNullable<Awaited<ReturnType<typeof authDO.getSession>>>;
+import type { Organization, OrgMembership, User, WorkspaceWithAccess } from '@/types';
+import type { SessionData } from '../../workers/main/src/session-kv';
+
+export type Session = SessionData;
 
 export type SessionContext = {
   sessionId: string;
@@ -25,76 +34,35 @@ export type AuthContext = AuthContextLite & {
   workspaces: WorkspaceWithAccess[];
 };
 
-export const getSessionContext = cache(async (): Promise<SessionContext | null> => {
-  const sessionId = await getSessionId();
-  if (!sessionId) return null;
+// These functions are stubs that throw errors directing developers to use auth.server.ts
+// They exist only to prevent import errors during migration
 
-  const session = await authDO.getSession(sessionId);
-  if (!session) return null;
+export async function getSessionContext(): Promise<SessionContext | null> {
+  throw new Error(
+    'getSessionContext() is deprecated. Use getSession() from auth.server.ts with (request, context) parameters.'
+  );
+}
 
-  return { sessionId, session };
-});
+export async function getUserByIdCached(userId: string) {
+  throw new Error(
+    'getUserByIdCached() is deprecated. Use auth.server.ts functions with (request, context) parameters.'
+  );
+}
 
-export const getUserByIdCached = cache(async (userId: string) => {
-  return authDO.getUserById(userId);
-});
+export async function getUserContext(): Promise<UserContext | null> {
+  throw new Error(
+    'getUserContext() is deprecated. Use getUserContext() from auth.server.ts with (request, context) parameters.'
+  );
+}
 
-export const getUserContext = cache(async (): Promise<UserContext | null> => {
-  const sessionContext = await getSessionContext();
-  if (!sessionContext) return null;
+export async function getAuthContextLite(): Promise<AuthContextLite | null> {
+  throw new Error(
+    'getAuthContextLite() is deprecated. Use getAuthContext() from auth.server.ts with (request, context) parameters.'
+  );
+}
 
-  const profile = await getUserByIdCached(sessionContext.session.user_id);
-  if (!profile) return null;
-
-  const user: User = {
-    id: profile.id,
-    email: profile.email,
-    name: profile.name,
-    created_at: profile.created_at,
-    is_superuser: profile.is_superuser,
-    avatar: {
-      color: profile.avatar_color,
-      content: profile.avatar_content,
-    },
-    is_orphaned: profile.is_orphaned,
-  };
-
-  return {
-    ...sessionContext,
-    user,
-  };
-});
-
-export const getAuthContextLite = cache(async (): Promise<AuthContextLite | null> => {
-  const userContext = await getUserContext();
-  if (!userContext) return null;
-
-  const currentOrg = await authDO.getOrg(userContext.session.org_id);
-  if (!currentOrg) return null;
-
-  const workspaces = await authDO.listUserWorkspaces(userContext.session.user_id, currentOrg.id);
-  const currentWorkspace = userContext.session.workspace_id
-    ? workspaces.find((workspace) => workspace.id === userContext.session.workspace_id) || null
-    : null;
-
-  return {
-    ...userContext,
-    currentOrg,
-    currentWorkspace,
-    workspaces,
-  };
-});
-
-export const getAuthContext = cache(async (): Promise<AuthContext | null> => {
-  const authContext = await getAuthContextLite();
-  if (!authContext) return null;
-
-  const orgs = await authDO.getUserOrgs(authContext.session.user_id);
-  const workspaces = await authDO.listUserWorkspacesAcrossOrgs(authContext.session.user_id, orgs);
-
-  return {
-    ...authContext,
-    orgs,
-    workspaces,
-  };
-});
+export async function getAuthContext(): Promise<AuthContext | null> {
+  throw new Error(
+    'getAuthContext() is deprecated. Use getAuthContext() from auth.server.ts with (request, context) parameters.'
+  );
+}
