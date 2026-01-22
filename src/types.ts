@@ -43,6 +43,8 @@ export interface Message {
   content: string | ContentBlock[];
   created_at: number;
   isStreaming?: boolean;
+  /** True if this user message was sent while assistant was streaming */
+  sentDuringStreaming?: boolean;
   /** @internal Block offset for streaming, cleared when done */
   _blockOffset?: number;
   /** Indicates this is a meta message (e.g., skill sheet), not a real user message */

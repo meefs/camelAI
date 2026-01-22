@@ -1011,7 +1011,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     }
     return null;
   }, [visibleMessages]);
-  const shouldRenderSpacer = Boolean(lastUserMessage) && (isAwaitingAssistant || lastMessage?.role === 'assistant');
+  const shouldRenderSpacer = Boolean(lastUserMessage) &&
+    !lastUserMessage?.sentDuringStreaming &&
+    (isAwaitingAssistant || lastMessage?.role === 'assistant');
 
   // Connect when threadId changes
   useEffect(() => {
@@ -1469,6 +1471,8 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       return;
     }
 
+    const wasSentDuringStreaming = isStreaming;
+
     // Mark that user has interacted - prevents loader sync from overwriting streaming state
     hasHadUserInteraction.current = true;
 
@@ -1505,10 +1509,13 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
       role: 'user',
       content: userMessage,
       created_at: Date.now(),
+      sentDuringStreaming: wasSentDuringStreaming,
     };
 
     // Add user message - it naturally appears after any streaming message
-    forceScrollOnNextUpdate.current = true;
+    if (!wasSentDuringStreaming) {
+      forceScrollOnNextUpdate.current = true;
+    }
     setMessages(prev => [...prev, userMsg]);
 
     // If WebSocket is connected and ready, send immediately
