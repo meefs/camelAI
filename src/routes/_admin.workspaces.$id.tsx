@@ -1,7 +1,9 @@
 import { Link, useLoaderData, redirect, useFetcher } from 'react-router';
 import type { Route } from './+types/_admin.workspaces.$id';
-import { requireSuperuser } from '@/lib/auth.server';
+import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
+import { getWorkspaceStub } from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { WorkspaceEditForm } from '@/components/admin/workspace-edit-form';
 import { WorkspaceDangerZone } from '@/components/admin/workspace-danger-zone';
@@ -69,6 +71,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const formData = await request.formData();
   const intent = formData.get('intent');
   const { id: workspaceId } = params;
+  const authEnv = getAuthEnv(getEnv(context));
 
   if (intent === 'reset-container') {
     await authDO.resetAdminWorkspaceContainer(context, workspaceId);
@@ -85,16 +88,19 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return { error: 'Workspace name is required' };
     }
 
-    await authDO.adminUpdateWorkspace(context, workspaceId, {
+    const stub = getWorkspaceStub(authEnv, workspaceId);
+    await stub.updateWorkspace({
       name: name.trim(),
       description: description?.trim() || null,
-      avatar: { color: avatarColor, content: avatarContent },
-    });
+      avatar_color: avatarColor,
+      avatar_content: avatarContent,
+    }, 'system-admin');
     return { success: true };
   }
 
   if (intent === 'archiveWorkspace') {
-    await authDO.adminArchiveWorkspace(context, workspaceId);
+    const stub = getWorkspaceStub(authEnv, workspaceId);
+    await stub.archive('system-admin');
     return { success: true };
   }
 

@@ -1,7 +1,9 @@
 import { Link, useLoaderData, redirect } from 'react-router';
 import type { Route } from './+types/_admin.apps.$scriptName';
-import { requireSuperuser } from '@/lib/auth.server';
+import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
+import { setWorkerScriptPublic, deleteWorkerScript } from '@/lib/auth-do';
 import { getVanityDomain } from '@/lib/app-url.server';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AppEditForm } from '@/components/admin/app-edit-form';
@@ -29,18 +31,28 @@ export function meta({ data }: Route.MetaArgs) {
 export async function action({ request, context, params }: Route.ActionArgs) {
   await requireSuperuser(request, context);
 
+  const { scriptName } = params;
+  const decodedScriptName = decodeURIComponent(scriptName);
   const formData = await request.formData();
   const intent = formData.get('intent');
 
+  // Get app to find org_id
+  const app = await authDO.adminGetAppDetail(context, decodedScriptName);
+  if (!app) {
+    return { error: 'App not found' };
+  }
+
+  const authEnv = getAuthEnv(getEnv(context));
+
   if (intent === 'updateApp') {
     const isPublic = formData.get('isPublic') === 'true';
-    // TODO: Implement adminUpdateApp in auth-do.server.ts
-    return { error: 'Update app not yet implemented' };
+    await setWorkerScriptPublic(authEnv, app.org_id, decodedScriptName, isPublic, 'system-admin');
+    return { success: true };
   }
 
   if (intent === 'deleteApp') {
-    // TODO: Implement adminDeleteApp in auth-do.server.ts
-    return { error: 'Delete app not yet implemented' };
+    await deleteWorkerScript(authEnv, app.org_id, decodedScriptName, 'system-admin');
+    return redirect('/qaml-backdoor/apps');
   }
 
   return { error: 'Unknown action' };

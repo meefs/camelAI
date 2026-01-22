@@ -21,6 +21,8 @@ import type {
   PaginationParams,
   Message,
   AppPreviewStatus,
+  Integration,
+  Thread,
 } from '@/types';
 import {
   type UserProfile,
@@ -63,18 +65,18 @@ export interface AuthEnv {
   API_TOKENS: KVNamespace;
 }
 
-// Helper to get UserDO stub
-function getUserStub(env: AuthEnv, userId: string): UserDO {
+// Helper to get UserDO stub (exported for direct DO access in routes)
+export function getUserStub(env: AuthEnv, userId: string): UserDO {
   return env.USER.get(env.USER.idFromName(userId)) as unknown as UserDO;
 }
 
-// Helper to get OrgDO stub
-function getOrgStub(env: AuthEnv, orgId: string): OrgDO {
+// Helper to get OrgDO stub (exported for direct DO access in routes)
+export function getOrgStub(env: AuthEnv, orgId: string): OrgDO {
   return env.ORG.get(env.ORG.idFromName(orgId)) as unknown as OrgDO;
 }
 
-// Helper to get WorkspaceDO stub
-function getWorkspaceStub(env: AuthEnv, workspaceId: string): WorkspaceDO {
+// Helper to get WorkspaceDO stub (exported for direct DO access in routes)
+export function getWorkspaceStub(env: AuthEnv, workspaceId: string): WorkspaceDO {
   return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as unknown as WorkspaceDO;
 }
 
@@ -424,29 +426,7 @@ export async function adminUpdateUser(
   return profileToUser(profile);
 }
 
-export async function adminUpdateWorkspace(
-  env: AuthEnv,
-  workspaceId: string,
-  updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } },
-  actorId: string
-): Promise<Workspace | null> {
-  const stub = getWorkspaceStub(env, workspaceId);
-  const info = await stub.updateWorkspace({
-    name: updates.name,
-    description: updates.description,
-    avatar_color: updates.avatar?.color,
-    avatar_content: updates.avatar?.content,
-  }, actorId);
-  if (!info) return null;
-  return wsInfoToWorkspace(info);
-}
 
-export async function adminArchiveWorkspace(env: AuthEnv, workspaceId: string, actorId: string): Promise<Workspace | null> {
-  const stub = getWorkspaceStub(env, workspaceId);
-  const info = await stub.archive(actorId);
-  if (!info) return null;
-  return wsInfoToWorkspace(info);
-}
 
 export async function adminTransferOrgOwnership(
   env: AuthEnv,
@@ -498,10 +478,6 @@ export async function adminForceOrphanUser(env: AuthEnv, userId: string, _actorI
   await userStub.setOrphaned(true);
 }
 
-export async function adminDeleteInvitation(env: AuthEnv, orgId: string, invitationId: string): Promise<void> {
-  const stub = getOrgStub(env, orgId);
-  await stub.deleteInvitation(invitationId);
-}
 
 // Organization functions
 export async function getOrg(env: AuthEnv, orgId: string): Promise<Organization | null> {
@@ -509,6 +485,29 @@ export async function getOrg(env: AuthEnv, orgId: string): Promise<Organization 
   const info = await stub.getInfo();
   if (!info) return null;
   return orgInfoToOrg(info);
+}
+
+
+// Thread functions (used by admin pages)
+export async function getOrgThreads(env: AuthEnv, orgId: string): Promise<OrgThread[]> {
+  const stub = getOrgStub(env, orgId);
+  return stub.getThreads();
+}
+
+export async function getOrgThread(env: AuthEnv, orgId: string, threadId: string): Promise<OrgThread | null> {
+  const stub = getOrgStub(env, orgId);
+  return stub.getThread(threadId);
+}
+
+// Messages are stored in container filesystem, not in DOs - return empty for admin view
+export async function getOrgThreadMessages(
+  _env: AuthEnv,
+  _orgId: string,
+  _threadId: string
+): Promise<Message[]> {
+  // Messages are stored in the container's session.jsonl files
+  // For admin purposes, we don't fetch them from the container
+  return [];
 }
 
 export async function createOrg(env: AuthEnv, name: string, createdBy: string): Promise<Organization> {
@@ -524,10 +523,6 @@ export async function createOrg(env: AuthEnv, name: string, createdBy: string): 
   return orgInfoToOrg(info);
 }
 
-export async function updateOrgName(env: AuthEnv, orgId: string, name: string, actorId: string): Promise<void> {
-  const stub = getOrgStub(env, orgId);
-  await stub.updateName(name, actorId);
-}
 
 export async function getOrgMembers(env: AuthEnv, orgId: string): Promise<Array<{ user: User; role: OrgRole; joined_at: number }>> {
   const stub = getOrgStub(env, orgId);
@@ -585,10 +580,6 @@ export async function transferOrgOwnership(env: AuthEnv, orgId: string, newOwner
   await oldOwnerStub.updateOrgRole(orgId, 'admin');
 }
 
-export async function archiveOrg(env: AuthEnv, orgId: string, actorId: string): Promise<void> {
-  const stub = getOrgStub(env, orgId);
-  await stub.archiveOrg(actorId);
-}
 
 export async function listOrgWorkspaces(env: AuthEnv, orgId: string): Promise<Workspace[]> {
   const stub = getOrgStub(env, orgId);
@@ -673,12 +664,6 @@ export async function updateWorkspace(
   return wsInfoToWorkspace(info);
 }
 
-export async function archiveWorkspace(env: AuthEnv, workspaceId: string, actorId: string): Promise<Workspace | null> {
-  const stub = getWorkspaceStub(env, workspaceId);
-  const info = await stub.archive(actorId);
-  if (!info) return null;
-  return wsInfoToWorkspace(info);
-}
 
 export async function getWorkspaceAccess(env: AuthEnv, workspaceId: string, userId: string): Promise<WorkspaceAccessLevel> {
   const wsStub = getWorkspaceStub(env, workspaceId);
@@ -733,6 +718,24 @@ export async function setWorkspaceAccess(
 export async function listWorkspaceMembers(env: AuthEnv, workspaceId: string): Promise<WorkspaceMember[]> {
   const stub = getWorkspaceStub(env, workspaceId);
   return stub.listMembers();
+}
+
+export async function listWorkspaceIntegrations(env: AuthEnv, workspaceId: string): Promise<Integration[]> {
+  const stub = getWorkspaceStub(env, workspaceId);
+  const records = await stub.getIntegrations();
+  return records.map((r) => ({
+    id: r.id,
+    integration_type: r.integration_type,
+    name: r.name,
+    category: r.category as Integration['category'],
+    auth_method: r.auth_method as Integration['auth_method'],
+    config: r.config ? JSON.parse(r.config) : {},
+    enabled: r.enabled === 1,
+    created_by: r.created_by,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    has_credentials: !!r.credentials_encrypted,
+  }));
 }
 
 export async function checkUserOrphaned(env: AuthEnv, userId: string): Promise<boolean> {
@@ -870,6 +873,7 @@ export async function getOrgInvitations(env: AuthEnv, orgId: string): Promise<Ar
   id: string;
   email: string;
   role: OrgRole;
+  invited_by: string;
   created_at: number;
   expires_at: number;
 }>> {
@@ -880,15 +884,12 @@ export async function getOrgInvitations(env: AuthEnv, orgId: string): Promise<Ar
     id: inv.id,
     email: inv.email,
     role: inv.role,
+    invited_by: inv.invited_by,
     created_at: inv.created_at,
     expires_at: inv.expires_at,
   }));
 }
 
-export async function deleteInvitation(env: AuthEnv, orgId: string, invitationId: string): Promise<void> {
-  const stub = getOrgStub(env, orgId);
-  await stub.deleteInvitation(invitationId);
-}
 
 // API Token functions
 export async function createOrgApiToken(
@@ -1011,24 +1012,6 @@ export async function setWorkerScriptPublic(
   return script;
 }
 
-export async function adminSetAppPublic(
-  env: AuthEnv,
-  orgId: string,
-  scriptName: string,
-  isPublic: boolean,
-  actorId: string
-): Promise<WorkerScript | null> {
-  return setWorkerScriptPublic(env, orgId, scriptName, isPublic, actorId);
-}
-
-export async function adminDeleteApp(
-  env: AuthEnv,
-  orgId: string,
-  scriptName: string,
-  actorId: string
-): Promise<boolean> {
-  return deleteWorkerScript(env, orgId, scriptName, actorId);
-}
 
 // Worker cross-domain auth functions
 export interface WorkerAuthState {

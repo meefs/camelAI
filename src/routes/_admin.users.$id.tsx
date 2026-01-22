@@ -1,8 +1,10 @@
 import { Link, useLoaderData } from 'react-router';
 import { redirect } from 'react-router';
 import type { Route } from './+types/_admin.users.$id';
-import { requireSuperuser } from '@/lib/auth.server';
+import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
+import { adminForceOrphanUser, adminUpdateUser } from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { UserAdminActions } from '@/components/admin/user-admin-actions';
 import { UserEditForm } from '@/components/admin/user-edit-form';
@@ -49,20 +51,23 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const formData = await request.formData();
   const intent = formData.get('intent');
   const { id: userId } = params;
+  const authEnv = getAuthEnv(getEnv(context));
 
   if (intent === 'forceOrphan') {
-    // TODO: Implement forceOrphanUser in auth-do.server.ts
-    // This would remove the user from all organizations
-    return { error: 'Force orphan not yet implemented' };
+    await adminForceOrphanUser(authEnv, userId, 'system-admin');
+    return { success: true };
   }
 
   if (intent === 'updateUser') {
     const name = formData.get('name') as string;
-    const isSuperuser = formData.get('isSuperuser') === 'true';
     const avatarColor = formData.get('avatarColor') as string;
     const avatarContent = formData.get('avatarContent') as string;
-    // TODO: Implement adminUpdateUser in auth-do.server.ts
-    return { error: 'Update user not yet implemented' };
+    // Note: is_superuser is determined by email domain, not manually set
+    await adminUpdateUser(authEnv, userId, {
+      name: name?.trim() || null,
+      avatar: avatarColor && avatarContent ? { color: avatarColor, content: avatarContent } : undefined,
+    });
+    return { success: true };
   }
 
   return { error: 'Unknown action' };

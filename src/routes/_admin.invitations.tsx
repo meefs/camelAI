@@ -1,7 +1,9 @@
 import { Link, useLoaderData } from 'react-router';
 import type { Route } from './+types/_admin.invitations';
-import { requireSuperuser } from '@/lib/auth.server';
+import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
+import { getOrgStub } from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
 import { AdminSearch } from '@/components/admin/admin-search';
@@ -62,14 +64,17 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   const formData = await request.formData();
   const intent = formData.get('intent');
+  const authEnv = getAuthEnv(getEnv(context));
 
   if (intent === 'deleteInvitation') {
     const invitationId = formData.get('invitationId') as string;
-    if (!invitationId) {
-      return { error: 'Invitation ID is required' };
+    const orgId = formData.get('orgId') as string;
+    if (!invitationId || !orgId) {
+      return { error: 'Invitation ID and Org ID are required' };
     }
-    // TODO: Implement adminDeleteInvitation in auth-do.server.ts
-    return { error: 'Delete invitation not yet implemented' };
+    const stub = getOrgStub(authEnv, orgId);
+    await stub.deleteInvitation(invitationId);
+    return { success: true };
   }
 
   return { error: 'Unknown action' };

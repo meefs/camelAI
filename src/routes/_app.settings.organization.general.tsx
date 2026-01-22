@@ -3,7 +3,7 @@ import { parseWithZod } from '@conform-to/zod/v4';
 import type { Route } from './+types/_app.settings.organization.general';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import * as authDO from '@/lib/auth-do';
+import { getOrgStub } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { OrgGeneralForm } from '@/components/settings/org-general-form';
@@ -29,7 +29,8 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  await authDO.updateOrgName(authEnv, authContext.currentOrg!.id, name.trim(), authContext.user!.id);
+  const stub = getOrgStub(authEnv, authContext.currentOrg!.id);
+  await stub.updateName(name.trim(), authContext.user!.id);
 
   return { result: submission.reply(), success: true };
 }

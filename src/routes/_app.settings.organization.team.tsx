@@ -2,7 +2,7 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.team';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import * as authDO from '@/lib/auth-do';
+import { getOrgStub, createInvitation, removeOrgMember, updateOrgMemberRole, transferOrgOwnership, setWorkspaceAccess, getOrgMembers, getOrgInvitations } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { TeamTable } from '@/components/settings/team-table';
@@ -30,7 +30,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!email || !email.includes('@')) {
       return { error: 'Valid email is required' };
     }
-    await authDO.createInvitation(authEnv, orgId, email.toLowerCase().trim(), role || 'member', actorId);
+    await createInvitation(authEnv, orgId, email.toLowerCase().trim(), role || 'member', actorId);
     return { success: true };
   }
 
@@ -39,7 +39,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!userId) {
       return { error: 'User ID is required' };
     }
-    await authDO.removeOrgMember(authEnv, orgId, userId, actorId);
+    await removeOrgMember(authEnv, orgId, userId, actorId);
     return { success: true };
   }
 
@@ -49,7 +49,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!userId || !role) {
       return { error: 'User ID and role are required' };
     }
-    await authDO.updateOrgMemberRole(authEnv, orgId, userId, role, actorId);
+    await updateOrgMemberRole(authEnv, orgId, userId, role, actorId);
     return { success: true };
   }
 
@@ -58,7 +58,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!newOwnerId) {
       return { error: 'New owner ID is required' };
     }
-    await authDO.transferOrgOwnership(authEnv, orgId, newOwnerId, actorId);
+    await transferOrgOwnership(authEnv, orgId, newOwnerId, actorId);
     return { success: true };
   }
 
@@ -67,7 +67,8 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!invitationId) {
       return { error: 'Invitation ID is required' };
     }
-    await authDO.deleteInvitation(authEnv, orgId, invitationId);
+    const stub = getOrgStub(authEnv, orgId);
+    await stub.deleteInvitation(invitationId);
     return { success: true };
   }
 
@@ -78,7 +79,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!userId || !workspaceId || !access) {
       return { error: 'User ID, workspace ID, and access level are required' };
     }
-    await authDO.setWorkspaceAccess(authEnv, workspaceId, userId, access, actorId);
+    await setWorkspaceAccess(authEnv, workspaceId, userId, access, actorId);
     return { success: true };
   }
 
@@ -91,8 +92,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authEnv = getAuthEnv(env);
 
   const [members, invitations] = await Promise.all([
-    authDO.getOrgMembers(authEnv, authContext.currentOrg.id),
-    authDO.getOrgInvitations(authEnv, authContext.currentOrg.id),
+    getOrgMembers(authEnv, authContext.currentOrg.id),
+    getOrgInvitations(authEnv, authContext.currentOrg.id),
   ]);
 
   return {

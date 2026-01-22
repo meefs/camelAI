@@ -1,7 +1,9 @@
 import { Link, useLoaderData, redirect } from 'react-router';
 import type { Route } from './+types/_admin.threads.$id';
-import { requireSuperuser } from '@/lib/auth.server';
+import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
+import { getOrgStub } from '@/lib/auth-do';
 import { getVanityDomain } from '@/lib/app-url.server';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { ThreadEditForm } from '@/components/admin/thread-edit-form';
@@ -38,16 +40,23 @@ export function meta({ data }: Route.MetaArgs) {
 export async function action({ request, context, params }: Route.ActionArgs) {
   await requireSuperuser(request, context);
 
+  const { id: threadId } = params;
   const formData = await request.formData();
   const intent = formData.get('intent');
+  const authEnv = getAuthEnv(getEnv(context));
 
   if (intent === 'updateThread') {
     const title = formData.get('title') as string;
+    const orgId = formData.get('orgId') as string;
     if (!title?.trim()) {
       return { error: 'Thread title is required' };
     }
-    // TODO: Implement adminUpdateThread in auth-do.server.ts
-    return { error: 'Update thread not yet implemented' };
+    if (!orgId) {
+      return { error: 'Org ID is required' };
+    }
+    const stub = getOrgStub(authEnv, orgId);
+    stub.updateThread(threadId, title.trim(), 'system-admin');
+    return { success: true };
   }
 
   return { error: 'Unknown action' };

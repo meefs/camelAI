@@ -2,7 +2,7 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.workspaces';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import * as authDO from '@/lib/auth-do';
+import { createWorkspace, getWorkspaceStub } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { WorkspacesList } from '@/components/settings/workspaces-list';
@@ -29,7 +29,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!name?.trim()) {
       return { error: 'Workspace name is required' };
     }
-    await authDO.createWorkspace(authEnv, orgId, name.trim(), actorId, description?.trim() || null);
+    await createWorkspace(authEnv, orgId, name.trim(), actorId, description?.trim() || null);
     return { success: true };
   }
 
@@ -38,7 +38,8 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!workspaceId) {
       return { error: 'Workspace ID is required' };
     }
-    await authDO.archiveWorkspace(authEnv, workspaceId, actorId);
+    const stub = getWorkspaceStub(authEnv, workspaceId);
+    await stub.archive(actorId);
     return { success: true };
   }
 

@@ -1,7 +1,9 @@
 import { Link, useLoaderData, redirect, useFetcher } from 'react-router';
 import type { Route } from './+types/_admin.orgs.$id';
-import { requireSuperuser } from '@/lib/auth.server';
+import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
+import { getOrgStub, adminTransferOrgOwnership, updateOrgMemberRole } from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AddOrgMemberDialog } from '@/components/admin/add-org-member-dialog';
 import { OrgDangerZone } from '@/components/admin/org-danger-zone';
@@ -97,6 +99,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const formData = await request.formData();
   const intent = formData.get('intent');
   const { id: orgId } = params;
+  const authEnv = getAuthEnv(getEnv(context));
 
   if (intent === 'reset-containers') {
     await authDO.resetAdminOrgContainers(context, orgId);
@@ -119,7 +122,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (!userId || !role) {
       return { error: 'User ID and role are required' };
     }
-    await authDO.updateAdminOrgMemberRole(context, orgId, userId, role);
+    await updateOrgMemberRole(authEnv, orgId, userId, role, 'system-admin');
     return { success: true };
   }
 
@@ -128,12 +131,13 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (!newOwnerId) {
       return { error: 'New owner ID is required' };
     }
-    await authDO.adminTransferOrgOwnership(context, orgId, newOwnerId);
+    await adminTransferOrgOwnership(authEnv, orgId, newOwnerId, 'system-admin');
     return { success: true };
   }
 
   if (intent === 'archiveOrg') {
-    await authDO.adminArchiveOrg(context, orgId);
+    const stub = getOrgStub(authEnv, orgId);
+    await stub.archiveOrg('system-admin');
     return { success: true };
   }
 
@@ -142,8 +146,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (!name?.trim()) {
       return { error: 'Organization name is required' };
     }
-    // TODO: Implement adminUpdateOrg in auth-do.server.ts
-    return { error: 'Update org not yet implemented' };
+    const stub = getOrgStub(authEnv, orgId);
+    await stub.updateName(name.trim(), 'system-admin');
+    return { success: true };
   }
 
   return { error: 'Unknown action' };

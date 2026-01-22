@@ -25,6 +25,7 @@ import type {
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import type { UserProfile } from '../../workers/main/src/auth';
 import * as authDO from './auth-do';
+import { getMessages as getThreadMessages, getThreadPreview } from './chat-do.server';
 import {
   getWorkspaceContainer,
   type WorkspaceContainerEnv,
@@ -172,7 +173,7 @@ export async function adminGetAllThreads(context: AppLoadContext): Promise<Admin
     Array.from(orgIds).map(async (orgId) => {
       try {
         const [info, orgThreads, workspaces] = await Promise.all([
-          authDO.getOrgById(authEnv, orgId),
+          authDO.getOrg(authEnv, orgId),
           authDO.getOrgThreads(authEnv, orgId),
           authDO.listOrgWorkspaces(authEnv, orgId),
         ]);
@@ -244,7 +245,7 @@ export async function adminGetUsersPaginated(
   const total = items.length;
   const paged = items.slice(offset, offset + limit);
 
-  return { items: paged, total };
+  return { items: paged, total, offset, limit };
 }
 
 export async function adminGetOrgsPaginated(
@@ -262,7 +263,7 @@ export async function adminGetOrgsPaginated(
     Array.from(orgIds).map(async (orgId) => {
       try {
         const [info, members, workspaces] = await Promise.all([
-          authDO.getOrgById(authEnv, orgId),
+          authDO.getOrg(authEnv, orgId),
           authDO.getOrgMembers(authEnv, orgId),
           authDO.listOrgWorkspaces(authEnv, orgId),
         ]);
@@ -293,7 +294,7 @@ export async function adminGetOrgsPaginated(
   const total = items.length;
   const paged = items.slice(offset, offset + limit);
 
-  return { items: paged, total };
+  return { items: paged, total, offset, limit };
 }
 
 export async function adminGetWorkspacesPaginated(
@@ -305,24 +306,38 @@ export async function adminGetWorkspacesPaginated(
   const orgIds = await collectAllOrgIds(env);
   const { offset = 0, limit = 50, search } = params;
 
-  const workspaces: AdminWorkspaceSummary[] = [];
+  // Maps for counts
+  const threadCountByWorkspace = new Map<string, number>();
+  const integrationCountByWorkspace = new Map<string, number>();
+
+  // First pass: collect workspaces and counts
+  const entries: Array<{
+    workspace: Awaited<ReturnType<typeof authDO.listOrgWorkspaces>>[0];
+    org_id: string;
+    org_name: string;
+  }> = [];
 
   await Promise.all(
     Array.from(orgIds).map(async (orgId) => {
       try {
-        const [orgInfo, orgWorkspaces] = await Promise.all([
-          authDO.getOrgById(authEnv, orgId),
+        const [orgInfo, orgWorkspaces, threads] = await Promise.all([
+          authDO.getOrg(authEnv, orgId),
           authDO.listOrgWorkspaces(authEnv, orgId),
+          authDO.getOrgThreads(authEnv, orgId),
         ]);
 
         if (orgInfo) {
+          // Count threads by workspace
+          for (const thread of threads) {
+            const count = threadCountByWorkspace.get(thread.workspace_id) ?? 0;
+            threadCountByWorkspace.set(thread.workspace_id, count + 1);
+          }
+
           for (const ws of orgWorkspaces) {
-            workspaces.push({
-              ...ws,
+            entries.push({
+              workspace: ws,
               org_id: orgId,
               org_name: orgInfo.name,
-              thread_count: 0, // Would require additional queries
-              integration_count: 0, // Would require additional queries
             });
           }
         }
@@ -331,6 +346,27 @@ export async function adminGetWorkspacesPaginated(
       }
     })
   );
+
+  // Fetch integration counts for each workspace
+  await Promise.all(
+    entries.map(async (entry) => {
+      try {
+        const integrations = await authDO.listWorkspaceIntegrations(authEnv, entry.workspace.id);
+        integrationCountByWorkspace.set(entry.workspace.id, integrations.length);
+      } catch {
+        integrationCountByWorkspace.set(entry.workspace.id, 0);
+      }
+    })
+  );
+
+  // Build final workspace list
+  const workspaces: AdminWorkspaceSummary[] = entries.map((entry) => ({
+    ...entry.workspace,
+    org_id: entry.org_id,
+    org_name: entry.org_name,
+    thread_count: threadCountByWorkspace.get(entry.workspace.id) ?? 0,
+    integration_count: integrationCountByWorkspace.get(entry.workspace.id) ?? 0,
+  }));
 
   // Apply search filter
   let items = workspaces;
@@ -349,7 +385,7 @@ export async function adminGetWorkspacesPaginated(
   const total = items.length;
   const paged = items.slice(offset, offset + limit);
 
-  return { items: paged, total };
+  return { items: paged, total, offset, limit };
 }
 
 export async function adminGetThreadsPaginated(
@@ -377,7 +413,7 @@ export async function adminGetThreadsPaginated(
   const total = items.length;
   const paged = items.slice(offset, offset + limit);
 
-  return { items: paged, total };
+  return { items: paged, total, offset, limit };
 }
 
 export async function adminGetAppsPaginated(
@@ -389,31 +425,31 @@ export async function adminGetAppsPaginated(
   const orgIds = await collectAllOrgIds(env);
   const { offset = 0, limit = 50, search } = params;
 
-  const apps: AdminAppSummary[] = [];
+  // First pass: collect all scripts with org/workspace info
+  const entries: Array<{
+    script: Awaited<ReturnType<typeof authDO.listWorkerScripts>>[0];
+    org_id: string;
+    org_name: string;
+    workspace_name: string;
+  }> = [];
 
   await Promise.all(
     Array.from(orgIds).map(async (orgId) => {
       try {
         const [orgInfo, scripts, workspaces] = await Promise.all([
-          authDO.getOrgById(authEnv, orgId),
+          authDO.getOrg(authEnv, orgId),
           authDO.listWorkerScripts(authEnv, orgId),
           authDO.listOrgWorkspaces(authEnv, orgId),
         ]);
 
         if (orgInfo) {
           const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
-
           for (const script of scripts) {
-            apps.push({
-              script_name: script.script_name,
+            entries.push({
+              script,
               org_id: orgId,
               org_name: orgInfo.name,
-              workspace_id: script.workspace_id,
               workspace_name: workspaceMap.get(script.workspace_id) || 'unknown',
-              created_by: script.created_by,
-              created_at: script.created_at,
-              updated_at: script.updated_at,
-              is_public: script.is_public,
             });
           }
         }
@@ -423,15 +459,40 @@ export async function adminGetAppsPaginated(
     })
   );
 
-  // Apply search filter
+  // Batch fetch creator info
+  const creatorIds = [...new Set(entries.map((e) => e.script.created_by).filter(Boolean))];
+  const creators = await authDO.getUsersByIds(authEnv, creatorIds);
+  const creatorMap = new Map(creators.map((c) => [c.id, c]));
+
+  // Build final app list with creator info
+  const apps: AdminAppSummary[] = entries.map((entry) => {
+    const creator = creatorMap.get(entry.script.created_by);
+    return {
+      script_name: entry.script.script_name,
+      org_id: entry.org_id,
+      org_name: entry.org_name,
+      workspace_id: entry.script.workspace_id,
+      workspace_name: entry.workspace_name,
+      created_by: entry.script.created_by,
+      created_by_name: creator?.name ?? null,
+      created_by_email: creator?.email ?? null,
+      created_at: entry.script.created_at,
+      updated_at: entry.script.updated_at,
+      is_public: entry.script.is_public,
+      preview_status: entry.script.preview_status,
+      preview_error: entry.script.preview_error,
+    };
+  });
+
+  // Apply search filter (include creator info in search)
   let items = apps;
   if (search) {
     const lowerSearch = search.toLowerCase();
-    items = items.filter(
-      (a) =>
-        a.script_name.toLowerCase().includes(lowerSearch) ||
-        a.org_name.toLowerCase().includes(lowerSearch) ||
-        a.workspace_name.toLowerCase().includes(lowerSearch)
+    items = items.filter((a) =>
+      [a.script_name, a.org_name, a.workspace_name, a.created_by_name ?? '', a.created_by_email ?? '']
+        .join(' ')
+        .toLowerCase()
+        .includes(lowerSearch)
     );
   }
 
@@ -441,7 +502,7 @@ export async function adminGetAppsPaginated(
   const total = items.length;
   const paged = items.slice(offset, offset + limit);
 
-  return { items: paged, total };
+  return { items: paged, total, offset, limit };
 }
 
 export async function adminGetInvitationsPaginated(
@@ -453,20 +514,25 @@ export async function adminGetInvitationsPaginated(
   const orgIds = await collectAllOrgIds(env);
   const { offset = 0, limit = 50, search } = params;
 
-  const invitations: AdminInvitation[] = [];
+  // First pass: collect all invitations with org info
+  const entries: Array<{
+    inv: Awaited<ReturnType<typeof authDO.getOrgInvitations>>[0];
+    org_id: string;
+    org_name: string;
+  }> = [];
 
   await Promise.all(
     Array.from(orgIds).map(async (orgId) => {
       try {
         const [orgInfo, orgInvitations] = await Promise.all([
-          authDO.getOrgById(authEnv, orgId),
+          authDO.getOrg(authEnv, orgId),
           authDO.getOrgInvitations(authEnv, orgId),
         ]);
 
         if (orgInfo) {
           for (const inv of orgInvitations) {
-            invitations.push({
-              ...inv,
+            entries.push({
+              inv,
               org_id: orgId,
               org_name: orgInfo.name,
             });
@@ -478,6 +544,23 @@ export async function adminGetInvitationsPaginated(
     })
   );
 
+  // Batch fetch inviter info
+  const inviterIds = [...new Set(entries.map((e) => e.inv.invited_by).filter(Boolean))];
+  const inviters = await authDO.getUsersByIds(authEnv, inviterIds);
+  const inviterMap = new Map(inviters.map((u) => [u.id, u]));
+
+  // Build final invitation list with inviter info
+  const invitations: AdminInvitation[] = entries.map((entry) => {
+    const inviter = inviterMap.get(entry.inv.invited_by);
+    return {
+      ...entry.inv,
+      org_id: entry.org_id,
+      org_name: entry.org_name,
+      inviter_email: inviter?.email ?? entry.inv.invited_by,
+      inviter_name: inviter?.name ?? null,
+    };
+  });
+
   // Apply search filter
   let items = invitations;
   if (search) {
@@ -485,7 +568,9 @@ export async function adminGetInvitationsPaginated(
     items = items.filter(
       (i) =>
         i.email.toLowerCase().includes(lowerSearch) ||
-        i.org_name.toLowerCase().includes(lowerSearch)
+        i.org_name.toLowerCase().includes(lowerSearch) ||
+        (i.inviter_email?.toLowerCase().includes(lowerSearch)) ||
+        (i.inviter_name?.toLowerCase().includes(lowerSearch))
     );
   }
 
@@ -495,7 +580,7 @@ export async function adminGetInvitationsPaginated(
   const total = items.length;
   const paged = items.slice(offset, offset + limit);
 
-  return { items: paged, total };
+  return { items: paged, total, offset, limit };
 }
 
 // Admin detail functions
@@ -519,10 +604,11 @@ export async function adminGetThreadWithMessages(
     try {
       const thread = await authDO.getOrgThread(authEnv, orgId, threadId);
       if (thread) {
-        const [orgInfo, workspaces, messages] = await Promise.all([
-          authDO.getOrgById(authEnv, orgId),
+        const [orgInfo, workspaces, messages, preview_workers] = await Promise.all([
+          authDO.getOrg(authEnv, orgId),
           authDO.listOrgWorkspaces(authEnv, orgId),
-          authDO.getOrgThreadMessages(authEnv, orgId, threadId),
+          getThreadMessages(context, threadId, thread.workspace_id),
+          getThreadPreview(context, threadId),
         ]);
 
         const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
@@ -540,7 +626,7 @@ export async function adminGetThreadWithMessages(
           workspace_id: thread.workspace_id,
           org_name: orgInfo?.name || 'Unknown',
           workspace_name: workspaceMap.get(thread.workspace_id) || 'Unknown',
-          preview_workers: [], // Would require ChatThreadDO query
+          preview_workers,
         };
       }
     } catch {
@@ -561,21 +647,33 @@ export async function adminGetWorkspaceDetail(
   const workspace = await authDO.getWorkspace(authEnv, workspaceId);
   if (!workspace) return null;
 
-  const [orgInfo, threads, integrations, members] = await Promise.all([
-    authDO.getOrgById(authEnv, workspace.org_id),
-    authDO.getOrgThreads(authEnv, workspace.org_id).then((t) =>
-      t.filter((thread) => thread.workspace_id === workspaceId)
-    ),
+  const [org, orgThreads, integrations, members] = await Promise.all([
+    authDO.getOrg(authEnv, workspace.org_id),
+    authDO.getOrgThreads(authEnv, workspace.org_id),
     authDO.listWorkspaceIntegrations(authEnv, workspaceId),
     authDO.listWorkspaceMembers(authEnv, workspaceId),
   ]);
 
+  if (!org) return null;
+
+  // Filter threads to this workspace and map to Thread type
+  const threads = orgThreads
+    .filter((t) => t.workspace_id === workspaceId)
+    .map((t) => ({
+      id: t.id,
+      workspace_id: t.workspace_id,
+      title: t.title,
+      created_by: t.created_by,
+      created_at: t.created_at,
+      updated_at: t.updated_at,
+    }));
+
   return {
-    ...workspace,
-    org_name: orgInfo?.name || 'Unknown',
-    thread_count: threads.length,
-    integration_count: integrations.length,
-    member_count: members.length,
+    workspace,
+    org,
+    threads,
+    integrations,
+    members,
   };
 }
 
@@ -593,9 +691,10 @@ export async function adminGetAppDetail(
       const script = scripts.find((s) => s.script_name === scriptName);
 
       if (script) {
-        const [orgInfo, workspaces] = await Promise.all([
-          authDO.getOrgById(authEnv, orgId),
+        const [orgInfo, workspaces, creator] = await Promise.all([
+          authDO.getOrg(authEnv, orgId),
           authDO.listOrgWorkspaces(authEnv, orgId),
+          authDO.getUserById(authEnv, script.created_by),
         ]);
 
         const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
@@ -605,6 +704,8 @@ export async function adminGetAppDetail(
           org_id: orgId,
           org_name: orgInfo?.name || 'Unknown',
           workspace_name: workspaceMap.get(script.workspace_id) || 'Unknown',
+          created_by_name: creator?.name ?? null,
+          created_by_email: creator?.email ?? null,
         };
       }
     } catch {
@@ -777,46 +878,3 @@ export async function updateAdminOrgMemberRole(
   await authDO.updateOrgMemberRole(authEnv, orgId, userId, role, actorId);
 }
 
-// Admin workspace functions
-export async function adminUpdateWorkspace(
-  context: AppLoadContext,
-  workspaceId: string,
-  updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } }
-): Promise<void> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const actorId = 'system-admin';
-  await authDO.adminUpdateWorkspace(authEnv, workspaceId, updates, actorId);
-}
-
-export async function adminArchiveWorkspace(
-  context: AppLoadContext,
-  workspaceId: string
-): Promise<void> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const actorId = 'system-admin';
-  await authDO.adminArchiveWorkspace(authEnv, workspaceId, actorId);
-}
-
-// Admin org functions
-export async function adminArchiveOrg(
-  context: AppLoadContext,
-  orgId: string
-): Promise<void> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const actorId = 'system-admin';
-  await authDO.archiveOrg(authEnv, orgId, actorId);
-}
-
-export async function adminTransferOrgOwnership(
-  context: AppLoadContext,
-  orgId: string,
-  newOwnerId: string
-): Promise<void> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const actorId = 'system-admin';
-  await authDO.adminTransferOrgOwnership(authEnv, orgId, newOwnerId, actorId);
-}
