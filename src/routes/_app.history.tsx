@@ -3,7 +3,7 @@ import type { Route } from './+types/_app.history';
 import { requireAuthContext } from '@/lib/auth.server';
 import * as chatDO from '@/lib/chat-do.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { getUserById, type AuthEnv } from '@/lib/auth-do';
+import { getUserStub, type AuthEnv } from '@/lib/auth-helpers';
 import HistoryClient from '@/components/pages/history/history-client';
 import { HistoryLoadingSkeleton } from '@/components/history/history-loading';
 import type { User } from '@/types';
@@ -108,7 +108,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   );
   const creatorProfiles = await Promise.all(
     creatorIds.map(async (id) => {
-      const profile = await getUserById(authEnv, id);
+      const profile = await getUserStub(authEnv, id).getProfile();
       return [id, profile] as const;
     })
   );

@@ -28,24 +28,6 @@ import {
   createWorkerAuthToken,
 } from '../../workers/main/src/worker-auth';
 
-// Re-export core types and helpers from auth-helpers
-export {
-  type AuthEnv,
-  type UserProfile,
-  type OrgInfo,
-  type OrgThread,
-  type WorkspaceInfo,
-  type SessionData,
-  type ApiTokenData,
-  getUserStub,
-  getOrgStub,
-  getWorkspaceStub,
-  profileToUser,
-  orgInfoToOrg,
-  wsInfoToWorkspace,
-  integrationRecordToIntegration,
-} from './auth-helpers';
-
 import {
   type AuthEnv,
   type UserProfile,

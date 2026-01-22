@@ -3,7 +3,7 @@ import type { Route } from './+types/_admin.threads.$id';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
-import { getOrgStub } from '@/lib/auth-do';
+import { getOrgStub } from '@/lib/auth-helpers';
 import { getVanityDomain } from '@/lib/app-url.server';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { ThreadEditForm } from '@/components/admin/thread-edit-form';

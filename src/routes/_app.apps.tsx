@@ -2,12 +2,11 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.apps';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
+import { type AuthEnv, getUserStub } from '@/lib/auth-helpers';
 import {
   listWorkerScripts,
-  getUserById,
   setWorkerScriptPublic,
   deleteWorkerScript,
-  type AuthEnv,
 } from '@/lib/auth-do';
 import AppsClient from '@/components/pages/apps/apps-client';
 import { AppsLoadingSkeleton } from '@/components/pages/apps/apps-loading';
@@ -114,7 +113,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   );
   const creatorProfiles = await Promise.all(
     creatorIds.map(async (id) => {
-      const profile = await getUserById(authEnv, id);
+      const profile = await getUserStub(authEnv, id).getProfile();
       return [id, profile] as const;
     })
   );

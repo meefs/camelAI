@@ -1,7 +1,8 @@
 import type { Route } from './+types/workspace.warmup';
 import { getSession } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { warmupWorkspace as warmupWorkspaceAction, type AuthEnv } from '@/lib/auth-do';
+import { type AuthEnv } from '@/lib/auth-helpers';
+import { warmupWorkspace as warmupWorkspaceAction } from '@/lib/auth-do';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
   return {

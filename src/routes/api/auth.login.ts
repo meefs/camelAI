@@ -1,6 +1,7 @@
 import type { Route } from './+types/auth.login';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { createSessionCookie } from '@/lib/cookies.server';
+import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   getUserByEmail,
   verifyUserPassword,
@@ -9,7 +10,6 @@ import {
   getUserOrgs,
   listUserWorkspaces,
   createSession,
-  type AuthEnv,
 } from '@/lib/auth-do';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {

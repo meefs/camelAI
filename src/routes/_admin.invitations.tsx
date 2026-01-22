@@ -3,7 +3,7 @@ import type { Route } from './+types/_admin.invitations';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
-import { getOrgStub } from '@/lib/auth-do';
+import { getOrgStub } from '@/lib/auth-helpers';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
 import { AdminSearch } from '@/components/admin/admin-search';

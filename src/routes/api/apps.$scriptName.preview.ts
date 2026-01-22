@@ -1,6 +1,7 @@
 import type { Route } from './+types/apps.$scriptName.preview';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { getSession, isOrgMember, getWorkerAccessInfo, getWorkerScript, type AuthEnv } from '@/lib/auth-do';
+import { type AuthEnv } from '@/lib/auth-helpers';
+import { getSession, isOrgMember, getWorkerAccessInfo, getWorkerScript } from '@/lib/auth-do';
 
 const SESSION_COOKIE_NAME = 'chiridion_session';
 

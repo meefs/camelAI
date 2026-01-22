@@ -3,7 +3,7 @@ import { parseWithZod } from '@conform-to/zod/v4';
 import type { Route } from './+types/_app.settings.organization.general';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getOrgStub } from '@/lib/auth-do';
+import { getOrgStub } from '@/lib/auth-helpers';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { OrgGeneralForm } from '@/components/settings/org-general-form';

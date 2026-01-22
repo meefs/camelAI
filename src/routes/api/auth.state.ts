@@ -2,7 +2,8 @@ import type { Route } from './+types/auth.state';
 import { getSession, getSessionId } from '@/lib/cookies.server';
 import * as authDO from '@/lib/auth-do.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { getOrg, type AuthEnv } from '@/lib/auth-do';
+import { type AuthEnv } from '@/lib/auth-helpers';
+import { getOrg } from '@/lib/auth-do';
 import type { AuthState } from '@/types';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {

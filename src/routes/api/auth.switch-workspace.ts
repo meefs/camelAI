@@ -1,11 +1,11 @@
 import type { Route } from './+types/auth.switch-workspace';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { getSessionIdFromRequest } from '@/lib/cookies.server';
+import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   getSession,
   getWorkspaceAccess,
   switchSessionWorkspace,
-  type AuthEnv,
 } from '@/lib/auth-do';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {

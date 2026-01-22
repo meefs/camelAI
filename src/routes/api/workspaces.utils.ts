@@ -1,7 +1,8 @@
 import type { AppLoadContext } from 'react-router';
 import { getSession } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { getWorkspace, getWorkspaceAccess, type AuthEnv } from '@/lib/auth-do';
+import { type AuthEnv } from '@/lib/auth-helpers';
+import { getWorkspace, getWorkspaceAccess } from '@/lib/auth-do';
 import type { WorkspaceAccessLevel } from '../../../workers/main/src/workspace';
 import {
   getWorkspaceContainer,

@@ -24,6 +24,7 @@ import type {
 } from '@/types';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import type { UserProfile } from '../../workers/main/src/auth';
+import { type AuthEnv } from './auth-helpers';
 import * as authDO from './auth-do';
 import { getMessages as getThreadMessages, getThreadPreview } from './chat-do.server';
 import {
@@ -31,11 +32,11 @@ import {
   type WorkspaceContainerEnv,
 } from '../../workers/main/src/workspace-container';
 
-function getAuthEnv(env: CloudflareEnv): authDO.AuthEnv {
+function getAuthEnv(env: CloudflareEnv): AuthEnv {
   return {
-    USER: env.USER as authDO.AuthEnv['USER'],
-    ORG: env.ORG as authDO.AuthEnv['ORG'],
-    WORKSPACE: env.WORKSPACE as authDO.AuthEnv['WORKSPACE'],
+    USER: env.USER as AuthEnv['USER'],
+    ORG: env.ORG as AuthEnv['ORG'],
+    WORKSPACE: env.WORKSPACE as AuthEnv['WORKSPACE'],
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,
     API_TOKENS: env.API_TOKENS,
