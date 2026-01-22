@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-22-v10-fix-all-dir-perms
+# Version: 2026-01-22-v11-refresh-juicefs-creds
 set -eu
 
 echo "[entrypoint] Starting container initialization..." >&2
@@ -290,6 +290,23 @@ mount_juicefs() {
     fi
   else
     echo "[entrypoint] Using existing metadata: $(ls -la "$JFS_META_FILE" | awk '{print $5}') bytes" >&2
+  fi
+
+  # Update JuiceFS credentials before mounting.
+  # Temp session tokens expire, so we must refresh credentials on every startup.
+  # This ensures old data remains readable even after token rotation.
+  echo "[entrypoint] Updating JuiceFS credentials..." >&2
+  CONFIG_LOG="/tmp/juicefs-config.log"
+  if su -s /bin/sh claude -c "juicefs config \
+    --access-key \"$AWS_ACCESS_KEY_ID\" \
+    --secret-key \"$AWS_SECRET_ACCESS_KEY\" \
+    ${AWS_SESSION_TOKEN:+--session-token \"$AWS_SESSION_TOKEN\"} \
+    --yes \
+    \"$JFS_META_URL\"" >"$CONFIG_LOG" 2>&1; then
+    echo "[entrypoint] Credentials updated" >&2
+  else
+    echo "[entrypoint] WARNING: Failed to update credentials (may be first-time format):" >&2
+    cat "$CONFIG_LOG" >&2 || true
   fi
 
   echo "[entrypoint] Mounting JuiceFS at ${TARGET_DIR}..." >&2
