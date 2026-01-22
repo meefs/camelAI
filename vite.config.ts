@@ -8,11 +8,6 @@ export default defineConfig({
     cloudflare({
       configPath: './wrangler.jsonc',
       viteEnvironment: { name: 'ssr' },
-      auxiliaryWorkers: [
-        {
-          configPath: './workers/proxy/wrangler.jsonc',
-        },
-      ],
     }),
     reactRouter(),
     tsconfigPaths({ ignoreConfigErrors: true }),
