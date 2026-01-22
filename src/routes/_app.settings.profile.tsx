@@ -7,6 +7,7 @@ import * as authDO from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { ProfileForm } from '@/components/settings/profile-form';
+import { ThemePreference } from '@/components/settings/theme-preference';
 import { profileSchema } from '@/lib/schemas';
 
 export function meta() {
@@ -72,6 +73,8 @@ export default function ProfilePage() {
       />
       <Separator />
       <ProfileForm user={user} />
+      <Separator />
+      <ThemePreference />
     </div>
   );
 }

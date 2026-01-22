@@ -8,6 +8,7 @@ import {
 } from 'react-router';
 import type { Route } from './+types/root';
 import { Toaster } from '@/components/ui/sonner';
+import { ThemeProvider } from '@/components/theme-provider';
 
 // Import global styles
 import './styles/globals.css';
@@ -40,9 +41,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body className="font-sans antialiased">
-        {/* TODO: Re-enable ThemeProvider after fixing React 19.2 compatibility */}
-        {children}
-        <Toaster />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          {children}
+          <Toaster />
+        </ThemeProvider>
         <ScrollRestoration />
         <Scripts />
       </body>
