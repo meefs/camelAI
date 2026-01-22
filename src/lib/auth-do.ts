@@ -890,20 +890,6 @@ export async function deleteInvitation(env: AuthEnv, orgId: string, invitationId
   await stub.deleteInvitation(invitationId);
 }
 
-export async function resetWorkspaceContainer(
-  _env: AuthEnv,
-  _workspaceId: string
-): Promise<{ success: boolean; containerId: string }> {
-  throw new Error('resetWorkspaceContainer not yet implemented - requires container bindings');
-}
-
-export async function restartOrgContainers(
-  _env: AuthEnv,
-  _orgId: string
-): Promise<{ restarted: number; failed: number }> {
-  throw new Error('restartOrgContainers not yet implemented - requires container bindings');
-}
-
 // API Token functions
 export async function createOrgApiToken(
   env: AuthEnv,
