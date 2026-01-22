@@ -28,9 +28,9 @@ interface UserProfile {
 }
 
 // Mock functions representing the auth layer
-const mockGetSessionId = vi.fn<[], Promise<string | null>>();
-const mockGetSession = vi.fn<[string], Promise<SessionData | null>>();
-const mockGetUserById = vi.fn<[string], Promise<UserProfile | null>>();
+const mockGetSessionId = vi.fn<() => Promise<string | null>>();
+const mockGetSession = vi.fn<(sessionId: string) => Promise<SessionData | null>>();
+const mockGetUserById = vi.fn<(userId: string) => Promise<UserProfile | null>>();
 
 /**
  * Reimplementation of requireSuperuser logic for testing

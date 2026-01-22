@@ -3,7 +3,7 @@ import type { Route } from './+types/_app.history';
 import { requireAuthContext } from '@/lib/auth.server';
 import * as chatDO from '@/lib/chat-do.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { getUserStub, type AuthEnv } from '@/lib/auth-helpers';
+import { type AuthEnv } from '@/lib/auth-helpers';
 import HistoryClient from '@/components/pages/history/history-client';
 import { HistoryLoadingSkeleton } from '@/components/history/history-loading';
 import type { User } from '@/types';
@@ -108,7 +108,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   );
   const creatorProfiles = await Promise.all(
     creatorIds.map(async (id) => {
-      const profile = await getUserStub(authEnv, id).getProfile();
+      const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
       return [id, profile] as const;
     })
   );
@@ -125,10 +125,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
             name: creator.name,
             created_at: creator.created_at,
             is_superuser: creator.is_superuser,
-            avatar: {
-              color: creator.avatar_color,
-              content: creator.avatar_content,
-            },
+            avatar: creator.avatar,
             is_orphaned: creator.is_orphaned,
           } as User)
         : undefined,

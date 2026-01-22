@@ -57,7 +57,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     return { error: 'No workspace selected' };
   }
 
-  const stub = getWorkspaceStub(env, workspaceId);
+  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const formData = await request.formData();
   const intent = formData.get('intent');
 
@@ -177,7 +177,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   // Get workspace integrations
   let connections: Integration[] = [];
   if (workspaceId) {
-    const stub = getWorkspaceStub(env, workspaceId);
+    const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
     const records = await stub.getIntegrations();
     connections = records.map(recordToIntegration);
   }

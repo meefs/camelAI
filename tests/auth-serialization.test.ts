@@ -18,6 +18,9 @@ function toSafeUser(user: User): User {
     name: user.name,
     created_at: user.created_at,
     is_superuser: user.is_superuser,
+    avatar: user.avatar,
+    is_orphaned: user.is_orphaned,
+    orphaned_at: user.orphaned_at,
   };
 }
 
@@ -27,6 +30,10 @@ function toSafeOrg(org: Organization): Organization {
     name: org.name,
     created_at: org.created_at,
     created_by: org.created_by,
+    billing_status: org.billing_status,
+    archived: org.archived,
+    archived_at: org.archived_at,
+    archived_by: org.archived_by,
   };
 }
 
@@ -40,6 +47,8 @@ function toSafeOrgMembership(membership: OrgMembership): OrgMembership {
 }
 
 describe('toSafeUser', () => {
+  const defaultAvatar = { color: '#000000', content: 'TU' };
+
   it('should create a plain object with expected fields', () => {
     const input: User = {
       id: 'user-123',
@@ -47,6 +56,9 @@ describe('toSafeUser', () => {
       name: 'Test User',
       created_at: 1234567890,
       is_superuser: false,
+      avatar: defaultAvatar,
+      is_orphaned: false,
+      orphaned_at: null,
     };
 
     const result = toSafeUser(input);
@@ -57,6 +69,9 @@ describe('toSafeUser', () => {
       name: 'Test User',
       created_at: 1234567890,
       is_superuser: false,
+      avatar: defaultAvatar,
+      is_orphaned: false,
+      orphaned_at: null,
     });
   });
 
@@ -67,6 +82,9 @@ describe('toSafeUser', () => {
       name: null,
       created_at: 1234567890,
       is_superuser: false,
+      avatar: defaultAvatar,
+      is_orphaned: false,
+      orphaned_at: null,
     };
 
     const result = toSafeUser(input);
@@ -81,6 +99,9 @@ describe('toSafeUser', () => {
       name: 'Test',
       created_at: 1234567890,
       is_superuser: false,
+      avatar: defaultAvatar,
+      is_orphaned: false,
+      orphaned_at: null,
     };
 
     const result = toSafeUser(input);
@@ -96,6 +117,9 @@ describe('toSafeUser', () => {
     input.name = 'Test';
     input.created_at = 1234567890;
     input.is_superuser = false;
+    input.avatar = defaultAvatar;
+    input.is_orphaned = false;
+    input.orphaned_at = null;
 
     const result = toSafeUser(input);
 
@@ -111,6 +135,9 @@ describe('toSafeUser', () => {
       name: 'Test',
       created_at: 1234567890,
       is_superuser: false,
+      avatar: defaultAvatar,
+      is_orphaned: false,
+      orphaned_at: null,
       password_hash: 'secret-hash', // Should NOT be included
       extra_field: 'should-not-appear',
     } as User & { password_hash: string; extra_field: string };
@@ -119,7 +146,7 @@ describe('toSafeUser', () => {
 
     expect(result).not.toHaveProperty('password_hash');
     expect(result).not.toHaveProperty('extra_field');
-    expect(Object.keys(result)).toEqual(['id', 'email', 'name', 'created_at', 'is_superuser']);
+    expect(Object.keys(result)).toEqual(['id', 'email', 'name', 'created_at', 'is_superuser', 'avatar', 'is_orphaned', 'orphaned_at']);
   });
 });
 
@@ -130,6 +157,10 @@ describe('toSafeOrg', () => {
       name: 'Test Org',
       created_at: 1234567890,
       created_by: 'user-123',
+      billing_status: 'free',
+      archived: false,
+      archived_at: null,
+      archived_by: null,
     };
 
     const result = toSafeOrg(input);
@@ -139,6 +170,10 @@ describe('toSafeOrg', () => {
       name: 'Test Org',
       created_at: 1234567890,
       created_by: 'user-123',
+      billing_status: 'free',
+      archived: false,
+      archived_at: null,
+      archived_by: null,
     });
   });
 
@@ -148,6 +183,10 @@ describe('toSafeOrg', () => {
     input.name = 'Test Org';
     input.created_at = 1234567890;
     input.created_by = 'user-123';
+    input.billing_status = 'free';
+    input.archived = false;
+    input.archived_at = null;
+    input.archived_by = null;
 
     const result = toSafeOrg(input);
 
@@ -160,13 +199,17 @@ describe('toSafeOrg', () => {
       name: 'Test Org',
       created_at: 1234567890,
       created_by: 'user-123',
+      billing_status: 'free',
+      archived: false,
+      archived_at: null,
+      archived_by: null,
       internal_secret: 'should-not-appear',
     } as Organization & { internal_secret: string };
 
     const result = toSafeOrg(input);
 
     expect(result).not.toHaveProperty('internal_secret');
-    expect(Object.keys(result)).toEqual(['id', 'name', 'created_at', 'created_by']);
+    expect(Object.keys(result)).toEqual(['id', 'name', 'created_at', 'created_by', 'billing_status', 'archived', 'archived_at', 'archived_by']);
   });
 });
 

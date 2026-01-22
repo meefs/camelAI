@@ -42,7 +42,7 @@ export async function getThreads(
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
   if (!wsInfo) return [];
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   const threads = await orgStub.getThreadsByWorkspace(workspaceId);
   return threads.map((t) => toThread(t));
 }
@@ -59,7 +59,7 @@ export async function getThreadsPaginated(
   if (!wsInfo) {
     return { items: [], total: 0, offset, limit };
   }
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   const result = await orgStub.getThreadsPaginated(offset, limit, workspaceId);
   return {
     items: result.items.map((t) => toThread(t)),
@@ -84,7 +84,7 @@ export async function getThreadsPaginatedAllWorkspaces(
   if (!wsInfo) {
     return { items: [], total: 0, offset, limit };
   }
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   const result = await orgStub.getThreadsAllWorkspacesPaginated(workspaceIds, offset, limit);
   return {
     items: result.items.map((t) => toThread(t)),
@@ -105,7 +105,7 @@ export async function createThread(
   if (!wsInfo) {
     throw new Error('Workspace not found');
   }
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   const thread = await orgStub.createThread(workspaceId, title, createdBy);
   return toThread(thread);
 }
@@ -118,7 +118,7 @@ export async function getThread(
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
   if (!wsInfo) return null;
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   const thread = await orgStub.getThread(id);
   if (!thread) return null;
   // Verify the thread belongs to this workspace
@@ -135,7 +135,7 @@ export async function updateThread(
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
   if (!wsInfo) return null;
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   // Verify the thread belongs to this workspace first
   const existing = await orgStub.getThread(id);
   if (!existing || existing.workspace_id !== workspaceId) return null;
@@ -152,7 +152,7 @@ export async function deleteThread(
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
   if (!wsInfo) return;
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   // Verify the thread belongs to this workspace first
   const existing = await orgStub.getThread(id);
   if (!existing || existing.workspace_id !== workspaceId) return;
@@ -167,7 +167,7 @@ export async function touchThread(
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
   if (!wsInfo) return;
-  const orgStub = getOrgStub(env, wsInfo.org_id);
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
   // Verify the thread belongs to this workspace first
   const existing = await orgStub.getThread(id);
   if (!existing || existing.workspace_id !== workspaceId) return;
@@ -204,7 +204,7 @@ export async function generateThreadTitle(
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return;
 
-    const orgStub = getOrgStub(env, wsInfo.org_id);
+    const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
     await orgStub.updateThread(threadId, title);
 
     // Broadcast via ChatThreadDO

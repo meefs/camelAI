@@ -3,7 +3,6 @@ import type { Route } from './+types/_admin.threads.$id';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
-import { getOrgStub } from '@/lib/auth-helpers';
 import { getVanityDomain } from '@/lib/app-url.server';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { ThreadEditForm } from '@/components/admin/thread-edit-form';
@@ -54,7 +53,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (!orgId) {
       return { error: 'Org ID is required' };
     }
-    const stub = getOrgStub(authEnv, orgId);
+    const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     stub.updateThread(threadId, title.trim(), 'system-admin');
     return { success: true };
   }

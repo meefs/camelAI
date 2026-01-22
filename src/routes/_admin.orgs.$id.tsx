@@ -3,7 +3,6 @@ import type { Route } from './+types/_admin.orgs.$id';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
-import { getOrgStub } from '@/lib/auth-helpers';
 import { adminTransferOrgOwnership, updateOrgMemberRole } from '@/lib/auth-do';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AddOrgMemberDialog } from '@/components/admin/add-org-member-dialog';
@@ -137,7 +136,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   }
 
   if (intent === 'archiveOrg') {
-    const stub = getOrgStub(authEnv, orgId);
+    const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     await stub.archiveOrg('system-admin');
     return { success: true };
   }
@@ -147,7 +146,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (!name?.trim()) {
       return { error: 'Organization name is required' };
     }
-    const stub = getOrgStub(authEnv, orgId);
+    const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     await stub.updateName(name.trim(), 'system-admin');
     return { success: true };
   }

@@ -1,7 +1,7 @@
 import type { Route } from './+types/auth.login';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { createSessionCookie } from '@/lib/cookies.server';
-import { type AuthEnv, getUserStub } from '@/lib/auth-helpers';
+import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   getUserByEmail,
   checkUserOrphaned,
@@ -45,7 +45,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     // Verify password
-    const isValid = await getUserStub(authEnv, userResult.userId).verifyPassword(password);
+    const isValid = await authEnv.USER.get(authEnv.USER.idFromName(userResult.userId)).verifyPassword(password);
     if (!isValid) {
       return Response.json({ error: 'Invalid credentials' }, { status: 401 });
     }

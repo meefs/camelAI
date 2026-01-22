@@ -53,18 +53,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : workspaces[0];
 
   const authState: AuthState = {
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      created_at: user.created_at,
-      avatar: {
-        color: user.avatar_color,
-        content: user.avatar_content,
-      },
-      is_superuser: user.is_superuser,
-      is_orphaned: user.is_orphaned,
-    },
+    user,
     currentOrg,
     orgs,
     currentWorkspace: currentWorkspace ?? null,

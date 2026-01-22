@@ -3,14 +3,8 @@ import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import { getSessionIdFromRequest } from './cookies.server';
 import { getSession as getSessionKV } from '../../workers/main/src/session-kv';
 import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
-import {
-  type AuthEnv,
-  type SessionData,
-  getUserStub,
-  getOrgStub,
-  profileToUser,
-  orgInfoToOrg,
-} from './auth-helpers';
+import type { User } from '@/types';
+import { type AuthEnv, type SessionData } from './auth-helpers';
 import { getUserOrgs, listUserWorkspaces, isOrgAdmin, getWorkspaceAccess } from './auth-do';
 
 // Re-export AuthEnv for routes that need it
@@ -24,7 +18,7 @@ export interface SessionContext {
 }
 
 export interface UserContext extends SessionContext {
-  user: ReturnType<typeof profileToUser>;
+  user: User;
 }
 
 export interface AuthContext extends UserContext {
@@ -95,12 +89,12 @@ export async function getUserContext(
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const profile = await getUserStub(authEnv, sessionContext.session.user_id).getProfile();
+  const profile = await authEnv.USER.get(authEnv.USER.idFromName(sessionContext.session.user_id)).getProfile();
   if (!profile) return null;
 
   return {
     ...sessionContext,
-    user: profileToUser(profile),
+    user: profile,
   };
 }
 
@@ -136,9 +130,9 @@ export async function getAuthContext(
   const authEnv = getAuthEnv(env);
 
   // Get current org info directly from DO
-  const orgInfo = await getOrgStub(authEnv, userContext.session.org_id).getInfo();
+  const orgInfo = await authEnv.ORG.get(authEnv.ORG.idFromName(userContext.session.org_id)).getInfo();
   if (!orgInfo) return null;
-  const currentOrg = orgInfoToOrg(orgInfo);
+  const currentOrg = orgInfo;
 
   // Get user's org memberships
   const orgs = await getUserOrgs(authEnv, userContext.session.user_id);

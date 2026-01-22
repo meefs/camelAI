@@ -2,7 +2,6 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.team';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getOrgStub } from '@/lib/auth-helpers';
 import { createInvitation, removeOrgMember, updateOrgMemberRole, transferOrgOwnership, setWorkspaceAccess, getOrgMembers, getOrgInvitations } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
@@ -68,7 +67,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!invitationId) {
       return { error: 'Invitation ID is required' };
     }
-    const stub = getOrgStub(authEnv, orgId);
+    const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
     await stub.deleteInvitation(invitationId);
     return { success: true };
   }

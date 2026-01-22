@@ -68,6 +68,7 @@
 		"zod": "^4.3.5"
 	},
 	"devDependencies": {
+		"@ast-grep/cli": "^0.40.5",
 		"@cloudflare/puppeteer": "^0.0.11",
 		"@cloudflare/vitest-pool-workers": "^0.11.1",
 		"@eslint/eslintrc": "^3",

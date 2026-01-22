@@ -35,12 +35,6 @@ import {
   type OrgThread,
   type SessionData,
   type ApiTokenData,
-  getUserStub,
-  getOrgStub,
-  getWorkspaceStub,
-  profileToUser,
-  orgInfoToOrg,
-  wsInfoToWorkspace,
 } from './auth-helpers';
 
 // Session functions
@@ -54,7 +48,7 @@ export async function getSessionWithUser(
 ): Promise<{ session: SessionData; user: UserProfile } | null> {
   const session = await getSessionKV(env.SESSIONS, sessionId);
   if (!session) return null;
-  const stub = getUserStub(env, session.user_id);
+  const stub = env.USER.get(env.USER.idFromName(session.user_id));
   const user = await stub.getProfile();
   if (!user) return null;
   return { session, user };
@@ -86,7 +80,7 @@ export async function switchSessionOrg(
   await updateSessionKV(env.SESSIONS, sessionId, session);
   // Update user's last workspace for this org
   if (workspaceId) {
-    const stub = getUserStub(env, session.user_id);
+    const stub = env.USER.get(env.USER.idFromName(session.user_id));
     await stub.setOrgLastWorkspace(orgId, workspaceId);
   }
 }
@@ -98,7 +92,7 @@ export async function switchSessionWorkspace(env: AuthEnv, sessionId: string, wo
   await updateSessionKV(env.SESSIONS, sessionId, session);
   // Update user's last workspace for this org
   if (workspaceId && session.org_id) {
-    const stub = getUserStub(env, session.user_id);
+    const stub = env.USER.get(env.USER.idFromName(session.user_id));
     await stub.setOrgLastWorkspace(session.org_id, workspaceId);
   }
 }
@@ -108,20 +102,20 @@ export async function getUserByEmail(env: AuthEnv, email: string): Promise<{ use
   const normalizedEmail = email.toLowerCase();
   const userId = await env.EMAIL_TO_USER.get(`email:${normalizedEmail}`);
   if (!userId) return null;
-  const stub = getUserStub(env, userId);
+  const stub = env.USER.get(env.USER.idFromName(userId));
   const user = await stub.getProfile();
   if (!user) return null;
   return { userId, user };
 }
 
-export async function getUsersByIds(env: AuthEnv, userIds: string[]): Promise<UserProfile[]> {
+export async function getUsersByIds(env: AuthEnv, userIds: string[]): Promise<(UserProfile & Disposable)[]> {
   const results = await Promise.all(
     userIds.map(async (userId) => {
-      const stub = getUserStub(env, userId);
+      const stub = env.USER.get(env.USER.idFromName(userId));
       return stub.getProfile();
     })
   );
-  return results.filter((p): p is UserProfile => p !== null);
+  return results.filter((p): p is UserProfile & Disposable => p !== null);
 }
 
 export async function updateUserProfile(
@@ -129,14 +123,13 @@ export async function updateUserProfile(
   userId: string,
   updates: { name?: string | null; avatar?: { color: string; content: string } }
 ): Promise<User | null> {
-  const stub = getUserStub(env, userId);
+  const stub = env.USER.get(env.USER.idFromName(userId));
   const profile = await stub.updateProfile({
     name: updates.name,
-    avatar_color: updates.avatar?.color,
-    avatar_content: updates.avatar?.content,
+    avatar: updates.avatar,
   });
   if (!profile) return null;
-  return profileToUser(profile);
+  return profile;
 }
 
 export async function createUser(
@@ -166,7 +159,7 @@ export async function createUser(
   }
 
   try {
-    const stub = getUserStub(env, userId);
+    const stub = env.USER.get(env.USER.idFromName(userId));
     const user = await stub.createUser(userId, normalizedEmail, password, name);
     return { userId, user };
   } catch (error) {
@@ -185,7 +178,7 @@ export async function getUserByOAuthProvider(
   const oauthKvKey = `oauth:${provider}:${providerId}`;
   const userId = await env.EMAIL_TO_USER.get(oauthKvKey);
   if (!userId) return null;
-  const stub = getUserStub(env, userId);
+  const stub = env.USER.get(env.USER.idFromName(userId));
   const user = await stub.getProfile();
   if (!user) return null;
   return { userId, user };
@@ -238,7 +231,7 @@ export async function createUserFromOAuth(
   }
 
   try {
-    const stub = getUserStub(env, userId);
+    const stub = env.USER.get(env.USER.idFromName(userId));
     const user = await stub.createUserFromOAuth(userId, normalizedEmail, name, provider, providerId);
     return { userId, user };
   } catch (error) {
@@ -267,7 +260,7 @@ export async function linkOAuthProvider(
 
   // Link in KV and DO
   await env.EMAIL_TO_USER.put(oauthKvKey, userId);
-  const stub = getUserStub(env, userId);
+  const stub = env.USER.get(env.USER.idFromName(userId));
   await stub.linkOAuthProvider(provider, providerId);
 }
 
@@ -275,17 +268,17 @@ export async function getUserOAuthProviders(
   env: AuthEnv,
   userId: string
 ): Promise<Array<{ provider: string; provider_id: string; linked_at: number }>> {
-  const stub = getUserStub(env, userId);
+  const stub = env.USER.get(env.USER.idFromName(userId));
   return stub.getOAuthProviders();
 }
 
 export async function getUserOrgs(env: AuthEnv, userId: string): Promise<OrgMembership[]> {
-  const userStub = getUserStub(env, userId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
   const userOrgs = await userStub.getOrgs();
 
   const memberships: OrgMembership[] = [];
   for (const uo of userOrgs) {
-    const orgStub = getOrgStub(env, uo.org_id);
+    const orgStub = env.ORG.get(env.ORG.idFromName(uo.org_id));
     const orgInfo = await orgStub.getInfo();
     if (orgInfo && !orgInfo.archived) {
       memberships.push({
@@ -304,12 +297,12 @@ export async function getUserOrgs(env: AuthEnv, userId: string): Promise<OrgMemb
 export async function addUserToOrg(env: AuthEnv, userId: string, orgId: string, role: OrgRole): Promise<void> {
   const workspaces = await listOrgWorkspaces(env, orgId);
   const lastWorkspaceId = workspaces[0]?.id ?? null;
-  const userStub = getUserStub(env, userId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
   await userStub.addOrg(orgId, role, lastWorkspaceId);
 }
 
 export async function removeUserFromOrg(env: AuthEnv, userId: string, orgId: string): Promise<void> {
-  const userStub = getUserStub(env, userId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
   await userStub.removeOrg(orgId);
 }
 
@@ -319,15 +312,14 @@ export async function adminUpdateUser(
   userId: string,
   updates: { name?: string | null; avatar?: { color: string; content: string } }
 ): Promise<User | null> {
-  const stub = getUserStub(env, userId);
+  const stub = env.USER.get(env.USER.idFromName(userId));
   // Note: is_superuser is determined by email domain, not manually set
   const profile = await stub.updateProfile({
     name: updates.name,
-    avatar_color: updates.avatar?.color,
-    avatar_content: updates.avatar?.content,
+    avatar: updates.avatar,
   });
   if (!profile) return null;
-  return profileToUser(profile);
+  return profile;
 }
 
 
@@ -338,7 +330,7 @@ export async function adminTransferOrgOwnership(
   newOwnerId: string,
   actorId: string
 ): Promise<void> {
-  const orgStub = getOrgStub(env, orgId);
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const members = await orgStub.getMembers();
   const currentOwner = members.find((member) => member.role === 'owner');
   if (!currentOwner) {
@@ -347,10 +339,10 @@ export async function adminTransferOrgOwnership(
 
   await orgStub.adminTransferOwnership(actorId, newOwnerId);
 
-  const newOwnerStub = getUserStub(env, newOwnerId);
+  const newOwnerStub = env.USER.get(env.USER.idFromName(newOwnerId));
   await newOwnerStub.updateOrgRole(orgId, 'owner');
 
-  const oldOwnerStub = getUserStub(env, currentOwner.user_id);
+  const oldOwnerStub = env.USER.get(env.USER.idFromName(currentOwner.user_id));
   await oldOwnerStub.updateOrgRole(orgId, 'admin');
 }
 
@@ -361,21 +353,21 @@ export async function adminAddOrgMember(
   role: 'admin' | 'member',
   actorId: string
 ): Promise<void> {
-  const orgStub = getOrgStub(env, orgId);
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   await orgStub.addMember(userId, role, actorId);
   const workspaces = await listOrgWorkspaces(env, orgId);
   const lastWorkspaceId = workspaces[0]?.id ?? null;
-  const userStub = getUserStub(env, userId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
   await userStub.addOrg(orgId, role, lastWorkspaceId);
   await userStub.setOrphaned(false);
 }
 
 export async function adminForceOrphanUser(env: AuthEnv, userId: string, _actorId: string): Promise<void> {
-  const userStub = getUserStub(env, userId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
   const orgs = await userStub.getOrgs();
   // Remove from all orgs
   for (const org of orgs) {
-    const orgStub = getOrgStub(env, org.org_id);
+    const orgStub = env.ORG.get(env.ORG.idFromName(org.org_id));
     await orgStub.removeMember(userId, userId);
     await userStub.removeOrg(org.org_id);
   }
@@ -385,37 +377,37 @@ export async function adminForceOrphanUser(env: AuthEnv, userId: string, _actorI
 
 // Organization functions
 export async function getOrg(env: AuthEnv, orgId: string): Promise<Organization | null> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const info = await stub.getInfo();
   if (!info) return null;
-  return orgInfoToOrg(info);
+  return info;
 }
 
 
 export async function createOrg(env: AuthEnv, name: string, createdBy: string): Promise<Organization> {
   const orgId = crypto.randomUUID();
-  const orgStub = getOrgStub(env, orgId);
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   // createOrg now creates the default workspace internally
   const { org: info, defaultWorkspaceId } = await orgStub.createOrg(orgId, name, createdBy);
 
   // Add to user's orgs with the default workspace
-  const userStub = getUserStub(env, createdBy);
+  const userStub = env.USER.get(env.USER.idFromName(createdBy));
   await userStub.addOrg(orgId, 'owner', defaultWorkspaceId);
 
-  return orgInfoToOrg(info);
+  return info;
 }
 
 
 export async function getOrgMembers(env: AuthEnv, orgId: string): Promise<Array<{ user: User; role: OrgRole; joined_at: number }>> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const members = await stub.getMembers();
   const results: Array<{ user: User; role: OrgRole; joined_at: number }> = [];
   for (const member of members) {
-    const userStub = getUserStub(env, member.user_id);
+    const userStub = env.USER.get(env.USER.idFromName(member.user_id));
     const profile = await userStub.getProfile();
     if (profile) {
       results.push({
-        user: profileToUser(profile),
+        user: profile,
         role: member.role,
         joined_at: member.joined_at,
       });
@@ -425,14 +417,14 @@ export async function getOrgMembers(env: AuthEnv, orgId: string): Promise<Array<
 }
 
 export async function isOrgMember(env: AuthEnv, userId: string, orgId: string): Promise<boolean> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const info = await stub.getInfo();
   if (!info || info.archived) return false;
   return stub.isMember(userId);
 }
 
 export async function isOrgAdmin(env: AuthEnv, userId: string, orgId: string): Promise<boolean> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const info = await stub.getInfo();
   if (!info || info.archived) return false;
   const member = await stub.getMember(userId);
@@ -440,39 +432,39 @@ export async function isOrgAdmin(env: AuthEnv, userId: string, orgId: string): P
 }
 
 export async function removeOrgMember(env: AuthEnv, orgId: string, userId: string, actorId: string): Promise<void> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   await stub.removeMember(userId, actorId);
   // Also remove from user's org list
-  const userStub = getUserStub(env, userId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
   await userStub.removeOrg(orgId);
 }
 
 export async function updateOrgMemberRole(env: AuthEnv, orgId: string, userId: string, role: OrgRole, actorId: string): Promise<void> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   await stub.updateMemberRole(userId, role, actorId);
 }
 
 export async function transferOrgOwnership(env: AuthEnv, orgId: string, newOwnerId: string, actorId: string): Promise<void> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   await stub.transferOwnership(newOwnerId, actorId);
   // Update user roles
-  const newOwnerStub = getUserStub(env, newOwnerId);
+  const newOwnerStub = env.USER.get(env.USER.idFromName(newOwnerId));
   await newOwnerStub.updateOrgRole(orgId, 'owner');
-  const oldOwnerStub = getUserStub(env, actorId);
+  const oldOwnerStub = env.USER.get(env.USER.idFromName(actorId));
   await oldOwnerStub.updateOrgRole(orgId, 'admin');
 }
 
 
 export async function listOrgWorkspaces(env: AuthEnv, orgId: string): Promise<Workspace[]> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const workspaceIds = await stub.getWorkspaces();
   const results: Workspace[] = [];
   for (const ws of workspaceIds) {
     if (ws.archived) continue;
-    const wsStub = getWorkspaceStub(env, ws.id);
+    const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
     const info = await wsStub.getInfo();
     if (info && !info.archived) {
-      results.push(wsInfoToWorkspace(info));
+      results.push(info);
     }
   }
   return results;
@@ -485,7 +477,7 @@ export async function listUserWorkspaces(env: AuthEnv, userId: string, orgId: st
   const workspaces = await listOrgWorkspaces(env, orgId);
   const results: WorkspaceWithAccess[] = [];
   for (const workspace of workspaces) {
-    const wsStub = getWorkspaceStub(env, workspace.id);
+    const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspace.id));
     const memberAccess = await wsStub.getMemberAccess(userId);
     const accessLevel = memberAccess?.access_level ?? 'full';
     if (accessLevel !== 'none') {
@@ -510,10 +502,10 @@ export async function listUserWorkspacesAcrossOrgs(
 }
 
 export async function getWorkspace(env: AuthEnv, workspaceId: string): Promise<Workspace | null> {
-  const stub = getWorkspaceStub(env, workspaceId);
+  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await stub.getInfo();
   if (!info || info.archived) return null;
-  return wsInfoToWorkspace(info);
+  return info;
 }
 
 export async function createWorkspace(
@@ -524,9 +516,9 @@ export async function createWorkspace(
   description?: string | null
 ): Promise<Workspace> {
   const workspaceId = crypto.randomUUID();
-  const stub = getWorkspaceStub(env, workspaceId);
+  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await stub.createWorkspace(workspaceId, orgId, name, createdBy, description ?? null);
-  return wsInfoToWorkspace(info);
+  return info;
 }
 
 export async function updateWorkspace(
@@ -535,20 +527,19 @@ export async function updateWorkspace(
   updates: { name?: string; description?: string | null; avatar?: { color: string; content: string } },
   actorId: string
 ): Promise<Workspace | null> {
-  const stub = getWorkspaceStub(env, workspaceId);
+  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await stub.updateWorkspace({
     name: updates.name,
     description: updates.description,
-    avatar_color: updates.avatar?.color,
-    avatar_content: updates.avatar?.content,
+    avatar: updates.avatar,
   }, actorId);
   if (!info) return null;
-  return wsInfoToWorkspace(info);
+  return info;
 }
 
 
 export async function getWorkspaceAccess(env: AuthEnv, workspaceId: string, userId: string): Promise<WorkspaceAccessLevel> {
-  const wsStub = getWorkspaceStub(env, workspaceId);
+  const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await wsStub.getInfo();
   if (!info || info.archived) return 'none';
 
@@ -575,7 +566,7 @@ export async function warmupWorkspace(
     return { status: 'unauthorized' };
   }
 
-  const wsStub = getWorkspaceStub(env, workspaceId);
+  const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await wsStub.getInfo();
   if (!info) {
     return { status: 'unauthorized' };
@@ -593,12 +584,12 @@ export async function setWorkspaceAccess(
   accessLevel: WorkspaceAccessLevel,
   actorId: string
 ): Promise<void> {
-  const stub = getWorkspaceStub(env, workspaceId);
+  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   await stub.setMemberAccess(userId, accessLevel, actorId);
 }
 
 export async function listWorkspaceIntegrations(env: AuthEnv, workspaceId: string): Promise<Integration[]> {
-  const stub = getWorkspaceStub(env, workspaceId);
+  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const records = await stub.getIntegrations();
   return records.map((r) => ({
     id: r.id,
@@ -616,7 +607,7 @@ export async function listWorkspaceIntegrations(env: AuthEnv, workspaceId: strin
 }
 
 export async function checkUserOrphaned(env: AuthEnv, userId: string): Promise<boolean> {
-  const userStub = getUserStub(env, userId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
   const profile = await userStub.getProfile();
   if (!profile) return false;
 
@@ -637,7 +628,7 @@ export async function handleOrphanedUserLogin(
   env: AuthEnv,
   userId: string
 ): Promise<{ org: Organization; workspace: WorkspaceWithAccess } | null> {
-  const userStub = getUserStub(env, userId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
   const profile = await userStub.getProfile();
   if (!profile?.is_orphaned) return null;
 
@@ -662,7 +653,7 @@ export async function getOrgAuditLog(
   limit = 100,
   offset = 0
 ): Promise<AuditLogEntry[]> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const entries = await stub.getAuditLog(limit, offset);
   return entries.map((entry) => ({
     id: entry.id,
@@ -680,7 +671,7 @@ export async function getWorkspaceAuditLog(
   limit = 100,
   offset = 0
 ): Promise<AuditLogEntry[]> {
-  const stub = getWorkspaceStub(env, workspaceId);
+  const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const entries = await stub.getAuditLog(limit, offset);
   return entries.map((entry) => ({
     id: entry.id,
@@ -703,7 +694,7 @@ export async function createInvitation(
   if (role === 'owner') {
     throw new Error('Cannot invite as owner');
   }
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const invitation = await stub.createInvitation(email, role, invitedBy);
   return { id: invitation.id, expires_at: invitation.expires_at };
 }
@@ -714,7 +705,7 @@ export async function getInvitation(env: AuthEnv, orgId: string, invitationId: s
   role: OrgRole;
   org: Organization;
 } | null> {
-  const orgStub = getOrgStub(env, orgId);
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const invitation = await orgStub.getInvitation(invitationId);
   if (!invitation) return null;
 
@@ -725,12 +716,12 @@ export async function getInvitation(env: AuthEnv, orgId: string, invitationId: s
     id: invitation.id,
     email: invitation.email,
     role: invitation.role,
-    org: orgInfoToOrg(orgInfo),
+    org: orgInfo,
   };
 }
 
 export async function acceptInvitation(env: AuthEnv, orgId: string, invitationId: string, userId: string): Promise<boolean> {
-  const orgStub = getOrgStub(env, orgId);
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const invitation = await orgStub.getInvitation(invitationId);
   if (!invitation) return false;
 
@@ -739,7 +730,7 @@ export async function acceptInvitation(env: AuthEnv, orgId: string, invitationId
 
   const workspaces = await listOrgWorkspaces(env, orgId);
   const lastWorkspaceId = workspaces[0]?.id ?? null;
-  const userStub = getUserStub(env, userId);
+  const userStub = env.USER.get(env.USER.idFromName(userId));
   await userStub.addOrg(orgId, invitation.role, lastWorkspaceId);
   await userStub.setOrphaned(false);
 
@@ -754,7 +745,7 @@ export async function getOrgInvitations(env: AuthEnv, orgId: string): Promise<Ar
   created_at: number;
   expires_at: number;
 }>> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const invitations = await stub.getInvitations();
   const now = Date.now();
   return invitations.filter((inv) => inv.expires_at > now).map((inv) => ({
@@ -834,10 +825,10 @@ export interface WorkerScript {
 }
 
 export async function listWorkerScriptsByWorkspace(env: AuthEnv, workspaceId: string): Promise<WorkerScript[]> {
-  const wsStub = getWorkspaceStub(env, workspaceId);
+  const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await wsStub.getInfo();
   if (!info) return [];
-  const orgStub = getOrgStub(env, info.org_id);
+  const orgStub = env.ORG.get(env.ORG.idFromName(info.org_id));
   return orgStub.listWorkerScriptsByWorkspace(workspaceId);
 }
 
@@ -847,7 +838,7 @@ export async function deleteWorkerScript(
   scriptName: string,
   actorId: string
 ): Promise<boolean> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const result = await stub.deleteWorkerScript(scriptName, actorId);
   if (result) {
     // Remove from global script→org index
@@ -863,7 +854,7 @@ export async function setWorkerScriptPublic(
   isPublic: boolean,
   actorId: string
 ): Promise<WorkerScript | null> {
-  const stub = getOrgStub(env, orgId);
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const script = await stub.setWorkerScriptPublic(scriptName, isPublic, actorId);
   if (script) {
     // Update the denormalized KV index

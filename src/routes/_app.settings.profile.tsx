@@ -45,21 +45,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
-
-  const safeUser = {
-    id: authContext.user.id,
-    email: authContext.user.email,
-    name: authContext.user.name,
-    created_at: authContext.user.created_at,
-    is_superuser: authContext.user.is_superuser,
-    avatar: {
-      color: authContext.user.avatar.color,
-      content: authContext.user.avatar.content,
-    },
-    is_orphaned: authContext.user.is_orphaned,
-  };
-
-  return { user: safeUser };
+  return { user: authContext.user };
 }
 
 export default function ProfilePage() {

@@ -124,6 +124,7 @@ export interface User {
   is_superuser: boolean;
   avatar: Avatar;
   is_orphaned: boolean;
+  orphaned_at: number | null;
 }
 
 export interface Session {
@@ -142,8 +143,8 @@ export interface Organization {
   created_by: string;
   billing_status: BillingStatus;
   archived: boolean;
-  archived_at?: number | null;
-  archived_by?: string | null;
+  archived_at: number | null;
+  archived_by: string | null;
 }
 
 export interface OrgMembership {
@@ -174,8 +175,9 @@ export interface Workspace {
   created_at: number;
   avatar: Avatar;
   archived: boolean;
-  archived_at?: number | null;
-  archived_by?: string | null;
+  archived_at: number | null;
+  archived_by: string | null;
+  compute_tier: 'standard';
 }
 
 export interface WorkspaceWithAccess extends Workspace {

@@ -30,8 +30,7 @@ export interface UserProfile {
   name: string | null;
   created_at: number;
   is_superuser: boolean;
-  avatar_color: string;
-  avatar_content: string;
+  avatar: { color: string; content: string };
   is_orphaned: boolean;
   orphaned_at: number | null;
 }
@@ -259,9 +258,9 @@ export class UserDO extends DurableObject<AuthEnv> {
       const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
       if (rows.length > 0) {
         const profile = JSON.parse((rows[0] as { value: string }).value) as UserProfile;
-        const avatar = generateDefaultAvatar(profile.name || profile.email);
-        if (!profile.avatar_color) profile.avatar_color = avatar.color;
-        if (!profile.avatar_content) profile.avatar_content = avatar.content;
+        if (!profile.avatar) {
+          profile.avatar = generateDefaultAvatar(profile.name || profile.email);
+        }
         if (typeof profile.is_orphaned !== 'boolean') profile.is_orphaned = false;
         if (profile.orphaned_at === undefined) profile.orphaned_at = null;
         this.sql.exec(
@@ -302,14 +301,13 @@ export class UserDO extends DurableObject<AuthEnv> {
     if (rows.length === 0) return null;
     const profile = JSON.parse((rows[0] as { value: string }).value) as UserProfile;
     let changed = false;
+
     if (typeof profile.is_superuser !== 'boolean') {
       profile.is_superuser = isSuperuserEmail(profile.email);
       changed = true;
     }
-    if (!profile.avatar_color || !profile.avatar_content) {
-      const avatar = generateDefaultAvatar(profile.name || profile.email);
-      if (!profile.avatar_color) profile.avatar_color = avatar.color;
-      if (!profile.avatar_content) profile.avatar_content = avatar.content;
+    if (!profile.avatar) {
+      profile.avatar = generateDefaultAvatar(profile.name || profile.email);
       changed = true;
     }
     if (typeof profile.is_orphaned !== 'boolean') {
@@ -320,6 +318,7 @@ export class UserDO extends DurableObject<AuthEnv> {
       profile.orphaned_at = null;
       changed = true;
     }
+
     if (changed) {
       await this.setProfile(profile);
     }
@@ -368,8 +367,7 @@ export class UserDO extends DurableObject<AuthEnv> {
       name,
       created_at: now,
       is_superuser: isSuperuserEmail(email),
-      avatar_color: avatar.color,
-      avatar_content: avatar.content,
+      avatar,
       is_orphaned: false,
       orphaned_at: null,
     };
@@ -391,8 +389,7 @@ export class UserDO extends DurableObject<AuthEnv> {
 
   async updateProfile(updates: {
     name?: string | null;
-    avatar_color?: string;
-    avatar_content?: string;
+    avatar?: { color?: string; content?: string };
   }): Promise<UserProfile | null> {
     const profile = await this.getProfile();
     if (!profile) return null;
@@ -404,17 +401,17 @@ export class UserDO extends DurableObject<AuthEnv> {
       changed = true;
     }
 
-    if (updates.avatar_color && updates.avatar_color !== profile.avatar_color) {
-      profile.avatar_color = updates.avatar_color;
+    if (updates.avatar?.color && updates.avatar.color !== profile.avatar.color) {
+      profile.avatar.color = updates.avatar.color;
       changed = true;
     }
 
-    if (updates.avatar_content && updates.avatar_content !== profile.avatar_content) {
-      const trimmed = updates.avatar_content.trim();
+    if (updates.avatar?.content && updates.avatar.content !== profile.avatar.content) {
+      const trimmed = updates.avatar.content.trim();
       if (!validateAvatarContent(trimmed)) {
         throw new Error('Invalid avatar content');
       }
-      profile.avatar_content = trimmed;
+      profile.avatar.content = trimmed;
       changed = true;
     }
 
@@ -517,8 +514,7 @@ export class UserDO extends DurableObject<AuthEnv> {
       name,
       created_at: now,
       is_superuser: isSuperuserEmail(email),
-      avatar_color: avatar.color,
-      avatar_content: avatar.content,
+      avatar,
       is_orphaned: false,
       orphaned_at: null,
     };

@@ -2,7 +2,7 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.apps';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { type AuthEnv, getUserStub, getOrgStub } from '@/lib/auth-helpers';
+import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   setWorkerScriptPublic,
   deleteWorkerScript,
@@ -97,7 +97,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const workspaceId = authContext.currentWorkspace?.id;
   let apps: WorkerScriptWithCreator[] = [];
 
-  const scripts = await getOrgStub(authEnv, authContext.currentOrg.id).listWorkerScripts();
+  const scripts = await authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id)).listWorkerScripts();
 
   // Filter based on filter param
   const filteredScripts = filter === 'all-workspaces'
@@ -112,7 +112,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   );
   const creatorProfiles = await Promise.all(
     creatorIds.map(async (id) => {
-      const profile = await getUserStub(authEnv, id).getProfile();
+      const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
       return [id, profile] as const;
     })
   );
@@ -136,10 +136,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
             id: creator.id,
             name: creator.name,
             email: creator.email,
-            avatar: {
-              color: creator.avatar_color,
-              content: creator.avatar_content,
-            },
+            avatar: creator.avatar,
           }
         : undefined,
     };

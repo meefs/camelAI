@@ -9,8 +9,7 @@ export interface WorkspaceInfo {
   description: string | null;
   created_by: string;
   created_at: number;
-  avatar_color: string;
-  avatar_content: string;
+  avatar: { color: string; content: string };
   archived: boolean;
   archived_at: number | null;
   archived_by: string | null;
@@ -193,8 +192,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       description: description ?? null,
       created_by: createdBy,
       created_at: now,
-      avatar_color: avatar.color,
-      avatar_content: avatar.content,
+      avatar,
       archived: false,
       archived_at: null,
       archived_by: null,
@@ -216,8 +214,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     updates: {
       name?: string;
       description?: string | null;
-      avatar_color?: string;
-      avatar_content?: string;
+      avatar?: { color?: string; content?: string };
     },
     actorId: string
   ): Promise<WorkspaceInfo | null> {
@@ -234,16 +231,16 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       changes.description = [info.description, updates.description];
       info.description = updates.description ?? null;
     }
-    if (updates.avatar_color && updates.avatar_color !== info.avatar_color) {
-      changes.avatar_color = [info.avatar_color, updates.avatar_color];
-      info.avatar_color = updates.avatar_color;
+    if (updates.avatar?.color && updates.avatar.color !== info.avatar.color) {
+      changes.avatar_color = [info.avatar.color, updates.avatar.color];
+      info.avatar.color = updates.avatar.color;
     }
-    if (updates.avatar_content && updates.avatar_content !== info.avatar_content) {
-      if (!validateAvatarContent(updates.avatar_content)) {
+    if (updates.avatar?.content && updates.avatar.content !== info.avatar.content) {
+      if (!validateAvatarContent(updates.avatar.content)) {
         throw new Error('Invalid avatar content');
       }
-      changes.avatar_content = [info.avatar_content, updates.avatar_content];
-      info.avatar_content = updates.avatar_content;
+      changes.avatar_content = [info.avatar.content, updates.avatar.content];
+      info.avatar.content = updates.avatar.content;
     }
 
     await this.setInfo(info);

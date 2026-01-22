@@ -95,10 +95,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     name: user.name,
     created_at: user.created_at,
     is_superuser: user.is_superuser,
-    avatar: {
-      color: user.avatar_color,
-      content: user.avatar_content,
-    },
+    avatar: user.avatar,
     is_orphaned: user.is_orphaned,
     orphaned_at: user.orphaned_at,
   };

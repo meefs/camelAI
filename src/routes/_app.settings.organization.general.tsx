@@ -3,7 +3,6 @@ import { parseWithZod } from '@conform-to/zod/v4';
 import type { Route } from './+types/_app.settings.organization.general';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getOrgStub } from '@/lib/auth-helpers';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { OrgGeneralForm } from '@/components/settings/org-general-form';
@@ -29,7 +28,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const stub = getOrgStub(authEnv, authContext.currentOrg!.id);
+  const stub = authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg!.id));
   await stub.updateName(name.trim(), authContext.user!.id);
 
   return { result: submission.reply(), success: true };

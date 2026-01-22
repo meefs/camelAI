@@ -3,7 +3,6 @@ import type { Route } from './+types/_admin.workspaces.$id';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
-import { getWorkspaceStub } from '@/lib/auth-helpers';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { WorkspaceEditForm } from '@/components/admin/workspace-edit-form';
 import { WorkspaceDangerZone } from '@/components/admin/workspace-danger-zone';
@@ -88,18 +87,17 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return { error: 'Workspace name is required' };
     }
 
-    const stub = getWorkspaceStub(authEnv, workspaceId);
+    const stub = authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId));
     await stub.updateWorkspace({
       name: name.trim(),
       description: description?.trim() || null,
-      avatar_color: avatarColor,
-      avatar_content: avatarContent,
+      avatar: { color: avatarColor, content: avatarContent },
     }, 'system-admin');
     return { success: true };
   }
 
   if (intent === 'archiveWorkspace') {
-    const stub = getWorkspaceStub(authEnv, workspaceId);
+    const stub = authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId));
     await stub.archive('system-admin');
     return { success: true };
   }

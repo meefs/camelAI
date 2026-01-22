@@ -1,10 +1,10 @@
 /**
- * Core auth helpers: DO stubs, type converters, and AuthEnv interface.
+ * Core auth helpers: AuthEnv interface and integration record converter.
  * Keep this file minimal - only pure helpers with no business logic.
  */
-import type { User, Organization, Workspace, Integration } from '@/types';
-import { type UserProfile, type OrgInfo, UserDO, OrgDO } from '../../workers/main/src/auth';
-import { WorkspaceDO, type WorkspaceInfo } from '../../workers/main/src/workspace';
+import type { Integration } from '@/types';
+import { UserDO, OrgDO } from '../../workers/main/src/auth';
+import { WorkspaceDO } from '../../workers/main/src/workspace';
 
 // Re-export types that consumers need
 export type { UserProfile, OrgInfo, OrgThread } from '../../workers/main/src/auth';
@@ -25,70 +25,8 @@ export interface AuthEnv {
 }
 
 // ============================================================================
-// DO Stub Helpers
+// Integration Record Converter (DB record → API type)
 // ============================================================================
-
-export function getUserStub(env: AuthEnv, userId: string): UserDO {
-  return env.USER.get(env.USER.idFromName(userId)) as unknown as UserDO;
-}
-
-export function getOrgStub(env: AuthEnv, orgId: string): OrgDO {
-  return env.ORG.get(env.ORG.idFromName(orgId)) as unknown as OrgDO;
-}
-
-export function getWorkspaceStub(env: AuthEnv, workspaceId: string): WorkspaceDO {
-  return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as unknown as WorkspaceDO;
-}
-
-// ============================================================================
-// Type Converters (DO types → API types)
-// ============================================================================
-
-export function profileToUser(profile: UserProfile): User {
-  return {
-    id: profile.id,
-    email: profile.email,
-    name: profile.name,
-    created_at: profile.created_at,
-    is_superuser: profile.is_superuser,
-    avatar: {
-      color: profile.avatar_color,
-      content: profile.avatar_content,
-    },
-    is_orphaned: profile.is_orphaned,
-  };
-}
-
-export function orgInfoToOrg(info: OrgInfo): Organization {
-  return {
-    id: info.id,
-    name: info.name,
-    created_at: info.created_at,
-    created_by: info.created_by,
-    billing_status: info.billing_status,
-    archived: info.archived,
-    archived_at: info.archived_at,
-    archived_by: info.archived_by,
-  };
-}
-
-export function wsInfoToWorkspace(info: WorkspaceInfo): Workspace {
-  return {
-    id: info.id,
-    org_id: info.org_id,
-    name: info.name,
-    description: info.description,
-    created_by: info.created_by,
-    created_at: info.created_at,
-    avatar: {
-      color: info.avatar_color,
-      content: info.avatar_content,
-    },
-    archived: info.archived,
-    archived_at: info.archived_at,
-    archived_by: info.archived_by,
-  };
-}
 
 export function integrationRecordToIntegration(r: {
   id: string;
