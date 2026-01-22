@@ -1,8 +1,9 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "chiridion-app",
-	"main": "workers/main/src/index.ts",
+	"main": "build/server/index.js",
 	"compatibility_date": "2025-12-01",
+	"no_bundle": true,
 	"keep_names": false,
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": {
