@@ -247,6 +247,7 @@ MCP auth uses API tokens with `mcp` scope. Requests must include `Authorization:
 
 ### Prerequisites
 - Node.js 22+
+- Bun (package manager - **always use `bun` instead of `npm`**)
 - Docker (for Cloudflare Containers)
 - Cloudflare account (for deployment)
 
@@ -254,7 +255,7 @@ MCP auth uses API tokens with `mcp` scope. Requests must include `Authorization:
 
 **Full Cloudflare dev (recommended)**
 ```bash
-npm run dev
+bun run dev
 ```
 Runs `wrangler dev` + `next dev` with a local proxy. The proxy routes `/ws/*` and `/client/v4/*` to Wrangler and everything else to Next.
 Default ports: proxy `3100`, Wrangler `8787`, Next `3001` (override with `PROXY_DEV_PORT`, `WRANGLER_DEV_PORT`, `NEXT_DEV_PORT`).
@@ -372,28 +373,28 @@ ORDER BY count DESC
 ### Testing
 ```bash
 # Unit tests (Vitest + jsdom)
-npm run test
+bun run test
 
 # Integration tests (Vitest + real dev server)
-npm run test:integration
+bun run test:integration
 
 # Workers runtime tests (Miniflare + Durable Objects)
-npm run test:workers
+bun run test:workers
 
-# E2E tests (Playwright; configure BASE_URL or run npm run dev)
-npm run test:e2e
+# E2E tests (Playwright; configure BASE_URL or run bun run dev)
+bun run test:e2e
 ```
 
 ### Build & Deploy
 ```bash
 # Build for Cloudflare
-npm run build:cf
+bun run build:cf
 
 # Deploy to production
-npm run deploy:prod
+bun run deploy:prod
 
 # Deploy to staging
-npm run deploy:staging
+bun run deploy:staging
 ```
 
 ### Admin CLI
@@ -402,21 +403,21 @@ Query live environments locally using remote DO namespace bindings to call metho
 
 ```bash
 # Quick CLI (starts wrangler, queries, exits)
-npm run admin -- [env] [endpoint] [jq-filter]
+bun run admin -- [env] [endpoint] [jq-filter]
 
 # Examples
-npm run admin -- dev-illiana overview
-npm run admin -- staging orgs
-npm run admin -- prod users '.users[] | {name, email}'
-npm run admin -- dev-illiana orgs '.orgs[] | {org_id: .id, name: .name}'
-npm run admin -- dev-illiana threads
-npm run admin -- workers                    # Fast - no wrangler startup
-npm run admin -- workers                    # List all workers in dispatch namespace
+bun run admin -- dev-illiana overview
+bun run admin -- staging orgs
+bun run admin -- prod users '.users[] | {name, email}'
+bun run admin -- dev-illiana orgs '.orgs[] | {org_id: .id, name: .name}'
+bun run admin -- dev-illiana threads
+bun run admin -- workers                    # Fast - no wrangler startup
+bun run admin -- workers                    # List all workers in dispatch namespace
 
 # Interactive mode (keeps server running for multiple queries)
-npm run admin:dev-illiana  # Then curl http://localhost:8788/overview
-npm run admin:staging
-npm run admin:prod
+bun run admin:dev-illiana  # Then curl http://localhost:8788/overview
+bun run admin:staging
+bun run admin:prod
 ```
 
 | Environment | Target |
@@ -500,7 +501,7 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 
 ### Common Issues
 
-1. **Durable Objects not working locally**: Use `npm run dev` (wrangler-based dev) rather than `next dev`
+1. **Durable Objects not working locally**: Use `bun run dev` (wrangler-based dev) rather than `next dev`
 2. **Streaming not working**: Ensure `includePartialMessages: true` is set in ws-server.mjs
 3. **API key not found**: Check `.dev.vars` has `ANTHROPIC_API_KEY` set
 4. **Docker cache stale**: Add version comment to `entrypoint.sh` or Dockerfile to invalidate cache
@@ -518,20 +519,20 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 - Crypto: `password.test.ts` (PBKDF2 hash/verify, edge cases).
 
 ### Integration Tests (Vitest + dev server) (`tests/integration/`)
-- Run with `npm run test:integration` using `vitest.integration.config.ts`.
-- `global-setup.ts` starts `npm run dev` (wrangler + next) on `INTEGRATION_TEST_PORT` (default `3100`), waits for readiness, writes `.server-url` for tests to read.
+- Run with `bun run test:integration` using `vitest.integration.config.ts`.
+- `global-setup.ts` starts `bun run dev` (wrangler + next) on `INTEGRATION_TEST_PORT` (default `3100`), waits for readiness, writes `.server-url` for tests to read.
 - Tests focus on page accessibility and auth gating (auth uses server actions, not API routes):
   - `pages.test.ts` checks login/signup SSR, public invitation pages, and protected route redirects.
   - `api-routes.test.ts` asserts auth required for chat, threads preview, workspace FS, and computer APIs; static asset behavior.
 - Runs sequentially (single fork) to avoid port conflicts.
 
 ### Workers Runtime Tests (Cloudflare pool) (`workers/main/tests/`)
-- Run with `npm run test:workers` using `vitest.workers.config.ts` + `wrangler.test.jsonc`.
+- Run with `bun run test:workers` using `vitest.workers.config.ts` + `wrangler.test.jsonc`.
 - `auth-do.test.ts` exercises full auth flow through RPC -> Durable Objects (users, orgs, sessions, org switching).
 - `password.test.ts` validates hashing/verification in the Workers runtime.
 
 ### E2E Tests (Playwright) (`e2e/`)
-- Config in `playwright.config.ts`; default `baseURL` is remote, override `BASE_URL` for local (`npm run dev`).
+- Config in `playwright.config.ts`; default `baseURL` is remote, override `BASE_URL` for local (`bun run dev`).
 - `auth.spec.ts` covers signup/login/logout and protected-route redirects.
 - `chat.spec.ts` validates chat creation, streaming deltas, and tool use UI.
 - `streaming.spec.ts` inspects WebSocket `sdk_event` flow and partial assistant events.
