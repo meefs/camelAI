@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { useLoaderData, Await, defer } from 'react-router';
+import { useLoaderData, Await } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
 import { requireAuthContext } from '@/lib/auth.server';
 import * as chatDO from '@/lib/chat-do.server';
@@ -58,7 +58,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   // Get thread metadata immediately (fast - from OrgDO)
   const thread = await chatDO.getThread(context, params.id, workspaceId);
 
-  // Defer slow data that requires container boot
+  // Return promises directly - React Router v7 streams them automatically
   const messagesPromise = isNewThread
     ? Promise.resolve([])
     : chatDO.getMessages(context, params.id, workspaceId);
@@ -67,8 +67,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     ? Promise.resolve([])
     : chatDO.getThreadPreview(context, params.id).catch(() => []);
 
-  // Return immediately with deferred data
-  return defer({
+  // Return immediately - promises will be streamed
+  return {
     threadId: params.id,
     workspaceId,
     messagesPromise,
@@ -76,7 +76,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadTitle: thread?.title ?? null,
     isNewThread,
     hostname,
-  });
+  };
 }
 
 // Loading state shown while messages load
