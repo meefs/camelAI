@@ -183,6 +183,9 @@ function createSession(threadId, threadDeployToken = null, userInfo = null) {
     queryIterator: null,
     initPromise: null,
     queryId: 0,
+    earlyExitRetries: 0,
+    lastUserMessage: null,
+    lastStopRequestedAt: 0,
     eventLoopRunning: false,
     messageResolver: null,
     messageQueue: [],
@@ -341,6 +344,14 @@ function getQueryOptions(session, fileExists) {
     includePartialMessages: true,
     permissionMode: 'bypassPermissions',
     allowUnsandboxedCommands: true,
+    stderr: (data) => {
+      const message = String(data || '').trim();
+      if (!message) return;
+      logError('[ws-server]', 'cli_stderr', {
+        threadId: session.threadId,
+        message: message.slice(0, 2000),
+      });
+    },
     // MCP server configuration
     ...(Object.keys(mcpServers).length > 0 && {
       mcpServers,
@@ -567,6 +578,7 @@ function startEventLoop(session) {
   }
   session.eventLoopRunning = true;
   const eventLoopQueryId = session.queryId;
+  let hadNonSystemEvent = false;
 
   (async () => {
     let exitReason = 'unknown';
@@ -595,6 +607,10 @@ function startEventLoop(session) {
 
         const eventType = event?.type;
         const eventSubType = event?.event?.type;
+        if (eventType && eventType !== 'system') {
+          hadNonSystemEvent = true;
+          session.earlyExitRetries = 0;
+        }
         if (session.eventTypeHistory) {
           session.eventTypeHistory.push({ type: eventType, subType: eventSubType });
           if (session.eventTypeHistory.length > 20) {
@@ -650,6 +666,39 @@ function startEventLoop(session) {
         lastEvents: session.eventTypeHistory || [],
         queryId: eventLoopQueryId,
       });
+
+      const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
+      const stopCooldownMs = 5000;
+      const stopRecently = session.lastStopRequestedAt
+        ? Date.now() - session.lastStopRequestedAt < stopCooldownMs
+        : false;
+      if (exitReason === 'iterator_done' && !hadNonSystemEvent && hasConnections && !stopRecently) {
+        if (session.earlyExitRetries < 1 && session.lastUserMessage) {
+          session.earlyExitRetries += 1;
+          const retryContent = session.lastUserMessage;
+          log('[ws-server]', 'early_exit_retry', {
+            threadId: session.threadId,
+            queryId: eventLoopQueryId,
+            retryCount: session.earlyExitRetries,
+          });
+          setTimeout(() => {
+            if (session.activeQuery || session.messageResolver || session.messageQueue.length > 0) {
+              return;
+            }
+            void (async () => {
+              await initSession(session);
+              startEventLoop(session);
+              if (session.messageResolver) {
+                const resolver = session.messageResolver;
+                session.messageResolver = null;
+                resolver(retryContent);
+              } else {
+                session.messageQueue.push(retryContent);
+              }
+            })();
+          }, 200);
+        }
+      }
     }
   })();
 }
@@ -674,6 +723,7 @@ async function handleUserMessage(session, content, userInfo = null) {
   // Prepend author attribution to message content
   const authorPrefix = formatAuthorPrefix(userInfo?.userName, userInfo?.userEmail);
   const attributedContent = authorPrefix + content;
+  session.lastUserMessage = attributedContent;
 
   void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content: attributedContent, author: userInfo });
   log('[ws-server]', 'handleUserMessage', {
@@ -847,6 +897,7 @@ Bun.serve({
             const session = sessions.get(threadId);
             void writeTrace(session.threadId, { direction: 'ws_in', type: 'stop' });
             log('[ws-server]', 'stop', { threadId });
+            session.lastStopRequestedAt = Date.now();
             if (session.activeQuery) {
               try {
                 await session.activeQuery.interrupt();
