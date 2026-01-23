@@ -189,6 +189,7 @@ function createSession(threadId, threadDeployToken = null, userInfo = null) {
     eventBuffer: [],
     nextEventId: 1,
     taskToolUseIds: new Set(),
+    eventTypeHistory: [],
   };
   sessions.set(threadId, session);
   return session;
@@ -414,7 +415,11 @@ async function* createMessageStream(session) {
     } else {
       // Wait for next message
       message = await new Promise((resolve) => {
-        session.messageResolver = resolve;
+        log('[ws-server]', 'messageStream_wait', { threadId: session.threadId });
+        session.messageResolver = (value) => {
+          log('[ws-server]', 'messageStream_resolve', { threadId: session.threadId, resolved: value !== null });
+          resolve(value);
+        };
       });
     }
 
@@ -563,10 +568,20 @@ function startEventLoop(session) {
           });
         }
 
+        const eventType = event?.type;
+        const eventSubType = event?.event?.type;
+        if (session.eventTypeHistory) {
+          session.eventTypeHistory.push({ type: eventType, subType: eventSubType });
+          if (session.eventTypeHistory.length > 20) {
+            session.eventTypeHistory.shift();
+          }
+        }
+
         log('[ws-server]', 'sdk_event', {
           threadId: session.threadId,
-          eventType: event?.type,
-          eventSubType: event?.event?.type,
+          eventType,
+          eventSubType,
+          systemSubType: eventType === 'system' ? event?.subtype || event?.message?.subtype || event?.message?.type : null,
         });
 
         // Send event to client via WebSocket (or buffer if detached)
@@ -575,8 +590,12 @@ function startEventLoop(session) {
         persistTaskResultUpdates(session, event);
 
         // Result means this turn is done - but keep loop alive if sockets connected or messages pending
-        if (event.type === 'result') {
-          log('[ws-server]', 'sdk_result', { threadId: session.threadId });
+        if (eventType === 'result') {
+          log('[ws-server]', 'sdk_result', {
+            threadId: session.threadId,
+            stopReason: event?.stop_reason || event?.message?.stop_reason || null,
+            status: event?.status || event?.message?.status || null,
+          });
           const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
           const hasPendingMessages = session.messageQueue.length > 0;
           if (!hasConnections && !hasPendingMessages) {
@@ -603,6 +622,7 @@ function startEventLoop(session) {
         eventCount,
         durationMs: Date.now() - loopStart,
         hadFirstEvent: Boolean(firstEventAt),
+        lastEvents: session.eventTypeHistory || [],
       });
     }
   })();
