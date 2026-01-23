@@ -2,7 +2,76 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { appendFile, mkdir, access } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-23-sandbox-v25-simplify-yield';
+const VERSION = '2026-01-23-sandbox-v26-message-queue';
+
+/**
+ * MessageQueue - Similar to SDK's internal QX class.
+ * Key property: next() returns a Promise that waits indefinitely until
+ * enqueue() or close() is called. This prevents streamInput from calling
+ * endInput() prematurely (which closes stdin and causes early exit).
+ */
+class MessageQueue {
+  #queue = [];
+  #waitingResolve = null;
+  #waitingReject = null;
+  #closed = false;
+  #started = false;
+
+  [Symbol.asyncIterator]() {
+    if (this.#started) throw new Error('MessageQueue can only be iterated once');
+    this.#started = true;
+    return this;
+  }
+
+  next() {
+    // If there are queued messages, return immediately
+    if (this.#queue.length > 0) {
+      return Promise.resolve({ done: false, value: this.#queue.shift() });
+    }
+    // If closed, signal done
+    if (this.#closed) {
+      return Promise.resolve({ done: true, value: undefined });
+    }
+    // Wait for next enqueue() or close() - this is the key difference!
+    // This Promise stays pending until something happens, preventing
+    // the for-await loop from completing.
+    return new Promise((resolve, reject) => {
+      this.#waitingResolve = resolve;
+      this.#waitingReject = reject;
+    });
+  }
+
+  enqueue(value) {
+    if (this.#closed) return;
+    if (this.#waitingResolve) {
+      const resolve = this.#waitingResolve;
+      this.#waitingResolve = null;
+      this.#waitingReject = null;
+      resolve({ done: false, value });
+    } else {
+      this.#queue.push(value);
+    }
+  }
+
+  close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    if (this.#waitingResolve) {
+      const resolve = this.#waitingResolve;
+      this.#waitingResolve = null;
+      this.#waitingReject = null;
+      resolve({ done: true, value: undefined });
+    }
+  }
+
+  get length() {
+    return this.#queue.length;
+  }
+
+  get isClosed() {
+    return this.#closed;
+  }
+}
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {
@@ -187,8 +256,9 @@ function createSession(threadId, threadDeployToken = null, userInfo = null) {
     lastUserMessage: null,
     lastStopRequestedAt: 0,
     eventLoopRunning: false,
-    messageResolver: null,
-    messageQueue: [],
+    // MessageQueue replaces messageResolver + messageQueue array
+    // It never returns done:true until explicitly closed, preventing early stdin close
+    inputQueue: new MessageQueue(),
     attachedSockets: new Set(),
     eventBuffer: [],
     nextEventId: 1,
@@ -417,31 +487,20 @@ The infrastructure is already configured for Worker deployments. For fullstack a
   return options;
 }
 
-// Async generator that yields user messages on demand
+// Async generator that yields user messages from the MessageQueue.
+// The queue's next() waits indefinitely until enqueue() or close() is called,
+// which prevents streamInput from calling endInput() prematurely.
 async function* createMessageStream(session) {
   log('[ws-server]', 'messageStream_start', { threadId: session.threadId });
   let isFirstMessage = true;
-  while (true) {
-    // Check queue first for any buffered messages
-    let message;
-    if (session.messageQueue.length > 0) {
-      message = session.messageQueue.shift();
-    } else {
-      // Wait for next message
-      message = await new Promise((resolve) => {
-        log('[ws-server]', 'messageStream_wait', { threadId: session.threadId });
-        session.messageResolver = (value) => {
-          log('[ws-server]', 'messageStream_resolve', { threadId: session.threadId, resolved: value !== null });
-          resolve(value);
-        };
-      });
-    }
 
-    if (message === null) {
-      // Signal to stop
-      log('[ws-server]', 'messageStream_stop', { threadId: session.threadId });
-      return;
-    }
+  // Iterate the MessageQueue - this will wait indefinitely for messages
+  for await (const message of session.inputQueue) {
+    log('[ws-server]', 'messageStream_received', {
+      threadId: session.threadId,
+      contentLength: typeof message === 'string' ? message.length : null,
+      queueLength: session.inputQueue.length,
+    });
 
     // Short delay before first message to let SDK fully initialize
     if (isFirstMessage) {
@@ -453,7 +512,6 @@ async function* createMessageStream(session) {
     log('[ws-server]', 'messageStream_yield', {
       threadId: session.threadId,
       contentLength: typeof message === 'string' ? message.length : null,
-      queueLength: session.messageQueue.length,
     });
     yield {
       type: 'user',
@@ -463,6 +521,8 @@ async function* createMessageStream(session) {
       },
     };
   }
+
+  log('[ws-server]', 'messageStream_done', { threadId: session.threadId });
 }
 
 function bufferEvent(session, payload) {
@@ -638,7 +698,7 @@ function startEventLoop(session) {
             status: event?.status || event?.message?.status || null,
           });
           const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
-          const hasPendingMessages = session.messageQueue.length > 0;
+          const hasPendingMessages = session.inputQueue.length > 0;
           if (!hasConnections && !hasPendingMessages) {
             exitReason = 'no_connections_or_messages';
             break;
@@ -682,19 +742,15 @@ function startEventLoop(session) {
             retryCount: session.earlyExitRetries,
           });
           setTimeout(() => {
-            if (session.activeQuery || session.messageResolver || session.messageQueue.length > 0) {
+            if (session.activeQuery || session.inputQueue.length > 0) {
               return;
             }
             void (async () => {
+              // Create fresh input queue for retry (old one may be closed)
+              session.inputQueue = new MessageQueue();
               await initSession(session);
               startEventLoop(session);
-              if (session.messageResolver) {
-                const resolver = session.messageResolver;
-                session.messageResolver = null;
-                resolver(retryContent);
-              } else {
-                session.messageQueue.push(retryContent);
-              }
+              session.inputQueue.enqueue(retryContent);
             })();
           }, 200);
         }
@@ -731,29 +787,23 @@ async function handleUserMessage(session, content, userInfo = null) {
     contentLength: attributedContent.length,
     hasActiveQuery: Boolean(session.activeQuery),
     hasIterator: Boolean(session.queryIterator),
-    queueLength: session.messageQueue.length,
-    hasResolver: Boolean(session.messageResolver),
+    queueLength: session.inputQueue.length,
+    queueClosed: session.inputQueue.isClosed,
   });
+
   // Initialize session if needed
   await initSession(session);
 
   // Start event loop if not running (it runs continuously)
   startEventLoop(session);
 
-  // Feed message to the generator
+  // Feed message to the MessageQueue
   // Messages are persisted by Claude SDK in ~/.claude/projects/.../session.jsonl
-  if (session.messageResolver) {
-    const resolver = session.messageResolver;
-    session.messageResolver = null;
-    resolver(attributedContent);
-  } else {
-    // Queue message - will be picked up when generator pulls
-    session.messageQueue.push(attributedContent);
-  }
+  session.inputQueue.enqueue(attributedContent);
+
   log('[ws-server]', 'handleUserMessage_enqueued', {
     threadId: session.threadId,
-    queueLength: session.messageQueue.length,
-    hasResolver: Boolean(session.messageResolver),
+    queueLength: session.inputQueue.length,
   });
 }
 
@@ -898,6 +948,8 @@ Bun.serve({
             void writeTrace(session.threadId, { direction: 'ws_in', type: 'stop' });
             log('[ws-server]', 'stop', { threadId });
             session.lastStopRequestedAt = Date.now();
+            // Close input queue to signal message stream to end
+            session.inputQueue.close();
             if (session.activeQuery) {
               try {
                 await session.activeQuery.interrupt();
