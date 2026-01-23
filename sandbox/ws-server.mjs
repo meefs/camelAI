@@ -405,6 +405,7 @@ The infrastructure is already configured for Worker deployments. For fullstack a
 
 // Async generator that yields user messages on demand
 async function* createMessageStream(session) {
+  log('[ws-server]', 'messageStream_start', { threadId: session.threadId });
   while (true) {
     // Check queue first for any buffered messages
     let message;
@@ -419,10 +420,16 @@ async function* createMessageStream(session) {
 
     if (message === null) {
       // Signal to stop
+      log('[ws-server]', 'messageStream_stop', { threadId: session.threadId });
       return;
     }
 
     // Yield the user message
+    log('[ws-server]', 'messageStream_yield', {
+      threadId: session.threadId,
+      contentLength: typeof message === 'string' ? message.length : null,
+      queueLength: session.messageQueue.length,
+    });
     yield {
       type: 'user',
       session_id: session.threadId || '',
@@ -556,6 +563,12 @@ function startEventLoop(session) {
           });
         }
 
+        log('[ws-server]', 'sdk_event', {
+          threadId: session.threadId,
+          eventType: event?.type,
+          eventSubType: event?.event?.type,
+        });
+
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
         trackTaskToolUse(session, event);
@@ -563,6 +576,7 @@ function startEventLoop(session) {
 
         // Result means this turn is done - but keep loop alive if sockets connected or messages pending
         if (event.type === 'result') {
+          log('[ws-server]', 'sdk_result', { threadId: session.threadId });
           const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
           const hasPendingMessages = session.messageQueue.length > 0;
           if (!hasConnections && !hasPendingMessages) {
