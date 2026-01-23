@@ -29,6 +29,7 @@ export interface WorkspaceContainerEnv {
   R2_PARENT_ACCESS_KEY_ID?: string;
   WORKER_BASE_URL?: string;
   PROXY_BASE_URL?: string;
+  DISABLE_JUICEFS?: string;
 }
 
 // Control plane response types
@@ -219,6 +220,7 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     if (this.env.R2_ACCOUNT_ID) envVars.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
     if (this.env.R2_MOUNT_DIR) envVars.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
     if (this.env.R2_MOUNT_READONLY) envVars.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
+    if (this.env.DISABLE_JUICEFS) envVars.DISABLE_JUICEFS = this.env.DISABLE_JUICEFS;
 
     // R2 prefix for workspace-scoped access (legacy org-id workspaces keep old prefix)
     const prefix = workspaceId === orgId ? `${orgId}/` : `${orgId}/${workspaceId}/`;
