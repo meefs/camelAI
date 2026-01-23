@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Container entrypoint - mounts JuiceFS (R2 + SQLite) and starts services.
 # Supports migration from old R2 tar backups to JuiceFS.
 # Environment variables are passed at container start time via @cloudflare/containers.
@@ -7,8 +7,11 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-22-v11-refresh-juicefs-creds
+# Version: 2026-01-23-v19-no-force
 set -eu
+
+# Trap errors and show what failed
+trap 'echo "[entrypoint] ERROR at line $LINENO: $BASH_COMMAND (exit code $?)" >&2' ERR
 
 echo "[entrypoint] Starting container initialization..." >&2
 START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
@@ -21,12 +24,11 @@ JUICEFS_META_DIR="${JUICEFS_META_DIR:-/var/lib/juicefs}"
 JUICEFS_CACHE_DIR="${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}"
 JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-60s}"
 JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-1024}"
-JUICEFS_META_UPLOAD_INTERVAL="${JUICEFS_META_UPLOAD_INTERVAL:-60s}"
 
 # Track PIDs for cleanup (Verdaccio managed by pm2)
 WS_PID=""
 CONTROL_PID=""
-META_UPLOAD_PID=""
+LITESTREAM_PID=""
 MOUNT_SUCCEEDED=""
 
 # Check if R2 is configured
@@ -51,47 +53,74 @@ ensure_trailing_slash() {
   esac
 }
 
-upload_juicefs_meta() {
+# Create Litestream config for continuous SQLite replication to R2
+create_litestream_config() {
   if ! has_r2_config; then
-    return 0
+    return 1
+  fi
+
+  ORG_SAFE="$(sanitize_name "${ORG_ID:-org}")"
+  WS_SAFE="$(sanitize_name "${WORKSPACE_ID:-ws}")"
+  JFS_META_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.db"
+  R2_BASE="$(ensure_trailing_slash "${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}")"
+
+  # Litestream config with R2 as S3-compatible endpoint
+  # Uses environment variables for credentials (including AWS_SESSION_TOKEN for temp creds)
+  cat > /tmp/litestream.yml << LSEOF
+dbs:
+  - path: ${JFS_META_FILE}
+    replicas:
+      - type: s3
+        bucket: ${R2_BUCKET_NAME}
+        path: ${R2_BASE}litestream
+        endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+        region: auto
+        force-path-style: true
+        sync-interval: 10s
+LSEOF
+  echo "[entrypoint] Created Litestream config for ${JFS_META_FILE}" >&2
+}
+
+# Restore SQLite metadata from Litestream replica
+restore_from_litestream() {
+  if ! has_r2_config; then
+    return 1
   fi
 
   ORG_SAFE="$(sanitize_name "${ORG_ID:-org}")"
   WS_SAFE="$(sanitize_name "${WORKSPACE_ID:-ws}")"
   JFS_META_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.db"
 
-  if [ -f "$JFS_META_FILE" ]; then
-    # Use SQLite's .backup command for a safe, consistent backup
-    # This handles WAL mode properly and works even if the database is in use
-    BACKUP_FILE="/tmp/juicefs-meta-backup.db"
-    echo "[entrypoint] Creating SQLite backup..." >&2
-    if sqlite3 "$JFS_META_FILE" ".backup '$BACKUP_FILE'" 2>/dev/null; then
-      node /app/r2-meta.mjs upload "$BACKUP_FILE" || true
-      rm -f "$BACKUP_FILE" 2>/dev/null || true
-    else
-      echo "[entrypoint] WARNING: SQLite backup failed" >&2
+  create_litestream_config
+
+  echo "[entrypoint] Restoring JuiceFS metadata from Litestream..." >&2
+  if litestream restore -config /tmp/litestream.yml -if-replica-exists "$JFS_META_FILE" 2>&1; then
+    if [ -s "$JFS_META_FILE" ]; then
+      echo "[entrypoint] Restored SQLite metadata ($(stat -c%s "$JFS_META_FILE" 2>/dev/null || stat -f%z "$JFS_META_FILE") bytes)" >&2
+      chown claude:claude "$JFS_META_FILE" 2>/dev/null || true
+      chmod u+rw "$JFS_META_FILE" 2>/dev/null || true
+      return 0
     fi
   fi
+  echo "[entrypoint] No Litestream replica found or restore failed" >&2
+  return 1
 }
 
-start_meta_upload_loop() {
-  if [ -z "${JUICEFS_META_UPLOAD_INTERVAL:-}" ]; then
-    return 0
-  fi
+# Start Litestream continuous replication (runs in background)
+start_litestream_replication() {
   if ! has_r2_config; then
     return 0
   fi
-  if [ -n "${META_UPLOAD_PID:-}" ] && kill -0 "$META_UPLOAD_PID" 2>/dev/null; then
+  if [ -n "${LITESTREAM_PID:-}" ] && kill -0 "$LITESTREAM_PID" 2>/dev/null; then
     return 0
   fi
 
-  (
-    while true; do
-      sleep "$JUICEFS_META_UPLOAD_INTERVAL" || true
-      upload_juicefs_meta
-    done
-  ) &
-  META_UPLOAD_PID=$!
+  create_litestream_config
+
+  echo "[entrypoint] Starting Litestream replication..." >&2
+  litestream replicate -config /tmp/litestream.yml &
+  LITESTREAM_PID=$!
+  echo "[entrypoint] Litestream PID: $LITESTREAM_PID" >&2
 }
 
 # Check if a tar backup exists in R2 (for migration)
@@ -229,10 +258,9 @@ mount_juicefs() {
 
   echo "[entrypoint] Restoring JuiceFS metadata (if present)..." >&2
   META_START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
-  META_DOWNLOAD_LOG="/tmp/meta-download.log"
   NEEDS_MIGRATION=""
 
-  # Export R2_PREFIX for r2-meta.mjs (defaults to org/workspace path)
+  # Export R2_PREFIX for Litestream config (defaults to org/workspace path)
   export R2_PREFIX="${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}"
   echo "[entrypoint] R2_PREFIX=$R2_PREFIX" >&2
 
@@ -241,15 +269,8 @@ mount_juicefs() {
     unset AWS_SESSION_TOKEN
   fi
 
-  # Download SQLite metadata directly (no dump/load, just the raw SQLite file)
-  if node /app/r2-meta.mjs download "$JFS_META_FILE" >"$META_DOWNLOAD_LOG" 2>&1; then
-    if [ -s "$JFS_META_FILE" ]; then
-      echo "[entrypoint] Downloaded SQLite metadata ($(ls -la "$JFS_META_FILE" | awk '{print $5}') bytes)" >&2
-      # Ensure claude user can write to the metadata file
-      chown claude:claude "$JFS_META_FILE" 2>/dev/null || true
-      chmod u+rw "$JFS_META_FILE" 2>/dev/null || true
-    fi
-  fi
+  # Restore SQLite metadata from Litestream continuous replication
+  restore_from_litestream || true
 
   # If no JuiceFS metadata exists, check for tar backup to migrate
   if [ ! -f "$JFS_META_FILE" ] || [ ! -s "$JFS_META_FILE" ]; then
@@ -282,11 +303,68 @@ mount_juicefs() {
       \"$JFS_META_URL\" \
       \"$VOLUME_NAME\"" >"$FORMAT_LOG" 2>&1; then
       echo "[entrypoint] Format succeeded" >&2
-      upload_juicefs_meta
     else
-      echo "[entrypoint] ERROR: JuiceFS format failed:" >&2
-      cat "$FORMAT_LOG" >&2
-      return 1
+      # Check if format failed due to non-empty storage (orphaned data without metadata)
+      if grep -q "is not empty" "$FORMAT_LOG"; then
+        echo "[entrypoint] Storage has orphaned data (no metadata). Cleaning up..." >&2
+        # Use AWS SDK via node to delete all objects at the JuiceFS prefix
+        cd /app && node -e "
+          const { S3Client, ListObjectsV2Command, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
+          const client = new S3Client({
+            endpoint: 'https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+            region: 'auto',
+            credentials: {
+              accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+              secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+              ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN }),
+            },
+          });
+          async function cleanup() {
+            const prefix = '${VOLUME_NAME}/';
+            console.error('[cleanup] Listing objects at prefix:', prefix);
+            let cont = true, token;
+            let deleted = 0;
+            while (cont) {
+              const list = await client.send(new ListObjectsV2Command({
+                Bucket: '${R2_BUCKET_NAME}',
+                Prefix: prefix,
+                ContinuationToken: token,
+              }));
+              if (list.Contents && list.Contents.length > 0) {
+                await client.send(new DeleteObjectsCommand({
+                  Bucket: '${R2_BUCKET_NAME}',
+                  Delete: { Objects: list.Contents.map(o => ({ Key: o.Key })) },
+                }));
+                deleted += list.Contents.length;
+              }
+              token = list.NextContinuationToken;
+              cont = list.IsTruncated;
+            }
+            console.error('[cleanup] Deleted', deleted, 'orphaned objects');
+          }
+          cleanup().catch(e => { console.error('[cleanup] Error:', e.message); process.exit(1); });
+        "
+        # Retry format after cleanup
+        echo "[entrypoint] Retrying format..." >&2
+        if su -s /bin/sh claude -c "juicefs format \
+          --storage s3 \
+          --bucket \"$JFS_BUCKET_URL\" \
+          --access-key \"$AWS_ACCESS_KEY_ID\" \
+          --secret-key \"$AWS_SECRET_ACCESS_KEY\" \
+          ${AWS_SESSION_TOKEN:+--session-token \"$AWS_SESSION_TOKEN\"} \
+          \"$JFS_META_URL\" \
+          \"$VOLUME_NAME\"" >"$FORMAT_LOG" 2>&1; then
+          echo "[entrypoint] Format succeeded after cleanup" >&2
+        else
+          echo "[entrypoint] ERROR: JuiceFS format still failed:" >&2
+          cat "$FORMAT_LOG" >&2
+          return 1
+        fi
+      else
+        echo "[entrypoint] ERROR: JuiceFS format failed:" >&2
+        cat "$FORMAT_LOG" >&2
+        return 1
+      fi
     fi
   else
     echo "[entrypoint] Using existing metadata: $(ls -la "$JFS_META_FILE" | awk '{print $5}') bytes" >&2
@@ -441,25 +519,20 @@ cleanup() {
   echo "[entrypoint] Stopping Verdaccio (pm2)..." >&2
   pm2 stop verdaccio 2>/dev/null || true
 
+  # Stop Litestream replication (graceful shutdown ensures final WAL sync)
+  if [ -n "${LITESTREAM_PID:-}" ] && kill -0 "$LITESTREAM_PID" 2>/dev/null; then
+    echo "[entrypoint] Stopping Litestream (PID: $LITESTREAM_PID)..." >&2
+    kill -INT "$LITESTREAM_PID" 2>/dev/null || true
+    # Give Litestream time to flush final changes
+    sleep 2
+    kill "$LITESTREAM_PID" 2>/dev/null || true
+    wait "$LITESTREAM_PID" 2>/dev/null || true
+  fi
+
   # Unmount JuiceFS
   if grep -q " $TARGET_DIR " /proc/mounts 2>/dev/null; then
     echo "[entrypoint] Unmounting JuiceFS..." >&2
     juicefs umount "$TARGET_DIR" 2>/dev/null || fusermount -u "$TARGET_DIR" 2>/dev/null || true
-  fi
-
-  # Stop metadata upload loop
-  if [ -n "${META_UPLOAD_PID:-}" ] && kill -0 "$META_UPLOAD_PID" 2>/dev/null; then
-    kill "$META_UPLOAD_PID" 2>/dev/null || true
-    wait "$META_UPLOAD_PID" 2>/dev/null || true
-  fi
-
-  # CRITICAL: Upload metadata to R2 on shutdown
-  # Only upload metadata if mount was successful (avoid overwriting good data with bad)
-  if [ "$MOUNT_SUCCEEDED" = "1" ]; then
-    echo "[entrypoint] Uploading JuiceFS metadata to R2..." >&2
-    upload_juicefs_meta
-  else
-    echo "[entrypoint] Skipping metadata upload (mount was not successful)" >&2
   fi
 
   # Unmount R2 goofys mounts
@@ -484,38 +557,44 @@ trap 'SHUTDOWN_REASON="SIGINT"; echo "[entrypoint] Received SIGINT" >&2; exit 0'
 echo "[entrypoint] Starting Verdaccio npm registry (async)..." >&2
 pm2 start verdaccio --name verdaccio -- --config /verdaccio/config.yaml >/dev/null 2>&1
 
-# Mount JuiceFS (includes migration from tar if needed)
-if ! mount_juicefs; then
-  echo "[entrypoint] Fatal: JuiceFS mount failed." >&2
-  exit 1
-fi
-
-# Start background metadata upload loop
-start_meta_upload_loop
-
-# Mount R2 paths via goofys for file sharing with user
-if has_r2_config; then
-  echo "[entrypoint] Mounting R2 file sharing directories..." >&2
-  R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-  R2_BASE="$(ensure_trailing_slash "${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}")"
-
-  # Create mount directories
-  mkdir -p /mnt/user-uploads /mnt/user-outputs
-
-  # Mount user-uploads (files uploaded by user via web UI)
-  if goofys --endpoint "$R2_ENDPOINT" -o allow_other --uid "$(id -u claude)" --gid "$(id -g claude)" \
-      "${R2_BUCKET_NAME}:${R2_BASE}user-uploads" /mnt/user-uploads 2>&1; then
-    echo "[entrypoint] Mounted /mnt/user-uploads" >&2
-  else
-    echo "[entrypoint] WARNING: Failed to mount /mnt/user-uploads" >&2
+# Mount JuiceFS (includes migration from tar if needed) - skip if DISABLE_JUICEFS=1
+if [ "${DISABLE_JUICEFS:-}" = "1" ]; then
+  echo "[entrypoint] DISABLE_JUICEFS=1 - skipping JuiceFS mount, using local filesystem" >&2
+  mkdir -p "$TARGET_DIR"
+  chown claude:claude "$TARGET_DIR"
+else
+  if ! mount_juicefs; then
+    echo "[entrypoint] Fatal: JuiceFS mount failed." >&2
+    exit 1
   fi
 
-  # Mount user-outputs (files created for user to download)
-  if goofys --endpoint "$R2_ENDPOINT" -o allow_other --uid "$(id -u claude)" --gid "$(id -g claude)" \
-      "${R2_BUCKET_NAME}:${R2_BASE}user-outputs" /mnt/user-outputs 2>&1; then
-    echo "[entrypoint] Mounted /mnt/user-outputs" >&2
-  else
-    echo "[entrypoint] WARNING: Failed to mount /mnt/user-outputs" >&2
+  # Start Litestream continuous replication to R2
+  start_litestream_replication
+
+  # Mount R2 paths via goofys for file sharing with user
+  if has_r2_config; then
+    echo "[entrypoint] Mounting R2 file sharing directories..." >&2
+    R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+    R2_BASE="$(ensure_trailing_slash "${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}")"
+
+    # Create mount directories
+    mkdir -p /mnt/user-uploads /mnt/user-outputs
+
+    # Mount user-uploads (files uploaded by user via web UI)
+    if goofys --endpoint "$R2_ENDPOINT" -o allow_other --uid "$(id -u claude)" --gid "$(id -g claude)" \
+        "${R2_BUCKET_NAME}:${R2_BASE}user-uploads" /mnt/user-uploads 2>&1; then
+      echo "[entrypoint] Mounted /mnt/user-uploads" >&2
+    else
+      echo "[entrypoint] WARNING: Failed to mount /mnt/user-uploads" >&2
+    fi
+
+    # Mount user-outputs (files created for user to download)
+    if goofys --endpoint "$R2_ENDPOINT" -o allow_other --uid "$(id -u claude)" --gid "$(id -g claude)" \
+        "${R2_BUCKET_NAME}:${R2_BASE}user-outputs" /mnt/user-outputs 2>&1; then
+      echo "[entrypoint] Mounted /mnt/user-outputs" >&2
+    else
+      echo "[entrypoint] WARNING: Failed to mount /mnt/user-outputs" >&2
+    fi
   fi
 fi
 
@@ -556,6 +635,7 @@ export CLOUDFLARE_API_TOKEN='${CLOUDFLARE_API_TOKEN:-}'
 export CLOUDFLARE_API_BASE_URL='${CLOUDFLARE_API_BASE_URL:-}'
 export CF_DISPATCH_NAMESPACE='${CF_DISPATCH_NAMESPACE:-}'
 export WORKER_BASE_URL='${WORKER_BASE_URL:-}'
+export ENABLE_STRACE='${ENABLE_STRACE:-}'
 ENVEOF
 chmod 644 /tmp/ws-env.sh
 
@@ -575,7 +655,12 @@ fi
 # Start ws-server as claude user (runs on port 8080)
 # Run in foreground (no exec) so the shell stays alive for the trap
 echo "[entrypoint] Starting ws-server as claude user on port 8080..." >&2
-su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && bun /app/ws-server.mjs" &
+if [ "${ENABLE_STRACE:-}" = "1" ]; then
+  echo "[entrypoint] STRACE ENABLED - logging to /tmp/ws-strace.log" >&2
+  su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && strace -f -tt -T -o /tmp/ws-strace.log bun /app/ws-server.mjs" &
+else
+  su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && bun /app/ws-server.mjs" &
+fi
 WS_PID=$!
 echo "[entrypoint] ws-server PID: $WS_PID" >&2
 

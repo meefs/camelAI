@@ -40,9 +40,9 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
    - `entrypoint.sh` - Mounts JuiceFS (R2 + SQLite metadata), handles tar migration, starts services
    - `ws-server.mjs` - WebSocket server running inside Cloudflare Container
    - Calls Claude SDK `query()` with streaming enabled
-   - `r2-meta.mjs` - JuiceFS SQLite metadata backup/restore to R2
    - `sync.mjs` - R2 tar snapshot download (used for migration from old backups)
    - `control-plane.mjs` - Exec/filesystem API server for container management
+   - Litestream - Continuous SQLite replication to R2 (replaces discrete backups)
 
 ## Key Files
 
@@ -73,8 +73,7 @@ Chiridion is an AI chat application built on Cloudflare's edge infrastructure. I
 | `workers/main/src/screenshot-queue.ts` | Screenshot queue handler for app previews |
 | `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
-| `sandbox/entrypoint.sh` | Container entrypoint that mounts JuiceFS, handles tar migration, starts services |
-| `sandbox/r2-meta.mjs` | JuiceFS SQLite metadata backup/restore helper |
+| `sandbox/entrypoint.sh` | Container entrypoint that mounts JuiceFS, starts Litestream, starts services |
 | `sandbox/sync.mjs` | R2 tar snapshot download (used for migration) |
 | `src/lib/integration-registry.ts` | Integration type definitions and schemas |
 | `src/lib/integration-crypto.ts` | Credential encryption utilities |
@@ -291,7 +290,7 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `JUICEFS_CACHE_DIR` | Directory for JuiceFS FUSE cache (default: `/tmp/juicefs-cache`) |
 | `JUICEFS_UPLOAD_DELAY` | Delay before uploading dirty data to R2 (default: `60s`) |
 | `JUICEFS_BUFFER_SIZE` | Read/write buffer size in MB (default: `1024`) |
-| `JUICEFS_META_UPLOAD_INTERVAL` | Background metadata backup interval (default: `60s`) |
+| `DISABLE_JUICEFS` | Set to `1` to skip JuiceFS mount and use local filesystem |
 
 #### OAuth Setup
 

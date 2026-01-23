@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-22-v9-fix-claude-dir-perms
+# Version: 2026-01-23-v18-cleanup-orphaned-storage
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -25,11 +25,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfuse2 \
     libfuse3-3 \
     sqlite3 \
+    strace \
   && rm -rf /var/lib/apt/lists/* \
   && npm install -g bun shadcn verdaccio pm2 \
   && curl -L -o /usr/local/bin/goofys https://github.com/kahing/goofys/releases/download/v0.24.0/goofys \
   && chmod +x /usr/local/bin/goofys \
-  && curl -fsSL https://d.juicefs.com/install | sh -
+  && curl -fsSL https://d.juicefs.com/install | sh - \
+  && curl -fsSL -o /tmp/litestream.deb https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-amd64.deb \
+  && dpkg -i /tmp/litestream.deb \
+  && rm /tmp/litestream.deb
 
 # Layer 3: Chiridion Wrangler + Verdaccio local registry
 # Pre-publish chiridion-wrangler as "wrangler" so all npm/bun installs get our version
@@ -65,7 +69,7 @@ RUN bun install
 
 # Layer 5: App code (changes frequently) - copied after install for better caching
 COPY --chmod=755 sandbox/entrypoint.sh ./
-COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/r2-meta.mjs ./
+COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
 COPY sandbox/skills ./skills
 RUN chmod -R a+rX /app
 

@@ -1,9 +1,8 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync } from 'fs';
-import { appendFile, mkdir } from 'fs/promises';
+import { appendFile, mkdir, access } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-22-sandbox-v22-fix-all-dir-perms';
+const VERSION = '2026-01-23-sandbox-v25-simplify-yield';
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {
@@ -286,24 +285,26 @@ process.on('SIGINT', () => {
   log('[ws-server]', 'Received SIGINT signal');
 });
 
-// Check if a session JSONL file exists
-function sessionFileExists(sessionId) {
+// Check if a session JSONL file exists (async version)
+async function sessionFileExists(sessionId) {
   if (!sessionId) return false;
   const projectPath = '-home-claude';
   const jsonlPath = `${SYNC_DIR}/.claude/projects/${projectPath}/${sessionId}.jsonl`;
   const start = Date.now();
   let exists = false;
   try {
-    exists = existsSync(jsonlPath);
-    return exists;
-  } finally {
-    const durationMs = Date.now() - start;
-    log('[ws-server]', 'sessionFileExists', { sessionId, path: jsonlPath, exists, durationMs });
+    await access(jsonlPath);
+    exists = true;
+  } catch {
+    exists = false;
   }
+  const durationMs = Date.now() - start;
+  log('[ws-server]', 'sessionFileExists', { sessionId, path: jsonlPath, exists, durationMs });
+  return exists;
 }
 
 // Query options for Claude SDK
-function getQueryOptions(session) {
+function getQueryOptions(session, fileExists) {
   // Build env vars, merging:
   // 1. Base process.env (set at container startup)
   // 2. Integration env vars (pushed by worker when integrations change)
@@ -393,8 +394,7 @@ The infrastructure is already configured for Worker deployments. For fullstack a
   };
 
   if (session.threadId) {
-    // Check if session file exists to determine resume vs new
-    if (sessionFileExists(session.threadId)) {
+    if (fileExists) {
       options.resume = session.threadId;
     } else {
       options.extraArgs = { 'session-id': session.threadId };
@@ -407,6 +407,7 @@ The infrastructure is already configured for Worker deployments. For fullstack a
 // Async generator that yields user messages on demand
 async function* createMessageStream(session) {
   log('[ws-server]', 'messageStream_start', { threadId: session.threadId });
+  let isFirstMessage = true;
   while (true) {
     // Check queue first for any buffered messages
     let message;
@@ -429,6 +430,12 @@ async function* createMessageStream(session) {
       return;
     }
 
+    // Short delay before first message to let SDK fully initialize
+    if (isFirstMessage) {
+      await Bun.sleep(100);
+      isFirstMessage = false;
+    }
+
     // Yield the user message
     log('[ws-server]', 'messageStream_yield', {
       threadId: session.threadId,
@@ -437,12 +444,10 @@ async function* createMessageStream(session) {
     });
     yield {
       type: 'user',
-      session_id: session.threadId || '',
       message: {
         role: 'user',
-        content: [{ type: 'text', text: message }],
+        content: message,
       },
-      parent_tool_use_id: null,
     };
   }
 }
@@ -513,21 +518,21 @@ function attachSession(ws, session, lastEventId) {
 }
 
 // Initialize the stateful query session
-function initSession(session) {
+async function initSession(session) {
   if (session.activeQuery) {
     return;
   }
 
   try {
     const initStart = Date.now();
-    const options = getQueryOptions(session);
+    const fileExists = await sessionFileExists(session.threadId);
+    const options = getQueryOptions(session, fileExists);
     const messageStream = createMessageStream(session);
     session.activeQuery = query({ prompt: messageStream, options });
     session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
     log('[ws-server]', 'initSession', {
       threadId: session.threadId,
-      resume: Boolean(options.resume),
-      extraArgs: options.extraArgs ? Object.keys(options.extraArgs) : null,
+      resume: fileExists,
       durationMs: Date.now() - initStart,
     });
   } catch (error) {
@@ -644,7 +649,7 @@ function formatAuthorPrefix(userName, userEmail) {
 }
 
 // Handle a user message
-function handleUserMessage(session, content, userInfo = null) {
+async function handleUserMessage(session, content, userInfo = null) {
   // Prepend author attribution to message content
   const authorPrefix = formatAuthorPrefix(userInfo?.userName, userInfo?.userEmail);
   const attributedContent = authorPrefix + content;
@@ -659,7 +664,7 @@ function handleUserMessage(session, content, userInfo = null) {
     hasResolver: Boolean(session.messageResolver),
   });
   // Initialize session if needed
-  initSession(session);
+  await initSession(session);
 
   // Start event loop if not running (it runs continuously)
   startEventLoop(session);
@@ -813,7 +818,7 @@ Bun.serve({
             contentLength: typeof data.content === 'string' ? data.content.length : null,
             hasSession: Boolean(session),
           });
-          handleUserMessage(session, data.content, userInfo);
+          await handleUserMessage(session, data.content, userInfo);
 
         } else if (data.type === 'stop') {
           const threadId = ws.data?.threadId;
