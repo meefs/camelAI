@@ -290,7 +290,15 @@ function sessionFileExists(sessionId) {
   if (!sessionId) return false;
   const projectPath = '-home-claude';
   const jsonlPath = `${SYNC_DIR}/.claude/projects/${projectPath}/${sessionId}.jsonl`;
-  return existsSync(jsonlPath);
+  const start = Date.now();
+  let exists = false;
+  try {
+    exists = existsSync(jsonlPath);
+    return exists;
+  } finally {
+    const durationMs = Date.now() - start;
+    log('[ws-server]', 'sessionFileExists', { sessionId, path: jsonlPath, exists, durationMs });
+  }
 }
 
 // Query options for Claude SDK
@@ -485,6 +493,11 @@ function attachSession(ws, session, lastEventId) {
 
   ws.send(JSON.stringify({ type: 'ready' }));
   replayBufferedEvents(session, ws, lastEventId);
+  log('[ws-server]', 'attachSession', {
+    threadId: session.threadId,
+    lastEventId,
+    attachedSockets: session.attachedSockets.size,
+  });
 }
 
 // Initialize the stateful query session
@@ -494,10 +507,17 @@ function initSession(session) {
   }
 
   try {
+    const initStart = Date.now();
     const options = getQueryOptions(session);
     const messageStream = createMessageStream(session);
     session.activeQuery = query({ prompt: messageStream, options });
     session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
+    log('[ws-server]', 'initSession', {
+      threadId: session.threadId,
+      resume: Boolean(options.resume),
+      extraArgs: options.extraArgs ? Object.keys(options.extraArgs) : null,
+      durationMs: Date.now() - initStart,
+    });
   } catch (error) {
     logError('[ws-server]', 'Failed to init:', summarizeError(error));
     bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
@@ -514,6 +534,8 @@ function startEventLoop(session) {
   (async () => {
     let exitReason = 'unknown';
     let eventCount = 0;
+    const loopStart = Date.now();
+    let firstEventAt = null;
     try {
       while (true) {
         const { value: event, done } = await session.queryIterator.next();
@@ -522,6 +544,16 @@ function startEventLoop(session) {
         if (done) {
           exitReason = 'iterator_done';
           break;
+        }
+
+        if (!firstEventAt) {
+          firstEventAt = Date.now();
+          log('[ws-server]', 'first_event', {
+            threadId: session.threadId,
+            afterMs: firstEventAt - loopStart,
+            eventType: event?.type,
+            eventSubType: event?.event?.type,
+          });
         }
 
         // Send event to client via WebSocket (or buffer if detached)
@@ -551,6 +583,13 @@ function startEventLoop(session) {
       session.activeQuery = null;
       session.queryIterator = null;
       session.eventLoopRunning = false;
+      log('[ws-server]', 'event_loop_exit', {
+        threadId: session.threadId,
+        exitReason,
+        eventCount,
+        durationMs: Date.now() - loopStart,
+        hadFirstEvent: Boolean(firstEventAt),
+      });
     }
   })();
 }
@@ -577,6 +616,14 @@ function handleUserMessage(session, content, userInfo = null) {
   const attributedContent = authorPrefix + content;
 
   void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content: attributedContent, author: userInfo });
+  log('[ws-server]', 'handleUserMessage', {
+    threadId: session.threadId,
+    contentLength: attributedContent.length,
+    hasActiveQuery: Boolean(session.activeQuery),
+    hasIterator: Boolean(session.queryIterator),
+    queueLength: session.messageQueue.length,
+    hasResolver: Boolean(session.messageResolver),
+  });
   // Initialize session if needed
   initSession(session);
 
@@ -593,6 +640,11 @@ function handleUserMessage(session, content, userInfo = null) {
     // Queue message - will be picked up when generator pulls
     session.messageQueue.push(attributedContent);
   }
+  log('[ws-server]', 'handleUserMessage_enqueued', {
+    threadId: session.threadId,
+    queueLength: session.messageQueue.length,
+    hasResolver: Boolean(session.messageResolver),
+  });
 }
 
 // Bun WebSocket server with HTTP health endpoint
@@ -676,6 +728,7 @@ Bun.serve({
   websocket: {
     open(ws) {
       totalConnections++;
+      log('[ws-server]', 'ws_open', { totalConnections });
     },
 
     async message(ws, message) {
@@ -700,6 +753,12 @@ Bun.serve({
 
           const session = getOrCreateSession(threadId, threadDeployToken, userInfo);
           void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken, userName: userInfo.userName } });
+          log('[ws-server]', 'init', {
+            threadId,
+            lastEventId: data.lastEventId,
+            hasDeployToken: Boolean(threadDeployToken),
+            userName: userInfo.userName,
+          });
           attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {
@@ -715,6 +774,11 @@ Bun.serve({
             userName: ws.data?.userName || null,
             userEmail: ws.data?.userEmail || null,
           };
+          log('[ws-server]', 'message', {
+            threadId,
+            contentLength: typeof data.content === 'string' ? data.content.length : null,
+            hasSession: Boolean(session),
+          });
           handleUserMessage(session, data.content, userInfo);
 
         } else if (data.type === 'stop') {
@@ -722,6 +786,7 @@ Bun.serve({
           if (threadId && sessions.has(threadId)) {
             const session = sessions.get(threadId);
             void writeTrace(session.threadId, { direction: 'ws_in', type: 'stop' });
+            log('[ws-server]', 'stop', { threadId });
             if (session.activeQuery) {
               try {
                 await session.activeQuery.interrupt();
@@ -745,6 +810,7 @@ Bun.serve({
           session.attachedSockets.delete(ws);
         }
       }
+      log('[ws-server]', 'ws_close', { threadId, code, reason: String(reason || '') });
     },
 
     error(ws, error) {
