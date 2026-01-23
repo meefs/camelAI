@@ -181,6 +181,8 @@ function createSession(threadId, threadDeployToken = null, userInfo = null) {
     userEmail: userInfo?.userEmail || null,
     activeQuery: null,
     queryIterator: null,
+    initPromise: null,
+    queryId: 0,
     eventLoopRunning: false,
     messageResolver: null,
     messageQueue: [],
@@ -520,24 +522,41 @@ function attachSession(ws, session, lastEventId) {
 // Initialize the stateful query session
 async function initSession(session) {
   if (session.activeQuery) {
+    log('[ws-server]', 'initSession_skip_active', { threadId: session.threadId });
+    return;
+  }
+  if (session.initPromise) {
+    log('[ws-server]', 'initSession_skip_inflight', { threadId: session.threadId });
+    await session.initPromise;
     return;
   }
 
-  try {
+  session.initPromise = (async () => {
     const initStart = Date.now();
-    const fileExists = await sessionFileExists(session.threadId);
-    const options = getQueryOptions(session, fileExists);
-    const messageStream = createMessageStream(session);
-    session.activeQuery = query({ prompt: messageStream, options });
-    session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
-    log('[ws-server]', 'initSession', {
-      threadId: session.threadId,
-      resume: fileExists,
-      durationMs: Date.now() - initStart,
-    });
-  } catch (error) {
-    logError('[ws-server]', 'Failed to init:', summarizeError(error));
-    bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
+    log('[ws-server]', 'initSession_start', { threadId: session.threadId });
+    try {
+      const fileExists = await sessionFileExists(session.threadId);
+      const options = getQueryOptions(session, fileExists);
+      const messageStream = createMessageStream(session);
+      session.activeQuery = query({ prompt: messageStream, options });
+      session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
+      session.queryId += 1;
+      log('[ws-server]', 'initSession', {
+        threadId: session.threadId,
+        resume: fileExists,
+        durationMs: Date.now() - initStart,
+        queryId: session.queryId,
+      });
+    } catch (error) {
+      logError('[ws-server]', 'Failed to init:', summarizeError(error));
+      bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
+    }
+  })();
+
+  try {
+    await session.initPromise;
+  } finally {
+    session.initPromise = null;
   }
 }
 
@@ -547,6 +566,7 @@ function startEventLoop(session) {
     return;
   }
   session.eventLoopRunning = true;
+  const eventLoopQueryId = session.queryId;
 
   (async () => {
     let exitReason = 'unknown';
@@ -628,6 +648,7 @@ function startEventLoop(session) {
         durationMs: Date.now() - loopStart,
         hadFirstEvent: Boolean(firstEventAt),
         lastEvents: session.eventTypeHistory || [],
+        queryId: eventLoopQueryId,
       });
     }
   })();
