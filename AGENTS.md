@@ -292,6 +292,26 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `JUICEFS_BUFFER_SIZE` | Read/write buffer size in MB (default: `1024`) |
 | `DISABLE_JUICEFS` | Set to `1` to skip JuiceFS mount and use local filesystem |
 
+#### Sandbox Debug Variables (optional)
+
+| Variable | Description |
+|----------|-------------|
+| `CHIRIDION_TRACE_EVENTS` | Set to `0` to disable ws-server trace writes (defaults to enabled) |
+| `CHIRIDION_DEBUG_STARTUP` | Log startup env snapshot + optional probes (`1` to enable) |
+| `CHIRIDION_DEBUG_SDK` | Log query options and early-exit context (`1` to enable) |
+| `CHIRIDION_DEBUG_FS` | Run filesystem probes + write test at startup (`1` to enable) |
+| `CHIRIDION_DEBUG_PROXY` | Probe `ANTHROPIC_BASE_URL/health` at startup (`1` to enable) |
+| `CHIRIDION_PREQUEUE_FIRST_MESSAGE` | Queue first user message before SDK init (`1` to enable) |
+| `CHIRIDION_FIRST_MESSAGE_DELAY_MS` | Delay (ms) before first message yield (default `100`) |
+
+#### Claude Code Runtime Variables (optional)
+
+| Variable | Description |
+|----------|-------------|
+| `CLAUDE_CODE_ENABLE_TELEMETRY` | Set to `0` to disable Claude Code telemetry |
+| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | Set to `1` to disable nonessential background network calls |
+| `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` | Set to `1` to disable background tasks in Claude Code |
+
 #### OAuth Setup
 
 **Google OAuth:**
@@ -314,6 +334,7 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `PROXY_DEFAULT_PROVIDER` | Default provider name |
 | `PROXY_FALLBACK_ORDER` | Comma-separated provider fallback list |
 | `PROXY_LOG_LEVEL` | Logging verbosity (`debug`, `info`, `warn`, `error`, `none`) |
+| `PROXY_LOCAL_COUNT_TOKENS` | If set to `1`, return locally-estimated token counts for `/v1/messages/count_tokens` without hitting upstream providers |
 | `PROXY_MODEL_ALIASES` | JSON map of Anthropic model IDs → canonical aliases |
 | `PROXY_BEDROCK_MODEL_MAP` | JSON map of Anthropic model IDs/aliases → Bedrock model IDs (e.g., `global.anthropic.claude-...-v1:0`) |
 | `ANTHROPIC_API_KEY` | Upstream Anthropic key |

@@ -30,6 +30,16 @@ export interface WorkspaceContainerEnv {
   WORKER_BASE_URL?: string;
   PROXY_BASE_URL?: string;
   DISABLE_JUICEFS?: string;
+  CHIRIDION_TRACE_EVENTS?: string;
+  CHIRIDION_DEBUG_STARTUP?: string;
+  CHIRIDION_DEBUG_SDK?: string;
+  CHIRIDION_DEBUG_FS?: string;
+  CHIRIDION_DEBUG_PROXY?: string;
+  CHIRIDION_PREQUEUE_FIRST_MESSAGE?: string;
+  CHIRIDION_FIRST_MESSAGE_DELAY_MS?: string;
+  CLAUDE_CODE_ENABLE_TELEMETRY?: string;
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC?: string;
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
 }
 
 // Control plane response types
@@ -221,6 +231,24 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     if (this.env.R2_MOUNT_DIR) envVars.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
     if (this.env.R2_MOUNT_READONLY) envVars.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
     if (this.env.DISABLE_JUICEFS) envVars.DISABLE_JUICEFS = this.env.DISABLE_JUICEFS;
+    if (this.env.CHIRIDION_TRACE_EVENTS) envVars.CHIRIDION_TRACE_EVENTS = this.env.CHIRIDION_TRACE_EVENTS;
+    if (this.env.CHIRIDION_DEBUG_STARTUP) envVars.CHIRIDION_DEBUG_STARTUP = this.env.CHIRIDION_DEBUG_STARTUP;
+    if (this.env.CHIRIDION_DEBUG_SDK) envVars.CHIRIDION_DEBUG_SDK = this.env.CHIRIDION_DEBUG_SDK;
+    if (this.env.CHIRIDION_DEBUG_FS) envVars.CHIRIDION_DEBUG_FS = this.env.CHIRIDION_DEBUG_FS;
+    if (this.env.CHIRIDION_DEBUG_PROXY) envVars.CHIRIDION_DEBUG_PROXY = this.env.CHIRIDION_DEBUG_PROXY;
+    if (this.env.CHIRIDION_PREQUEUE_FIRST_MESSAGE) envVars.CHIRIDION_PREQUEUE_FIRST_MESSAGE = this.env.CHIRIDION_PREQUEUE_FIRST_MESSAGE;
+    if (this.env.CHIRIDION_FIRST_MESSAGE_DELAY_MS) {
+      envVars.CHIRIDION_FIRST_MESSAGE_DELAY_MS = this.env.CHIRIDION_FIRST_MESSAGE_DELAY_MS;
+    }
+    if (this.env.CLAUDE_CODE_ENABLE_TELEMETRY) {
+      envVars.CLAUDE_CODE_ENABLE_TELEMETRY = this.env.CLAUDE_CODE_ENABLE_TELEMETRY;
+    }
+    if (this.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) {
+      envVars.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = this.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+    }
+    if (this.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) {
+      envVars.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = this.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS;
+    }
 
     // R2 prefix for workspace-scoped access (legacy org-id workspaces keep old prefix)
     const prefix = workspaceId === orgId ? `${orgId}/` : `${orgId}/${workspaceId}/`;

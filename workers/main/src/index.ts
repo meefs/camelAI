@@ -223,17 +223,18 @@ export default {
       return handleMcpRequest(request, env, ctx);
     }
 
-    // LLM Proxy passthrough at /v1/messages (forwards to PROXY service binding)
+    // LLM Proxy passthrough at /v1/messages (and subpaths like /v1/messages/count_tokens)
     // This allows sandbox containers to use PROXY_BASE_URL pointing to the main worker
-    if (url.pathname === '/v1/messages' || url.pathname === '/v1/messages/') {
+    if (url.pathname === '/v1/messages' || url.pathname === '/v1/messages/' || url.pathname.startsWith('/v1/messages/')) {
       if (!env.PROXY) {
         return new Response(JSON.stringify({ error: 'Proxy service not configured' }), {
           status: 503,
           headers: { 'Content-Type': 'application/json' },
         });
       }
+      console.log('[proxy-pass]', { path: url.pathname, search: url.search });
       // Forward the request to the proxy worker
-      const proxyUrl = new URL('/v1/messages', 'https://proxy.internal');
+      const proxyUrl = new URL(`${url.pathname}${url.search}`, 'https://proxy.internal');
       return env.PROXY.fetch(new Request(proxyUrl, {
         method: request.method,
         headers: request.headers,

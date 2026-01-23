@@ -1,5 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { appendFile, mkdir, access } from 'fs/promises';
+import { appendFile, mkdir, access, stat, readFile } from 'fs/promises';
+import os from 'os';
 
 // Version for verifying container has latest code
 const VERSION = '2026-01-23-sandbox-v25-simplify-yield';
@@ -32,6 +33,13 @@ const TRACE_EVENTS = process.env.CHIRIDION_TRACE_EVENTS !== '0';
 const TRACE_DIR = `${SYNC_DIR}/.chiridion/trace`;
 const TRACE_ALL_FILE = `${TRACE_DIR}/_all.ndjson`;
 const TASK_RESULTS_DIR = `${SYNC_DIR}/.chiridion/task-results`;
+const CLAUDE_DEBUG_DIR = `${SYNC_DIR}/.claude/debug`;
+const DEBUG_STARTUP = process.env.CHIRIDION_DEBUG_STARTUP === '1';
+const DEBUG_SDK = process.env.CHIRIDION_DEBUG_SDK === '1';
+const DEBUG_FS = process.env.CHIRIDION_DEBUG_FS === '1';
+const DEBUG_PROXY = process.env.CHIRIDION_DEBUG_PROXY === '1';
+const PREQUEUE_FIRST_MESSAGE = process.env.CHIRIDION_PREQUEUE_FIRST_MESSAGE === '1';
+const FIRST_MESSAGE_DELAY_MS = Number(process.env.CHIRIDION_FIRST_MESSAGE_DELAY_MS || '100') || 0;
 
 log('[ws-server]', 'Starting', { version: VERSION, port: PORT });
 
@@ -45,6 +53,7 @@ const sessions = new Map();
 const MAX_EVENT_BUFFER = 500;
 let traceDirPromise = null;
 let taskResultsDirPromise = null;
+let startupDiagnosticsPromise = null;
 
 // Integration env vars cache - pushed by worker when integrations change
 // Keys are INT_* prefixed env var names, values are the credential values
@@ -70,6 +79,126 @@ function ensureTaskResultsDir() {
     });
   }
   return taskResultsDirPromise;
+}
+
+async function probePath(label, path) {
+  try {
+    const info = await stat(path);
+    log('[ws-server]', 'fs_probe', {
+      label,
+      path,
+      isFile: info.isFile(),
+      isDirectory: info.isDirectory(),
+      size: info.size,
+      mode: info.mode,
+    });
+  } catch (error) {
+    logError('[ws-server]', 'fs_probe_failed', { label, path, error: error?.message || String(error) });
+  }
+}
+
+async function probeFilesystem() {
+  try {
+    await mkdir(SYNC_DIR, { recursive: true });
+  } catch (error) {
+    logError('[ws-server]', 'fs_probe_mkdir_failed', { path: SYNC_DIR, error: error?.message || String(error) });
+  }
+
+  await probePath('sync_dir', SYNC_DIR);
+  await probePath('claude_dir', `${SYNC_DIR}/.claude`);
+  await probePath('claude_projects_dir', `${SYNC_DIR}/.claude/projects`);
+  await probePath('chiridion_dir', `${SYNC_DIR}/.chiridion`);
+
+  try {
+    await ensureTraceDir();
+    const probePathFile = `${TRACE_DIR}/startup-probe.ndjson`;
+    const line = `${JSON.stringify({ at: new Date().toISOString(), ok: true })}\n`;
+    await appendFile(probePathFile, line);
+    log('[ws-server]', 'fs_probe_write_ok', { path: probePathFile });
+  } catch (error) {
+    logError('[ws-server]', 'fs_probe_write_failed', { path: TRACE_DIR, error: error?.message || String(error) });
+  }
+}
+
+async function tailFile(path, maxBytes = 12000) {
+  try {
+    const data = await readFile(path);
+    if (!data || data.length === 0) return null;
+    const slice = data.length > maxBytes ? data.subarray(data.length - maxBytes) : data;
+    const text = new TextDecoder().decode(slice);
+    // Keep the last ~40 lines to avoid flooding logs.
+    const lines = text.trim().split('\n');
+    const tail = lines.slice(-40).join('\n');
+    return tail || null;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function logClaudeDebugTail(threadId, reason) {
+  if (!threadId) return;
+  const debugPath = `${CLAUDE_DEBUG_DIR}/${threadId}.txt`;
+  const tail = await tailFile(debugPath);
+  if (tail) {
+    log('[ws-server]', 'claude_debug_tail', { threadId, reason, path: debugPath });
+    console.log(tail);
+  } else {
+    log('[ws-server]', 'claude_debug_tail_missing', { threadId, reason, path: debugPath });
+  }
+}
+
+async function probeProxyBaseUrl() {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL;
+  if (!baseUrl) {
+    logError('[ws-server]', 'proxy_probe_skipped', { reason: 'ANTHROPIC_BASE_URL not set' });
+    return;
+  }
+  const trimmed = baseUrl.replace(/\/$/, '');
+  const candidates = [`${trimmed}/proxy/health`, `${trimmed}/health`];
+  for (const target of candidates) {
+    try {
+      const res = await fetch(target, { method: 'GET' });
+      log('[ws-server]', 'proxy_probe', { url: target, status: res.status });
+      if (res.ok || res.status === 404) {
+        return;
+      }
+    } catch (error) {
+      logError('[ws-server]', 'proxy_probe_failed', { url: target, error: error?.message || String(error) });
+    }
+  }
+}
+
+async function runStartupDiagnostics() {
+  if (startupDiagnosticsPromise) return startupDiagnosticsPromise;
+  startupDiagnosticsPromise = (async () => {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    const gid = typeof process.getgid === 'function' ? process.getgid() : null;
+    const envSnapshot = {
+      cwd: process.cwd(),
+      home: typeof os.homedir === 'function' ? os.homedir() : process.env.HOME || null,
+      user: process.env.USER || null,
+      uid,
+      gid,
+      syncDir: SYNC_DIR,
+      traceDir: TRACE_DIR,
+      taskResultsDir: TASK_RESULTS_DIR,
+      anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || null,
+      anthropicKeyLen: (process.env.ANTHROPIC_API_KEY || '').length,
+      mcpServerUrl: MCP_SERVER_URL || null,
+      mcpKeyLen: (MCP_API_KEY || '').length,
+      bunVersion: typeof Bun !== 'undefined' ? Bun.version : null,
+      nodeVersion: process.version,
+    };
+    log('[ws-server]', 'startup_env', envSnapshot);
+
+    if (DEBUG_FS) {
+      await probeFilesystem();
+    }
+    if (DEBUG_PROXY) {
+      await probeProxyBaseUrl();
+    }
+  })();
+  return startupDiagnosticsPromise;
 }
 
 async function writeTrace(threadId, entry) {
@@ -414,6 +543,21 @@ The infrastructure is already configured for Worker deployments. For fullstack a
     }
   }
 
+  if (DEBUG_SDK) {
+    log('[ws-server]', 'query_options', {
+      threadId: session.threadId,
+      resume: Boolean(options.resume),
+      hasExtraArgs: Boolean(options.extraArgs),
+      model: options.model,
+      fallbackModel: options.fallbackModel,
+      includePartialMessages: options.includePartialMessages,
+      permissionMode: options.permissionMode,
+      allowUnsandboxedCommands: options.allowUnsandboxedCommands,
+      mcpServers: Object.keys(mcpServers || {}),
+      envKeys: Object.keys(envVars || {}).length,
+    });
+  }
+
   return options;
 }
 
@@ -421,47 +565,52 @@ The infrastructure is already configured for Worker deployments. For fullstack a
 async function* createMessageStream(session) {
   log('[ws-server]', 'messageStream_start', { threadId: session.threadId });
   let isFirstMessage = true;
-  while (true) {
-    // Check queue first for any buffered messages
-    let message;
-    if (session.messageQueue.length > 0) {
-      message = session.messageQueue.shift();
-    } else {
-      // Wait for next message
-      message = await new Promise((resolve) => {
-        log('[ws-server]', 'messageStream_wait', { threadId: session.threadId });
-        session.messageResolver = (value) => {
-          log('[ws-server]', 'messageStream_resolve', { threadId: session.threadId, resolved: value !== null });
-          resolve(value);
-        };
+  try {
+    while (true) {
+      // Check queue first for any buffered messages
+      let message;
+      if (session.messageQueue.length > 0) {
+        message = session.messageQueue.shift();
+      } else {
+        // Wait for next message
+        message = await new Promise((resolve) => {
+          log('[ws-server]', 'messageStream_wait', { threadId: session.threadId });
+          session.messageResolver = (value) => {
+            log('[ws-server]', 'messageStream_resolve', { threadId: session.threadId, resolved: value !== null });
+            resolve(value);
+          };
+        });
+      }
+
+      if (message === null) {
+        // Signal to stop
+        log('[ws-server]', 'messageStream_stop', { threadId: session.threadId });
+        return;
+      }
+
+      // Short delay before first message to let SDK fully initialize
+      if (isFirstMessage && FIRST_MESSAGE_DELAY_MS > 0) {
+        await Bun.sleep(FIRST_MESSAGE_DELAY_MS);
+        isFirstMessage = false;
+      }
+
+      // Yield the user message
+      log('[ws-server]', 'messageStream_yield', {
+        threadId: session.threadId,
+        contentLength: typeof message === 'string' ? message.length : null,
+        queueLength: session.messageQueue.length,
       });
+      yield {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: message,
+        },
+      };
     }
-
-    if (message === null) {
-      // Signal to stop
-      log('[ws-server]', 'messageStream_stop', { threadId: session.threadId });
-      return;
-    }
-
-    // Short delay before first message to let SDK fully initialize
-    if (isFirstMessage) {
-      await Bun.sleep(100);
-      isFirstMessage = false;
-    }
-
-    // Yield the user message
-    log('[ws-server]', 'messageStream_yield', {
-      threadId: session.threadId,
-      contentLength: typeof message === 'string' ? message.length : null,
-      queueLength: session.messageQueue.length,
-    });
-    yield {
-      type: 'user',
-      message: {
-        role: 'user',
-        content: message,
-      },
-    };
+  } catch (error) {
+    logError('[ws-server]', 'messageStream_error', { threadId: session.threadId, error: summarizeError(error) });
+    throw error;
   }
 }
 
@@ -546,6 +695,9 @@ async function initSession(session) {
     const initStart = Date.now();
     log('[ws-server]', 'initSession_start', { threadId: session.threadId });
     try {
+      if (DEBUG_STARTUP) {
+        await runStartupDiagnostics();
+      }
       const fileExists = await sessionFileExists(session.threadId);
       const options = getQueryOptions(session, fileExists);
       const messageStream = createMessageStream(session);
@@ -673,6 +825,7 @@ function startEventLoop(session) {
         ? Date.now() - session.lastStopRequestedAt < stopCooldownMs
         : false;
       if (exitReason === 'iterator_done' && !hadNonSystemEvent && hasConnections && !stopRecently) {
+        void logClaudeDebugTail(session.threadId, 'early_exit_iterator_done');
         if (session.earlyExitRetries < 1 && session.lastUserMessage) {
           session.earlyExitRetries += 1;
           const retryContent = session.lastUserMessage;
@@ -680,6 +833,9 @@ function startEventLoop(session) {
             threadId: session.threadId,
             queryId: eventLoopQueryId,
             retryCount: session.earlyExitRetries,
+            lastUserMessageLength: retryContent?.length || 0,
+            queueLength: session.messageQueue.length,
+            hasResolver: Boolean(session.messageResolver),
           });
           setTimeout(() => {
             if (session.activeQuery || session.messageResolver || session.messageQueue.length > 0) {
@@ -734,21 +890,32 @@ async function handleUserMessage(session, content, userInfo = null) {
     queueLength: session.messageQueue.length,
     hasResolver: Boolean(session.messageResolver),
   });
+  const shouldPrequeue = PREQUEUE_FIRST_MESSAGE && !session.activeQuery && !session.initPromise && !session.messageResolver;
+  if (shouldPrequeue) {
+    session.messageQueue.push(attributedContent);
+    log('[ws-server]', 'message_prequeued', {
+      threadId: session.threadId,
+      queueLength: session.messageQueue.length,
+    });
+  }
+
   // Initialize session if needed
   await initSession(session);
 
   // Start event loop if not running (it runs continuously)
   startEventLoop(session);
 
-  // Feed message to the generator
-  // Messages are persisted by Claude SDK in ~/.claude/projects/.../session.jsonl
-  if (session.messageResolver) {
-    const resolver = session.messageResolver;
-    session.messageResolver = null;
-    resolver(attributedContent);
-  } else {
-    // Queue message - will be picked up when generator pulls
-    session.messageQueue.push(attributedContent);
+  if (!shouldPrequeue) {
+    // Feed message to the generator
+    // Messages are persisted by Claude SDK in ~/.claude/projects/.../session.jsonl
+    if (session.messageResolver) {
+      const resolver = session.messageResolver;
+      session.messageResolver = null;
+      resolver(attributedContent);
+    } else {
+      // Queue message - will be picked up when generator pulls
+      session.messageQueue.push(attributedContent);
+    }
   }
   log('[ws-server]', 'handleUserMessage_enqueued', {
     threadId: session.threadId,

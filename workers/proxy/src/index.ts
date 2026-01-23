@@ -23,6 +23,7 @@ interface Env {
   PROXY_DEFAULT_PROVIDER?: string;
   PROXY_FALLBACK_ORDER?: string;
   PROXY_LOG_LEVEL?: string;
+  PROXY_LOCAL_COUNT_TOKENS?: string;
   PROXY_MODEL_ALIASES?: string;
   PROXY_BEDROCK_MODEL_MAP?: string;
   ORG?: DurableObjectNamespace<OrgDO>;
@@ -88,13 +89,23 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    logDebug(env, 'proxy request', {
+      path: url.pathname,
+      search: url.search,
+      method: request.method,
+    });
+
     if (url.pathname === '/health') {
       return new Response(JSON.stringify({ ok: true }), {
         headers: { 'content-type': 'application/json' },
       });
     }
 
-    if (url.pathname !== '/v1/messages') {
+    const isMessages = url.pathname === '/v1/messages' || url.pathname === '/v1/messages/';
+    const isCountTokens =
+      url.pathname === '/v1/messages/count_tokens' || url.pathname === '/v1/messages/count_tokens/';
+
+    if (!isMessages && !isCountTokens) {
       return new Response('Not Found', { status: 404 });
     }
 
@@ -105,6 +116,13 @@ export default {
     const clientKey = extractClientKey(request);
     const authResult = await authorizeClient(clientKey, env);
     if (!authResult.ok || !authResult.auth) {
+      logWarn(env, 'proxy auth failed', {
+        path: url.pathname,
+        reason: authResult.error ?? 'unknown',
+        hasAuthHeader: Boolean(request.headers.get('authorization')),
+        hasApiKeyHeader: Boolean(request.headers.get('x-api-key') || request.headers.get('x-chiridion-key')),
+        tokenPrefix: clientKey ? clientKey.slice(0, 8) : null,
+      });
       return errorResponse(401, 'authentication_error', authResult.error ?? 'Invalid API key');
     }
 
@@ -119,6 +137,16 @@ export default {
 
     const stream = Boolean(body.stream);
     const providers = resolveProviders(env);
+
+    if (isCountTokens && env.PROXY_LOCAL_COUNT_TOKENS === '1') {
+      const usage = estimateUsage(body, {});
+      logInfo(env, 'proxy count_tokens local', {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+      });
+      return buildLocalCountTokensResponse(body);
+    }
 
     if (providers.length === 0) {
       logError(env, 'proxy no providers configured', {
@@ -135,11 +163,20 @@ export default {
 
     for (const provider of providers) {
       try {
-        const result = stream
-          ? await handleStream(provider, body, env, usageContext, ctx)
-          : await handleNonStream(provider, body, env, usageContext, ctx);
+        const result = isCountTokens
+          ? await handleCountTokens(provider, body, env, usageContext, ctx)
+          : stream
+            ? await handleStream(provider, body, env, usageContext, ctx)
+            : await handleNonStream(provider, body, env, usageContext, ctx);
 
         if (result.ok) {
+          logInfo(env, 'proxy request ok', {
+            path: url.pathname,
+            provider: provider.name,
+            type: provider.type,
+            status: result.status,
+            request_id: getRequestId(result.response.headers),
+          });
           return result.response;
         }
 
@@ -151,7 +188,7 @@ export default {
           message: result.message,
           request_id: getRequestId(result.response.headers),
         });
-        if (!shouldFallback(result.status)) {
+        if (!shouldFallback(result.status, isCountTokens)) {
           return result.response;
         }
       } catch (error) {
@@ -422,7 +459,8 @@ function parseStringMap(value: string | undefined): Record<string, string> {
   }
 }
 
-function shouldFallback(status: number): boolean {
+function shouldFallback(status: number, isCountTokens = false): boolean {
+  if (isCountTokens && status === 404) return true;
   return status >= 500 || status === 429 || status === 401 || status === 403;
 }
 
@@ -478,6 +516,25 @@ async function handleStream(
   }
 }
 
+async function handleCountTokens(
+  provider: ProviderConfig,
+  body: Record<string, unknown>,
+  env: Env,
+  usageContext: UsageContext | null,
+  ctx: ExecutionContext
+): Promise<HandlerResult> {
+  switch (provider.type) {
+    case 'anthropic':
+      return handleAnthropicCountTokens(provider, body, env, usageContext, ctx);
+    case 'foundry':
+      return handleFoundryCountTokens(provider, body, env, usageContext, ctx);
+    case 'bedrock':
+      return buildLocalCountTokensResult();
+    default:
+      return buildProviderError(provider, 500, 'Unsupported provider type');
+  }
+}
+
 async function handleAnthropicNonStream(
   provider: ProviderConfig,
   body: Record<string, unknown>,
@@ -515,6 +572,28 @@ async function handleAnthropicStream(
   try {
     const response = await client.messages.create({ ...(normalizedBody as any), stream: true }).asResponse();
     return handleSdkStreamResponse(response, normalizedBody, env, usageContext, provider.name, ctx);
+  } catch (error) {
+    const handled = handleSdkException(provider, env, error);
+    if (handled) return handled;
+    throw error;
+  }
+}
+
+async function handleAnthropicCountTokens(
+  provider: ProviderConfig,
+  body: Record<string, unknown>,
+  env: Env,
+  usageContext: UsageContext | null,
+  ctx: ExecutionContext
+): Promise<HandlerResult> {
+  const apiKey = resolveEnvKey(env, provider.apiKeyEnv || 'ANTHROPIC_API_KEY');
+  if (!apiKey) return buildProviderError(provider, 500, 'Missing Anthropic API key');
+
+  const normalizedBody = normalizeModelInBody(body, env);
+  const client = createAnthropicClient(provider, apiKey, env);
+  try {
+    const response = await client.messages.countTokens(normalizedBody as any).asResponse();
+    return handleSdkJsonResponse(response, normalizedBody, env, usageContext, provider.name, ctx, false, false);
   } catch (error) {
     const handled = handleSdkException(provider, env, error);
     if (handled) return handled;
@@ -566,6 +645,47 @@ async function handleFoundryStream(
     if (handled) return handled;
     throw error;
   }
+}
+
+async function handleFoundryCountTokens(
+  provider: ProviderConfig,
+  body: Record<string, unknown>,
+  env: Env,
+  usageContext: UsageContext | null,
+  ctx: ExecutionContext
+): Promise<HandlerResult> {
+  const apiKey = resolveEnvKey(env, provider.apiKeyEnv || 'ANTHROPIC_FOUNDRY_API_KEY') ??
+    resolveEnvKey(env, 'AZURE_FOUNDRY_API_KEY');
+  if (!apiKey) return buildProviderError(provider, 500, 'Missing Foundry API key');
+
+  const normalizedBody = normalizeModelInBody(body, env);
+  const client = createFoundryClient(provider, apiKey, env);
+  try {
+    const response = await client.messages.countTokens(normalizedBody as any).asResponse();
+    return handleSdkJsonResponse(response, normalizedBody, env, usageContext, provider.name, ctx, false, false);
+  } catch (error) {
+    const handled = handleSdkException(provider, env, error);
+    if (handled) return handled;
+    throw error;
+  }
+}
+
+function buildLocalCountTokensResult(body?: Record<string, unknown>): HandlerResult {
+  const usage = estimateUsage(body ?? {}, {});
+  const payload = JSON.stringify({ input_tokens: usage.input_tokens });
+  return {
+    ok: true,
+    status: 200,
+    message: 'local_count_tokens',
+    response: new Response(payload, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  };
+}
+
+function buildLocalCountTokensResponse(body: Record<string, unknown>): Response {
+  return buildLocalCountTokensResult(body).response;
 }
 
 async function handleBedrockNonStream(
@@ -706,7 +826,8 @@ async function handleSdkJsonResponse(
   usageContext: UsageContext | null,
   providerName: string,
   ctx: ExecutionContext,
-  stripRequestId = false
+  stripRequestId = false,
+  recordUsage = true
 ): Promise<HandlerResult> {
   const payload = await response.arrayBuffer();
   if (!response.ok) {
@@ -714,13 +835,15 @@ async function handleSdkJsonResponse(
     return buildProxyResponse(response.status, response.headers, payload);
   }
 
-  const text = new TextDecoder().decode(payload);
-  let usage = parseUsageFromJson(text);
-  if (!usage) {
-    usage = estimateUsage(body, parseJson(text) ?? {});
+  if (recordUsage) {
+    const text = new TextDecoder().decode(payload);
+    let usage = parseUsageFromJson(text);
+    if (!usage) {
+      usage = estimateUsage(body, parseJson(text) ?? {});
+    }
+    const model = typeof body.model === 'string' ? body.model : null;
+    ctx.waitUntil(recordUsage(env, usageContext, usage, providerName, model));
   }
-  const model = typeof body.model === 'string' ? body.model : null;
-  ctx.waitUntil(recordUsage(env, usageContext, usage, providerName, model));
 
   const headers = cloneHeaders(response.headers, stripRequestId);
   return {
