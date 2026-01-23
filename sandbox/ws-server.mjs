@@ -1,8 +1,77 @@
-import { unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import { appendFile, mkdir, access } from 'fs/promises';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-23-sandbox-v28-sdk-v2-api';
+const VERSION = '2026-01-23-sandbox-v26-message-queue';
+
+/**
+ * MessageQueue - Similar to SDK's internal QX class.
+ * Key property: next() returns a Promise that waits indefinitely until
+ * enqueue() or close() is called. This prevents streamInput from calling
+ * endInput() prematurely (which closes stdin and causes early exit).
+ */
+class MessageQueue {
+  #queue = [];
+  #waitingResolve = null;
+  #waitingReject = null;
+  #closed = false;
+  #started = false;
+
+  [Symbol.asyncIterator]() {
+    if (this.#started) throw new Error('MessageQueue can only be iterated once');
+    this.#started = true;
+    return this;
+  }
+
+  next() {
+    // If there are queued messages, return immediately
+    if (this.#queue.length > 0) {
+      return Promise.resolve({ done: false, value: this.#queue.shift() });
+    }
+    // If closed, signal done
+    if (this.#closed) {
+      return Promise.resolve({ done: true, value: undefined });
+    }
+    // Wait for next enqueue() or close() - this is the key difference!
+    // This Promise stays pending until something happens, preventing
+    // the for-await loop from completing.
+    return new Promise((resolve, reject) => {
+      this.#waitingResolve = resolve;
+      this.#waitingReject = reject;
+    });
+  }
+
+  enqueue(value) {
+    if (this.#closed) return;
+    if (this.#waitingResolve) {
+      const resolve = this.#waitingResolve;
+      this.#waitingResolve = null;
+      this.#waitingReject = null;
+      resolve({ done: false, value });
+    } else {
+      this.#queue.push(value);
+    }
+  }
+
+  close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    if (this.#waitingResolve) {
+      const resolve = this.#waitingResolve;
+      this.#waitingResolve = null;
+      this.#waitingReject = null;
+      resolve({ done: true, value: undefined });
+    }
+  }
+
+  get length() {
+    return this.#queue.length;
+  }
+
+  get isClosed() {
+    return this.#closed;
+  }
+}
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {
@@ -179,15 +248,17 @@ function createSession(threadId, threadDeployToken = null, userInfo = null) {
     threadDeployToken, // Per-thread token for auto-preview after deploys
     userName: userInfo?.userName || null,
     userEmail: userInfo?.userEmail || null,
-    // V2 API: uses sdkSession + streamIterator instead of activeQuery + queryIterator + inputQueue
-    sdkSession: null,
-    streamIterator: null,
+    activeQuery: null,
+    queryIterator: null,
     initPromise: null,
     queryId: 0,
     earlyExitRetries: 0,
     lastUserMessage: null,
     lastStopRequestedAt: 0,
     eventLoopRunning: false,
+    // MessageQueue replaces messageResolver + messageQueue array
+    // It never returns done:true until explicitly closed, preventing early stdin close
+    inputQueue: new MessageQueue(),
     attachedSockets: new Set(),
     eventBuffer: [],
     nextEventId: 1,
@@ -307,10 +378,8 @@ async function sessionFileExists(sessionId) {
   return exists;
 }
 
-// Session options for Claude SDK V2 API
-// Note: V2 has fewer options than V1 - missing: includePartialMessages, mcpServers, stderr, systemPrompt
-// Resume is handled via separate unstable_v2_resumeSession function
-function getSessionOptions(session) {
+// Query options for Claude SDK
+function getQueryOptions(session, fileExists) {
   // Build env vars, merging:
   // 1. Base process.env (set at container startup)
   // 2. Integration env vars (pushed by worker when integrations change)
@@ -327,16 +396,133 @@ function getSessionOptions(session) {
     envVars.CLOUDFLARE_API_TOKEN = session.threadDeployToken;
   }
 
-  // V2 API options
-  // V2 supports: model, permissionMode, env, allowedTools, disallowedTools, canUseTool, hooks, executable
-  // V2 missing: includePartialMessages, mcpServers, stderr, systemPrompt, settingSources, agents, fallbackModel, cwd
+  // Build MCP servers configuration if MCP_SERVER_URL is set
+  const mcpServers = {};
+  if (MCP_SERVER_URL && MCP_API_KEY) {
+    mcpServers['chiridion'] = {
+      type: 'http',
+      url: MCP_SERVER_URL,
+      headers: {
+        Authorization: `Bearer ${MCP_API_KEY}`,
+      },
+    };
+  }
+
   const options = {
     model: 'opus',
+    fallbackModel: 'sonnet',
+    includePartialMessages: true,
     permissionMode: 'bypassPermissions',
+    allowUnsandboxedCommands: true,
+    stderr: (data) => {
+      const message = String(data || '').trim();
+      if (!message) return;
+      logError('[ws-server]', 'cli_stderr', {
+        threadId: session.threadId,
+        message: message.slice(0, 2000),
+      });
+    },
+    // MCP server configuration
+    ...(Object.keys(mcpServers).length > 0 && {
+      mcpServers,
+      allowedTools: ['mcp__chiridion__*'], // Allow all tools from chiridion MCP server
+    }),
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: `
+## About This Environment
+
+You are running inside **Chiridion**, a web application that brings Claude Code to the browser. Users interact through a chat interface - they cannot see your terminal, localhost servers, or file system directly.
+
+**Important constraints:**
+- **localhost is not accessible** - Users cannot open localhost URLs. If you need to show something, deploy it or output the content directly.
+- **Don't assume technical ability** - Users may not be developers. Explain what you're doing in plain language. Avoid jargon unless the user demonstrates familiarity.
+- **Show results, not processes** - Instead of saying "run npm start and open localhost:3000", deploy the app or show the output directly.
+
+## Multi-User Threads
+
+Threads in Chiridion can have multiple users. Each user message is prefixed with the sender's identity in the format \`[Name (email)]: message\` or \`[email]: message\`. Pay attention to who is sending each message - different team members may have different questions or instructions.
+
+## File Sharing with User
+
+You have access to two special directories for exchanging files with the user:
+
+- **\`/mnt/user-uploads/\`** - Files uploaded by the user. When a user uploads a file, you'll see a message like "(user uploaded file to /mnt/user-uploads/filename.png)". Read files from this directory to access what they shared.
+
+- **\`/mnt/user-outputs/\`** - Files you create for the user to download. Save files here when you want the user to be able to download them.
+
+**Creating downloadable files:**
+When you save a file for the user to download in /mnt/user-outputs/, provide a link using the chiridion:// protocol:
+- Format: \`[Link Text](chiridion://outputs/filename)\`
+- Example: \`[Download Report](chiridion://outputs/report.pdf)\`
+- Example: \`[Download Chart](chiridion://outputs/analysis/chart.png)\`
+
+The user can click these links to download the file directly.
+
+## Cloudflare Deployment
+
+When deploying software to the internet or for the user to access:
+
+1. **Always use the globally installed \`wrangler\` CLI** - Do not install wrangler locally via npm
+2. **Build as Cloudflare Workers** - All deployable software should be written as Workers
+3. **Use Durable Objects with SQLite** - For persistence, use SQLite-backed Durable Objects (not KV)
+4. **Use \`wrangler deploy\`** - Deploy with the global wrangler binary
+
+The infrastructure is already configured for Worker deployments. For fullstack apps, use Next.js with OpenNext for Cloudflare.
+`.trim(),
+    },
+    settingSources: ['project', 'user'],
     env: envVars,
   };
 
+  if (session.threadId) {
+    if (fileExists) {
+      options.resume = session.threadId;
+    } else {
+      options.extraArgs = { 'session-id': session.threadId };
+    }
+  }
+
   return options;
+}
+
+// Async generator that yields user messages from the MessageQueue.
+// The queue's next() waits indefinitely until enqueue() or close() is called,
+// which prevents streamInput from calling endInput() prematurely.
+async function* createMessageStream(session) {
+  log('[ws-server]', 'messageStream_start', { threadId: session.threadId });
+  let isFirstMessage = true;
+
+  // Iterate the MessageQueue - this will wait indefinitely for messages
+  for await (const message of session.inputQueue) {
+    log('[ws-server]', 'messageStream_received', {
+      threadId: session.threadId,
+      contentLength: typeof message === 'string' ? message.length : null,
+      queueLength: session.inputQueue.length,
+    });
+
+    // Short delay before first message to let SDK fully initialize
+    if (isFirstMessage) {
+      await Bun.sleep(100);
+      isFirstMessage = false;
+    }
+
+    // Yield the user message
+    log('[ws-server]', 'messageStream_yield', {
+      threadId: session.threadId,
+      contentLength: typeof message === 'string' ? message.length : null,
+    });
+    yield {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: message,
+      },
+    };
+  }
+
+  log('[ws-server]', 'messageStream_done', { threadId: session.threadId });
 }
 
 function bufferEvent(session, payload) {
@@ -404,9 +590,9 @@ function attachSession(ws, session, lastEventId) {
   });
 }
 
-// Initialize the stateful SDK session using V2 API
+// Initialize the stateful query session
 async function initSession(session) {
-  if (session.sdkSession) {
+  if (session.activeQuery) {
     log('[ws-server]', 'initSession_skip_active', { threadId: session.threadId });
     return;
   }
@@ -421,21 +607,11 @@ async function initSession(session) {
     log('[ws-server]', 'initSession_start', { threadId: session.threadId });
     try {
       const fileExists = await sessionFileExists(session.threadId);
-      const options = getSessionOptions(session);
-
-      // V2 API: use resumeSession if session file exists, otherwise createSession
-      if (fileExists && session.threadId) {
-        log('[ws-server]', 'initSession_resume', { threadId: session.threadId });
-        session.sdkSession = unstable_v2_resumeSession(session.threadId, options);
-      } else {
-        log('[ws-server]', 'initSession_create', { threadId: session.threadId });
-        session.sdkSession = unstable_v2_createSession(options);
-      }
-
-      // V2 API: get stream iterator - it stays open until close() is called
-      session.streamIterator = session.sdkSession.stream();
+      const options = getQueryOptions(session, fileExists);
+      const messageStream = createMessageStream(session);
+      session.activeQuery = query({ prompt: messageStream, options });
+      session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
       session.queryId += 1;
-
       log('[ws-server]', 'initSession', {
         threadId: session.threadId,
         resume: fileExists,
@@ -455,10 +631,9 @@ async function initSession(session) {
   }
 }
 
-// Start continuous event loop - runs until stream ends or error
-// V2 API: stream stays open until close() is called, which should prevent early exits
+// Start continuous event loop - runs until query ends or error
 function startEventLoop(session) {
-  if (session.eventLoopRunning || !session.streamIterator) {
+  if (session.eventLoopRunning || !session.queryIterator) {
     return;
   }
   session.eventLoopRunning = true;
@@ -471,9 +646,14 @@ function startEventLoop(session) {
     const loopStart = Date.now();
     let firstEventAt = null;
     try {
-      // V2 API: iterate the stream - it won't end until close() is called
-      for await (const event of session.streamIterator) {
+      while (true) {
+        const { value: event, done } = await session.queryIterator.next();
         eventCount++;
+
+        if (done) {
+          exitReason = 'iterator_done';
+          break;
+        }
 
         if (!firstEventAt) {
           firstEventAt = Date.now();
@@ -510,7 +690,7 @@ function startEventLoop(session) {
         trackTaskToolUse(session, event);
         persistTaskResultUpdates(session, event);
 
-        // Result means this turn is done - but keep loop alive if sockets connected
+        // Result means this turn is done - but keep loop alive if sockets connected or messages pending
         if (eventType === 'result') {
           log('[ws-server]', 'sdk_result', {
             threadId: session.threadId,
@@ -518,23 +698,24 @@ function startEventLoop(session) {
             status: event?.status || event?.message?.status || null,
           });
           const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
-          if (!hasConnections) {
-            exitReason = 'no_connections';
+          const hasPendingMessages = session.inputQueue.length > 0;
+          if (!hasConnections && !hasPendingMessages) {
+            exitReason = 'no_connections_or_messages';
             break;
           }
-          // V2 API: stream stays open, will continue when send() is called
+          // Continue looping - generator will yield queued message or wait for new one
         }
       }
-      exitReason = 'stream_ended';
     } catch (e) {
       exitReason = 'error';
       logError('[ws-server]', 'Query error:', summarizeError(e));
       bufferEvent(session, { type: 'error', error: String(e) });
       void writeTrace(session.threadId, { direction: 'error', error: String(e) });
       logForPersistence({ type: 'error', error: String(e) });
+      // Snapshot sync happens on container shutdown via entrypoint cleanup.
     } finally {
-      session.sdkSession = null;
-      session.streamIterator = null;
+      session.activeQuery = null;
+      session.queryIterator = null;
       session.eventLoopRunning = false;
       log('[ws-server]', 'event_loop_exit', {
         threadId: session.threadId,
@@ -546,13 +727,12 @@ function startEventLoop(session) {
         queryId: eventLoopQueryId,
       });
 
-      // V2 API should not have early exits, but keep retry logic just in case
       const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
       const stopCooldownMs = 5000;
       const stopRecently = session.lastStopRequestedAt
         ? Date.now() - session.lastStopRequestedAt < stopCooldownMs
         : false;
-      if (exitReason === 'stream_ended' && !hadNonSystemEvent && hasConnections && !stopRecently) {
+      if (exitReason === 'iterator_done' && !hadNonSystemEvent && hasConnections && !stopRecently) {
         if (session.earlyExitRetries < 1 && session.lastUserMessage) {
           session.earlyExitRetries += 1;
           const retryContent = session.lastUserMessage;
@@ -562,19 +742,15 @@ function startEventLoop(session) {
             retryCount: session.earlyExitRetries,
           });
           setTimeout(() => {
-            if (session.sdkSession) {
+            if (session.activeQuery || session.inputQueue.length > 0) {
               return;
             }
             void (async () => {
+              // Create fresh input queue for retry (old one may be closed)
+              session.inputQueue = new MessageQueue();
               await initSession(session);
               startEventLoop(session);
-              // V2 API: use send() to enqueue message
-              if (session.sdkSession) {
-                session.sdkSession.send({
-                  type: 'user',
-                  message: { role: 'user', content: retryContent },
-                });
-              }
+              session.inputQueue.enqueue(retryContent);
             })();
           }, 200);
         }
@@ -609,8 +785,10 @@ async function handleUserMessage(session, content, userInfo = null) {
   log('[ws-server]', 'handleUserMessage', {
     threadId: session.threadId,
     contentLength: attributedContent.length,
-    hasSession: Boolean(session.sdkSession),
-    hasStream: Boolean(session.streamIterator),
+    hasActiveQuery: Boolean(session.activeQuery),
+    hasIterator: Boolean(session.queryIterator),
+    queueLength: session.inputQueue.length,
+    queueClosed: session.inputQueue.isClosed,
   });
 
   // Initialize session if needed
@@ -619,19 +797,14 @@ async function handleUserMessage(session, content, userInfo = null) {
   // Start event loop if not running (it runs continuously)
   startEventLoop(session);
 
-  // V2 API: use send() to enqueue message to the session
+  // Feed message to the MessageQueue
   // Messages are persisted by Claude SDK in ~/.claude/projects/.../session.jsonl
-  if (session.sdkSession) {
-    session.sdkSession.send({
-      type: 'user',
-      message: { role: 'user', content: attributedContent },
-    });
-    log('[ws-server]', 'handleUserMessage_sent', {
-      threadId: session.threadId,
-    });
-  } else {
-    logError('[ws-server]', 'handleUserMessage_no_session', { threadId: session.threadId });
-  }
+  session.inputQueue.enqueue(attributedContent);
+
+  log('[ws-server]', 'handleUserMessage_enqueued', {
+    threadId: session.threadId,
+    queueLength: session.inputQueue.length,
+  });
 }
 
 // Bun WebSocket server with HTTP health endpoint
@@ -775,12 +948,13 @@ Bun.serve({
             void writeTrace(session.threadId, { direction: 'ws_in', type: 'stop' });
             log('[ws-server]', 'stop', { threadId });
             session.lastStopRequestedAt = Date.now();
-            // V2 API: close() terminates the session and underlying process
-            if (session.sdkSession) {
+            // Close input queue to signal message stream to end
+            session.inputQueue.close();
+            if (session.activeQuery) {
               try {
-                session.sdkSession.close();
+                await session.activeQuery.interrupt();
               } catch (e) {
-                logError('[ws-server]', 'Close error:', String(e));
+                logError('[ws-server]', 'Interrupt error:', String(e));
               }
             }
           }
