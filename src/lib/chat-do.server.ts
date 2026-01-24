@@ -285,13 +285,62 @@ export async function getMessages(
       return [...toolResults, ...incoming];
     };
 
+    // Assistant segment grouping - groups consecutive assistant messages into one
+    let assistantSegments: Array<{ id: string; content: Message['content']; createdAt: number }> = [];
+    let assistantGroupId: string | null = null;
+    let assistantGroupCreatedAt: number | null = null;
+
+    const flushAssistantGroup = () => {
+      if (assistantSegments.length === 0) return;
+      const content = assistantSegments.flatMap(segment =>
+        Array.isArray(segment.content) ? segment.content : []
+      );
+      const id = assistantGroupId || assistantSegments[0]?.id || `assistant_${messages.length}`;
+      const createdAt = assistantGroupCreatedAt || assistantSegments[0]?.createdAt || Date.now();
+      messages.push({
+        id,
+        thread_id: threadId,
+        role: 'assistant',
+        content,
+        created_at: createdAt,
+      });
+      assistantSegments = [];
+      assistantGroupId = null;
+      assistantGroupCreatedAt = null;
+    };
+
+    const upsertAssistantSegment = (id: string, content: Message['content'], createdAt: number) => {
+      if (!assistantGroupId) {
+        assistantGroupId = id;
+        assistantGroupCreatedAt = createdAt;
+      }
+      const lastSegment = assistantSegments[assistantSegments.length - 1];
+      if (lastSegment && lastSegment.id === id) {
+        lastSegment.content = mergeContentBlocks(lastSegment.content, content) as Message['content'];
+        return;
+      }
+      assistantSegments.push({ id, content, createdAt });
+    };
+
+    const appendToolResult = (content: Message['content'], createdAt: number) => {
+      if (assistantSegments.length === 0) {
+        const id = `tool_result_${messages.length}`;
+        upsertAssistantSegment(id, content, createdAt);
+        return;
+      }
+      const lastSegment = assistantSegments[assistantSegments.length - 1];
+      const existingBlocks = Array.isArray(lastSegment.content) ? lastSegment.content : [];
+      const incomingBlocks = Array.isArray(content) ? content : [];
+      lastSegment.content = [...existingBlocks, ...incomingBlocks];
+    };
+
     for (const line of lines) {
       try {
         const event = JSON.parse(line);
         if (!event || typeof event !== 'object') continue;
 
         // Handle user messages
-        if (event.type === 'user' && event.message?.role === 'user') {
+        if (event.type === 'user' && event.message?.content) {
           // Extract meta info for Skill tool prompts and other injected content
           const isMeta = Boolean(
             event.isMeta ??
@@ -316,81 +365,51 @@ export async function getMessages(
           const isToolResult = firstContent?.type === 'tool_result';
 
           if (isToolResult) {
-            // Tool results get attached to the assistant message that contains the tool_use
-            const toolResults = event.message.content.filter(
-              (block: ContentBlock) => block.type === 'tool_result'
-            );
-            for (const toolResult of toolResults) {
-              // Find the assistant message with the matching tool_use
-              for (let i = messages.length - 1; i >= 0; i--) {
-                const msg = messages[i];
-                if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
-                const hasMatchingToolUse = msg.content.some(
-                  (block: ContentBlock) => block.type === 'tool_use' && block.id === toolResult.tool_use_id
-                );
-                if (hasMatchingToolUse) {
-                  messages[i] = {
-                    ...msg,
-                    content: [...msg.content, toolResult],
-                  };
-                  break;
-                }
-              }
-            }
+            // Tool results get appended to the current assistant segment
+            const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
+            appendToolResult(event.message.content, createdAt);
           } else if (isMeta || resolvedToolUseId) {
             // Meta messages (like Skill prompts) are hidden but stored for skill sheet display
+            const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
+            const id = event.uuid || `meta_${resolvedToolUseId || messages.length}`;
             messages.push({
-              id: event.uuid || `meta_${resolvedToolUseId || messages.length}`,
+              id,
               thread_id: threadId,
               role: 'user',
               content: event.message.content,
-              created_at: event.timestamp || Date.now(),
+              created_at: createdAt,
               isMeta: true,
               sourceToolUseID: resolvedToolUseId,
             });
           } else {
-            // Regular user message
+            // Regular user message - flush any pending assistant segments first
+            flushAssistantGroup();
+            const id = event.uuid || `user_${messages.length}`;
             messages.push({
-              id: event.uuid || crypto.randomUUID(),
+              id,
               thread_id: threadId,
               role: 'user',
               content: event.message.content,
-              created_at: event.timestamp || Date.now(),
+              created_at: event.timestamp ? new Date(event.timestamp).getTime() : Date.now(),
             });
           }
+          continue;
         }
 
-        // Handle assistant messages
-        if (event.type === 'assistant' && event.message?.role === 'assistant') {
-          const existingIndex = messages.findIndex(
-            (m) => m.role === 'assistant' && m.id === event.uuid
-          );
-
-          if (existingIndex >= 0) {
-            // Merge with existing message
-            messages[existingIndex] = {
-              ...messages[existingIndex],
-              content: mergeContentBlocks(
-                messages[existingIndex].content,
-                event.message.content
-              ) as ContentBlock[],
-            };
-          } else {
-            // Add new message
-            messages.push({
-              id: event.uuid || crypto.randomUUID(),
-              thread_id: threadId,
-              role: 'assistant',
-              content: event.message.content,
-              created_at: event.timestamp || Date.now(),
-            });
-          }
+        // Handle assistant messages - accumulate into segments
+        if (event.type === 'assistant' && event.message?.content?.length > 0) {
+          const id = event.message?.id || event.uuid || `assistant_${messages.length}`;
+          const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
+          upsertAssistantSegment(id, event.message.content, createdAt);
         }
       } catch {
         // Skip malformed lines
         continue;
       }
     }
+
+    // Flush any remaining assistant segments
+    flushAssistantGroup();
 
     return messages;
   } catch (e) {

@@ -620,9 +620,13 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
               created_at: Date.now(),
               isStreaming: true,
             };
-            if (!currentMsgs.some(m => m.id === msgId)) {
-              setMessages([...currentMsgs, newMsg]);
-            }
+            // Use functional update to avoid race conditions with rapid events
+            setMessages(prev => {
+              if (prev.some(m => m.id === msgId)) {
+                return prev;
+              }
+              return [...prev, newMsg];
+            });
           } else if (currentStreamingId) {
             // Apply streaming delta to the current message
             setMessages(prev => prev.map(msg =>
