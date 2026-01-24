@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-23-v24-sdk-simplified
+# Version: 2026-01-23-v25-litestream-0.5.2
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && curl -L -o /usr/local/bin/goofys https://github.com/kahing/goofys/releases/download/v0.24.0/goofys \
   && chmod +x /usr/local/bin/goofys \
   && curl -fsSL https://d.juicefs.com/install | sh - \
-  && curl -fsSL -o /tmp/litestream.deb https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-amd64.deb \
+  && curl -fsSL -o /tmp/litestream.deb https://github.com/benbjohnson/litestream/releases/download/v0.5.2/litestream-v0.5.2-linux-amd64.deb \
   && dpkg -i /tmp/litestream.deb \
   && rm /tmp/litestream.deb
 
