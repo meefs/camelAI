@@ -3,7 +3,7 @@ import { createInterface } from 'readline';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-24-direct-cli-v5';
+const VERSION = '2026-01-24-direct-cli-v6';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -334,7 +334,7 @@ function sendMessageToCLI(session, content) {
     spawnCLI(session);
   }
 
-  // Send the message
+  // Send the message immediately - CLI waits for input before outputting
   const msg = {
     type: 'user',
     message: { role: 'user', content },
@@ -344,13 +344,7 @@ function sendMessageToCLI(session, content) {
   console.log(`[ws-server] Sending to CLI threadId=${session.threadId} len=${content.length}`);
 
   try {
-    const written = session.cliProcess.stdin.write(msgStr);
-    if (!written) {
-      console.log(`[ws-server] stdin buffer full, waiting for drain threadId=${session.threadId}`);
-      session.cliProcess.stdin.once('drain', () => {
-        console.log(`[ws-server] stdin drained threadId=${session.threadId}`);
-      });
-    }
+    session.cliProcess.stdin.write(msgStr);
   } catch (err) {
     console.error(`[ws-server] stdin write error threadId=${session.threadId}:`, err);
     session.isProcessing = false;
