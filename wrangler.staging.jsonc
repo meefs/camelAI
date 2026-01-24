@@ -19,7 +19,7 @@
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
 		"WORKER_BASE_URL": "https://staging.chiridion.ai",
-		"PROXY_BASE_URL": "https://staging.chiridion.ai"
+		"PROXY_BASE_URL": "https://llm-proxy.staging.chiridion.ai"
 	},
 	"assets": {
 		"binding": "ASSETS",
