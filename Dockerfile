@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && curl -L -o /usr/local/bin/goofys https://github.com/kahing/goofys/releases/download/v0.24.0/goofys \
   && chmod +x /usr/local/bin/goofys \
   && curl -fsSL https://d.juicefs.com/install | sh - \
-  && curl -fsSL -o /tmp/litestream.deb https://github.com/benbjohnson/litestream/releases/download/v0.5.2/litestream-v0.5.2-linux-amd64.deb \
+  && curl -fsSL -o /tmp/litestream.deb https://github.com/benbjohnson/litestream/releases/download/v0.5.2/litestream-0.5.2-linux-x86_64.deb \
   && dpkg -i /tmp/litestream.deb \
   && rm /tmp/litestream.deb
 
