@@ -34,6 +34,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Upload,
   X,
 } from 'lucide-react';
 
@@ -330,8 +331,11 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const [hydrated, setHydrated] = useState(false);
   const [monacoReady, setMonacoReady] = useState(false);
   const [readOnlyHintOpen, setReadOnlyHintOpen] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
+  const [uploadTargetPath, setUploadTargetPath] = useState<string>(ROOT_PATH);
 
   const monacoRef = useRef<Monaco | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<monacoEditor.editor.IStandaloneCodeEditor | null>(null);
   const modelsRef = useRef<Map<string, monacoEditor.editor.ITextModel>>(new Map());
   const modelDisposablesRef = useRef<Map<string, monacoEditor.IDisposable>>(
@@ -978,6 +982,70 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
     [apiBase]
   );
 
+  const uploadFiles = useCallback(
+    async (files: FileList | File[], targetPath: string = ROOT_PATH) => {
+      if (!editingEnabled) return;
+
+      for (const file of Array.from(files)) {
+        const uploadId = `${targetPath}/${file.name}`;
+        setUploadingFiles((prev) => new Set(prev).add(uploadId));
+
+        try {
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('path', targetPath);
+
+          const res = await fetch(`${apiBase}/upload`, {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (!res.ok) {
+            const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+            console.error('Failed to upload file:', payload?.error || 'Unknown error');
+            continue;
+          }
+
+          const data = (await res.json()) as { path: string; filename: string };
+
+          // Refresh the target directory to show the new file
+          await loadDirectory(targetPath);
+
+          // Optionally open the uploaded file
+          if (!data.path.match(/\.(png|jpg|jpeg|gif|webp|svg|ico|pdf|zip|tar|gz|mp3|mp4|wav|avi|mov)$/i)) {
+            openFile(data.path, { force: false });
+          }
+        } catch (error) {
+          console.error('Failed to upload file:', error);
+        } finally {
+          setUploadingFiles((prev) => {
+            const next = new Set(prev);
+            next.delete(uploadId);
+            return next;
+          });
+        }
+      }
+    },
+    [apiBase, editingEnabled, loadDirectory, openFile]
+  );
+
+  const handleFileInputChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files;
+      if (files && files.length > 0) {
+        void uploadFiles(files, uploadTargetPath);
+      }
+      // Reset input so the same file can be selected again
+      event.target.value = '';
+    },
+    [uploadFiles, uploadTargetPath]
+  );
+
+  const triggerUpload = useCallback((targetPath: string = ROOT_PATH) => {
+    setUploadTargetPath(targetPath);
+    fileInputRef.current?.click();
+  }, []);
+
   useEffect(() => {
     saveFileRef.current = saveFile;
   }, [saveFile]);
@@ -1538,6 +1606,15 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                     >
                       New folder
                     </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={!editingEnabled}
+                      onSelect={() => {
+                        if (!editingEnabled) return;
+                        triggerUpload(ROOT_PATH);
+                      }}
+                    >
+                      Upload file
+                    </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
                 <Tooltip>
@@ -1803,6 +1880,15 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                               >
                                 New folder
                               </ContextMenuItem>
+                              <ContextMenuItem
+                                disabled={!editingEnabled}
+                                onSelect={() => {
+                                  if (!editingEnabled) return;
+                                  triggerUpload(node.path);
+                                }}
+                              >
+                                Upload file
+                              </ContextMenuItem>
                               <ContextMenuSeparator />
                             </>
                           )}
@@ -1838,6 +1924,16 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                                 variant="destructive"
                               >
                                 Delete
+                              </ContextMenuItem>
+                            </>
+                          )}
+                          {!isDirectory && (
+                            <>
+                              <ContextMenuSeparator />
+                              <ContextMenuItem
+                                onSelect={() => void downloadFile(node.path)}
+                              >
+                                Download
                               </ContextMenuItem>
                             </>
                           )}
@@ -2331,6 +2427,15 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Hidden file input for uploads */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleFileInputChange}
+      />
     </div>
   );
 }

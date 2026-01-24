@@ -228,9 +228,16 @@ To reduce perceived latency from JuiceFS mount, the app proactively warms up con
 ### Workspaces (auth required)
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/api/workspaces/[id]/fs/*` | Various | Workspace file system operations |
-| `/api/workspaces/[id]/upload` | POST | Upload files to workspace |
-| `/api/workspaces/[id]/download` | GET | Download files from workspace outputs |
+| `/api/workspaces/[id]/fs/list` | GET | List directory contents |
+| `/api/workspaces/[id]/fs/read` | GET | Read file contents (text or base64 binary) |
+| `/api/workspaces/[id]/fs/write` | POST | Write text file to workspace |
+| `/api/workspaces/[id]/fs/upload` | POST | Upload binary file to any path (FormData) |
+| `/api/workspaces/[id]/fs/create` | POST | Create new file |
+| `/api/workspaces/[id]/fs/mkdir` | POST | Create directory |
+| `/api/workspaces/[id]/fs/move` | POST | Move/rename file or directory |
+| `/api/workspaces/[id]/fs/delete` | POST | Delete file or directory |
+| `/api/workspaces/[id]/upload` | POST | Upload files to R2 user-uploads (for chat attachments) |
+| `/api/workspaces/[id]/download` | GET | Download files from R2 user-outputs (outputs only) |
 
 ### Proxy Worker (separate service)
 | Route | Method | Purpose |

@@ -489,6 +489,17 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
   }
 
   /**
+   * Write a binary file to the container (content is base64-encoded).
+   */
+  async writeBinaryFile(path: string, base64Content: string): Promise<ControlPlaneWriteResponse> {
+    return this.controlPlane<ControlPlaneWriteResponse>('/fs/write', {
+      path,
+      content: base64Content,
+      encoding: 'base64',
+    });
+  }
+
+  /**
    * List files in a directory.
    */
   async listFiles(path: string, options?: { recursive?: boolean; includeHidden?: boolean }): Promise<ControlPlaneListResponse> {
