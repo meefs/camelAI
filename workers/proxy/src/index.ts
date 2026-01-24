@@ -101,16 +101,22 @@ export default {
       });
     }
 
-    const isMessages = url.pathname === '/v1/messages' || url.pathname === '/v1/messages/';
-    const isCountTokens =
-      url.pathname === '/v1/messages/count_tokens' || url.pathname === '/v1/messages/count_tokens/';
-
-    if (!isMessages && !isCountTokens) {
-      return new Response('Not Found', { status: 404 });
+    // Drop telemetry/event logging calls silently
+    if (url.pathname === '/api/event_logging/batch') {
+      return new Response(null, { status: 204 });
     }
 
+    // All other endpoints require POST
     if (request.method !== 'POST') {
       return new Response('Method Not Allowed', { status: 405 });
+    }
+
+    // Check for valid API routes
+    const isMessagesEndpoint = url.pathname === '/v1/messages';
+    const isCountTokensEndpoint = url.pathname === '/v1/messages/count_tokens';
+
+    if (!isMessagesEndpoint && !isCountTokensEndpoint) {
+      return new Response('Not Found', { status: 404 });
     }
 
     const clientKey = extractClientKey(request);
@@ -124,6 +130,11 @@ export default {
         tokenPrefix: clientKey ? clientKey.slice(0, 8) : null,
       });
       return errorResponse(401, 'authentication_error', authResult.error ?? 'Invalid API key');
+    }
+
+    // Handle count_tokens endpoint - always proxy directly to Anthropic
+    if (isCountTokensEndpoint) {
+      return handleCountTokens(request, env);
     }
 
     const bodyText = await request.text();
@@ -207,6 +218,49 @@ export default {
     );
   },
 };
+
+async function handleCountTokens(request: Request, env: Env): Promise<Response> {
+  const apiKey = env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return errorResponse(500, 'api_error', 'Anthropic API key not configured');
+  }
+
+  const url = new URL(request.url);
+  const anthropicUrl = new URL('/v1/messages/count_tokens', env.ANTHROPIC_API_URL || 'https://api.anthropic.com');
+  anthropicUrl.search = url.search;
+
+  const headers = new Headers();
+  headers.set('content-type', 'application/json');
+  headers.set('x-api-key', apiKey);
+  headers.set('anthropic-version', env.ANTHROPIC_VERSION || DEFAULT_ANTHROPIC_VERSION);
+
+  // Forward anthropic-beta header if present
+  const betaHeader = request.headers.get('anthropic-beta');
+  if (betaHeader) {
+    headers.set('anthropic-beta', betaHeader);
+  }
+
+  try {
+    const body = await request.text();
+    const response = await fetch(anthropicUrl.toString(), {
+      method: 'POST',
+      headers,
+      body,
+    });
+
+    const responseHeaders = cloneHeaders(response.headers);
+    const payload = await response.arrayBuffer();
+    return new Response(payload, {
+      status: response.status,
+      headers: responseHeaders,
+    });
+  } catch (error) {
+    logError(env, 'count_tokens proxy error', {
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+    return errorResponse(502, 'api_error', 'Failed to proxy count_tokens request');
+  }
+}
 
 function extractClientKey(request: Request): string | null {
   const auth = request.headers.get('authorization');
@@ -722,7 +776,7 @@ async function handleBedrockNonStream(
     const updatedText = JSON.stringify(parsed);
     const usage = extractUsageFromMessage(parsed) ?? estimateUsage(body, parsed);
     const usageModel = resolved.responseModel ?? (typeof body.model === 'string' ? body.model : null);
-    ctx.waitUntil(recordUsage(env, usageContext, usage, provider.name, usageModel));
+    ctx.waitUntil(recordUsage(env, usageContext, usage, provider.name, usageModel).catch(() => {}));
 
     const headers = cloneHeaders(response.headers, true);
     headers.set('content-type', 'application/json');
@@ -769,7 +823,11 @@ async function handleBedrockStream(
 
     const { readable, usagePromise } = streamAnthropicEvents(stream, body, resolved.responseModel);
     const usageModel = resolved.responseModel ?? (typeof body.model === 'string' ? body.model : null);
-    ctx.waitUntil(usagePromise.then((usage) => recordUsage(env, usageContext, usage, provider.name, usageModel)));
+    ctx.waitUntil(
+      usagePromise
+        .then((usage) => recordUsage(env, usageContext, usage, provider.name, usageModel))
+        .catch(() => {})
+    );
 
     const headers = cloneHeaders(response.headers);
     headers.set('content-type', 'text/event-stream; charset=utf-8');
@@ -844,6 +902,8 @@ async function handleSdkJsonResponse(
     const model = typeof body.model === 'string' ? body.model : null;
     ctx.waitUntil(recordUsage(env, usageContext, usage, providerName, model));
   }
+  const model = typeof body.model === 'string' ? body.model : null;
+  ctx.waitUntil(recordUsage(env, usageContext, usage, providerName, model).catch(() => {}));
 
   const headers = cloneHeaders(response.headers, stripRequestId);
   return {
@@ -875,7 +935,11 @@ async function handleSdkStreamResponse(
   const [clientStream, usageStream] = response.body.tee();
   const usagePromise = parseAnthropicUsageFromStream(usageStream, body);
   const model = typeof body.model === 'string' ? body.model : null;
-  ctx.waitUntil(usagePromise.then((usage) => recordUsage(env, usageContext, usage, providerName, model)));
+  ctx.waitUntil(
+    usagePromise
+      .then((usage) => recordUsage(env, usageContext, usage, providerName, model))
+      .catch(() => {})
+  );
 
   const headers = cloneHeaders(response.headers);
   headers.delete('content-length');
