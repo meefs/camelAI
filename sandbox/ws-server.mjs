@@ -1,7 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-23-sdk-todo-persist-v1';
+const VERSION = '2026-01-23-debug-early-exit-v1';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -18,31 +18,42 @@ class MessageQueue {
   #queue = [];
   #waiting = null;
   #closed = false;
+  #id = Math.random().toString(36).slice(2, 8);
 
   [Symbol.asyncIterator]() { return this; }
 
   next() {
     if (this.#queue.length > 0) {
-      return Promise.resolve({ done: false, value: this.#queue.shift() });
+      const value = this.#queue.shift();
+      console.log(`[ws-server] MQ[${this.#id}] next value queueLen=${this.#queue.length}`);
+      return Promise.resolve({ done: false, value });
     }
     if (this.#closed) {
+      console.log(`[ws-server] MQ[${this.#id}] next done (closed)`);
       return Promise.resolve({ done: true });
     }
+    console.log(`[ws-server] MQ[${this.#id}] next waiting`);
     return new Promise(resolve => { this.#waiting = resolve; });
   }
 
   enqueue(value) {
-    if (this.#closed) return;
+    if (this.#closed) {
+      console.log(`[ws-server] MQ[${this.#id}] enqueue rejected (closed)`);
+      return;
+    }
     if (this.#waiting) {
       const resolve = this.#waiting;
       this.#waiting = null;
+      console.log(`[ws-server] MQ[${this.#id}] enqueue direct-resolve`);
       resolve({ done: false, value });
     } else {
       this.#queue.push(value);
+      console.log(`[ws-server] MQ[${this.#id}] enqueue queued len=${this.#queue.length}`);
     }
   }
 
   close() {
+    console.log(`[ws-server] MQ[${this.#id}] close called wasPending=${!!this.#waiting}`);
     this.#closed = true;
     if (this.#waiting) {
       this.#waiting({ done: true });
@@ -51,6 +62,7 @@ class MessageQueue {
   }
 
   get length() { return this.#queue.length; }
+  get closed() { return this.#closed; }
 }
 
 // Todo state persistence - simple file per thread
@@ -230,13 +242,21 @@ async function* messageStream(session) {
   const startTime = Date.now();
   console.log(`[ws-server] messageStream started threadId=${session.threadId}`);
   let msgCount = 0;
-  for await (const msg of session.inputQueue) {
-    msgCount++;
-    const waitMs = Date.now() - startTime;
-    console.log(`[ws-server] messageStream yield threadId=${session.threadId} msg=${msgCount} len=${msg.length} waitMs=${waitMs}`);
-    yield { type: 'user', message: { role: 'user', content: msg } };
+  try {
+    for await (const msg of session.inputQueue) {
+      msgCount++;
+      const waitMs = Date.now() - startTime;
+      console.log(`[ws-server] messageStream yield threadId=${session.threadId} msg=${msgCount} len=${msg.length} waitMs=${waitMs}`);
+      yield { type: 'user', message: { role: 'user', content: msg } };
+      console.log(`[ws-server] messageStream yield_complete threadId=${session.threadId} msg=${msgCount}`);
+    }
+    console.log(`[ws-server] messageStream ended_normally threadId=${session.threadId} total=${msgCount} queueClosed=${session.inputQueue ? 'maybe' : 'null'}`);
+  } catch (e) {
+    console.log(`[ws-server] messageStream error threadId=${session.threadId} error=${e?.message || e}`);
+    throw e;
+  } finally {
+    console.log(`[ws-server] messageStream finally threadId=${session.threadId} total=${msgCount}`);
   }
-  console.log(`[ws-server] messageStream ended threadId=${session.threadId} total=${msgCount}`);
 }
 
 async function startQuery(session) {
@@ -268,6 +288,11 @@ async function startQuery(session) {
           console.log(`[ws-server] firstEvent threadId=${session.threadId} type=${event?.type} waitMs=${firstEventTime - queryStartTime}`);
         }
         console.log(`[ws-server] event threadId=${session.threadId} type=${event?.type} count=${eventCount}`);
+
+        // Log system events fully to diagnose early exits
+        if (event?.type === 'system') {
+          console.log(`[ws-server] system_event threadId=${session.threadId} subtype=${event?.subtype} full=${JSON.stringify(event).slice(0, 500)}`);
+        }
         broadcast(session, { type: 'sdk_event', event });
 
         // Check for TodoWrite tool calls and broadcast + persist
@@ -282,8 +307,13 @@ async function startQuery(session) {
           void clearTodoState(session.threadId);
         }
       }
+      // This runs when the async iterator completes normally (done=true)
+      // If we end with only a system event, something went wrong
+      const earlyExit = eventCount <= 1;
+      console.log(`[ws-server] query_iterator_done threadId=${session.threadId} events=${eventCount} earlyExit=${earlyExit}`);
     } catch (e) {
       console.error(`[ws-server] query error threadId=${session.threadId}:`, e);
+      console.error(`[ws-server] query error stack:`, e?.stack || 'no stack');
       broadcast(session, { type: 'error', error: String(e) });
     } finally {
       console.log(`[ws-server] query ended threadId=${session.threadId} events=${eventCount} totalMs=${Date.now() - startTime}`);
