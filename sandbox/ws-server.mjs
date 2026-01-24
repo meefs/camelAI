@@ -103,21 +103,41 @@ async function clearTodoState(threadId) {
 
 // Extract TodoWrite todos from SDK events
 function extractTodosFromEvent(event) {
-  // Check assistant messages for TodoWrite tool_use blocks
+  // Helper to extract todos from a tool_use block
+  function getTodosFromBlock(block) {
+    if (block?.type !== 'tool_use' || block.name !== 'TodoWrite') return null;
+
+    let input = block.input;
+    // Input might be a string (partial JSON) that needs parsing
+    if (typeof input === 'string') {
+      try {
+        input = JSON.parse(input);
+      } catch {
+        return null; // Not valid JSON yet
+      }
+    }
+
+    if (input && Array.isArray(input.todos)) {
+      return input.todos;
+    }
+    return null;
+  }
+
+  // Check assistant messages (partial or complete) for TodoWrite tool_use blocks
   if (event?.type === 'assistant' && Array.isArray(event.message?.content)) {
     for (const block of event.message.content) {
-      if (block?.type === 'tool_use' && block.name === 'TodoWrite' && Array.isArray(block.input?.todos)) {
-        return block.input.todos;
+      // Log any TodoWrite blocks we find for debugging
+      if (block?.type === 'tool_use' && block.name === 'TodoWrite') {
+        console.log(`[ws-server] TodoWrite block found, input type=${typeof block.input}, input=${JSON.stringify(block.input)?.slice(0, 200)}`);
+      }
+      const todos = getTodosFromBlock(block);
+      if (todos) {
+        console.log(`[ws-server] Found TodoWrite with ${todos.length} todos`);
+        return todos;
       }
     }
   }
-  // Check streaming content_block_start for TodoWrite
-  if (event?.type === 'stream_event' && event.event?.type === 'content_block_start') {
-    const block = event.event.content_block;
-    if (block?.type === 'tool_use' && block.name === 'TodoWrite' && Array.isArray(block.input?.todos)) {
-      return block.input.todos;
-    }
-  }
+
   return null;
 }
 
