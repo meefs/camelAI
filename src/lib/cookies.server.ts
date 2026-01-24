@@ -7,7 +7,8 @@ interface EnvWithSessions {
 }
 
 // Cookie configuration
-export const SESSION_COOKIE_NAME = 'chiridion_session';
+export const SESSION_COOKIE_NAME = 'chiridion_session_v2';
+export const LEGACY_SESSION_COOKIE_NAME = 'chiridion_session';
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days in seconds
 
 export const SESSION_COOKIE_OPTIONS: SerializeOptions = {
@@ -30,7 +31,11 @@ export function parseCookies(request: Request): Record<string, string | undefine
  */
 export function getSessionIdFromRequest(request: Request): string | null {
   const cookies = parseCookies(request);
-  return cookies[SESSION_COOKIE_NAME] || null;
+  return (
+    cookies[SESSION_COOKIE_NAME] ||
+    cookies[LEGACY_SESSION_COOKIE_NAME] ||
+    null
+  );
 }
 
 /**
@@ -114,6 +119,20 @@ export function createDeleteSessionCookieHeader(request: Request): string {
 }
 
 /**
+ * Create a Set-Cookie header to delete the legacy session cookie
+ */
+export function createDeleteLegacySessionCookieHeader(request: Request): string {
+  const domain = getCookieDomain(request);
+  return serialize(LEGACY_SESSION_COOKIE_NAME, '', {
+    ...SESSION_COOKIE_OPTIONS,
+    maxAge: 0,
+    expires: new Date(0),
+    secure: shouldUseSecureCookie(request),
+    ...(domain && { domain }),
+  });
+}
+
+/**
  * Add session cookie to response headers
  */
 export function withSessionCookie(
@@ -168,6 +187,18 @@ export function createSessionCookie(sessionId: string): string {
  */
 export function deleteSessionCookie(): string {
   return serialize(SESSION_COOKIE_NAME, '', {
+    ...SESSION_COOKIE_OPTIONS,
+    maxAge: 0,
+    expires: new Date(0),
+    secure: true,
+  });
+}
+
+/**
+ * Delete legacy session cookie without request context.
+ */
+export function deleteLegacySessionCookie(): string {
+  return serialize(LEGACY_SESSION_COOKIE_NAME, '', {
     ...SESSION_COOKIE_OPTIONS,
     maxAge: 0,
     expires: new Date(0),

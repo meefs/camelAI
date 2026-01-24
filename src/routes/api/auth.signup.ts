@@ -1,6 +1,6 @@
 import type { Route } from './+types/auth.signup';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { createSessionCookie } from '@/lib/cookies.server';
+import { createSessionCookie, deleteLegacySessionCookie } from '@/lib/cookies.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   getUserByEmail,
@@ -63,6 +63,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     // Create response with session cookie
     const headers = new Headers();
     headers.append('Set-Cookie', createSessionCookie(sessionId));
+    headers.append('Set-Cookie', deleteLegacySessionCookie());
 
     return Response.json({ success: true }, { headers });
   } catch (error) {

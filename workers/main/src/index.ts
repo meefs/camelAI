@@ -41,7 +41,8 @@ export { ChiridionMcp } from './mcp-handler.js';
 // Export WorkspaceContainer as ThreadSandbox to match wrangler.jsonc class_name
 export { WorkspaceContainer as ThreadSandbox };
 
-const SESSION_COOKIE_NAME = 'chiridion_session';
+const SESSION_COOKIE_NAME = 'chiridion_session_v2';
+const LEGACY_SESSION_COOKIE_NAME = 'chiridion_session';
 const CHIRIDION_SESSION_HEADER = 'X-Chiridion-Session-Id';
 
 function getCookieValue(cookieHeader: string | null, name: string): string | null {
@@ -51,6 +52,44 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
     if (k === name) return rest.join('=') || '';
   }
   return null;
+}
+
+function getSessionIdFromCookieHeader(cookieHeader: string | null): string | null {
+  const sessionId = getCookieValue(cookieHeader, SESSION_COOKIE_NAME);
+  if (sessionId) return sessionId;
+  return getCookieValue(cookieHeader, LEGACY_SESSION_COOKIE_NAME);
+}
+
+function buildSessionCookie(name: string, sessionId: string, secure: boolean): string {
+  const cookieOptions = [
+    `${name}=${sessionId}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=2592000', // 30 days
+  ];
+
+  if (secure) {
+    cookieOptions.push('Secure');
+  }
+
+  return cookieOptions.join('; ');
+}
+
+function buildDeleteCookie(name: string, secure: boolean): string {
+  const cookieOptions = [
+    `${name}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+  ];
+
+  if (secure) {
+    cookieOptions.push('Secure');
+  }
+
+  return cookieOptions.join('; ');
 }
 
 interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, CfApiProxyEnv, McpEnv {
@@ -264,7 +303,7 @@ export default {
 
       // Authenticate the request
       const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
-      const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
+      const cookieSessionId = getSessionIdFromCookieHeader(request.headers.get('Cookie'));
       const sessionId = headerSessionId || cookieSessionId;
 
       if (!sessionId) {
@@ -318,7 +357,7 @@ export default {
 
       // Authenticate the request
       const headerSessionId = request.headers.get(CHIRIDION_SESSION_HEADER);
-      const cookieSessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
+      const cookieSessionId = getSessionIdFromCookieHeader(request.headers.get('Cookie'));
       const sessionId = headerSessionId || cookieSessionId;
 
       if (!sessionId) {
@@ -756,25 +795,15 @@ export default {
 
         // Set session cookie and redirect
         const redirectTo = stateData.redirect_url || '/';
-        const cookieOptions = [
-          `${SESSION_COOKIE_NAME}=${sessionId}`,
-          'Path=/',
-          'HttpOnly',
-          'SameSite=Lax',
-          'Max-Age=2592000', // 30 days
-        ];
-
-        // Add Secure flag in production
-        if (url.protocol === 'https:') {
-          cookieOptions.push('Secure');
-        }
+        const secure = url.protocol === 'https:';
+        const headers = new Headers();
+        headers.set('Location', redirectTo);
+        headers.append('Set-Cookie', buildSessionCookie(SESSION_COOKIE_NAME, sessionId, secure));
+        headers.append('Set-Cookie', buildDeleteCookie(LEGACY_SESSION_COOKIE_NAME, secure));
 
         return new Response(null, {
           status: 302,
-          headers: {
-            Location: redirectTo,
-            'Set-Cookie': cookieOptions.join('; '),
-          },
+          headers,
         });
       } catch (err) {
         console.error('[oauth] OAuth flow failed:', err);

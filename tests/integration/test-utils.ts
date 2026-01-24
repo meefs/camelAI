@@ -39,11 +39,11 @@ export function extractSessionCookie(response: Response): string {
   if (!setCookie) {
     throw new Error('Missing set-cookie header');
   }
-  const match = setCookie.match(/chiridion_session=([^;]+)/);
+  const match = setCookie.match(/chiridion_session_v2=([^;]+)/);
   if (!match) {
-    throw new Error('Missing chiridion_session cookie');
+    throw new Error('Missing chiridion_session_v2 cookie');
   }
-  return `chiridion_session=${match[1] ?? ''}`;
+  return `chiridion_session_v2=${match[1] ?? ''}`;
 }
 
 /**

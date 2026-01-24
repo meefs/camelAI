@@ -38,7 +38,7 @@ describe('API Routes Integration', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Cookie: 'chiridion_session=invalid-session-id',
+          Cookie: 'chiridion_session_v2=invalid-session-id',
         },
         body: JSON.stringify({
           threadId: 'test-thread',
@@ -60,7 +60,7 @@ describe('API Routes Integration', () => {
     it('should reject with invalid session cookie', async () => {
       const response = await fetch(`${baseUrl}/api/threads/test-thread-id/preview`, {
         headers: {
-          Cookie: 'chiridion_session=invalid-session-id',
+          Cookie: 'chiridion_session_v2=invalid-session-id',
         },
       });
 

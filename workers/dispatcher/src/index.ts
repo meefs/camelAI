@@ -83,7 +83,8 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 const SCREENSHOT_SESSION_MAX_AGE = SCREENSHOT_SESSION_TTL_SECONDS;
 
 // Main app session cookie name (same-site requests will have this)
-const MAIN_APP_SESSION_COOKIE = 'chiridion_session';
+const MAIN_APP_SESSION_COOKIE = 'chiridion_session_v2';
+const LEGACY_MAIN_APP_SESSION_COOKIE = 'chiridion_session';
 
 // Main app URL for auth redirects (determined from request hostname)
 function getMainAppUrl(hostname: string): string {
@@ -348,7 +349,9 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
   // For same-site requests (*.chiridion.ai), check main app session cookie directly
   // No redirect dance needed - the cookie is already available or the user isn't logged in
   if (isSameSiteRequest(url.hostname)) {
-    const mainSessionId = getCookieValue(cookieHeader, MAIN_APP_SESSION_COOKIE);
+    const mainSessionId =
+      getCookieValue(cookieHeader, MAIN_APP_SESSION_COOKIE) ||
+      getCookieValue(cookieHeader, LEGACY_MAIN_APP_SESSION_COOKIE);
     if (!mainSessionId) {
       // No session cookie - user is not logged in
       return new Response('Unauthorized', { status: 401 });

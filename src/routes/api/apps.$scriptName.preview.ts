@@ -1,18 +1,8 @@
 import type { Route } from './+types/apps.$scriptName.preview';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
+import { getSessionIdFromRequest } from '@/lib/cookies.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import { getSession, isOrgMember, getWorkerAccessInfo } from '@/lib/auth-do';
-
-const SESSION_COOKIE_NAME = 'chiridion_session';
-
-function getCookieValue(cookieHeader: string | null, name: string): string | null {
-  if (!cookieHeader) return null;
-  for (const part of cookieHeader.split(';')) {
-    const [k, ...rest] = part.trim().split('=');
-    if (k === name) return rest.join('=') || '';
-  }
-  return null;
-}
 
 interface R2Env extends AuthEnv {
   R2_BUCKET: R2Bucket;
@@ -38,7 +28,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'App not found' }, { status: 404 });
     }
 
-    const sessionId = getCookieValue(request.headers.get('Cookie'), SESSION_COOKIE_NAME);
+    const sessionId = getSessionIdFromRequest(request);
     if (!sessionId) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }

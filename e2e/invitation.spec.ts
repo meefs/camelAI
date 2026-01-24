@@ -17,9 +17,9 @@ async function signup(page: Page, email = generateEmail()) {
 
 async function getSessionCookie(page: Page) {
   const cookies = await page.context().cookies();
-  const sessionCookie = cookies.find((cookie) => cookie.name === 'chiridion_session');
+  const sessionCookie = cookies.find((cookie) => cookie.name === 'chiridion_session_v2');
   if (!sessionCookie) {
-    throw new Error('Missing chiridion_session cookie');
+    throw new Error('Missing chiridion_session_v2 cookie');
   }
   return `${sessionCookie.name}=${sessionCookie.value}`;
 }
