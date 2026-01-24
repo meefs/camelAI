@@ -3,7 +3,7 @@ import { createInterface } from 'readline';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-24-direct-cli-v7';
+const VERSION = '2026-01-24-direct-cli-v8';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -222,8 +222,6 @@ function findClaudeCLI() {
 
 const CLAUDE_CLI = findClaudeCLI();
 console.log(`[ws-server] Using Claude CLI: ${CLAUDE_CLI}`);
-console.log(`[ws-server] CLI working directory: ${CLI_CWD}`);
-console.log(`[ws-server] HOME=${process.env.HOME}`);
 
 function spawnCLI(session) {
   const resume = sessionFileExists(session.threadId);
@@ -231,10 +229,6 @@ function spawnCLI(session) {
   const env = buildCLIEnv(session);
 
   console.log(`[ws-server] spawning CLI threadId=${session.threadId} resume=${resume}`);
-  console.log(`[ws-server] CLI args: ${CLAUDE_CLI} ${args.join(' ').slice(0, 200)}...`);
-  console.log(`[ws-server] CLI env: ANTHROPIC_BASE_URL=${env.ANTHROPIC_BASE_URL || '(not set)'}`);
-  console.log(`[ws-server] CLI env: ANTHROPIC_API_KEY=${env.ANTHROPIC_API_KEY ? env.ANTHROPIC_API_KEY.slice(0, 20) + '...' : '(not set)'}`);
-  console.log(`[ws-server] CLI cwd: ${CLI_CWD}`);
 
   const proc = spawn(CLAUDE_CLI, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -243,25 +237,12 @@ function spawnCLI(session) {
   });
 
   session.cliProcess = proc;
-  console.log(`[ws-server] CLI spawned pid=${proc.pid} threadId=${session.threadId}`);
 
-  // Handle stderr - log everything
+  // Handle stderr
   proc.stderr.on('data', (data) => {
-    const msg = data.toString();
-    console.error(`[ws-server] CLI_STDERR threadId=${session.threadId}: ${msg}`);
-  });
-
-  // Log spawn event
-  proc.on('spawn', () => {
-    console.log(`[ws-server] CLI spawn event received threadId=${session.threadId}`);
-  });
-
-  // Log first stdout data
-  let gotFirstOutput = false;
-  proc.stdout.on('data', (chunk) => {
-    if (!gotFirstOutput) {
-      gotFirstOutput = true;
-      console.log(`[ws-server] First stdout data received threadId=${session.threadId} len=${chunk.length}`);
+    const msg = data.toString().trim();
+    if (msg) {
+      console.error(`[ws-server] CLI_STDERR threadId=${session.threadId}: ${msg.slice(0, 500)}`);
     }
   });
 
@@ -357,16 +338,10 @@ function sendMessageToCLI(session, content) {
   };
 
   const msgStr = JSON.stringify(msg) + '\n';
-  console.log(`[ws-server] Sending to CLI threadId=${session.threadId} len=${content.length} msgLen=${msgStr.length}`);
+  console.log(`[ws-server] Sending to CLI threadId=${session.threadId} len=${content.length}`);
 
   try {
-    const written = session.cliProcess.stdin.write(msgStr);
-    console.log(`[ws-server] stdin.write returned=${written} threadId=${session.threadId}`);
-    if (!written) {
-      session.cliProcess.stdin.once('drain', () => {
-        console.log(`[ws-server] stdin drained threadId=${session.threadId}`);
-      });
-    }
+    session.cliProcess.stdin.write(msgStr);
   } catch (err) {
     console.error(`[ws-server] stdin write error threadId=${session.threadId}:`, err);
     session.isProcessing = false;
