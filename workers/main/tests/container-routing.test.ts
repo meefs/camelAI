@@ -8,15 +8,27 @@ import type { WorkspaceContainerEnv } from '../src/workspace-container';
 import type { OrgDO } from '../src/auth';
 import type { WorkspaceDO } from '../src/workspace';
 
+// Mock the OpenRouter key functions to avoid actual crypto in tests
+vi.mock('../src/openrouter-keys', () => ({
+  decryptOpenRouterKey: vi.fn().mockResolvedValue('sk-or-test-key-12345'),
+  encryptOpenRouterKey: vi.fn().mockResolvedValue('mock-encrypted'),
+  createOpenRouterKey: vi.fn(),
+  getKeyHash: vi.fn().mockReturnValue('test-hash'),
+}));
+
 function buildEnvVarsForTest(workspaceId: string, orgId: string) {
   const fakeEnv = {
-    OPENROUTER_API_KEY: 'test-openrouter-key',
     TOKEN_SIGNING_SECRET: 'test-signing-secret-for-unit-tests-only',
     INTEGRATION_SECRET_KEY: 'test-integration-secret-key',
     ORG: {
       get: () => ({
         getInfo: async () => ({ created_by: 'user-1', name: 'Test Org' }),
-        getOpenRouterKeyRecord: async () => null, // No org-specific key, will use fallback
+        // Return a mock key record - the actual decryption is mocked below
+        getOpenRouterKeyRecord: async () => ({
+          key_hash: 'test-hash',
+          key_encrypted: 'mock-encrypted-value',
+          name: 'Test Key',
+        }),
       }),
       idFromName: (name: string) => name,
     } as unknown as DurableObjectNamespace<OrgDO>,

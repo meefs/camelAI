@@ -5,7 +5,7 @@
 	"compatibility_date": "2025-12-01",
 	"compatibility_flags": ["nodejs_compat"],
 	"vars": {
-		"OPENROUTER_API_KEY": "test-openrouter-key",
+		"OPENROUTER_PROVISIONING_KEY": "test-openrouter-provisioning-key",
 		"TOKEN_SIGNING_SECRET": "test-signing-secret-for-unit-tests-only"
 	},
 	"kv_namespaces": [

@@ -34,7 +34,6 @@ export interface WorkspaceContainerEnv {
   R2_API_TOKEN?: string;
   R2_PARENT_ACCESS_KEY_ID?: string;
   WORKER_BASE_URL?: string;
-  OPENROUTER_API_KEY?: string; // Fallback global key
   OPENROUTER_PROVISIONING_KEY?: string; // Parent key for creating per-org keys
   DISABLE_JUICEFS?: string;
   CHIRIDION_TRACE_EVENTS?: string;
@@ -349,13 +348,9 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
       }
     }
 
-    // Fall back to global key if no org-specific key
+    // Require org-specific key (no fallback)
     if (!openRouterKey) {
-      if (!this.env.OPENROUTER_API_KEY) {
-        throw new Error('No OpenRouter API key available (neither org-specific nor global fallback)');
-      }
-      openRouterKey = this.env.OPENROUTER_API_KEY;
-      console.log('[WorkspaceContainer] Using global OpenRouter key fallback', { orgId });
+      throw new Error('No OpenRouter API key available. Ensure OPENROUTER_PROVISIONING_KEY is set.');
     }
 
     // OpenRouter LLM config

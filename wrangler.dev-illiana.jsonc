@@ -19,7 +19,7 @@
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
 		"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai"
-		// OPENROUTER_API_KEY (fallback) and OPENROUTER_PROVISIONING_KEY are set via secrets
+		// OPENROUTER_PROVISIONING_KEY is set via secrets
 	},
 	"assets": {
 		"binding": "ASSETS",
