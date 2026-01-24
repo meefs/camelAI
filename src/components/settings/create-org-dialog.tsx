@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { useFetcher } from "react-router"
 import { useForm, getFormProps, getInputProps, type SubmissionResult } from "@conform-to/react"
 import { parseWithZod } from "@conform-to/zod/v4"
@@ -44,6 +44,7 @@ export function CreateOrgDialog({
   const { refreshAuth, switchOrg } = useAuth()
   const fetcher = useFetcher<{ result?: SubmissionResult<string[]>; success?: boolean; error?: string; orgId?: string }>()
   const saving = fetcher.state !== "idle"
+  const processedOrgIdRef = useRef<string | null>(null)
 
   const [form, fields] = useForm({
     lastResult: fetcher.data?.result,
@@ -57,14 +58,27 @@ export function CreateOrgDialog({
     shouldRevalidate: "onInput",
   })
 
-  // Handle response
+  // Reset processed ref when dialog opens
+  useEffect(() => {
+    if (open) {
+      processedOrgIdRef.current = null
+    }
+  }, [open])
+
+  // Handle response - use ref to prevent processing the same response multiple times
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data) {
-      if (fetcher.data.success) {
+      if (fetcher.data.success && fetcher.data.orgId) {
+        // Skip if we already processed this org creation
+        if (processedOrgIdRef.current === fetcher.data.orgId) {
+          return
+        }
+        processedOrgIdRef.current = fetcher.data.orgId
+
         toast.success("Organization created")
         onOpenChange(false)
         // Switch to new org if requested
-        if (switchToNewOrg && fetcher.data.orgId) {
+        if (switchToNewOrg) {
           switchOrg(fetcher.data.orgId).catch(() => refreshAuth())
         } else {
           refreshAuth()
