@@ -357,6 +357,7 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     envVars.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api';
     envVars.ANTHROPIC_AUTH_TOKEN = openRouterKey;
     envVars.ANTHROPIC_API_KEY = ''; // Must be empty for OpenRouter
+    envVars.CLAUDE_CODE_ATTRIBUTION_HEADER = '0'; // Disable billing header for OpenRouter compatibility
     console.log('[WorkspaceContainer] Configured OpenRouter for workspace', { workspaceId, orgId });
 
     // Cloudflare API proxy config

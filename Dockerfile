@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-24-v28-direct-cli-copy
+# Version: 2026-01-24-v29-disable-attribution-header
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
