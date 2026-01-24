@@ -92,10 +92,6 @@
 		{
 			"binding": "WORKER_SELF_REFERENCE",
 			"service": "chiridion-app"
-		},
-		{
-			"binding": "PROXY",
-			"service": "chiridion-llm-proxy"
 		}
 	],
 	"durable_objects": {
@@ -184,10 +180,6 @@
 				{
 					"binding": "WORKER_SELF_REFERENCE",
 					"service": "chiridion-app"
-				},
-				{
-					"binding": "PROXY",
-					"service": "chiridion-llm-proxy"
 				}
 			],
 			"containers": [
@@ -291,10 +283,6 @@
 				{
 					"binding": "WORKER_SELF_REFERENCE",
 					"service": "chiridion-app-staging"
-				},
-				{
-					"binding": "PROXY",
-					"service": "chiridion-llm-proxy-staging"
 				}
 			],
 			"containers": [
@@ -393,10 +381,6 @@
 				{
 					"binding": "WORKER_SELF_REFERENCE",
 					"service": "chiridion-app-dev-miguel"
-				},
-				{
-					"binding": "PROXY",
-					"service": "chiridion-llm-proxy-dev-miguel"
 				}
 			],
 			"containers": [
@@ -495,10 +479,6 @@
 				{
 					"binding": "WORKER_SELF_REFERENCE",
 					"service": "chiridion-app-dev-illiana"
-				},
-				{
-					"binding": "PROXY",
-					"service": "chiridion-llm-proxy-dev-illiana"
 				}
 			],
 			"containers": [

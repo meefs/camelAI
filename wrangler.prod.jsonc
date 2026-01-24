@@ -49,8 +49,7 @@
 		]
 	},
 	"services": [
-		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app" },
-		{ "binding": "PROXY", "service": "chiridion-llm-proxy" }
+		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app" }
 	],
 	"containers": [
 		{

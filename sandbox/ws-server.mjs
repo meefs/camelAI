@@ -13,8 +13,9 @@ const CLI_CWD = existsSync(SYNC_DIR) ? SYNC_DIR : process.cwd();
 
 console.log(`[ws-server] Starting version=${VERSION} port=${PORT}`);
 
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('ANTHROPIC_API_KEY required');
+// Auth via ANTHROPIC_AUTH_TOKEN (OpenRouter) or ANTHROPIC_API_KEY (direct Anthropic)
+if (!process.env.ANTHROPIC_AUTH_TOKEN && !process.env.ANTHROPIC_API_KEY) {
+  console.error('ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY required');
   process.exit(1);
 }
 

@@ -100,7 +100,6 @@ interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, CfApiProxyEnv, McpE
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
   BROWSER?: Fetcher;
   LOCAL_APP_PREVIEW_URL?: string;
-  PROXY?: Fetcher;
   // OAuth
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;

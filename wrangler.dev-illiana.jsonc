@@ -48,8 +48,7 @@
 		]
 	},
 	"services": [
-		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app-dev-illiana" },
-		{ "binding": "PROXY", "service": "chiridion-llm-proxy-dev-illiana" }
+		{ "binding": "WORKER_SELF_REFERENCE", "service": "chiridion-app-dev-illiana" }
 	],
 	"containers": [
 		{
