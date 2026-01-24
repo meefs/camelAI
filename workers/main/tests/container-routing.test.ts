@@ -10,12 +10,13 @@ import type { WorkspaceDO } from '../src/workspace';
 
 function buildEnvVarsForTest(workspaceId: string, orgId: string) {
   const fakeEnv = {
-    PROXY_BASE_URL: 'http://proxy.test.local',
+    OPENROUTER_API_KEY: 'test-openrouter-key',
     TOKEN_SIGNING_SECRET: 'test-signing-secret-for-unit-tests-only',
     INTEGRATION_SECRET_KEY: 'test-integration-secret-key',
     ORG: {
       get: () => ({
-        getInfo: async () => ({ created_by: 'user-1' }),
+        getInfo: async () => ({ created_by: 'user-1', name: 'Test Org' }),
+        getOpenRouterKeyRecord: async () => null, // No org-specific key, will use fallback
       }),
       idFromName: (name: string) => name,
     } as unknown as DurableObjectNamespace<OrgDO>,

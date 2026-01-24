@@ -7,6 +7,12 @@ import { getTempR2Credentials } from './r2-credentials';
 import { createSignedToken } from './signed-tokens';
 import { mapCredentialsToEnvVars } from './integration-env';
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import {
+  createOpenRouterKey,
+  encryptOpenRouterKey,
+  decryptOpenRouterKey,
+  getKeyHash,
+} from './openrouter-keys';
 import type { OrgDO } from './auth';
 import type { WorkspaceDO } from './workspace';
 
@@ -28,7 +34,8 @@ export interface WorkspaceContainerEnv {
   R2_API_TOKEN?: string;
   R2_PARENT_ACCESS_KEY_ID?: string;
   WORKER_BASE_URL?: string;
-  PROXY_BASE_URL?: string;
+  OPENROUTER_API_KEY?: string; // Fallback global key
+  OPENROUTER_PROVISIONING_KEY?: string; // Parent key for creating per-org keys
   DISABLE_JUICEFS?: string;
   CHIRIDION_TRACE_EVENTS?: string;
   CHIRIDION_DEBUG_STARTUP?: string;
@@ -293,10 +300,6 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     envVars.CI = '1';
 
     // Validate required config
-    const proxyBaseUrl = this.env.PROXY_BASE_URL;
-    if (!proxyBaseUrl) {
-      throw new Error('PROXY_BASE_URL is required for sandbox LLM access');
-    }
     if (!this.env.TOKEN_SIGNING_SECRET) {
       throw new Error('TOKEN_SIGNING_SECRET is required for sandbox token signing');
     }
@@ -305,6 +308,61 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
     const orgInfo = await orgStub.getInfo();
     const userId = orgInfo?.created_by || 'system';
+    const orgName = orgInfo?.name || orgId;
+
+    // Get or create per-org OpenRouter API key
+    let openRouterKey: string | null = null;
+
+    // Try to get existing org-specific key
+    const keyRecord = await orgStub.getOpenRouterKeyRecord();
+    if (keyRecord) {
+      try {
+        openRouterKey = await decryptOpenRouterKey(keyRecord.key_encrypted, this.env.INTEGRATION_SECRET_KEY);
+        console.log('[WorkspaceContainer] Using existing org OpenRouter key', { orgId, keyHash: keyRecord.key_hash });
+      } catch (e) {
+        console.error('[WorkspaceContainer] Failed to decrypt org OpenRouter key:', e);
+      }
+    }
+
+    // If no org key exists and we have a provisioning key, create one
+    if (!openRouterKey && this.env.OPENROUTER_PROVISIONING_KEY) {
+      try {
+        console.log('[WorkspaceContainer] Creating new OpenRouter key for org', { orgId, orgName });
+        const keyResponse = await createOpenRouterKey(this.env.OPENROUTER_PROVISIONING_KEY, {
+          name: `Chiridion - ${orgName}`,
+        });
+        openRouterKey = keyResponse.key;
+
+        // Store encrypted key in org
+        const keyHash = getKeyHash(openRouterKey);
+        const keyEncrypted = await encryptOpenRouterKey(openRouterKey, this.env.INTEGRATION_SECRET_KEY);
+        await orgStub.setOpenRouterKey(
+          keyHash,
+          keyEncrypted,
+          `Chiridion - ${orgName}`,
+          keyResponse.data.hash,
+          null
+        );
+        console.log('[WorkspaceContainer] Created and stored new org OpenRouter key', { orgId, keyHash });
+      } catch (e) {
+        console.error('[WorkspaceContainer] Failed to create org OpenRouter key:', e);
+      }
+    }
+
+    // Fall back to global key if no org-specific key
+    if (!openRouterKey) {
+      if (!this.env.OPENROUTER_API_KEY) {
+        throw new Error('No OpenRouter API key available (neither org-specific nor global fallback)');
+      }
+      openRouterKey = this.env.OPENROUTER_API_KEY;
+      console.log('[WorkspaceContainer] Using global OpenRouter key fallback', { orgId });
+    }
+
+    // OpenRouter LLM config
+    envVars.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api';
+    envVars.ANTHROPIC_AUTH_TOKEN = openRouterKey;
+    envVars.ANTHROPIC_API_KEY = ''; // Must be empty for OpenRouter
+    console.log('[WorkspaceContainer] Configured OpenRouter for workspace', { workspaceId, orgId });
 
     // Cloudflare API proxy config
     // Create a workspace-scoped deploy token for container to use with Cloudflare API
@@ -319,19 +377,6 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
 
     // Token expires in 24 hours
     const tokenExpiry = Date.now() + TOKEN_TTL_MS;
-
-    // Create signed proxy token for LLM access
-    const proxyToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
-      org_id: orgId,
-      user_id: userId,
-      scopes: ['proxy'],
-      exp: tokenExpiry,
-      workspace_id: workspaceId,
-      name: `sandbox-${workspaceId}`,
-    });
-    envVars.ANTHROPIC_BASE_URL = proxyBaseUrl;
-    envVars.ANTHROPIC_API_KEY = proxyToken;
-    console.log('[WorkspaceContainer] Created signed proxy token for workspace', { workspaceId, orgId });
 
     // MCP server config (create signed token for MCP access)
     // MCP endpoint is on the main worker at /mcp

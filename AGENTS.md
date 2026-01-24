@@ -29,8 +29,8 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
          │                        │                           │
          ▼                        ▼                           ▼
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
-│   R2 Storage    │     │   LLM Proxy      │     │     JuiceFS         │
-│  (Files/Assets) │     │ (Multi-Provider) │     │   (Workspace FS)    │
+│   R2 Storage    │     │    OpenRouter    │     │     JuiceFS         │
+│  (Files/Assets) │     │   (LLM Access)   │     │   (Workspace FS)    │
 └─────────────────┘     └──────────────────┘     └─────────────────────┘
 ```
 
@@ -54,7 +54,6 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
      - MCP server endpoint (`/mcp`) with API key auth
    - `dispatcher/` - Routes `*.chiridion.app` to user workers (Workers for Platforms)
    - `admin-cli/` - Local-only admin CLI for querying live environments
-   - `proxy/` - Multi-provider LLM proxy (Anthropic/Bedrock/Azure Foundry) with token accounting
 
 3. **Sandbox** (`sandbox/`)
    - `entrypoint.sh` - Container startup: mounts JuiceFS, starts services
@@ -105,6 +104,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 | `workers/main/src/durable-objects.ts` | `ChatThreadDO` for thread state |
 | `workers/main/src/cf-api-proxy.ts` | Cloudflare API proxy for deploys |
 | `workers/main/src/mcp-handler.ts` | MCP server with `ChiridionMcp` |
+| `workers/main/src/openrouter-keys.ts` | OpenRouter API key provisioning for per-org usage |
 
 ### Sandbox
 | File | Purpose |
@@ -290,13 +290,6 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 
 MCP auth uses API tokens with `mcp` scope. Requests must include `Authorization: Bearer <token>` or `x-api-key`. Sandbox containers receive a per-org MCP token via `MCP_API_KEY` env var.
 
-### Proxy Worker Routes
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/v1/messages` | POST | LLM proxy (Anthropic-style, streaming) |
-| `/v1/messages/count_tokens` | POST | Token counting |
-| `/health` | GET | Health check |
-
 ## Development
 
 ### Prerequisites
@@ -324,7 +317,8 @@ Runs `react-router build`, outputs to `build/client/` and `build/server/`.
 
 Create `.dev.vars`:
 ```
-ANTHROPIC_API_KEY=your_key_here
+OPENROUTER_API_KEY=your_openrouter_key_here
+OPENROUTER_PROVISIONING_KEY=your_provisioning_key_here
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
 GITHUB_CLIENT_ID=your_github_client_id
@@ -333,9 +327,9 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | Claude API key for SDK |
+| `OPENROUTER_API_KEY` | Fallback OpenRouter API key for LLM access |
+| `OPENROUTER_PROVISIONING_KEY` | OpenRouter provisioning key for creating per-org API keys |
 | `WORKER_BASE_URL` | Base URL for the main worker |
-| `PROXY_BASE_URL` | Base URL for LLM proxy (sets `ANTHROPIC_BASE_URL` in containers) |
 | `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
 | `TOKEN_SIGNING_SECRET` | Secret for signing auth tokens |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
@@ -362,7 +356,6 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `CHIRIDION_DEBUG_STARTUP` | Log startup env snapshot (`1` to enable) |
 | `CHIRIDION_DEBUG_SDK` | Log query options (`1` to enable) |
 | `CHIRIDION_DEBUG_FS` | Run filesystem probes at startup (`1` to enable) |
-| `CHIRIDION_DEBUG_PROXY` | Probe proxy health at startup (`1` to enable) |
 
 #### OAuth Setup
 
@@ -377,25 +370,6 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 1. Go to [GitHub Developer Settings](https://github.com/settings/developers)
 2. Create a new OAuth App
 3. Set Authorization callback URL: `https://your-domain.com/api/auth/github/callback`
-
-### Proxy Worker Environment Variables (`workers/proxy`)
-
-| Variable | Description |
-|----------|-------------|
-| `PROXY_PROVIDERS` | JSON array of provider configs (name/type/baseUrl/etc.) |
-| `PROXY_DEFAULT_PROVIDER` | Default provider name |
-| `PROXY_FALLBACK_ORDER` | Comma-separated provider fallback list |
-| `PROXY_LOG_LEVEL` | Logging verbosity (`debug`, `info`, `warn`, `error`, `none`) |
-| `PROXY_LOCAL_COUNT_TOKENS` | If `1`, return local token estimates without upstream call |
-| `PROXY_MODEL_ALIASES` | JSON map of Anthropic model IDs → canonical aliases |
-| `PROXY_BEDROCK_MODEL_MAP` | JSON map of Anthropic model IDs → Bedrock model IDs |
-| `ANTHROPIC_API_KEY` | Upstream Anthropic key |
-| `ANTHROPIC_FOUNDRY_API_KEY` | Foundry API key |
-| `ANTHROPIC_FOUNDRY_BASE_URL` | Foundry base URL |
-| `AWS_REGION` | AWS region for Bedrock |
-| `BEDROCK_API_KEY` | Bedrock API key (bearer token auth) |
-
-Proxy auth uses API tokens minted via `OrgDO.createApiToken` (stored in `API_TOKENS` KV). The proxy validates tokens via remote DO bindings.
 
 ### KV Namespaces
 
@@ -455,10 +429,6 @@ bun run deploy:main:prod
 bun run deploy:main:staging
 bun run deploy:main:dev-illiana
 bun run deploy:main:dev-miguel
-
-# Deploy proxy worker
-bun run deploy:proxy:prod
-bun run deploy:proxy:staging
 
 # Deploy dispatcher worker
 bun run deploy:dispatcher:prod
@@ -543,9 +513,9 @@ chiridion-app/
 │   │   ├── workspace-container.ts # ThreadSandbox
 │   │   ├── durable-objects.ts # ChatThreadDO
 │   │   ├── cf-api-proxy.ts    # Deploy proxy
-│   │   └── mcp-handler.ts     # MCP server
+│   │   ├── mcp-handler.ts     # MCP server
+│   │   └── openrouter-keys.ts # Per-org API key provisioning
 │   ├── dispatcher/src/        # WfP subdomain router
-│   ├── proxy/src/             # LLM proxy worker
 │   └── admin-cli/             # Admin CLI tool
 ├── sandbox/
 │   ├── entrypoint.sh          # Container startup
@@ -574,6 +544,7 @@ chiridion-app/
 - Worker scripts with preview status
 - Integration credentials (org-level)
 - API tokens
+- OpenRouter API key (encrypted, per-org)
 
 ### WorkspaceDO (per workspace)
 - Workspace metadata, members, access levels
@@ -602,7 +573,7 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 
 1. **Durable Objects not working locally**: Use `bun run dev` (wrangler-based dev)
 2. **Streaming not working**: Ensure `includePartialMessages: true` in ws-server.mjs
-3. **API key not found**: Check `.dev.vars` has `ANTHROPIC_API_KEY`
+3. **API key not found**: Check `.dev.vars` has `OPENROUTER_API_KEY`
 4. **Docker cache stale**: Add version comment to `entrypoint.sh` to invalidate
 5. **Session not persisting**: Check cookies and DO worker is running
 6. **JuiceFS mount fails**: Check `/dev/fuse` exists, verify R2 credentials

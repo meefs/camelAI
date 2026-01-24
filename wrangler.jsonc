@@ -17,9 +17,8 @@
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-local",
 		// For containers, use host.docker.internal to reach the host (Vite dev on port 3001)
-		"WORKER_BASE_URL": "http://host.docker.internal:3001",
-		// Proxy requests go directly to local wrangler (which handles /v1/messages)
-		"PROXY_BASE_URL": "http://host.docker.internal:8787"
+		"WORKER_BASE_URL": "http://host.docker.internal:3001"
+		// OPENROUTER_API_KEY (fallback) and OPENROUTER_PROVISIONING_KEY (for per-org keys) are set via .dev.vars
 	},
 	"assets": {
 		"binding": "ASSETS",
@@ -134,9 +133,8 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform",
-				"WORKER_BASE_URL": "https://chiridion.ai",
-				// Proxy requests go directly to the LLM proxy worker
-				"PROXY_BASE_URL": "https://llm-proxy.chiridion.ai"
+				"WORKER_BASE_URL": "https://chiridion.ai"
+				// OPENROUTER_API_KEY is set via secrets
 			},
 			"images": {
 				"binding": "IMAGES"
@@ -233,9 +231,8 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
-				"WORKER_BASE_URL": "https://staging.chiridion.ai",
-				// Proxy requests go directly to the LLM proxy worker
-				"PROXY_BASE_URL": "https://llm-proxy.staging.chiridion.ai"
+				"WORKER_BASE_URL": "https://staging.chiridion.ai"
+				// OPENROUTER_API_KEY is set via secrets
 			},
 			"assets": {
 				"binding": "ASSETS",
@@ -335,9 +332,8 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
-				"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai",
-				// Proxy requests go directly to the LLM proxy worker
-				"PROXY_BASE_URL": "https://llm-proxy.dev-miguel.chiridion.ai"
+				"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai"
+				// OPENROUTER_API_KEY is set via secrets
 			},
 			"assets": {
 				"binding": "ASSETS",
@@ -438,9 +434,8 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
-				"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai",
-				// Proxy requests go directly to the LLM proxy worker
-				"PROXY_BASE_URL": "https://llm-proxy.dev-illiana.chiridion.ai"
+				"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai"
+				// OPENROUTER_API_KEY is set via secrets
 			},
 			"assets": {
 				"binding": "ASSETS",

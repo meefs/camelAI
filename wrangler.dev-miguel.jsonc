@@ -18,8 +18,8 @@
 		"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
-		"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai",
-		"PROXY_BASE_URL": "https://llm-proxy.dev-miguel.chiridion.ai"
+		"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai"
+		// OPENROUTER_API_KEY is set via secrets
 	},
 	"assets": {
 		"binding": "ASSETS",
