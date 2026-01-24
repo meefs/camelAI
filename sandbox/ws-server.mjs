@@ -1,56 +1,21 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { spawn } from 'child_process';
+import { createInterface } from 'readline';
+import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-24-retry-early-exit-v2';
+const VERSION = '2026-01-24-direct-cli-v4';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
+
+// Use SYNC_DIR if it exists, otherwise use current directory (for local testing)
+const CLI_CWD = existsSync(SYNC_DIR) ? SYNC_DIR : process.cwd();
 
 console.log(`[ws-server] Starting version=${VERSION} port=${PORT}`);
 
 if (!process.env.ANTHROPIC_API_KEY) {
   console.error('ANTHROPIC_API_KEY required');
   process.exit(1);
-}
-
-// Simple async queue for feeding messages to SDK
-class MessageQueue {
-  #queue = [];
-  #waiting = null;
-  #closed = false;
-
-  [Symbol.asyncIterator]() { return this; }
-
-  next() {
-    if (this.#queue.length > 0) {
-      return Promise.resolve({ done: false, value: this.#queue.shift() });
-    }
-    if (this.#closed) {
-      return Promise.resolve({ done: true });
-    }
-    return new Promise(resolve => { this.#waiting = resolve; });
-  }
-
-  enqueue(value) {
-    if (this.#closed) return;
-    if (this.#waiting) {
-      const resolve = this.#waiting;
-      this.#waiting = null;
-      resolve({ done: false, value });
-    } else {
-      this.#queue.push(value);
-    }
-  }
-
-  close() {
-    this.#closed = true;
-    if (this.#waiting) {
-      this.#waiting({ done: true });
-      this.#waiting = null;
-    }
-  }
-
-  get length() { return this.#queue.length; }
 }
 
 // Todo state persistence - simple file per thread
@@ -86,7 +51,7 @@ async function readTodoState(threadId) {
     console.log(`[ws-server] Loaded todo state threadId=${threadId} count=${todos.length}`);
     return todos;
   } catch {
-    return null; // File doesn't exist or parse error
+    return null;
   }
 }
 
@@ -101,7 +66,7 @@ async function clearTodoState(threadId) {
   }
 }
 
-// Extract TodoWrite todos from SDK events
+// Extract TodoWrite todos from CLI events
 function extractTodosFromEvent(event) {
   if (event?.type === 'assistant' && Array.isArray(event.message?.content)) {
     for (const block of event.message.content) {
@@ -129,8 +94,9 @@ function getSession(threadId, deployToken, userInfo) {
     sockets: new Set(),
     events: [],
     nextEventId: 1,
-    inputQueue: null,
-    activeQuery: null,
+    cliProcess: null,
+    pendingMessages: [],
+    isProcessing: false,
   };
   sessions.set(threadId, session);
   return session;
@@ -183,7 +149,44 @@ For downloadable files, use: \`[Link Text](chiridion://outputs/filename)\`
 4. Deploy with \`wrangler deploy\`
 `;
 
-function buildQueryOptions(session, resume) {
+function buildCLIArgs(session, resume) {
+  const args = [
+    '--print',
+    '--output-format', 'stream-json',
+    '--input-format', 'stream-json',
+    '--verbose',
+    '--include-partial-messages',
+    '--permission-mode', 'bypassPermissions',
+    '--allow-dangerously-skip-permissions',
+    '--model', 'opus',
+    '--append-system-prompt', SYSTEM_PROMPT_APPEND.trim(),
+  ];
+
+  if (resume) {
+    args.push('--resume', session.threadId);
+  } else {
+    args.push('--session-id', session.threadId);
+  }
+
+  // Add MCP config if available
+  if (process.env.MCP_SERVER_URL && process.env.MCP_API_KEY) {
+    const mcpConfig = {
+      mcpServers: {
+        chiridion: {
+          type: 'http',
+          url: process.env.MCP_SERVER_URL,
+          headers: { Authorization: `Bearer ${process.env.MCP_API_KEY}` },
+        },
+      },
+    };
+    args.push('--mcp-config', JSON.stringify(mcpConfig));
+    args.push('--allowedTools', 'mcp__chiridion__*');
+  }
+
+  return args;
+}
+
+function buildCLIEnv(session) {
   const env = {
     ...process.env,
     ...integrationEnvVars,
@@ -194,142 +197,145 @@ function buildQueryOptions(session, resume) {
     env.CLOUDFLARE_API_TOKEN = session.deployToken;
   }
 
-  const mcpServers = {};
-  if (process.env.MCP_SERVER_URL && process.env.MCP_API_KEY) {
-    mcpServers.chiridion = {
-      type: 'http',
-      url: process.env.MCP_SERVER_URL,
-      headers: { Authorization: `Bearer ${process.env.MCP_API_KEY}` },
-    };
-  }
-
-  return {
-    model: 'opus',
-    includePartialMessages: true,
-    permissionMode: 'bypassPermissions',
-    allowDangerouslySkipPermissions: true,
-    sandbox: { enabled: false, allowUnsandboxedCommands: true },
-    systemPrompt: { type: 'preset', preset: 'claude_code', append: SYSTEM_PROMPT_APPEND.trim() },
-    settingSources: ['project', 'user'],
-    env,
-    // Capture CLI stderr for debugging
-    stderr: (data) => {
-      const msg = String(data).trim();
-      if (msg) console.error(`[ws-server] CLI_STDERR threadId=${session.threadId}: ${msg.slice(0, 500)}`);
-    },
-    // Also capture stdout in case there's useful info
-    stdout: (data) => {
-      const msg = String(data).trim();
-      if (msg) console.log(`[ws-server] CLI_STDOUT threadId=${session.threadId}: ${msg.slice(0, 500)}`);
-    },
-    ...(Object.keys(mcpServers).length > 0 && { mcpServers, allowedTools: ['mcp__chiridion__*'] }),
-    ...(resume ? { resume: session.threadId } : { extraArgs: { 'session-id': session.threadId } }),
-  };
+  return env;
 }
 
-async function* messageStream(session) {
-  const startTime = Date.now();
-  console.log(`[ws-server] messageStream started threadId=${session.threadId}`);
-  let msgCount = 0;
-  for await (const msg of session.inputQueue) {
-    msgCount++;
-    const waitMs = Date.now() - startTime;
-    console.log(`[ws-server] messageStream yield threadId=${session.threadId} msg=${msgCount} len=${msg.length} waitMs=${waitMs}`);
-    yield { type: 'user', message: { role: 'user', content: msg } };
-  }
-  console.log(`[ws-server] messageStream ended threadId=${session.threadId} total=${msgCount}`);
-}
+// Claude CLI installed via official installer to ~/.local/bin/claude
+const CLAUDE_CLI = process.env.CLAUDE_CLI_PATH || '/root/.local/bin/claude';
+console.log(`[ws-server] Using Claude CLI: ${CLAUDE_CLI}`);
+console.log(`[ws-server] CLI working directory: ${CLI_CWD}`);
 
-const MAX_EARLY_EXIT_RETRIES = 3;
-
-async function runQueryWithRetry(session, pendingMessage, attempt = 1) {
-  const startTime = Date.now();
+function spawnCLI(session) {
   const resume = sessionFileExists(session.threadId);
-  console.log(`[ws-server] runQuery threadId=${session.threadId} attempt=${attempt} resume=${resume}`);
+  const args = buildCLIArgs(session, resume);
+  const env = buildCLIEnv(session);
 
-  const options = buildQueryOptions(session, resume);
+  console.log(`[ws-server] spawning CLI threadId=${session.threadId} resume=${resume}`);
+  console.log(`[ws-server] CLI args: ${CLAUDE_CLI} ${args.join(' ').slice(0, 200)}...`);
 
-  // Create fresh queue and enqueue the pending message
-  session.inputQueue = new MessageQueue();
-  if (pendingMessage) {
-    session.inputQueue.enqueue(pendingMessage);
+  const proc = spawn(CLAUDE_CLI, args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env,
+    cwd: CLI_CWD,
+  });
+
+  session.cliProcess = proc;
+
+  // Handle stderr
+  proc.stderr.on('data', (data) => {
+    const msg = data.toString().trim();
+    if (msg) {
+      console.error(`[ws-server] CLI_STDERR threadId=${session.threadId}: ${msg.slice(0, 500)}`);
+    }
+  });
+
+  // Parse JSON lines from stdout
+  const rl = createInterface({ input: proc.stdout });
+
+  rl.on('line', (line) => {
+    if (!line.trim()) return;
+
+    try {
+      const event = JSON.parse(line);
+      handleCLIEvent(session, event);
+    } catch (e) {
+      console.error(`[ws-server] Failed to parse CLI output: ${line.slice(0, 200)}`, e);
+    }
+  });
+
+  // Handle process exit
+  proc.on('exit', (code, signal) => {
+    console.log(`[ws-server] CLI exited threadId=${session.threadId} code=${code} signal=${signal}`);
+    session.cliProcess = null;
+    session.isProcessing = false;
+
+    // Process any pending messages by spawning a new CLI
+    if (session.pendingMessages.length > 0) {
+      const nextMessage = session.pendingMessages.shift();
+      console.log(`[ws-server] Processing pending message threadId=${session.threadId}`);
+      sendMessageToCLI(session, nextMessage);
+    }
+  });
+
+  proc.on('error', (err) => {
+    console.error(`[ws-server] CLI error threadId=${session.threadId}:`, err);
+    session.cliProcess = null;
+    session.isProcessing = false;
+    broadcast(session, { type: 'error', error: `CLI error: ${err.message}` });
+  });
+
+  return proc;
+}
+
+function handleCLIEvent(session, event) {
+  console.log(`[ws-server] event threadId=${session.threadId} type=${event?.type}`);
+
+  // Log system events for debugging
+  if (event?.type === 'system') {
+    console.log(`[ws-server] system_event threadId=${session.threadId} subtype=${event?.subtype} sessionId=${event?.session_id}`);
   }
 
-  const queryStartTime = Date.now();
-  session.activeQuery = query({ prompt: messageStream(session), options });
-  console.log(`[ws-server] query created threadId=${session.threadId} queryCreateMs=${Date.now() - queryStartTime}`);
+  // Broadcast event to connected clients
+  broadcast(session, { type: 'sdk_event', event });
 
-  let firstEventTime = null;
-  let eventCount = 0;
-  let gotMeaningfulResponse = false;
+  // Handle TodoWrite
+  const todos = extractTodosFromEvent(event);
+  if (todos) {
+    broadcast(session, { type: 'todo_state', todos });
+    void writeTodoState(session.threadId, todos);
+  }
+
+  // Clear todos on result
+  if (event?.type === 'result') {
+    void clearTodoState(session.threadId);
+    session.isProcessing = false;
+
+    // Process any pending messages
+    if (session.pendingMessages.length > 0) {
+      const nextMessage = session.pendingMessages.shift();
+      console.log(`[ws-server] Processing pending message after result threadId=${session.threadId}`);
+      sendMessageToCLI(session, nextMessage);
+    }
+  }
+}
+
+function sendMessageToCLI(session, content) {
+  // If already processing, queue the message
+  if (session.isProcessing) {
+    console.log(`[ws-server] Queueing message threadId=${session.threadId} len=${content.length}`);
+    session.pendingMessages.push(content);
+    return;
+  }
+
+  session.isProcessing = true;
+
+  // Spawn CLI if not running
+  if (!session.cliProcess) {
+    spawnCLI(session);
+  }
+
+  // Send the message
+  const msg = {
+    type: 'user',
+    message: { role: 'user', content },
+  };
+
+  const msgStr = JSON.stringify(msg) + '\n';
+  console.log(`[ws-server] Sending to CLI threadId=${session.threadId} len=${content.length}`);
 
   try {
-    for await (const event of session.activeQuery) {
-      eventCount++;
-      if (!firstEventTime) {
-        firstEventTime = Date.now();
-        console.log(`[ws-server] firstEvent threadId=${session.threadId} type=${event?.type} waitMs=${firstEventTime - queryStartTime}`);
-      }
-      console.log(`[ws-server] event threadId=${session.threadId} type=${event?.type} count=${eventCount}`);
-
-      // Log system events fully to diagnose early exits
-      if (event?.type === 'system') {
-        console.log(`[ws-server] system_event threadId=${session.threadId} subtype=${event?.subtype} full=${JSON.stringify(event).slice(0, 500)}`);
-      }
-
-      // Track if we got a meaningful response (not just system init)
-      if (event?.type === 'stream_event' || event?.type === 'assistant' || event?.type === 'result') {
-        gotMeaningfulResponse = true;
-      }
-
-      broadcast(session, { type: 'sdk_event', event });
-
-      // Check for TodoWrite tool calls and broadcast + persist
-      const todos = extractTodosFromEvent(event);
-      if (todos) {
-        broadcast(session, { type: 'todo_state', todos });
-        void writeTodoState(session.threadId, todos);
-      }
-
-      // Clear persisted todos when turn completes
-      if (event?.type === 'result') {
-        void clearTodoState(session.threadId);
-      }
+    const written = session.cliProcess.stdin.write(msgStr);
+    if (!written) {
+      console.log(`[ws-server] stdin buffer full, waiting for drain threadId=${session.threadId}`);
+      session.cliProcess.stdin.once('drain', () => {
+        console.log(`[ws-server] stdin drained threadId=${session.threadId}`);
+      });
     }
-
-    // Check if this was an early exit (only system event, no real response)
-    const earlyExit = !gotMeaningfulResponse && eventCount <= 1;
-    console.log(`[ws-server] query_iterator_done threadId=${session.threadId} events=${eventCount} earlyExit=${earlyExit} attempt=${attempt}`);
-
-    // Retry on early exit if we have attempts left and had a pending message
-    if (earlyExit && attempt < MAX_EARLY_EXIT_RETRIES && pendingMessage) {
-      console.log(`[ws-server] retrying_early_exit threadId=${session.threadId} attempt=${attempt + 1}`);
-      session.activeQuery = null;
-      session.inputQueue = null;
-      // Small delay before retry
-      await new Promise(resolve => setTimeout(resolve, 500));
-      return runQueryWithRetry(session, pendingMessage, attempt + 1);
-    }
-
-    if (earlyExit) {
-      console.error(`[ws-server] early_exit_failed threadId=${session.threadId} attempts=${attempt}`);
-      broadcast(session, { type: 'error', error: 'Query ended unexpectedly after initialization. Please try again.' });
-    }
-  } catch (e) {
-    console.error(`[ws-server] query error threadId=${session.threadId}:`, e);
-    console.error(`[ws-server] query error stack:`, e?.stack || 'no stack');
-    broadcast(session, { type: 'error', error: String(e) });
-  } finally {
-    console.log(`[ws-server] query ended threadId=${session.threadId} events=${eventCount} totalMs=${Date.now() - startTime} attempt=${attempt}`);
-    session.activeQuery = null;
-    session.inputQueue = null;
+  } catch (err) {
+    console.error(`[ws-server] stdin write error threadId=${session.threadId}:`, err);
+    session.isProcessing = false;
+    broadcast(session, { type: 'error', error: `Failed to send message: ${err.message}` });
   }
-}
-
-async function startQuery(session, pendingMessage = null) {
-  if (session.activeQuery) return;
-  // Run in background
-  runQueryWithRetry(session, pendingMessage, 1);
 }
 
 function formatAuthor(userName, userEmail) {
@@ -342,22 +348,17 @@ function formatAuthor(userName, userEmail) {
 async function handleMessage(session, content, userInfo) {
   const attributed = formatAuthor(userInfo?.userName, userInfo?.userEmail) + content;
   console.log(`[ws-server] message threadId=${session.threadId} len=${attributed.length}`);
-
-  if (!session.activeQuery) {
-    // Pass the message to startQuery - it will handle enqueueing and retries
-    console.log(`[ws-server] message starting_query threadId=${session.threadId}`);
-    await startQuery(session, attributed);
-  } else {
-    session.inputQueue?.enqueue(attributed);
-  }
+  sendMessageToCLI(session, attributed);
 }
 
 async function handleStop(session) {
   console.log(`[ws-server] stop threadId=${session.threadId}`);
-  session.inputQueue?.close();
-  try {
-    await session.activeQuery?.interrupt();
-  } catch {}
+  session.pendingMessages = [];
+  if (session.cliProcess) {
+    session.cliProcess.kill('SIGTERM');
+    session.cliProcess = null;
+  }
+  session.isProcessing = false;
 }
 
 // HTTP + WebSocket server
