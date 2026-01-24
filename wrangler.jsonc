@@ -19,7 +19,7 @@
 		// For containers, use host.docker.internal to reach the host (Vite dev on port 3001)
 		"WORKER_BASE_URL": "http://host.docker.internal:3001",
 		// Proxy requests now go through main worker via /v1/messages
-		"PROXY_BASE_URL": "http://host.docker.internal:3001"
+		"PROXY_BASE_URL": "http://host.docker.internal:8787"
 	},
 	"assets": {
 		"binding": "ASSETS",

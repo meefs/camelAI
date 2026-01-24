@@ -261,41 +261,6 @@ export default {
     if (url.pathname.startsWith('/mcp')) {
       return handleMcpRequest(request, env, ctx);
     }
-
-    // LLM Proxy passthrough at /v1/messages (and subpaths like /v1/messages/count_tokens)
-    // This allows sandbox containers to use PROXY_BASE_URL pointing to the main worker
-    if (url.pathname === '/v1/messages' || url.pathname === '/v1/messages/' || url.pathname.startsWith('/v1/messages/')) {
-      if (!env.PROXY) {
-        return new Response(JSON.stringify({ error: 'Proxy service not configured' }), {
-          status: 503,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      console.log('[proxy-pass]', { path: url.pathname, search: url.search });
-      // Forward the request to the proxy worker
-      const proxyUrl = new URL(`${url.pathname}${url.search}`, 'https://proxy.internal');
-      return env.PROXY.fetch(new Request(proxyUrl, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-      }));
-    }
-
-    // Proxy health check passthrough
-    if (url.pathname === '/proxy/health') {
-      if (!env.PROXY) {
-        return new Response(JSON.stringify({ ok: false, error: 'Proxy service not configured' }), {
-          status: 503,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      const proxyUrl = new URL('/health', 'https://proxy.internal');
-      return env.PROXY.fetch(new Request(proxyUrl, {
-        method: 'GET',
-        headers: request.headers,
-      }));
-    }
-
     // Handle WebSocket upgrade for thread preview state at /ws/thread/{threadId}
     const threadWsMatch = url.pathname.match(/^\/ws\/thread\/([^\/]+)$/);
     if (threadWsMatch && request.headers.get('Upgrade') === 'websocket') {
