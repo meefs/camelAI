@@ -294,6 +294,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const wsRef = useRef<WebSocket | null>(null);
   const previewWsRef = useRef<WebSocket | null>(null);
   const previewReconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const iframeRefreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const previewReconnectAttempts = useRef(0);
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -831,6 +832,11 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         clearInterval(previewPingIntervalRef.current);
         previewPingIntervalRef.current = null;
       }
+
+      if (iframeRefreshTimeoutRef.current) {
+        clearTimeout(iframeRefreshTimeoutRef.current);
+        iframeRefreshTimeoutRef.current = null;
+      }
     };
   }, [bumpConnectionId]);
 
@@ -897,8 +903,16 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
 
           setDeployedApp(firstWorker);
           // Force iframe refresh on new deploy by changing key
+          // Add a small delay to allow the worker to fully initialize
           if (firstWorker && isNewDeploy) {
-            setIframeKey(prev => prev + 1);
+            // Clear any existing pending refresh
+            if (iframeRefreshTimeoutRef.current) {
+              clearTimeout(iframeRefreshTimeoutRef.current);
+            }
+            iframeRefreshTimeoutRef.current = setTimeout(() => {
+              setIframeKey(prev => prev + 1);
+              iframeRefreshTimeoutRef.current = null;
+            }, 1500); // 1.5 second delay for worker initialization
           }
         } else if (data.type === 'title_updated' && data.title) {
           // Update thread title when AI generates it
