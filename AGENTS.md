@@ -2,97 +2,126 @@
 
 > **Note to agents:** Keep this file up to date. When you add new features, workers, API routes, or make significant architectural changes, update the relevant sections of this document.
 
-> **Server Actions vs API Routes:** Strongly prefer Next.js server actions over API routes. Always create server actions (in `src/lib/server-actions/`) instead of API endpoints when possible. Server actions provide better type safety, simpler client code, and automatic request handling. Only use API routes when you need features server actions can't provide (e.g., webhooks, OAuth callbacks, streaming binary data, or third-party integrations that require specific HTTP endpoints).
-
 ## Overview
 
-Chiridion is an AI chat application built on Cloudflare's edge infrastructure. It uses the Claude SDK running inside Cloudflare Containers to provide streaming AI responses through WebSockets. The app includes multi-tenant authentication with users and organizations.
+Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. Users can chat with a Claude-powered agent that has access to a persistent computer (workspace) where files persist across sessions. Users can create applications by having the agent write code, then publish those applications to live URLs hosted by Chiridion. The app supports integrations (connections) to external services that can be used in applications.
+
+**Key Capabilities:**
+- Real-time AI chat with streaming responses via WebSockets
+- Persistent workspaces with JuiceFS-backed filesystem
+- One-click app deployment to `*.chiridion.app` subdomains
+- Multi-tenant authentication with users, organizations, and workspaces
+- External service integrations for reading/writing data
 
 ## Architecture
 
 ```
 ┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────────┐
-│   Next.js UI    │────▶│   Cloudflare Worker  │────▶│ Cloudflare Container│
-│  (React + WS)   │◀────│   (Durable Objects)  │◀────│   (Claude SDK)      │
+│  React Router   │────▶│   Cloudflare Worker  │────▶│ Cloudflare Container│
+│   (SSR + WS)    │◀────│   (Durable Objects)  │◀────│   (Claude SDK)      │
 └─────────────────┘     └──────────────────────┘     └─────────────────────┘
+         │                        │                           │
+         │                        ▼                           │
+         │              ┌──────────────────┐                  │
+         │              │  Dispatcher WfP  │                  │
+         │              │ (User App Hosts) │                  │
+         │              └──────────────────┘                  │
+         │                        │                           │
+         ▼                        ▼                           ▼
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
+│   R2 Storage    │     │   LLM Proxy      │     │     JuiceFS         │
+│  (Files/Assets) │     │ (Multi-Provider) │     │   (Workspace FS)    │
+└─────────────────┘     └──────────────────┘     └─────────────────────┘
 ```
 
 ### Components
 
 1. **Frontend** (`src/`)
-   - Next.js 15 with React 19
+   - React Router 7 with React 19 SSR
+   - Imperative route configuration in `src/routes.ts`
+   - Loaders/actions for data fetching and mutations
    - WebSocket client for real-time streaming
    - Tailwind CSS v4 + shadcn/ui components
-   - AuthContext for session/org state management
+   - Cloudflare Workers SSR via `@cloudflare/vite-plugin`
 
 2. **Workers** (`workers/`)
    - `main/` - Main Chiridion app worker
-     - Cloudflare Workers with Durable Objects
-     - **Auth DOs:** `UserDO`, `OrgDO` (OrgDO stores threads per workspace + proxy usage rollups)
-     - `ThreadSandbox` - Executes Claude SDK in containers
-     - WebSocket routing at worker level (one container per org)
-   - `dispatcher/` - Routes `*.chiridion.app` to user workers (WfP)
+     - React Router SSR handler
+     - Durable Objects for state: `UserDO`, `OrgDO`, `WorkspaceDO`, `ChatThreadDO`
+     - `ThreadSandbox` - Container lifecycle management
+     - WebSocket routing (one container per workspace)
+     - OAuth flow handling
+     - MCP server endpoint (`/mcp`) with API key auth
+   - `dispatcher/` - Routes `*.chiridion.app` to user workers (Workers for Platforms)
    - `admin-cli/` - Local-only admin CLI for querying live environments
-   - `proxy/` - Multi-provider LLM proxy worker (Anthropic/OpenAI-compatible/Bedrock/Azure Foundry) with token accounting
-     - MCP server endpoint (`/mcp`) with API key auth for sandbox containers (streamable HTTP transport)
+   - `proxy/` - Multi-provider LLM proxy (Anthropic/Bedrock/Azure Foundry) with token accounting
 
 3. **Sandbox** (`sandbox/`)
-   - `entrypoint.sh` - Mounts JuiceFS (R2 + SQLite metadata), handles tar migration, starts services
-   - `ws-server.mjs` - WebSocket server running inside Cloudflare Container
-   - Calls Claude SDK `query()` with streaming enabled
-   - `sync.mjs` - R2 tar snapshot download (used for migration from old backups)
+   - `entrypoint.sh` - Container startup: mounts JuiceFS, starts services
+   - `ws-server.mjs` - WebSocket server running Claude SDK inside container
    - `control-plane.mjs` - Exec/filesystem API server for container management
-   - Litestream - Continuous SQLite replication to R2 (replaces discrete backups)
+   - `sync.mjs` - R2 tar snapshot download (migration tool)
+   - `skills/` - Agent skills (deploy-software, file-sharing, frontend-design)
 
 ## Key Files
 
+### Frontend Core
 | File | Purpose |
 |------|---------|
-| `src/components/Chat.tsx` | Main chat UI with streaming state management |
-| `src/components/floating-todo/*` | Floating todo list UI for streaming task progress |
-| `src/components/tool-call/*` | Tool call UI, summaries, and expanded details (including Skill sheet rendering) |
-| `src/app/(admin)/qaml-backdoor/apps/*` | Admin Apps list/detail pages for worker scripts |
-| `src/components/admin/app-edit-form.tsx` | Admin app visibility editor |
-| `src/components/admin/app-danger-zone.tsx` | Admin app deletion actions |
-| `src/app/(app)/apps/apps-client.tsx` | Apps list UI with workspace filter tabs and data refresh |
-| `src/app/(app)/apps/AppCard.tsx` | App card layout, URL actions, and workspace badges |
-| `src/contexts/AuthContext.tsx` | React context for auth state (includes auto-warmup) |
-| `src/hooks/use-workspace-warmup.ts` | Async workspace container warmup hooks |
-| `src/app/login/page.tsx` | Login page |
-| `src/app/signup/page.tsx` | Signup page |
-| `src/lib/auth.ts` | Cookie handling, validation helpers |
-| `src/lib/auth-do.ts` | Functions to interact with auth DOs |
-| `src/lib/oauth-config.ts` | OAuth provider configuration (Google, GitHub) |
-| `src/components/auth/oauth-buttons.tsx` | OAuth sign-in buttons component |
-| `workers/main/src/oauth-state.ts` | OAuth state management for CSRF protection |
-| `workers/main/src/durable-objects.ts` | ChatThreadDO for thread preview state |
-| `workers/main/src/container.ts` | Container lifecycle and WebSocket routing |
-| `workers/main/src/auth.ts` | UserDO, OrgDO implementations (threads stored in OrgDO) |
-| `workers/main/src/password.ts` | PBKDF2 password hashing |
-| `workers/main/src/index.ts` | Worker entry point (includes queue consumer for app preview screenshots) |
-| `workers/main/src/screenshot-queue.ts` | Screenshot queue handler for app previews |
-| `scripts/dev-proxy.mjs` | Local dev runner (wrangler + next + proxy) |
-| `sandbox/ws-server.mjs` | WebSocket server with Claude SDK inside container |
-| `sandbox/entrypoint.sh` | Container entrypoint that mounts JuiceFS, starts Litestream, starts services |
-| `sandbox/sync.mjs` | R2 tar snapshot download (used for migration) |
-| `src/lib/integration-registry.ts` | Integration type definitions and schemas |
-| `src/lib/integration-crypto.ts` | Credential encryption utilities |
-| `workers/main/src/integration-env.ts` | Maps integration credentials to environment variables |
-| `workers/admin-cli/cli.mjs` | Admin CLI wrapper script |
-| `workers/admin-cli/src/index.ts` | Admin CLI worker (local-only) |
-| `workers/proxy/src/index.ts` | LLM proxy worker entry (multi-provider, streaming, token usage) |
-| `workers/proxy/wrangler.jsonc` | Proxy worker deployment config |
-| `workers/main/src/mcp-handler.ts` | MCP server handler with ChiridionMcp class and API key auth |
-| `src/instrumentation.ts` | Next.js SSR error logging to Analytics Engine |
-| `src/app/api/apps/[scriptName]/preview/route.ts` | Authenticated preview image endpoint for app cards |
+| `src/routes.ts` | Imperative route configuration |
+| `src/root.tsx` | Root layout, links, meta, error boundary |
+| `src/entry.server.tsx` | SSR entry point with streaming |
+| `src/entry.client.tsx` | Client-side hydration |
+| `vite.config.ts` | Vite + React Router + Cloudflare plugin |
+
+### Route Files
+| File | Purpose |
+|------|---------|
+| `src/routes/_app.tsx` | Protected app layout with auth check |
+| `src/routes/_auth.tsx` | Public auth layout (login/signup) |
+| `src/routes/_admin.tsx` | Admin-only layout (superuser check) |
+| `src/routes/_app.chat.$id.tsx` | Chat page with streaming |
+| `src/routes/_app.apps.tsx` | Apps listing with workspace filter |
+| `src/routes/_app.computer.tsx` | File browser for workspace |
+| `src/routes/_app.connections.tsx` | Integration management |
+| `src/routes/_app.history.tsx` | Chat history across workspaces |
+
+### Server Libraries
+| File | Purpose |
+|------|---------|
+| `src/lib/auth.server.ts` | Auth helpers: `requireAuthContext()`, `requireSuperuser()` |
+| `src/lib/cloudflare.server.ts` | `getEnv()` helper for Cloudflare bindings |
+| `src/lib/cookies.server.ts` | Cookie management utilities |
+| `src/lib/chat-do.server.ts` | Chat Durable Object interactions |
+| `src/lib/auth-do.ts` | User/Org DO method wrappers |
+
+### Worker Core
+| File | Purpose |
+|------|---------|
+| `workers/main/src/index.ts` | Worker entry: WebSocket, OAuth, MCP, SSR |
+| `workers/main/src/auth.ts` | `UserDO`, `OrgDO` implementations |
+| `workers/main/src/workspace.ts` | `WorkspaceDO` implementation |
+| `workers/main/src/workspace-container.ts` | `ThreadSandbox` container lifecycle |
+| `workers/main/src/durable-objects.ts` | `ChatThreadDO` for thread state |
+| `workers/main/src/cf-api-proxy.ts` | Cloudflare API proxy for deploys |
+| `workers/main/src/mcp-handler.ts` | MCP server with `ChiridionMcp` |
+
+### Sandbox
+| File | Purpose |
+|------|---------|
+| `sandbox/entrypoint.sh` | Container startup script |
+| `sandbox/ws-server.mjs` | WebSocket server with Claude SDK |
+| `sandbox/control-plane.mjs` | Container exec/filesystem API |
+| `sandbox/skills/deploy-software/SKILL.md` | Deployment skill documentation |
 
 ## Configuration Files
 
 | File | Purpose |
 |------|---------|
-| `wrangler.jsonc` | Main production/deployment config |
+| `wrangler.jsonc` | Main worker config (prod/staging/dev envs) |
+| `vite.config.ts` | Vite build configuration |
 | `components.json` | shadcn/ui configuration |
-| `.mcp.json` | MCP server config (shadcn registry access) |
+| `.mcp.json` | MCP server config (shadcn registry) |
 
 ## UI Components (shadcn/ui)
 
@@ -113,65 +142,87 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 
 ## Data Flow
 
+### React Router Data Loading
+
+**Loaders** run on the server for GET requests:
+```typescript
+// src/routes/_app.tsx
+import type { Route } from './+types/_app';
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const authContext = await requireAuthContext(request, context);
+  return { authState: authContext };
+}
+
+export default function AppLayout() {
+  const { authState } = useLoaderData<typeof loader>();
+  // Render with auth state...
+}
+```
+
+**Actions** handle POST/PUT/DELETE requests:
+```typescript
+// src/routes/_app.apps.tsx
+export async function action({ request, context }: Route.ActionArgs) {
+  const authContext = await requireAuthContext(request, context);
+  const formData = await request.formData();
+  const intent = formData.get('intent');
+
+  if (intent === 'setAppPublic') {
+    // Perform mutation...
+    return { success: true };
+  }
+  return { error: 'Unknown action' };
+}
+```
+
 ### Authentication
-1. User signs up/logs in via server actions (`login()`, `signup()` in `src/lib/server-actions/auth.ts`)
+1. User signs up/logs in via API routes (`/api/auth/login`, `/api/auth/signup`)
 2. Password verified with PBKDF2 (100k iterations, SHA-256)
-3. Session created in `SessionDO`, cookie set with `httpOnly`, `sameSite: lax`
+3. Session created in KV (`SESSIONS`), cookie set with `httpOnly`, `sameSite: lax`
 4. Email → userId mapping stored in KV (`EMAIL_TO_USER`)
-5. `AuthContext` calls `getAuthState()` server action to fetch session state
+5. Route loaders call `requireAuthContext()` which validates session and loads user/org/workspace data
 
 ### Message Sending
 1. User types message in `Chat.tsx`
-2. WebSocket connects to `/ws/{org}` - Worker routes directly to container
-3. Container runs ws-server which proxies to Claude SDK
+2. WebSocket connects to `/ws/{workspace}` - Worker routes to container
+3. Container runs `ws-server.mjs` which calls Claude SDK
 4. Claude SDK stores messages in JSONL files (`~/.claude/projects/.../session.jsonl`)
 5. Streaming responses sent back through WebSocket
 6. Thread ID = Claude session_id (received on first message)
-7. Frontend updates React state with streaming content
 
 ### Todo State Persistence
 The floating todo list state persists across reconnections:
 1. When `ws-server.mjs` sees a `TodoWrite` tool call, it broadcasts a `todo_state` event and saves to `/home/claude/.chiridion/todos/{threadId}.json`
 2. On WebSocket init, the server reads the persisted file and sends `todo_state` to the client
 3. On turn completion (`result` event), the persisted file is cleared
-4. Frontend simply listens for `todo_state` events - no message parsing needed
 
 ### Workspace Persistence (JuiceFS)
 JuiceFS provides a FUSE-based distributed filesystem with SQLite metadata and R2 data storage:
 
-1. Container entrypoint downloads JuiceFS SQLite metadata from R2 (stored as `juicefs-meta.db`)
-2. If no JuiceFS metadata exists but an old tar backup is found, the system migrates:
-   - Downloads and extracts the tar backup to a temp directory
-   - Formats a new JuiceFS volume
-   - Copies data to the JuiceFS mount
-   - Deletes the old tar backup from R2
+1. Container entrypoint downloads JuiceFS SQLite metadata from R2
+2. If no JuiceFS metadata exists but an old tar backup is found, migrates data
 3. JuiceFS mounts at `R2_MOUNT_DIR` (defaults to `/home/claude`) with writeback caching
 4. Data is stored in R2 at `{bucket}/chiridion-{org}-{workspace}/`
-5. On shutdown, SQLite metadata is backed up to R2 using `.backup` command
-6. Background metadata upload loop runs every 60s during container lifetime
-7. Goofys mounts `/mnt/user-uploads` and `/mnt/user-outputs` for file sharing
+5. Background metadata upload loop runs every 60s
 
 ### Async Workspace Warmup
-To reduce perceived latency from JuiceFS mount, the app proactively warms up containers:
-1. `AuthContext` calls `useAutoWarmup(currentWorkspace?.id)` on workspace change
-2. The hook calls `warmupWorkspace` server action (fire-and-forget)
-3. Backend checks container state - if already healthy, returns `{ status: 'warm' }`
-4. If container needs starting, uses `ctx.waitUntil()` to start in background, returns `{ status: 'warming' }`
-5. Client-side deduplication prevents redundant warmup calls for the same workspace
+To reduce perceived latency from JuiceFS mount:
+1. `useAutoWarmup(workspaceId)` hook fires on workspace change
+2. Calls `POST /api/workspace/warmup` (fire-and-forget)
+3. Backend checks container state - returns `warm` or starts in background
 
 ### Threads
-1. Each thread belongs to a workspace
-2. Threads are stored in `OrgDO` (one per organization)
-3. `ChatThreadDO` handles real-time preview state for each thread
-4. History can query threads across accessible workspaces via `getThreadsAllWorkspacesPaginated` on `OrgDO`
+- Each thread belongs to a workspace
+- Threads stored in `OrgDO` (one per organization)
+- `ChatThreadDO` handles real-time preview state
+- History queries threads across accessible workspaces
 
 ### App Previews
-1. Deploy succeeds in `workers/main/src/index.ts` and enqueues an `APP_SCREENSHOT_QUEUE` job (local dev captures inline with Browser Rendering against `LOCAL_APP_PREVIEW_URL`, defaulting to `https://hello-world-test.chiridion.app/`).
-2. The main worker's queue consumer (`screenshot-queue.ts`) renders `https://{script}.apps.{env}.chiridion.ai` via Browser Rendering.
-3. For private apps, the dispatcher exchanges the single-use screenshot token for a short-lived screenshot session cookie to allow asset requests.
-4. JPEG previews are stored in R2 under `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg`.
-5. OrgDO updates `worker_scripts.preview_*` fields for status + key.
-6. Apps page loads previews through `/api/apps/[scriptName]/preview` (org membership required).
+1. Deploy succeeds and enqueues screenshot job to `APP_SCREENSHOT_QUEUE`
+2. Queue consumer renders app via Browser Rendering
+3. JPEG previews stored in R2 under `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg`
+4. Apps page loads previews through `/api/apps/:scriptName/preview`
 
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization
@@ -185,72 +236,66 @@ To reduce perceived latency from JuiceFS mount, the app proactively warms up con
 
 ## API Routes
 
-### Organizations
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/orgs` | GET, POST | List/create orgs |
-| `/api/orgs/[id]` | GET, PUT, DELETE | Get/update/delete org |
-| `/api/orgs/[id]/members` | GET, PUT, DELETE | Manage members |
-| `/api/orgs/[id]/invite` | GET, POST, DELETE | Manage invitations |
-| `/api/orgs/[id]/integrations` | GET, POST | List/create integrations |
-| `/api/orgs/[id]/integrations/[integrationId]` | GET, PUT, DELETE | Get/update/delete integration |
-| `/api/invitations/[orgId]/[invitationId]` | GET, POST | View/accept invitation |
+API routes are defined as React Router routes with loaders (GET) and actions (POST/PUT/DELETE) in `src/routes/api/`.
 
-### Integrations (public)
+### Auth Routes
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/api/integrations/types` | GET | List available integration types |
+| `/api/auth/state` | GET | Get current auth state |
+| `/api/auth/login` | POST | Login with email/password |
+| `/api/auth/signup` | POST | Create new account |
+| `/api/auth/logout` | POST | Clear session |
+| `/api/auth/switch-org` | POST | Switch active organization |
+| `/api/auth/switch-workspace` | POST | Switch active workspace |
 
-### OAuth (public)
+### Workspace Routes
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/api/auth/google` | GET | Initiate Google OAuth flow |
+| `/api/workspace/warmup` | POST | Pre-warm workspace container |
+| `/api/workspaces/:id/fs/list` | GET | List directory contents |
+| `/api/workspaces/:id/fs/read` | GET | Read file contents |
+| `/api/workspaces/:id/fs/write` | POST | Write text file |
+| `/api/workspaces/:id/fs/upload` | POST | Upload binary file (FormData) |
+| `/api/workspaces/:id/fs/create` | POST | Create new file |
+| `/api/workspaces/:id/fs/mkdir` | POST | Create directory |
+| `/api/workspaces/:id/fs/move` | POST | Move/rename file |
+| `/api/workspaces/:id/fs/delete` | POST | Delete file or directory |
+| `/api/workspaces/:id/upload` | POST | Upload files to R2 (chat attachments) |
+| `/api/workspaces/:id/download` | GET | Download files from R2 |
+
+### Apps Routes
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/apps/:scriptName/preview` | GET | Stream app preview screenshot |
+
+### WebSocket Routes (Main Worker)
+| Route | Purpose |
+|-------|---------|
+| `/ws/{workspace}` | Real-time chat streaming |
+| `/ws/thread/{threadId}` | Thread preview state updates |
+
+### OAuth Routes (Main Worker)
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/auth/google` | GET | Initiate Google OAuth |
 | `/api/auth/google/callback` | GET | Google OAuth callback |
-| `/api/auth/github` | GET | Initiate GitHub OAuth flow |
+| `/api/auth/github` | GET | Initiate GitHub OAuth |
 | `/api/auth/github/callback` | GET | GitHub OAuth callback |
 
-### Chat (auth required)
+### MCP Routes (Main Worker)
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/api/threads` | GET, POST | List/create threads |
-| `/api/threads/[id]` | GET, DELETE | Get/delete thread |
-| `/api/threads/[id]/messages` | GET, POST | Get/add thread messages |
-| `/api/projects` | GET, POST | List/create projects |
-| `/api/projects/[id]` | GET, PUT, DELETE | Get/update/delete project |
-| `/api/chat` | POST | Send message (REST fallback) |
-| `/ws/{org}` | WebSocket | Real-time chat (one connection per org) |
+| `/mcp/health` | GET | Health check |
+| `/mcp` | POST | MCP protocol endpoint (streamable HTTP) |
 
-### Apps (auth required)
+MCP auth uses API tokens with `mcp` scope. Requests must include `Authorization: Bearer <token>` or `x-api-key`. Sandbox containers receive a per-org MCP token via `MCP_API_KEY` env var.
+
+### Proxy Worker Routes
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/api/apps/[scriptName]/preview` | GET | Stream app preview screenshot from R2 |
-
-### Workspaces (auth required)
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/workspaces/[id]/fs/list` | GET | List directory contents |
-| `/api/workspaces/[id]/fs/read` | GET | Read file contents (text or base64 binary) |
-| `/api/workspaces/[id]/fs/write` | POST | Write text file to workspace |
-| `/api/workspaces/[id]/fs/upload` | POST | Upload binary file to any path (FormData) |
-| `/api/workspaces/[id]/fs/create` | POST | Create new file |
-| `/api/workspaces/[id]/fs/mkdir` | POST | Create directory |
-| `/api/workspaces/[id]/fs/move` | POST | Move/rename file or directory |
-| `/api/workspaces/[id]/fs/delete` | POST | Delete file or directory |
-| `/api/workspaces/[id]/upload` | POST | Upload files to R2 user-uploads (for chat attachments) |
-| `/api/workspaces/[id]/download` | GET | Download files from R2 user-outputs (outputs only) |
-
-### Proxy Worker (separate service)
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/v1/messages` | POST | LLM proxy (Anthropic-style request/response, streaming supported) |
-
-### MCP (main worker)
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/mcp/health` | GET | Health check endpoint |
-| `/mcp` | POST | MCP protocol endpoint (streamable HTTP transport) |
-
-MCP auth uses API tokens with `mcp` scope. Requests must include `Authorization: Bearer <token>` or `x-api-key`. Sandbox containers receive a per-org MCP token via `MCP_API_KEY` env var, with the endpoint at `${WORKER_BASE_URL}/mcp`.
+| `/v1/messages` | POST | LLM proxy (Anthropic-style, streaming) |
+| `/v1/messages/count_tokens` | POST | Token counting |
+| `/health` | GET | Health check |
 
 ## Development
 
@@ -266,8 +311,14 @@ MCP auth uses API tokens with `mcp` scope. Requests must include `Authorization:
 ```bash
 bun run dev
 ```
-Runs `wrangler dev` + `next dev` with a local proxy. The proxy routes `/ws/*` and `/client/v4/*` to Wrangler and everything else to Next.
-Default ports: proxy `3100`, Wrangler `8787`, Next `3001` (override with `PROXY_DEV_PORT`, `WRANGLER_DEV_PORT`, `NEXT_DEV_PORT`).
+Runs `react-router dev` with Cloudflare Vite plugin. Starts Docker proxy socket for FUSE mount access.
+Default port: 3001 (override with `VITE_DEV_PORT`).
+
+**Production build**
+```bash
+bun run build
+```
+Runs `react-router build`, outputs to `build/client/` and `build/server/`.
 
 ### Environment Variables
 
@@ -283,14 +334,15 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Claude API key for SDK |
-| `NEXTJS_ENV` | Environment (development/production) |
+| `WORKER_BASE_URL` | Base URL for the main worker |
+| `PROXY_BASE_URL` | Base URL for LLM proxy (sets `ANTHROPIC_BASE_URL` in containers) |
 | `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID (from Google Cloud Console) |
+| `TOKEN_SIGNING_SECRET` | Secret for signing auth tokens |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `GITHUB_CLIENT_ID` | GitHub OAuth App client ID (from GitHub Developer Settings) |
-| `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
-| `LOCAL_APP_PREVIEW_URL` | Optional override for local app preview screenshots (defaults to `https://hello-world-test.chiridion.app/`) |
-| `PROXY_BASE_URL` | Base URL for the LLM proxy used by sandbox containers (sets `ANTHROPIC_BASE_URL` in containers) |
+| `GITHUB_CLIENT_ID` | GitHub OAuth client ID |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth client secret |
+| `LOCAL_APP_PREVIEW_URL` | Override for local app preview screenshots |
 
 #### JuiceFS Container Variables (set automatically by worker)
 
@@ -300,27 +352,17 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `JUICEFS_CACHE_DIR` | Directory for JuiceFS FUSE cache (default: `/tmp/juicefs-cache`) |
 | `JUICEFS_UPLOAD_DELAY` | Delay before uploading dirty data to R2 (default: `60s`) |
 | `JUICEFS_BUFFER_SIZE` | Read/write buffer size in MB (default: `1024`) |
-| `DISABLE_JUICEFS` | Set to `1` to skip JuiceFS mount and use local filesystem |
+| `DISABLE_JUICEFS` | Set to `1` to skip JuiceFS mount |
 
 #### Sandbox Debug Variables (optional)
 
 | Variable | Description |
 |----------|-------------|
-| `CHIRIDION_TRACE_EVENTS` | Set to `0` to disable ws-server trace writes (defaults to enabled) |
-| `CHIRIDION_DEBUG_STARTUP` | Log startup env snapshot + optional probes (`1` to enable) |
-| `CHIRIDION_DEBUG_SDK` | Log query options and early-exit context (`1` to enable) |
-| `CHIRIDION_DEBUG_FS` | Run filesystem probes + write test at startup (`1` to enable) |
-| `CHIRIDION_DEBUG_PROXY` | Probe `ANTHROPIC_BASE_URL/health` at startup (`1` to enable) |
-| `CHIRIDION_PREQUEUE_FIRST_MESSAGE` | Queue first user message before SDK init (`1` to enable) |
-| `CHIRIDION_FIRST_MESSAGE_DELAY_MS` | Delay (ms) before first message yield (default `100`) |
-
-#### Claude Code Runtime Variables (optional)
-
-| Variable | Description |
-|----------|-------------|
-| `CLAUDE_CODE_ENABLE_TELEMETRY` | Set to `0` to disable Claude Code telemetry |
-| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | Set to `1` to disable nonessential background network calls |
-| `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` | Set to `1` to disable background tasks in Claude Code |
+| `CHIRIDION_TRACE_EVENTS` | Set to `0` to disable ws-server trace writes |
+| `CHIRIDION_DEBUG_STARTUP` | Log startup env snapshot (`1` to enable) |
+| `CHIRIDION_DEBUG_SDK` | Log query options (`1` to enable) |
+| `CHIRIDION_DEBUG_FS` | Run filesystem probes at startup (`1` to enable) |
+| `CHIRIDION_DEBUG_PROXY` | Probe proxy health at startup (`1` to enable) |
 
 #### OAuth Setup
 
@@ -344,75 +386,63 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `PROXY_DEFAULT_PROVIDER` | Default provider name |
 | `PROXY_FALLBACK_ORDER` | Comma-separated provider fallback list |
 | `PROXY_LOG_LEVEL` | Logging verbosity (`debug`, `info`, `warn`, `error`, `none`) |
-| `PROXY_LOCAL_COUNT_TOKENS` | If set to `1`, return locally-estimated token counts for `/v1/messages/count_tokens` without hitting upstream providers |
+| `PROXY_LOCAL_COUNT_TOKENS` | If `1`, return local token estimates without upstream call |
 | `PROXY_MODEL_ALIASES` | JSON map of Anthropic model IDs → canonical aliases |
-| `PROXY_BEDROCK_MODEL_MAP` | JSON map of Anthropic model IDs/aliases → Bedrock model IDs (e.g., `global.anthropic.claude-...-v1:0`) |
+| `PROXY_BEDROCK_MODEL_MAP` | JSON map of Anthropic model IDs → Bedrock model IDs |
 | `ANTHROPIC_API_KEY` | Upstream Anthropic key |
-| `ANTHROPIC_API_URL` | Anthropic base URL override |
-| `ANTHROPIC_VERSION` | Anthropic API version header override |
-| `ANTHROPIC_FOUNDRY_API_KEY` | Upstream Foundry API key |
-| `ANTHROPIC_FOUNDRY_BASE_URL` | Foundry base URL (optional if resource is set) |
-| `ANTHROPIC_FOUNDRY_RESOURCE` | Foundry resource name (optional if base URL is set) |
-| `AZURE_FOUNDRY_API_KEY` | Back-compat alias for Foundry API key |
-| `AZURE_FOUNDRY_BASE_URL` | Back-compat alias for Foundry base URL |
-| `AZURE_FOUNDRY_RESOURCE` | Back-compat alias for Foundry resource name |
-| `AWS_REGION` | AWS region for Bedrock runtime |
-| `BEDROCK_MODEL_ID` | Bedrock model identifier |
-| `ANTHROPIC_BEDROCK_BASE_URL` | Optional Bedrock runtime base URL override |
-| `BEDROCK_API_KEY` | Bedrock Runtime API key (uses bearer token auth) |
-| `AWS_BEARER_TOKEN_BEDROCK` | Alternate Bedrock API key env var (bearer token auth) |
+| `ANTHROPIC_FOUNDRY_API_KEY` | Foundry API key |
+| `ANTHROPIC_FOUNDRY_BASE_URL` | Foundry base URL |
+| `AWS_REGION` | AWS region for Bedrock |
+| `BEDROCK_API_KEY` | Bedrock API key (bearer token auth) |
 
-Proxy auth uses API tokens minted via `OrgDO.createApiToken` (stored in `API_TOKENS` KV on the main worker). Requests must include `Authorization: Bearer <token>` or `x-api-key`. The proxy uses direct DO calls via remote namespace bindings to validate tokens and record usage.
-
-Sandbox containers require `PROXY_BASE_URL` on the main worker; the container mints a per-org proxy token and exports `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` (no upstream key fallback).
+Proxy auth uses API tokens minted via `OrgDO.createApiToken` (stored in `API_TOKENS` KV). The proxy validates tokens via remote DO bindings.
 
 ### KV Namespaces
 
 | Binding | Purpose |
 |---------|---------|
 | `EMAIL_TO_USER` | Maps email addresses to user IDs |
+| `SESSIONS` | Session storage |
+| `API_TOKENS` | API token storage |
 
 ### Observability
 
-**Error Analytics** - SSR errors are logged to Workers Analytics Engine via `src/instrumentation.ts`.
+**Error Analytics** - SSR errors logged to Workers Analytics Engine.
 
 | Binding | Dataset | Purpose |
 |---------|---------|---------|
 | `ERROR_ANALYTICS` | `chiridion_errors` | SSR error tracking |
 
-**Data points logged:**
-- `indexes[0]`: Route type (`render`, `route`, `action`, `middleware`)
-- `blobs[0-6]`: Error digest, message, path, method, route pattern, router kind, stack trace
-- `doubles[0-1]`: Timestamp, count
-
-**Querying errors** (via Cloudflare Dashboard → Analytics Engine or GraphQL API):
+**Querying errors:**
 ```sql
-SELECT
-  blob1 AS digest,
-  blob2 AS message,
-  blob3 AS path,
-  SUM(double2) AS count
+SELECT blob1 AS digest, blob2 AS message, blob3 AS path, SUM(double2) AS count
 FROM chiridion_errors
 WHERE timestamp > NOW() - INTERVAL '1' HOUR
 GROUP BY digest, message, path
 ORDER BY count DESC
 ```
 
-**Live logs:** Use `npx wrangler tail --env <env>` to see `console.error` output in real-time.
+**Live logs:** `npx wrangler tail --env <env>`
 
 ### Testing
 ```bash
 # Unit tests (Vitest + jsdom)
 bun run test
 
-# Integration tests (Vitest + real dev server)
-bun run test:integration
+# Run tests once (CI mode)
+bun run test:run
+
+# All tests (unit + workers)
+bun run test:all
 
 # Workers runtime tests (Miniflare + Durable Objects)
 bun run test:workers
 
-# E2E tests (Playwright; configure BASE_URL or run bun run dev)
+# E2E tests (Playwright)
 bun run test:e2e
+
+# E2E with UI
+bun run test:e2e:ui
 ```
 
 ### Build & Deploy
@@ -420,110 +450,149 @@ bun run test:e2e
 # Build for Cloudflare
 bun run build:cf
 
-# Deploy to production
-bun run deploy:prod
+# Deploy main worker
+bun run deploy:main:prod
+bun run deploy:main:staging
+bun run deploy:main:dev-illiana
+bun run deploy:main:dev-miguel
 
-# Deploy to staging
-bun run deploy:staging
+# Deploy proxy worker
+bun run deploy:proxy:prod
+bun run deploy:proxy:staging
+
+# Deploy dispatcher worker
+bun run deploy:dispatcher:prod
+bun run deploy:dispatcher:staging
 ```
 
 ### Admin CLI
 
-Query live environments locally using remote DO namespace bindings to call methods directly on deployed Durable Objects.
+Query live environments locally using remote DO namespace bindings.
 
 ```bash
 # Quick CLI (starts wrangler, queries, exits)
 bun run admin -- [env] [endpoint] [jq-filter]
 
 # Examples
-bun run admin -- dev-illiana overview
-bun run admin -- staging orgs
+bun run admin -- staging overview
 bun run admin -- prod users '.users[] | {name, email}'
-bun run admin -- dev-illiana orgs '.orgs[] | {org_id: .id, name: .name}'
-bun run admin -- dev-illiana threads
-bun run admin -- workers                    # Fast - no wrangler startup
-bun run admin -- workers                    # List all workers in dispatch namespace
+bun run admin -- dev-illiana orgs
+bun run admin -- staging threads
+bun run admin -- workers  # List all user workers
 
-# Interactive mode (keeps server running for multiple queries)
-bun run admin:dev-illiana  # Then curl http://localhost:8788/overview
+# Interactive mode (keeps server running)
 bun run admin:staging
 bun run admin:prod
+bun run admin:dev-illiana
 ```
 
-| Environment | Target |
-|-------------|--------|
-| `staging` (default) | staging.chiridion.ai |
-| `prod` | chiridion.ai |
-| `dev-illiana` | dev-illiana.chiridion.ai |
-| `dev-miguel` | dev-miguel.chiridion.ai |
-
-| Endpoint | DO Method | Description |
-|----------|-----------|-------------|
-| `/overview` | Aggregated from UserDO/OrgDO | Users, orgs, membership counts |
-| `/orgs` | `OrgDO.getInfo()` + `OrgDO.getMembers()` | All orgs with member details |
-| `/users` | `UserDO.getInfo()` | All users with org counts |
-| `/threads` | `OrgDO.getThreads()` | All threads across all orgs |
-| `/kv-keys` | Direct KV access | List KV keys (optional `?prefix=`) |
-| `/r2/list` | Direct R2 access | List R2 objects (optional `?prefix=`) |
-| `/r2/info/{key}` | Direct R2 access | Get R2 object metadata |
-| `/r2/backup/{orgId}` | Direct R2 access | Get backup info for an org |
-| `/workers` | Direct API (no wrangler) | List all user workers in dispatch namespace |
-
-**How it works:** The admin CLI uses remote DO namespace bindings to call methods directly on deployed Durable Objects. No HTTP routes needed - direct RPC over the Cloudflare network.
-
-**Workers endpoint:** The `/workers` endpoint uses direct Cloudflare API calls (no wrangler needed), reading the OAuth token automatically from `~/Library/Preferences/.wrangler/config/default.toml`. Run `npx wrangler login` if not already authenticated.
+| Endpoint | Description |
+|----------|-------------|
+| `/overview` | Users, orgs, membership counts |
+| `/orgs` | All orgs with member details |
+| `/users` | All users with org counts |
+| `/threads` | All threads across orgs |
+| `/kv-keys` | List KV keys (optional `?prefix=`) |
+| `/r2/list` | List R2 objects (optional `?prefix=`) |
+| `/workers` | List all user workers in dispatch namespace |
 
 ## Project Structure
 
 ```
 chiridion-app/
 ├── src/
-│   ├── app/
-│   │   ├── api/
-│   │   │   ├── chat/        # Chat endpoint
-│   │   │   ├── integrations/# Integration type registry
-│   │   │   ├── invitations/ # Invitation acceptance
-│   │   │   ├── orgs/        # Org management + integrations
-│   │   │   ├── projects/    # Project CRUD
-│   │   │   └── threads/     # Thread CRUD
-│   │   ├── chat/[id]/       # Chat page
-│   │   ├── login/           # Login page
-│   │   ├── signup/          # Signup page
-│   │   └── globals.css      # Tailwind + shadcn theme variables
+│   ├── routes.ts              # Route configuration
+│   ├── root.tsx               # Root layout
+│   ├── entry.server.tsx       # SSR entry
+│   ├── entry.client.tsx       # Client hydration
+│   ├── types.ts               # Shared types
+│   ├── routes/
+│   │   ├── _app.tsx           # Protected layout
+│   │   ├── _auth.tsx          # Auth layout
+│   │   ├── _admin.tsx         # Admin layout
+│   │   ├── _app.chat.$id.tsx  # Chat page
+│   │   ├── _app.apps.tsx      # Apps listing
+│   │   ├── _app.computer.$workspaceId.tsx  # File browser
+│   │   ├── _app.connections.tsx # Integrations
+│   │   ├── _app.history.tsx   # Chat history
+│   │   ├── _app.settings.*.tsx # Settings pages
+│   │   ├── invitations.$orgId.$invitationId.tsx # Public invitation
+│   │   └── api/               # API route handlers
+│   │       ├── auth.*.ts      # Auth endpoints
+│   │       ├── workspaces.*.ts # Workspace endpoints
+│   │       └── apps.*.ts      # Apps endpoints
 │   ├── components/
-│   │   └── ui/              # shadcn/ui components
-│   ├── contexts/            # React contexts (AuthContext)
+│   │   ├── ui/                # shadcn/ui components
+│   │   ├── Chat.tsx           # Chat with WebSocket
+│   │   ├── sidebar/           # Navigation
+│   │   ├── settings/          # Settings components
+│   │   ├── admin/             # Admin components
+│   │   └── floating-todo/     # Todo list UI
 │   ├── lib/
-│   │   └── utils.ts         # cn() helper for Tailwind classes
-│   └── types.ts             # TypeScript types
+│   │   ├── auth.server.ts     # Server auth helpers
+│   │   ├── cloudflare.server.ts # CF env helpers
+│   │   ├── cookies.server.ts  # Cookie utils
+│   │   ├── utils.ts           # cn() helper
+│   │   └── streaming/         # Stream event handling
+│   └── styles/globals.css     # Tailwind + theme
 ├── workers/
-│   ├── main/
-│   │   └── src/
-│   │       ├── index.ts         # Worker entry point
-│   │       ├── durable-objects.ts # Chat DOs
-│   │       ├── auth.ts          # Auth DOs
-│   │       ├── mcp-handler.ts   # MCP server handler
-│   │       ├── integration-env.ts # Integration credential mapping
-│   │       └── password.ts      # Password hashing
-│   ├── dispatcher/          # WfP subdomain router
-│   │   └── src/
-│   ├── proxy/               # LLM proxy worker
-│   │   ├── src/index.ts     # Proxy worker entry
-│   │   └── wrangler.jsonc   # Proxy worker config
-│   └── admin-cli/           # Local-only admin CLI
-│       ├── cli.mjs          # CLI wrapper script
-│       ├── src/index.ts     # Worker code
-│       └── wrangler.jsonc   # Config with remote DO namespace bindings
-├── sandbox/                 # Container sandbox code
-├── scripts/                 # Dev scripts
-│   └── dev-proxy.mjs        # Wrangler + Next dev + proxy
-├── e2e/                     # Playwright E2E tests
-├── tests/                   # Vitest unit tests
-├── wrangler.jsonc           # Production config
-├── components.json          # shadcn/ui config
-├── .mcp.json                # MCP server config
+│   ├── main/src/
+│   │   ├── index.ts           # Worker entry
+│   │   ├── auth.ts            # UserDO, OrgDO
+│   │   ├── workspace.ts       # WorkspaceDO
+│   │   ├── workspace-container.ts # ThreadSandbox
+│   │   ├── durable-objects.ts # ChatThreadDO
+│   │   ├── cf-api-proxy.ts    # Deploy proxy
+│   │   └── mcp-handler.ts     # MCP server
+│   ├── dispatcher/src/        # WfP subdomain router
+│   ├── proxy/src/             # LLM proxy worker
+│   └── admin-cli/             # Admin CLI tool
+├── sandbox/
+│   ├── entrypoint.sh          # Container startup
+│   ├── ws-server.mjs          # Claude SDK WebSocket
+│   ├── control-plane.mjs      # Container management API
+│   └── skills/                # Agent skills
+├── tests/                     # Vitest unit tests
+├── e2e/                       # Playwright E2E tests
+├── scripts/                   # Dev/deploy scripts
+├── wrangler.jsonc             # Main worker config
+├── vite.config.ts             # Vite configuration
+├── components.json            # shadcn/ui config
 └── package.json
 ```
+
+## Durable Objects
+
+### UserDO (per user)
+- User profile, password hash, OAuth providers
+- Organization memberships and roles
+- Workspace access permissions
+
+### OrgDO (per organization)
+- Organization info, members, invitations
+- Thread storage
+- Worker scripts with preview status
+- Integration credentials (org-level)
+- API tokens
+
+### WorkspaceDO (per workspace)
+- Workspace metadata, members, access levels
+- Workspace-specific integrations
+- Audit logs
+
+### ChatThreadDO (per thread)
+- WebSocket connection state
+- Preview worker list (out-of-band state)
+
+### ThreadSandbox (per workspace)
+- Container lifecycle using `@cloudflare/containers`
+- WebSocket upgrade handling
+- Control plane API endpoints
+
+### ChiridionMcp (MCP Agent)
+- MCP server implementation
+- Deployment management tools
+- Context-aware operations
 
 ## Known Issues & Solutions
 
@@ -531,41 +600,28 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 
 ### Common Issues
 
-1. **Durable Objects not working locally**: Use `bun run dev` (wrangler-based dev) rather than `next dev`
-2. **Streaming not working**: Ensure `includePartialMessages: true` is set in ws-server.mjs
-3. **API key not found**: Check `.dev.vars` has `ANTHROPIC_API_KEY` set
-4. **Docker cache stale**: Add version comment to `entrypoint.sh` or Dockerfile to invalidate cache
-5. **Session not persisting**: Ensure cookies are set with correct domain and the DO worker is running
-6. **JuiceFS mount fails**: Check `/dev/fuse` exists in container, verify R2 credentials are valid
-7. **JuiceFS performance issues**: JuiceFS FUSE has overhead; enable writeback caching in mount options
+1. **Durable Objects not working locally**: Use `bun run dev` (wrangler-based dev)
+2. **Streaming not working**: Ensure `includePartialMessages: true` in ws-server.mjs
+3. **API key not found**: Check `.dev.vars` has `ANTHROPIC_API_KEY`
+4. **Docker cache stale**: Add version comment to `entrypoint.sh` to invalidate
+5. **Session not persisting**: Check cookies and DO worker is running
+6. **JuiceFS mount fails**: Check `/dev/fuse` exists, verify R2 credentials
+7. **Type errors after route changes**: Run `bun run typecheck` to regenerate types
 
 ## Testing Strategy
 
-### Unit Tests (Vitest + jsdom) (`tests/`)
-- Config: `vitest.config.ts` with `jsdom`, `tests/setup.ts` (matchMedia), excludes `tests/integration/**`.
-- Auth/UI state: `AuthContext.test.tsx` tests auth flows with mocked server actions.
-- Auth helpers: `auth-validation.test.ts`, `admin-auth.test.ts`, `auth-serialization.test.ts` (plain-object safety for DO responses).
-- Chat rendering logic: `Chat.test.tsx` (partial message replacement vs append), `content-parsing.test.ts` (JSON content blocks), `stream-playback.test.ts` (stream event reducer in `src/lib/streaming`).
-- Crypto: `password.test.ts` (PBKDF2 hash/verify, edge cases).
+### Unit Tests (`tests/`)
+- Config: `vitest.config.ts` with jsdom
+- Auth helpers, Chat rendering, content parsing, stream playback
 
-### Integration Tests (Vitest + dev server) (`tests/integration/`)
-- Run with `bun run test:integration` using `vitest.integration.config.ts`.
-- `global-setup.ts` starts `bun run dev` (wrangler + next) on `INTEGRATION_TEST_PORT` (default `3100`), waits for readiness, writes `.server-url` for tests to read.
-- Tests focus on page accessibility and auth gating (auth uses server actions, not API routes):
-  - `pages.test.ts` checks login/signup SSR, public invitation pages, and protected route redirects.
-  - `api-routes.test.ts` asserts auth required for chat, threads preview, workspace FS, and computer APIs; static asset behavior.
-- Runs sequentially (single fork) to avoid port conflicts.
+### Integration Tests (`tests/integration/`)
+- Config: `vitest.integration.config.ts`
+- Page accessibility, auth gating, API route auth requirements
 
-### Workers Runtime Tests (Cloudflare pool) (`workers/main/tests/`)
-- Run with `bun run test:workers` using `vitest.workers.config.ts` + `wrangler.test.jsonc`.
-- `auth-do.test.ts` exercises full auth flow through RPC -> Durable Objects (users, orgs, sessions, org switching).
-- `password.test.ts` validates hashing/verification in the Workers runtime.
+### Workers Tests (`workers/main/tests/`)
+- Config: `vitest.workers.config.ts`
+- Full auth flow through RPC → Durable Objects
 
-### E2E Tests (Playwright) (`e2e/`)
-- Config in `playwright.config.ts`; default `baseURL` is remote, override `BASE_URL` for local (`bun run dev`).
-- `auth.spec.ts` covers signup/login/logout and protected-route redirects.
-- `chat.spec.ts` validates chat creation, streaming deltas, and tool use UI.
-- `streaming.spec.ts` inspects WebSocket `sdk_event` flow and partial assistant events.
-- `persistence.spec.ts` + `persistence-api.spec.ts` verify message/tool block persistence across reload.
-- `invitation.spec.ts` tests invitation page error handling.
-- `admin.spec.ts` covers admin access control; superuser tests require `SUPERUSER_TEST_EMAIL` and `SUPERUSER_TEST_PASSWORD`.
+### E2E Tests (`e2e/`)
+- Config: `playwright.config.ts`
+- Signup/login/logout, chat streaming, tool use, persistence
