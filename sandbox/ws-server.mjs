@@ -3,7 +3,7 @@ import { createInterface } from 'readline';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-24-spawn-wait-v2';
+const VERSION = '2026-01-24-async-messages-v1';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -96,7 +96,6 @@ function getSession(threadId, deployToken, userInfo) {
     nextEventId: 1,
     cliProcess: null,
     pendingMessages: [],
-    isProcessing: false,
   };
   sessions.set(threadId, session);
   return session;
@@ -249,15 +248,19 @@ function spawnCLI(session, initialMessage) {
 
   // Write initial message once process is ready
   // Check proc.pid in case 'spawn' already fired synchronously
-  if (initialMessage) {
-    if (proc.pid) {
-      // Already spawned
+  if (proc.pid) {
+    // Already spawned - write initial message and flush queue
+    if (initialMessage) {
       writeToStdin(session, initialMessage);
-    } else {
-      proc.once('spawn', () => {
-        writeToStdin(session, initialMessage);
-      });
     }
+    flushPendingMessages(session);
+  } else {
+    proc.once('spawn', () => {
+      if (initialMessage) {
+        writeToStdin(session, initialMessage);
+      }
+      flushPendingMessages(session);
+    });
   }
 
   // Parse JSON lines from stdout
@@ -278,9 +281,8 @@ function spawnCLI(session, initialMessage) {
   proc.on('exit', (code, signal) => {
     console.log(`[ws-server] CLI exited threadId=${session.threadId} code=${code} signal=${signal}`);
     session.cliProcess = null;
-    session.isProcessing = false;
 
-    // Process any pending messages by spawning a new CLI
+    // If messages were queued during spawn window, process them with a new CLI
     if (session.pendingMessages.length > 0) {
       const nextMessage = session.pendingMessages.shift();
       sendMessageToCLI(session, nextMessage);
@@ -290,11 +292,18 @@ function spawnCLI(session, initialMessage) {
   proc.on('error', (err) => {
     console.error(`[ws-server] CLI error threadId=${session.threadId}:`, err);
     session.cliProcess = null;
-    session.isProcessing = false;
     broadcast(session, { type: 'error', error: `CLI error: ${err.message}` });
   });
 
   return proc;
+}
+
+// Flush any messages that queued during spawn
+function flushPendingMessages(session) {
+  while (session.pendingMessages.length > 0) {
+    const msg = session.pendingMessages.shift();
+    writeToStdin(session, msg);
+  }
 }
 
 // Write a message to the CLI stdin
@@ -310,7 +319,6 @@ function writeToStdin(session, content) {
     session.cliProcess.stdin.write(msgStr);
   } catch (err) {
     console.error(`[ws-server] stdin write error threadId=${session.threadId}:`, err);
-    session.isProcessing = false;
     broadcast(session, { type: 'error', error: `Failed to send message: ${err.message}` });
   }
 }
@@ -336,34 +344,24 @@ function handleCLIEvent(session, event) {
   // Clear todos on result
   if (event?.type === 'result') {
     void clearTodoState(session.threadId);
-    session.isProcessing = false;
-
-    // Process any pending messages
-    if (session.pendingMessages.length > 0) {
-      const nextMessage = session.pendingMessages.shift();
-      console.log(`[ws-server] Processing pending message after result threadId=${session.threadId}`);
-      sendMessageToCLI(session, nextMessage);
-    }
   }
 }
 
 function sendMessageToCLI(session, content) {
-  // If already processing, queue the message
-  if (session.isProcessing) {
-    console.log(`[ws-server] Queueing message threadId=${session.threadId}`);
-    session.pendingMessages.push(content);
-    return;
-  }
-
-  session.isProcessing = true;
-
   // Spawn CLI if not running - message will be sent on 'spawn' event
   if (!session.cliProcess) {
     spawnCLI(session, content);
     return;
   }
 
-  // CLI already running, write directly
+  // If process exists but not yet spawned, queue the message
+  if (!session.cliProcess.pid) {
+    console.log(`[ws-server] Queueing message (spawning) threadId=${session.threadId}`);
+    session.pendingMessages.push(content);
+    return;
+  }
+
+  // CLI is running and spawned - write directly (async message support)
   writeToStdin(session, content);
 }
 
@@ -387,7 +385,6 @@ async function handleStop(session) {
     session.cliProcess.kill('SIGTERM');
     session.cliProcess = null;
   }
-  session.isProcessing = false;
 }
 
 // HTTP + WebSocket server
