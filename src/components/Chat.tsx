@@ -68,11 +68,6 @@ function coerceContentBlocks(value: unknown): ContentBlock[] | null {
   return null;
 }
 
-function isTodoToolUseBlock(block: ContentBlock): block is ToolUseBlock {
-  if (block.type !== 'tool_use') return false;
-  return block.name === 'TodoWrite';
-}
-
 // Parse message content - handles both plain string and JSON-encoded ContentBlock[]
 function parseMessageContent(content: string | ContentBlock[]): string | ContentBlock[] {
   const directBlocks = coerceContentBlocks(content);
@@ -97,34 +92,6 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
 
   // Plain string content
   return content;
-}
-
-const todoStatuses = new Set<TodoStatus>(['pending', 'in_progress', 'completed']);
-
-function coerceTodoItem(value: unknown): TodoItem | null {
-  if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-  const content = record.content;
-  const status = record.status;
-  const activeForm = record.activeForm;
-  if (typeof content !== 'string' || typeof status !== 'string') return null;
-  if (!todoStatuses.has(status as TodoStatus)) return null;
-  return {
-    content,
-    status: status as TodoStatus,
-    activeForm: typeof activeForm === 'string' ? activeForm : content,
-  };
-}
-
-function extractTodoItemsFromMessage(message: Message): TodoItem[] | null {
-  if (!Array.isArray(message.content)) return null;
-  const todoToolUse = message.content
-    .filter(isTodoToolUseBlock)
-    .pop();
-  if (!todoToolUse) return null;
-  const todosInput = todoToolUse.input.todos;
-  if (!Array.isArray(todosInput)) return null;
-  return todosInput.map(coerceTodoItem).filter(Boolean) as TodoItem[];
 }
 
 function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
@@ -348,18 +315,11 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   }, [threadId, deployedApp]);
 
 
-  useEffect(() => {
-    if (!streamingMessageId) return;
-    const streamingMessage = messages.find(message => message.id === streamingMessageId);
-    if (!streamingMessage) return;
-    const todos = extractTodoItemsFromMessage(streamingMessage);
-    if (!todos) return;
-    setCurrentTodos(todos);
-  }, [messages, streamingMessageId]);
-
+  // Todo state comes directly from server via todo_state events
+  // Clear todos when streaming starts (new message turn)
   useEffect(() => {
     if (!wasStreamingRef.current && isStreaming) {
-      setCurrentTodos(prev => (prev.length ? [] : prev));
+      setCurrentTodos([]);
     }
     wasStreamingRef.current = isStreaming;
   }, [isStreaming]);
@@ -744,6 +704,11 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
           }
           setStreamingMessageId(null);
           setLoading(false);
+        }
+      } else if (data.type === 'todo_state') {
+        // Direct todo state from server - no extraction needed
+        if (Array.isArray(data.todos)) {
+          setCurrentTodos(data.todos);
         }
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);

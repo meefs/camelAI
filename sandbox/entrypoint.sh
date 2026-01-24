@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-23-v19-no-force
+# Version: 2026-01-23-v25-fix-shutdown-order
 set -eu
 
 # Trap errors and show what failed
@@ -94,15 +94,43 @@ restore_from_litestream() {
   create_litestream_config
 
   echo "[entrypoint] Restoring JuiceFS metadata from Litestream..." >&2
-  if litestream restore -config /tmp/litestream.yml -if-replica-exists "$JFS_META_FILE" 2>&1; then
-    if [ -s "$JFS_META_FILE" ]; then
-      echo "[entrypoint] Restored SQLite metadata ($(stat -c%s "$JFS_META_FILE" 2>/dev/null || stat -f%z "$JFS_META_FILE") bytes)" >&2
+  RESTORE_LOG="/tmp/litestream-restore.log"
+  if litestream restore -config /tmp/litestream.yml -if-replica-exists "$JFS_META_FILE" >"$RESTORE_LOG" 2>&1; then
+    RESTORE_EXIT=0
+  else
+    RESTORE_EXIT=$?
+  fi
+
+  # Log restore output for debugging
+  if [ -s "$RESTORE_LOG" ]; then
+    echo "[entrypoint] Litestream restore output:" >&2
+    cat "$RESTORE_LOG" >&2
+  fi
+
+  if [ "$RESTORE_EXIT" -eq 0 ] && [ -s "$JFS_META_FILE" ]; then
+    FILE_SIZE="$(stat -c%s "$JFS_META_FILE" 2>/dev/null || stat -f%z "$JFS_META_FILE")"
+    echo "[entrypoint] Restored SQLite metadata ($FILE_SIZE bytes)" >&2
+    # Verify the database is valid
+    if sqlite3 "$JFS_META_FILE" "SELECT count(*) FROM sqlite_master;" >/dev/null 2>&1; then
+      echo "[entrypoint] SQLite metadata verified OK" >&2
       chown claude:claude "$JFS_META_FILE" 2>/dev/null || true
       chmod u+rw "$JFS_META_FILE" 2>/dev/null || true
+      # Ensure file is fully flushed to disk before JuiceFS reads it
+      sync
       return 0
+    else
+      echo "[entrypoint] WARNING: Restored file failed SQLite validation" >&2
     fi
   fi
-  echo "[entrypoint] No Litestream replica found or restore failed" >&2
+
+  if [ "$RESTORE_EXIT" -ne 0 ]; then
+    echo "[entrypoint] Litestream restore failed (exit code: $RESTORE_EXIT)" >&2
+  elif [ ! -f "$JFS_META_FILE" ]; then
+    echo "[entrypoint] No Litestream replica found (file not created)" >&2
+  elif [ ! -s "$JFS_META_FILE" ]; then
+    echo "[entrypoint] Litestream restored empty file (0 bytes)" >&2
+    rm -f "$JFS_META_FILE"
+  fi
   return 1
 }
 
@@ -413,6 +441,8 @@ mount_juicefs() {
     --upload-delay \"$JUICEFS_UPLOAD_DELAY\" \
     --buffer-size \"$JUICEFS_BUFFER_SIZE\" \
     --prefix-internal \
+    --io-retries 3 \
+    --get-timeout 5 \
     -o user_id=$CLAUDE_UID,group_id=$CLAUDE_GID \
     --writeback \
     --no-syslog \
@@ -498,9 +528,21 @@ mount_juicefs() {
 }
 
 # Cleanup function for shutdown (runs on EXIT, which fires for all termination paths)
+# Cloudflare gives containers ~15 minutes for graceful shutdown, so we can take our time
+# to ensure data is properly flushed and replicated.
+#
+# CRITICAL: Shutdown order matters for data integrity!
+# 1. Stop application processes (ws-server, control-plane, Verdaccio)
+# 2. Unmount JuiceFS FIRST (flushes writeback cache to R2, updates SQLite metadata)
+# 3. Stop Litestream LAST (replicates final metadata state to R2)
+#
+# If we stop Litestream before unmounting JuiceFS, the final metadata changes
+# from the unmount won't be replicated, causing corruption on next startup.
 cleanup() {
   echo "[entrypoint] Shutting down... (reason: ${SHUTDOWN_REASON:-unknown})" >&2
+  CLEANUP_START_TS="$(date +%s)"
 
+  # Step 1: Stop application processes
   # Kill ws-server if running
   if [ -n "${WS_PID:-}" ] && kill -0 "$WS_PID" 2>/dev/null; then
     echo "[entrypoint] Stopping ws-server (PID: $WS_PID)..." >&2
@@ -519,27 +561,50 @@ cleanup() {
   echo "[entrypoint] Stopping Verdaccio (pm2)..." >&2
   pm2 stop verdaccio 2>/dev/null || true
 
-  # Stop Litestream replication (graceful shutdown ensures final WAL sync)
+  # Step 2: Unmount JuiceFS FIRST (before stopping Litestream!)
+  # This flushes the writeback cache to R2 and updates the SQLite metadata.
+  # Litestream must still be running to replicate these final changes.
+  if grep -q " $TARGET_DIR " /proc/mounts 2>/dev/null; then
+    echo "[entrypoint] Unmounting JuiceFS (flushing writeback cache)..." >&2
+    # juicefs umount flushes all dirty data before unmounting
+    if ! juicefs umount "$TARGET_DIR" 2>&1; then
+      echo "[entrypoint] juicefs umount failed, trying fusermount..." >&2
+      fusermount -u "$TARGET_DIR" 2>/dev/null || true
+    fi
+    echo "[entrypoint] JuiceFS unmounted" >&2
+    # Sync to ensure metadata changes are visible to Litestream
+    sync
+    # Give Litestream time to replicate final metadata changes (sync interval is 10s)
+    echo "[entrypoint] Waiting for Litestream to replicate final changes..." >&2
+    sleep 12
+  fi
+
+  # Step 3: Stop Litestream LAST (after JuiceFS unmount completes)
+  # This ensures the final metadata changes from unmount are replicated to R2.
+  # Use SIGINT for graceful shutdown which flushes pending WAL frames.
   if [ -n "${LITESTREAM_PID:-}" ] && kill -0 "$LITESTREAM_PID" 2>/dev/null; then
     echo "[entrypoint] Stopping Litestream (PID: $LITESTREAM_PID)..." >&2
     kill -INT "$LITESTREAM_PID" 2>/dev/null || true
-    # Give Litestream time to flush final changes
-    sleep 2
-    kill "$LITESTREAM_PID" 2>/dev/null || true
+    # Wait up to 60 seconds for Litestream to finish graceful shutdown
+    LITESTREAM_WAIT=0
+    while kill -0 "$LITESTREAM_PID" 2>/dev/null && [ "$LITESTREAM_WAIT" -lt 60 ]; do
+      sleep 1
+      LITESTREAM_WAIT=$((LITESTREAM_WAIT + 1))
+    done
+    if kill -0 "$LITESTREAM_PID" 2>/dev/null; then
+      echo "[entrypoint] Litestream didn't exit gracefully, forcing..." >&2
+      kill -9 "$LITESTREAM_PID" 2>/dev/null || true
+    fi
     wait "$LITESTREAM_PID" 2>/dev/null || true
-  fi
-
-  # Unmount JuiceFS
-  if grep -q " $TARGET_DIR " /proc/mounts 2>/dev/null; then
-    echo "[entrypoint] Unmounting JuiceFS..." >&2
-    juicefs umount "$TARGET_DIR" 2>/dev/null || fusermount -u "$TARGET_DIR" 2>/dev/null || true
+    echo "[entrypoint] Litestream stopped (waited ${LITESTREAM_WAIT}s)" >&2
   fi
 
   # Unmount R2 goofys mounts
   fusermount -u /mnt/user-uploads 2>/dev/null || true
   fusermount -u /mnt/user-outputs 2>/dev/null || true
 
-  echo "[entrypoint] Shutdown complete." >&2
+  CLEANUP_END_TS="$(date +%s)"
+  echo "[entrypoint] Shutdown complete (took $((CLEANUP_END_TS - CLEANUP_START_TS))s)" >&2
 }
 
 # Track shutdown reason for debugging
@@ -567,6 +632,10 @@ else
     echo "[entrypoint] Fatal: JuiceFS mount failed." >&2
     exit 1
   fi
+
+  # Sync metadata to disk before starting Litestream replication
+  # This ensures any JuiceFS format/mount changes are flushed
+  sync
 
   # Start Litestream continuous replication to R2
   start_litestream_replication
@@ -619,6 +688,7 @@ echo "[entrypoint] Skills installed (ms: $((SKILLS_END_TS - SKILLS_START_TS)))" 
 # Write env vars to a file that claude user can source
 cat > /tmp/ws-env.sh << ENVEOF
 export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'
+export ANTHROPIC_BASE_URL='${ANTHROPIC_BASE_URL:-}'
 export ORG_ID='${ORG_ID:-}'
 export WORKSPACE_ID='${WORKSPACE_ID:-}'
 export R2_BUCKET_NAME='${R2_BUCKET_NAME:-}'
@@ -635,7 +705,8 @@ export CLOUDFLARE_API_TOKEN='${CLOUDFLARE_API_TOKEN:-}'
 export CLOUDFLARE_API_BASE_URL='${CLOUDFLARE_API_BASE_URL:-}'
 export CF_DISPATCH_NAMESPACE='${CF_DISPATCH_NAMESPACE:-}'
 export WORKER_BASE_URL='${WORKER_BASE_URL:-}'
-export ENABLE_STRACE='${ENABLE_STRACE:-}'
+export MCP_SERVER_URL='${MCP_SERVER_URL:-}'
+export MCP_API_KEY='${MCP_API_KEY:-}'
 ENVEOF
 chmod 644 /tmp/ws-env.sh
 
@@ -653,14 +724,10 @@ if ! kill -0 "$CONTROL_PID" 2>/dev/null; then
 fi
 
 # Start ws-server as claude user (runs on port 8080)
+# Uses Claude Agent SDK for streaming conversations
 # Run in foreground (no exec) so the shell stays alive for the trap
-echo "[entrypoint] Starting ws-server as claude user on port 8080..." >&2
-if [ "${ENABLE_STRACE:-}" = "1" ]; then
-  echo "[entrypoint] STRACE ENABLED - logging to /tmp/ws-strace.log" >&2
-  su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && strace -f -tt -T -o /tmp/ws-strace.log bun /app/ws-server.mjs" &
-else
-  su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && bun /app/ws-server.mjs" &
-fi
+echo "[entrypoint] Starting ws-server (SDK) as claude user on port 8080..." >&2
+su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && bun /app/ws-server.mjs" &
 WS_PID=$!
 echo "[entrypoint] ws-server PID: $WS_PID" >&2
 

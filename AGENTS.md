@@ -129,9 +129,12 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 6. Thread ID = Claude session_id (received on first message)
 7. Frontend updates React state with streaming content
 
-### Task Tool Updates
-1. Streaming Task sub-agent tool_results are persisted to `/home/claude/.chiridion/task-results/{threadId}.jsonl` inside the container.
-2. The `getMessages` method on `OrgDO` merges these updates into assistant messages so refreshes retain Task progress history.
+### Todo State Persistence
+The floating todo list state persists across reconnections:
+1. When `ws-server.mjs` sees a `TodoWrite` tool call, it broadcasts a `todo_state` event and saves to `/home/claude/.chiridion/todos/{threadId}.json`
+2. On WebSocket init, the server reads the persisted file and sends `todo_state` to the client
+3. On turn completion (`result` event), the persisted file is cleared
+4. Frontend simply listens for `todo_state` events - no message parsing needed
 
 ### Workspace Persistence (JuiceFS)
 JuiceFS provides a FUSE-based distributed filesystem with SQLite metadata and R2 data storage:
