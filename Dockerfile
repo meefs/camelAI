@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-23-v18-cleanup-orphaned-storage
+# Version: 2026-01-23-v24-sdk-simplified
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Layer 1: Create claude user (separate from node user)
 RUN useradd -m -s /bin/bash claude
 
-# Layer 2: System deps + Bun + Verdaccio + JuiceFS (changes rarely)
+# Layer 2: System deps + Bun + Verdaccio + JuiceFS
 # Note: fuse3 replaces fuse (they conflict). libfuse2 provides compat for older tools.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
