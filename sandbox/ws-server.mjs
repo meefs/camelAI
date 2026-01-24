@@ -3,7 +3,7 @@ import { createInterface } from 'readline';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-24-direct-cli-v4';
+const VERSION = '2026-01-24-direct-cli-v5';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -200,10 +200,30 @@ function buildCLIEnv(session) {
   return env;
 }
 
-// Claude CLI installed via official installer to ~/.local/bin/claude
-const CLAUDE_CLI = process.env.CLAUDE_CLI_PATH || '/root/.local/bin/claude';
+// Claude CLI - try multiple locations
+function findClaudeCLI() {
+  const paths = [
+    process.env.CLAUDE_CLI_PATH,
+    '/usr/local/bin/claude',
+    '/root/.local/bin/claude',
+    `${process.env.HOME}/.local/bin/claude`,
+  ].filter(Boolean);
+
+  for (const p of paths) {
+    if (existsSync(p)) {
+      console.log(`[ws-server] Found CLI at: ${p}`);
+      return p;
+    }
+    console.log(`[ws-server] CLI not at: ${p}`);
+  }
+  console.log(`[ws-server] WARNING: CLI not found, falling back to 'claude'`);
+  return 'claude';
+}
+
+const CLAUDE_CLI = findClaudeCLI();
 console.log(`[ws-server] Using Claude CLI: ${CLAUDE_CLI}`);
 console.log(`[ws-server] CLI working directory: ${CLI_CWD}`);
+console.log(`[ws-server] HOME=${process.env.HOME}`);
 
 function spawnCLI(session) {
   const resume = sessionFileExists(session.threadId);
