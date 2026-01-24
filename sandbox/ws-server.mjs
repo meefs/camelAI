@@ -1,7 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-23-retry-early-exit-v1';
+const VERSION = '2026-01-24-retry-early-exit-v2';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -18,42 +18,31 @@ class MessageQueue {
   #queue = [];
   #waiting = null;
   #closed = false;
-  #id = Math.random().toString(36).slice(2, 8);
 
   [Symbol.asyncIterator]() { return this; }
 
   next() {
     if (this.#queue.length > 0) {
-      const value = this.#queue.shift();
-      console.log(`[ws-server] MQ[${this.#id}] next value queueLen=${this.#queue.length}`);
-      return Promise.resolve({ done: false, value });
+      return Promise.resolve({ done: false, value: this.#queue.shift() });
     }
     if (this.#closed) {
-      console.log(`[ws-server] MQ[${this.#id}] next done (closed)`);
       return Promise.resolve({ done: true });
     }
-    console.log(`[ws-server] MQ[${this.#id}] next waiting`);
     return new Promise(resolve => { this.#waiting = resolve; });
   }
 
   enqueue(value) {
-    if (this.#closed) {
-      console.log(`[ws-server] MQ[${this.#id}] enqueue rejected (closed)`);
-      return;
-    }
+    if (this.#closed) return;
     if (this.#waiting) {
       const resolve = this.#waiting;
       this.#waiting = null;
-      console.log(`[ws-server] MQ[${this.#id}] enqueue direct-resolve`);
       resolve({ done: false, value });
     } else {
       this.#queue.push(value);
-      console.log(`[ws-server] MQ[${this.#id}] enqueue queued len=${this.#queue.length}`);
     }
   }
 
   close() {
-    console.log(`[ws-server] MQ[${this.#id}] close called wasPending=${!!this.#waiting}`);
     this.#closed = true;
     if (this.#waiting) {
       this.#waiting({ done: true });
@@ -62,7 +51,6 @@ class MessageQueue {
   }
 
   get length() { return this.#queue.length; }
-  get closed() { return this.#closed; }
 }
 
 // Todo state persistence - simple file per thread
@@ -113,16 +101,12 @@ async function clearTodoState(threadId) {
   }
 }
 
-// Extract TodoWrite todos from SDK events - matches docs pattern exactly
+// Extract TodoWrite todos from SDK events
 function extractTodosFromEvent(event) {
-  if (event.type === 'assistant') {
+  if (event?.type === 'assistant' && Array.isArray(event.message?.content)) {
     for (const block of event.message.content) {
-      if (block.type === 'tool_use' && block.name === 'TodoWrite') {
-        const todos = block.input.todos;
-        if (Array.isArray(todos)) {
-          console.log(`[ws-server] Found TodoWrite with ${todos.length} todos`);
-          return todos;
-        }
+      if (block?.type === 'tool_use' && block.name === 'TodoWrite' && Array.isArray(block.input?.todos)) {
+        return block.input.todos;
       }
     }
   }
@@ -247,21 +231,13 @@ async function* messageStream(session) {
   const startTime = Date.now();
   console.log(`[ws-server] messageStream started threadId=${session.threadId}`);
   let msgCount = 0;
-  try {
-    for await (const msg of session.inputQueue) {
-      msgCount++;
-      const waitMs = Date.now() - startTime;
-      console.log(`[ws-server] messageStream yield threadId=${session.threadId} msg=${msgCount} len=${msg.length} waitMs=${waitMs}`);
-      yield { type: 'user', message: { role: 'user', content: msg } };
-      console.log(`[ws-server] messageStream yield_complete threadId=${session.threadId} msg=${msgCount}`);
-    }
-    console.log(`[ws-server] messageStream ended_normally threadId=${session.threadId} total=${msgCount} queueClosed=${session.inputQueue ? 'maybe' : 'null'}`);
-  } catch (e) {
-    console.log(`[ws-server] messageStream error threadId=${session.threadId} error=${e?.message || e}`);
-    throw e;
-  } finally {
-    console.log(`[ws-server] messageStream finally threadId=${session.threadId} total=${msgCount}`);
+  for await (const msg of session.inputQueue) {
+    msgCount++;
+    const waitMs = Date.now() - startTime;
+    console.log(`[ws-server] messageStream yield threadId=${session.threadId} msg=${msgCount} len=${msg.length} waitMs=${waitMs}`);
+    yield { type: 'user', message: { role: 'user', content: msg } };
   }
+  console.log(`[ws-server] messageStream ended threadId=${session.threadId} total=${msgCount}`);
 }
 
 const MAX_EARLY_EXIT_RETRIES = 3;
