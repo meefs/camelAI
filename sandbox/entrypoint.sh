@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-23-v25-fix-shutdown-order
+# Version: 2026-01-24-v26-litestream-0.5
 set -eu
 
 # Trap errors and show what failed
@@ -69,14 +69,14 @@ create_litestream_config() {
   cat > /tmp/litestream.yml << LSEOF
 dbs:
   - path: ${JFS_META_FILE}
-    replicas:
-      - type: s3
-        bucket: ${R2_BUCKET_NAME}
-        path: ${R2_BASE}litestream
-        endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
-        region: auto
-        force-path-style: true
-        sync-interval: 10s
+    replica:
+      type: s3
+      bucket: ${R2_BUCKET_NAME}
+      path: ${R2_BASE}litestream
+      endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+      region: auto
+      force-path-style: true
+      sync-interval: 10s
 LSEOF
   echo "[entrypoint] Created Litestream config for ${JFS_META_FILE}" >&2
 }

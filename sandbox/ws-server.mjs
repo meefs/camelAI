@@ -1,7 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-23-debug-early-exit-v1';
+const VERSION = '2026-01-23-retry-early-exit-v1';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -233,6 +233,11 @@ function buildQueryOptions(session, resume) {
       const msg = String(data).trim();
       if (msg) console.error(`[ws-server] CLI_STDERR threadId=${session.threadId}: ${msg.slice(0, 500)}`);
     },
+    // Also capture stdout in case there's useful info
+    stdout: (data) => {
+      const msg = String(data).trim();
+      if (msg) console.log(`[ws-server] CLI_STDOUT threadId=${session.threadId}: ${msg.slice(0, 500)}`);
+    },
     ...(Object.keys(mcpServers).length > 0 && { mcpServers, allowedTools: ['mcp__chiridion__*'] }),
     ...(resume ? { resume: session.threadId } : { extraArgs: { 'session-id': session.threadId } }),
   };
@@ -259,68 +264,96 @@ async function* messageStream(session) {
   }
 }
 
-async function startQuery(session) {
-  if (session.activeQuery) return;
+const MAX_EARLY_EXIT_RETRIES = 3;
 
+async function runQueryWithRetry(session, pendingMessage, attempt = 1) {
   const startTime = Date.now();
   const resume = sessionFileExists(session.threadId);
-  console.log(`[ws-server] startQuery threadId=${session.threadId} resume=${resume} fileCheckMs=${Date.now() - startTime}`);
+  console.log(`[ws-server] runQuery threadId=${session.threadId} attempt=${attempt} resume=${resume}`);
 
   const options = buildQueryOptions(session, resume);
-  // inputQueue may already exist if message was pre-enqueued
-  if (!session.inputQueue) {
-    session.inputQueue = new MessageQueue();
+
+  // Create fresh queue and enqueue the pending message
+  session.inputQueue = new MessageQueue();
+  if (pendingMessage) {
+    session.inputQueue.enqueue(pendingMessage);
   }
 
   const queryStartTime = Date.now();
   session.activeQuery = query({ prompt: messageStream(session), options });
   console.log(`[ws-server] query created threadId=${session.threadId} queryCreateMs=${Date.now() - queryStartTime}`);
 
-  // Process events in background
-  (async () => {
-    let firstEventTime = null;
-    let eventCount = 0;
-    try {
-      for await (const event of session.activeQuery) {
-        eventCount++;
-        if (!firstEventTime) {
-          firstEventTime = Date.now();
-          console.log(`[ws-server] firstEvent threadId=${session.threadId} type=${event?.type} waitMs=${firstEventTime - queryStartTime}`);
-        }
-        console.log(`[ws-server] event threadId=${session.threadId} type=${event?.type} count=${eventCount}`);
+  let firstEventTime = null;
+  let eventCount = 0;
+  let gotMeaningfulResponse = false;
 
-        // Log system events fully to diagnose early exits
-        if (event?.type === 'system') {
-          console.log(`[ws-server] system_event threadId=${session.threadId} subtype=${event?.subtype} full=${JSON.stringify(event).slice(0, 500)}`);
-        }
-        broadcast(session, { type: 'sdk_event', event });
-
-        // Check for TodoWrite tool calls and broadcast + persist
-        const todos = extractTodosFromEvent(event);
-        if (todos) {
-          broadcast(session, { type: 'todo_state', todos });
-          void writeTodoState(session.threadId, todos);
-        }
-
-        // Clear persisted todos when turn completes
-        if (event?.type === 'result') {
-          void clearTodoState(session.threadId);
-        }
+  try {
+    for await (const event of session.activeQuery) {
+      eventCount++;
+      if (!firstEventTime) {
+        firstEventTime = Date.now();
+        console.log(`[ws-server] firstEvent threadId=${session.threadId} type=${event?.type} waitMs=${firstEventTime - queryStartTime}`);
       }
-      // This runs when the async iterator completes normally (done=true)
-      // If we end with only a system event, something went wrong
-      const earlyExit = eventCount <= 1;
-      console.log(`[ws-server] query_iterator_done threadId=${session.threadId} events=${eventCount} earlyExit=${earlyExit}`);
-    } catch (e) {
-      console.error(`[ws-server] query error threadId=${session.threadId}:`, e);
-      console.error(`[ws-server] query error stack:`, e?.stack || 'no stack');
-      broadcast(session, { type: 'error', error: String(e) });
-    } finally {
-      console.log(`[ws-server] query ended threadId=${session.threadId} events=${eventCount} totalMs=${Date.now() - startTime}`);
+      console.log(`[ws-server] event threadId=${session.threadId} type=${event?.type} count=${eventCount}`);
+
+      // Log system events fully to diagnose early exits
+      if (event?.type === 'system') {
+        console.log(`[ws-server] system_event threadId=${session.threadId} subtype=${event?.subtype} full=${JSON.stringify(event).slice(0, 500)}`);
+      }
+
+      // Track if we got a meaningful response (not just system init)
+      if (event?.type === 'stream_event' || event?.type === 'assistant' || event?.type === 'result') {
+        gotMeaningfulResponse = true;
+      }
+
+      broadcast(session, { type: 'sdk_event', event });
+
+      // Check for TodoWrite tool calls and broadcast + persist
+      const todos = extractTodosFromEvent(event);
+      if (todos) {
+        broadcast(session, { type: 'todo_state', todos });
+        void writeTodoState(session.threadId, todos);
+      }
+
+      // Clear persisted todos when turn completes
+      if (event?.type === 'result') {
+        void clearTodoState(session.threadId);
+      }
+    }
+
+    // Check if this was an early exit (only system event, no real response)
+    const earlyExit = !gotMeaningfulResponse && eventCount <= 1;
+    console.log(`[ws-server] query_iterator_done threadId=${session.threadId} events=${eventCount} earlyExit=${earlyExit} attempt=${attempt}`);
+
+    // Retry on early exit if we have attempts left and had a pending message
+    if (earlyExit && attempt < MAX_EARLY_EXIT_RETRIES && pendingMessage) {
+      console.log(`[ws-server] retrying_early_exit threadId=${session.threadId} attempt=${attempt + 1}`);
       session.activeQuery = null;
       session.inputQueue = null;
+      // Small delay before retry
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return runQueryWithRetry(session, pendingMessage, attempt + 1);
     }
-  })();
+
+    if (earlyExit) {
+      console.error(`[ws-server] early_exit_failed threadId=${session.threadId} attempts=${attempt}`);
+      broadcast(session, { type: 'error', error: 'Query ended unexpectedly after initialization. Please try again.' });
+    }
+  } catch (e) {
+    console.error(`[ws-server] query error threadId=${session.threadId}:`, e);
+    console.error(`[ws-server] query error stack:`, e?.stack || 'no stack');
+    broadcast(session, { type: 'error', error: String(e) });
+  } finally {
+    console.log(`[ws-server] query ended threadId=${session.threadId} events=${eventCount} totalMs=${Date.now() - startTime} attempt=${attempt}`);
+    session.activeQuery = null;
+    session.inputQueue = null;
+  }
+}
+
+async function startQuery(session, pendingMessage = null) {
+  if (session.activeQuery) return;
+  // Run in background
+  runQueryWithRetry(session, pendingMessage, 1);
 }
 
 function formatAuthor(userName, userEmail) {
@@ -335,12 +368,9 @@ async function handleMessage(session, content, userInfo) {
   console.log(`[ws-server] message threadId=${session.threadId} len=${attributed.length}`);
 
   if (!session.activeQuery) {
-    // Pre-create queue and enqueue message BEFORE starting query
-    // This ensures message is ready when SDK starts consuming
-    session.inputQueue = new MessageQueue();
-    session.inputQueue.enqueue(attributed);
-    console.log(`[ws-server] message pre-enqueued threadId=${session.threadId}`);
-    await startQuery(session);
+    // Pass the message to startQuery - it will handle enqueueing and retries
+    console.log(`[ws-server] message starting_query threadId=${session.threadId}`);
+    await startQuery(session, attributed);
   } else {
     session.inputQueue?.enqueue(attributed);
   }
