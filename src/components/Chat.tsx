@@ -278,6 +278,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [isDragOver, setIsDragOver] = useState(false);
   const [deployedApp, setDeployedApp] = useState<string | null>(initialDeployedApp ?? null);
   const [iframeKey, setIframeKey] = useState(0);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
   const previewVersionRef = useRef<number>(0);
@@ -901,19 +902,21 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
           const firstWorker = data.workers[0] || null;
           const newVersion = data.version || 0;
 
-          // Check if this is a new deploy (version changed)
-          const isNewDeploy = newVersion > previewVersionRef.current && previewVersionRef.current > 0;
+          // Check if this is a new deploy (version changed or first deploy)
+          const isNewDeploy = newVersion > previewVersionRef.current;
           previewVersionRef.current = newVersion;
 
           setDeployedApp(firstWorker);
-          // Force iframe refresh on new deploy by changing key
-          // Add a small delay to allow the worker to fully initialize
+
+          // Add delay before showing iframe to allow worker to fully initialize
           if (firstWorker && isNewDeploy) {
             // Clear any existing pending refresh
             if (iframeRefreshTimeoutRef.current) {
               clearTimeout(iframeRefreshTimeoutRef.current);
             }
+            setPreviewLoading(true);
             iframeRefreshTimeoutRef.current = setTimeout(() => {
+              setPreviewLoading(false);
               setIframeKey(prev => prev + 1);
               iframeRefreshTimeoutRef.current = null;
             }, 1500); // 1.5 second delay for worker initialization
@@ -1582,12 +1585,21 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         </div>
       </div>
       <div className="flex-1 min-h-0">
-        <iframe
-          key={iframeKey}
-          src={previewUrl || 'about:blank'}
-          className="w-full h-full bg-white"
-          title="Deployed App Preview"
-        />
+        {previewLoading ? (
+          <div className="w-full h-full flex items-center justify-center bg-muted/30">
+            <div className="flex flex-col items-center gap-3">
+              <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">Loading preview...</span>
+            </div>
+          </div>
+        ) : (
+          <iframe
+            key={iframeKey}
+            src={previewUrl || 'about:blank'}
+            className="w-full h-full bg-white"
+            title="Deployed App Preview"
+          />
+        )}
       </div>
     </>
   ) : null;
