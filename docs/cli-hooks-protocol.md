@@ -174,19 +174,18 @@ When the CLI needs to execute a hook, it sends:
 
 ### Response (You → CLI)
 
+Hook-specific fields go at the **top level** of the response object (not nested in `hookSpecificOutput`):
+
 ```json
 {
   "type": "control_response",
   "response": {
     "request_id": "hook_req_456",
     "subtype": "success",
-    "continue": true,
-    "hookSpecificOutput": {
-      "hookEventName": "PreToolUse",
-      "permissionDecision": "deny",
-      "permissionDecisionReason": "Dangerous command blocked",
-      "additionalContext": "This command would delete important data"
-    }
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "Dangerous command blocked",
+    "additionalContext": "This command would delete important data"
   }
 }
 ```
@@ -270,15 +269,24 @@ type UserPromptSubmitHookSpecificOutput = {
 
 ## Common Response Fields
 
+Hook-specific fields (like `hookEventName`, `permissionDecision`, `updatedInput`) go directly in the response object alongside these common fields:
+
 ```typescript
-type SyncHookJSONOutput = {
+type HookResponse = {
+  // Common fields
   continue?: boolean;           // Whether to continue execution
   suppressOutput?: boolean;     // Suppress hook output in logs
   stopReason?: string;          // Reason for stopping (if continue=false)
   decision?: 'approve' | 'block';  // For permission-related hooks
   systemMessage?: string;       // System message to inject
   reason?: string;              // General reason field
-  hookSpecificOutput?: HookSpecificOutput;
+
+  // Hook-specific fields (at top level, NOT nested)
+  hookEventName?: string;       // e.g., 'PreToolUse'
+  permissionDecision?: 'allow' | 'deny' | 'ask';
+  permissionDecisionReason?: string;
+  updatedInput?: Record<string, unknown>;
+  additionalContext?: string;
 };
 ```
 
@@ -480,16 +488,13 @@ claude.onPreToolUse('Bash*', async (input) => {
 
   if (cmd.includes('rm -rf') || cmd.includes('sudo')) {
     return {
-      continue: true,
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: 'Dangerous command blocked by policy'
-      }
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'Dangerous command blocked by policy'
     };
   }
 
-  return { continue: true };
+  return {};  // Allow by default
 });
 
 // Log all tool executions
