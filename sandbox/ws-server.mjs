@@ -3,7 +3,7 @@ import { appendFile, mkdir, access, stat, readFile, writeFile, unlink } from 'fs
 import os from 'os';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-25-sdk-rewrite-v11-infinite-stream';
+const VERSION = '2026-01-25-sdk-rewrite-v12-no-socket-fix';
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {
@@ -536,7 +536,13 @@ The infrastructure is already configured for Worker deployments. For fullstack a
 
 // Handle AskUserQuestion via canUseTool callback
 async function handleCanUseTool(session, toolName, input, opts) {
-  log('[ws-server]', 'canUseTool', { threadId: session.threadId, tool: toolName, toolUseID: opts?.toolUseID });
+  const connectedSockets = session.attachedSockets?.size || 0;
+  log('[ws-server]', 'canUseTool', {
+    threadId: session.threadId,
+    tool: toolName,
+    toolUseID: opts?.toolUseID,
+    connectedSockets,
+  });
 
   if (toolName === 'AskUserQuestion') {
     const questions = input?.questions;
@@ -546,10 +552,26 @@ async function handleCanUseTool(session, toolName, input, opts) {
       return { behavior: 'allow' };
     }
 
+    // If no sockets connected, we can't get user input - allow with empty answers
+    if (connectedSockets === 0) {
+      log('[ws-server]', 'AskUserQuestion_no_sockets', {
+        threadId: session.threadId,
+        numQuestions: questions.length,
+      });
+      // Return allow with empty answers - Claude will proceed without user input
+      return {
+        behavior: 'allow',
+        updatedInput: {
+          questions,
+          answers: {},
+        },
+      };
+    }
+
     const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const toolUseId = opts?.toolUseID;
 
-    log('[ws-server]', 'AskUserQuestion', { threadId: session.threadId, questionId, numQuestions: questions.length });
+    log('[ws-server]', 'AskUserQuestion', { threadId: session.threadId, questionId, numQuestions: questions.length, connectedSockets });
 
     // Create a promise that will be resolved when user responds
     const answerPromise = new Promise((resolve) => {
@@ -972,6 +994,8 @@ function startEventLoop(session) {
         hadFirstEvent: Boolean(firstEventAt),
         lastEvents: session.eventTypeHistory || [],
         queryId: eventLoopQueryId,
+        connectedSockets: session.attachedSockets?.size || 0,
+        pendingQuestions: session.pendingQuestions?.size || 0,
       });
 
       const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
