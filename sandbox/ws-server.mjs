@@ -5,7 +5,7 @@ import { WebSocketServer } from 'ws';
 import os from 'os';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-25-sdk-rewrite-v13-node-ws';
+const VERSION = '2026-01-25-sdk-rewrite-v14-stop-fix';
 
 // Sleep helper (replaces sleep)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1274,11 +1274,18 @@ wss.on('connection', (ws, req) => {
           void writeTrace(session.threadId, { direction: 'ws_in', type: 'stop' });
           log('[ws-server]', 'stop', { threadId });
           session.lastStopRequestedAt = Date.now();
-          // Clear any pending questions
-          for (const [questionId] of session.pendingQuestions) {
+          // Resolve any pending questions with empty answers so SDK can unwind
+          for (const [questionId, pending] of session.pendingQuestions) {
             bufferEvent(session, { type: 'question_answered', questionId });
+            // Resolve the promise with empty answers to unblock handleCanUseTool
+            if (pending.resolve) {
+              pending.resolve({});
+            }
           }
           session.pendingQuestions.clear();
+          // Clear awaiting state
+          session.awaitingCanUseTool = false;
+          session.awaitingCanUseToolSince = null;
           if (session.activeQuery) {
             try {
               await session.activeQuery.interrupt();
