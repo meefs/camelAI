@@ -15,6 +15,7 @@ import {
 import { PageHeader } from '@/components/page-header';
 import { PromptInput } from '@/components/prompt-input';
 import { FloatingTodoList, type TodoItem, type TodoStatus } from '@/components/floating-todo';
+import { AskUserQuestion, type AskUserQuestionData } from '@/components/ask-user-question';
 import type { Attachment } from '@/components/attachment-list';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -183,6 +184,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [loading, setLoading] = useState(isLoadingMessages);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
+  const [pendingQuestion, setPendingQuestion] = useState<AskUserQuestionData | null>(null);
   const normalizedMessages = useMemo(
     () => normalizeToolResultMessages(messages),
     [messages]
@@ -310,6 +312,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     initialScrollDoneRef.current = false;
     stickToBottomRef.current = true;
     setCurrentTodos([]);
+    setPendingQuestion(null);
   }, [threadId]);
 
   useEffect(() => {
@@ -716,6 +719,23 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         if (Array.isArray(data.todos)) {
           setCurrentTodos(data.todos);
         }
+      } else if (data.type === 'ask_user_question') {
+        // Claude is asking the user a question
+        if (data.questionId && Array.isArray(data.questions)) {
+          setPendingQuestion({
+            questionId: data.questionId,
+            toolUseId: data.toolUseId,
+            questions: data.questions,
+          });
+        }
+      } else if (data.type === 'question_answered') {
+        // Clear the pending question
+        setPendingQuestion((prev) => {
+          if (prev?.questionId === data.questionId) {
+            return null;
+          }
+          return prev;
+        });
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
         setError(data.error || 'An unknown error occurred');
@@ -1452,6 +1472,21 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     wsRef.current.send(JSON.stringify({ type: 'stop' }));
   }
 
+  const handleQuestionResponse = useCallback((answers: Record<string, string>) => {
+    if (!pendingQuestion || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    wsRef.current.send(JSON.stringify({
+      type: 'question_response',
+      questionId: pendingQuestion.questionId,
+      answers,
+    }));
+
+    // Optimistically clear the question
+    setPendingQuestion(null);
+  }, [pendingQuestion]);
+
   function sendMessage() {
     if (!input.trim() || !shouldShowChat || !resolvedWorkspaceId || !threadId) {
       return;
@@ -1708,6 +1743,13 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         <div className="bg-background">
           <div className="pt-2 pb-4 px-4">
             <div className="max-w-3xl mx-auto w-full">
+              {pendingQuestion && (
+                <AskUserQuestion
+                  data={pendingQuestion}
+                  onSubmit={handleQuestionResponse}
+                  className="mb-3"
+                />
+              )}
               {currentTodos.length > 0 && (
                 <FloatingTodoList
                   todos={currentTodos}
