@@ -3,7 +3,7 @@ import { createInterface } from 'readline';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-24-ask-user-question-v2';
+const VERSION = '2026-01-25-ask-user-question-v3';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -443,11 +443,8 @@ function handleAskUserQuestionHook(session, requestId, input) {
     console.error(`[ws-server] Invalid AskUserQuestion input threadId=${session.threadId} input=${JSON.stringify(input)}`);
     // Allow the tool to proceed - Claude will handle missing questions
     sendControlResponse(session, requestId, {
-      continue: true,
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-      },
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
     });
     return;
   }
@@ -498,16 +495,13 @@ function handleQuestionResponse(session, questionId, answers) {
 
   console.log(`[ws-server] Question response received threadId=${session.threadId} questionId=${questionId} answers=${JSON.stringify(answers)}`);
 
-  // Return allow with updatedInput using CLI hooks protocol format
+  // Return allow with updatedInput - fields at top level of response
   sendControlResponse(session, foundRequestId, {
-    continue: true,
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'allow',
-      updatedInput: {
-        questions: pendingQuestion.questions,
-        answers,
-      },
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'allow',
+    updatedInput: {
+      questions: pendingQuestion.questions,
+      answers,
     },
   });
 
