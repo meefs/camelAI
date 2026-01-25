@@ -5,7 +5,7 @@ import { WebSocketServer } from 'ws';
 import os from 'os';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-25-sdk-rewrite-v14-stop-fix';
+const VERSION = '2026-01-25-sdk-rewrite-v16-node-ws';
 
 // Sleep helper (replaces sleep)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -659,8 +659,9 @@ function getQueryOptions(session, fileExists) {
     model: 'opus',
     fallbackModel: 'sonnet',
     includePartialMessages: true,
+    permissionMode: 'bypassPermissions',
     allowUnsandboxedCommands: true,
-    // Use canUseTool for AskUserQuestion interception (instead of bypassPermissions)
+    // Use canUseTool for AskUserQuestion interception
     canUseTool: canUseToolCallback,
     stderr: (data) => {
       const message = String(data || '').trim();
@@ -700,6 +701,7 @@ function getQueryOptions(session, fileExists) {
       fallbackModel: options.fallbackModel,
       includePartialMessages: options.includePartialMessages,
       hasCanUseTool: Boolean(options.canUseTool),
+      permissionMode: options.permissionMode,
       allowUnsandboxedCommands: options.allowUnsandboxedCommands,
       mcpServers: Object.keys(mcpServers || {}),
       envKeys: Object.keys(envVars || {}).length,
