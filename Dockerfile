@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-25-v30-sdk-rewrite
+# Version: 2026-01-25-v31-sdk-debug
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873

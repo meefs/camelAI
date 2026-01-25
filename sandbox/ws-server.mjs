@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-25-sdk-rewrite-v1';
+const VERSION = '2026-01-25-sdk-rewrite-v2';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -180,7 +180,7 @@ function buildSDKOptions(session) {
 
 // Handle tool interception via canUseTool callback
 async function handleCanUseTool(session, toolName, input, opts) {
-  console.log(`[ws-server] canUseTool threadId=${session.threadId} tool=${toolName}`);
+  console.log(`[ws-server] canUseTool CALLED threadId=${session.threadId} tool=${toolName} input=${JSON.stringify(input)?.slice(0, 500)}`);
 
   if (toolName === 'AskUserQuestion') {
     const questions = input?.questions;
@@ -304,6 +304,7 @@ async function sendMessageToSDK(session, content) {
   console.log(`[ws-server] Starting query threadId=${session.threadId} len=${content.length}`);
 
   const options = buildSDKOptions(session);
+  console.log(`[ws-server] Query options: hasCanUseTool=${!!options.canUseTool} model=${options.model} sessionId=${options.sessionId}`);
 
   // Start the query
   const conversation = query({
