@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-25-sdk-rewrite-v3';
+const VERSION = '2026-01-25-sdk-rewrite-v4';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -151,17 +151,24 @@ function buildSDKOptions(session) {
   }
 
   const options = {
-    // Use 'default' permission mode so canUseTool callback is invoked
-    // The callback auto-allows all tools (except AskUserQuestion which needs user input)
-    permissionMode: 'default',
+    // Bypass permissions for all tools - we handle AskUserQuestion via hooks
+    permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: true,
     model: 'opus',
     appendSystemPrompt: SYSTEM_PROMPT_APPEND.trim(),
     sessionId: session.threadId,
     cwd: existsSync(SYNC_DIR) ? SYNC_DIR : process.cwd(),
     includePartialMessages: true,
     env,
-    // Intercept all tool calls - auto-allow most, handle AskUserQuestion specially
-    canUseTool: (toolName, input, opts) => handleCanUseTool(session, toolName, input, opts),
+    // Use PreToolUse hook to intercept AskUserQuestion
+    // This is called for ALL tool uses, not just permission requests
+    hooks: {
+      PreToolUse: [{
+        matcher: 'AskUserQuestion',
+        timeout: 120,
+        hooks: [async (input, opts) => handleAskUserQuestionHook(session, input, opts)],
+      }],
+    },
   };
 
   // Add MCP config if available
@@ -179,59 +186,57 @@ function buildSDKOptions(session) {
   return options;
 }
 
-// Handle tool interception via canUseTool callback
-async function handleCanUseTool(session, toolName, input, opts) {
-  console.log(`[ws-server] canUseTool CALLED threadId=${session.threadId} tool=${toolName} input=${JSON.stringify(input)?.slice(0, 500)}`);
+// Handle AskUserQuestion via PreToolUse hook
+async function handleAskUserQuestionHook(session, input, opts) {
+  console.log(`[ws-server] PreToolUse hook CALLED threadId=${session.threadId} tool=${input.tool_name} input=${JSON.stringify(input.tool_input)?.slice(0, 500)}`);
 
-  if (toolName === 'AskUserQuestion') {
-    const questions = input?.questions;
+  const questions = input.tool_input?.questions;
 
-    if (!Array.isArray(questions) || questions.length === 0) {
-      console.error(`[ws-server] Invalid AskUserQuestion input threadId=${session.threadId}`);
-      return { behavior: 'allow' };
-    }
+  if (!Array.isArray(questions) || questions.length === 0) {
+    console.error(`[ws-server] Invalid AskUserQuestion input threadId=${session.threadId}`);
+    return { continue: true };
+  }
 
-    // Generate a unique ID for this question set
-    const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const toolUseId = opts.toolUseID;
+  // Generate a unique ID for this question set
+  const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const toolUseId = input.tool_use_id;
 
-    console.log(`[ws-server] AskUserQuestion threadId=${session.threadId} questionId=${questionId} numQuestions=${questions.length}`);
+  console.log(`[ws-server] AskUserQuestion threadId=${session.threadId} questionId=${questionId} numQuestions=${questions.length}`);
 
-    // Create a promise that will be resolved when user responds
-    const answerPromise = new Promise((resolve) => {
-      session.pendingQuestions.set(questionId, {
-        questionId,
-        toolUseId,
-        questions,
-        resolve,
-      });
-    });
-
-    // Broadcast question to all connected clients
-    broadcast(session, {
-      type: 'ask_user_question',
+  // Create a promise that will be resolved when user responds
+  const answerPromise = new Promise((resolve) => {
+    session.pendingQuestions.set(questionId, {
       questionId,
       toolUseId,
       questions,
+      resolve,
     });
+  });
 
-    // Wait for user response
-    const answers = await answerPromise;
+  // Broadcast question to all connected clients
+  broadcast(session, {
+    type: 'ask_user_question',
+    questionId,
+    toolUseId,
+    questions,
+  });
 
-    console.log(`[ws-server] AskUserQuestion answered threadId=${session.threadId} questionId=${questionId}`);
+  // Wait for user response
+  const answers = await answerPromise;
 
-    // Return allow with updated input containing answers
-    return {
-      behavior: 'allow',
+  console.log(`[ws-server] AskUserQuestion answered threadId=${session.threadId} questionId=${questionId}`);
+
+  // Return with updated input containing answers
+  return {
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
       updatedInput: {
         questions,
         answers,
       },
-    };
-  }
-
-  // Allow all other tools
-  return { behavior: 'allow' };
+    },
+  };
 }
 
 // Handle user's response to AskUserQuestion
