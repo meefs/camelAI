@@ -3,7 +3,7 @@ import { appendFile, mkdir, access, stat, readFile, writeFile, unlink } from 'fs
 import os from 'os';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-25-sdk-rewrite-v11-infinite-stream';
+const VERSION = '2026-01-25-sdk-rewrite-v12-iterator-debug';
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {
@@ -382,6 +382,9 @@ function createSession(threadId, threadDeployToken = null, userInfo = null) {
     eventTypeHistory: [],
     // AskUserQuestion state
     pendingQuestions: new Map(),
+    // Track when canUseTool is awaiting user response
+    awaitingCanUseTool: false,
+    awaitingCanUseToolSince: null,
   };
   sessions.set(threadId, session);
   return session;
@@ -407,6 +410,10 @@ function getOrCreateSession(threadId, threadDeployToken = null, userInfo = null)
     }
     if (!session.pendingQuestions) {
       session.pendingQuestions = new Map();
+    }
+    if (session.awaitingCanUseTool === undefined) {
+      session.awaitingCanUseTool = false;
+      session.awaitingCanUseToolSince = null;
     }
     return session;
   }
@@ -551,6 +558,10 @@ async function handleCanUseTool(session, toolName, input, opts) {
 
     log('[ws-server]', 'AskUserQuestion', { threadId: session.threadId, questionId, numQuestions: questions.length });
 
+    // Track that we're waiting for user response
+    session.awaitingCanUseTool = true;
+    session.awaitingCanUseToolSince = Date.now();
+
     // Create a promise that will be resolved when user responds
     const answerPromise = new Promise((resolve) => {
       session.pendingQuestions.set(questionId, {
@@ -571,6 +582,10 @@ async function handleCanUseTool(session, toolName, input, opts) {
 
     // Wait for user response
     const answers = await answerPromise;
+
+    // Clear awaiting state
+    session.awaitingCanUseTool = false;
+    session.awaitingCanUseToolSince = null;
 
     log('[ws-server]', 'AskUserQuestion_answered', { threadId: session.threadId, questionId });
 
@@ -882,13 +897,25 @@ function startEventLoop(session) {
     let eventCount = 0;
     const loopStart = Date.now();
     let firstEventAt = null;
+    let lastEventType = null;
     try {
       while (true) {
+        const iteratorCallStart = Date.now();
         const { value: event, done } = await session.queryIterator.next();
+        const iteratorCallDuration = Date.now() - iteratorCallStart;
         eventCount++;
 
         if (done) {
           exitReason = 'iterator_done';
+          log('[ws-server]', 'iterator_done_debug', {
+            threadId: session.threadId,
+            eventCount,
+            lastEventType,
+            iteratorCallDurationMs: iteratorCallDuration,
+            awaitingCanUseTool: session.awaitingCanUseTool,
+            pendingQuestions: session.pendingQuestions.size,
+            queueLength: session.messageQueue.length,
+          });
           break;
         }
 
@@ -914,6 +941,8 @@ function startEventLoop(session) {
             session.eventTypeHistory.shift();
           }
         }
+
+        lastEventType = `${eventType}:${eventSubType || 'none'}`;
 
         log('[ws-server]', 'sdk_event', {
           threadId: session.threadId,
@@ -964,14 +993,24 @@ function startEventLoop(session) {
       session.activeQuery = null;
       session.queryIterator = null;
       session.eventLoopRunning = false;
+
+      const wasAwaitingCanUseTool = session.awaitingCanUseTool;
+      const awaitingDuration = session.awaitingCanUseToolSince
+        ? Date.now() - session.awaitingCanUseToolSince
+        : null;
+
       log('[ws-server]', 'event_loop_exit', {
         threadId: session.threadId,
         exitReason,
         eventCount,
         durationMs: Date.now() - loopStart,
         hadFirstEvent: Boolean(firstEventAt),
+        hadNonSystemEvent,
         lastEvents: session.eventTypeHistory || [],
         queryId: eventLoopQueryId,
+        wasAwaitingCanUseTool,
+        awaitingDurationMs: awaitingDuration,
+        pendingQuestions: session.pendingQuestions.size,
       });
 
       const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
@@ -979,19 +1018,47 @@ function startEventLoop(session) {
       const stopRecently = session.lastStopRequestedAt
         ? Date.now() - session.lastStopRequestedAt < stopCooldownMs
         : false;
-      if (exitReason === 'iterator_done' && !hadNonSystemEvent && hasConnections && !stopRecently) {
-        void logClaudeDebugTail(session.threadId, 'early_exit_iterator_done');
-        if (session.earlyExitRetries < 1 && session.lastUserMessage) {
+
+      // Detect unexpected iterator termination:
+      // 1. Original case: iterator_done with no non-system events (early exit)
+      // 2. New case: iterator_done while awaiting canUseTool (SDK bug?)
+      const unexpectedTermination = exitReason === 'iterator_done' && (
+        !hadNonSystemEvent ||
+        wasAwaitingCanUseTool
+      );
+
+      if (unexpectedTermination && hasConnections && !stopRecently) {
+        void logClaudeDebugTail(session.threadId, 'unexpected_iterator_done');
+
+        // Log extra diagnostic info for this case
+        if (wasAwaitingCanUseTool) {
+          logError('[ws-server]', 'SDK_BUG_DETECTED', {
+            threadId: session.threadId,
+            reason: 'Iterator ended while awaiting canUseTool callback',
+            awaitingDurationMs: awaitingDuration,
+            pendingQuestions: Array.from(session.pendingQuestions.keys()),
+            hadNonSystemEvent,
+            eventCount,
+          });
+        }
+
+        if (session.earlyExitRetries < 2 && session.lastUserMessage) {
           session.earlyExitRetries += 1;
           const retryContent = session.lastUserMessage;
-          log('[ws-server]', 'early_exit_retry', {
+          log('[ws-server]', 'unexpected_exit_retry', {
             threadId: session.threadId,
             queryId: eventLoopQueryId,
             retryCount: session.earlyExitRetries,
             lastUserMessageLength: retryContent?.length || 0,
             queueLength: session.messageQueue.length,
             hasResolver: Boolean(session.messageResolver),
+            wasAwaitingCanUseTool,
           });
+
+          // Clear awaiting state for retry
+          session.awaitingCanUseTool = false;
+          session.awaitingCanUseToolSince = null;
+
           setTimeout(() => {
             if (session.activeQuery || session.messageResolver || session.messageQueue.length > 0) {
               return;
