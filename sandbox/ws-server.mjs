@@ -3,7 +3,7 @@ import { createInterface } from 'readline';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-24-async-messages-v1';
+const VERSION = '2026-01-24-ask-user-question-v2';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -97,6 +97,12 @@ function getSession(threadId, deployToken, userInfo) {
     nextEventId: 1,
     cliProcess: null,
     pendingMessages: [],
+    // Track pending hook callbacks awaiting user response
+    pendingQuestions: new Map(), // requestId -> { toolUseId, questions, callbackId }
+    // Track pending control request responses
+    pendingControlResponses: new Map(), // requestId -> { resolve, reject, timeout }
+    // Whether CLI has been initialized with hooks
+    cliInitialized: false,
   };
   sessions.set(threadId, session);
   return session;
@@ -249,18 +255,22 @@ function spawnCLI(session, initialMessage) {
 
   // Write initial message once process is ready
   // Check proc.pid in case 'spawn' already fired synchronously
-  if (proc.pid) {
-    // Already spawned - write initial message and flush queue
+  const onSpawned = async () => {
+    // Initialize CLI with hooks first
+    await initializeCLIWithHooks(session);
+
     if (initialMessage) {
       writeToStdin(session, initialMessage);
     }
     flushPendingMessages(session);
+  };
+
+  if (proc.pid) {
+    // Already spawned
+    void onSpawned();
   } else {
     proc.once('spawn', () => {
-      if (initialMessage) {
-        writeToStdin(session, initialMessage);
-      }
-      flushPendingMessages(session);
+      void onSpawned();
     });
   }
 
@@ -282,6 +292,19 @@ function spawnCLI(session, initialMessage) {
   proc.on('exit', (code, signal) => {
     console.log(`[ws-server] CLI exited threadId=${session.threadId} code=${code} signal=${signal}`);
     session.cliProcess = null;
+    session.cliInitialized = false;
+
+    // Clear any pending questions (they won't be answered now)
+    for (const [requestId, data] of session.pendingQuestions) {
+      broadcast(session, { type: 'question_answered', questionId: data.questionId });
+    }
+    session.pendingQuestions.clear();
+
+    // Clear pending control responses
+    for (const [requestId, pending] of session.pendingControlResponses) {
+      pending.reject(new Error('CLI process exited'));
+    }
+    session.pendingControlResponses.clear();
 
     // If messages were queued during spawn window, process them with a new CLI
     if (session.pendingMessages.length > 0) {
@@ -324,8 +347,212 @@ function writeToStdin(session, content) {
   }
 }
 
+// Write raw JSON to CLI stdin (for control messages)
+function writeRawToStdin(session, msg) {
+  const msgStr = JSON.stringify(msg) + '\n';
+  console.log(`[ws-server] STDIN threadId=${session.threadId} type=${msg.type} request_type=${msg.request?.subtype || msg.response?.request_id || 'n/a'}`);
+  try {
+    session.cliProcess.stdin.write(msgStr);
+  } catch (err) {
+    console.error(`[ws-server] stdin write error threadId=${session.threadId}:`, err);
+    broadcast(session, { type: 'error', error: `Failed to send message: ${err.message}` });
+  }
+}
+
+// Send a control request to CLI and wait for response
+function sendControlRequest(session, request, timeoutMs = 30000) {
+  const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      session.pendingControlResponses.delete(requestId);
+      reject(new Error('Control request timeout'));
+    }, timeoutMs);
+
+    session.pendingControlResponses.set(requestId, {
+      resolve: (response) => {
+        clearTimeout(timeout);
+        session.pendingControlResponses.delete(requestId);
+        if (response.subtype === 'error') {
+          reject(new Error(response.error || 'Control request failed'));
+        } else {
+          resolve(response);
+        }
+      },
+      reject: (err) => {
+        clearTimeout(timeout);
+        session.pendingControlResponses.delete(requestId);
+        reject(err);
+      },
+      timeout,
+    });
+
+    writeRawToStdin(session, {
+      type: 'control_request',
+      request_id: requestId,
+      request,
+    });
+  });
+}
+
+// Send a control response to CLI (for hook callbacks)
+function sendControlResponse(session, requestId, response) {
+  writeRawToStdin(session, {
+    type: 'control_response',
+    response: {
+      request_id: requestId,
+      subtype: 'success',
+      ...response,
+    },
+  });
+}
+
+// Initialize CLI with hooks registration
+async function initializeCLIWithHooks(session) {
+  if (session.cliInitialized) return;
+
+  console.log(`[ws-server] Initializing CLI with hooks threadId=${session.threadId}`);
+
+  try {
+    const response = await sendControlRequest(session, {
+      subtype: 'initialize',
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'AskUserQuestion',
+            hookCallbackIds: ['hook_ask_user_question'],
+            timeout: 120,
+          },
+        ],
+      },
+    });
+    session.cliInitialized = true;
+    console.log(`[ws-server] CLI initialized with hooks threadId=${session.threadId} response=${JSON.stringify(response)}`);
+  } catch (err) {
+    console.error(`[ws-server] Failed to initialize CLI hooks threadId=${session.threadId}:`, err?.message || err);
+    // Continue without hooks - tools may prompt for permission
+  }
+}
+
+// Handle AskUserQuestion hook callback
+function handleAskUserQuestionHook(session, requestId, input) {
+  const { tool_input, tool_use_id, callback_id } = input;
+  const questions = tool_input?.questions;
+
+  if (!Array.isArray(questions) || questions.length === 0) {
+    console.error(`[ws-server] Invalid AskUserQuestion input threadId=${session.threadId} input=${JSON.stringify(input)}`);
+    // Allow the tool to proceed - Claude will handle missing questions
+    sendControlResponse(session, requestId, {
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+      },
+    });
+    return;
+  }
+
+  // Generate a unique ID for this question set
+  const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  // Store the pending question
+  session.pendingQuestions.set(requestId, {
+    questionId,
+    toolUseId: tool_use_id,
+    callbackId: callback_id,
+    questions,
+  });
+
+  console.log(`[ws-server] AskUserQuestion hook received threadId=${session.threadId} questionId=${questionId} numQuestions=${questions.length}`);
+
+  // Broadcast to all connected clients
+  broadcast(session, {
+    type: 'ask_user_question',
+    questionId,
+    toolUseId: tool_use_id,
+    questions,
+  });
+}
+
+// Handle user's response to AskUserQuestion
+function handleQuestionResponse(session, questionId, answers) {
+  // Find the pending question by questionId
+  let foundRequestId = null;
+  let pendingQuestion = null;
+
+  for (const [requestId, data] of session.pendingQuestions) {
+    if (data.questionId === questionId) {
+      foundRequestId = requestId;
+      pendingQuestion = data;
+      break;
+    }
+  }
+
+  if (!foundRequestId || !pendingQuestion) {
+    console.error(`[ws-server] No pending question found for questionId=${questionId}`);
+    return;
+  }
+
+  // Remove from pending
+  session.pendingQuestions.delete(foundRequestId);
+
+  console.log(`[ws-server] Question response received threadId=${session.threadId} questionId=${questionId} answers=${JSON.stringify(answers)}`);
+
+  // Return allow with updatedInput using CLI hooks protocol format
+  sendControlResponse(session, foundRequestId, {
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
+      updatedInput: {
+        questions: pendingQuestion.questions,
+        answers,
+      },
+    },
+  });
+
+  // Clear the question from UI
+  broadcast(session, {
+    type: 'question_answered',
+    questionId,
+  });
+}
+
 function handleCLIEvent(session, event) {
-  console.log(`[ws-server] event threadId=${session.threadId} type=${event?.type}`);
+  console.log(`[ws-server] event threadId=${session.threadId} type=${event?.type} subtype=${event?.subtype || event?.request?.subtype || 'n/a'}`);
+
+  // Handle control_request from CLI (hook callbacks)
+  if (event?.type === 'control_request') {
+    const { request_id, request } = event;
+    console.log(`[ws-server] CONTROL_REQUEST threadId=${session.threadId} requestId=${request_id} subtype=${request?.subtype} callbackId=${request?.callback_id}`);
+
+    if (request?.subtype === 'hook_callback') {
+      const { callback_id, input } = request;
+      const toolName = input?.tool_name;
+      console.log(`[ws-server] hook_callback threadId=${session.threadId} callbackId=${callback_id} toolName=${toolName}`);
+
+      if (callback_id === 'hook_ask_user_question') {
+        handleAskUserQuestionHook(session, request_id, { ...input, callback_id });
+      } else {
+        // Unknown hook callback - allow by default
+        sendControlResponse(session, request_id, { continue: true });
+      }
+    }
+    return; // Don't broadcast control requests to clients
+  }
+
+  // Handle control_response from CLI (for our pending requests)
+  if (event?.type === 'control_response') {
+    const { response } = event;
+    console.log(`[ws-server] CONTROL_RESPONSE threadId=${session.threadId} requestId=${response?.request_id} subtype=${response?.subtype}`);
+    const pending = session.pendingControlResponses.get(response?.request_id);
+    if (pending) {
+      pending.resolve(response);
+    } else {
+      console.log(`[ws-server] No pending request for response requestId=${response?.request_id}`);
+    }
+    return; // Don't broadcast control responses to clients
+  }
 
   // Log system events for debugging
   if (event?.type === 'system') {
@@ -470,6 +697,16 @@ Bun.serve({
             ws.send(JSON.stringify({ type: 'todo_state', todos }));
           }
 
+          // Send any pending questions to this client
+          for (const [, data] of session.pendingQuestions) {
+            ws.send(JSON.stringify({
+              type: 'ask_user_question',
+              questionId: data.questionId,
+              toolUseId: data.toolUseId,
+              questions: data.questions,
+            }));
+          }
+
           // Replay buffered events
           const lastId = data.lastEventId || 0;
           for (const event of session.events) {
@@ -495,6 +732,20 @@ Bun.serve({
         } else if (data.type === 'stop') {
           const session = sessions.get(ws.data?.threadId);
           if (session) await handleStop(session);
+
+        } else if (data.type === 'question_response') {
+          const threadId = ws.data?.threadId;
+          const session = sessions.get(threadId);
+          if (!session) {
+            ws.send(JSON.stringify({ type: 'error', error: 'No session' }));
+            return;
+          }
+          const { questionId, answers } = data;
+          if (!questionId || !answers) {
+            ws.send(JSON.stringify({ type: 'error', error: 'Missing questionId or answers' }));
+            return;
+          }
+          handleQuestionResponse(session, questionId, answers);
         }
       } catch (e) {
         console.error('[ws-server] message error:', e);
