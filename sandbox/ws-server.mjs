@@ -3,7 +3,7 @@ import { appendFile, mkdir, access, stat, readFile, writeFile, unlink } from 'fs
 import os from 'os';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-25-sdk-rewrite-v10-merged';
+const VERSION = '2026-01-25-sdk-rewrite-v11-infinite-stream';
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {
@@ -690,11 +690,14 @@ function getQueryOptions(session, fileExists) {
 }
 
 // Async generator that yields user messages on demand
+// IMPORTANT: This generator must NEVER end - it runs for the lifetime of the session
 async function* createMessageStream(session) {
   log('[ws-server]', 'messageStream_start', { threadId: session.threadId });
   let isFirstMessage = true;
-  try {
-    while (true) {
+
+  // Infinite loop - generator never terminates
+  while (true) {
+    try {
       let message;
       if (session.messageQueue.length > 0) {
         message = session.messageQueue.shift();
@@ -708,9 +711,10 @@ async function* createMessageStream(session) {
         });
       }
 
-      if (message === null) {
-        log('[ws-server]', 'messageStream_stop', { threadId: session.threadId });
-        return;
+      // Skip null messages but don't terminate - just wait for next message
+      if (message === null || message === undefined) {
+        log('[ws-server]', 'messageStream_skip_null', { threadId: session.threadId });
+        continue;
       }
 
       if (isFirstMessage && FIRST_MESSAGE_DELAY_MS > 0) {
@@ -730,10 +734,12 @@ async function* createMessageStream(session) {
           content: message,
         },
       };
+    } catch (error) {
+      // Log error but DON'T throw - keep the generator alive
+      logError('[ws-server]', 'messageStream_error', { threadId: session.threadId, error: summarizeError(error) });
+      // Small delay before continuing to prevent tight error loops
+      await Bun.sleep(100);
     }
-  } catch (error) {
-    logError('[ws-server]', 'messageStream_error', { threadId: session.threadId, error: summarizeError(error) });
-    throw error;
   }
 }
 
