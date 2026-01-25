@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-25-sdk-rewrite-v4';
+const VERSION = '2026-01-25-sdk-rewrite-v5';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -150,26 +150,23 @@ function buildSDKOptions(session) {
     env.CLOUDFLARE_API_TOKEN = session.deployToken;
   }
 
+  // Create the canUseTool callback
+  const canUseToolCallback = async (toolName, input, opts) => {
+    return handleCanUseTool(session, toolName, input, opts);
+  };
+
   const options = {
-    // Bypass permissions for all tools - we handle AskUserQuestion via hooks
-    permissionMode: 'bypassPermissions',
-    allowDangerouslySkipPermissions: true,
     model: 'opus',
     appendSystemPrompt: SYSTEM_PROMPT_APPEND.trim(),
     sessionId: session.threadId,
     cwd: existsSync(SYNC_DIR) ? SYNC_DIR : process.cwd(),
     includePartialMessages: true,
     env,
-    // Use PreToolUse hook to intercept AskUserQuestion
-    // This is called for ALL tool uses, not just permission requests
-    hooks: {
-      PreToolUse: [{
-        matcher: 'AskUserQuestion',
-        timeout: 120,
-        hooks: [async (input, opts) => handleAskUserQuestionHook(session, input, opts)],
-      }],
-    },
+    // canUseTool callback - should be called for every tool
+    canUseTool: canUseToolCallback,
   };
+
+  console.log(`[ws-server] buildSDKOptions: canUseTool=${typeof options.canUseTool} keys=${Object.keys(options).join(',')}`);
 
   // Add MCP config if available
   if (process.env.MCP_SERVER_URL && process.env.MCP_API_KEY) {
@@ -186,57 +183,62 @@ function buildSDKOptions(session) {
   return options;
 }
 
-// Handle AskUserQuestion via PreToolUse hook
-async function handleAskUserQuestionHook(session, input, opts) {
-  console.log(`[ws-server] PreToolUse hook CALLED threadId=${session.threadId} tool=${input.tool_name} input=${JSON.stringify(input.tool_input)?.slice(0, 500)}`);
+// Handle tool interception via canUseTool callback
+async function handleCanUseTool(session, toolName, input, opts) {
+  console.log(`[ws-server] *** canUseTool CALLED *** threadId=${session.threadId} tool=${toolName}`);
+  console.log(`[ws-server] canUseTool input: ${JSON.stringify(input)?.slice(0, 500)}`);
+  console.log(`[ws-server] canUseTool opts: toolUseID=${opts?.toolUseID} agentID=${opts?.agentID} decisionReason=${opts?.decisionReason}`);
 
-  const questions = input.tool_input?.questions;
+  if (toolName === 'AskUserQuestion') {
+    const questions = input?.questions;
 
-  if (!Array.isArray(questions) || questions.length === 0) {
-    console.error(`[ws-server] Invalid AskUserQuestion input threadId=${session.threadId}`);
-    return { continue: true };
-  }
+    if (!Array.isArray(questions) || questions.length === 0) {
+      console.error(`[ws-server] Invalid AskUserQuestion input threadId=${session.threadId}`);
+      return { behavior: 'allow' };
+    }
 
-  // Generate a unique ID for this question set
-  const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const toolUseId = input.tool_use_id;
+    // Generate a unique ID for this question set
+    const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const toolUseId = opts?.toolUseID;
 
-  console.log(`[ws-server] AskUserQuestion threadId=${session.threadId} questionId=${questionId} numQuestions=${questions.length}`);
+    console.log(`[ws-server] AskUserQuestion threadId=${session.threadId} questionId=${questionId} numQuestions=${questions.length}`);
 
-  // Create a promise that will be resolved when user responds
-  const answerPromise = new Promise((resolve) => {
-    session.pendingQuestions.set(questionId, {
+    // Create a promise that will be resolved when user responds
+    const answerPromise = new Promise((resolve) => {
+      session.pendingQuestions.set(questionId, {
+        questionId,
+        toolUseId,
+        questions,
+        resolve,
+      });
+    });
+
+    // Broadcast question to all connected clients
+    broadcast(session, {
+      type: 'ask_user_question',
       questionId,
       toolUseId,
       questions,
-      resolve,
     });
-  });
 
-  // Broadcast question to all connected clients
-  broadcast(session, {
-    type: 'ask_user_question',
-    questionId,
-    toolUseId,
-    questions,
-  });
+    // Wait for user response
+    const answers = await answerPromise;
 
-  // Wait for user response
-  const answers = await answerPromise;
+    console.log(`[ws-server] AskUserQuestion answered threadId=${session.threadId} questionId=${questionId}`);
 
-  console.log(`[ws-server] AskUserQuestion answered threadId=${session.threadId} questionId=${questionId}`);
-
-  // Return with updated input containing answers
-  return {
-    continue: true,
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
+    // Return allow with updated input containing answers
+    return {
+      behavior: 'allow',
       updatedInput: {
         questions,
         answers,
       },
-    },
-  };
+    };
+  }
+
+  // Allow all other tools
+  console.log(`[ws-server] canUseTool allowing tool=${toolName}`);
+  return { behavior: 'allow' };
 }
 
 // Handle user's response to AskUserQuestion
@@ -310,7 +312,8 @@ async function sendMessageToSDK(session, content) {
   console.log(`[ws-server] Starting query threadId=${session.threadId} len=${content.length}`);
 
   const options = buildSDKOptions(session);
-  console.log(`[ws-server] Query options: hasCanUseTool=${!!options.canUseTool} model=${options.model} sessionId=${options.sessionId}`);
+  console.log(`[ws-server] Query options: canUseTool=${typeof options.canUseTool} permissionMode=${options.permissionMode || 'NOT SET'} model=${options.model} sessionId=${options.sessionId}`);
+  console.log(`[ws-server] Query options keys: ${Object.keys(options).join(', ')}`);
 
   // Start the query
   const conversation = query({

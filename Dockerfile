@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-25-v33-use-hooks
+# Version: 2026-01-25-v34-canUseTool-debug
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
