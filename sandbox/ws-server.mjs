@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-25-sdk-rewrite-v5';
+const VERSION = '2026-01-25-sdk-rewrite-v6';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -267,9 +267,46 @@ function handleQuestionResponse(session, questionId, answers) {
 
 // Process SDK events from the query iterator
 async function processSDKEvents(session, conversation) {
+  console.log(`[ws-server] processSDKEvents STARTED threadId=${session.threadId}`);
   try {
     for await (const message of conversation) {
-      console.log(`[ws-server] sdk_event threadId=${session.threadId} type=${message.type} subtype=${message.subtype || 'n/a'}`);
+      // Detailed logging for each event type
+      if (message.type === 'stream_event') {
+        // Log stream event details
+        const delta = message.event?.delta;
+        if (delta?.type === 'text_delta') {
+          // Don't log full text, just that we got text
+          console.log(`[ws-server] stream_event: text_delta (${delta.text?.length || 0} chars)`);
+        } else if (delta?.type === 'input_json_delta') {
+          console.log(`[ws-server] stream_event: input_json_delta`);
+        } else if (message.event?.type === 'content_block_start') {
+          const block = message.event?.content_block;
+          console.log(`[ws-server] stream_event: content_block_start type=${block?.type} name=${block?.name || 'n/a'}`);
+          if (block?.type === 'tool_use') {
+            console.log(`[ws-server] *** TOOL_USE BLOCK STARTED: ${block.name} ***`);
+          }
+        } else if (message.event?.type === 'content_block_stop') {
+          console.log(`[ws-server] stream_event: content_block_stop`);
+        } else {
+          console.log(`[ws-server] stream_event: ${message.event?.type || 'unknown'}`);
+        }
+      } else if (message.type === 'assistant') {
+        // Log assistant message with tool uses
+        const content = message.message?.content || [];
+        const toolUses = content.filter(b => b.type === 'tool_use');
+        console.log(`[ws-server] assistant message: ${content.length} blocks, ${toolUses.length} tool_uses`);
+        for (const tu of toolUses) {
+          console.log(`[ws-server] *** TOOL_USE in assistant: ${tu.name} id=${tu.id} ***`);
+        }
+      } else if (message.type === 'user') {
+        // Log user message (tool results)
+        const content = message.message?.content || [];
+        console.log(`[ws-server] user message: ${content.length} blocks`);
+      } else if (message.type === 'result') {
+        console.log(`[ws-server] RESULT: subtype=${message.subtype} is_error=${message.is_error}`);
+      } else {
+        console.log(`[ws-server] sdk_event threadId=${session.threadId} type=${message.type} subtype=${message.subtype || 'n/a'}`);
+      }
 
       // Broadcast event to connected clients
       broadcast(session, { type: 'sdk_event', event: message });
@@ -293,8 +330,10 @@ async function processSDKEvents(session, conversation) {
         }
       }
     }
+    console.log(`[ws-server] processSDKEvents ENDED (iterator done) threadId=${session.threadId}`);
   } catch (err) {
     console.error(`[ws-server] SDK error threadId=${session.threadId}:`, err);
+    console.error(`[ws-server] SDK error stack:`, err.stack);
     broadcast(session, { type: 'error', error: `SDK error: ${err.message}` });
     session.activeQuery = null;
   }
