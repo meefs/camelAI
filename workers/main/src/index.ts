@@ -652,45 +652,49 @@ export default {
             await userStub.linkOAuthProvider(provider, userInfo.providerId);
           }
         } else {
-          // Create new user - claim email and OAuth provider in KV first
-          userId = crypto.randomUUID();
-
-          // Check if OAuth provider already linked to another user
+          // Email not found - check if OAuth provider is already linked
           const existingOAuthUser = await env.EMAIL_TO_USER.get(oauthKvKey);
           if (existingOAuthUser) {
-            return Response.redirect(`${url.origin}/login?error=oauth_already_linked`, 302);
-          }
+            // OAuth provider already linked to an existing user - use that account
+            // This handles the case where user's Google email differs from their Chiridion email
+            // (e.g., Google returns google-user@example.com but account is account-owner@example.com)
+            userId = existingOAuthUser;
+            console.log(`[oauth] Using existing user ${userId} via OAuth provider (email mismatch: ${normalizedEmail})`);
+          } else {
+            // Truly new user - claim email and OAuth provider in KV first
+            userId = crypto.randomUUID();
 
-          // Claim the email and OAuth provider
-          await Promise.all([
-            env.EMAIL_TO_USER.put(emailKvKey, userId),
-            env.EMAIL_TO_USER.put(oauthKvKey, userId),
-          ]);
-
-          // Verify we still own them (handle race condition)
-          const [verifyEmail, verifyOAuth] = await Promise.all([
-            env.EMAIL_TO_USER.get(emailKvKey),
-            env.EMAIL_TO_USER.get(oauthKvKey),
-          ]);
-
-          if (verifyEmail !== userId || verifyOAuth !== userId) {
-            // Clean up and abort - another request won the race
+            // Claim the email and OAuth provider
             await Promise.all([
-              env.EMAIL_TO_USER.delete(emailKvKey),
-              env.EMAIL_TO_USER.delete(oauthKvKey),
+              env.EMAIL_TO_USER.put(emailKvKey, userId),
+              env.EMAIL_TO_USER.put(oauthKvKey, userId),
             ]);
-            return Response.redirect(`${url.origin}/login?error=oauth_race_condition`, 302);
-          }
 
-          // Create user in DO
-          const userStub = env.USER.get(env.USER.idFromName(userId)) as unknown as UserDO;
-          await userStub.createUserFromOAuth(
-            userId,
-            normalizedEmail,
-            userInfo.name || userInfo.email.split('@')[0],
-            provider,
-            userInfo.providerId
-          );
+            // Verify we still own them (handle race condition)
+            const [verifyEmail, verifyOAuth] = await Promise.all([
+              env.EMAIL_TO_USER.get(emailKvKey),
+              env.EMAIL_TO_USER.get(oauthKvKey),
+            ]);
+
+            if (verifyEmail !== userId || verifyOAuth !== userId) {
+              // Clean up and abort - another request won the race
+              await Promise.all([
+                env.EMAIL_TO_USER.delete(emailKvKey),
+                env.EMAIL_TO_USER.delete(oauthKvKey),
+              ]);
+              return Response.redirect(`${url.origin}/login?error=oauth_race_condition`, 302);
+            }
+
+            // Create user in DO
+            const userStub = env.USER.get(env.USER.idFromName(userId)) as unknown as UserDO;
+            await userStub.createUserFromOAuth(
+              userId,
+              normalizedEmail,
+              userInfo.name || userInfo.email.split('@')[0],
+              provider,
+              userInfo.providerId
+            );
+          }
         }
 
         // Create session - get user's orgs
