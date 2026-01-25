@@ -1,20 +1,46 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync } from 'fs';
-import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
+import { appendFile, mkdir, access, stat, readFile, writeFile, unlink } from 'fs/promises';
+import os from 'os';
 
-const VERSION = '2026-01-25-sdk-rewrite-v9';
+// Version for verifying container has latest code
+const VERSION = '2026-01-25-sdk-rewrite-v10-merged';
+
+// Single-line logging helpers (CF treats each line as separate log entry)
+function log(prefix, message, data) {
+  if (data !== undefined) {
+    console.log(`${prefix} ${message} ${JSON.stringify(data)}`);
+  } else {
+    console.log(`${prefix} ${message}`);
+  }
+}
+
+function logError(prefix, message, data) {
+  if (data !== undefined) {
+    console.error(`${prefix} ${message} ${JSON.stringify(data)}`);
+  } else {
+    console.error(`${prefix} ${message}`);
+  }
+}
+
+// Configuration from environment
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
-const SESSION_PROJECT_PATH = '-home-claude';
+const TRACE_EVENTS = process.env.CHIRIDION_TRACE_EVENTS !== '0';
+const TRACE_DIR = `${SYNC_DIR}/.chiridion/trace`;
+const TRACE_ALL_FILE = `${TRACE_DIR}/_all.ndjson`;
+const TASK_RESULTS_DIR = `${SYNC_DIR}/.chiridion/task-results`;
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
+const CLAUDE_DEBUG_DIR = `${SYNC_DIR}/.claude/debug`;
+const DEBUG_STARTUP = process.env.CHIRIDION_DEBUG_STARTUP === '1';
+const DEBUG_SDK = process.env.CHIRIDION_DEBUG_SDK === '1';
+const DEBUG_FS = process.env.CHIRIDION_DEBUG_FS === '1';
+const DEBUG_PROXY = process.env.CHIRIDION_DEBUG_PROXY === '1';
+const PREQUEUE_FIRST_MESSAGE = process.env.CHIRIDION_PREQUEUE_FIRST_MESSAGE === '1';
+const FIRST_MESSAGE_DELAY_MS = Number(process.env.CHIRIDION_FIRST_MESSAGE_DELAY_MS || '100') || 0;
+const MCP_SERVER_URL = process.env.MCP_SERVER_URL;
+const MCP_API_KEY = process.env.MCP_API_KEY;
 
-console.log(`[ws-server] Starting version=${VERSION} port=${PORT}`);
-
-// Catch unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[ws-server] UNHANDLED REJECTION:', reason);
-  console.error('[ws-server] Promise:', promise);
-});
+log('[ws-server]', 'Starting', { version: VERSION, port: PORT });
 
 // Auth via ANTHROPIC_AUTH_TOKEN (OpenRouter) or ANTHROPIC_API_KEY (direct Anthropic)
 if (!process.env.ANTHROPIC_AUTH_TOKEN && !process.env.ANTHROPIC_API_KEY) {
@@ -22,27 +48,58 @@ if (!process.env.ANTHROPIC_AUTH_TOKEN && !process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-// Todo state persistence - simple file per thread
+// Session state - keyed by threadId
+const sessions = new Map();
+const MAX_EVENT_BUFFER = 500;
+let traceDirPromise = null;
+let taskResultsDirPromise = null;
 let todosDirPromise = null;
+let startupDiagnosticsPromise = null;
+
+// Integration env vars cache - pushed by worker when integrations change
+let integrationEnvVars = {};
+
+function sanitizeFileSegment(value) {
+  return String(value || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+}
+
+function ensureTraceDir() {
+  if (!traceDirPromise) {
+    traceDirPromise = mkdir(TRACE_DIR, { recursive: true }).catch((err) => {
+      logError('[ws-server]', 'Failed to create trace dir:', err?.message || String(err));
+    });
+  }
+  return traceDirPromise;
+}
+
+function ensureTaskResultsDir() {
+  if (!taskResultsDirPromise) {
+    taskResultsDirPromise = mkdir(TASK_RESULTS_DIR, { recursive: true }).catch((err) => {
+      logError('[ws-server]', 'Failed to create task results dir:', err?.message || String(err));
+    });
+  }
+  return taskResultsDirPromise;
+}
 
 function ensureTodosDir() {
   if (!todosDirPromise) {
     todosDirPromise = mkdir(TODOS_DIR, { recursive: true }).catch((err) => {
-      console.error('[ws-server] Failed to create todos dir:', err?.message || String(err));
+      logError('[ws-server]', 'Failed to create todos dir:', err?.message || String(err));
     });
   }
   return todosDirPromise;
 }
 
+// Todo state persistence
 async function writeTodoState(threadId, todos) {
   if (!threadId) return;
   try {
     await ensureTodosDir();
     const todoPath = `${TODOS_DIR}/${threadId}.json`;
     await writeFile(todoPath, JSON.stringify(todos));
-    console.log(`[ws-server] Saved todo state threadId=${threadId} count=${todos.length}`);
+    log('[ws-server]', 'todo_saved', { threadId, count: todos.length });
   } catch (error) {
-    console.error('[ws-server] Todo write failed:', error?.message || String(error));
+    logError('[ws-server]', 'Todo write failed:', error?.message || String(error));
   }
 }
 
@@ -52,7 +109,7 @@ async function readTodoState(threadId) {
     const todoPath = `${TODOS_DIR}/${threadId}.json`;
     const content = await readFile(todoPath, 'utf-8');
     const todos = JSON.parse(content);
-    console.log(`[ws-server] Loaded todo state threadId=${threadId} count=${todos.length}`);
+    log('[ws-server]', 'todo_loaded', { threadId, count: todos.length });
     return todos;
   } catch {
     return null;
@@ -64,19 +121,10 @@ async function clearTodoState(threadId) {
   try {
     const todoPath = `${TODOS_DIR}/${threadId}.json`;
     await unlink(todoPath);
-    console.log(`[ws-server] Cleared todo state threadId=${threadId}`);
+    log('[ws-server]', 'todo_cleared', { threadId });
   } catch {
     // File doesn't exist, that's fine
   }
-}
-
-// Check if a session JSONL file exists (determines resume vs new session)
-function sessionFileExists(sessionId) {
-  if (!sessionId) return false;
-  const jsonlPath = `${SYNC_DIR}/.claude/projects/${SESSION_PROJECT_PATH}/${sessionId}.jsonl`;
-  const exists = existsSync(jsonlPath);
-  console.log(`[ws-server] sessionFileExists: ${sessionId} => ${exists} (path: ${jsonlPath})`);
-  return exists;
 }
 
 // Extract TodoWrite todos from SDK events
@@ -91,39 +139,357 @@ function extractTodosFromEvent(event) {
   return null;
 }
 
-// Sessions keyed by threadId
-const sessions = new Map();
-let integrationEnvVars = {};
-
-function getSession(threadId, deployToken, userInfo) {
-  if (sessions.has(threadId)) {
-    return sessions.get(threadId);
+async function probePath(label, path) {
+  try {
+    const info = await stat(path);
+    log('[ws-server]', 'fs_probe', {
+      label,
+      path,
+      isFile: info.isFile(),
+      isDirectory: info.isDirectory(),
+      size: info.size,
+      mode: info.mode,
+    });
+  } catch (error) {
+    logError('[ws-server]', 'fs_probe_failed', { label, path, error: error?.message || String(error) });
   }
+}
+
+async function probeFilesystem() {
+  try {
+    await mkdir(SYNC_DIR, { recursive: true });
+  } catch (error) {
+    logError('[ws-server]', 'fs_probe_mkdir_failed', { path: SYNC_DIR, error: error?.message || String(error) });
+  }
+
+  await probePath('sync_dir', SYNC_DIR);
+  await probePath('claude_dir', `${SYNC_DIR}/.claude`);
+  await probePath('claude_projects_dir', `${SYNC_DIR}/.claude/projects`);
+  await probePath('chiridion_dir', `${SYNC_DIR}/.chiridion`);
+
+  try {
+    await ensureTraceDir();
+    const probePathFile = `${TRACE_DIR}/startup-probe.ndjson`;
+    const line = `${JSON.stringify({ at: new Date().toISOString(), ok: true })}\n`;
+    await appendFile(probePathFile, line);
+    log('[ws-server]', 'fs_probe_write_ok', { path: probePathFile });
+  } catch (error) {
+    logError('[ws-server]', 'fs_probe_write_failed', { path: TRACE_DIR, error: error?.message || String(error) });
+  }
+}
+
+async function tailFile(path, maxBytes = 12000) {
+  try {
+    const data = await readFile(path);
+    if (!data || data.length === 0) return null;
+    const slice = data.length > maxBytes ? data.subarray(data.length - maxBytes) : data;
+    const text = new TextDecoder().decode(slice);
+    const lines = text.trim().split('\n');
+    const tail = lines.slice(-40).join('\n');
+    return tail || null;
+  } catch {
+    return null;
+  }
+}
+
+async function logClaudeDebugTail(threadId, reason) {
+  if (!threadId) return;
+  const debugPath = `${CLAUDE_DEBUG_DIR}/${threadId}.txt`;
+  const tail = await tailFile(debugPath);
+  if (tail) {
+    log('[ws-server]', 'claude_debug_tail', { threadId, reason, path: debugPath });
+    console.log(tail);
+  } else {
+    log('[ws-server]', 'claude_debug_tail_missing', { threadId, reason, path: debugPath });
+  }
+}
+
+async function probeProxyBaseUrl() {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL;
+  if (!baseUrl) {
+    logError('[ws-server]', 'proxy_probe_skipped', { reason: 'ANTHROPIC_BASE_URL not set' });
+    return;
+  }
+  const trimmed = baseUrl.replace(/\/$/, '');
+  const candidates = [`${trimmed}/proxy/health`, `${trimmed}/health`];
+  for (const target of candidates) {
+    try {
+      const res = await fetch(target, { method: 'GET' });
+      log('[ws-server]', 'proxy_probe', { url: target, status: res.status });
+      if (res.ok || res.status === 404) {
+        return;
+      }
+    } catch (error) {
+      logError('[ws-server]', 'proxy_probe_failed', { url: target, error: error?.message || String(error) });
+    }
+  }
+}
+
+async function runStartupDiagnostics() {
+  if (startupDiagnosticsPromise) return startupDiagnosticsPromise;
+  startupDiagnosticsPromise = (async () => {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    const gid = typeof process.getgid === 'function' ? process.getgid() : null;
+    const envSnapshot = {
+      cwd: process.cwd(),
+      home: typeof os.homedir === 'function' ? os.homedir() : process.env.HOME || null,
+      user: process.env.USER || null,
+      uid,
+      gid,
+      syncDir: SYNC_DIR,
+      traceDir: TRACE_DIR,
+      taskResultsDir: TASK_RESULTS_DIR,
+      anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || null,
+      anthropicKeyLen: (process.env.ANTHROPIC_API_KEY || '').length,
+      mcpServerUrl: MCP_SERVER_URL || null,
+      mcpKeyLen: (MCP_API_KEY || '').length,
+      bunVersion: typeof Bun !== 'undefined' ? Bun.version : null,
+      nodeVersion: process.version,
+    };
+    log('[ws-server]', 'startup_env', envSnapshot);
+
+    if (DEBUG_FS) {
+      await probeFilesystem();
+    }
+    if (DEBUG_PROXY) {
+      await probeProxyBaseUrl();
+    }
+  })();
+  return startupDiagnosticsPromise;
+}
+
+async function writeTrace(threadId, entry) {
+  if (!TRACE_EVENTS) return;
+  try {
+    await ensureTraceDir();
+    const safeThread = sanitizeFileSegment(threadId);
+    const tracePath = `${TRACE_DIR}/${safeThread}.ndjson`;
+    const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
+    await appendFile(tracePath, line);
+    await appendFile(TRACE_ALL_FILE, line);
+  } catch (error) {
+    logError('[ws-server]', 'Trace write failed:', error?.message || String(error));
+  }
+}
+
+function extractParentToolUseId(event) {
+  if (!event || typeof event !== 'object') return null;
+  const record = event;
+  const message = record.message || {};
+  const parent = (
+    record.parent_tool_use_id ??
+    record.source_tool_use_id ??
+    record.parentToolUseId ??
+    record.sourceToolUseId ??
+    message.parent_tool_use_id ??
+    message.source_tool_use_id ??
+    message.parentToolUseId ??
+    message.sourceToolUseId
+  );
+  return typeof parent === 'string' ? parent : null;
+}
+
+function extractParentToolPrompt(event) {
+  if (!event || typeof event !== 'object') return null;
+  const toolUseResult = event.toolUseResult || event.tool_use_result || null;
+  const prompt = toolUseResult?.prompt;
+  return typeof prompt === 'string' ? prompt : null;
+}
+
+async function writeTaskResultUpdate(threadId, entry) {
+  if (!threadId) return;
+  try {
+    await ensureTaskResultsDir();
+    const taskPath = `${TASK_RESULTS_DIR}/${threadId || 'unknown'}.jsonl`;
+    const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
+    await appendFile(taskPath, line);
+  } catch (error) {
+    logError('[ws-server]', 'Task update write failed:', error?.message || String(error));
+  }
+}
+
+function persistTaskResultUpdates(session, event) {
+  if (!session?.threadId) return;
+  if (!event || event.type !== 'user') return;
+  const content = event.message?.content;
+  if (!Array.isArray(content)) return;
+  const toolResults = content.filter((block) => block?.type === 'tool_result' && block.tool_use_id);
+  if (toolResults.length === 0) return;
+  const parentToolUseId = extractParentToolUseId(event);
+  const parentToolPrompt = extractParentToolPrompt(event);
+  const parentIsTask = parentToolUseId
+    ? session.taskToolUseIds?.has(parentToolUseId)
+    : Boolean(parentToolPrompt);
+  if (!parentIsTask) return;
+  const timestamp = event.timestamp || new Date().toISOString();
+
+  toolResults.forEach((toolResult, index) => {
+    if (session.taskToolUseIds?.has(toolResult.tool_use_id)) return;
+    if (parentToolUseId && toolResult.tool_use_id === parentToolUseId) return;
+    if (!parentToolUseId && !parentToolPrompt) return;
+    void writeTaskResultUpdate(session.threadId, {
+      type: 'task_update',
+      parent_tool_use_id: parentToolUseId,
+      parent_tool_prompt: parentToolPrompt,
+      tool_use_id: toolResult.tool_use_id,
+      content: toolResult.content,
+      timestamp,
+      index,
+    });
+  });
+}
+
+function trackTaskToolUse(session, event) {
+  if (!session) return;
+  if (!event || typeof event !== 'object') return;
+
+  if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+    event.message.content.forEach((block) => {
+      if (block?.type === 'tool_use' && block.name === 'Task' && block.id) {
+        session.taskToolUseIds.add(block.id);
+      }
+    });
+  }
+
+  if (event.type === 'stream_event' && event.event?.type === 'content_block_start') {
+    const block = event.event.content_block;
+    if (block?.type === 'tool_use' && block.name === 'Task' && block.id) {
+      session.taskToolUseIds.add(block.id);
+    }
+  }
+}
+
+function createSession(threadId, threadDeployToken = null, userInfo = null) {
   const session = {
     threadId,
-    deployToken,
-    userName: userInfo?.userName,
-    userEmail: userInfo?.userEmail,
-    sockets: new Set(),
-    events: [],
-    nextEventId: 1,
-    // SDK query state
+    threadDeployToken,
+    userName: userInfo?.userName || null,
+    userEmail: userInfo?.userEmail || null,
     activeQuery: null,
-    pendingMessages: [],
+    queryIterator: null,
+    initPromise: null,
+    queryId: 0,
+    earlyExitRetries: 0,
+    lastUserMessage: null,
+    lastStopRequestedAt: 0,
+    eventLoopRunning: false,
+    messageResolver: null,
+    messageQueue: [],
+    attachedSockets: new Set(),
+    eventBuffer: [],
+    nextEventId: 1,
+    taskToolUseIds: new Set(),
+    eventTypeHistory: [],
     // AskUserQuestion state
-    pendingQuestions: new Map(), // toolUseId -> { questionId, questions, resolve }
+    pendingQuestions: new Map(),
   };
   sessions.set(threadId, session);
   return session;
 }
 
-function broadcast(session, payload) {
-  const event = { ...payload, eventId: session.nextEventId++, sessionId: session.threadId };
-  session.events.push(event);
-  if (session.events.length > 500) session.events.shift();
-  for (const ws of session.sockets) {
-    try { ws.send(JSON.stringify(event)); } catch {}
+function getOrCreateSession(threadId, threadDeployToken = null, userInfo = null) {
+  if (!threadId) {
+    threadId = crypto.randomUUID();
   }
+  if (sessions.has(threadId)) {
+    const session = sessions.get(threadId);
+    if (threadDeployToken && !session.threadDeployToken) {
+      session.threadDeployToken = threadDeployToken;
+    }
+    if (userInfo?.userName && !session.userName) {
+      session.userName = userInfo.userName;
+    }
+    if (userInfo?.userEmail && !session.userEmail) {
+      session.userEmail = userInfo.userEmail;
+    }
+    if (!session.taskToolUseIds) {
+      session.taskToolUseIds = new Set();
+    }
+    if (!session.pendingQuestions) {
+      session.pendingQuestions = new Map();
+    }
+    return session;
+  }
+  return createSession(threadId, threadDeployToken, userInfo);
+}
+
+const PERSIST_PREFIX = '[PERSIST]';
+function logForPersistence(event) {
+  const line = JSON.stringify(event);
+  console.error(`${PERSIST_PREFIX}${line}`);
+}
+
+function summarizeError(error) {
+  if (!error || typeof error !== 'object') {
+    return { message: String(error) };
+  }
+  return {
+    message: String(error),
+    name: error.name,
+    stack: error.stack,
+    cause: error.cause ? String(error.cause) : undefined,
+  };
+}
+
+process.on('uncaughtException', (error) => {
+  logError('[ws-server]', 'Uncaught exception:', summarizeError(error));
+});
+
+process.on('unhandledRejection', (error) => {
+  logError('[ws-server]', 'Unhandled rejection:', summarizeError(error));
+});
+
+let totalConnections = 0;
+let serverStartTime = Date.now();
+
+const STATUS_LOG_INTERVAL = 5 * 60 * 1000;
+setInterval(() => {
+  const uptimeMs = Date.now() - serverStartTime;
+  const uptimeMins = Math.floor(uptimeMs / 60000);
+  const sessionCount = sessions.size;
+  let activeSocketCount = 0;
+  for (const session of sessions.values()) {
+    activeSocketCount += session.attachedSockets?.size || 0;
+  }
+  log('[ws-server]', 'STATUS', {
+    uptimeMins,
+    sessions: sessionCount,
+    activeSockets: activeSocketCount,
+    totalConnectionsEver: totalConnections,
+  });
+}, STATUS_LOG_INTERVAL);
+
+process.on('exit', (code) => {
+  log('[ws-server]', `Process exiting code=${code}`, {
+    uptimeSecs: Math.floor((Date.now() - serverStartTime) / 1000),
+    sessions: sessions.size,
+  });
+});
+
+process.on('SIGTERM', () => {
+  log('[ws-server]', 'Received SIGTERM signal');
+});
+
+process.on('SIGINT', () => {
+  log('[ws-server]', 'Received SIGINT signal');
+});
+
+// Check if a session JSONL file exists (async version)
+async function sessionFileExists(sessionId) {
+  if (!sessionId) return false;
+  const projectPath = '-home-claude';
+  const jsonlPath = `${SYNC_DIR}/.claude/projects/${projectPath}/${sessionId}.jsonl`;
+  const start = Date.now();
+  let exists = false;
+  try {
+    await access(jsonlPath);
+    exists = true;
+  } catch {
+    exists = false;
+  }
+  const durationMs = Date.now() - start;
+  log('[ws-server]', 'sessionFileExists', { sessionId, path: jsonlPath, exists, durationMs });
+  return exists;
 }
 
 const SYSTEM_PROMPT_APPEND = `
@@ -168,95 +534,22 @@ When deploying software to the internet or for the user to access:
 The infrastructure is already configured for Worker deployments. For fullstack apps, use Next.js with OpenNext for Cloudflare.
 `;
 
-function buildSDKOptions(session) {
-  const env = {
-    ...process.env,
-    ...integrationEnvVars,
-    THREAD_ID: session.threadId,
-  };
-
-  if (session.deployToken) {
-    env.CLOUDFLARE_API_TOKEN = session.deployToken;
-  }
-
-  // Create the canUseTool callback
-  const canUseToolCallback = async (toolName, input, opts) => {
-    return handleCanUseTool(session, toolName, input, opts);
-  };
-
-  const options = {
-    model: 'opus',
-    fallbackModel: 'sonnet',
-    includePartialMessages: true,
-    allowUnsandboxedCommands: true,
-    cwd: existsSync(SYNC_DIR) ? SYNC_DIR : process.cwd(),
-    // canUseTool callback - should be called for every tool (replaces bypassPermissions)
-    canUseTool: canUseToolCallback,
-    // Capture stderr from CLI for debugging
-    stderr: (data) => {
-      const msg = data.toString().trim();
-      if (msg) {
-        console.log(`[ws-server] CLI_STDERR threadId=${session.threadId}: ${msg.slice(0, 1000)}`);
-      }
-    },
-    systemPrompt: {
-      type: 'preset',
-      preset: 'claude_code',
-      append: SYSTEM_PROMPT_APPEND.trim(),
-    },
-    settingSources: ['project', 'user'],
-    env,
-  };
-
-  // Session handling: resume existing vs create new
-  if (session.threadId) {
-    if (sessionFileExists(session.threadId)) {
-      // Resume existing session
-      options.resume = session.threadId;
-      console.log(`[ws-server] buildSDKOptions: RESUMING session threadId=${session.threadId}`);
-    } else {
-      // Create new session with specific ID
-      options.extraArgs = { 'session-id': session.threadId };
-      console.log(`[ws-server] buildSDKOptions: NEW session threadId=${session.threadId}`);
-    }
-  }
-
-  console.log(`[ws-server] buildSDKOptions: canUseTool=${typeof options.canUseTool} resume=${!!options.resume} extraArgs=${JSON.stringify(options.extraArgs)} keys=${Object.keys(options).join(',')}`);
-
-  // Add MCP config if available
-  if (process.env.MCP_SERVER_URL && process.env.MCP_API_KEY) {
-    options.mcpServers = {
-      chiridion: {
-        type: 'http',
-        url: process.env.MCP_SERVER_URL,
-        headers: { Authorization: `Bearer ${process.env.MCP_API_KEY}` },
-      },
-    };
-    options.allowedTools = ['mcp__chiridion__*'];
-  }
-
-  return options;
-}
-
-// Handle tool interception via canUseTool callback
+// Handle AskUserQuestion via canUseTool callback
 async function handleCanUseTool(session, toolName, input, opts) {
-  console.log(`[ws-server] *** canUseTool CALLED *** threadId=${session.threadId} tool=${toolName}`);
-  console.log(`[ws-server] canUseTool input: ${JSON.stringify(input)?.slice(0, 500)}`);
-  console.log(`[ws-server] canUseTool opts: toolUseID=${opts?.toolUseID} agentID=${opts?.agentID} decisionReason=${opts?.decisionReason}`);
+  log('[ws-server]', 'canUseTool', { threadId: session.threadId, tool: toolName, toolUseID: opts?.toolUseID });
 
   if (toolName === 'AskUserQuestion') {
     const questions = input?.questions;
 
     if (!Array.isArray(questions) || questions.length === 0) {
-      console.error(`[ws-server] Invalid AskUserQuestion input threadId=${session.threadId}`);
+      logError('[ws-server]', 'Invalid AskUserQuestion input', { threadId: session.threadId });
       return { behavior: 'allow' };
     }
 
-    // Generate a unique ID for this question set
     const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const toolUseId = opts?.toolUseID;
 
-    console.log(`[ws-server] AskUserQuestion threadId=${session.threadId} questionId=${questionId} numQuestions=${questions.length}`);
+    log('[ws-server]', 'AskUserQuestion', { threadId: session.threadId, questionId, numQuestions: questions.length });
 
     // Create a promise that will be resolved when user responds
     const answerPromise = new Promise((resolve) => {
@@ -269,7 +562,7 @@ async function handleCanUseTool(session, toolName, input, opts) {
     });
 
     // Broadcast question to all connected clients
-    broadcast(session, {
+    bufferEvent(session, {
       type: 'ask_user_question',
       questionId,
       toolUseId,
@@ -279,9 +572,8 @@ async function handleCanUseTool(session, toolName, input, opts) {
     // Wait for user response
     const answers = await answerPromise;
 
-    console.log(`[ws-server] AskUserQuestion answered threadId=${session.threadId} questionId=${questionId}`);
+    log('[ws-server]', 'AskUserQuestion_answered', { threadId: session.threadId, questionId });
 
-    // Return allow with updated input containing answers
     return {
       behavior: 'allow',
       updatedInput: {
@@ -292,7 +584,6 @@ async function handleCanUseTool(session, toolName, input, opts) {
   }
 
   // Allow all other tools
-  console.log(`[ws-server] canUseTool allowing tool=${toolName}`);
   return { behavior: 'allow' };
 }
 
@@ -301,203 +592,545 @@ function handleQuestionResponse(session, questionId, answers) {
   const pending = session.pendingQuestions.get(questionId);
 
   if (!pending) {
-    console.error(`[ws-server] No pending question found for questionId=${questionId}`);
+    logError('[ws-server]', 'No pending question', { questionId });
     return;
   }
 
-  // Remove from pending
   session.pendingQuestions.delete(questionId);
+  log('[ws-server]', 'question_response', { threadId: session.threadId, questionId });
 
-  console.log(`[ws-server] Question response received threadId=${session.threadId} questionId=${questionId}`);
-
-  // Resolve the promise with answers
   pending.resolve(answers);
 
-  // Clear the question from UI
-  broadcast(session, {
+  bufferEvent(session, {
     type: 'question_answered',
     questionId,
   });
 }
 
-// Process SDK events from the query iterator
-async function processSDKEvents(session, conversation) {
-  console.log(`[ws-server] processSDKEvents STARTED threadId=${session.threadId}`);
-  try {
-    for await (const message of conversation) {
-      // Detailed logging for each event type
-      if (message.type === 'stream_event') {
-        // Log stream event details
-        const delta = message.event?.delta;
-        if (delta?.type === 'text_delta') {
-          // Don't log full text, just that we got text
-          console.log(`[ws-server] stream_event: text_delta (${delta.text?.length || 0} chars)`);
-        } else if (delta?.type === 'input_json_delta') {
-          console.log(`[ws-server] stream_event: input_json_delta`);
-        } else if (message.event?.type === 'content_block_start') {
-          const block = message.event?.content_block;
-          console.log(`[ws-server] stream_event: content_block_start type=${block?.type} name=${block?.name || 'n/a'}`);
-          if (block?.type === 'tool_use') {
-            console.log(`[ws-server] *** TOOL_USE BLOCK STARTED: ${block.name} ***`);
-          }
-        } else if (message.event?.type === 'content_block_stop') {
-          console.log(`[ws-server] stream_event: content_block_stop`);
-        } else {
-          console.log(`[ws-server] stream_event: ${message.event?.type || 'unknown'}`);
-        }
-      } else if (message.type === 'assistant') {
-        // Log assistant message with tool uses
-        const content = message.message?.content || [];
-        const toolUses = content.filter(b => b.type === 'tool_use');
-        console.log(`[ws-server] assistant message: ${content.length} blocks, ${toolUses.length} tool_uses`);
-        for (const tu of toolUses) {
-          console.log(`[ws-server] *** TOOL_USE in assistant: ${tu.name} id=${tu.id} ***`);
-        }
-      } else if (message.type === 'user') {
-        // Log user message (tool results)
-        const content = message.message?.content || [];
-        console.log(`[ws-server] user message: ${content.length} blocks`);
-      } else if (message.type === 'result') {
-        console.log(`[ws-server] RESULT: subtype=${message.subtype} is_error=${message.is_error}`);
-      } else {
-        console.log(`[ws-server] sdk_event threadId=${session.threadId} type=${message.type} subtype=${message.subtype || 'n/a'}`);
-      }
+// Query options for Claude SDK
+function getQueryOptions(session, fileExists) {
+  const envVars = {
+    ...process.env,
+    ...integrationEnvVars,
+    THREAD_ID: session.threadId || '',
+  };
 
-      // Broadcast event to connected clients
-      broadcast(session, { type: 'sdk_event', event: message });
+  if (session.threadDeployToken) {
+    envVars.CLOUDFLARE_API_TOKEN = session.threadDeployToken;
+  }
 
-      // Handle TodoWrite
-      const todos = extractTodosFromEvent(message);
-      if (todos) {
-        broadcast(session, { type: 'todo_state', todos });
-        void writeTodoState(session.threadId, todos);
-      }
+  const mcpServers = {};
+  if (MCP_SERVER_URL && MCP_API_KEY) {
+    mcpServers['chiridion'] = {
+      type: 'http',
+      url: MCP_SERVER_URL,
+      headers: {
+        Authorization: `Bearer ${MCP_API_KEY}`,
+      },
+    };
+  }
 
-      // Clear todos and active query on result
-      if (message.type === 'result') {
-        void clearTodoState(session.threadId);
-        session.activeQuery = null;
+  // Create canUseTool callback for this session
+  const canUseToolCallback = async (toolName, input, opts) => {
+    return handleCanUseTool(session, toolName, input, opts);
+  };
 
-        // Process any pending messages
-        if (session.pendingMessages.length > 0) {
-          const nextMessage = session.pendingMessages.shift();
-          void sendMessageToSDK(session, nextMessage);
-        }
-      }
+  const options = {
+    model: 'opus',
+    fallbackModel: 'sonnet',
+    includePartialMessages: true,
+    allowUnsandboxedCommands: true,
+    // Use canUseTool for AskUserQuestion interception (instead of bypassPermissions)
+    canUseTool: canUseToolCallback,
+    stderr: (data) => {
+      const message = String(data || '').trim();
+      if (!message) return;
+      logError('[ws-server]', 'cli_stderr', {
+        threadId: session.threadId,
+        message: message.slice(0, 2000),
+      });
+    },
+    ...(Object.keys(mcpServers).length > 0 && {
+      mcpServers,
+      allowedTools: ['mcp__chiridion__*'],
+    }),
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: SYSTEM_PROMPT_APPEND.trim(),
+    },
+    settingSources: ['project', 'user'],
+    env: envVars,
+  };
+
+  if (session.threadId) {
+    if (fileExists) {
+      options.resume = session.threadId;
+    } else {
+      options.extraArgs = { 'session-id': session.threadId };
     }
-    console.log(`[ws-server] processSDKEvents ENDED (iterator done) threadId=${session.threadId} activeQuery=${!!session.activeQuery}`);
-  } catch (err) {
-    console.error(`[ws-server] SDK error threadId=${session.threadId}:`, err);
-    console.error(`[ws-server] SDK error stack:`, err.stack);
-    broadcast(session, { type: 'error', error: `SDK error: ${err.message}` });
-    session.activeQuery = null;
+  }
+
+  if (DEBUG_SDK) {
+    log('[ws-server]', 'query_options', {
+      threadId: session.threadId,
+      resume: Boolean(options.resume),
+      hasExtraArgs: Boolean(options.extraArgs),
+      model: options.model,
+      fallbackModel: options.fallbackModel,
+      includePartialMessages: options.includePartialMessages,
+      hasCanUseTool: Boolean(options.canUseTool),
+      allowUnsandboxedCommands: options.allowUnsandboxedCommands,
+      mcpServers: Object.keys(mcpServers || {}),
+      envKeys: Object.keys(envVars || {}).length,
+    });
+  }
+
+  return options;
+}
+
+// Async generator that yields user messages on demand
+async function* createMessageStream(session) {
+  log('[ws-server]', 'messageStream_start', { threadId: session.threadId });
+  let isFirstMessage = true;
+  try {
+    while (true) {
+      let message;
+      if (session.messageQueue.length > 0) {
+        message = session.messageQueue.shift();
+      } else {
+        message = await new Promise((resolve) => {
+          log('[ws-server]', 'messageStream_wait', { threadId: session.threadId });
+          session.messageResolver = (value) => {
+            log('[ws-server]', 'messageStream_resolve', { threadId: session.threadId, resolved: value !== null });
+            resolve(value);
+          };
+        });
+      }
+
+      if (message === null) {
+        log('[ws-server]', 'messageStream_stop', { threadId: session.threadId });
+        return;
+      }
+
+      if (isFirstMessage && FIRST_MESSAGE_DELAY_MS > 0) {
+        await Bun.sleep(FIRST_MESSAGE_DELAY_MS);
+        isFirstMessage = false;
+      }
+
+      log('[ws-server]', 'messageStream_yield', {
+        threadId: session.threadId,
+        contentLength: typeof message === 'string' ? message.length : null,
+        queueLength: session.messageQueue.length,
+      });
+      yield {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: message,
+        },
+      };
+    }
+  } catch (error) {
+    logError('[ws-server]', 'messageStream_error', { threadId: session.threadId, error: summarizeError(error) });
+    throw error;
   }
 }
 
-// Send a message to the SDK
-async function sendMessageToSDK(session, content) {
-  // If already processing, queue the message
+function bufferEvent(session, payload) {
+  if (!session.attachedSockets) {
+    session.attachedSockets = new Set();
+  }
+  const eventId = session.nextEventId++;
+  const envelope = { ...payload, eventId, sessionId: session.threadId };
+  session.eventBuffer.push(envelope);
+  void writeTrace(session.threadId, { direction: 'ws_out', payload: envelope });
+  if (session.eventBuffer.length > MAX_EVENT_BUFFER) {
+    session.eventBuffer.shift();
+  }
+  if (session.attachedSockets.size > 0) {
+    for (const socket of session.attachedSockets) {
+      try {
+        socket.send(JSON.stringify(envelope));
+      } catch (e) {
+        logError('[ws-server]', 'Failed to send event:', String(e));
+        session.attachedSockets.delete(socket);
+      }
+    }
+  }
+  return envelope;
+}
+
+function replayBufferedEvents(session, ws, lastEventId) {
+  const fromId = Number.isFinite(lastEventId) ? lastEventId : 0;
+  let replayed = 0;
+  for (const envelope of session.eventBuffer) {
+    if (envelope.eventId > fromId) {
+      try {
+        ws.send(JSON.stringify(envelope));
+        replayed++;
+      } catch (e) {
+        logError('[ws-server]', 'Failed to replay event:', String(e));
+        break;
+      }
+    }
+  }
+  if (replayed > 0) {
+    void writeTrace(session.threadId, { direction: 'ws_out_replay', count: replayed, fromEventId: fromId });
+  }
+}
+
+async function attachSession(ws, session, lastEventId) {
+  if (!session.attachedSockets) {
+    session.attachedSockets = new Set();
+  }
+  session.attachedSockets.add(ws);
+  ws.data = { ...ws.data, threadId: session.threadId };
+
+  if (session.threadId) {
+    ws.send(JSON.stringify({ type: 'session', sessionId: session.threadId }));
+  }
+
+  ws.send(JSON.stringify({ type: 'ready' }));
+
+  // Send persisted todo state if exists
+  const todos = await readTodoState(session.threadId);
+  if (todos && todos.length > 0) {
+    ws.send(JSON.stringify({ type: 'todo_state', todos }));
+  }
+
+  // Send any pending questions to this client
+  for (const [, data] of session.pendingQuestions) {
+    ws.send(JSON.stringify({
+      type: 'ask_user_question',
+      questionId: data.questionId,
+      toolUseId: data.toolUseId,
+      questions: data.questions,
+    }));
+  }
+
+  replayBufferedEvents(session, ws, lastEventId);
+  log('[ws-server]', 'attachSession', {
+    threadId: session.threadId,
+    lastEventId,
+    attachedSockets: session.attachedSockets.size,
+    hasTodos: Boolean(todos),
+  });
+}
+
+// Initialize the stateful query session
+async function initSession(session) {
   if (session.activeQuery) {
-    console.log(`[ws-server] Queueing message (busy) threadId=${session.threadId}`);
-    session.pendingMessages.push(content);
+    log('[ws-server]', 'initSession_skip_active', { threadId: session.threadId });
+    return;
+  }
+  if (session.initPromise) {
+    log('[ws-server]', 'initSession_skip_inflight', { threadId: session.threadId });
+    await session.initPromise;
     return;
   }
 
-  console.log(`[ws-server] Starting query threadId=${session.threadId} len=${content.length}`);
+  session.initPromise = (async () => {
+    const initStart = Date.now();
+    log('[ws-server]', 'initSession_start', { threadId: session.threadId });
+    try {
+      if (DEBUG_STARTUP) {
+        await runStartupDiagnostics();
+      }
+      const fileExists = await sessionFileExists(session.threadId);
+      const options = getQueryOptions(session, fileExists);
+      const messageStream = createMessageStream(session);
+      session.activeQuery = query({ prompt: messageStream, options });
+      session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
+      session.queryId += 1;
+      log('[ws-server]', 'initSession', {
+        threadId: session.threadId,
+        resume: fileExists,
+        durationMs: Date.now() - initStart,
+        queryId: session.queryId,
+      });
+    } catch (error) {
+      logError('[ws-server]', 'Failed to init:', summarizeError(error));
+      bufferEvent(session, { type: 'error', error: `Failed to initialize session: ${String(error)}` });
+    }
+  })();
 
-  const options = buildSDKOptions(session);
-  console.log(`[ws-server] Query options: canUseTool=${typeof options.canUseTool} resume=${!!options.resume} extraArgs=${JSON.stringify(options.extraArgs)} model=${options.model}`);
-  console.log(`[ws-server] Query options keys: ${Object.keys(options).join(', ')}`);
-
-  // Start the query
-  const conversation = query({
-    prompt: content,
-    options,
-  });
-
-  session.activeQuery = conversation;
-
-  // Process events in the background
-  void processSDKEvents(session, conversation);
+  try {
+    await session.initPromise;
+  } finally {
+    session.initPromise = null;
+  }
 }
 
-function formatAuthor(userName, userEmail) {
-  if (userName && userEmail) return `[${userName} (${userEmail})]: `;
-  if (userName) return `[${userName}]: `;
-  if (userEmail) return `[${userEmail}]: `;
+// Start continuous event loop - runs until query ends or error
+function startEventLoop(session) {
+  if (session.eventLoopRunning || !session.queryIterator) {
+    return;
+  }
+  session.eventLoopRunning = true;
+  const eventLoopQueryId = session.queryId;
+  let hadNonSystemEvent = false;
+
+  (async () => {
+    let exitReason = 'unknown';
+    let eventCount = 0;
+    const loopStart = Date.now();
+    let firstEventAt = null;
+    try {
+      while (true) {
+        const { value: event, done } = await session.queryIterator.next();
+        eventCount++;
+
+        if (done) {
+          exitReason = 'iterator_done';
+          break;
+        }
+
+        if (!firstEventAt) {
+          firstEventAt = Date.now();
+          log('[ws-server]', 'first_event', {
+            threadId: session.threadId,
+            afterMs: firstEventAt - loopStart,
+            eventType: event?.type,
+            eventSubType: event?.event?.type,
+          });
+        }
+
+        const eventType = event?.type;
+        const eventSubType = event?.event?.type;
+        if (eventType && eventType !== 'system') {
+          hadNonSystemEvent = true;
+          session.earlyExitRetries = 0;
+        }
+        if (session.eventTypeHistory) {
+          session.eventTypeHistory.push({ type: eventType, subType: eventSubType });
+          if (session.eventTypeHistory.length > 20) {
+            session.eventTypeHistory.shift();
+          }
+        }
+
+        log('[ws-server]', 'sdk_event', {
+          threadId: session.threadId,
+          eventType,
+          eventSubType,
+          systemSubType: eventType === 'system' ? event?.subtype || event?.message?.subtype || event?.message?.type : null,
+        });
+
+        // Send event to client via WebSocket (or buffer if detached)
+        bufferEvent(session, { type: 'sdk_event', event });
+        trackTaskToolUse(session, event);
+        persistTaskResultUpdates(session, event);
+
+        // Handle TodoWrite
+        const todos = extractTodosFromEvent(event);
+        if (todos) {
+          bufferEvent(session, { type: 'todo_state', todos });
+          void writeTodoState(session.threadId, todos);
+        }
+
+        // Result means this turn is done - but keep loop alive if sockets connected or messages pending
+        if (eventType === 'result') {
+          log('[ws-server]', 'sdk_result', {
+            threadId: session.threadId,
+            stopReason: event?.stop_reason || event?.message?.stop_reason || null,
+            status: event?.status || event?.message?.status || null,
+          });
+
+          // Clear todos on result
+          void clearTodoState(session.threadId);
+
+          const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
+          const hasPendingMessages = session.messageQueue.length > 0;
+          if (!hasConnections && !hasPendingMessages) {
+            exitReason = 'no_connections_or_messages';
+            break;
+          }
+          // Continue looping - generator will yield queued message or wait for new one
+        }
+      }
+    } catch (e) {
+      exitReason = 'error';
+      logError('[ws-server]', 'Query error:', summarizeError(e));
+      bufferEvent(session, { type: 'error', error: String(e) });
+      void writeTrace(session.threadId, { direction: 'error', error: String(e) });
+      logForPersistence({ type: 'error', error: String(e) });
+    } finally {
+      session.activeQuery = null;
+      session.queryIterator = null;
+      session.eventLoopRunning = false;
+      log('[ws-server]', 'event_loop_exit', {
+        threadId: session.threadId,
+        exitReason,
+        eventCount,
+        durationMs: Date.now() - loopStart,
+        hadFirstEvent: Boolean(firstEventAt),
+        lastEvents: session.eventTypeHistory || [],
+        queryId: eventLoopQueryId,
+      });
+
+      const hasConnections = session.attachedSockets && session.attachedSockets.size > 0;
+      const stopCooldownMs = 5000;
+      const stopRecently = session.lastStopRequestedAt
+        ? Date.now() - session.lastStopRequestedAt < stopCooldownMs
+        : false;
+      if (exitReason === 'iterator_done' && !hadNonSystemEvent && hasConnections && !stopRecently) {
+        void logClaudeDebugTail(session.threadId, 'early_exit_iterator_done');
+        if (session.earlyExitRetries < 1 && session.lastUserMessage) {
+          session.earlyExitRetries += 1;
+          const retryContent = session.lastUserMessage;
+          log('[ws-server]', 'early_exit_retry', {
+            threadId: session.threadId,
+            queryId: eventLoopQueryId,
+            retryCount: session.earlyExitRetries,
+            lastUserMessageLength: retryContent?.length || 0,
+            queueLength: session.messageQueue.length,
+            hasResolver: Boolean(session.messageResolver),
+          });
+          setTimeout(() => {
+            if (session.activeQuery || session.messageResolver || session.messageQueue.length > 0) {
+              return;
+            }
+            void (async () => {
+              await initSession(session);
+              startEventLoop(session);
+              if (session.messageResolver) {
+                const resolver = session.messageResolver;
+                session.messageResolver = null;
+                resolver(retryContent);
+              } else {
+                session.messageQueue.push(retryContent);
+              }
+            })();
+          }, 200);
+        }
+      }
+    }
+  })();
+}
+
+function formatAuthorPrefix(userName, userEmail) {
+  if (userName && userEmail) {
+    return `[${userName} (${userEmail})]: `;
+  } else if (userName) {
+    return `[${userName}]: `;
+  } else if (userEmail) {
+    return `[${userEmail}]: `;
+  }
   return '';
 }
 
-async function handleMessage(session, content, userInfo) {
-  const attributed = formatAuthor(userInfo?.userName, userInfo?.userEmail) + content;
-  console.log(`[ws-server] message threadId=${session.threadId} len=${attributed.length}`);
-  void sendMessageToSDK(session, attributed);
-}
+// Handle a user message
+async function handleUserMessage(session, content, userInfo = null) {
+  const authorPrefix = formatAuthorPrefix(userInfo?.userName, userInfo?.userEmail);
+  const attributedContent = authorPrefix + content;
+  session.lastUserMessage = attributedContent;
 
-async function handleStop(session) {
-  console.log(`[ws-server] stop threadId=${session.threadId}`);
-  session.pendingMessages = [];
+  void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content: attributedContent, author: userInfo });
+  log('[ws-server]', 'handleUserMessage', {
+    threadId: session.threadId,
+    contentLength: attributedContent.length,
+    hasActiveQuery: Boolean(session.activeQuery),
+    hasIterator: Boolean(session.queryIterator),
+    queueLength: session.messageQueue.length,
+    hasResolver: Boolean(session.messageResolver),
+  });
+  const shouldPrequeue = PREQUEUE_FIRST_MESSAGE && !session.activeQuery && !session.initPromise && !session.messageResolver;
+  if (shouldPrequeue) {
+    session.messageQueue.push(attributedContent);
+    log('[ws-server]', 'message_prequeued', {
+      threadId: session.threadId,
+      queueLength: session.messageQueue.length,
+    });
+  }
 
-  // Abort the active query if possible
-  if (session.activeQuery?.abort) {
-    try {
-      session.activeQuery.abort();
-    } catch (err) {
-      console.error(`[ws-server] Failed to abort query:`, err);
+  // Initialize session if needed
+  await initSession(session);
+
+  // Start event loop if not running (it runs continuously)
+  startEventLoop(session);
+
+  if (!shouldPrequeue) {
+    if (session.messageResolver) {
+      const resolver = session.messageResolver;
+      session.messageResolver = null;
+      resolver(attributedContent);
+    } else {
+      session.messageQueue.push(attributedContent);
     }
   }
-  session.activeQuery = null;
-
-  // Clear any pending questions
-  for (const [questionId, data] of session.pendingQuestions) {
-    broadcast(session, { type: 'question_answered', questionId });
-  }
-  session.pendingQuestions.clear();
+  log('[ws-server]', 'handleUserMessage_enqueued', {
+    threadId: session.threadId,
+    queueLength: session.messageQueue.length,
+    hasResolver: Boolean(session.messageResolver),
+  });
 }
 
-// HTTP + WebSocket server
+// Bun WebSocket server with HTTP health endpoint
 Bun.serve({
   port: PORT,
 
-  fetch(req, server) {
+  async fetch(req, server) {
     const url = new URL(req.url);
 
     if (url.pathname === '/health') {
-      return Response.json({ status: 'ok', version: VERSION });
+      return new Response(JSON.stringify({ status: 'ok', version: VERSION }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     if (url.pathname === '/broadcast' && req.method === 'POST') {
-      return req.json().then(data => {
+      try {
+        const data = await req.json();
         let sent = false;
         for (const session of sessions.values()) {
-          for (const ws of session.sockets) {
-            ws.send(JSON.stringify(data));
+          if (!session.attachedSockets) continue;
+          for (const socket of session.attachedSockets) {
+            socket.send(JSON.stringify(data));
             sent = true;
           }
         }
-        return sent ? new Response('ok') : new Response('No connections', { status: 503 });
-      });
+        if (sent) {
+          return new Response('ok', { status: 200 });
+        }
+        return new Response('No active WebSocket connection', { status: 503 });
+      } catch (e) {
+        return new Response(String(e), { status: 400 });
+      }
     }
 
     if (url.pathname === '/update-env' && req.method === 'POST') {
-      return req.json().then(data => {
-        if (data.env) {
+      try {
+        const data = await req.json();
+        if (data.env && typeof data.env === 'object') {
           integrationEnvVars = data.env;
-          return Response.json({ success: true, keys: Object.keys(data.env).length });
+          return new Response(JSON.stringify({ success: true, keys: Object.keys(integrationEnvVars) }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
         }
-        return Response.json({ success: false }, { status: 400 });
-      });
+        return new Response(JSON.stringify({ success: false, error: 'Missing env object' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ success: false, error: String(e) }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
     }
 
     if (req.headers.get('upgrade') === 'websocket') {
+      const threadDeployToken = req.headers.get('x-chiridion-thread-deploy-token');
+      const userName = req.headers.get('x-chiridion-user-name');
+      const userEmail = req.headers.get('x-chiridion-user-email');
+
       const success = server.upgrade(req, {
-        data: {
-          deployToken: req.headers.get('x-chiridion-thread-deploy-token'),
-          userName: req.headers.get('x-chiridion-user-name'),
-          userEmail: req.headers.get('x-chiridion-user-email'),
-        },
+        data: { threadDeployToken, userName, userEmail },
       });
-      return success ? undefined : new Response('Upgrade failed', { status: 500 });
+      if (success) {
+        return undefined;
+      }
+      return new Response('WebSocket upgrade failed', { status: 500 });
     }
 
     return new Response('Not found', { status: 404 });
@@ -505,7 +1138,8 @@ Bun.serve({
 
   websocket: {
     open(ws) {
-      console.log('[ws-server] ws_open');
+      totalConnections++;
+      log('[ws-server]', 'ws_open', { totalConnections });
     },
 
     async message(ws, message) {
@@ -513,65 +1147,67 @@ Bun.serve({
         const data = JSON.parse(message);
 
         if (data.type === 'init') {
-          const threadId = data.threadId?.trim();
+          const threadId = typeof data.threadId === 'string' ? data.threadId.trim() : '';
           if (!threadId) {
-            ws.send(JSON.stringify({ type: 'error', error: 'Missing threadId' }));
-            ws.close();
+            ws.send(JSON.stringify({ type: 'error', error: 'Missing threadId - init requires a valid threadId' }));
+            ws.close(1008, 'missing threadId');
             return;
           }
 
-          const session = getSession(threadId, ws.data?.deployToken, {
-            userName: ws.data?.userName,
-            userEmail: ws.data?.userEmail,
+          const threadDeployToken = ws.data?.threadDeployToken || null;
+          const userInfo = {
+            userName: ws.data?.userName || null,
+            userEmail: ws.data?.userEmail || null,
+          };
+
+          const session = getOrCreateSession(threadId, threadDeployToken, userInfo);
+          void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken, userName: userInfo.userName } });
+          log('[ws-server]', 'init', {
+            threadId,
+            lastEventId: data.lastEventId,
+            hasDeployToken: Boolean(threadDeployToken),
+            userName: userInfo.userName,
           });
-
-          ws.data.threadId = threadId;
-          session.sockets.add(ws);
-
-          ws.send(JSON.stringify({ type: 'session', sessionId: threadId }));
-          ws.send(JSON.stringify({ type: 'ready' }));
-
-          // Send persisted todo state if exists
-          const todos = await readTodoState(threadId);
-          if (todos && todos.length > 0) {
-            ws.send(JSON.stringify({ type: 'todo_state', todos }));
-          }
-
-          // Send any pending questions to this client
-          for (const [, data] of session.pendingQuestions) {
-            ws.send(JSON.stringify({
-              type: 'ask_user_question',
-              questionId: data.questionId,
-              toolUseId: data.toolUseId,
-              questions: data.questions,
-            }));
-          }
-
-          // Replay buffered events
-          const lastId = data.lastEventId || 0;
-          for (const event of session.events) {
-            if (event.eventId > lastId) {
-              ws.send(JSON.stringify(event));
-            }
-          }
-
-          console.log(`[ws-server] init threadId=${threadId} sockets=${session.sockets.size} hasTodos=${!!todos}`);
+          await attachSession(ws, session, data.lastEventId);
 
         } else if (data.type === 'message') {
-          const threadId = ws.data?.threadId;
-          const session = sessions.get(threadId);
-          if (!session) {
-            ws.send(JSON.stringify({ type: 'error', error: 'No session' }));
+          const threadId = ws.data?.threadId || data.threadId;
+          if (!threadId || !sessions.has(threadId)) {
+            ws.send(JSON.stringify({ type: 'error', error: 'No session - send init first' }));
             return;
           }
-          await handleMessage(session, data.content, {
-            userName: ws.data?.userName,
-            userEmail: ws.data?.userEmail,
+          const session = sessions.get(threadId);
+          const userInfo = {
+            userName: ws.data?.userName || null,
+            userEmail: ws.data?.userEmail || null,
+          };
+          log('[ws-server]', 'message', {
+            threadId,
+            contentLength: typeof data.content === 'string' ? data.content.length : null,
+            hasSession: Boolean(session),
           });
+          await handleUserMessage(session, data.content, userInfo);
 
         } else if (data.type === 'stop') {
-          const session = sessions.get(ws.data?.threadId);
-          if (session) await handleStop(session);
+          const threadId = ws.data?.threadId;
+          if (threadId && sessions.has(threadId)) {
+            const session = sessions.get(threadId);
+            void writeTrace(session.threadId, { direction: 'ws_in', type: 'stop' });
+            log('[ws-server]', 'stop', { threadId });
+            session.lastStopRequestedAt = Date.now();
+            // Clear any pending questions
+            for (const [questionId] of session.pendingQuestions) {
+              bufferEvent(session, { type: 'question_answered', questionId });
+            }
+            session.pendingQuestions.clear();
+            if (session.activeQuery) {
+              try {
+                await session.activeQuery.interrupt();
+              } catch (e) {
+                logError('[ws-server]', 'Interrupt error:', String(e));
+              }
+            }
+          }
 
         } else if (data.type === 'question_response') {
           const threadId = ws.data?.threadId;
@@ -588,17 +1224,24 @@ Bun.serve({
           handleQuestionResponse(session, questionId, answers);
         }
       } catch (e) {
-        console.error('[ws-server] message error:', e);
+        logError('[ws-server]', 'Message handling error:', String(e));
         ws.send(JSON.stringify({ type: 'error', error: String(e) }));
       }
     },
 
-    close(ws) {
-      const session = sessions.get(ws.data?.threadId);
-      if (session) session.sockets.delete(ws);
-      console.log(`[ws-server] ws_close threadId=${ws.data?.threadId}`);
+    close(ws, code, reason) {
+      const threadId = ws?.data?.threadId;
+      if (threadId && sessions.has(threadId)) {
+        const session = sessions.get(threadId);
+        if (session.attachedSockets) {
+          session.attachedSockets.delete(ws);
+        }
+      }
+      log('[ws-server]', 'ws_close', { threadId, code, reason: String(reason || '') });
+    },
+
+    error(ws, error) {
+      logError('[ws-server]', 'WebSocket error:', String(error));
     },
   },
 });
-
-console.log(`[ws-server] Listening on :${PORT}`);
