@@ -2,12 +2,18 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-25-sdk-rewrite-v6';
+const VERSION = '2026-01-25-sdk-rewrite-v7';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
 
 console.log(`[ws-server] Starting version=${VERSION} port=${PORT}`);
+
+// Catch unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[ws-server] UNHANDLED REJECTION:', reason);
+  console.error('[ws-server] Promise:', promise);
+});
 
 // Auth via ANTHROPIC_AUTH_TOKEN (OpenRouter) or ANTHROPIC_API_KEY (direct Anthropic)
 if (!process.env.ANTHROPIC_AUTH_TOKEN && !process.env.ANTHROPIC_API_KEY) {
@@ -164,6 +170,13 @@ function buildSDKOptions(session) {
     env,
     // canUseTool callback - should be called for every tool
     canUseTool: canUseToolCallback,
+    // Capture stderr from CLI for debugging
+    stderr: (data) => {
+      const msg = data.toString().trim();
+      if (msg) {
+        console.log(`[ws-server] CLI_STDERR threadId=${session.threadId}: ${msg.slice(0, 1000)}`);
+      }
+    },
   };
 
   console.log(`[ws-server] buildSDKOptions: canUseTool=${typeof options.canUseTool} keys=${Object.keys(options).join(',')}`);
@@ -330,7 +343,7 @@ async function processSDKEvents(session, conversation) {
         }
       }
     }
-    console.log(`[ws-server] processSDKEvents ENDED (iterator done) threadId=${session.threadId}`);
+    console.log(`[ws-server] processSDKEvents ENDED (iterator done) threadId=${session.threadId} activeQuery=${!!session.activeQuery}`);
   } catch (err) {
     console.error(`[ws-server] SDK error threadId=${session.threadId}:`, err);
     console.error(`[ws-server] SDK error stack:`, err.stack);
