@@ -2,9 +2,10 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-25-sdk-rewrite-v7';
+const VERSION = '2026-01-25-sdk-rewrite-v9';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
+const SESSION_PROJECT_PATH = '-home-claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
 
 console.log(`[ws-server] Starting version=${VERSION} port=${PORT}`);
@@ -69,6 +70,15 @@ async function clearTodoState(threadId) {
   }
 }
 
+// Check if a session JSONL file exists (determines resume vs new session)
+function sessionFileExists(sessionId) {
+  if (!sessionId) return false;
+  const jsonlPath = `${SYNC_DIR}/.claude/projects/${SESSION_PROJECT_PATH}/${sessionId}.jsonl`;
+  const exists = existsSync(jsonlPath);
+  console.log(`[ws-server] sessionFileExists: ${sessionId} => ${exists} (path: ${jsonlPath})`);
+  return exists;
+}
+
 // Extract TodoWrite todos from SDK events
 function extractTodosFromEvent(event) {
   if (event?.type === 'assistant' && Array.isArray(event.message?.content)) {
@@ -122,27 +132,40 @@ const SYSTEM_PROMPT_APPEND = `
 You are running inside **Chiridion**, a web application that brings Claude Code to the browser. Users interact through a chat interface - they cannot see your terminal, localhost servers, or file system directly.
 
 **Important constraints:**
-- **localhost is not accessible** - Users cannot open localhost URLs. Deploy apps or output content directly.
-- **Don't assume technical ability** - Users may not be developers. Explain in plain language.
-- **Show results, not processes** - Deploy apps rather than telling users to run localhost.
+- **localhost is not accessible** - Users cannot open localhost URLs. If you need to show something, deploy it or output the content directly.
+- **Don't assume technical ability** - Users may not be developers. Explain what you're doing in plain language. Avoid jargon unless the user demonstrates familiarity.
+- **Show results, not processes** - Instead of saying "run npm start and open localhost:3000", deploy the app or show the output directly.
 
 ## Multi-User Threads
 
-Threads can have multiple users. Messages are prefixed with \`[Name (email)]: message\`. Pay attention to who is sending each message.
+Threads in Chiridion can have multiple users. Each user message is prefixed with the sender's identity in the format \`[Name (email)]: message\` or \`[email]: message\`. Pay attention to who is sending each message - different team members may have different questions or instructions.
 
-## File Sharing
+## File Sharing with User
 
-- **\`/mnt/user-uploads/\`** - Files uploaded by the user
-- **\`/mnt/user-outputs/\`** - Files you create for download
+You have access to two special directories for exchanging files with the user:
 
-For downloadable files, use: \`[Link Text](chiridion://outputs/filename)\`
+- **\`/mnt/user-uploads/\`** - Files uploaded by the user. When a user uploads a file, you'll see a message like "(user uploaded file to /mnt/user-uploads/filename.png)". Read files from this directory to access what they shared.
+
+- **\`/mnt/user-outputs/\`** - Files you create for the user to download. Save files here when you want the user to be able to download them.
+
+**Creating downloadable files:**
+When you save a file for the user to download in /mnt/user-outputs/, provide a link using the chiridion:// protocol:
+- Format: \`[Link Text](chiridion://outputs/filename)\`
+- Example: \`[Download Report](chiridion://outputs/report.pdf)\`
+- Example: \`[Download Chart](chiridion://outputs/analysis/chart.png)\`
+
+The user can click these links to download the file directly.
 
 ## Cloudflare Deployment
 
-1. Use the globally installed \`wrangler\` CLI (don't install locally)
-2. Build as Cloudflare Workers
-3. Use Durable Objects with SQLite for persistence
-4. Deploy with \`wrangler deploy\`
+When deploying software to the internet or for the user to access:
+
+1. **Always use the globally installed \`wrangler\` CLI** - Do not install wrangler locally via npm
+2. **Build as Cloudflare Workers** - All deployable software should be written as Workers
+3. **Use Durable Objects with SQLite** - For persistence, use SQLite-backed Durable Objects (not KV)
+4. **Use \`wrangler deploy\`** - Deploy with the global wrangler binary
+
+The infrastructure is already configured for Worker deployments. For fullstack apps, use Next.js with OpenNext for Cloudflare.
 `;
 
 function buildSDKOptions(session) {
@@ -163,12 +186,11 @@ function buildSDKOptions(session) {
 
   const options = {
     model: 'opus',
-    appendSystemPrompt: SYSTEM_PROMPT_APPEND.trim(),
-    sessionId: session.threadId,
-    cwd: existsSync(SYNC_DIR) ? SYNC_DIR : process.cwd(),
+    fallbackModel: 'sonnet',
     includePartialMessages: true,
-    env,
-    // canUseTool callback - should be called for every tool
+    allowUnsandboxedCommands: true,
+    cwd: existsSync(SYNC_DIR) ? SYNC_DIR : process.cwd(),
+    // canUseTool callback - should be called for every tool (replaces bypassPermissions)
     canUseTool: canUseToolCallback,
     // Capture stderr from CLI for debugging
     stderr: (data) => {
@@ -177,9 +199,29 @@ function buildSDKOptions(session) {
         console.log(`[ws-server] CLI_STDERR threadId=${session.threadId}: ${msg.slice(0, 1000)}`);
       }
     },
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: SYSTEM_PROMPT_APPEND.trim(),
+    },
+    settingSources: ['project', 'user'],
+    env,
   };
 
-  console.log(`[ws-server] buildSDKOptions: canUseTool=${typeof options.canUseTool} keys=${Object.keys(options).join(',')}`);
+  // Session handling: resume existing vs create new
+  if (session.threadId) {
+    if (sessionFileExists(session.threadId)) {
+      // Resume existing session
+      options.resume = session.threadId;
+      console.log(`[ws-server] buildSDKOptions: RESUMING session threadId=${session.threadId}`);
+    } else {
+      // Create new session with specific ID
+      options.extraArgs = { 'session-id': session.threadId };
+      console.log(`[ws-server] buildSDKOptions: NEW session threadId=${session.threadId}`);
+    }
+  }
+
+  console.log(`[ws-server] buildSDKOptions: canUseTool=${typeof options.canUseTool} resume=${!!options.resume} extraArgs=${JSON.stringify(options.extraArgs)} keys=${Object.keys(options).join(',')}`);
 
   // Add MCP config if available
   if (process.env.MCP_SERVER_URL && process.env.MCP_API_KEY) {
@@ -364,7 +406,7 @@ async function sendMessageToSDK(session, content) {
   console.log(`[ws-server] Starting query threadId=${session.threadId} len=${content.length}`);
 
   const options = buildSDKOptions(session);
-  console.log(`[ws-server] Query options: canUseTool=${typeof options.canUseTool} permissionMode=${options.permissionMode || 'NOT SET'} model=${options.model} sessionId=${options.sessionId}`);
+  console.log(`[ws-server] Query options: canUseTool=${typeof options.canUseTool} resume=${!!options.resume} extraArgs=${JSON.stringify(options.extraArgs)} model=${options.model}`);
   console.log(`[ws-server] Query options keys: ${Object.keys(options).join(', ')}`);
 
   // Start the query
