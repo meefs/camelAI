@@ -1,9 +1,14 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { appendFile, mkdir, access, stat, readFile, writeFile, unlink } from 'fs/promises';
+import { createServer } from 'http';
+import { WebSocketServer } from 'ws';
 import os from 'os';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-25-sdk-rewrite-v12-iterator-debug';
+const VERSION = '2026-01-25-sdk-rewrite-v13-node-ws';
+
+// Sleep helper (replaces sleep)
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Single-line logging helpers (CF treats each line as separate log entry)
 function log(prefix, message, data) {
@@ -733,7 +738,7 @@ async function* createMessageStream(session) {
       }
 
       if (isFirstMessage && FIRST_MESSAGE_DELAY_MS > 0) {
-        await Bun.sleep(FIRST_MESSAGE_DELAY_MS);
+        await sleep(FIRST_MESSAGE_DELAY_MS);
         isFirstMessage = false;
       }
 
@@ -753,7 +758,7 @@ async function* createMessageStream(session) {
       // Log error but DON'T throw - keep the generator alive
       logError('[ws-server]', 'messageStream_error', { threadId: session.threadId, error: summarizeError(error) });
       // Small delay before continuing to prevent tight error loops
-      await Bun.sleep(100);
+      await sleep(100);
     }
   }
 }
@@ -1138,22 +1143,22 @@ async function handleUserMessage(session, content, userInfo = null) {
   });
 }
 
-// Bun WebSocket server with HTTP health endpoint
-Bun.serve({
-  port: PORT,
+// Node.js HTTP + WebSocket server
+const httpServer = createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
 
-  async fetch(req, server) {
-    const url = new URL(req.url);
+  if (url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', version: VERSION }));
+    return;
+  }
 
-    if (url.pathname === '/health') {
-      return new Response(JSON.stringify({ status: 'ok', version: VERSION }), {
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    if (url.pathname === '/broadcast' && req.method === 'POST') {
+  if (url.pathname === '/broadcast' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
       try {
-        const data = await req.json();
+        const data = JSON.parse(body);
         let sent = false;
         for (const session of sessions.values()) {
           if (!session.attachedSockets) continue;
@@ -1163,158 +1168,162 @@ Bun.serve({
           }
         }
         if (sent) {
-          return new Response('ok', { status: 200 });
+          res.writeHead(200);
+          res.end('ok');
+        } else {
+          res.writeHead(503);
+          res.end('No active WebSocket connection');
         }
-        return new Response('No active WebSocket connection', { status: 503 });
       } catch (e) {
-        return new Response(String(e), { status: 400 });
+        res.writeHead(400);
+        res.end(String(e));
       }
-    }
+    });
+    return;
+  }
 
-    if (url.pathname === '/update-env' && req.method === 'POST') {
+  if (url.pathname === '/update-env' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
       try {
-        const data = await req.json();
+        const data = JSON.parse(body);
         if (data.env && typeof data.env === 'object') {
           integrationEnvVars = data.env;
-          return new Response(JSON.stringify({ success: true, keys: Object.keys(integrationEnvVars) }), {
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
-        return new Response(JSON.stringify({ success: false, error: 'Missing env object' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      } catch (e) {
-        return new Response(JSON.stringify({ success: false, error: String(e) }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-    }
-
-    if (req.headers.get('upgrade') === 'websocket') {
-      const threadDeployToken = req.headers.get('x-chiridion-thread-deploy-token');
-      const userName = req.headers.get('x-chiridion-user-name');
-      const userEmail = req.headers.get('x-chiridion-user-email');
-
-      const success = server.upgrade(req, {
-        data: { threadDeployToken, userName, userEmail },
-      });
-      if (success) {
-        return undefined;
-      }
-      return new Response('WebSocket upgrade failed', { status: 500 });
-    }
-
-    return new Response('Not found', { status: 404 });
-  },
-
-  websocket: {
-    open(ws) {
-      totalConnections++;
-      log('[ws-server]', 'ws_open', { totalConnections });
-    },
-
-    async message(ws, message) {
-      try {
-        const data = JSON.parse(message);
-
-        if (data.type === 'init') {
-          const threadId = typeof data.threadId === 'string' ? data.threadId.trim() : '';
-          if (!threadId) {
-            ws.send(JSON.stringify({ type: 'error', error: 'Missing threadId - init requires a valid threadId' }));
-            ws.close(1008, 'missing threadId');
-            return;
-          }
-
-          const threadDeployToken = ws.data?.threadDeployToken || null;
-          const userInfo = {
-            userName: ws.data?.userName || null,
-            userEmail: ws.data?.userEmail || null,
-          };
-
-          const session = getOrCreateSession(threadId, threadDeployToken, userInfo);
-          void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken, userName: userInfo.userName } });
-          log('[ws-server]', 'init', {
-            threadId,
-            lastEventId: data.lastEventId,
-            hasDeployToken: Boolean(threadDeployToken),
-            userName: userInfo.userName,
-          });
-          await attachSession(ws, session, data.lastEventId);
-
-        } else if (data.type === 'message') {
-          const threadId = ws.data?.threadId || data.threadId;
-          if (!threadId || !sessions.has(threadId)) {
-            ws.send(JSON.stringify({ type: 'error', error: 'No session - send init first' }));
-            return;
-          }
-          const session = sessions.get(threadId);
-          const userInfo = {
-            userName: ws.data?.userName || null,
-            userEmail: ws.data?.userEmail || null,
-          };
-          log('[ws-server]', 'message', {
-            threadId,
-            contentLength: typeof data.content === 'string' ? data.content.length : null,
-            hasSession: Boolean(session),
-          });
-          await handleUserMessage(session, data.content, userInfo);
-
-        } else if (data.type === 'stop') {
-          const threadId = ws.data?.threadId;
-          if (threadId && sessions.has(threadId)) {
-            const session = sessions.get(threadId);
-            void writeTrace(session.threadId, { direction: 'ws_in', type: 'stop' });
-            log('[ws-server]', 'stop', { threadId });
-            session.lastStopRequestedAt = Date.now();
-            // Clear any pending questions
-            for (const [questionId] of session.pendingQuestions) {
-              bufferEvent(session, { type: 'question_answered', questionId });
-            }
-            session.pendingQuestions.clear();
-            if (session.activeQuery) {
-              try {
-                await session.activeQuery.interrupt();
-              } catch (e) {
-                logError('[ws-server]', 'Interrupt error:', String(e));
-              }
-            }
-          }
-
-        } else if (data.type === 'question_response') {
-          const threadId = ws.data?.threadId;
-          const session = sessions.get(threadId);
-          if (!session) {
-            ws.send(JSON.stringify({ type: 'error', error: 'No session' }));
-            return;
-          }
-          const { questionId, answers } = data;
-          if (!questionId || !answers) {
-            ws.send(JSON.stringify({ type: 'error', error: 'Missing questionId or answers' }));
-            return;
-          }
-          handleQuestionResponse(session, questionId, answers);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, keys: Object.keys(integrationEnvVars) }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'Missing env object' }));
         }
       } catch (e) {
-        logError('[ws-server]', 'Message handling error:', String(e));
-        ws.send(JSON.stringify({ type: 'error', error: String(e) }));
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: String(e) }));
       }
-    },
+    });
+    return;
+  }
 
-    close(ws, code, reason) {
-      const threadId = ws?.data?.threadId;
-      if (threadId && sessions.has(threadId)) {
+  res.writeHead(404);
+  res.end('Not found');
+});
+
+const wss = new WebSocketServer({ server: httpServer });
+
+wss.on('connection', (ws, req) => {
+  totalConnections++;
+  log('[ws-server]', 'ws_open', { totalConnections });
+
+  // Store connection metadata on the socket
+  ws.data = {
+    threadDeployToken: req.headers['x-chiridion-thread-deploy-token'] || null,
+    userName: req.headers['x-chiridion-user-name'] || null,
+    userEmail: req.headers['x-chiridion-user-email'] || null,
+  };
+
+  ws.on('message', async (message) => {
+    try {
+      const data = JSON.parse(message.toString());
+
+      if (data.type === 'init') {
+        const threadId = typeof data.threadId === 'string' ? data.threadId.trim() : '';
+        if (!threadId) {
+          ws.send(JSON.stringify({ type: 'error', error: 'Missing threadId - init requires a valid threadId' }));
+          ws.close(1008, 'missing threadId');
+          return;
+        }
+
+        const threadDeployToken = ws.data?.threadDeployToken || null;
+        const userInfo = {
+          userName: ws.data?.userName || null,
+          userEmail: ws.data?.userEmail || null,
+        };
+
+        const session = getOrCreateSession(threadId, threadDeployToken, userInfo);
+        void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken, userName: userInfo.userName } });
+        log('[ws-server]', 'init', {
+          threadId,
+          lastEventId: data.lastEventId,
+          hasDeployToken: Boolean(threadDeployToken),
+          userName: userInfo.userName,
+        });
+        await attachSession(ws, session, data.lastEventId);
+
+      } else if (data.type === 'message') {
+        const threadId = ws.data?.threadId || data.threadId;
+        if (!threadId || !sessions.has(threadId)) {
+          ws.send(JSON.stringify({ type: 'error', error: 'No session - send init first' }));
+          return;
+        }
         const session = sessions.get(threadId);
-        if (session.attachedSockets) {
-          session.attachedSockets.delete(ws);
-        }
-      }
-      log('[ws-server]', 'ws_close', { threadId, code, reason: String(reason || '') });
-    },
+        const userInfo = {
+          userName: ws.data?.userName || null,
+          userEmail: ws.data?.userEmail || null,
+        };
+        log('[ws-server]', 'message', {
+          threadId,
+          contentLength: typeof data.content === 'string' ? data.content.length : null,
+          hasSession: Boolean(session),
+        });
+        await handleUserMessage(session, data.content, userInfo);
 
-    error(ws, error) {
-      logError('[ws-server]', 'WebSocket error:', String(error));
-    },
-  },
+      } else if (data.type === 'stop') {
+        const threadId = ws.data?.threadId;
+        if (threadId && sessions.has(threadId)) {
+          const session = sessions.get(threadId);
+          void writeTrace(session.threadId, { direction: 'ws_in', type: 'stop' });
+          log('[ws-server]', 'stop', { threadId });
+          session.lastStopRequestedAt = Date.now();
+          // Clear any pending questions
+          for (const [questionId] of session.pendingQuestions) {
+            bufferEvent(session, { type: 'question_answered', questionId });
+          }
+          session.pendingQuestions.clear();
+          if (session.activeQuery) {
+            try {
+              await session.activeQuery.interrupt();
+            } catch (e) {
+              logError('[ws-server]', 'Interrupt error:', String(e));
+            }
+          }
+        }
+
+      } else if (data.type === 'question_response') {
+        const threadId = ws.data?.threadId;
+        const session = sessions.get(threadId);
+        if (!session) {
+          ws.send(JSON.stringify({ type: 'error', error: 'No session' }));
+          return;
+        }
+        const { questionId, answers } = data;
+        if (!questionId || !answers) {
+          ws.send(JSON.stringify({ type: 'error', error: 'Missing questionId or answers' }));
+          return;
+        }
+        handleQuestionResponse(session, questionId, answers);
+      }
+    } catch (e) {
+      logError('[ws-server]', 'Message handling error:', String(e));
+      ws.send(JSON.stringify({ type: 'error', error: String(e) }));
+    }
+  });
+
+  ws.on('close', (code, reason) => {
+    const threadId = ws.data?.threadId;
+    if (threadId && sessions.has(threadId)) {
+      const session = sessions.get(threadId);
+      if (session.attachedSockets) {
+        session.attachedSockets.delete(ws);
+      }
+    }
+    log('[ws-server]', 'ws_close', { threadId, code, reason: String(reason || '') });
+  });
+
+  ws.on('error', (error) => {
+    logError('[ws-server]', 'WebSocket error:', String(error));
+  });
+});
+
+httpServer.listen(PORT, () => {
+  log('[ws-server]', 'Server listening', { port: PORT });
 });

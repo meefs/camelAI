@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-24-v26-litestream-0.5
+# Version: 2026-01-25-v30-node-ws
 set -eu
 
 # Trap errors and show what failed
@@ -726,8 +726,9 @@ fi
 # Start ws-server as claude user (runs on port 8080)
 # Uses Claude Agent SDK for streaming conversations
 # Run in foreground (no exec) so the shell stays alive for the trap
+# Using Node.js instead of Bun for stability
 echo "[entrypoint] Starting ws-server (SDK) as claude user on port 8080..." >&2
-su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && bun /app/ws-server.mjs" &
+su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && node /app/ws-server.mjs" &
 WS_PID=$!
 echo "[entrypoint] ws-server PID: $WS_PID" >&2
 

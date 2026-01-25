@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-25-v37-iterator-debug
+# Version: 2026-01-25-v41-node-ws
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -65,7 +65,7 @@ RUN bash -c '\
 # Layer 4: Sandbox dependencies - cached unless package.json changes
 WORKDIR /app
 COPY sandbox/package.json ./
-RUN bun install
+RUN npm install
 
 # Layer 5: App code (changes frequently) - copied after install for better caching
 COPY --chmod=755 sandbox/entrypoint.sh ./
