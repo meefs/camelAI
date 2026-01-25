@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-24-v29-disable-attribution-header
+# Version: 2026-01-25-v30-sdk-rewrite
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -28,9 +28,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     strace \
   && rm -rf /var/lib/apt/lists/* \
   && npm install -g bun shadcn verdaccio pm2 \
-  && curl -fsSL https://claude.ai/install.sh | bash -s 2.1.19 \
-  && cp /root/.local/share/claude/versions/2.1.19 /usr/local/bin/claude \
-  && chmod +x /usr/local/bin/claude \
   && curl -L -o /usr/local/bin/goofys https://github.com/kahing/goofys/releases/download/v0.24.0/goofys \
   && chmod +x /usr/local/bin/goofys \
   && curl -fsSL https://d.juicefs.com/install | sh - \
