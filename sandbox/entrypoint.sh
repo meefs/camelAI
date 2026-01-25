@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-25-v30-node-ws
+# Version: 2026-01-25-v31-faster-sync
 set -eu
 
 # Trap errors and show what failed
@@ -22,7 +22,7 @@ echo "[entrypoint] R2_BUCKET_NAME=${R2_BUCKET_NAME:-unset}" >&2
 TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
 JUICEFS_META_DIR="${JUICEFS_META_DIR:-/var/lib/juicefs}"
 JUICEFS_CACHE_DIR="${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}"
-JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-60s}"
+JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-5s}"
 JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-1024}"
 
 # Track PIDs for cleanup (Verdaccio managed by pm2)
@@ -76,7 +76,7 @@ dbs:
       endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
       region: auto
       force-path-style: true
-      sync-interval: 10s
+      sync-interval: 1s
 LSEOF
   echo "[entrypoint] Created Litestream config for ${JFS_META_FILE}" >&2
 }
@@ -574,9 +574,9 @@ cleanup() {
     echo "[entrypoint] JuiceFS unmounted" >&2
     # Sync to ensure metadata changes are visible to Litestream
     sync
-    # Give Litestream time to replicate final metadata changes (sync interval is 10s)
+    # Give Litestream time to replicate final metadata changes (sync interval is 1s)
     echo "[entrypoint] Waiting for Litestream to replicate final changes..." >&2
-    sleep 12
+    sleep 3
   fi
 
   # Step 3: Stop Litestream LAST (after JuiceFS unmount completes)
