@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync } from 'fs';
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises';
 
-const VERSION = '2026-01-25-sdk-rewrite-v2';
+const VERSION = '2026-01-25-sdk-rewrite-v3';
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
@@ -151,15 +151,16 @@ function buildSDKOptions(session) {
   }
 
   const options = {
-    permissionMode: 'bypassPermissions',
-    allowDangerouslySkipPermissions: true,
+    // Use 'default' permission mode so canUseTool callback is invoked
+    // The callback auto-allows all tools (except AskUserQuestion which needs user input)
+    permissionMode: 'default',
     model: 'opus',
     appendSystemPrompt: SYSTEM_PROMPT_APPEND.trim(),
     sessionId: session.threadId,
     cwd: existsSync(SYNC_DIR) ? SYNC_DIR : process.cwd(),
     includePartialMessages: true,
     env,
-    // Intercept AskUserQuestion tool calls
+    // Intercept all tool calls - auto-allow most, handle AskUserQuestion specially
     canUseTool: (toolName, input, opts) => handleCanUseTool(session, toolName, input, opts),
   };
 

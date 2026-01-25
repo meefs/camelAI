@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-25-v31-sdk-debug
+# Version: 2026-01-25-v32-fix-permission-mode
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
