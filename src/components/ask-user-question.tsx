@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -50,6 +50,17 @@ export function AskUserQuestion({ data, onSubmit, className }: AskUserQuestionPr
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+
+  // Reset state when a new question payload arrives
+  useEffect(() => {
+    setCurrentQuestionIndex(0);
+    setIsSubmitting(false);
+    const initial: Record<string, QuestionState> = {};
+    for (const q of data.questions) {
+      initial[q.question] = { selected: [], otherText: '', isOther: false };
+    }
+    setQuestionStates(initial);
+  }, [data.questionId]);
 
   const totalQuestions = data.questions.length;
   const hasMultipleQuestions = totalQuestions > 1;
