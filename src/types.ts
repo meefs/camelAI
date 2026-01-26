@@ -208,7 +208,10 @@ export interface AuthState {
   currentOrg: Organization | null;
   currentWorkspace?: WorkspaceWithAccess | null;
   orgs: OrgMembership[];
+  /** Workspaces in the current org only (for settings/management) */
   workspaces?: WorkspaceWithAccess[];
+  /** All workspaces across all orgs (for workspace switcher) */
+  allWorkspaces?: WorkspaceWithAccess[];
   loading: boolean;
   error: string | null;
 }

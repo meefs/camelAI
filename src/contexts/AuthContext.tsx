@@ -105,6 +105,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
       currentWorkspace: null,
       orgs: [],
       workspaces: [],
+      allWorkspaces: [],
       loading: true,
       error: null,
     }
@@ -124,6 +125,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
           currentWorkspace: data.currentWorkspace ?? null,
           orgs: data.orgs,
           workspaces: data.workspaces ?? [],
+          allWorkspaces: data.allWorkspaces ?? [],
           loading: false,
           error: null,
         });
@@ -134,6 +136,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
           currentWorkspace: null,
           orgs: [],
           workspaces: [],
+          allWorkspaces: [],
           loading: false,
           error: null,
         });
@@ -145,6 +148,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
         currentWorkspace: null,
         orgs: [],
         workspaces: [],
+        allWorkspaces: [],
         loading: false,
         error: String(e),
       });
@@ -237,6 +241,7 @@ export function AuthProvider({ children, initialState }: AuthProviderProps) {
       currentWorkspace: null,
       orgs: [],
       workspaces: [],
+      allWorkspaces: [],
       loading: false,
       error,
     });

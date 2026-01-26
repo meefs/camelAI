@@ -27,7 +27,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!name?.trim()) {
       return { error: 'Organization name is required' };
     }
-    const org = await authDO.createOrg(authEnv, name.trim(), actorId);
+    const { org } = await authDO.createOrg(authEnv, name.trim(), actorId);
     return { success: true, orgId: org.id };
   }
 

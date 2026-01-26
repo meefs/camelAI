@@ -42,8 +42,8 @@ function WorkspaceSwitcherSkeleton() {
 
 export function WorkspaceSwitcher() {
   const { isMobile } = useSidebar()
-  const { currentOrg, currentWorkspace, workspaces, orgs, switchWorkspace, loading } = useAuth()
-  const workspaceList = workspaces ?? []
+  const { currentOrg, currentWorkspace, allWorkspaces, orgs, switchWorkspace, loading } = useAuth()
+  const workspaceList = allWorkspaces ?? []
   const orgNameById = new Map(orgs.map((org) => [org.org_id, org.org_name]))
 
   if (loading && !currentWorkspace) {

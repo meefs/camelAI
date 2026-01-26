@@ -2,7 +2,7 @@ import type { Route } from './+types/auth.state';
 import { getSession, getSessionId } from '@/lib/cookies.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
-import { getOrg, getUserOrgs, listUserWorkspacesAcrossOrgs } from '@/lib/auth-do';
+import { getOrg, getUserOrgs, listUserWorkspaces, listUserWorkspacesAcrossOrgs } from '@/lib/auth-do';
 import type { AuthState } from '@/types';
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -33,11 +33,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const currentOrg = currentOrgMembership
     ? await getOrg(authEnv, currentOrgMembership.org_id)
     : null;
-  // Fetch workspaces across all orgs the user belongs to
-  const workspaces = await listUserWorkspacesAcrossOrgs(authEnv, session.user_id, orgs);
+
+  // Fetch workspaces for current org (for settings/management)
+  const workspaces = currentOrg
+    ? await listUserWorkspaces(authEnv, session.user_id, currentOrg.id)
+    : [];
+
+  // Fetch all workspaces across all orgs (for workspace switcher)
+  const allWorkspaces = await listUserWorkspacesAcrossOrgs(authEnv, session.user_id, orgs);
+
   const currentWorkspace = session.workspace_id
-    ? workspaces.find(w => w.id === session.workspace_id)
-    : workspaces.find(w => w.org_id === session.org_id) ?? workspaces[0];
+    ? allWorkspaces.find(w => w.id === session.workspace_id)
+    : workspaces[0] ?? allWorkspaces[0];
 
   const authState: AuthState = {
     user,
@@ -45,6 +52,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgs,
     currentWorkspace: currentWorkspace ?? null,
     workspaces,
+    allWorkspaces,
     loading: false,
     error: null,
   };
