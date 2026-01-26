@@ -8,6 +8,7 @@
 
 const CHIRIDION_PROTOCOL = 'chiridion://';
 const OUTPUTS_PREFIX = 'outputs/';
+const MNT_USER_OUTPUTS_PATH = '/mnt/user-outputs/';
 
 export interface ChiridionUrl {
   /** Full path starting with /outputs/ */
@@ -17,34 +18,46 @@ export interface ChiridionUrl {
 }
 
 /**
- * Check if a URL uses the chiridion:// protocol
+ * Check if a URL uses the chiridion:// protocol or /mnt/user-outputs/ path
  */
 export function isChiridionUrl(url: string | null | undefined): boolean {
-  return url?.startsWith(CHIRIDION_PROTOCOL) ?? false;
+  if (!url) return false;
+  return url.startsWith(CHIRIDION_PROTOCOL) || url.startsWith(MNT_USER_OUTPUTS_PATH);
 }
 
 /**
- * Parse a chiridion:// URL into its components
+ * Parse a chiridion:// URL or /mnt/user-outputs/ path into its components
  * Returns null if the URL is invalid
  *
  * Valid formats:
  * - chiridion://outputs/file.png
  * - chiridion://outputs/subdir/file.pdf
+ * - /mnt/user-outputs/file.png
+ * - /mnt/user-outputs/subdir/file.pdf
  */
 export function parseChiridionUrl(url: string): ChiridionUrl | null {
   if (!isChiridionUrl(url)) {
     return null;
   }
 
-  const withoutProtocol = url.slice(CHIRIDION_PROTOCOL.length);
+  let filePath: string;
 
-  // Must start with outputs/
-  if (!withoutProtocol.startsWith(OUTPUTS_PREFIX)) {
+  if (url.startsWith(CHIRIDION_PROTOCOL)) {
+    const withoutProtocol = url.slice(CHIRIDION_PROTOCOL.length);
+
+    // Must start with outputs/
+    if (!withoutProtocol.startsWith(OUTPUTS_PREFIX)) {
+      return null;
+    }
+
+    // Get the file path after outputs/
+    filePath = withoutProtocol.slice(OUTPUTS_PREFIX.length);
+  } else if (url.startsWith(MNT_USER_OUTPUTS_PATH)) {
+    // Handle /mnt/user-outputs/ paths
+    filePath = url.slice(MNT_USER_OUTPUTS_PATH.length);
+  } else {
     return null;
   }
-
-  // Get the file path after outputs/
-  const filePath = withoutProtocol.slice(OUTPUTS_PREFIX.length);
 
   // Validate - must have a filename
   if (!filePath || filePath.endsWith('/')) {
