@@ -6,8 +6,9 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { MessageCircleQuestion, Send } from 'lucide-react';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { MessageCircleQuestion, Send, ChevronUp, ChevronDown } from 'lucide-react';
 
 export interface QuestionOption {
   label: string;
@@ -48,6 +49,7 @@ export function AskUserQuestion({ data, onSubmit, className }: AskUserQuestionPr
     return initial;
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(true);
 
   const updateQuestionState = useCallback((questionText: string, update: Partial<QuestionState>) => {
     setQuestionStates(prev => ({
@@ -120,159 +122,182 @@ export function AskUserQuestion({ data, onSubmit, className }: AskUserQuestionPr
   return (
     <div
       className={cn(
-        "rounded-xl border border-primary/20 bg-primary/5",
+        "rounded-xl border border-border/50 bg-background/95 backdrop-blur-sm shadow-sm",
         "overflow-hidden",
         "animate-in fade-in-0 slide-in-from-bottom-2 duration-200",
         className
       )}
     >
-      {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-primary/20 bg-primary/10">
-        <MessageCircleQuestion className="h-5 w-5 text-primary" />
-        <span className="text-sm font-medium text-primary">Claude needs your input</span>
-      </div>
+      <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
+        {/* Header */}
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              "flex w-full items-center gap-2 px-4 py-3 text-sm text-muted-foreground",
+              "hover:bg-muted/30 transition-colors",
+              "cursor-pointer"
+            )}
+          >
+            <MessageCircleQuestion className="h-4 w-4 text-muted-foreground/60" />
+            <span className="flex-1 text-left">Claude needs your input</span>
+            {isExpanded ? (
+              <ChevronUp className="h-4 w-4 text-muted-foreground/40" />
+            ) : (
+              <ChevronDown className="h-4 w-4 text-muted-foreground/40" />
+            )}
+          </button>
+        </CollapsibleTrigger>
 
-      {/* Questions */}
-      <div className="p-4 space-y-6">
-        {data.questions.map((q, qIndex) => {
-          const state = questionStates[q.question];
-
-          return (
-            <div key={`${q.question}-${qIndex}`} className="space-y-3">
-              {/* Question header and text */}
-              <div className="space-y-1">
-                <span className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-muted text-muted-foreground">
-                  {q.header}
-                </span>
-                <p className="text-sm font-medium text-foreground">{q.question}</p>
-              </div>
-
-              {/* Options */}
-              {q.multiSelect ? (
-                <div className="space-y-2">
-                  {q.options.map((opt, optIndex) => (
-                    <label
-                      key={`${opt.label}-${optIndex}`}
-                      className={cn(
-                        "flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors",
-                        state.selected.includes(opt.label)
-                          ? "border-primary bg-primary/5"
-                          : "border-border hover:border-primary/50 hover:bg-muted/50"
-                      )}
-                    >
-                      <Checkbox
-                        checked={state.selected.includes(opt.label)}
-                        onCheckedChange={(checked) => handleMultiSelect(q.question, opt.label, !!checked)}
-                        className="mt-0.5"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-foreground">{opt.label}</p>
-                        <p className="text-xs text-muted-foreground">{opt.description}</p>
-                      </div>
-                    </label>
-                  ))}
-
-                  {/* Other option for multi-select */}
-                  <label
-                    className={cn(
-                      "flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors",
-                      state.isOther
-                        ? "border-primary bg-primary/5"
-                        : "border-border hover:border-primary/50 hover:bg-muted/50"
-                    )}
-                  >
-                    <Checkbox
-                      checked={state.isOther}
-                      onCheckedChange={(checked) => handleMultiSelect(q.question, '__other__', !!checked)}
-                      className="mt-0.5"
-                    />
-                    <div className="flex-1 min-w-0 space-y-2">
-                      <p className="text-sm font-medium text-foreground">Other</p>
-                      {state.isOther && (
-                        <Input
-                          type="text"
-                          placeholder="Type your answer..."
-                          value={state.otherText}
-                          onChange={(e) => handleOtherTextChange(q.question, e.target.value)}
-                          className="h-8 text-sm"
-                          autoFocus
-                        />
-                      )}
-                    </div>
-                  </label>
-                </div>
-              ) : (
-                <RadioGroup
-                  value={state.isOther ? '__other__' : (state.selected[0] || '')}
-                  onValueChange={(value: string) => handleSingleSelect(q.question, value)}
-                  className="space-y-2"
-                >
-                  {q.options.map((opt, optIndex) => (
-                    <label
-                      key={`${opt.label}-${optIndex}`}
-                      className={cn(
-                        "flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors",
-                        state.selected.includes(opt.label)
-                          ? "border-primary bg-primary/5"
-                          : "border-border hover:border-primary/50 hover:bg-muted/50"
-                      )}
-                    >
-                      <RadioGroupItem value={opt.label} className="mt-0.5" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-foreground">{opt.label}</p>
-                        <p className="text-xs text-muted-foreground">{opt.description}</p>
-                      </div>
-                    </label>
-                  ))}
-
-                  {/* Other option for single-select */}
-                  <label
-                    className={cn(
-                      "flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors",
-                      state.isOther
-                        ? "border-primary bg-primary/5"
-                        : "border-border hover:border-primary/50 hover:bg-muted/50"
-                    )}
-                  >
-                    <RadioGroupItem value="__other__" className="mt-0.5" />
-                    <div className="flex-1 min-w-0 space-y-2">
-                      <p className="text-sm font-medium text-foreground">Other</p>
-                      {state.isOther && (
-                        <Input
-                          type="text"
-                          placeholder="Type your answer..."
-                          value={state.otherText}
-                          onChange={(e) => handleOtherTextChange(q.question, e.target.value)}
-                          className="h-8 text-sm"
-                          autoFocus
-                        />
-                      )}
-                    </div>
-                  </label>
-                </RadioGroup>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Submit button */}
-      <div className="px-4 pb-4">
-        <Button
-          onClick={handleSubmit}
-          disabled={!isValid || isSubmitting}
-          className="w-full"
-        >
-          {isSubmitting ? (
-            <>Submitting...</>
-          ) : (
-            <>
-              <Send className="h-4 w-4 mr-2" />
-              Submit Response
-            </>
+        <CollapsibleContent
+          className={cn(
+            "overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up",
+            "motion-reduce:animate-none"
           )}
-        </Button>
-      </div>
+        >
+          <ScrollArea viewportClassName="max-h-[400px]">
+            {/* Questions */}
+            <div className="px-4 pb-3 space-y-5">
+              {data.questions.map((q, qIndex) => {
+                const state = questionStates[q.question];
+
+                return (
+                  <div key={`${q.question}-${qIndex}`} className="space-y-3">
+                    {/* Question header and text */}
+                    <div className="space-y-1">
+                      <span className="text-xs text-muted-foreground/60">
+                        {q.header}
+                      </span>
+                      <p className="text-sm text-foreground">{q.question}</p>
+                    </div>
+
+                    {/* Options */}
+                    {q.multiSelect ? (
+                      <div className="space-y-1">
+                        {q.options.map((opt, optIndex) => (
+                          <label
+                            key={`${opt.label}-${optIndex}`}
+                            className={cn(
+                              "flex items-start gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
+                              "transition-colors hover:bg-muted/20"
+                            )}
+                          >
+                            <Checkbox
+                              checked={state.selected.includes(opt.label)}
+                              onCheckedChange={(checked) => handleMultiSelect(q.question, opt.label, !!checked)}
+                              className="mt-0.5"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-muted-foreground">{opt.label}</p>
+                              {opt.description && (
+                                <p className="text-xs text-muted-foreground/60">{opt.description}</p>
+                              )}
+                            </div>
+                          </label>
+                        ))}
+
+                        {/* Other option for multi-select */}
+                        <label
+                          className={cn(
+                            "flex items-start gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
+                            "transition-colors hover:bg-muted/20"
+                          )}
+                        >
+                          <Checkbox
+                            checked={state.isOther}
+                            onCheckedChange={(checked) => handleMultiSelect(q.question, '__other__', !!checked)}
+                            className="mt-0.5"
+                          />
+                          <div className="flex-1 min-w-0 space-y-2">
+                            <p className="text-sm text-muted-foreground">Other</p>
+                            {state.isOther && (
+                              <Input
+                                type="text"
+                                placeholder="Type your answer..."
+                                value={state.otherText}
+                                onChange={(e) => handleOtherTextChange(q.question, e.target.value)}
+                                className="h-8 text-sm"
+                                autoFocus
+                              />
+                            )}
+                          </div>
+                        </label>
+                      </div>
+                    ) : (
+                      <RadioGroup
+                        value={state.isOther ? '__other__' : (state.selected[0] || '')}
+                        onValueChange={(value: string) => handleSingleSelect(q.question, value)}
+                        className="space-y-1"
+                      >
+                        {q.options.map((opt, optIndex) => (
+                          <label
+                            key={`${opt.label}-${optIndex}`}
+                            className={cn(
+                              "flex items-start gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
+                              "transition-colors hover:bg-muted/20"
+                            )}
+                          >
+                            <RadioGroupItem value={opt.label} className="mt-0.5" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-muted-foreground">{opt.label}</p>
+                              {opt.description && (
+                                <p className="text-xs text-muted-foreground/60">{opt.description}</p>
+                              )}
+                            </div>
+                          </label>
+                        ))}
+
+                        {/* Other option for single-select */}
+                        <label
+                          className={cn(
+                            "flex items-start gap-3 py-2 px-2 -mx-2 rounded-md cursor-pointer",
+                            "transition-colors hover:bg-muted/20"
+                          )}
+                        >
+                          <RadioGroupItem value="__other__" className="mt-0.5" />
+                          <div className="flex-1 min-w-0 space-y-2">
+                            <p className="text-sm text-muted-foreground">Other</p>
+                            {state.isOther && (
+                              <Input
+                                type="text"
+                                placeholder="Type your answer..."
+                                value={state.otherText}
+                                onChange={(e) => handleOtherTextChange(q.question, e.target.value)}
+                                className="h-8 text-sm"
+                                autoFocus
+                              />
+                            )}
+                          </div>
+                        </label>
+                      </RadioGroup>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
+
+          {/* Submit button */}
+          <div className="flex justify-end px-4 pb-3 pt-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleSubmit}
+              disabled={!isValid || isSubmitting}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              {isSubmitting ? (
+                <>Submitting...</>
+              ) : (
+                <>
+                  Submit
+                  <Send className="ml-2 h-3.5 w-3.5" />
+                </>
+              )}
+            </Button>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }
