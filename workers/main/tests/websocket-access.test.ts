@@ -27,7 +27,7 @@ describe('WebSocket access guard', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'WS Access Org', ownerId);
+    const { org } = await createOrg(testEnv, 'WS Access Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);

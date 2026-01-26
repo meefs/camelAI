@@ -28,6 +28,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     currentWorkspace: authContext.currentWorkspace,
     orgs: authContext.orgs,
     workspaces: authContext.workspaces,
+    allWorkspaces: authContext.allWorkspaces,
     loading: false,
     error: null,
   };

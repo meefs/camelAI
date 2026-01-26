@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react"
 import { useEffect, useRef } from "react"
-import { useNavigate } from 'react-router';
+import { useRevalidator } from 'react-router';
 
 import { useAuth } from "@/contexts/AuthContext"
 
@@ -11,7 +11,7 @@ interface SettingsRefreshWrapperProps {
 }
 
 export function SettingsRefreshWrapper({ children }: SettingsRefreshWrapperProps) {
-  const navigate = useNavigate()
+  const revalidator = useRevalidator()
   const { currentOrg, currentWorkspace } = useAuth()
   const prevOrgRef = useRef<string | undefined>(currentOrg?.id)
   const prevWorkspaceRef = useRef<string | undefined>(currentWorkspace?.id)
@@ -29,13 +29,16 @@ export function SettingsRefreshWrapper({ children }: SettingsRefreshWrapperProps
     if (orgChanged || workspaceChanged) {
       prevOrgRef.current = nextOrgId
       prevWorkspaceRef.current = nextWorkspaceId
-      // TODO: implement refresh
+      // Revalidate to refresh settings data for new org/workspace
+      if (revalidator.state === 'idle') {
+        revalidator.revalidate()
+      }
       return
     }
 
     prevOrgRef.current = nextOrgId
     prevWorkspaceRef.current = nextWorkspaceId
-  }, [currentOrg?.id, currentWorkspace?.id, navigate])
+  }, [currentOrg?.id, currentWorkspace?.id, revalidator])
 
   return <>{children}</>
 }

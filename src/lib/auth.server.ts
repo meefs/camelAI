@@ -1,11 +1,11 @@
 import { redirect, type AppLoadContext } from 'react-router';
 import { getEnv } from './cloudflare.server';
 import { getSessionIdFromRequest } from './cookies.server';
-import { getSession as getSessionKV } from '../../workers/main/src/session-kv';
+import { getSession as getSessionKV, updateSession } from '../../workers/main/src/session-kv';
 import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
-import { getUserOrgs, listUserWorkspaces, isOrgAdmin, getWorkspaceAccess } from './auth-do';
+import { getUserOrgs, listUserWorkspaces, listUserWorkspacesAcrossOrgs, isOrgAdmin, getWorkspaceAccess } from './auth-do';
 
 // Re-export AuthEnv and getAuthEnv for routes that need them
 export { getAuthEnv, type AuthEnv } from './auth-helpers';
@@ -25,7 +25,10 @@ export interface AuthContext extends UserContext {
   currentOrg: Organization;
   currentWorkspace: WorkspaceWithAccess | null;
   orgs: OrgMembership[];
+  /** Workspaces in the current org only (for settings/management) */
   workspaces: WorkspaceWithAccess[];
+  /** All workspaces across all orgs (for workspace switcher) */
+  allWorkspaces: WorkspaceWithAccess[];
 }
 
 /**
@@ -118,22 +121,46 @@ export async function getAuthContext(
   // Get current org info directly from DO
   const orgInfo = await authEnv.ORG.get(authEnv.ORG.idFromName(userContext.session.org_id)).getInfo();
   if (!orgInfo) return null;
-  const currentOrg = orgInfo;
+  const currentOrg: Organization = orgInfo;
 
   // Get user's org memberships
   const orgs = await getUserOrgs(authEnv, userContext.session.user_id);
 
-  // Get workspaces for current org
+  // Get workspaces for current org (for settings/management)
   const workspaces = await listUserWorkspaces(
     authEnv,
     userContext.session.user_id,
     currentOrg.id
   );
 
-  // Find current workspace
-  const currentWorkspace = userContext.session.workspace_id
-    ? workspaces.find((ws) => ws.id === userContext.session.workspace_id) || null
-    : null;
+  // Get all workspaces across all orgs (for workspace switcher)
+  const allWorkspaces = await listUserWorkspacesAcrossOrgs(
+    authEnv,
+    userContext.session.user_id,
+    orgs
+  );
+
+  // Select current workspace - must be from current org to maintain consistency
+  // If no workspaces in current org, currentWorkspace will be null and UI shows NoWorkspacesError
+  const sessionWorkspaceId = userContext.session.workspace_id;
+  const sessionWorkspaceStillValid = sessionWorkspaceId
+    ? workspaces.some((ws) => ws.id === sessionWorkspaceId)
+    : false;
+
+  const currentWorkspace = sessionWorkspaceStillValid
+    ? workspaces.find((ws) => ws.id === sessionWorkspaceId)!
+    : workspaces[0] ?? null;
+
+  // Sync session if workspace changed (stale session.workspace_id or fallback to first workspace)
+  const newWorkspaceId = currentWorkspace?.id ?? null;
+  if (newWorkspaceId !== sessionWorkspaceId) {
+    // Update session in background - don't block the response
+    void updateSession(env.SESSIONS, userContext.sessionId, {
+      ...userContext.session,
+      workspace_id: newWorkspaceId,
+      last_accessed: Date.now(),
+    });
+  }
 
   return {
     ...userContext,
@@ -141,6 +168,7 @@ export async function getAuthContext(
     currentWorkspace,
     orgs,
     workspaces,
+    allWorkspaces,
   };
 }
 

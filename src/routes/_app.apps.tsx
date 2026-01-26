@@ -9,6 +9,7 @@ import {
 } from '@/lib/auth-do';
 import AppsClient from '@/components/pages/apps/apps-client';
 import { AppsLoadingSkeleton } from '@/components/pages/apps/apps-loading';
+import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { WorkerScriptWithCreator } from '@/types';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
@@ -147,11 +148,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     orgId: authContext.currentOrg.id,
     hostname,
     renderedAt,
+    hasWorkspace: Boolean(workspaceId),
   };
 }
 
 export default function AppsPage() {
-  const { apps, orgId, hostname, renderedAt } = useLoaderData<typeof loader>();
+  const { apps, orgId, hostname, renderedAt, hasWorkspace } = useLoaderData<typeof loader>();
+
+  if (!hasWorkspace) {
+    return <NoWorkspacesError />;
+  }
 
   return (
     <AppsClient

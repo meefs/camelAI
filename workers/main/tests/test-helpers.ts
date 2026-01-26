@@ -125,18 +125,18 @@ export async function handleOrphanedUserLogin(
   const profile = await userStub.getProfile();
   if (!profile || !profile.is_orphaned) return null;
 
-  // Create a new org for the orphaned user
-  const org = await createOrg(env, `${profile.name}'s Workspace`, userId);
+  // Create a new org for the orphaned user (which also creates default workspace)
+  const { org, defaultWorkspaceId } = await createOrg(env, `${profile.name}'s Workspace`, userId);
 
-  // Get default workspace
-  const workspaces = await listOrgWorkspaces(env, org.id);
-  const workspace = workspaces[0];
+  // Get default workspace info
+  const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(defaultWorkspaceId));
+  const workspace = await wsStub.getInfo();
 
   await userStub.setOrphaned(false);
 
   return {
     org: { id: org.id, name: org.name },
-    workspace: { id: workspace.id, name: workspace.name },
+    workspace: { id: workspace!.id, name: workspace!.name },
   };
 }
 
@@ -146,7 +146,7 @@ export async function createOrg(
   env: TestEnv,
   name: string,
   createdBy: string
-): Promise<{ id: string; name: string; created_by: string }> {
+): Promise<{ org: { id: string; name: string; created_by: string }; defaultWorkspaceId: string }> {
   const orgId = generateId();
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
 
@@ -157,7 +157,7 @@ export async function createOrg(
   const userStub = env.USER.get(env.USER.idFromName(createdBy));
   await userStub.addOrg(orgId, 'owner', defaultWorkspaceId);
 
-  return { id: org.id, name: org.name, created_by: org.created_by };
+  return { org: { id: org.id, name: org.name, created_by: org.created_by }, defaultWorkspaceId };
 }
 
 export async function getOrg(
@@ -521,6 +521,31 @@ export async function listUserWorkspaces(
     const access = member?.access_level ?? 'full';
     if (access !== 'none') {
       result.push({ id: ws.id, name: ws.name, access_level: access });
+    }
+  }
+  return result;
+}
+
+export async function listUserWorkspacesAcrossOrgs(
+  env: TestEnv,
+  userId: string
+): Promise<Array<{ id: string; name: string; org_id: string; access_level: WorkspaceAccessLevelDO }>> {
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  const orgs = await userStub.getOrgs();
+
+  const result: Array<{ id: string; name: string; org_id: string; access_level: WorkspaceAccessLevelDO }> = [];
+  for (const org of orgs) {
+    const orgStub = env.ORG.get(env.ORG.idFromName(org.org_id));
+    const workspaces = await orgStub.getWorkspaces();
+
+    for (const ws of workspaces) {
+      if (ws.archived) continue;
+      const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+      const member = await workspaceStub.getMemberAccess(userId);
+      const access = member?.access_level ?? 'full';
+      if (access !== 'none') {
+        result.push({ id: ws.id, name: ws.name, org_id: org.org_id, access_level: access });
+      }
     }
   }
   return result;

@@ -55,7 +55,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
   it('creates a workspace and lists it under the org', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Workspace Owner');
-    const org = await createOrg(testEnv, 'Workspace Org', userId);
+    const { org } = await createOrg(testEnv, 'Workspace Org', userId);
 
     const workspace = await createWorkspace(testEnv, org.id, 'Design', userId, 'Design workspace');
 
@@ -70,7 +70,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
   it('updates workspace metadata and records audit log entries', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Workspace Owner');
-    const org = await createOrg(testEnv, 'Audit Org', userId);
+    const { org } = await createOrg(testEnv, 'Audit Org', userId);
 
     const workspace = await createWorkspace(testEnv, org.id, 'Initial', userId);
     const updated = await updateWorkspace(
@@ -93,7 +93,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
   it('archives workspace and preserves metadata for audit', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Archive Owner');
-    const org = await createOrg(testEnv, 'Archive Org', userId);
+    const { org } = await createOrg(testEnv, 'Archive Org', userId);
 
     const workspace = await createWorkspace(testEnv, org.id, 'Archive Workspace', userId);
     await archiveWorkspace(testEnv, workspace.id, userId);
@@ -123,7 +123,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
     it('blocks archiving the only workspace in an org', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Solo Owner');
-      const org = await createOrg(testEnv, 'Solo Org', userId);
+      const { org } = await createOrg(testEnv, 'Solo Org', userId);
 
       const workspaces = await listOrgWorkspaces(testEnv, org.id);
       expect(workspaces).toHaveLength(1);
@@ -137,7 +137,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
     it('keeps archived workspace entries archived after metadata updates', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Archive Owner');
-      const org = await createOrg(testEnv, 'Archive Metadata Org', userId);
+      const { org } = await createOrg(testEnv, 'Archive Metadata Org', userId);
 
       const workspace = await createWorkspace(testEnv, org.id, 'Archive Me', userId);
 
@@ -152,7 +152,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
     it('repairs session workspace when the current workspace is archived', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Session Owner');
-      const org = await createOrg(testEnv, 'Session Org', userId);
+      const { org } = await createOrg(testEnv, 'Session Org', userId);
 
       const secondWorkspace = await createWorkspace(testEnv, org.id, 'Second', userId);
       const { sessionId } = await createTestSession(userId, org.id);
@@ -174,7 +174,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
     it('clears last_workspace_id when the workspace is archived', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Org Owner');
-      const org = await createOrg(testEnv, 'Last Workspace Org', userId);
+      const { org } = await createOrg(testEnv, 'Last Workspace Org', userId);
       const secondWorkspace = await createWorkspace(testEnv, org.id, 'Second', userId);
       const { sessionId } = await createTestSession(userId, org.id);
 
@@ -195,7 +195,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Access Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Access Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -223,7 +223,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Membership Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Membership Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -247,7 +247,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
   it('creates integration and stores encrypted credentials', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Integration Owner');
-    const org = await createOrg(testEnv, 'Integration Org', userId);
+    const { org } = await createOrg(testEnv, 'Integration Org', userId);
     const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
     const workspace = workspaces[0];
     expect(workspace).toBeDefined();
@@ -276,7 +276,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
   it('updates integration and logs audit entry', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Integration Owner');
-    const org = await createOrg(testEnv, 'Integration Audit Org', userId);
+    const { org } = await createOrg(testEnv, 'Integration Audit Org', userId);
     const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
     const workspace = workspaces[0];
     expect(workspace).toBeDefined();
@@ -301,7 +301,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
   it('deletes integration (soft delete) and logs audit entry', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Integration Owner');
-    const org = await createOrg(testEnv, 'Integration Delete Org', userId);
+    const { org } = await createOrg(testEnv, 'Integration Delete Org', userId);
     const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
     const workspace = workspaces[0];
     expect(workspace).toBeDefined();
@@ -323,7 +323,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
   it('does not expose deleted integrations in container env vars', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Env Vars Owner');
-    const org = await createOrg(testEnv, 'Env Vars Delete Org', userId);
+    const { org } = await createOrg(testEnv, 'Env Vars Delete Org', userId);
     const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
     const workspace = workspaces[0];
     expect(workspace).toBeDefined();
@@ -344,7 +344,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
   it('getIntegrations excludes soft-deleted entries', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Integration Owner');
-    const org = await createOrg(testEnv, 'Integration List Org', userId);
+    const { org } = await createOrg(testEnv, 'Integration List Org', userId);
     const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
     const workspace = workspaces[0];
     expect(workspace).toBeDefined();
@@ -367,7 +367,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Member Access Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Member Access Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -385,7 +385,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
   it('exposes integration env vars for container', async () => {
     const email = testEmail();
     const { userId } = await createUser(testEnv, email, 'password123', 'Integration Owner');
-    const org = await createOrg(testEnv, 'Env Vars Org', userId);
+    const { org } = await createOrg(testEnv, 'Env Vars Org', userId);
     const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
     const workspace = workspaces[0];
     expect(workspace).toBeDefined();
@@ -406,7 +406,7 @@ describe('Workspace DO (full-stack with DOs)', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Access Audit Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Access Audit Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);

@@ -6,6 +6,7 @@ import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import HistoryClient from '@/components/pages/history/history-client';
 import { HistoryLoadingSkeleton } from '@/components/history/history-loading';
+import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { User } from '@/types';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
@@ -86,6 +87,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       offset: 0,
       limit: PAGE_SIZE,
       orgId: authContext.currentOrg.id,
+      hasWorkspace: false,
     };
   }
 
@@ -138,12 +140,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     offset: page.offset,
     limit: page.limit,
     orgId: authContext.currentOrg.id,
+    hasWorkspace: true,
   };
 }
 
 export default function HistoryPage() {
-  const { threads, total, offset, limit, orgId } =
+  const { threads, total, offset, limit, orgId, hasWorkspace } =
     useLoaderData<typeof loader>();
+
+  if (!hasWorkspace) {
+    return <NoWorkspacesError />;
+  }
 
   return (
     <HistoryClient

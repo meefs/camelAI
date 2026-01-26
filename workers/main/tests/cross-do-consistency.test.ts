@@ -23,6 +23,7 @@ import {
   createWorkspace,
   archiveWorkspace,
   listOrgWorkspaces,
+  listUserWorkspacesAcrossOrgs,
   isOrgMember,
   getOrgAuditLog,
   type TestEnv,
@@ -38,7 +39,7 @@ describe('cross-DO consistency', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Member Sync Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Member Sync Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -55,7 +56,7 @@ describe('cross-DO consistency', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Remove Sync Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Remove Sync Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -74,7 +75,7 @@ describe('cross-DO consistency', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Role Sync Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Role Sync Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -91,7 +92,7 @@ describe('cross-DO consistency', () => {
   it('createWorkspace adds to OrgDO.workspaces', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
-    const org = await createOrg(testEnv, 'Workspace Registry Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Workspace Registry Org', ownerId);
 
     const workspace = await createWorkspace(testEnv, org.id, 'Design', ownerId, 'Design workspace');
     const workspaces = await listOrgWorkspaces(testEnv, org.id);
@@ -101,7 +102,7 @@ describe('cross-DO consistency', () => {
   it('archiveWorkspace updates OrgDO.workspaces', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
-    const org = await createOrg(testEnv, 'Archive Registry Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Archive Registry Org', ownerId);
 
     const workspace = await createWorkspace(testEnv, org.id, 'Archive Me', ownerId);
     await archiveWorkspace(testEnv, workspace.id, ownerId);
@@ -115,7 +116,7 @@ describe('cross-DO consistency', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Orphan Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Orphan Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -131,7 +132,7 @@ describe('cross-DO consistency', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Invite Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Invite Org', ownerId);
 
     await checkUserOrphaned(testEnv, memberId);
 
@@ -164,7 +165,7 @@ describe('cross-DO consistency', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Ownership Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Ownership Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -188,7 +189,7 @@ describe('cross-DO consistency', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Archive Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Archive Org', ownerId);
 
     await createWorkspace(testEnv, org.id, 'Extra Workspace', ownerId);
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
@@ -225,7 +226,7 @@ describe('cross-DO consistency', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Audit Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Audit Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -243,7 +244,7 @@ describe('cross-DO consistency', () => {
   it('logs org update and workspace creation events', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
-    const org = await createOrg(testEnv, 'Audit Updates Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Audit Updates Org', ownerId);
 
     await updateOrgName(testEnv, org.id, 'Audit Updates Org Renamed', ownerId);
     const workspace = await createWorkspace(testEnv, org.id, 'New Workspace', ownerId);
@@ -264,7 +265,7 @@ describe('cross-DO consistency', () => {
     const memberEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
     const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
-    const org = await createOrg(testEnv, 'Ownership Log Org', ownerId);
+    const { org } = await createOrg(testEnv, 'Ownership Log Org', ownerId);
 
     const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
     await acceptInvitation(testEnv, org.id, invitation.id, memberId);
@@ -281,5 +282,50 @@ describe('cross-DO consistency', () => {
     expect(transferEntry?.target_id).toBe(memberId);
     const details = transferEntry?.details as { from_user_id?: string } | undefined;
     expect(details?.from_user_id).toBe(ownerId);
+  });
+
+  it('listUserWorkspacesAcrossOrgs returns workspaces from all user orgs', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Multi-Org User');
+
+    // Create two orgs with workspaces
+    const { org: org1, defaultWorkspaceId: ws1Id } = await createOrg(testEnv, 'Org One', userId);
+    const { org: org2, defaultWorkspaceId: ws2Id } = await createOrg(testEnv, 'Org Two', userId);
+
+    // Create additional workspace in org1
+    const extraWorkspace = await createWorkspace(testEnv, org1.id, 'Extra Workspace', userId);
+
+    // List all workspaces across orgs
+    const allWorkspaces = await listUserWorkspacesAcrossOrgs(testEnv, userId);
+
+    // Should have 3 workspaces total (2 defaults + 1 extra)
+    expect(allWorkspaces.length).toBe(3);
+
+    // Should include workspaces from both orgs
+    const org1Workspaces = allWorkspaces.filter((ws) => ws.org_id === org1.id);
+    const org2Workspaces = allWorkspaces.filter((ws) => ws.org_id === org2.id);
+
+    expect(org1Workspaces.length).toBe(2); // default + extra
+    expect(org2Workspaces.length).toBe(1); // default only
+
+    // Verify specific workspace IDs
+    expect(allWorkspaces.some((ws) => ws.id === ws1Id)).toBe(true);
+    expect(allWorkspaces.some((ws) => ws.id === ws2Id)).toBe(true);
+    expect(allWorkspaces.some((ws) => ws.id === extraWorkspace.id)).toBe(true);
+  });
+
+  it('createOrg returns defaultWorkspaceId that is different from org.id', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Workspace ID User');
+
+    const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Test Org', userId);
+
+    // The bug was using org.id as workspace ID - they must be different UUIDs
+    expect(defaultWorkspaceId).toBeDefined();
+    expect(defaultWorkspaceId).not.toBe(org.id);
+
+    // Verify the workspace actually exists
+    const workspaces = await listOrgWorkspaces(testEnv, org.id);
+    expect(workspaces.some((ws) => ws.id === defaultWorkspaceId)).toBe(true);
   });
 });

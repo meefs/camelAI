@@ -27,7 +27,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!name?.trim()) {
       return { error: 'Organization name is required' };
     }
-    const org = await authDO.createOrg(authEnv, name.trim(), actorId);
+    const { org } = await authDO.createOrg(authEnv, name.trim(), actorId);
     return { success: true, orgId: org.id };
   }
 
@@ -45,17 +45,28 @@ export async function action({ request, context }: Route.ActionArgs) {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
 
-  // Map orgs to the summary format expected by the component
-  const orgSummaries = authContext.orgs.map(org => ({
-    org_id: org.org_id,
-    org_name: org.org_name,
-    role: org.role,
-    joined_at: org.joined_at,
-    billing_status: 'free' as const, // TODO: Get from org data
-    member_count: 1, // TODO: Get actual count
-    workspace_count: 1, // TODO: Get actual count
-  }));
+  // Fetch member and workspace counts for each org in parallel
+  const orgSummaries = await Promise.all(
+    authContext.orgs.map(async (org) => {
+      const [members, workspaces] = await Promise.all([
+        authDO.getOrgMembers(authEnv, org.org_id),
+        authDO.listOrgWorkspaces(authEnv, org.org_id),
+      ]);
+
+      return {
+        org_id: org.org_id,
+        org_name: org.org_name,
+        role: org.role,
+        joined_at: org.joined_at,
+        billing_status: 'free' as const, // TODO: Get from org data
+        member_count: members.length,
+        workspace_count: workspaces.length,
+      };
+    })
+  );
 
   return {
     orgs: orgSummaries,

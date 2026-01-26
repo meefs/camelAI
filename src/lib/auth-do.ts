@@ -326,7 +326,7 @@ export async function getOrg(env: AuthEnv, orgId: string): Promise<Organization 
 }
 
 
-export async function createOrg(env: AuthEnv, name: string, createdBy: string): Promise<Organization> {
+export async function createOrg(env: AuthEnv, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
   const orgId = crypto.randomUUID();
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   // createOrg now creates the default workspace internally
@@ -336,7 +336,7 @@ export async function createOrg(env: AuthEnv, name: string, createdBy: string): 
   const userStub = env.USER.get(env.USER.idFromName(createdBy));
   await userStub.addOrg(orgId, 'owner', defaultWorkspaceId);
 
-  return info;
+  return { org: info, defaultWorkspaceId };
 }
 
 
@@ -576,17 +576,17 @@ export async function handleOrphanedUserLogin(
 
   const baseName = profile.name?.trim() || 'My';
   const orgName = `${baseName}'s Organization`;
-  const org = await createOrg(env, orgName, userId);
+  const { org, defaultWorkspaceId } = await createOrg(env, orgName, userId);
 
-  const workspaces = await listUserWorkspaces(env, userId, org.id);
-  const workspace = workspaces[0];
+  // Get the default workspace info
+  const workspace = await getWorkspace(env, defaultWorkspaceId);
   if (!workspace) {
     throw new Error('Failed to create default workspace');
   }
 
   await userStub.setOrphaned(false);
 
-  return { org, workspace };
+  return { org, workspace: { ...workspace, access_level: 'full' } };
 }
 
 export async function getOrgAuditLog(
