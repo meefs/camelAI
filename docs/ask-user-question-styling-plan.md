@@ -55,8 +55,9 @@ The current `AskUserQuestion` component uses primary accent colors and bold styl
 │  ?  Claude needs your input                               ▾    │ ← MUTED, SUBTLE
 ├ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┤
 │                                                                 │
-│   What framework should I use?                 ← QUESTION ONLY  │
-│                                                  (no badge)     │
+│   Library                                      ← SMALL, MUTED   │
+│   What framework should I use?                                  │
+│                                                                 │
 │   ○ React                                                       │
 │     A popular library for building UIs         ← INLINE, SIMPLE │
 │                                                                 │
@@ -105,7 +106,7 @@ The current `AskUserQuestion` component uses primary accent colors and bold styl
 - Clickable to collapse/expand (Radix Collapsible)
 - Hover state: `hover:bg-muted/30`
 
-### 3. Question Header Badge → Removed
+### 3. Question Header Badge → Simple Text
 
 **Before:**
 ```tsx
@@ -114,9 +115,14 @@ The current `AskUserQuestion` component uses primary accent colors and bold styl
 </span>
 ```
 
-**After:** Remove entirely.
+**After:**
+```tsx
+<span className="text-xs text-muted-foreground/60">
+  {q.header}
+</span>
+```
 
-The `header` field (e.g., "Auth method", "Library") comes from the Claude SDK but adds visual noise without much value. The question text itself is self-explanatory. We simply don't render `q.header` anymore.
+The `header` field (e.g., "Auth method", "Library") comes from the Claude SDK. Keep it since the agent chose to provide context, but remove the heavy badge styling - just render as simple muted text above the question.
 
 ### 4. Option Cards → Option Rows
 
@@ -271,8 +277,11 @@ src/components/
 ### Question Section
 
 ```tsx
-<div className="px-4">
-  {/* Question text only - no header badge */}
+<div className="space-y-1 px-4">
+  {/* Question header - subtle text, no badge */}
+  <span className="text-xs text-muted-foreground/60">{q.header}</span>
+
+  {/* Question text */}
   <p className="text-sm text-foreground">{q.question}</p>
 </div>
 ```
@@ -383,6 +392,7 @@ Since no tests currently exist for this component, add the following:
 describe('AskUserQuestion', () => {
   // Rendering
   it('renders question text and options');
+  it('renders question header as muted text');
   it('renders "Other" option for each question');
 
   // Single-select behavior
@@ -416,7 +426,7 @@ describe('AskUserQuestion', () => {
 - [ ] Container has subtle border and background blur
 - [ ] Header shows muted icon and text
 - [ ] Chevron indicates expand/collapse state
-- [ ] Question text renders without header badge
+- [ ] Question header renders as subtle muted text (no badge styling)
 - [ ] Option rows have minimal styling (no heavy borders)
 - [ ] Hover state shows subtle background change
 - [ ] Selected radio/checkbox shows proper state
@@ -438,7 +448,7 @@ describe('AskUserQuestion', () => {
 5. [ ] Add chevron icon to header
 
 ### Phase 2: Content Restyle
-1. [ ] Remove question header badge entirely (don't render `q.header`)
+1. [ ] Change question header from badge to simple muted text
 2. [ ] Simplify question text styling
 3. [ ] Remove borders from option cards
 4. [ ] Update option hover states
