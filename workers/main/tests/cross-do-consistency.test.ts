@@ -23,6 +23,7 @@ import {
   createWorkspace,
   archiveWorkspace,
   listOrgWorkspaces,
+  listUserWorkspacesAcrossOrgs,
   isOrgMember,
   getOrgAuditLog,
   type TestEnv,
@@ -281,5 +282,50 @@ describe('cross-DO consistency', () => {
     expect(transferEntry?.target_id).toBe(memberId);
     const details = transferEntry?.details as { from_user_id?: string } | undefined;
     expect(details?.from_user_id).toBe(ownerId);
+  });
+
+  it('listUserWorkspacesAcrossOrgs returns workspaces from all user orgs', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Multi-Org User');
+
+    // Create two orgs with workspaces
+    const { org: org1, defaultWorkspaceId: ws1Id } = await createOrg(testEnv, 'Org One', userId);
+    const { org: org2, defaultWorkspaceId: ws2Id } = await createOrg(testEnv, 'Org Two', userId);
+
+    // Create additional workspace in org1
+    const extraWorkspace = await createWorkspace(testEnv, org1.id, 'Extra Workspace', userId);
+
+    // List all workspaces across orgs
+    const allWorkspaces = await listUserWorkspacesAcrossOrgs(testEnv, userId);
+
+    // Should have 3 workspaces total (2 defaults + 1 extra)
+    expect(allWorkspaces.length).toBe(3);
+
+    // Should include workspaces from both orgs
+    const org1Workspaces = allWorkspaces.filter((ws) => ws.org_id === org1.id);
+    const org2Workspaces = allWorkspaces.filter((ws) => ws.org_id === org2.id);
+
+    expect(org1Workspaces.length).toBe(2); // default + extra
+    expect(org2Workspaces.length).toBe(1); // default only
+
+    // Verify specific workspace IDs
+    expect(allWorkspaces.some((ws) => ws.id === ws1Id)).toBe(true);
+    expect(allWorkspaces.some((ws) => ws.id === ws2Id)).toBe(true);
+    expect(allWorkspaces.some((ws) => ws.id === extraWorkspace.id)).toBe(true);
+  });
+
+  it('createOrg returns defaultWorkspaceId that is different from org.id', async () => {
+    const email = testEmail();
+    const { userId } = await createUser(testEnv, email, 'password123', 'Workspace ID User');
+
+    const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Test Org', userId);
+
+    // The bug was using org.id as workspace ID - they must be different UUIDs
+    expect(defaultWorkspaceId).toBeDefined();
+    expect(defaultWorkspaceId).not.toBe(org.id);
+
+    // Verify the workspace actually exists
+    const workspaces = await listOrgWorkspaces(testEnv, org.id);
+    expect(workspaces.some((ws) => ws.id === defaultWorkspaceId)).toBe(true);
   });
 });

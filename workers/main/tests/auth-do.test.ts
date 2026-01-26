@@ -327,6 +327,27 @@ describe('Auth flow (full-stack with DOs)', () => {
       const membership = orgs.find((entry) => entry.org_id === org.id);
       expect(membership?.last_workspace_id).toBe(workspace.id);
     });
+
+    it('switching to workspace in different org also switches session org', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Cross-Org User');
+
+      // Create two orgs
+      const { org: org1 } = await createOrg(testEnv, 'First Org', userId);
+      const { org: org2, defaultWorkspaceId: ws2Id } = await createOrg(testEnv, 'Second Org', userId);
+
+      // Start session in org1
+      const { sessionId } = await createTestSession(userId, org1.id);
+      let session = await getSessionData(testEnv, sessionId);
+      expect(session!.org_id).toBe(org1.id);
+
+      // Switch to workspace in org2 - this should also switch the org
+      await switchSessionOrg(testEnv, sessionId, org2.id, ws2Id);
+
+      session = await getSessionData(testEnv, sessionId);
+      expect(session!.org_id).toBe(org2.id);
+      expect(session!.workspace_id).toBe(ws2Id);
+    });
   });
 
   describe('Full signup flow', () => {

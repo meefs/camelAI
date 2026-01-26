@@ -526,6 +526,31 @@ export async function listUserWorkspaces(
   return result;
 }
 
+export async function listUserWorkspacesAcrossOrgs(
+  env: TestEnv,
+  userId: string
+): Promise<Array<{ id: string; name: string; org_id: string; access_level: WorkspaceAccessLevelDO }>> {
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  const orgs = await userStub.getOrgs();
+
+  const result: Array<{ id: string; name: string; org_id: string; access_level: WorkspaceAccessLevelDO }> = [];
+  for (const org of orgs) {
+    const orgStub = env.ORG.get(env.ORG.idFromName(org.org_id));
+    const workspaces = await orgStub.getWorkspaces();
+
+    for (const ws of workspaces) {
+      if (ws.archived) continue;
+      const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+      const member = await workspaceStub.getMemberAccess(userId);
+      const access = member?.access_level ?? 'full';
+      if (access !== 'none') {
+        result.push({ id: ws.id, name: ws.name, org_id: org.org_id, access_level: access });
+      }
+    }
+  }
+  return result;
+}
+
 export async function archiveWorkspace(
   env: TestEnv,
   workspaceId: string,
