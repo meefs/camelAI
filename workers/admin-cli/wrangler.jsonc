@@ -45,6 +45,7 @@
 				{
 					"binding": "EMAIL_TO_USER",
 					"id": "45b452b3b19c42f6991408c140149a70",
+					"preview_id": "45b452b3b19c42f6991408c140149a70",
 					"remote": true
 				}
 			],
@@ -52,6 +53,7 @@
 				{
 					"binding": "R2",
 					"bucket_name": "chiridion-sandbox",
+					"preview_bucket_name": "chiridion-sandbox",
 					"remote": true
 				}
 			],

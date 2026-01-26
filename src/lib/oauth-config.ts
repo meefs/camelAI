@@ -163,6 +163,7 @@ export async function fetchUserInfo(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: 'application/json',
+      'User-Agent': 'Chiridion',
     },
   });
 
@@ -214,6 +215,7 @@ async function fetchGitHubPrimaryEmail(accessToken: string): Promise<string | nu
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: 'application/json',
+      'User-Agent': 'Chiridion',
     },
   });
 
