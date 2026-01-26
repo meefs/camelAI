@@ -4,6 +4,7 @@ import { requireAuthContext } from '@/lib/auth.server';
 import { getCtx } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
+import { NoWorkspacesError } from '@/components/no-workspaces-error';
 
 export function meta() {
   return [
@@ -69,7 +70,7 @@ export default function NewChatPage() {
   const { workspaceId, hostname } = useLoaderData<typeof loader>();
 
   if (!workspaceId) {
-    return null;
+    return <NoWorkspacesError />;
   }
 
   return <Chat workspaceId={workspaceId} hostname={hostname} />;

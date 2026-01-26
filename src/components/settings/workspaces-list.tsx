@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react"
 import { useFetcher } from "react-router"
 import { toast } from "sonner"
-import { MoreHorizontal, Plus } from "lucide-react"
+import { CircleAlert, Folder, MoreHorizontal, Plus } from "lucide-react"
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -117,6 +118,46 @@ export function WorkspacesList({
     fetcher.submit(
       { intent: "archiveWorkspace", workspaceId },
       { method: "POST" }
+    )
+  }
+
+  // Empty state when no workspaces exist
+  if (workspaces.length === 0) {
+    return (
+      <div className="space-y-6">
+        {canManage && (
+          <div className="flex justify-end">
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="mr-2 size-4" />
+              Create workspace
+            </Button>
+          </div>
+        )}
+
+        <div className="flex flex-col items-center justify-center py-12 text-center">
+          <div className="rounded-full bg-destructive/10 p-4 mb-4">
+            <CircleAlert className="h-8 w-8 text-destructive" />
+          </div>
+          <h3 className="text-lg font-medium text-foreground mb-1">No workspaces</h3>
+          <p className="text-sm text-muted-foreground max-w-sm mb-6">
+            A workspace is required to use Chiridion. Without a workspace, you cannot create chats, set up connections, or deploy apps.
+          </p>
+
+          {canManage && (
+            <div className="flex justify-end">
+              <Button onClick={() => setCreateOpen(true)}>
+                <Plus className="mr-2 size-4" />
+                Create workspace
+              </Button>
+            </div>
+          )}
+        </div>
+
+        <CreateWorkspaceDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+        />
+      </div>
     )
   }
 

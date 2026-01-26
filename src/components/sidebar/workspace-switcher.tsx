@@ -1,6 +1,6 @@
 "use client"
 
-import { Check, ChevronsUpDown } from "lucide-react"
+import { Check, ChevronsUpDown, CircleAlert } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -54,23 +54,91 @@ export function WorkspaceSwitcher() {
     return null
   }
 
+  // When no current workspace, show a clickable dropdown with empty state
   if (!currentWorkspace) {
     return (
       <SidebarMenu>
         <SidebarMenuItem>
-          <SidebarMenuButton size="lg" disabled>
-            <Avatar size="default">
-              <AvatarFallback content="?">?</AvatarFallback>
-            </Avatar>
-            <div className="grid flex-1 text-left text-sm leading-tight">
-              <span className="truncate font-medium text-muted-foreground">
-                No workspace
-              </span>
-              <span className="truncate text-xs text-muted-foreground">
-                {currentOrg.name}
-              </span>
-            </div>
-          </SidebarMenuButton>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <SidebarMenuButton
+                size="lg"
+                className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+              >
+                <Avatar size="default">
+                  <AvatarFallback content="?">?</AvatarFallback>
+                </Avatar>
+                <div className="grid flex-1 text-left text-sm leading-tight">
+                  <span className="truncate font-medium text-muted-foreground">
+                    No workspace
+                  </span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {currentOrg.name}
+                  </span>
+                </div>
+                <ChevronsUpDown className="ml-auto" />
+              </SidebarMenuButton>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              className="w-(--radix-dropdown-menu-trigger-width) min-w-60 rounded-lg"
+              align="start"
+              side={isMobile ? "bottom" : "right"}
+              sideOffset={4}
+            >
+              <DropdownMenuLabel className="text-muted-foreground text-xs">
+                Workspaces
+              </DropdownMenuLabel>
+              {workspaceList.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 py-4 px-3 text-center">
+                  <CircleAlert className="h-5 w-5 text-destructive" />
+                  <p className="text-sm text-muted-foreground">
+                    No workspaces available
+                  </p>
+                </div>
+              ) : (
+                workspaceList.map((workspace) => {
+                  const orgName =
+                    orgNameById.get(workspace.org_id) ??
+                    (workspace.org_id === currentOrg?.id ? currentOrg.name : null)
+
+                  return (
+                    <DropdownMenuItem
+                      key={workspace.id}
+                      onClick={() => switchWorkspace(workspace.id)}
+                      className="gap-2 p-2"
+                    >
+                      <Avatar size="md" className="shrink-0">
+                        <AvatarFallback
+                          content={workspace.avatar.content}
+                          style={{
+                            backgroundColor: workspace.avatar.color,
+                            color: getContrastTextColor(workspace.avatar.color),
+                          }}
+                        >
+                          {workspace.avatar.content}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="flex min-w-0 flex-1 flex-col">
+                        <span className="truncate text-sm">{workspace.name}</span>
+                        <div className="flex items-center gap-1">
+                          {orgName ? (
+                            <span className="truncate text-xs text-muted-foreground">
+                              {orgName}
+                            </span>
+                          ) : null}
+                          {workspace.access_level === "read_only" ? (
+                            <Badge variant="secondary" className="shrink-0 text-[10px]">
+                              Read-only
+                            </Badge>
+                          ) : null}
+                        </div>
+                      </div>
+                    </DropdownMenuItem>
+                  )
+                })
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </SidebarMenuItem>
       </SidebarMenu>
     )

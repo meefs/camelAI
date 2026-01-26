@@ -42,9 +42,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   // Fetch all workspaces across all orgs (for workspace switcher)
   const allWorkspaces = await listUserWorkspacesAcrossOrgs(authEnv, session.user_id, orgs);
 
+  // Select current workspace from current org only
+  // If no workspaces in current org, currentWorkspace will be null and UI shows error page
   const currentWorkspace = session.workspace_id
-    ? allWorkspaces.find(w => w.id === session.workspace_id)
-    : workspaces[0] ?? allWorkspaces[0];
+    ? workspaces.find(w => w.id === session.workspace_id) ?? workspaces[0] ?? null
+    : workspaces[0] ?? null;
 
   const authState: AuthState = {
     user,

@@ -7,6 +7,7 @@ import { encryptCredentials } from '@/lib/integration-crypto';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
 import ConnectionsClient from '@/components/pages/connections/connections-client';
 import { ConnectionsLoadingSkeleton } from '@/components/pages/connections/connections-loading';
+import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { Integration } from '@/types';
 
 function getWorkspaceStub(env: CloudflareEnv, workspaceId: string): WorkspaceDO {
@@ -192,8 +193,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function ConnectionsPage() {
-  const { connections, integrations, categories, orgId } =
+  const { connections, integrations, categories, orgId, workspaceId } =
     useLoaderData<typeof loader>();
+
+  if (!workspaceId) {
+    return <NoWorkspacesError />;
+  }
 
   return (
     <ConnectionsClient

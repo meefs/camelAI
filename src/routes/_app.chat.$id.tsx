@@ -5,6 +5,7 @@ import { requireAuthContext } from '@/lib/auth.server';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
+import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { Message } from '@/types';
 
 export function meta({ data }: Route.MetaArgs) {
@@ -128,7 +129,7 @@ export default function ChatPage() {
   } = useLoaderData<typeof loader>();
 
   if (!workspaceId) {
-    return null;
+    return <NoWorkspacesError />;
   }
 
   return (

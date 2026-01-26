@@ -121,7 +121,7 @@ export async function getAuthContext(
   // Get current org info directly from DO
   const orgInfo = await authEnv.ORG.get(authEnv.ORG.idFromName(userContext.session.org_id)).getInfo();
   if (!orgInfo) return null;
-  const currentOrg = orgInfo;
+  const currentOrg: Organization = orgInfo;
 
   // Get user's org memberships
   const orgs = await getUserOrgs(authEnv, userContext.session.user_id);
@@ -140,10 +140,11 @@ export async function getAuthContext(
     orgs
   );
 
-  // Find current workspace - prefer session workspace, then first workspace in current org, then any workspace
+  // Select current workspace - must be from current org to maintain consistency
+  // If no workspaces in current org, currentWorkspace will be null and UI shows NoWorkspacesError
   const currentWorkspace = userContext.session.workspace_id
-    ? allWorkspaces.find((ws) => ws.id === userContext.session.workspace_id) || null
-    : workspaces[0] || allWorkspaces[0] || null;
+    ? workspaces.find((ws) => ws.id === userContext.session.workspace_id) ?? workspaces[0] ?? null
+    : workspaces[0] ?? null;
 
   return {
     ...userContext,
