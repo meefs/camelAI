@@ -1,7 +1,7 @@
 import { redirect, type AppLoadContext } from 'react-router';
 import { getEnv } from './cloudflare.server';
 import { getSessionIdFromRequest } from './cookies.server';
-import { getSession as getSessionKV } from '../../workers/main/src/session-kv';
+import { getSession as getSessionKV, updateSession } from '../../workers/main/src/session-kv';
 import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
@@ -142,9 +142,25 @@ export async function getAuthContext(
 
   // Select current workspace - must be from current org to maintain consistency
   // If no workspaces in current org, currentWorkspace will be null and UI shows NoWorkspacesError
-  const currentWorkspace = userContext.session.workspace_id
-    ? workspaces.find((ws) => ws.id === userContext.session.workspace_id) ?? workspaces[0] ?? null
+  const sessionWorkspaceId = userContext.session.workspace_id;
+  const sessionWorkspaceStillValid = sessionWorkspaceId
+    ? workspaces.some((ws) => ws.id === sessionWorkspaceId)
+    : false;
+
+  const currentWorkspace = sessionWorkspaceStillValid
+    ? workspaces.find((ws) => ws.id === sessionWorkspaceId)!
     : workspaces[0] ?? null;
+
+  // Sync session if workspace changed (stale session.workspace_id or fallback to first workspace)
+  const newWorkspaceId = currentWorkspace?.id ?? null;
+  if (newWorkspaceId !== sessionWorkspaceId) {
+    // Update session in background - don't block the response
+    void updateSession(env.SESSIONS, userContext.sessionId, {
+      ...userContext.session,
+      workspace_id: newWorkspaceId,
+      last_accessed: Date.now(),
+    });
+  }
 
   return {
     ...userContext,
