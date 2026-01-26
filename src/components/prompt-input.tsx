@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { ArrowUp, Square, Loader2, Plus, Mic } from 'lucide-react';
 import {
   InputGroup,
@@ -9,6 +9,7 @@ import {
   InputGroupTextarea,
 } from '@/components/ui/input-group';
 import { AttachmentList, type Attachment } from '@/components/attachment-list';
+import { VoiceRecorderBar } from '@/components/voice-recorder';
 import { cn } from '@/lib/utils';
 import { useVoiceRecording } from '@/hooks/use-voice-recording';
 
@@ -63,6 +64,8 @@ export function PromptInput({
     stopRecording,
     cancelRecording,
     isSupported: isVoiceSupported,
+    analyser,
+    recordingStartTime,
   } = useVoiceRecording({
     onTranscript: (text) => {
       // Use ref to get latest value, preserving any edits made during recording
@@ -78,6 +81,7 @@ export function PromptInput({
   const isWarmingUp = voiceState === 'warming_up';
   const isRecording = voiceState === 'recording';
   const isTranscribing = voiceState === 'transcribing';
+  const isActiveRecording = isWarmingUp || isRecording;
   const showVoiceButton = enableVoiceRecording && isVoiceSupported;
 
   // Show stop button when assistant is running and input is empty
@@ -160,6 +164,22 @@ export function PromptInput({
   const isSubmitDisabled = disabled || isLoading || hasUploadingAttachments || isTranscribing || (!showStopButton && !value.trim());
   const showFileUpload = !!onFilesSelected;
 
+  useEffect(() => {
+    if (!isActiveRecording) return;
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelRecording();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => {
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [isActiveRecording, cancelRecording]);
+
   function handleMicClick(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -219,71 +239,87 @@ export function PromptInput({
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
-            disabled={disabled}
+            disabled={disabled || isActiveRecording}
             autoFocus={autoFocus}
-            className="text-base p-3.5 max-h-96 overflow-y-auto"
+            className={cn(
+              'text-base p-3.5 max-h-96 overflow-y-auto',
+              isActiveRecording && 'opacity-50'
+            )}
             style={{ minHeight }}
           />
 
           <InputGroupAddon align="block-end" className="justify-between pb-3 px-3">
-            {/* Left side buttons: Plus and Mic */}
-            <div className="flex items-center gap-1">
-              {/* Plus button for file upload */}
-              {showFileUpload && (
-                <InputGroupButton
-                  type="button"
-                  size="icon-sm"
-                  variant="ghost"
-                  onClick={handlePlusClick}
-                  disabled={disabled || isRecording || isTranscribing}
-                  className="rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
-                  aria-label="Attach file"
-                >
-                  <Plus className="size-4" />
-                </InputGroupButton>
-              )}
-
-              {/* Microphone button for voice recording */}
-              {showVoiceButton && (
-                <InputGroupButton
-                  type="button"
-                  size="icon-sm"
-                  variant="ghost"
-                  onClick={handleMicClick}
-                  disabled={disabled || isTranscribing}
-                  className={cn(
-                    'rounded-full text-muted-foreground hover:text-foreground hover:bg-muted',
-                    isWarmingUp && 'text-amber-500 hover:text-amber-500 animate-pulse bg-amber-500/10',
-                    isRecording && 'text-destructive hover:text-destructive animate-pulse bg-destructive/10'
+            {isActiveRecording || isTranscribing ? (
+              <VoiceRecorderBar
+                analyser={analyser}
+                recordingStartTime={recordingStartTime}
+                isWarmingUp={isWarmingUp}
+                isTranscribing={isTranscribing}
+                onCancel={cancelRecording}
+                onConfirm={stopRecording}
+              />
+            ) : (
+              <>
+                {/* Left side buttons: Plus and Mic */}
+                <div className="flex items-center gap-1">
+                  {/* Plus button for file upload */}
+                  {showFileUpload && (
+                    <InputGroupButton
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost"
+                      onClick={handlePlusClick}
+                      disabled={disabled || isRecording || isTranscribing}
+                      className="rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
+                      aria-label="Attach file"
+                    >
+                      <Plus className="size-4" />
+                    </InputGroupButton>
                   )}
-                  aria-label={isRecording ? 'Stop recording' : isWarmingUp ? 'Cancel' : 'Start voice recording'}
+
+                  {/* Microphone button for voice recording */}
+                  {showVoiceButton && (
+                    <InputGroupButton
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost"
+                      onClick={handleMicClick}
+                      disabled={disabled || isTranscribing}
+                      className={cn(
+                        'rounded-full text-muted-foreground hover:text-foreground hover:bg-muted',
+                        isWarmingUp && 'text-amber-500 hover:text-amber-500 animate-pulse bg-amber-500/10',
+                        isRecording && 'text-destructive hover:text-destructive animate-pulse bg-destructive/10'
+                      )}
+                      aria-label={isRecording ? 'Stop recording' : isWarmingUp ? 'Cancel' : 'Start voice recording'}
+                    >
+                      {isTranscribing || isWarmingUp ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Mic className="size-4" />
+                      )}
+                    </InputGroupButton>
+                  )}
+                </div>
+
+                {/* Submit/Stop button */}
+                <InputGroupButton
+                  type={showStopButton ? 'button' : 'submit'}
+                  size="icon-sm"
+                  variant={showStopButton ? 'destructive' : 'default'}
+                  disabled={isSubmitDisabled}
+                  onClick={handleButtonClick}
+                  className="rounded-full"
                 >
-                  {isTranscribing || isWarmingUp ? (
+                  {isLoading ? (
                     <Loader2 className="size-4 animate-spin" />
+                  ) : showStopButton ? (
+                    <Square className="size-3" />
                   ) : (
-                    <Mic className="size-4" />
+                    <ArrowUp className="size-4" />
                   )}
                 </InputGroupButton>
-              )}
-            </div>
-
-            {/* Submit/Stop button */}
-            <InputGroupButton
-              type={showStopButton ? 'button' : 'submit'}
-              size="icon-sm"
-              variant={showStopButton ? 'destructive' : 'default'}
-              disabled={isSubmitDisabled}
-              onClick={handleButtonClick}
-              className="rounded-full"
-            >
-              {isLoading ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : showStopButton ? (
-                <Square className="size-3" />
-              ) : (
-                <ArrowUp className="size-4" />
-              )}
-            </InputGroupButton>
+              </>
+            )}
           </InputGroupAddon>
         </InputGroup>
       </div>
