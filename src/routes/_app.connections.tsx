@@ -1,10 +1,12 @@
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
 import { requireAuthContext } from '@/lib/auth.server';
-import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
+import { getEnv, getCtx, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { INTEGRATION_REGISTRY, getIntegrationDefinition } from '@/lib/integration-registry';
 import { encryptCredentials } from '@/lib/integration-crypto';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
+import { getWorkspaceContainer } from '../../workers/main/src/workspace-container';
+import type { WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 import ConnectionsClient from '@/components/pages/connections/connections-client';
 import { ConnectionsLoadingSkeleton } from '@/components/pages/connections/connections-loading';
 import type { Integration } from '@/types';
@@ -46,6 +48,23 @@ export function meta() {
     { title: 'Connections - Chiridion' },
     { name: 'description', content: 'Manage integrations and connections' },
   ];
+}
+
+/**
+ * Push updated integration env vars to the running container (if any).
+ * Returns a promise that resolves when push completes (or fails gracefully).
+ */
+function pushIntegrationEnvVarsToContainer(env: CloudflareEnv, workspaceId: string): Promise<void> {
+  return (async () => {
+    try {
+      const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId);
+      const integrationEnvVars = await container.fetchIntegrationEnvVars(workspaceId);
+      await container.pushIntegrationEnvVars(integrationEnvVars);
+    } catch (e) {
+      // Container might not be running - that's fine, env vars will be pushed on next start
+      console.log('[connections] Failed to push env vars to container (may not be running):', e);
+    }
+  })();
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
@@ -91,6 +110,8 @@ export async function action({ request, context }: Route.ActionArgs) {
         credentialsEncrypted,
         authContext.user.id
       );
+      // Push updated env vars to running container (background, kept alive via waitUntil)
+      getCtx(context).waitUntil(pushIntegrationEnvVarsToContainer(env, workspaceId));
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to create integration' };
@@ -123,6 +144,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
 
       await stub.updateIntegration(integrationId, updates, authContext.user.id);
+      // Push updated env vars to running container (background, kept alive via waitUntil)
+      getCtx(context).waitUntil(pushIntegrationEnvVarsToContainer(env, workspaceId));
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to update integration' };
@@ -139,6 +162,8 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     try {
       await stub.updateIntegration(integrationId, { enabled }, authContext.user.id);
+      // Push updated env vars to running container (background, kept alive via waitUntil)
+      getCtx(context).waitUntil(pushIntegrationEnvVarsToContainer(env, workspaceId));
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to toggle integration' };
@@ -154,6 +179,8 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     try {
       await stub.deleteIntegration(integrationId, authContext.user.id);
+      // Push updated env vars to running container (background, kept alive via waitUntil)
+      getCtx(context).waitUntil(pushIntegrationEnvVarsToContainer(env, workspaceId));
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete integration' };

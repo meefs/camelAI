@@ -390,27 +390,6 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
       console.log('[WorkspaceContainer] Created signed MCP token for workspace', { workspaceId, orgId });
     }
 
-    // Fetch integration credentials and pass as ENV vars
-    try {
-      const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
-      const records = await workspaceStub.getIntegrations();
-      const integrationEnvVars: Record<string, string> = {};
-
-      for (const record of records) {
-        if (record.enabled !== 1) continue;
-        const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
-        const config = JSON.parse(record.config) as Record<string, unknown>;
-        Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.integration_type, credentials, config));
-      }
-
-      console.log('[WorkspaceContainer] Integration env vars:', Object.entries(integrationEnvVars).map(
-        ([k, v]) => `${k}=${v.length} chars`
-      ));
-      Object.assign(envVars, integrationEnvVars);
-    } catch (e) {
-      console.error('[WorkspaceContainer] Failed to load integration env vars:', e);
-    }
-
     return envVars;
   }
 
@@ -461,6 +440,17 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
       orgId,
       waitMs,
       totalMs: Date.now() - startTs,
+    });
+
+    // Push integration env vars after container is ready
+    // This writes to /etc/profile.d/chiridion-integrations.sh so bash commands can access them
+    const integrationEnvVars = await this.fetchIntegrationEnvVars(workspaceId);
+    const pushSuccess = await this.pushIntegrationEnvVars(integrationEnvVars);
+    console.log('[WorkspaceContainer] Pushed integration env vars', {
+      workspaceId,
+      orgId,
+      keyCount: Object.keys(integrationEnvVars).length,
+      success: pushSuccess,
     });
   }
 
@@ -576,8 +566,35 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
   }
 
   /**
+   * Fetch integration env vars for this workspace.
+   * Returns a map of INT_* env vars from enabled integrations.
+   */
+  async fetchIntegrationEnvVars(workspaceId: string): Promise<Record<string, string>> {
+    const integrationEnvVars: Record<string, string> = {};
+    try {
+      const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
+      const records = await workspaceStub.getIntegrations();
+
+      for (const record of records) {
+        if (record.enabled !== 1) continue;
+        const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
+        const config = JSON.parse(record.config) as Record<string, unknown>;
+        Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.integration_type, credentials, config));
+      }
+
+      console.log('[WorkspaceContainer] Fetched integration env vars:', Object.entries(integrationEnvVars).map(
+        ([k, v]) => `${k}=${v.length} chars`
+      ));
+    } catch (e) {
+      console.error('[WorkspaceContainer] Failed to fetch integration env vars:', e);
+    }
+    return integrationEnvVars;
+  }
+
+  /**
    * Push integration env vars to ws-server.
    * Called when integrations are created/updated/deleted to update the running container.
+   * Also called after container startup to set initial integration env vars.
    * Returns true if successful, false if container is not running or push failed.
    */
   async pushIntegrationEnvVars(envVars: Record<string, string>): Promise<boolean> {
@@ -658,10 +675,10 @@ export async function handleWebSocketUpgrade(
     try {
       console.log('[handleWebSocketUpgrade] Starting container', { workspaceId, orgId, attempt });
 
-      // Start container if not running (startForWorkspace is smart about checking state)
+      // Start container if not running (startForWorkspace handles integration env vars push)
       await container.startForWorkspace(workspaceId, orgId);
 
-      console.log('[handleWebSocketUpgrade] Container started, proxying WebSocket via fetch()', {
+      console.log('[handleWebSocketUpgrade] Container ready, proxying WebSocket via fetch()', {
         workspaceId,
         orgId,
         attempt,

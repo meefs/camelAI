@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-25-v41-node-ws
+# Version: 2026-01-26-v43-integration-file-perms
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -8,6 +8,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Layer 1: Create claude user (separate from node user)
 RUN useradd -m -s /bin/bash claude
+
+# Pre-create integration env file with correct permissions
+# This file is written by ws-server (runs as claude) when integrations are pushed
+RUN touch /etc/profile.d/chiridion-integrations.sh \
+  && chown claude:claude /etc/profile.d/chiridion-integrations.sh \
+  && chmod 644 /etc/profile.d/chiridion-integrations.sh
 
 # Layer 2: System deps + Bun + Verdaccio + JuiceFS
 # Note: fuse3 replaces fuse (they conflict). libfuse2 provides compat for older tools.
@@ -67,18 +73,15 @@ WORKDIR /app
 COPY sandbox/package.json ./
 RUN npm install
 
-# Layer 5: App code (changes frequently) - copied after install for better caching
-COPY --chmod=755 sandbox/entrypoint.sh ./
-COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
-COPY sandbox/skills ./skills
-RUN chmod -R a+rX /app
-
-# Layer 6: Pre-install template dependencies with Yarn PnP (minimal files for fast JuiceFS copy)
-# Yarn PnP stores deps as ~400 zip files instead of ~8000 files in node_modules
-# Must enable corepack to get Yarn 4+ (Node includes Yarn 1.x which doesn't support PnP)
-# YARN_IGNORE_PATH=1 prevents Yarn from detecting parent /app/package.json
+# Layer 5: Template files + Yarn PnP setup (cached unless template files change)
+# Copy ONLY template files first, before frequently-changing sandbox code
+# This ensures template yarn install is cached when only ws-server.mjs changes
 RUN corepack enable && corepack prepare yarn@stable --activate
+COPY sandbox/skills/deploy-software/templates ./skills/deploy-software/templates
 
+# Pre-install template dependencies with Yarn PnP (minimal files for fast JuiceFS copy)
+# Yarn PnP stores deps as ~400 zip files instead of ~8000 files in node_modules
+# YARN_IGNORE_PATH=1 prevents Yarn from detecting parent /app/package.json
 # Install template deps in a temp location first (avoids /app workspace detection)
 # Then copy PnP files back to template
 RUN bash -c '\
@@ -100,6 +103,16 @@ RUN bash -c '\
   rm -rf /tmp/template-build && \
   kill $(pgrep -f verdaccio) 2>/dev/null || true \
 '
+
+# Layer 6: App code (changes frequently) - copied AFTER template install for better caching
+# Changes to ws-server.mjs, entrypoint.sh, etc. won't trigger template rebuild
+COPY --chmod=755 sandbox/entrypoint.sh ./
+COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
+COPY sandbox/skills/deploy-software/scripts ./skills/deploy-software/scripts
+COPY sandbox/skills/deploy-software/SKILL.md ./skills/deploy-software/
+COPY sandbox/skills/file-sharing ./skills/file-sharing
+COPY sandbox/skills/frontend-design ./skills/frontend-design
+RUN chmod -R a+rX /app
 
 # Layer 7: create-worker CLI (scaffolds projects from templates)
 RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker

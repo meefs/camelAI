@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-25-v32-node-ws
+# Version: 2026-01-26-v34-simplified
 set -eu
 
 # Trap errors and show what failed
