@@ -5,7 +5,7 @@ import { getSession as getSessionKV } from '../../workers/main/src/session-kv';
 import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
-import { getUserOrgs, listUserWorkspaces, isOrgAdmin, getWorkspaceAccess } from './auth-do';
+import { getUserOrgs, listUserWorkspacesAcrossOrgs, isOrgAdmin, getWorkspaceAccess } from './auth-do';
 
 // Re-export AuthEnv and getAuthEnv for routes that need them
 export { getAuthEnv, type AuthEnv } from './auth-helpers';
@@ -123,17 +123,17 @@ export async function getAuthContext(
   // Get user's org memberships
   const orgs = await getUserOrgs(authEnv, userContext.session.user_id);
 
-  // Get workspaces for current org
-  const workspaces = await listUserWorkspaces(
+  // Get workspaces across all orgs the user belongs to
+  const workspaces = await listUserWorkspacesAcrossOrgs(
     authEnv,
     userContext.session.user_id,
-    currentOrg.id
+    orgs
   );
 
-  // Find current workspace
+  // Find current workspace - prefer session workspace, then first workspace in current org, then any workspace
   const currentWorkspace = userContext.session.workspace_id
     ? workspaces.find((ws) => ws.id === userContext.session.workspace_id) || null
-    : null;
+    : workspaces.find((ws) => ws.org_id === currentOrg.id) || workspaces[0] || null;
 
   return {
     ...userContext,

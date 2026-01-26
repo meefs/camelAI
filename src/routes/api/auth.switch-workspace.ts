@@ -4,7 +4,9 @@ import { getSessionIdFromRequest } from '@/lib/cookies.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   getSession,
+  getWorkspace,
   getWorkspaceAccess,
+  switchSessionOrg,
   switchSessionWorkspace,
 } from '@/lib/auth-do';
 
@@ -50,8 +52,18 @@ export async function action({ request, context }: Route.ActionArgs) {
       return Response.json({ error: 'No access to this workspace' }, { status: 403 });
     }
 
-    // Switch session workspace
-    await switchSessionWorkspace(authEnv, sessionId, workspaceId);
+    // Get workspace to check its org
+    const workspace = await getWorkspace(authEnv, workspaceId);
+    if (!workspace) {
+      return Response.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+
+    // If workspace is in a different org, switch org as well
+    if (workspace.org_id !== session.org_id) {
+      await switchSessionOrg(authEnv, sessionId, workspace.org_id, workspaceId);
+    } else {
+      await switchSessionWorkspace(authEnv, sessionId, workspaceId);
+    }
 
     return Response.json({ success: true });
   } catch (error) {

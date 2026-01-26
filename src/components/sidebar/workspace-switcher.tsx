@@ -115,6 +115,7 @@ export function WorkspaceSwitcher() {
               Workspaces
             </DropdownMenuLabel>
             {workspaceList.map((workspace) => {
+              // Always show org name for all workspaces
               const orgName =
                 orgNameById.get(workspace.org_id) ??
                 (workspace.org_id === currentOrg?.id ? currentOrg.name : null)

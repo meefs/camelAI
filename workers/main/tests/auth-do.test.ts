@@ -100,7 +100,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
 
-      const org = await createOrg(testEnv, 'Test Workspace', userId);
+      const { org } = await createOrg(testEnv, 'Test Workspace', userId);
 
       expect(org.id).toBeDefined();
       expect(org.name).toBe('Test Workspace');
@@ -118,7 +118,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('should list user orgs', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
-      const org = await createOrg(testEnv, 'My Workspace', userId);
+      const { org } = await createOrg(testEnv, 'My Workspace', userId);
 
       const orgs = await getUserOrgs(testEnv, userId);
 
@@ -134,7 +134,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('prevents removing the org owner', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Owner');
-      const org = await createOrg(testEnv, 'Owner Org', userId);
+      const { org } = await createOrg(testEnv, 'Owner Org', userId);
 
       const result = await tryRemoveOrgMember(testEnv, org.id, userId, userId);
       expect(result.ok).toBe(false);
@@ -150,7 +150,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('prevents demoting the org owner without transfer', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Owner');
-      const org = await createOrg(testEnv, 'Owner Org', userId);
+      const { org } = await createOrg(testEnv, 'Owner Org', userId);
 
       const result = await tryUpdateOrgMemberRole(testEnv, org.id, userId, 'member', userId);
       expect(result.ok).toBe(false);
@@ -167,7 +167,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('should create an invitation', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
-      const org = await createOrg(testEnv, 'Test Org', userId);
+      const { org } = await createOrg(testEnv, 'Test Org', userId);
 
       const invitation = await createInvitation(
         testEnv,
@@ -184,7 +184,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('should persist invitations across requests', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
-      const org = await createOrg(testEnv, 'Test Org', userId);
+      const { org } = await createOrg(testEnv, 'Test Org', userId);
 
       await createInvitation(testEnv, org.id, 'invitee@example.com', 'member', userId);
 
@@ -197,7 +197,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('should retrieve invitation details', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
-      const org = await createOrg(testEnv, 'Test Org', userId);
+      const { org } = await createOrg(testEnv, 'Test Org', userId);
 
       const { id } = await createInvitation(
         testEnv,
@@ -223,7 +223,7 @@ describe('Auth flow (full-stack with DOs)', () => {
         'password123',
         'Inviter'
       );
-      const org = await createOrg(testEnv, 'Test Org', inviterId);
+      const { org } = await createOrg(testEnv, 'Test Org', inviterId);
 
       const inviteeEmail = testEmail();
       const { id: invitationId } = await createInvitation(
@@ -252,7 +252,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('should delete an invitation', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
-      const org = await createOrg(testEnv, 'Test Org', userId);
+      const { org } = await createOrg(testEnv, 'Test Org', userId);
 
       const { id } = await createInvitation(
         testEnv,
@@ -272,7 +272,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('should create and retrieve a session', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
-      const org = await createOrg(testEnv, 'Workspace', userId);
+      const { org } = await createOrg(testEnv, 'Workspace', userId);
 
       const { sessionId, sessionData } = await createTestSession(userId, org.id);
 
@@ -291,7 +291,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('should destroy a session', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
-      const org = await createOrg(testEnv, 'Workspace', userId);
+      const { org } = await createOrg(testEnv, 'Workspace', userId);
       const { sessionId } = await createTestSession(userId, org.id);
 
       await destroySessionData(testEnv, sessionId);
@@ -303,8 +303,8 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('should switch session org', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
-      const org1 = await createOrg(testEnv, 'Workspace 1', userId);
-      const org2 = await createOrg(testEnv, 'Workspace 2', userId);
+      const { org: org1 } = await createOrg(testEnv, 'Workspace 1', userId);
+      const { org: org2 } = await createOrg(testEnv, 'Workspace 2', userId);
       const { sessionId } = await createTestSession(userId, org1.id);
 
       await switchSessionOrg(testEnv, sessionId, org2.id);
@@ -317,7 +317,7 @@ describe('Auth flow (full-stack with DOs)', () => {
     it('persists last workspace per org when switching workspace', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Test User');
-      const org = await createOrg(testEnv, 'Workspace Org', userId);
+      const { org } = await createOrg(testEnv, 'Workspace Org', userId);
       const { sessionId } = await createTestSession(userId, org.id);
 
       const workspace = await createWorkspace(testEnv, org.id, 'Secondary', userId);
@@ -338,7 +338,7 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(user.email).toBe(email);
 
       // 2. Create org
-      const org = await createOrg(testEnv, `New User's Workspace`, userId);
+      const { org } = await createOrg(testEnv, `New User's Workspace`, userId);
       expect(org.created_by).toBe(userId);
 
       // 3. Create session
