@@ -1,6 +1,9 @@
 import type { Route } from './+types/workspaces.$id.fs.upload';
 import { requireWorkspaceAuth, toContainerPath, normalizeWorkspacePath } from './workspaces.utils';
 
+/** Maximum file size for uploads (50MB) */
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
+
 /**
  * Upload a file to any path in the workspace filesystem.
  * Accepts FormData with:
@@ -24,6 +27,14 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
     if (!file) {
       return Response.json({ error: 'No file provided' }, { status: 400 });
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      const sizeMB = Math.round(file.size / 1024 / 1024);
+      return Response.json(
+        { error: `File too large (${sizeMB}MB). Maximum size is 50MB.` },
+        { status: 413 }
+      );
     }
 
     // Normalize target directory and build full path

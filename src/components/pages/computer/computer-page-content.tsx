@@ -151,6 +151,7 @@ type ConflictState = {
 const ROOT_PATH = '/';
 const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
 const MAX_EDITABLE_BYTES = 1024 * 1024;
+const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   ts: 'typescript',
@@ -987,6 +988,13 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       if (!editingEnabled) return;
 
       for (const file of Array.from(files)) {
+        // Check file size before uploading
+        if (file.size > MAX_UPLOAD_SIZE) {
+          const sizeMB = Math.round(file.size / 1024 / 1024);
+          console.error(`File "${file.name}" is too large (${sizeMB}MB). Maximum size is 50MB.`);
+          continue;
+        }
+
         const uploadId = `${targetPath}/${file.name}`;
         setUploadingFiles((prev) => new Set(prev).add(uploadId));
 
