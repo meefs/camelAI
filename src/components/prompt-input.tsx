@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState, useCallback } from 'react';
-import { ArrowUp, Square, Loader2, Plus } from 'lucide-react';
+import { ArrowUp, Square, Loader2, Plus, Mic } from 'lucide-react';
 import {
   InputGroup,
   InputGroupAddon,
@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/input-group';
 import { AttachmentList, type Attachment } from '@/components/attachment-list';
 import { cn } from '@/lib/utils';
+import { useVoiceRecording } from '@/hooks/use-voice-recording';
 
 interface PromptInputProps {
   value: string;
@@ -27,6 +28,8 @@ interface PromptInputProps {
   attachments?: Attachment[];
   onFilesSelected?: (files: File[]) => void;
   onAttachmentRemove?: (id: string) => void;
+  // Voice recording props
+  enableVoiceRecording?: boolean;
 }
 
 export function PromptInput({
@@ -44,9 +47,38 @@ export function PromptInput({
   attachments = [],
   onFilesSelected,
   onAttachmentRemove,
+  enableVoiceRecording = true,
 }: PromptInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+
+  // Track latest value for voice recording callback
+  const valueRef = useRef(value);
+  valueRef.current = value;
+
+  // Voice recording
+  const {
+    state: voiceState,
+    startRecording,
+    stopRecording,
+    cancelRecording,
+    isSupported: isVoiceSupported,
+  } = useVoiceRecording({
+    onTranscript: (text) => {
+      // Use ref to get latest value, preserving any edits made during recording
+      const currentValue = valueRef.current;
+      const newValue = currentValue.trim() ? `${currentValue} ${text}` : text;
+      onChange(newValue);
+    },
+    onError: (error) => {
+      console.error('[PromptInput] Voice error:', error);
+    },
+  });
+
+  const isWarmingUp = voiceState === 'warming_up';
+  const isRecording = voiceState === 'recording';
+  const isTranscribing = voiceState === 'transcribing';
+  const showVoiceButton = enableVoiceRecording && isVoiceSupported;
 
   // Show stop button when assistant is running and input is empty
   const showStopButton = isAssistantRunning && !value.trim() && onStop;
@@ -125,8 +157,20 @@ export function PromptInput({
   }, [disabled, onFilesSelected]);
 
   const hasUploadingAttachments = attachments.some(a => a.status === 'uploading');
-  const isSubmitDisabled = disabled || isLoading || hasUploadingAttachments || (!showStopButton && !value.trim());
+  const isSubmitDisabled = disabled || isLoading || hasUploadingAttachments || isTranscribing || (!showStopButton && !value.trim());
   const showFileUpload = !!onFilesSelected;
+
+  function handleMicClick(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isRecording) {
+      stopRecording();
+    } else if (isWarmingUp) {
+      cancelRecording();
+    } else {
+      startRecording();
+    }
+  }
 
   return (
     <form onSubmit={handleSubmit} className={className}>
@@ -182,22 +226,48 @@ export function PromptInput({
           />
 
           <InputGroupAddon align="block-end" className="justify-between pb-3 px-3">
-            {/* Plus button for file upload */}
-            {showFileUpload ? (
-              <InputGroupButton
-                type="button"
-                size="icon-sm"
-                variant="ghost"
-                onClick={handlePlusClick}
-                disabled={disabled}
-                className="rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
-                aria-label="Attach file"
-              >
-                <Plus className="size-4" />
-              </InputGroupButton>
-            ) : (
-              <div />
-            )}
+            {/* Left side buttons: Plus and Mic */}
+            <div className="flex items-center gap-1">
+              {/* Plus button for file upload */}
+              {showFileUpload && (
+                <InputGroupButton
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={handlePlusClick}
+                  disabled={disabled || isRecording || isTranscribing}
+                  className="rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
+                  aria-label="Attach file"
+                >
+                  <Plus className="size-4" />
+                </InputGroupButton>
+              )}
+
+              {/* Microphone button for voice recording */}
+              {showVoiceButton && (
+                <InputGroupButton
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={handleMicClick}
+                  disabled={disabled || isTranscribing}
+                  className={cn(
+                    'rounded-full text-muted-foreground hover:text-foreground hover:bg-muted',
+                    isWarmingUp && 'text-amber-500 hover:text-amber-500 animate-pulse bg-amber-500/10',
+                    isRecording && 'text-destructive hover:text-destructive animate-pulse bg-destructive/10'
+                  )}
+                  aria-label={isRecording ? 'Stop recording' : isWarmingUp ? 'Cancel' : 'Start voice recording'}
+                >
+                  {isTranscribing || isWarmingUp ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Mic className="size-4" />
+                  )}
+                </InputGroupButton>
+              )}
+            </div>
+
+            {/* Submit/Stop button */}
             <InputGroupButton
               type={showStopButton ? 'button' : 'submit'}
               size="icon-sm"
