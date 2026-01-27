@@ -269,7 +269,7 @@ function updatePackageJson(projectDir, projectName, options) {
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
 }
 
-function updateViteConfig(projectDir) {
+function _updateViteConfig(projectDir) {
   const vitePath = join(projectDir, 'vite.config.ts');
   let content = readFileSync(vitePath, 'utf-8');
 
@@ -474,7 +474,7 @@ enableGlobalCache: false
   console.log('\nInstalling dependencies with Yarn...');
   try {
     await runCommand('yarn', ['install'], { cwd: projectDir });
-  } catch (error) {
+  } catch {
     console.warn('Note: Run `yarn install` in your project directory to install dependencies');
   }
 

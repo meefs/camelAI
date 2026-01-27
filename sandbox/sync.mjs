@@ -84,7 +84,7 @@ async function rmRecursiveSafe(targetPath, attempts = 3) {
   }
 }
 
-async function clearDirectory(targetDir) {
+async function _clearDirectory(targetDir) {
   const resolved = path.resolve(targetDir);
   if (!resolved || resolved === '/') {
     throw new Error(`Refusing to wipe directory "${resolved}"`);

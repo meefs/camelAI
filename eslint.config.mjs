@@ -1,17 +1,33 @@
-import { dirname } from "path";
-import { fileURLToPath } from "url";
-import { FlatCompat } from "@eslint/eslintrc";
+import js from "@eslint/js";
+import globals from "globals";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const compat = new FlatCompat({
-	baseDirectory: __dirname,
-});
-
-const eslintConfig = [
-	...compat.extends("next/core-web-vitals", "next/typescript"),
-	{ rules: { "@typescript-eslint/no-explicit-any": "off" } }
+export default [
+	js.configs.recommended,
+	{
+		languageOptions: {
+			ecmaVersion: 2022,
+			sourceType: "module",
+			globals: {
+				...globals.browser,
+				...globals.node,
+				...globals.es2022,
+			},
+		},
+		rules: {
+			"no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+			"no-undef": "off", // TypeScript handles this
+		},
+	},
+	{
+		ignores: [
+			"build/**",
+			"dist/**",
+			"node_modules/**",
+			".react-router/**",
+			"**/.wrangler/**",
+			"public/monaco/**",
+			"packages/chiridion-wrangler/**",
+			"**/*.d.ts",
+		],
+	},
 ];
-
-export default eslintConfig;

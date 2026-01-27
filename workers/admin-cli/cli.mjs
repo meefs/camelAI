@@ -29,7 +29,7 @@ const ENVIRONMENTS = ['staging', 'prod', 'dev-illiana', 'dev-miguel'];
 const ENDPOINTS = ['overview', 'orgs', 'users', 'threads', 'kv-keys', 'r2/list', 'r2/backup', 'workers', 'container'];
 
 // Direct API endpoints that don't need wrangler/bindings
-const DIRECT_API_ENDPOINTS = ['workers'];
+const _DIRECT_API_ENDPOINTS = ['workers'];
 
 // Get OAuth token from wrangler config
 function getWranglerToken() {
@@ -256,7 +256,7 @@ async function main() {
 	const cleanup = () => {
 		try {
 			wrangler.kill('SIGTERM');
-		} catch {}
+		} catch { /* ignore */ }
 	};
 
 	process.on('SIGINT', cleanup);
@@ -305,7 +305,7 @@ async function main() {
 			// Pretty print JSON
 			try {
 				result = JSON.stringify(JSON.parse(result), null, 2);
-			} catch {}
+			} catch { /* not JSON, keep as-is */ }
 		}
 
 		console.log(result.trim());

@@ -363,7 +363,7 @@ async function handleRequest(req, res) {
   if (req.method === 'POST') {
     try {
       body = await parseBody(req);
-    } catch (e) {
+    } catch {
       return json(res, { success: false, error: 'Invalid JSON body' }, 400);
     }
   }

@@ -11,7 +11,7 @@ const PROXY_SOCKET = '/tmp/docker-fuse-proxy.sock';
 const DOCKER_SOCKET = '/var/run/docker.sock';
 
 // Remove stale socket
-try { fs.unlinkSync(PROXY_SOCKET); } catch {}
+try { fs.unlinkSync(PROXY_SOCKET); } catch { /* ignore */ }
 
 const server = net.createServer((client) => {
   const docker = net.createConnection(DOCKER_SOCKET);
@@ -124,6 +124,6 @@ server.listen(PROXY_SOCKET, () => {
 
 process.on('SIGINT', () => {
   server.close();
-  try { fs.unlinkSync(PROXY_SOCKET); } catch {}
+  try { fs.unlinkSync(PROXY_SOCKET); } catch { /* ignore */ }
   process.exit(0);
 });
