@@ -130,7 +130,7 @@ export function ToolCall({
       </CollapsibleTrigger>
       <CollapsibleContent
         className={cn(
-          "overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up",
+          "group/details overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up",
           "motion-reduce:animate-none"
         )}
       >

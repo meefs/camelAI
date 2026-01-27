@@ -56,7 +56,7 @@ export function CopyButton({ value, label = 'Copy', className, hoverClassName }:
           size="icon-xs"
           className={cn(
             "h-5 w-5 text-muted-foreground/70 opacity-0 transition-opacity",
-            hoverClassName ?? "group-hover/row:opacity-100",
+            hoverClassName ?? "group-hover/details:opacity-100",
             className
           )}
           onClick={handleCopy}
@@ -136,7 +136,7 @@ export function DetailRow({
     <div className={cn("flex items-start gap-2 group/row py-0.5", className)}>
       <span className="shrink-0 text-muted-foreground/60">{label}</span>
       <div className="min-w-0 flex-1">{renderValue}</div>
-      {copyValue ? <CopyButton value={copyValue} hoverClassName="group-hover/row:opacity-100" /> : null}
+      {copyValue ? <CopyButton value={copyValue} hoverClassName="group-hover/details:opacity-100" /> : null}
     </div>
   );
 }
@@ -160,7 +160,7 @@ export function OutputBlock({ value, label, copyValue, className }: OutputBlockP
             <CopyButton
               value={copyValue}
               label="Copy output"
-              hoverClassName="group-hover/output:opacity-100"
+              hoverClassName="group-hover/details:opacity-100"
             />
           ) : null}
         </div>

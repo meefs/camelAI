@@ -12,7 +12,9 @@ import { WebDetails } from './details/web-details';
 import { TodoDetails } from './details/todo-details';
 import { NotebookDetails } from './details/notebook-details';
 import { GenericDetails } from './details/generic-details';
+import { McpDetails } from './details/mcp-details';
 import { SkillDetails } from './details/skill-details';
+import { isMcpTool } from './mcp-utils';
 
 interface ToolCallDetailsProps {
   tool?: ToolUseBlock;
@@ -26,7 +28,9 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
   const name = tool?.name;
 
   let content: ReactNode;
-  switch (name) {
+  if (tool && name && isMcpTool(name)) {
+    content = <McpDetails tool={tool} result={result} />;
+  } else switch (name) {
     case 'Skill':
       content = <SkillDetails tool={tool} result={result} skillSheet={skillSheet} />;
       break;

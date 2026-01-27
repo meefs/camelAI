@@ -1,4 +1,5 @@
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
+import { isMcpTool, parseMcpToolName } from './mcp-utils';
 import { getResultText } from './tool-utils';
 
 function getFilename(path: string): string {
@@ -42,6 +43,16 @@ export function getToolSummaryParts(
 
   const { name, input } = tool;
   const inputRecord = input || {};
+
+  if (isMcpTool(name)) {
+    const mcpParts = parseMcpToolName(name);
+    if (mcpParts) {
+      if (isStreaming && !result) {
+        return { action: `Calling ${mcpParts.displayTool} on ${mcpParts.displayServer}...` };
+      }
+      return { action: `Called ${mcpParts.displayTool} on ${mcpParts.displayServer}` };
+    }
+  }
 
   switch (name) {
     case 'Read': {
