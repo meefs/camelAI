@@ -26,8 +26,8 @@ export function AudioWaveform({
   const [levels, setLevels] = useState<number[]>(() => Array(barCount).fill(minLevel));
   const historyRef = useRef<number[]>(Array(barCount).fill(minLevel));
   const previousAmplitudeRef = useRef<number>(minLevel);
-  const floatBufferRef = useRef<Float32Array | null>(null);
-  const byteBufferRef = useRef<Uint8Array | null>(null);
+  const floatBufferRef = useRef<Float32Array<ArrayBuffer> | null>(null);
+  const byteBufferRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
 
   useEffect(() => {
     const baseLevels = Array(barCount).fill(minLevel);
