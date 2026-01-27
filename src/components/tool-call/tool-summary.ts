@@ -117,7 +117,13 @@ export function getToolSummaryParts(
     case 'Glob': {
       const count = parseCountFromResult(result);
       if (count !== null) return { action: `Found ${count} files` };
-      if (result) return { action: 'No files found' };
+      if (result) {
+        const text = getResultText(result).trim();
+        if (!text || text === 'No files found' || text === 'No files found.') {
+          return { action: 'No files found' };
+        }
+        return { action: 'Searched files' };
+      }
       const globPattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
       if (isStreaming && !globPattern) return { action: 'Searching for files...' };
       return { action: `Searching for "${truncate(globPattern || 'files', 20)}"...` };
@@ -125,7 +131,13 @@ export function getToolSummaryParts(
     case 'Grep': {
       const count = parseCountFromResult(result);
       if (count !== null) return { action: `Found ${count} matches` };
-      if (result) return { action: 'No matches found' };
+      if (result) {
+        const text = getResultText(result).trim();
+        if (!text || text === 'No matches found' || text === 'No matches found.') {
+          return { action: 'No matches found' };
+        }
+        return { action: 'Searched codebase' };
+      }
       const pattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
       if (isStreaming && !pattern) {
         return { action: 'Searching...' };
