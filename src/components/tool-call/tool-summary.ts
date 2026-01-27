@@ -37,7 +37,8 @@ export interface ToolSummaryParts {
 export function getToolSummaryParts(
   tool?: ToolUseBlock,
   result?: ToolResultBlock,
-  isStreaming?: boolean
+  isStreaming?: boolean,
+  status?: 'running' | 'complete' | 'error'
 ): ToolSummaryParts {
   if (!tool) return { action: result ? 'Result' : 'Tool call' };
 
@@ -106,22 +107,25 @@ export function getToolSummaryParts(
     case 'Bash': {
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
       const command = typeof inputRecord.command === 'string' ? inputRecord.command : '';
-      if (isStreaming && !description && !command) {
-        return { action: 'Running command...' };
+      const label = description || truncate(command || 'command', 30);
+      if (status === 'running') {
+        if (!description && !command) return { action: 'Running command...' };
+        return { action: `Running ${label}...` };
       }
-      return {
-        action: description
-          ? `Ran ${description}`
-          : `Ran ${truncate(command || 'command', 30)}`,
-      };
+      return { action: `Ran ${label}` };
     }
     case 'Glob': {
       const count = parseCountFromResult(result);
-      return { action: count !== null ? `Found ${count} files` : 'Searching for files...' };
+      if (count !== null) return { action: `Found ${count} files` };
+      if (result) return { action: 'No files found' };
+      const globPattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
+      if (isStreaming && !globPattern) return { action: 'Searching for files...' };
+      return { action: `Searching for "${truncate(globPattern || 'files', 20)}"...` };
     }
     case 'Grep': {
       const count = parseCountFromResult(result);
       if (count !== null) return { action: `Found ${count} matches` };
+      if (result) return { action: 'No matches found' };
       const pattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
       if (isStreaming && !pattern) {
         return { action: 'Searching...' };
@@ -135,8 +139,9 @@ export function getToolSummaryParts(
     }
     case 'Skill': {
       const skill = typeof inputRecord.skill === 'string' ? inputRecord.skill : '';
-      if (isStreaming) {
-        return { action: 'Reading skill...' };
+      if (!result) {
+        if (!skill) return { action: 'Reading skill...' };
+        return { action: `Reading skill ${skill}...` };
       }
       const path = skill ? `/home/claude/.claude/skills/${skill}/SKILL.md` : '';
       return {
