@@ -565,6 +565,26 @@ chiridion-app/
 - Deployment management tools
 - Context-aware operations
 
+### Storage APIs
+
+Durable Objects use SQLite-backed storage with two APIs:
+
+| API | Use Case |
+|-----|----------|
+| `ctx.storage.sql` | Relational data, queries, joins, complex transactions |
+| `ctx.storage.kv` | Simple key-value data (sync, fast) |
+
+```typescript
+// SQLite for complex data
+this.ctx.storage.sql.exec("SELECT * FROM users WHERE org_id = ?", orgId);
+
+// Sync KV for simple key-value (no await needed)
+this.ctx.storage.kv.put("config", { theme: "dark" });
+const config = this.ctx.storage.kv.get("config");
+```
+
+**Important:** Always use the sync KV API (`ctx.storage.kv`). Never use the legacy async API (`await ctx.storage.get/put`).
+
 ## Known Issues & Solutions
 
 See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.

@@ -170,6 +170,94 @@ const bookmark = await this.ctx.storage.getCurrentBookmark();
 await this.ctx.storage.restoreFromBookmark(previousBookmark);
 ```
 
+## KV Storage APIs
+
+In addition to SQLite, Durable Objects provide key-value storage APIs. There are two variants:
+
+### Synchronous KV Storage (Recommended)
+
+SQLite-backed Durable Objects have access to a fast, synchronous KV API via `ctx.storage.kv`. This is the preferred KV storage method when using SQLite-backed DOs.
+
+```typescript
+export class MyDurableObject extends DurableObject<Env> {
+  async handleRequest() {
+    // Synchronous operations - no await needed
+    this.ctx.storage.kv.put("key", { foo: "bar" });
+    const value = this.ctx.storage.kv.get("key");
+
+    // Delete a key
+    this.ctx.storage.kv.delete("key");
+
+    // Check if key exists
+    const exists = this.ctx.storage.kv.has("key");
+
+    // List keys with optional prefix
+    const keys = this.ctx.storage.kv.list(); // returns Map
+    const prefixed = this.ctx.storage.kv.list({ prefix: "user:" });
+
+    // Batch operations
+    this.ctx.storage.kv.put(new Map([
+      ["key1", "value1"],
+      ["key2", "value2"]
+    ]));
+
+    // Get multiple keys
+    const values = this.ctx.storage.kv.get(["key1", "key2"]); // returns Map
+  }
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `kv.get(key)` | Get a single value |
+| `kv.get(keys[])` | Get multiple values (returns Map) |
+| `kv.put(key, value)` | Store a single value |
+| `kv.put(entries)` | Store multiple values (accepts Map or entries) |
+| `kv.delete(key)` | Delete a single key |
+| `kv.delete(keys[])` | Delete multiple keys |
+| `kv.has(key)` | Check if key exists |
+| `kv.list(options?)` | List keys with optional prefix/limit |
+
+### Legacy Async KV Storage
+
+The original async KV storage API is still available and works with both SQLite-backed and legacy KV-backed Durable Objects:
+
+```typescript
+export class MyDurableObject extends DurableObject<Env> {
+  async handleRequest() {
+    // Async operations - requires await
+    await this.ctx.storage.put("key", { foo: "bar" });
+    const value = await this.ctx.storage.get("key");
+
+    // Delete
+    await this.ctx.storage.delete("key");
+
+    // List keys
+    const entries = await this.ctx.storage.list({ prefix: "user:" });
+
+    // Batch operations
+    await this.ctx.storage.put({
+      key1: "value1",
+      key2: "value2"
+    });
+
+    // Get multiple
+    const values = await this.ctx.storage.get(["key1", "key2"]);
+  }
+}
+```
+
+### When to Use KV vs SQLite
+
+| Use Case | Recommendation |
+|----------|----------------|
+| Simple key-value data | Sync KV (`ctx.storage.kv`) |
+| Relational data with queries | SQLite (`ctx.storage.sql`) |
+| Full-text search, joins, aggregations | SQLite |
+| Session/config data | Sync KV |
+| High-frequency reads of single keys | Sync KV |
+| Complex transactions | SQLite |
+
 ## Hibernatable WebSockets
 
 Durable Objects support WebSocket connections that can hibernate to save costs. During hibernation, the DO is evicted from memory but connections remain open.
@@ -402,8 +490,9 @@ app.route("/api/items", itemsRoutes);
 ## Best Practices
 
 1. **One DO class per domain concept** - e.g., `UserDO`, `RoomDO`, `SessionDO`
-2. **Use SQLite for all persistence** - Avoid the legacy KV storage API
-3. **Initialize schema in constructor** - Use `CREATE TABLE IF NOT EXISTS`
+2. **Use SQLite for relational data** - Queries, joins, and complex transactions
+3. **Use sync KV for simple key-value data** - `ctx.storage.kv` is fast and synchronous
+4. **Initialize schema in constructor** - Use `CREATE TABLE IF NOT EXISTS`
 4. **Use hibernatable WebSockets for real-time** - Saves significant costs
 5. **Tag WebSockets for routing** - Makes broadcasting to subsets efficient
 6. **Use transactions for multi-step operations** - Ensures consistency
