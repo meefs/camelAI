@@ -43,7 +43,6 @@ const DEBUG_PROXY = process.env.CHIRIDION_DEBUG_PROXY === '1';
 const PREQUEUE_FIRST_MESSAGE = process.env.CHIRIDION_PREQUEUE_FIRST_MESSAGE === '1';
 const FIRST_MESSAGE_DELAY_MS = Number(process.env.CHIRIDION_FIRST_MESSAGE_DELAY_MS || '100') || 0;
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL;
-const MCP_API_KEY = process.env.MCP_API_KEY;
 
 log('[ws-server]', 'Starting', { version: VERSION, port: PORT });
 
@@ -278,7 +277,6 @@ async function runStartupDiagnostics() {
       anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || null,
       anthropicKeyLen: (process.env.ANTHROPIC_API_KEY || '').length,
       mcpServerUrl: MCP_SERVER_URL || null,
-      mcpKeyLen: (MCP_API_KEY || '').length,
       bunVersion: typeof Bun !== 'undefined' ? Bun.version : null,
       nodeVersion: process.version,
     };
@@ -395,10 +393,11 @@ function trackTaskToolUse(session, event) {
   }
 }
 
-function createSession(threadId, threadDeployToken = null, userInfo = null) {
+function createSession(threadId, threadDeployToken = null, mcpToken = null, userInfo = null) {
   const session = {
     threadId,
     threadDeployToken,
+    mcpToken,
     userName: userInfo?.userName || null,
     userEmail: userInfo?.userEmail || null,
     activeQuery: null,
@@ -426,7 +425,7 @@ function createSession(threadId, threadDeployToken = null, userInfo = null) {
   return session;
 }
 
-function getOrCreateSession(threadId, threadDeployToken = null, userInfo = null) {
+function getOrCreateSession(threadId, threadDeployToken = null, mcpToken = null, userInfo = null) {
   if (!threadId) {
     threadId = crypto.randomUUID();
   }
@@ -434,6 +433,9 @@ function getOrCreateSession(threadId, threadDeployToken = null, userInfo = null)
     const session = sessions.get(threadId);
     if (threadDeployToken && !session.threadDeployToken) {
       session.threadDeployToken = threadDeployToken;
+    }
+    if (mcpToken && !session.mcpToken) {
+      session.mcpToken = mcpToken;
     }
     if (userInfo?.userName && !session.userName) {
       session.userName = userInfo.userName;
@@ -453,7 +455,7 @@ function getOrCreateSession(threadId, threadDeployToken = null, userInfo = null)
     }
     return session;
   }
-  return createSession(threadId, threadDeployToken, userInfo);
+  return createSession(threadId, threadDeployToken, mcpToken, userInfo);
 }
 
 const PERSIST_PREFIX = '[PERSIST]';
@@ -673,12 +675,13 @@ function getQueryOptions(session, fileExists) {
   }
 
   const mcpServers = {};
-  if (MCP_SERVER_URL && MCP_API_KEY) {
+  // Only use per-thread MCP token (has thread_id encoded, can't be spoofed)
+  if (MCP_SERVER_URL && session.mcpToken) {
     mcpServers['chiridion'] = {
       type: 'http',
       url: MCP_SERVER_URL,
       headers: {
-        Authorization: `Bearer ${MCP_API_KEY}`,
+        Authorization: `Bearer ${session.mcpToken}`,
       },
     };
   }
@@ -1270,6 +1273,7 @@ wss.on('connection', (ws, req) => {
   // Store connection metadata on the socket
   ws.data = {
     threadDeployToken: req.headers['x-chiridion-thread-deploy-token'] || null,
+    mcpToken: req.headers['x-chiridion-mcp-token'] || null,
     userName: req.headers['x-chiridion-user-name'] || null,
     userEmail: req.headers['x-chiridion-user-email'] || null,
   };
@@ -1287,17 +1291,19 @@ wss.on('connection', (ws, req) => {
         }
 
         const threadDeployToken = ws.data?.threadDeployToken || null;
+        const mcpToken = ws.data?.mcpToken || null;
         const userInfo = {
           userName: ws.data?.userName || null,
           userEmail: ws.data?.userEmail || null,
         };
 
-        const session = getOrCreateSession(threadId, threadDeployToken, userInfo);
-        void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken, userName: userInfo.userName } });
+        const session = getOrCreateSession(threadId, threadDeployToken, mcpToken, userInfo);
+        void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken, hasMcpToken: !!mcpToken, userName: userInfo.userName } });
         log('[ws-server]', 'init', {
           threadId,
           lastEventId: data.lastEventId,
           hasDeployToken: Boolean(threadDeployToken),
+          hasMcpToken: Boolean(mcpToken),
           userName: userInfo.userName,
         });
         await attachSession(ws, session, data.lastEventId);

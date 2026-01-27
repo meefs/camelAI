@@ -377,17 +377,8 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     // MCP server config (create signed token for MCP access)
     // MCP endpoint is on the main worker at /mcp
     if (this.env.WORKER_BASE_URL) {
-      const mcpToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
-        org_id: orgId,
-        user_id: userId,
-        scopes: ['mcp'],
-        exp: tokenExpiry,
-        workspace_id: workspaceId,
-        name: `sandbox-mcp-${workspaceId}`,
-      });
+      // MCP tokens are now per-thread and passed via WebSocket headers (X-Chiridion-MCP-Token)
       envVars.MCP_SERVER_URL = `${this.env.WORKER_BASE_URL}/mcp`;
-      envVars.MCP_API_KEY = mcpToken;
-      console.log('[WorkspaceContainer] Created signed MCP token for workspace', { workspaceId, orgId });
     }
 
     return envVars;
@@ -444,12 +435,10 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
 
     // Push integration env vars after container is ready
     // This writes to /etc/profile.d/chiridion-integrations.sh so bash commands can access them
-    const integrationEnvVars = await this.fetchIntegrationEnvVars(workspaceId);
-    const pushSuccess = await this.pushIntegrationEnvVars(integrationEnvVars);
-    console.log('[WorkspaceContainer] Pushed integration env vars', {
+    const pushSuccess = await this.refreshIntegrationEnvVars(workspaceId);
+    console.log('[WorkspaceContainer] Refreshed integration env vars', {
       workspaceId,
       orgId,
-      keyCount: Object.keys(integrationEnvVars).length,
       success: pushSuccess,
     });
   }
@@ -626,6 +615,16 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
       console.error('[WorkspaceContainer] Error pushing env vars:', e);
       return false;
     }
+  }
+
+  /**
+   * Refresh integration env vars by fetching from WorkspaceDO and pushing to container.
+   * Combines fetchIntegrationEnvVars + pushIntegrationEnvVars in a single RPC call.
+   * Returns true if successful, false if container is not running or push failed.
+   */
+  async refreshIntegrationEnvVars(workspaceId: string): Promise<boolean> {
+    const envVars = await this.fetchIntegrationEnvVars(workspaceId);
+    return this.pushIntegrationEnvVars(envVars);
   }
 }
 

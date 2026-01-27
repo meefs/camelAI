@@ -417,6 +417,45 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     ],
     // No proxyConfig - requires Google auth
   },
+
+  // ============================================
+  // GENERIC / CUSTOM INTEGRATION
+  // ============================================
+
+  other: {
+    type: 'other',
+    displayName: 'Other',
+    description: 'Connect to any HTTP API with custom authentication',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      { name: 'display_name', label: 'Display Name', type: 'string', required: true, placeholder: 'My Custom API' },
+      { name: 'description', label: 'Description', type: 'string', required: false, placeholder: 'What this integration does' },
+      { name: 'base_url', label: 'Base URL', type: 'string', required: false, placeholder: 'https://api.example.com' },
+      {
+        name: 'auth_type',
+        label: 'Authentication Type',
+        type: 'select',
+        required: false,
+        default: 'bearer',
+        options: [
+          { value: 'none', label: 'None' },
+          { value: 'bearer', label: 'Bearer Token' },
+          { value: 'basic', label: 'Basic Auth' },
+          { value: 'header', label: 'Custom Header' },
+        ],
+      },
+      { name: 'auth_header', label: 'Custom Auth Header Name', type: 'string', required: false, placeholder: 'X-API-Key' },
+    ],
+    credentialSchema: [
+      { name: 'api_key', label: 'API Key / Token', type: 'password', required: false },
+      { name: 'api_secret', label: 'API Secret / Password', type: 'password', required: false },
+      { name: 'client_id', label: 'Client ID', type: 'text', required: false },
+      { name: 'client_secret', label: 'Client Secret', type: 'password', required: false },
+    ],
+    // proxyConfig is dynamic based on config.auth_type and config.base_url
+    // Will be handled specially in the proxy handler
+  },
 };
 
 export function getIntegrationDefinition(type: string): IntegrationDefinition | undefined {

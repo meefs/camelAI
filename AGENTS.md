@@ -288,7 +288,7 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 | `/mcp/health` | GET | Health check |
 | `/mcp` | POST | MCP protocol endpoint (streamable HTTP) |
 
-MCP auth uses API tokens with `mcp` scope. Requests must include `Authorization: Bearer <token>` or `x-api-key`. Sandbox containers receive a per-org MCP token via `MCP_API_KEY` env var.
+MCP auth uses signed JWT tokens with `mcp` scope. Per-thread tokens are created when a WebSocket connects and passed to the container via `X-Chiridion-MCP-Token` header. The token includes the `thread_id` in the payload for secure thread context (can't be spoofed).
 
 ## Development
 

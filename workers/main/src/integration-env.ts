@@ -151,6 +151,20 @@ export function mapCredentialsToEnvVars(
       if (str(config.project_id)) set('BIGQUERY_PROJECT_ID', str(config.project_id)!);
       break;
 
+    case 'other': {
+      // Generic "other" integration - use display_name or a generic prefix
+      const displayName = str(config.display_name);
+      const prefix = displayName
+        ? displayName.toUpperCase().replace(/[^A-Z0-9]/g, '_').replace(/_+/g, '_')
+        : 'CUSTOM';
+      if (str(credentials.api_key)) set(`${prefix}_API_KEY`, str(credentials.api_key)!);
+      if (str(credentials.api_secret)) set(`${prefix}_API_SECRET`, str(credentials.api_secret)!);
+      if (str(credentials.client_id)) set(`${prefix}_CLIENT_ID`, str(credentials.client_id)!);
+      if (str(credentials.client_secret)) set(`${prefix}_CLIENT_SECRET`, str(credentials.client_secret)!);
+      if (str(config.base_url)) set(`${prefix}_BASE_URL`, str(config.base_url)!);
+      break;
+    }
+
     // Default: use integration type as prefix for api_key
     default: {
       const prefix = integrationType.toUpperCase().replace(/-/g, '_');

@@ -150,6 +150,19 @@ export default function ConnectionsClient({
     return connectionTypes.find((item) => item.type === type);
   };
 
+  const getConnectionDescription = useCallback((connection: Integration) => {
+    // For "other" type, show the custom description if provided
+    if (connection.integration_type === 'other') {
+      const config = connection.config as Record<string, unknown> | undefined;
+      if (config?.description && typeof config.description === 'string') {
+        return config.description;
+      }
+      return 'Custom Integration';
+    }
+    const typeDef = getTypeDefinition(connection.integration_type);
+    return typeDef?.displayName || connection.integration_type;
+  }, [connectionTypes]);
+
   const isLoading = authLoading || loading;
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
@@ -235,7 +248,7 @@ export default function ConnectionsClient({
                           <div>
                             <CardTitle>{connection.name}</CardTitle>
                             <CardDescription>
-                              {typeDef?.displayName || connection.integration_type}
+                              {getConnectionDescription(connection)}
                             </CardDescription>
                           </div>
                         </div>

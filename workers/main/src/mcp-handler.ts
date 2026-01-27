@@ -11,22 +11,25 @@ import { z } from 'zod';
 import type { ApiTokenData } from './api-tokens';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
+import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse } from './durable-objects';
+import type { WorkspaceContainer, WorkspaceContainerEnv } from './workspace-container';
+import { getWorkspaceContainer } from './workspace-container';
 import type { Integration } from '../../../src/types';
-import { getAllIntegrations, getIntegrationsByCategory } from '../../../src/lib/integration-registry';
+import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition, validateConfig, validateCredentials } from '../../../src/lib/integration-registry';
+import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { isSignedToken, validateSignedToken } from './signed-tokens';
 
-export interface McpEnv {
-  ORG: DurableObjectNamespace<OrgDO>;
-  WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+export interface McpEnv extends WorkspaceContainerEnv {
+  CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
   API_TOKENS: KVNamespace;
-  TOKEN_SIGNING_SECRET: string;
 }
 
 type AuthContext = {
   tokenId: string;
   token: ApiTokenData;
   workspaceId: string | null;
+  threadId: string | null;
 };
 
 type AuthResult =
@@ -37,6 +40,14 @@ type AuthResult =
 const AUTH_HEADER_ORG_ID = 'x-chiridion-org-id';
 const AUTH_HEADER_USER_ID = 'x-chiridion-user-id';
 const AUTH_HEADER_WORKSPACE_ID = 'x-chiridion-workspace-id';
+const AUTH_HEADER_THREAD_ID = 'x-chiridion-thread-id';
+
+// Pending connection setup request with resolver
+interface PendingConnectionSetup {
+  resolve: (response: ConnectionSetupResponse) => void;
+  reject: (error: Error) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
 
 /**
  * MCP Agent implementation with deployment management tools
@@ -51,6 +62,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
   private orgId: string | null = null;
   private userId: string | null = null;
   private workspaceId: string | null = null;
+  private threadId: string | null = null;
+
+  // Pending connection setup promises (requestId -> resolver)
+  private pendingConnectionSetups: Map<string, PendingConnectionSetup> = new Map();
 
   /**
    * Override fetch to extract auth context from headers before processing
@@ -60,6 +75,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     this.orgId = request.headers.get(AUTH_HEADER_ORG_ID);
     this.userId = request.headers.get(AUTH_HEADER_USER_ID);
     this.workspaceId = request.headers.get(AUTH_HEADER_WORKSPACE_ID);
+    this.threadId = request.headers.get(AUTH_HEADER_THREAD_ID);
 
     // Call parent fetch to handle MCP protocol
     return super.fetch(request);
@@ -81,6 +97,13 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
   }
 
   /**
+   * Get ChatThreadDO stub for a thread
+   */
+  private getChatThreadStub(threadId: string): DurableObjectStub<ChatThreadDO> {
+    return this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId)) as DurableObjectStub<ChatThreadDO>;
+  }
+
+  /**
    * Require auth context, throwing if not available
    */
   private requireAuth(): { orgId: string; userId: string; workspaceId: string | null } {
@@ -97,6 +120,50 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }],
     };
+  }
+
+  /**
+   * RPC method called by ChatThreadDO when user completes connection setup.
+   * Resolves the pending promise for the corresponding request.
+   * Also cleans up persisted storage for hibernation recovery.
+   */
+  receiveConnectionSetupResponse(response: ConnectionSetupResponse): void {
+    // Clean up persisted storage (for hibernation recovery) - sync KV is faster
+    this.ctx.storage.kv.delete(`pending_connection:${response.requestId}`);
+
+    // Resolve in-memory promise if it exists (DO didn't hibernate)
+    const pending = this.pendingConnectionSetups.get(response.requestId);
+    if (pending) {
+      clearTimeout(pending.timeoutId);
+      this.pendingConnectionSetups.delete(response.requestId);
+      pending.resolve(response);
+    }
+    // If not in Map, the tool call already timed out - nothing more to do
+  }
+
+  /**
+   * Persist a pending connection setup to storage (for hibernation recovery).
+   * Uses sync KV for better performance.
+   */
+  private persistPendingConnectionSetup(requestId: string): void {
+    this.ctx.storage.kv.put(`pending_connection:${requestId}`, Date.now().toString());
+  }
+
+  /**
+   * Register a pending connection setup and return a promise that resolves when user responds.
+   * Call persistPendingConnectionSetup() first to ensure storage is written.
+   */
+  private waitForConnectionSetup(requestId: string, timeoutMs: number): Promise<ConnectionSetupResponse> {
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.pendingConnectionSetups.delete(requestId);
+        // Clean up storage on timeout - sync KV
+        this.ctx.storage.kv.delete(`pending_connection:${requestId}`);
+        reject(new Error('Connection setup timed out'));
+      }, timeoutMs);
+
+      this.pendingConnectionSetups.set(requestId, { resolve, reject, timeoutId });
+    });
   }
 
   async init() {
@@ -322,6 +389,269 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
       }
     );
 
+    // Create a new integration
+    this.server.tool(
+      'create_integration',
+      'Create a new integration/connection for the current workspace. Use list_integration_types to see available types and their required config/credential fields.',
+      {
+        integration_type: z.string().describe('The type of integration (e.g., "stripe", "notion", "postgres", "other")'),
+        name: z.string().describe('A friendly name for this connection (e.g., "Production Stripe", "My Notion Workspace")'),
+        config: z
+          .any()
+          .optional()
+          .describe('Configuration fields as an object (varies by type). For "other" type, include display_name, description, base_url, auth_type, auth_header.'),
+        credentials: z
+          .any()
+          .optional()
+          .describe('Credential fields as an object (e.g., api_key, api_secret, client_id, client_secret). These are encrypted at rest.'),
+      },
+      async ({ integration_type, name, config = {}, credentials = {} }) => {
+        const { userId, workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ error: 'No workspace context available' });
+        }
+
+        // Validate integration type
+        const definition = getIntegrationDefinition(integration_type);
+        if (!definition) {
+          return this.textResponse({
+            success: false,
+            error: `Unknown integration type: ${integration_type}. Use list_integration_types to see available types.`,
+          });
+        }
+
+        // Validate config fields
+        const configErrors = validateConfig(integration_type, config as Record<string, unknown>);
+        if (configErrors.length > 0) {
+          return this.textResponse({
+            success: false,
+            error: 'Invalid configuration',
+            validation_errors: configErrors,
+          });
+        }
+
+        // Validate credential fields
+        const credentialErrors = validateCredentials(integration_type, credentials as Record<string, unknown>);
+        if (credentialErrors.length > 0) {
+          return this.textResponse({
+            success: false,
+            error: 'Invalid credentials',
+            validation_errors: credentialErrors,
+          });
+        }
+
+        try {
+          // Encrypt credentials
+          const credentialsEncrypted = await encryptCredentials(credentials as Record<string, unknown>, this.env.INTEGRATION_SECRET_KEY);
+
+          // Generate ID and create integration
+          const integrationId = crypto.randomUUID();
+          const workspaceStub = this.getWorkspaceStub(workspaceId);
+
+          await workspaceStub.createIntegration(
+            integrationId,
+            integration_type,
+            name,
+            definition.category,
+            definition.authMethod,
+            JSON.stringify(config),
+            credentialsEncrypted,
+            userId
+          );
+
+          // Push updated env vars to running container (fire-and-forget)
+          getWorkspaceContainer(this.env, workspaceId)
+            .refreshIntegrationEnvVars(workspaceId)
+            .catch(() => {});
+
+          return this.textResponse({
+            success: true,
+            integration: {
+              id: integrationId,
+              type: integration_type,
+              name,
+              category: definition.category,
+              enabled: true,
+            },
+            message: `Integration '${name}' created successfully`,
+          });
+        } catch (err) {
+          return this.textResponse({
+            success: false,
+            error: err instanceof Error ? err.message : 'Failed to create integration',
+          });
+        }
+      }
+    );
+
+    // Prompt user to set up a connection via UI modal
+    this.server.tool(
+      'prompt_connection_setup',
+      'Prompt the user to set up a new integration/connection through a UI modal in the chat interface. This allows the user to securely enter credentials without exposing them in the chat. The tool will wait for the user to complete the setup and return the result.',
+      {
+        integration_type: z
+          .string()
+          .optional()
+          .describe('Optional: Pre-select a specific integration type (e.g., "stripe", "notion"). If not provided, user can choose from all available types.'),
+        suggested_name: z
+          .string()
+          .optional()
+          .describe('Optional: Suggested name for the connection that will be pre-filled in the form.'),
+        message: z
+          .string()
+          .optional()
+          .describe('Optional: A message to show the user explaining why this connection is needed.'),
+      },
+      async ({ integration_type, suggested_name, message }) => {
+        const { userId, workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ error: 'No workspace context available' });
+        }
+
+        // Thread ID comes from the signed token (can't be spoofed)
+        const threadId = this.threadId;
+        if (!threadId) {
+          return this.textResponse({
+            success: false,
+            error: 'No thread context available. This tool requires a per-thread MCP token.',
+          });
+        }
+
+        // Get workspace stub for creating integration later
+        const workspaceStub = this.getWorkspaceStub(workspaceId);
+
+        // Validate integration type if provided
+        if (integration_type) {
+          const definition = getIntegrationDefinition(integration_type);
+          if (!definition) {
+            return this.textResponse({
+              success: false,
+              error: `Unknown integration type: ${integration_type}. Use list_integration_types to see available types.`,
+            });
+          }
+        }
+
+        const requestId = crypto.randomUUID();
+        const timeoutMs = 30 * 60 * 1000; // 30 minutes
+
+        try {
+          // Get the MCP DO's own ID so ChatThreadDO can call back
+          const mcpDoId = this.ctx.id.toString();
+
+          // Persist to storage first (for hibernation recovery) - sync KV
+          this.persistPendingConnectionSetup(requestId);
+
+          // Register the pending request BEFORE sending to ChatThreadDO
+          const responsePromise = this.waitForConnectionSetup(requestId, timeoutMs);
+
+          // Send prompt to ChatThreadDO with callback info
+          const chatThreadStub = this.getChatThreadStub(threadId);
+          const promptResponse = await chatThreadStub.fetch(
+            new Request('http://internal/connection-setup/prompt', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                requestId,
+                integrationType: integration_type,
+                suggestedName: suggested_name,
+                message,
+                createdAt: Date.now(),
+                // Callback info for RPC
+                mcpDoId,
+              } as ConnectionSetupRequest & { mcpDoId: string }),
+            })
+          );
+
+          if (!promptResponse.ok) {
+            // Clean up pending request (both in-memory and storage)
+            const pending = this.pendingConnectionSetups.get(requestId);
+            if (pending) {
+              clearTimeout(pending.timeoutId);
+              this.pendingConnectionSetups.delete(requestId);
+            }
+            this.ctx.storage.kv.delete(`pending_connection:${requestId}`);
+            return this.textResponse({
+              success: false,
+              error: 'Failed to send prompt to user',
+            });
+          }
+
+          // Wait for user response (via RPC callback from ChatThreadDO)
+          const userResponse = await responsePromise;
+
+          if (userResponse.cancelled) {
+            return this.textResponse({
+              success: false,
+              cancelled: true,
+              message: 'User cancelled the connection setup',
+            });
+          }
+
+          if (!userResponse.integration) {
+            return this.textResponse({
+              success: false,
+              error: 'Invalid response from user - missing integration data',
+            });
+          }
+
+          // Create the integration
+          const { type, name, config, credentials } = userResponse.integration;
+          const definition = getIntegrationDefinition(type);
+
+          if (!definition) {
+            return this.textResponse({
+              success: false,
+              error: `Unknown integration type from user response: ${type}`,
+            });
+          }
+
+          // Encrypt credentials and create integration
+          const credentialsEncrypted = await encryptCredentials(credentials, this.env.INTEGRATION_SECRET_KEY);
+          const integrationId = crypto.randomUUID();
+
+          await workspaceStub.createIntegration(
+            integrationId,
+            type,
+            name,
+            definition.category,
+            definition.authMethod,
+            JSON.stringify(config),
+            credentialsEncrypted,
+            userId
+          );
+
+          // Push updated env vars to running container (fire-and-forget)
+          getWorkspaceContainer(this.env, workspaceId)
+            .refreshIntegrationEnvVars(workspaceId)
+            .catch(() => {});
+
+          return this.textResponse({
+            success: true,
+            integration: {
+              id: integrationId,
+              type,
+              name,
+              category: definition.category,
+              enabled: true,
+            },
+            message: `Integration '${name}' created successfully via user prompt`,
+          });
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : 'Failed to prompt for connection setup';
+          const isTimeout = errorMessage.includes('timed out');
+
+          return this.textResponse({
+            success: false,
+            timeout: isTimeout,
+            error: errorMessage,
+            message: isTimeout
+              ? 'Connection setup timed out. The user did not complete the setup in time.'
+              : undefined,
+          });
+        }
+      }
+    );
+
   }
 }
 
@@ -378,7 +708,15 @@ async function authorizeRequest(
     created_at: payload.iat,
     expires_at: payload.exp,
   };
-  return { ok: true, auth: { tokenId: apiKey, token, workspaceId: payload.workspace_id ?? null } };
+  return {
+    ok: true,
+    auth: {
+      tokenId: apiKey,
+      token,
+      workspaceId: payload.workspace_id ?? null,
+      threadId: payload.thread_id ?? null,
+    },
+  };
 }
 
 /**
@@ -425,13 +763,16 @@ export async function handleMcpRequest(
     });
   }
 
-  // Create a new request with auth context headers
-  const { token, workspaceId } = authResult.auth;
+  // Create a new request with auth context headers (from validated token)
+  const { token, workspaceId, threadId } = authResult.auth;
   const headers = new Headers(request.headers);
   headers.set(AUTH_HEADER_ORG_ID, token.org_id);
   headers.set(AUTH_HEADER_USER_ID, token.user_id);
   if (workspaceId) {
     headers.set(AUTH_HEADER_WORKSPACE_ID, workspaceId);
+  }
+  if (threadId) {
+    headers.set(AUTH_HEADER_THREAD_ID, threadId);
   }
 
   const authenticatedRequest = new Request(request.url, {

@@ -16,6 +16,11 @@ import { PageHeader } from '@/components/page-header';
 import { PromptInput } from '@/components/prompt-input';
 import { FloatingTodoList, type TodoItem, type TodoStatus } from '@/components/floating-todo';
 import { AskUserQuestion, type AskUserQuestionData } from '@/components/ask-user-question';
+import {
+  ConnectionSetupPrompt,
+  type ConnectionSetupPromptData,
+  type ConnectionSetupResponse,
+} from '@/components/connection-setup-prompt';
 import type { Attachment } from '@/components/attachment-list';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -185,6 +190,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
   const [pendingQuestion, setPendingQuestion] = useState<AskUserQuestionData | null>(null);
+  const [connectionSetupPrompt, setConnectionSetupPrompt] = useState<ConnectionSetupPromptData | null>(null);
   const normalizedMessages = useMemo(
     () => normalizeToolResultMessages(messages),
     [messages]
@@ -944,6 +950,14 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         } else if (data.type === 'title_updated' && data.title) {
           // Update thread title when AI generates it
           setCurrentTitle(data.title);
+        } else if (data.type === 'connection_setup_prompt' && data.requestId) {
+          // MCP server is prompting user to set up a connection
+          setConnectionSetupPrompt({
+            requestId: data.requestId as string,
+            integrationType: data.integrationType as string | undefined,
+            suggestedName: data.suggestedName as string | undefined,
+            message: data.message as string | undefined,
+          });
         }
       } catch (e) {
         console.error('Preview WebSocket message parse error:', e);
@@ -1487,6 +1501,26 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     setPendingQuestion(null);
   }, [pendingQuestion]);
 
+  // Handle connection setup response - send via thread preview WebSocket
+  const handleConnectionSetupResponse = useCallback((response: ConnectionSetupResponse) => {
+    if (!previewWsRef.current || previewWsRef.current.readyState !== WebSocket.OPEN) {
+      console.error('[Chat] Preview WebSocket not available for connection setup response');
+      return;
+    }
+
+    previewWsRef.current.send(JSON.stringify({
+      type: 'connection_setup_response',
+      ...response,
+    }));
+
+    // Clear the prompt
+    setConnectionSetupPrompt(null);
+  }, []);
+
+  const handleConnectionSetupCancel = useCallback(() => {
+    setConnectionSetupPrompt(null);
+  }, []);
+
   function sendMessage() {
     if (!input.trim() || !shouldShowChat || !resolvedWorkspaceId || !threadId) {
       return;
@@ -1893,6 +1927,15 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
           </>
         )}
       </>
+
+      {/* Connection Setup Prompt Modal */}
+      {connectionSetupPrompt && (
+        <ConnectionSetupPrompt
+          data={connectionSetupPrompt}
+          onSubmit={handleConnectionSetupResponse}
+          onCancel={handleConnectionSetupCancel}
+        />
+      )}
     </TooltipProvider>
   );
 }

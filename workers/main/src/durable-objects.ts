@@ -7,6 +7,27 @@ export interface PreviewState {
   workers: string[]; // Worker script names to preview
 }
 
+// Connection setup prompt request
+export interface ConnectionSetupRequest {
+  requestId: string;
+  integrationType?: string; // Optional: pre-select integration type
+  suggestedName?: string; // Optional: suggested name for the connection
+  message?: string; // Optional: message to show user
+  createdAt: number;
+}
+
+// Connection setup response from user
+export interface ConnectionSetupResponse {
+  requestId: string;
+  cancelled: boolean;
+  integration?: {
+    type: string;
+    name: string;
+    config: Record<string, unknown>;
+    credentials: Record<string, unknown>;
+  };
+}
+
 export interface Thread {
   id: string;
   title: string;
@@ -23,10 +44,16 @@ export interface Message {
   created_at: number;
 }
 
+// Forward declaration for MCP DO RPC methods - used for callback from ChatThreadDO
+interface ChiridionMcpRpc {
+  receiveConnectionSetupResponse(response: ConnectionSetupResponse): void;
+}
+
 export interface ChatEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   SANDBOX: DurableObjectNamespace<WorkspaceContainer>;
   ORG: DurableObjectNamespace<OrgDO>;
+  MCP_OBJECT: DurableObjectNamespace;
   API_TOKENS: KVNamespace;
   R2_BUCKET: R2Bucket;
   AI: Ai;
@@ -48,9 +75,18 @@ export interface ChatEnv {
  * ChatThreadDO - One per thread, holds out-of-band state like preview workers.
  * Accepts WebSocket connections for live updates.
  */
+// Pending connection setup with MCP callback info
+interface PendingConnectionSetupInfo {
+  mcpDoId: string;
+  createdAt: number;
+}
+
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private previewWorkers: string[] = [];
   private previewVersion: number = 0;
+  // Pending connection setup requests (requestId -> MCP DO callback info)
+  // This is also persisted to storage to survive hibernation
+  private pendingConnectionSetups: Map<string, PendingConnectionSetupInfo> = new Map();
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -72,6 +108,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const version = await ctx.storage.get<number>('previewVersion');
       if (version) {
         this.previewVersion = version;
+      }
+
+      // Restore pending connection setups from storage (sync KV)
+      const pendingEntries = ctx.storage.kv.list({ prefix: 'pending_connection:' });
+      for (const { key, value } of pendingEntries) {
+        const info = value as PendingConnectionSetupInfo;
+        const requestId = key.replace('pending_connection:', '');
+        // Only restore if not expired (30 minutes)
+        if (Date.now() - info.createdAt < 30 * 60 * 1000) {
+          this.pendingConnectionSetups.set(requestId, info);
+        } else {
+          // Clean up expired entries
+          ctx.storage.kv.delete(key);
+        }
       }
     });
   }
@@ -114,7 +164,73 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
     }
 
+    // HTTP API for connection setup prompts (called by MCP server)
+    if (url.pathname === '/connection-setup/prompt' && request.method === 'POST') {
+      const body = await request.json() as ConnectionSetupRequest & { mcpDoId?: string };
+      const requestId = body.requestId || crypto.randomUUID();
+      const mcpDoId = body.mcpDoId;
+
+      if (!mcpDoId) {
+        return new Response(JSON.stringify({ error: 'Missing MCP DO ID for callback' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Store pending request with MCP callback info (both in-memory and durable storage)
+      const pendingInfo: PendingConnectionSetupInfo = {
+        mcpDoId,
+        createdAt: Date.now(),
+      };
+      this.pendingConnectionSetups.set(requestId, pendingInfo);
+      this.ctx.storage.kv.put(`pending_connection:${requestId}`, pendingInfo);
+
+      // Broadcast prompt to all connected clients
+      this.broadcast({
+        type: 'connection_setup_prompt',
+        requestId,
+        integrationType: body.integrationType,
+        suggestedName: body.suggestedName,
+        message: body.message,
+      });
+
+      return new Response(JSON.stringify({ requestId }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     return new Response('Not found', { status: 404 });
+  }
+
+  // Handle WebSocket messages (for connection setup responses)
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (typeof message !== 'string') return;
+
+    try {
+      const data = JSON.parse(message) as { type: string; [key: string]: unknown };
+
+      if (data.type === 'connection_setup_response') {
+        const response = data as unknown as ConnectionSetupResponse;
+        const pendingInfo = this.pendingConnectionSetups.get(response.requestId);
+
+        if (response.requestId && pendingInfo) {
+          // Clean up pending request (both in-memory and durable storage)
+          this.pendingConnectionSetups.delete(response.requestId);
+          this.ctx.storage.kv.delete(`pending_connection:${response.requestId}`);
+
+          // Call back to MCP DO via RPC
+          try {
+            const mcpDoId = this.env.MCP_OBJECT.idFromString(pendingInfo.mcpDoId);
+            const mcpStub = this.env.MCP_OBJECT.get(mcpDoId) as unknown as ChiridionMcpRpc;
+            await mcpStub.receiveConnectionSetupResponse(response);
+          } catch (err) {
+            console.error('[ChatThreadDO] Failed to call MCP DO callback:', err);
+          }
+        }
+      }
+    } catch {
+      // Ignore invalid JSON
+    }
   }
 
   // Get preview workers

@@ -450,8 +450,9 @@ export default {
       }
       headers.set('X-Chiridion-User-Email', userEmail);
 
-      // Create signed deploy token with validated threadId for auto-preview after deploys
+      // Create signed tokens with validated threadId
       if (validatedThreadId) {
+        // Deploy token for auto-preview after deploys
         const threadToken = await createSignedToken(env.TOKEN_SIGNING_SECRET, {
           org_id: orgId,
           user_id: session.user_id,
@@ -466,6 +467,18 @@ export default {
           tokenPrefix: threadToken.slice(0, 12),
         });
         headers.set(CHIRIDION_THREAD_TOKEN_HEADER, threadToken);
+
+        // Per-thread MCP token with thread_id encoded (can't be spoofed)
+        const mcpThreadToken = await createSignedToken(env.TOKEN_SIGNING_SECRET, {
+          org_id: orgId,
+          user_id: session.user_id,
+          scopes: ['mcp'],
+          exp: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
+          workspace_id: workspaceId,
+          thread_id: validatedThreadId,
+          name: `mcp-thread-${validatedThreadId}`,
+        });
+        headers.set('X-Chiridion-MCP-Token', mcpThreadToken);
       }
 
       const modifiedRequest = new Request(request.url, {

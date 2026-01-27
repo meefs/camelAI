@@ -428,4 +428,5 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       resolvedOffset
     ).toArray() as unknown as WorkspaceAuditLogEntry[];
   }
+
 }
