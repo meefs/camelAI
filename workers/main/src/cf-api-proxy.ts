@@ -5,6 +5,7 @@
  * Provides auth, path rewriting, and post-deploy side effects.
  */
 
+import { waitUntil } from 'cloudflare:workers';
 import { isSignedToken, validateSignedToken } from './signed-tokens.js';
 import { mapCredentialsToEnvVars } from './integration-env.js';
 import { decryptCredentials } from '../../../src/lib/integration-crypto.js';
@@ -391,7 +392,6 @@ export interface ProxyCloudflareApiOptions {
 export async function proxyCloudflareApi(
   request: Request,
   env: CfApiProxyEnv,
-  ctx: ExecutionContext,
   options: ProxyCloudflareApiOptions
 ): Promise<Response> {
   const url = new URL(request.url);
@@ -644,7 +644,7 @@ export async function proxyCloudflareApi(
       const scriptName = decodeURIComponent(scriptMatch[3]!);
 
       // Register script ownership and enqueue screenshots
-      ctx.waitUntil(
+      waitUntil(
         options.onDeploySideEffects({
           scriptName,
           orgId,
@@ -662,7 +662,7 @@ export async function proxyCloudflareApi(
       );
 
       // Sync integration secrets to deployed worker
-      ctx.waitUntil(
+      waitUntil(
         syncDispatchScriptSecrets(env, workspaceId, orgId, account, dispatchNs, scriptName, upstreamApiToken)
           .catch(err => {
             console.error('[cf-api-proxy] failed to sync script secrets', {
@@ -678,7 +678,7 @@ export async function proxyCloudflareApi(
 
       // Auto-set preview if threadId is in the deploy token
       if (threadId) {
-        ctx.waitUntil(
+        waitUntil(
           (async () => {
             try {
               const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));

@@ -1,7 +1,8 @@
+import { waitUntil } from 'cloudflare:workers';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
 import { requireAuthContext } from '@/lib/auth.server';
-import { getEnv, getCtx, type CloudflareEnv } from '@/lib/cloudflare.server';
+import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { INTEGRATION_REGISTRY, getIntegrationDefinition } from '@/lib/integration-registry';
 import { encryptCredentials } from '@/lib/integration-crypto';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
@@ -94,7 +95,7 @@ export async function action({ request, context }: Route.ActionArgs) {
         authContext.user.id
       );
       // Push updated env vars to running container (background, kept alive via waitUntil)
-      getCtx(context).waitUntil(
+      waitUntil(
         getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId)
           .refreshIntegrationEnvVars(workspaceId)
           .catch(() => {})
@@ -132,7 +133,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
       await stub.updateIntegration(integrationId, updates, authContext.user.id);
       // Push updated env vars to running container (background, kept alive via waitUntil)
-      getCtx(context).waitUntil(
+      waitUntil(
         getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId)
           .refreshIntegrationEnvVars(workspaceId)
           .catch(() => {})
@@ -154,7 +155,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     try {
       await stub.updateIntegration(integrationId, { enabled }, authContext.user.id);
       // Push updated env vars to running container (background, kept alive via waitUntil)
-      getCtx(context).waitUntil(
+      waitUntil(
         getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId)
           .refreshIntegrationEnvVars(workspaceId)
           .catch(() => {})
@@ -175,7 +176,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     try {
       await stub.deleteIntegration(integrationId, authContext.user.id);
       // Push updated env vars to running container (background, kept alive via waitUntil)
-      getCtx(context).waitUntil(
+      waitUntil(
         getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId)
           .refreshIntegrationEnvVars(workspaceId)
           .catch(() => {})

@@ -585,6 +585,21 @@ const config = this.ctx.storage.kv.get("config");
 
 **Important:** Always use the sync KV API (`ctx.storage.kv`). Never use the legacy async API (`await ctx.storage.get/put`).
 
+### Background Tasks
+
+Use `waitUntil` from `cloudflare:workers` to spawn fire-and-forget background tasks:
+
+```typescript
+import { waitUntil } from 'cloudflare:workers';
+
+// Fire-and-forget background task
+waitUntil(
+  someAsyncOperation().catch(err => console.error('Background task failed:', err))
+);
+```
+
+**Important:** Import `waitUntil` directly - don't pass `ctx` through function calls. This keeps APIs clean and avoids prop drilling.
+
 ## Known Issues & Solutions
 
 See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.

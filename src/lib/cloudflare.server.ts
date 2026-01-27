@@ -55,7 +55,6 @@ export interface CloudflareEnv {
 export interface CloudflareLoadContext extends AppLoadContext {
   cloudflare: {
     env: CloudflareEnv;
-    ctx: ExecutionContext;
   };
 }
 
@@ -68,25 +67,4 @@ export function getEnv(context: AppLoadContext): CloudflareEnv {
     throw new Error('Cloudflare environment not available in load context');
   }
   return cfContext.cloudflare.env;
-}
-
-/**
- * Get Cloudflare execution context from React Router load context
- */
-export function getCtx(context: AppLoadContext): ExecutionContext {
-  const cfContext = context as CloudflareLoadContext;
-  if (!cfContext.cloudflare?.ctx) {
-    throw new Error('Cloudflare execution context not available in load context');
-  }
-  return cfContext.cloudflare.ctx;
-}
-
-/**
- * Get both env and ctx from load context
- */
-export function getCloudflare(context: AppLoadContext) {
-  return {
-    env: getEnv(context),
-    ctx: getCtx(context),
-  };
 }

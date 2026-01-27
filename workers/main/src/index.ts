@@ -248,7 +248,7 @@ export default {
     // Cloudflare API proxy for Wrangler: set `CLOUDFLARE_API_BASE_URL` to `${origin}/client/v4`.
     if (url.pathname.startsWith('/client/v4/')) {
       try {
-        return await proxyCloudflareApi(request, env, ctx, {
+        return await proxyCloudflareApi(request, env, {
           onDeploySideEffects: (info) => handleDeploySideEffects(env, info),
         });
       } catch (e) {

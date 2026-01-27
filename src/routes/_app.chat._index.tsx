@@ -1,7 +1,7 @@
+import { waitUntil } from 'cloudflare:workers';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat._index';
 import { requireAuthContext } from '@/lib/auth.server';
-import { getCtx } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
@@ -45,8 +45,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
       // Generate title in background if we have a first message
       if (firstMessage) {
-        const ctx = getCtx(context);
-        ctx.waitUntil(
+        waitUntil(
           chatDO.generateThreadTitle(
             context,
             thread.id,
