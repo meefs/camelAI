@@ -182,15 +182,68 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     description: 'Send messages and notifications to Slack',
     category: 'communication',
     authMethod: 'oauth2',
-    configSchema: [
-      { name: 'team_id', label: 'Team ID', type: 'string', required: false },
-      { name: 'default_channel', label: 'Default Channel', type: 'string', required: false },
-    ],
+    configSchema: [],
     credentialSchema: [],
     oauthConfig: {
       authorizationUrl: 'https://slack.com/oauth/v2/authorize',
       tokenUrl: 'https://slack.com/api/oauth.v2.access',
-      scopes: ['chat:write', 'channels:read'],
+      scopes: [
+        // Messaging
+        'chat:write',
+        'chat:write.public',
+        'chat:write.customize',
+        'im:write',
+        'im:read',
+        'im:history',
+        'mpim:write',
+        'mpim:read',
+        'mpim:history',
+        // Channels
+        'channels:read',
+        'channels:history',
+        'channels:join',
+        'channels:manage',
+        'groups:read',
+        'groups:history',
+        'groups:write',
+        // Users & Team
+        'users:read',
+        'users:read.email',
+        'users.profile:read',
+        'team:read',
+        // Files
+        'files:read',
+        'files:write',
+        // Reactions & Pins
+        'reactions:read',
+        'reactions:write',
+        'pins:read',
+        'pins:write',
+        // Bookmarks
+        'bookmarks:read',
+        'bookmarks:write',
+        // Reminders
+        'reminders:read',
+        'reminders:write',
+        // User Groups
+        'usergroups:read',
+        'usergroups:write',
+        // Calls
+        'calls:read',
+        'calls:write',
+        // Canvas
+        'canvases:read',
+        'canvases:write',
+        // App management
+        'commands',
+        'app_mentions:read',
+        // Metadata & Links
+        'metadata.message:read',
+        'links:read',
+        'links:write',
+        // DND
+        'dnd:read',
+      ],
     },
     proxyConfig: {
       baseUrl: 'https://slack.com/api',

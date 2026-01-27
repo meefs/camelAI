@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useFetcher, useRevalidator } from 'react-router';
+import { useFetcher, useRevalidator, useSearchParams } from 'react-router';
 import { useAuth } from '@/contexts/AuthContext';
 
 // Note: Auth is handled by the (app) layout - no need to check here
@@ -22,6 +22,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   AlertCircle,
+  CheckCircle2,
   Plug,
   Plus,
   Settings,
@@ -43,6 +44,21 @@ interface ConnectionsClientProps {
   orgId: string;
 }
 
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  oauth_denied: 'You denied access to the service. Please try again if you want to connect.',
+  oauth_invalid: 'Invalid OAuth response. Please try again.',
+  oauth_state_invalid: 'OAuth session expired. Please try again.',
+  oauth_config: 'OAuth is not configured for this service.',
+  oauth_token_failed: 'Failed to get access token from the service.',
+  oauth_failed: 'OAuth connection failed. Please try again.',
+  no_workspace: 'No workspace selected. Please select a workspace first.',
+  unauthorized: 'Please log in to connect services.',
+};
+
+const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
+  slack_connected: 'Successfully connected to Slack!',
+};
+
 export default function ConnectionsClient({
   initialConnections,
   connectionTypes,
@@ -52,8 +68,10 @@ export default function ConnectionsClient({
   const { currentOrg, orgs, loading: authLoading } = useAuth();
   const revalidator = useRevalidator();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -63,6 +81,29 @@ export default function ConnectionsClient({
 
   const connections = initialConnections;
   const loading = revalidator.state === 'loading';
+
+  // Handle OAuth success/error from URL params
+  useEffect(() => {
+    const errorParam = searchParams.get('error');
+    const successParam = searchParams.get('success');
+
+    if (errorParam) {
+      setError(OAUTH_ERROR_MESSAGES[errorParam] || `Connection failed: ${errorParam}`);
+      // Clear the param from URL
+      searchParams.delete('error');
+      setSearchParams(searchParams, { replace: true });
+    }
+
+    if (successParam) {
+      setSuccess(OAUTH_SUCCESS_MESSAGES[successParam] || 'Connection successful!');
+      // Clear the param from URL
+      searchParams.delete('success');
+      setSearchParams(searchParams, { replace: true });
+      // Clear success message after 5 seconds
+      const timeout = setTimeout(() => setSuccess(null), 5000);
+      return () => clearTimeout(timeout);
+    }
+  }, [searchParams, setSearchParams]);
 
   // Revalidate when org changes
   useEffect(() => {
@@ -105,7 +146,15 @@ export default function ConnectionsClient({
     );
   };
 
+  // OAuth integration types that redirect immediately (no dialog)
+  const OAUTH_INTEGRATIONS = ['slack'];
+
   const handleAddClick = (type: string) => {
+    // For OAuth integrations, redirect immediately to OAuth flow
+    if (OAUTH_INTEGRATIONS.includes(type)) {
+      window.location.href = `/api/integrations/${type}/oauth?redirect=/connections`;
+      return;
+    }
     setSelectedType(type);
     setAddDialogOpen(true);
     setPickerOpen(false);
@@ -193,6 +242,13 @@ export default function ConnectionsClient({
               <Alert variant="destructive" className="mt-4">
                 <AlertCircle className="size-4" />
                 <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+
+            {success && (
+              <Alert className="mt-4 border-green-500/50 bg-green-500/10 text-green-600 dark:text-green-400">
+                <CheckCircle2 className="size-4" />
+                <AlertDescription>{success}</AlertDescription>
               </Alert>
             )}
 

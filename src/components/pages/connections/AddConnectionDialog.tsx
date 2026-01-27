@@ -22,7 +22,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, ExternalLink } from 'lucide-react';
 
 interface AddConnectionDialogProps {
   open: boolean;
@@ -32,6 +32,9 @@ interface AddConnectionDialogProps {
   orgId: string;
   onSuccess: () => void;
 }
+
+// OAuth integration types that have worker routes
+const OAUTH_INTEGRATIONS = ['slack'] as const;
 
 export function AddConnectionDialog({
   open,
@@ -197,15 +200,27 @@ export function AddConnectionDialog({
               </>
             )}
 
-            {/* OAuth notice */}
-            {typeDef.authMethod === 'oauth2' && (
-              <Alert>
-                <AlertDescription>
-                  This connection uses OAuth 2.0. After saving, you&apos;ll be redirected to
-                  authorize access.
-                </AlertDescription>
-              </Alert>
-            )}
+            {/* OAuth flow for supported integrations */}
+            {typeDef.authMethod === 'oauth2' &&
+              OAUTH_INTEGRATIONS.includes(connectionType as (typeof OAUTH_INTEGRATIONS)[number]) && (
+                <Alert>
+                  <AlertDescription>
+                    Click the button below to connect your {typeDef.displayName} account.
+                    You&apos;ll be redirected to authorize access.
+                  </AlertDescription>
+                </Alert>
+              )}
+
+            {/* OAuth notice for unsupported OAuth integrations */}
+            {typeDef.authMethod === 'oauth2' &&
+              !OAUTH_INTEGRATIONS.includes(connectionType as (typeof OAUTH_INTEGRATIONS)[number]) && (
+                <Alert>
+                  <AlertDescription>
+                    OAuth for {typeDef.displayName} is not yet implemented. Please check back
+                    later or use an API key if available.
+                  </AlertDescription>
+                </Alert>
+              )}
           </div>
 
           <DialogFooter>
@@ -217,9 +232,31 @@ export function AddConnectionDialog({
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={submitting}>
-              {submitting ? 'Creating...' : 'Create Connection'}
-            </Button>
+            {/* Show OAuth button for supported OAuth integrations */}
+            {typeDef.authMethod === 'oauth2' &&
+            OAUTH_INTEGRATIONS.includes(connectionType as (typeof OAUTH_INTEGRATIONS)[number]) ? (
+              <Button
+                type="button"
+                onClick={() => {
+                  // Redirect to OAuth flow
+                  window.location.href = `/api/integrations/${connectionType}/oauth?redirect=/connections`;
+                }}
+              >
+                <ExternalLink className="mr-2 size-4" />
+                Connect {typeDef.displayName}
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                disabled={
+                  submitting ||
+                  (typeDef.authMethod === 'oauth2' &&
+                    !OAUTH_INTEGRATIONS.includes(connectionType as (typeof OAUTH_INTEGRATIONS)[number]))
+                }
+              >
+                {submitting ? 'Creating...' : 'Create Connection'}
+              </Button>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>

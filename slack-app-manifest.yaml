@@ -1,0 +1,139 @@
+display_information:
+  name: Chiridion
+  description: AI coding assistant integration for Chiridion workspaces
+  background_color: "#18181b"
+  long_description: |
+    Chiridion is an AI coding assistant that can interact with your Slack workspace.
+    This integration allows Chiridion to read messages, post updates, manage channels,
+    and help automate workflows in your Slack workspace.
+
+features:
+  bot_user:
+    display_name: Chiridion
+    always_online: true
+  slash_commands:
+    - command: /chiridion
+      description: Interact with Chiridion AI assistant
+      usage_hint: "[message or command]"
+      should_escape: false
+
+oauth_config:
+  redirect_urls:
+    - https://chiridion.ai/api/integrations/slack/callback
+    - https://staging.chiridion.ai/api/integrations/slack/callback
+    - https://dev-miguel.chiridion.ai/api/integrations/slack/callback
+    - https://dev-illiana.chiridion.ai/api/integrations/slack/callback
+    - http://localhost:3001/api/integrations/slack/callback
+  scopes:
+    bot:
+      # Messaging
+      - chat:write
+      - chat:write.public
+      - chat:write.customize
+      - im:write
+      - im:read
+      - im:history
+      - mpim:write
+      - mpim:read
+      - mpim:history
+
+      # Channels
+      - channels:read
+      - channels:history
+      - channels:join
+      - channels:manage
+      - groups:read
+      - groups:history
+      - groups:write
+
+      # Users & Team
+      - users:read
+      - users:read.email
+      - users.profile:read
+      - team:read
+
+      # Files
+      - files:read
+      - files:write
+
+      # Reactions & Pins
+      - reactions:read
+      - reactions:write
+      - pins:read
+      - pins:write
+
+      # Bookmarks
+      - bookmarks:read
+      - bookmarks:write
+
+      # Reminders
+      - reminders:read
+      - reminders:write
+
+      # User Groups
+      - usergroups:read
+      - usergroups:write
+
+      # Calls
+      - calls:read
+      - calls:write
+
+      # Canvas (newer feature)
+      - canvases:read
+      - canvases:write
+
+      # Workflows
+      - workflow.steps:execute
+
+      # App management
+      - commands
+      - app_mentions:read
+
+      # Metadata
+      - metadata.message:read
+
+      # Links
+      - links:read
+      - links:write
+
+      # DND (Do Not Disturb)
+      - dnd:read
+
+    user:
+      - channels:read
+      - channels:history
+      - channels:write
+      - groups:read
+      - groups:history
+      - groups:write
+      - im:read
+      - im:history
+      - im:write
+      - mpim:read
+      - mpim:history
+      - mpim:write
+      - chat:write
+      - files:read
+      - files:write
+      - users:read
+      - users:read.email
+      - users.profile:read
+      - users.profile:write
+      - team:read
+      - reactions:read
+      - reactions:write
+      - pins:read
+      - pins:write
+      - reminders:read
+      - reminders:write
+      - search:read
+      - stars:read
+      - stars:write
+      - usergroups:read
+      - usergroups:write
+      - identify
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

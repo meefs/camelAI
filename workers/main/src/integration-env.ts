@@ -48,7 +48,12 @@ export function mapCredentialsToEnvVars(
       break;
 
     case 'slack':
-      if (str(credentials.api_key)) set('SLACK_BOT_TOKEN', str(credentials.api_key)!);
+      // OAuth flow stores access_token, fall back to api_key for manual entry
+      if (str(credentials.access_token)) set('SLACK_BOT_TOKEN', str(credentials.access_token)!);
+      else if (str(credentials.api_key)) set('SLACK_BOT_TOKEN', str(credentials.api_key)!);
+      // Also expose team info if available
+      if (str(credentials.team_id)) set('SLACK_TEAM_ID', str(credentials.team_id)!);
+      if (str(credentials.team_name)) set('SLACK_TEAM_NAME', str(credentials.team_name)!);
       break;
 
     case 'linear':
