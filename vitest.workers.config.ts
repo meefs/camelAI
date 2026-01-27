@@ -3,11 +3,12 @@ import path from 'path';
 
 export default defineWorkersConfig({
   resolve: {
-    alias: {
-      '../../../.open-next/worker.js': path.resolve(__dirname, 'workers/main/src/__mocks__/opennext-handler.ts'),
+    alias: [
+      { find: '../../../.open-next/worker.js', replacement: path.resolve(__dirname, 'workers/main/src/__mocks__/opennext-handler.ts') },
       // Mock MCP handler to avoid @modelcontextprotocol/sdk ajv compatibility issues in workers runtime
-      './mcp-handler.js': path.resolve(__dirname, 'workers/main/src/__mocks__/mcp-handler.ts'),
-    },
+      // Match any path ending in mcp-handler.js from the workers/main/src directory
+      { find: /.*\/mcp-handler\.js$/, replacement: path.resolve(__dirname, 'workers/main/src/__mocks__/mcp-handler.ts') },
+    ],
   },
   test: {
     include: ['workers/**/tests/**/*.test.ts'],
