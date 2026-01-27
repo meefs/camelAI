@@ -12,6 +12,7 @@ import { AttachmentList, type Attachment } from '@/components/attachment-list';
 import { VoiceRecorderBar } from '@/components/voice-recorder';
 import { cn } from '@/lib/utils';
 import { useVoiceRecording } from '@/hooks/use-voice-recording';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface PromptInputProps {
   value: string;
@@ -264,40 +265,50 @@ export function PromptInput({
                 <div className="flex items-center gap-1">
                   {/* Plus button for file upload */}
                   {showFileUpload && (
-                    <InputGroupButton
-                      type="button"
-                      size="icon-sm"
-                      variant="ghost"
-                      onClick={handlePlusClick}
-                      disabled={disabled || isRecording || isTranscribing}
-                      className="rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
-                      aria-label="Attach file"
-                    >
-                      <Plus className="size-4" />
-                    </InputGroupButton>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <InputGroupButton
+                          type="button"
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={handlePlusClick}
+                          disabled={disabled || isRecording || isTranscribing}
+                          className="rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
+                          aria-label="Upload file"
+                        >
+                          <Plus className="size-4" />
+                        </InputGroupButton>
+                      </TooltipTrigger>
+                      <TooltipContent>Upload file</TooltipContent>
+                    </Tooltip>
                   )}
 
                   {/* Microphone button for voice recording */}
                   {showVoiceButton && (
-                    <InputGroupButton
-                      type="button"
-                      size="icon-sm"
-                      variant="ghost"
-                      onClick={handleMicClick}
-                      disabled={disabled || isTranscribing}
-                      className={cn(
-                        'rounded-full text-muted-foreground hover:text-foreground hover:bg-muted',
-                        isWarmingUp && 'text-amber-500 hover:text-amber-500 animate-pulse bg-amber-500/10',
-                        isRecording && 'text-destructive hover:text-destructive animate-pulse bg-destructive/10'
-                      )}
-                      aria-label={isRecording ? 'Stop recording' : isWarmingUp ? 'Cancel' : 'Start voice recording'}
-                    >
-                      {isTranscribing || isWarmingUp ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Mic className="size-4" />
-                      )}
-                    </InputGroupButton>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <InputGroupButton
+                          type="button"
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={handleMicClick}
+                          disabled={disabled || isTranscribing}
+                          className={cn(
+                            'rounded-full text-muted-foreground hover:text-foreground hover:bg-muted',
+                            isWarmingUp && 'text-amber-500 hover:text-amber-500 animate-pulse bg-amber-500/10',
+                            isRecording && 'text-destructive hover:text-destructive animate-pulse bg-destructive/10'
+                          )}
+                          aria-label={isRecording ? 'Stop recording' : isWarmingUp ? 'Cancel' : 'Dictate'}
+                        >
+                          {isTranscribing || isWarmingUp ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <Mic className="size-4" />
+                          )}
+                        </InputGroupButton>
+                      </TooltipTrigger>
+                      <TooltipContent>Dictate</TooltipContent>
+                    </Tooltip>
                   )}
                 </div>
 
