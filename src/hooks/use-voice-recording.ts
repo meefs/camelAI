@@ -15,6 +15,8 @@ interface UseVoiceRecordingReturn {
   stopRecording: () => void;
   cancelRecording: () => void;
   isSupported: boolean;
+  analyser: AnalyserNode | null;
+  recordingStartTime: number | null;
 }
 
 export function useVoiceRecording({
@@ -22,10 +24,17 @@ export function useVoiceRecording({
   onError,
 }: UseVoiceRecordingOptions = {}): UseVoiceRecordingReturn {
   const [state, setState] = useState<VoiceRecordingState>('idle');
+  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
+  const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const highpassRef = useRef<BiquadFilterNode | null>(null);
+  const lowpassRef = useRef<BiquadFilterNode | null>(null);
+  const compressorRef = useRef<DynamicsCompressorNode | null>(null);
   const cancelledRef = useRef(false);
 
   // Check browser support
@@ -35,6 +44,26 @@ export function useVoiceRecording({
     typeof MediaRecorder !== 'undefined';
 
   const cleanup = useCallback(() => {
+    if (sourceRef.current) {
+      sourceRef.current.disconnect();
+      sourceRef.current = null;
+    }
+    if (analyserRef.current) {
+      analyserRef.current.disconnect();
+      analyserRef.current = null;
+    }
+    if (highpassRef.current) {
+      highpassRef.current.disconnect();
+      highpassRef.current = null;
+    }
+    if (lowpassRef.current) {
+      lowpassRef.current.disconnect();
+      lowpassRef.current = null;
+    }
+    if (compressorRef.current) {
+      compressorRef.current.disconnect();
+      compressorRef.current = null;
+    }
     if (audioContextRef.current) {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
@@ -45,7 +74,9 @@ export function useVoiceRecording({
     }
     mediaRecorderRef.current = null;
     chunksRef.current = [];
-  }, []);
+    setAnalyser(null);
+    setRecordingStartTime(null);
+  }, [setAnalyser, setRecordingStartTime]);
 
   const transcribeAudio = useCallback(
     async (audioBlob: Blob) => {
@@ -119,8 +150,37 @@ export function useVoiceRecording({
       audioContextRef.current = audioContext;
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.2;
+
+      const highpass = audioContext.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.value = 120;
+      highpass.Q.value = 0.707;
+
+      const lowpass = audioContext.createBiquadFilter();
+      lowpass.type = 'lowpass';
+      lowpass.frequency.value = 4000;
+      lowpass.Q.value = 0.707;
+
+      const compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -40;
+      compressor.knee.value = 20;
+      compressor.ratio.value = 3;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.2;
+
+      analyserRef.current = analyser;
+      sourceRef.current = source;
+      highpassRef.current = highpass;
+      lowpassRef.current = lowpass;
+      compressorRef.current = compressor;
+      setAnalyser(analyser);
+
+      source.connect(highpass);
+      highpass.connect(lowpass);
+      lowpass.connect(compressor);
+      compressor.connect(analyser);
 
       // Wait for actual audio signal (not silence) with timeout
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -143,9 +203,13 @@ export function useVoiceRecording({
         };
         checkAudio();
       });
-      source.disconnect();
-
       if (warmUpResult === 'cancelled') {
+        cleanup();
+        setState('idle');
+        return;
+      }
+
+      if (cancelledRef.current) {
         cleanup();
         setState('idle');
         return;
@@ -182,6 +246,12 @@ export function useVoiceRecording({
       };
 
       mediaRecorder.onstop = async () => {
+        if (cancelledRef.current) {
+          cleanup();
+          setState('idle');
+          return;
+        }
+
         const audioBlob = new Blob(chunksRef.current, {
           type: mediaRecorder.mimeType || 'audio/webm',
         });
@@ -203,6 +273,7 @@ export function useVoiceRecording({
 
       // Only show recording state once MediaRecorder is actually capturing
       mediaRecorder.onstart = () => {
+        setRecordingStartTime(Date.now());
         setState('recording');
       };
 
@@ -237,6 +308,9 @@ export function useVoiceRecording({
 
   const cancelRecording = useCallback(() => {
     cancelledRef.current = true;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
     cleanup();
     setState('idle');
   }, [cleanup]);
@@ -247,5 +321,7 @@ export function useVoiceRecording({
     stopRecording,
     cancelRecording,
     isSupported,
+    analyser,
+    recordingStartTime,
   };
 }
