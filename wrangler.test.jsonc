@@ -6,7 +6,8 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"vars": {
 		"OPENROUTER_PROVISIONING_KEY": "test-openrouter-provisioning-key",
-		"TOKEN_SIGNING_SECRET": "test-signing-secret-for-unit-tests-only"
+		"TOKEN_SIGNING_SECRET": "test-signing-secret-for-unit-tests-only",
+		"INTEGRATION_SECRET_KEY": "test-secret-key-for-integration-tests"
 	},
 	"kv_namespaces": [
 		{

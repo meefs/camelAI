@@ -160,13 +160,16 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
   notion: {
     type: 'notion',
     displayName: 'Notion',
-    description: 'Connect to Notion workspaces',
+    description: 'Connect to Notion workspaces and databases',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [],
-    credentialSchema: [
-      { name: 'api_key', label: 'Integration Token', type: 'password', required: true, placeholder: 'secret_...' },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://api.notion.com/v1/oauth/authorize',
+      tokenUrl: 'https://api.notion.com/v1/oauth/token',
+      scopes: [], // Notion doesn't use traditional scopes - capabilities are set in integration settings
+    },
     proxyConfig: {
       baseUrl: 'https://api.notion.com',
       authType: 'bearer',

@@ -21,7 +21,12 @@ import { handleCfProxy } from './routes/cf-proxy.js';
 import { handleMcp } from './routes/mcp.js';
 import { handleThreadPreview } from './routes/threads.js';
 import { handleOAuthStart, handleOAuthCallback } from './routes/oauth.js';
-import { handleSlackOAuthStart, handleSlackOAuthCallback } from './routes/integrations.js';
+import {
+  handleSlackOAuthStart,
+  handleSlackOAuthCallback,
+  handleNotionOAuthStart,
+  handleNotionOAuthCallback,
+} from './routes/integrations.js';
 import { handleThreadWebSocket, handleChatWebSocket } from './routes/websocket.js';
 
 // Re-exports for wrangler
@@ -59,6 +64,8 @@ const routes: Route[] = [
   // Integration OAuth
   { method: 'GET', path: /^\/api\/integrations\/slack\/oauth$/, handler: handleSlackOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/slack\/callback$/, handler: handleSlackOAuthCallback },
+  { method: 'GET', path: /^\/api\/integrations\/notion\/oauth$/, handler: handleNotionOAuthStart },
+  { method: 'GET', path: /^\/api\/integrations\/notion\/callback$/, handler: handleNotionOAuthCallback },
 
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/thread\/([^/]+)$/, handler: handleThreadWebSocket, websocket: true },

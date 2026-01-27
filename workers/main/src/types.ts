@@ -24,6 +24,8 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, CfApiProxyEn
   GITHUB_CLIENT_SECRET?: string;
   SLACK_CLIENT_ID?: string;
   SLACK_CLIENT_SECRET?: string;
+  NOTION_CLIENT_ID?: string;
+  NOTION_CLIENT_SECRET?: string;
   INTEGRATION_SECRET_KEY: string;
 }
 

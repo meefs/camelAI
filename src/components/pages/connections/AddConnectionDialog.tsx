@@ -34,7 +34,7 @@ interface AddConnectionDialogProps {
 }
 
 // OAuth integration types that have worker routes
-const OAUTH_INTEGRATIONS = ['slack'] as const;
+const OAUTH_INTEGRATIONS = ['slack', 'notion'] as const;
 
 export function AddConnectionDialog({
   open,

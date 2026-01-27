@@ -44,7 +44,13 @@ export function mapCredentialsToEnvVars(
       break;
 
     case 'notion':
-      if (str(credentials.api_key)) set('NOTION_API_KEY', str(credentials.api_key)!);
+      // OAuth flow stores access_token, fall back to api_key for manual entry
+      if (str(credentials.access_token)) set('NOTION_API_KEY', str(credentials.access_token)!);
+      else if (str(credentials.api_key)) set('NOTION_API_KEY', str(credentials.api_key)!);
+      // Expose workspace info if available (from OAuth)
+      if (str(credentials.notion_workspace_id)) set('NOTION_WORKSPACE_ID', str(credentials.notion_workspace_id)!);
+      if (str(credentials.notion_workspace_name)) set('NOTION_WORKSPACE_NAME', str(credentials.notion_workspace_name)!);
+      // Note: refresh_token and expires_at are intentionally NOT exposed to containers
       break;
 
     case 'slack':

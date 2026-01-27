@@ -2,6 +2,14 @@ import { DurableObject } from 'cloudflare:workers';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
 import type { Workspace } from '../../../src/types';
 import type { OrgDO } from './auth';
+import { decryptCredentials, encryptCredentials } from '../../../src/lib/integration-crypto';
+
+// Buffer time before token expiry to trigger refresh (10 minutes)
+const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
+// When refreshing, also refresh tokens expiring within this window (15 minutes)
+const TOKEN_BATCH_WINDOW_MS = 15 * 60 * 1000;
+// Fallback alarm delay if the alarm handler fails catastrophically (1 hour)
+const TOKEN_REFRESH_FALLBACK_MS = 60 * 60 * 1000;
 
 
 export type WorkspaceAccessLevel = 'full' | 'read_only' | 'none';
@@ -26,6 +34,7 @@ export interface WorkspaceIntegrationRecord {
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
+  token_expires_at: number | null;
 }
 
 export interface WorkspaceAuditLogEntry {
@@ -40,6 +49,12 @@ export interface WorkspaceAuditLogEntry {
 export interface WorkspaceEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   ORG: DurableObjectNamespace<OrgDO>;
+  INTEGRATION_SECRET_KEY: string;
+  // OAuth credentials for token refresh
+  NOTION_CLIENT_ID?: string;
+  NOTION_CLIENT_SECRET?: string;
+  SLACK_CLIENT_ID?: string;
+  SLACK_CLIENT_SECRET?: string;
 }
 
 /**
@@ -128,6 +143,13 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
         )
       `);
       this.sql.exec('UPDATE _schema_version SET version = 2');
+    }
+
+    if (version < 3) {
+      // V3: Add token_expires_at column for OAuth token refresh scheduling
+      this.sql.exec('ALTER TABLE integrations ADD COLUMN token_expires_at INTEGER');
+      this.sql.exec('CREATE INDEX IF NOT EXISTS idx_integrations_token_expires ON integrations(token_expires_at) WHERE token_expires_at IS NOT NULL AND deleted_at IS NULL');
+      this.sql.exec('UPDATE _schema_version SET version = 3');
     }
   }
 
@@ -328,7 +350,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return this.sql
       .exec(
         `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at
+                credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at, token_expires_at
          FROM integrations
          WHERE deleted_at IS NULL
          ORDER BY created_at DESC`
@@ -340,7 +362,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const rows = this.sql
       .exec(
         `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at
+                credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at, token_expires_at
          FROM integrations WHERE id = ? AND deleted_at IS NULL`,
         id
       )
@@ -356,13 +378,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     authMethod: string,
     config: string,
     credentialsEncrypted: string,
-    createdBy: string
+    createdBy: string,
+    tokenExpiresAt?: number | null
   ): Promise<void> {
     const now = Date.now();
     this.sql.exec(
       `INSERT INTO integrations
-       (id, integration_type, name, category, auth_method, config, credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL)`,
+       (id, integration_type, name, category, auth_method, config, credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at, token_expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?)`,
       id,
       integrationType,
       name,
@@ -372,9 +395,15 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       credentialsEncrypted,
       createdBy,
       now,
-      now
+      now,
+      tokenExpiresAt ?? null
     );
     this.log('integration_created', createdBy, id, { integration_type: integrationType, name });
+
+    // Schedule token refresh alarm if this is an OAuth integration with expiry
+    if (tokenExpiresAt) {
+      await this.scheduleNextTokenRefresh();
+    }
   }
 
   async updateIntegration(
@@ -384,6 +413,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       config?: string;
       credentialsEncrypted?: string;
       enabled?: boolean;
+      tokenExpiresAt?: number | null;
     },
     actorId: string
   ): Promise<void> {
@@ -407,10 +437,19 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       setClauses.push('enabled = ?');
       params.push(updates.enabled ? 1 : 0);
     }
+    if (updates.tokenExpiresAt !== undefined) {
+      setClauses.push('token_expires_at = ?');
+      params.push(updates.tokenExpiresAt);
+    }
 
     params.push(id);
     this.sql.exec(`UPDATE integrations SET ${setClauses.join(', ')} WHERE id = ?`, ...params);
     this.log('integration_updated', actorId, id, { changes: Object.keys(updates) });
+
+    // Reschedule token refresh alarm if expiry changed
+    if (updates.tokenExpiresAt !== undefined) {
+      await this.scheduleNextTokenRefresh();
+    }
   }
 
   async deleteIntegration(id: string, actorId: string): Promise<void> {
@@ -427,6 +466,214 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       resolvedLimit,
       resolvedOffset
     ).toArray() as unknown as WorkspaceAuditLogEntry[];
+  }
+
+  // =============================================================================
+  // OAuth Token Refresh
+  // =============================================================================
+
+  /**
+   * Schedule alarm for the next token that needs refreshing.
+   * Uses single-alarm pattern: finds earliest expiring token and sets alarm for it.
+   */
+  private async scheduleNextTokenRefresh(): Promise<void> {
+    // Find the earliest expiring OAuth token
+    const rows = this.sql.exec(
+      `SELECT MIN(token_expires_at) as token_expires_at
+       FROM integrations
+       WHERE token_expires_at IS NOT NULL
+         AND deleted_at IS NULL
+         AND enabled = 1
+         AND auth_method = 'oauth2'`
+    ).toArray() as { token_expires_at: number | null }[];
+
+    const nextExpiry = rows[0]?.token_expires_at;
+    if (!nextExpiry) {
+      // No OAuth tokens with expiry, clear any existing alarm
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+
+    // Schedule alarm 10 minutes before expiry
+    const alarmTime = nextExpiry - TOKEN_REFRESH_BUFFER_MS;
+    const now = Date.now();
+
+    // If already past the alarm time, trigger immediately
+    if (alarmTime <= now) {
+      await this.ctx.storage.setAlarm(now + 1000); // 1 second from now
+    } else {
+      await this.ctx.storage.setAlarm(alarmTime);
+    }
+  }
+
+  /**
+   * Durable Object alarm handler - refreshes expiring OAuth tokens
+   *
+   * Uses a "dead man's switch" pattern: immediately schedules a fallback alarm
+   * before doing any work. If everything succeeds, the fallback is overwritten
+   * with the correct next alarm time. If anything fails catastrophically,
+   * we'll retry in 1 hour.
+   */
+  async alarm(): Promise<void> {
+    const now = Date.now();
+
+    // Dead man's switch: schedule fallback alarm immediately
+    // This ensures we retry even if the handler throws unexpectedly
+    await this.ctx.storage.setAlarm(now + TOKEN_REFRESH_FALLBACK_MS);
+
+    try {
+      const batchCutoff = now + TOKEN_BATCH_WINDOW_MS;
+
+      // Find all tokens expiring within the batch window
+      const expiringIntegrations = this.sql.exec(
+        `SELECT id, integration_type, name, category, auth_method, config,
+                credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at, token_expires_at
+         FROM integrations
+         WHERE token_expires_at IS NOT NULL
+           AND token_expires_at <= ?
+           AND deleted_at IS NULL
+           AND enabled = 1
+           AND auth_method = 'oauth2'
+         ORDER BY token_expires_at ASC`,
+        batchCutoff
+      ).toArray() as unknown as WorkspaceIntegrationRecord[];
+
+      if (expiringIntegrations.length > 0) {
+        console.log(`[WorkspaceDO] Refreshing ${expiringIntegrations.length} expiring OAuth tokens`);
+
+        for (const integration of expiringIntegrations) {
+          try {
+            await this.refreshIntegrationToken(integration);
+          } catch (err) {
+            console.error(`[WorkspaceDO] Failed to refresh token for ${integration.integration_type}:`, err);
+            // Continue with other tokens even if one fails
+          }
+        }
+      }
+
+      // Schedule alarm for the next expiring token (overwrites fallback)
+      await this.scheduleNextTokenRefresh();
+    } catch (err) {
+      // Log the error but don't rethrow - fallback alarm is already set
+      console.error('[WorkspaceDO] Alarm handler failed, will retry in 1 hour:', err);
+    }
+  }
+
+  /**
+   * Refresh OAuth token for a specific integration
+   */
+  private async refreshIntegrationToken(integration: WorkspaceIntegrationRecord): Promise<void> {
+    const credentials = await decryptCredentials(
+      integration.credentials_encrypted,
+      this.env.INTEGRATION_SECRET_KEY
+    );
+
+    const refreshToken = credentials.refresh_token as string | undefined;
+    if (!refreshToken) {
+      console.warn(`[WorkspaceDO] No refresh token for integration ${integration.id}`);
+      return;
+    }
+
+    let newCredentials: Record<string, unknown>;
+    let newExpiresAt: number;
+
+    switch (integration.integration_type) {
+      case 'notion':
+        ({ credentials: newCredentials, expiresAt: newExpiresAt } = await this.refreshNotionToken(refreshToken));
+        break;
+
+      // Add other OAuth providers here as needed
+      // case 'slack':
+      //   Slack bot tokens don't expire, so no refresh needed
+      //   break;
+
+      default:
+        console.warn(`[WorkspaceDO] Unknown OAuth provider for refresh: ${integration.integration_type}`);
+        return;
+    }
+
+    // Encrypt and save new credentials
+    const encrypted = await encryptCredentials(newCredentials, this.env.INTEGRATION_SECRET_KEY);
+
+    this.sql.exec(
+      `UPDATE integrations
+       SET credentials_encrypted = ?, token_expires_at = ?, updated_at = ?
+       WHERE id = ?`,
+      encrypted,
+      newExpiresAt,
+      Date.now(),
+      integration.id
+    );
+
+    this.log('token_refreshed', 'system', integration.id, { integration_type: integration.integration_type });
+    console.log(`[WorkspaceDO] Refreshed token for ${integration.integration_type} integration ${integration.id}`);
+  }
+
+  /**
+   * Refresh Notion OAuth token
+   */
+  private async refreshNotionToken(refreshToken: string): Promise<{
+    credentials: Record<string, unknown>;
+    expiresAt: number;
+  }> {
+    if (!this.env.NOTION_CLIENT_ID || !this.env.NOTION_CLIENT_SECRET) {
+      throw new Error('Notion OAuth credentials not configured');
+    }
+
+    const basicAuth = btoa(`${this.env.NOTION_CLIENT_ID}:${this.env.NOTION_CLIENT_SECRET}`);
+    const response = await fetch('https://api.notion.com/v1/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Basic ${basicAuth}`,
+      },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Notion token refresh failed: ${response.status} ${errorText}`);
+    }
+
+    const data = (await response.json()) as {
+      access_token: string;
+      expires_in: number;
+      refresh_token?: string;
+      token_type: string;
+      bot_id?: string;
+      workspace_id?: string;
+      workspace_name?: string;
+      owner?: {
+        type: string;
+        user?: {
+          id: string;
+          name?: string;
+          person?: { email?: string };
+        };
+      };
+    };
+
+    const expiresAt = Date.now() + data.expires_in * 1000;
+
+    return {
+      credentials: {
+        access_token: data.access_token,
+        // Use new refresh token if provided, otherwise keep the old one
+        refresh_token: data.refresh_token || refreshToken,
+        expires_at: expiresAt,
+        token_type: data.token_type,
+        bot_id: data.bot_id,
+        notion_workspace_id: data.workspace_id,
+        notion_workspace_name: data.workspace_name,
+        owner_user_id: data.owner?.user?.id,
+        owner_user_name: data.owner?.user?.name,
+        owner_user_email: data.owner?.user?.person?.email,
+      },
+      expiresAt,
+    };
   }
 
 }

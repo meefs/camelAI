@@ -57,6 +57,7 @@ const OAUTH_ERROR_MESSAGES: Record<string, string> = {
 
 const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
   slack_connected: 'Successfully connected to Slack!',
+  notion_connected: 'Successfully connected to Notion!',
 };
 
 export default function ConnectionsClient({
@@ -147,7 +148,7 @@ export default function ConnectionsClient({
   };
 
   // OAuth integration types that redirect immediately (no dialog)
-  const OAUTH_INTEGRATIONS = ['slack'];
+  const OAUTH_INTEGRATIONS = ['slack', 'notion'];
 
   const handleAddClick = (type: string) => {
     // For OAuth integrations, redirect immediately to OAuth flow

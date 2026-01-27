@@ -1,5 +1,5 @@
 /**
- * Integration OAuth routes (Slack)
+ * Integration OAuth routes (Slack, Notion)
  */
 
 import type { RouteContext } from '../types.js';
@@ -172,6 +172,172 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
     redirectUrl.searchParams.set('success', 'slack_connected');
     return redirect(redirectUrl.toString());
   } catch {
+    return redirect(`${url.origin}/connections?error=oauth_failed`);
+  }
+}
+
+// =============================================================================
+// Notion OAuth
+// =============================================================================
+
+export async function handleNotionOAuthStart({ req, env, url }: RouteContext): Promise<Response> {
+  const notionDef = INTEGRATION_REGISTRY.notion;
+  if (!notionDef?.oauthConfig || !env.NOTION_CLIENT_ID) {
+    return text('Notion OAuth is not configured', 500);
+  }
+
+  const auth = await requireSession(req, env);
+  if ('error' in auth) return redirect(`${url.origin}/login?error=unauthorized`);
+
+  const { session } = auth;
+  if (!session.workspace_id) return redirect(`${url.origin}/connections?error=no_workspace`);
+
+  const redirectTo = sanitizeRedirectPath(url.searchParams.get('redirect') || '/connections');
+  const callbackUrl = `${url.origin}/api/integrations/notion/callback`;
+
+  const state = await createIntegrationOAuthState(
+    env.SESSIONS,
+    'notion',
+    session.workspace_id,
+    session.user_id,
+    redirectTo
+  );
+
+  const authUrl = new URL(notionDef.oauthConfig.authorizationUrl);
+  authUrl.searchParams.set('client_id', env.NOTION_CLIENT_ID);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('owner', 'user');
+  authUrl.searchParams.set('redirect_uri', callbackUrl);
+  authUrl.searchParams.set('state', state);
+
+  return redirect(authUrl.toString());
+}
+
+export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext): Promise<Response> {
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  const error = url.searchParams.get('error');
+
+  if (error) return redirect(`${url.origin}/connections?error=oauth_denied`);
+  if (!code || !state) return redirect(`${url.origin}/connections?error=oauth_invalid`);
+
+  const stateData = await validateAndConsumeIntegrationOAuthState(env.SESSIONS, state);
+  if (!stateData || stateData.integration_type !== 'notion') {
+    return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
+  }
+
+  if (!env.NOTION_CLIENT_ID || !env.NOTION_CLIENT_SECRET) {
+    return redirect(`${url.origin}/connections?error=oauth_config`);
+  }
+
+  try {
+    const callbackUrl = `${url.origin}/api/integrations/notion/callback`;
+
+    // Notion uses Basic Auth for token exchange
+    const basicAuth = btoa(`${env.NOTION_CLIENT_ID}:${env.NOTION_CLIENT_SECRET}`);
+    const tokenRes = await fetch('https://api.notion.com/v1/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Basic ${basicAuth}`,
+      },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: callbackUrl,
+      }),
+    });
+
+    const tokenData = (await tokenRes.json()) as {
+      access_token?: string;
+      token_type?: string;
+      expires_in?: number; // Token lifetime in seconds
+      refresh_token?: string; // For refreshing the access token
+      bot_id?: string;
+      workspace_id?: string;
+      workspace_name?: string;
+      workspace_icon?: string;
+      owner?: {
+        type: string;
+        user?: {
+          id: string;
+          name?: string;
+          avatar_url?: string;
+          person?: { email?: string };
+        };
+      };
+      duplicated_template_id?: string;
+      request_id?: string;
+      error?: string;
+    };
+
+    if (!tokenData.access_token) {
+      console.error('[notion-oauth] Token exchange failed:', tokenData.error);
+      return redirect(`${url.origin}/connections?error=oauth_token_failed`);
+    }
+
+    // Re-validate workspace access before creating integration
+    const wsStub = getWorkspaceStub(env, stateData.workspace_id);
+    const wsInfo = await wsStub.getInfo();
+    if (!wsInfo || wsInfo.archived) {
+      return redirect(`${url.origin}/connections?error=workspace_not_found`);
+    }
+
+    const orgStub = getOrgStub(env, wsInfo.org_id);
+    if (!(await orgStub.isMember(stateData.user_id))) {
+      return redirect(`${url.origin}/connections?error=access_denied`);
+    }
+
+    const memberAccess = await wsStub.getMemberAccess(stateData.user_id);
+    if ((memberAccess?.access_level ?? 'full') !== 'full') {
+      return redirect(`${url.origin}/connections?error=access_denied`);
+    }
+
+    // Calculate token expiry time (Notion tokens expire after ~1 hour)
+    // Default to 1 hour if expires_in not provided
+    const expiresInSeconds = tokenData.expires_in ?? 3600;
+    const tokenExpiresAt = Date.now() + expiresInSeconds * 1000;
+
+    const credentials = {
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token, // Stored but never pushed to containers
+      expires_at: tokenExpiresAt,
+      token_type: tokenData.token_type,
+      bot_id: tokenData.bot_id,
+      notion_workspace_id: tokenData.workspace_id,
+      notion_workspace_name: tokenData.workspace_name,
+      owner_user_id: tokenData.owner?.user?.id,
+      owner_user_name: tokenData.owner?.user?.name,
+      owner_user_email: tokenData.owner?.user?.person?.email,
+    };
+
+    const encrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
+    const name = tokenData.workspace_name ? `Notion - ${tokenData.workspace_name}` : 'Notion';
+
+    await wsStub.createIntegration(
+      crypto.randomUUID(),
+      'notion',
+      name,
+      'saas',
+      'oauth2',
+      JSON.stringify({}),
+      encrypted,
+      stateData.user_id,
+      tokenExpiresAt // Pass expiry for alarm scheduling
+    );
+
+    ctx.waitUntil(
+      getWorkspaceContainer(env, stateData.workspace_id)
+        .refreshIntegrationEnvVars(stateData.workspace_id)
+        .catch(() => {})
+    );
+
+    const safePath = sanitizeRedirectPath(stateData.redirect_url);
+    const redirectUrl = new URL(safePath, url.origin);
+    redirectUrl.searchParams.set('success', 'notion_connected');
+    return redirect(redirectUrl.toString());
+  } catch (err) {
+    console.error('[notion-oauth] OAuth flow failed:', err);
     return redirect(`${url.origin}/connections?error=oauth_failed`);
   }
 }
