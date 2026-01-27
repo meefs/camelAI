@@ -64,8 +64,10 @@ export function AskUserQuestion({ data, onSubmit, className }: AskUserQuestionPr
 
   const totalQuestions = data.questions.length;
   const hasMultipleQuestions = totalQuestions > 1;
-  const isLastQuestion = currentQuestionIndex === totalQuestions - 1;
-  const currentQuestion = data.questions[currentQuestionIndex];
+  // Clamp index to valid range to handle transitional render before useEffect resets it
+  const safeIndex = Math.min(currentQuestionIndex, totalQuestions - 1);
+  const isLastQuestion = safeIndex === totalQuestions - 1;
+  const currentQuestion = data.questions[safeIndex];
   const currentState = questionStates[currentQuestion.question];
 
   const updateQuestionState = useCallback((questionText: string, update: Partial<QuestionState>) => {
