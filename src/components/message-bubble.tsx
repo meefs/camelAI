@@ -336,7 +336,7 @@ export function MessageBubble({
                 variant="ghost"
                 size="icon-sm"
                 className="text-muted-foreground"
-                onClick={() => onCopy(message.id, contentToString(message.content))}
+                onClick={() => onCopy(message.id, contentToString(displayContent))}
               >
                 {isCopied ? <Check /> : <Copy />}
               </Button>
