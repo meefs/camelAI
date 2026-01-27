@@ -112,7 +112,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       // Restore pending connection setups from storage (sync KV)
       const pendingEntries = ctx.storage.kv.list({ prefix: 'pending_connection:' });
-      for (const { key, value } of pendingEntries) {
+      for (const [key, value] of pendingEntries) {
         const info = value as PendingConnectionSetupInfo;
         const requestId = key.replace('pending_connection:', '');
         // Only restore if not expired (30 minutes)
