@@ -47,7 +47,10 @@ export default function AppsClient({
     thread?: Thread;
     error?: string;
     requestId?: string;
+    cancelled?: boolean;
   }>();
+  const cancelFetcher = useFetcher<{ success?: boolean; requestId?: string }>();
+  const cleanupFetcher = useFetcher<{ success?: boolean }>();
   const filter = (searchParams.get('filter') as 'this-workspace' | 'all-workspaces') || 'this-workspace';
 
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
@@ -55,6 +58,7 @@ export default function AppsClient({
   const [referenceTime, setReferenceTime] = useState(initialNow);
   const pendingChatAppRef = useRef<string | null>(null);
   const activeChatRequestIdRef = useRef<string | null>(null);
+  const cancelledChatRequestIdsRef = useRef<Set<string>>(new Set());
 
   // Switch workspace dialog state
   const [switchDialog, setSwitchDialog] = useState<{
@@ -95,6 +99,24 @@ export default function AppsClient({
       return;
     }
 
+    if (cancelledChatRequestIdsRef.current.has(responseRequestId)) {
+      cancelledChatRequestIdsRef.current.delete(responseRequestId);
+      if (chatFetcher.data?.thread) {
+        cleanupFetcher.submit(
+          {
+            intent: 'deleteThread',
+            threadId: chatFetcher.data.thread.id,
+            workspaceId: chatFetcher.data.thread.workspace_id,
+          },
+          { method: 'post' }
+        );
+      }
+      setContainerDialog({ open: false, workspace: null, action: null });
+      activeChatRequestIdRef.current = null;
+      pendingChatAppRef.current = null;
+      return;
+    }
+
     if (responseRequestId !== activeChatRequestIdRef.current) {
       pendingChatAppRef.current = null;
       return;
@@ -102,6 +124,8 @@ export default function AppsClient({
 
     if (chatFetcher.data?.success && chatFetcher.data.thread) {
       navigate(`/chat/${chatFetcher.data.thread.id}`);
+    } else if (chatFetcher.data?.cancelled) {
+      setContainerDialog({ open: false, workspace: null, action: null });
     } else if (chatFetcher.data?.error) {
       toast.error(chatFetcher.data.error);
       setContainerDialog({ open: false, workspace: null, action: null });
@@ -109,7 +133,7 @@ export default function AppsClient({
 
     activeChatRequestIdRef.current = null;
     pendingChatAppRef.current = null;
-  }, [chatFetcher.state, chatFetcher.data, navigate]);
+  }, [chatFetcher.state, chatFetcher.data, cleanupFetcher, navigate]);
 
   const loading = authLoading || revalidator.state === 'loading';
   const apps = initialApps;
@@ -206,6 +230,11 @@ export default function AppsClient({
   const handleCancelContainerLoading = useCallback(() => {
     setContainerDialog({ open: false, workspace: null, action: null });
     pendingChatAppRef.current = null;
+    if (containerDialog.action === 'chat' && activeChatRequestIdRef.current) {
+      const requestId = activeChatRequestIdRef.current;
+      cancelledChatRequestIdsRef.current.add(requestId);
+      cancelFetcher.submit({ intent: 'cancelChatForApp', requestId }, { method: 'post' });
+    }
     activeChatRequestIdRef.current = null;
 
     if (containerDialog.action === 'viewSource') {
@@ -215,7 +244,7 @@ export default function AppsClient({
         state: { cancelledAt: Date.now() },
       });
     }
-  }, [containerDialog.action, navigate, searchParams]);
+  }, [cancelFetcher, containerDialog.action, navigate, searchParams]);
 
   // Handle workspace switch confirmation
   const handleConfirmSwitch = useCallback(async () => {
