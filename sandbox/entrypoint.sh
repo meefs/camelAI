@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-26-v34-simplified
+# Version: 2026-01-28-v35-add-uv
 set -eu
 
 # Trap errors and show what failed

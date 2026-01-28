@@ -5,7 +5,7 @@ import { WebSocketServer } from 'ws';
 import os from 'os';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-25-sdk-rewrite-v16-node-ws';
+const VERSION = '2026-01-28-sdk-rewrite-v17-add-uv';
 
 // Sleep helper (replaces sleep)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -566,6 +566,17 @@ When you save a file for the user to download in /mnt/user-outputs/, provide a l
 - Example: \`[Download Chart](chiridion://outputs/analysis/chart.png)\`
 
 The user can click these links to download the file directly.
+
+## Python Environment
+
+This environment has **\`uv\`** installed - a fast Python package manager and project tool. Use \`uv\` instead of \`pip\` for all Python package management:
+
+- **Install packages:** \`uv pip install <package>\` or \`uv add <package>\` (for projects)
+- **Run scripts:** \`uv run python script.py\` (auto-installs dependencies)
+- **Create virtualenvs:** \`uv venv\` (much faster than python -m venv)
+- **Sync dependencies:** \`uv sync\` (from pyproject.toml)
+
+\`uv\` is significantly faster than pip and handles dependency resolution better. Always prefer it for Python work.
 
 ## Cloudflare Deployment
 

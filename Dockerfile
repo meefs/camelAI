@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-26-v43-integration-file-perms
+# Version: 2026-01-28-v44-add-uv
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     strace \
   && rm -rf /var/lib/apt/lists/* \
   && npm install -g bun shadcn verdaccio pm2 \
+  && curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR=/usr/local/bin sh \
   && curl -L -o /usr/local/bin/goofys https://github.com/kahing/goofys/releases/download/v0.24.0/goofys \
   && chmod +x /usr/local/bin/goofys \
   && curl -fsSL https://d.juicefs.com/install | sh - \
