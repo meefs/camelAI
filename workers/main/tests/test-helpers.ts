@@ -742,7 +742,7 @@ export async function getWorkspaceIntegrationEnvVars(
 
     const credentials = await decryptCredentials(record.credentials_encrypted, secretKey);
     const config = JSON.parse(record.config) as Record<string, unknown>;
-    Object.assign(envVars, mapCredentialsToEnvVars(record.integration_type, credentials, config));
+    Object.assign(envVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
   }
 
   return envVars;

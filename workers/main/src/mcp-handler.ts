@@ -17,6 +17,7 @@ import { getWorkspaceContainer } from './workspace-container';
 import type { Integration } from '../../../src/types';
 import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition, validateConfig, validateCredentials } from '../../../src/lib/integration-registry';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
+import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { isSignedToken, validateSignedToken } from './signed-tokens';
 
 export interface McpEnv extends WorkspaceContainerEnv {
@@ -322,17 +323,24 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           filtered = filtered.filter((i) => i.enabled);
         }
 
-        const result = filtered.map((i) => ({
-          id: i.id,
-          type: i.integration_type,
-          name: i.name,
-          category: i.category,
-          auth_method: i.auth_method,
-          enabled: i.enabled,
-          has_credentials: i.has_credentials,
-          created_at: new Date(i.created_at).toISOString(),
-          updated_at: new Date(i.updated_at).toISOString(),
-        }));
+        const result = filtered.map((i) => {
+          const envVarPrefix = `INT_${normalizeEnvVarName(i.integration_type)}_${normalizeEnvVarName(i.name)}`;
+          const envVarSuffixes = getEnvVarSuffixesForType(i.integration_type);
+          return {
+            id: i.id,
+            type: i.integration_type,
+            name: i.name,
+            category: i.category,
+            auth_method: i.auth_method,
+            enabled: i.enabled,
+            has_credentials: i.has_credentials,
+            created_at: new Date(i.created_at).toISOString(),
+            updated_at: new Date(i.updated_at).toISOString(),
+            // Env var info for accessing credentials
+            env_var_prefix: envVarPrefix,
+            env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
+          };
+        });
 
         return this.textResponse({ count: result.length, integrations: result });
       }
@@ -464,6 +472,8 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             .refreshIntegrationEnvVars(workspaceId)
             .catch(() => {});
 
+          const envVarPrefix = `INT_${normalizeEnvVarName(integration_type)}_${normalizeEnvVarName(name)}`;
+          const envVarSuffixes = getEnvVarSuffixesForType(integration_type);
           return this.textResponse({
             success: true,
             integration: {
@@ -472,8 +482,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
               name,
               category: definition.category,
               enabled: true,
+              env_var_prefix: envVarPrefix,
+              env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
             },
-            message: `Integration '${name}' created successfully`,
+            message: `Integration '${name}' created successfully. Environment variables: ${envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`).join(', ')}`,
           });
         } catch (err) {
           return this.textResponse({
@@ -519,16 +531,17 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         // Get workspace stub for creating integration later
         const workspaceStub = this.getWorkspaceStub(workspaceId);
 
-        // Validate integration type if provided
-        if (integration_type) {
-          const definition = getIntegrationDefinition(integration_type);
-          if (!definition) {
-            return this.textResponse({
-              success: false,
-              error: `Unknown integration type: ${integration_type}. Use list_integration_types to see available types.`,
-            });
-          }
+        // Validate integration type and get definition for default name
+        const definition = getIntegrationDefinition(integration_type);
+        if (!definition) {
+          return this.textResponse({
+            success: false,
+            error: `Unknown integration type: ${integration_type}. Use list_integration_types to see available types.`,
+          });
         }
+
+        // Generate default name if not provided (e.g., "Stripe", "Notion")
+        const defaultName = suggested_name || definition.displayName;
 
         const requestId = crypto.randomUUID();
         const timeoutMs = 30 * 60 * 1000; // 30 minutes
@@ -552,7 +565,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
               body: JSON.stringify({
                 requestId,
                 integrationType: integration_type,
-                suggestedName: suggested_name,
+                suggestedName: defaultName,
                 message,
                 createdAt: Date.now(),
                 // Callback info for RPC
@@ -624,6 +637,8 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             .refreshIntegrationEnvVars(workspaceId)
             .catch(() => {});
 
+          const envVarPrefix = `INT_${normalizeEnvVarName(type)}_${normalizeEnvVarName(name)}`;
+          const envVarSuffixes = getEnvVarSuffixesForType(type);
           return this.textResponse({
             success: true,
             integration: {
@@ -632,8 +647,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
               name,
               category: definition.category,
               enabled: true,
+              env_var_prefix: envVarPrefix,
+              env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
             },
-            message: `Integration '${name}' created successfully via user prompt`,
+            message: `Integration '${name}' created successfully via user prompt. Environment variables: ${envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`).join(', ')}`,
           });
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Failed to prompt for connection setup';

@@ -92,6 +92,13 @@ export function ConnectionSetupPrompt({
       setError(null);
       setIsSubmitting(true);
 
+      // Validate name is required
+      if (!name.trim()) {
+        setError('Name is required');
+        setIsSubmitting(false);
+        return;
+      }
+
       // Validate required fields
       for (const field of typeDef.configSchema) {
         if (field.required && !config[field.name]) {
@@ -114,7 +121,7 @@ export function ConnectionSetupPrompt({
         cancelled: false,
         integration: {
           type: data.integrationType,
-          name: name.trim() || typeDef.displayName,
+          name: name.trim(),
           config,
           credentials,
         },
@@ -179,15 +186,19 @@ export function ConnectionSetupPrompt({
 
               {/* Name field */}
               <div className="grid gap-1.5">
-                <Label htmlFor="name">Name</Label>
+                <Label htmlFor="name">
+                  Name
+                  <span className="ml-1 text-red-400">*</span>
+                </Label>
                 <Input
                   id="name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder={typeDef.displayName}
+                  required
                 />
                 <p className="text-xs text-muted-foreground">
-                  A friendly name to identify this connection
+                  A unique name to identify this connection
                 </p>
               </div>
 

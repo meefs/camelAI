@@ -392,13 +392,14 @@ describe('Workspace DO (full-stack with DOs)', () => {
 
     await createWorkspaceIntegration(testEnv, workspace.id, userId, {
       integration_type: 'airtable',
-      name: 'Airtable',
+      name: 'Production',
       config: {},
       credentials: { api_key: 'secret-key' },
     });
 
     const envVars = await getWorkspaceIntegrationEnvVars(testEnv, workspace.id);
-    expect(envVars.INT_AIRTABLE_API_KEY).toBe('secret-key');
+    // Env var format: INT_<TYPE>_<NAME>_<SUFFIX>
+    expect(envVars.INT_AIRTABLE_PRODUCTION_API_KEY).toBe('secret-key');
   });
 
   it('logs access changes in workspace audit log', async () => {

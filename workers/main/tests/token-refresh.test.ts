@@ -39,16 +39,21 @@ describe('OAuth Token Refresh', () => {
     actorId: string,
     integrationType: string,
     tokenExpiresAt: number,
-    credentials: Record<string, unknown>
+    credentials: Record<string, unknown>,
+    nameSuffix?: string
   ): Promise<string> {
     const workspaceStub = testEnv.WORKSPACE.get(testEnv.WORKSPACE.idFromName(workspaceId));
     const integrationId = crypto.randomUUID();
     const encrypted = await encryptCredentials(credentials, getSecretKey());
+    // Use unique name to avoid conflicts (names must be unique per integration type)
+    const uniqueName = nameSuffix
+      ? `${integrationType} ${nameSuffix}`
+      : `${integrationType} ${integrationId.slice(0, 8)}`;
 
     await workspaceStub.createIntegration(
       integrationId,
       integrationType,
-      `${integrationType} Integration`,
+      uniqueName,
       'saas',
       'oauth2',
       JSON.stringify({}),

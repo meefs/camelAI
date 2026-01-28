@@ -147,7 +147,7 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
     };
 
     const encrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
-    const name = tokenData.team?.name ? `Slack - ${tokenData.team.name}` : 'Slack';
+    const name = tokenData.team?.name || 'Slack';
 
     await wsStub.createIntegration(
       crypto.randomUUID(),
@@ -312,7 +312,7 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
     };
 
     const encrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
-    const name = tokenData.workspace_name ? `Notion - ${tokenData.workspace_name}` : 'Notion';
+    const name = tokenData.workspace_name || 'Notion';
 
     await wsStub.createIntegration(
       crypto.randomUUID(),

@@ -368,7 +368,7 @@ async function syncDispatchScriptSecrets(
     if (record.enabled !== 1) continue;
     const credentials = await decryptCredentials(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY);
     const config = JSON.parse(record.config) as Record<string, unknown>;
-    Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.integration_type, credentials, config));
+    Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
   }
 
   const secretEntries = Object.entries(integrationEnvVars);

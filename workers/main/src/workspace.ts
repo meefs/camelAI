@@ -370,6 +370,19 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return rows[0] || null;
   }
 
+  /**
+   * Check if an integration name already exists for a given type.
+   * Names must be unique within the same integration type to avoid env var conflicts.
+   */
+  async integrationNameExists(integrationType: string, name: string, excludeId?: string): Promise<boolean> {
+    const query = excludeId
+      ? `SELECT 1 FROM integrations WHERE integration_type = ? AND name = ? AND deleted_at IS NULL AND id != ? LIMIT 1`
+      : `SELECT 1 FROM integrations WHERE integration_type = ? AND name = ? AND deleted_at IS NULL LIMIT 1`;
+    const args = excludeId ? [integrationType, name, excludeId] : [integrationType, name];
+    const rows = this.sql.exec(query, ...args).toArray();
+    return rows.length > 0;
+  }
+
   async createIntegration(
     id: string,
     integrationType: string,
@@ -381,6 +394,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     createdBy: string,
     tokenExpiresAt?: number | null
   ): Promise<void> {
+    // Check for duplicate name within the same integration type
+    if (await this.integrationNameExists(integrationType, name)) {
+      throw new Error(`An integration named "${name}" already exists for type "${integrationType}". Please choose a different name.`);
+    }
+
     const now = Date.now();
     this.sql.exec(
       `INSERT INTO integrations
@@ -417,6 +435,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     },
     actorId: string
   ): Promise<void> {
+    // If renaming, check for duplicate name within the same integration type
+    if (updates.name !== undefined) {
+      const existing = await this.getIntegration(id);
+      if (existing && await this.integrationNameExists(existing.integration_type, updates.name, id)) {
+        throw new Error(`An integration named "${updates.name}" already exists for type "${existing.integration_type}". Please choose a different name.`);
+      }
+    }
+
     const now = Date.now();
     const setClauses: string[] = ['updated_at = ?'];
     const params: (string | number | null)[] = [now];
