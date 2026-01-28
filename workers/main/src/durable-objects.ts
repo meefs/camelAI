@@ -10,7 +10,7 @@ export interface PreviewState {
 // Connection setup prompt request
 export interface ConnectionSetupRequest {
   requestId: string;
-  integrationType?: string; // Optional: pre-select integration type
+  integrationType: string; // Required: the integration type to set up
   suggestedName?: string; // Optional: suggested name for the connection
   message?: string; // Optional: message to show user
   createdAt: number;
@@ -172,6 +172,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       if (!mcpDoId) {
         return new Response(JSON.stringify({ error: 'Missing MCP DO ID for callback' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (!body.integrationType) {
+        return new Response(JSON.stringify({ error: 'Missing integrationType - connection type must be specified' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
         });

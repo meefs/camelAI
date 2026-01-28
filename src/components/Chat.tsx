@@ -950,11 +950,11 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         } else if (data.type === 'title_updated' && data.title) {
           // Update thread title when AI generates it
           setCurrentTitle(data.title);
-        } else if (data.type === 'connection_setup_prompt' && data.requestId) {
+        } else if (data.type === 'connection_setup_prompt' && data.requestId && data.integrationType) {
           // MCP server is prompting user to set up a connection
           setConnectionSetupPrompt({
             requestId: data.requestId as string,
-            integrationType: data.integrationType as string | undefined,
+            integrationType: data.integrationType as string,
             suggestedName: data.suggestedName as string | undefined,
             message: data.message as string | undefined,
           });
