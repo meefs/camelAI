@@ -364,6 +364,7 @@ export interface WorkerScript {
   preview_updated_at: number | null;
   preview_status: AppPreviewStatus | null;
   preview_error: string | null;
+  config_path: string | null;
 }
 
 export interface AppCreator {

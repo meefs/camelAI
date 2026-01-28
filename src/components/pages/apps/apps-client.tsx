@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams, useRevalidator } from 'react-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useFetcher, useSearchParams, useRevalidator, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
+import type { Thread } from '@/types';
 
 import type { WorkerScriptWithCreator } from '@/types';
 import { PageHeader } from '@/components/page-header';
@@ -35,13 +36,16 @@ export default function AppsClient({
     loading: authLoading,
   } = useAuth();
 
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const revalidator = useRevalidator();
+  const chatFetcher = useFetcher<{ success?: boolean; thread?: Thread; error?: string }>();
   const filter = (searchParams.get('filter') as 'this-workspace' | 'all-workspaces') || 'this-workspace';
 
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<WorkerScriptWithCreator | null>(null);
   const [referenceTime, setReferenceTime] = useState(initialNow);
+  const pendingChatAppRef = useRef<string | null>(null);
   const workspaceMap = useMemo(
     () => new Map((workspaces ?? []).map((workspace) => [workspace.id, workspace])),
     [workspaces]
@@ -54,6 +58,18 @@ export default function AppsClient({
       setReferenceTime(Date.now());
     }
   }, [currentOrg?.id, currentWorkspace?.id]);
+
+  // Handle chat creation result
+  useEffect(() => {
+    if (chatFetcher.state === 'idle' && chatFetcher.data) {
+      if (chatFetcher.data.success && chatFetcher.data.thread) {
+        navigate(`/chat/${chatFetcher.data.thread.id}`);
+      } else if (chatFetcher.data.error) {
+        toast.error(chatFetcher.data.error);
+      }
+      pendingChatAppRef.current = null;
+    }
+  }, [chatFetcher.state, chatFetcher.data, navigate]);
 
   const loading = authLoading || revalidator.state === 'loading';
   const apps = initialApps;
@@ -77,19 +93,45 @@ export default function AppsClient({
     }
   };
 
-  const handleStartChat = (app: WorkerScriptWithCreator) => {
-    // FIXME: Check if app.workspace_id !== currentWorkspace?.id and prompt workspace switch.
+  const handleStartChat = useCallback((app: WorkerScriptWithCreator) => {
+    // Check if app is in a different workspace
     if (currentWorkspace?.id && app.workspace_id !== currentWorkspace.id) {
-      console.log('Start chat with app:', app.script_name, 'workspace:', app.workspace_id);
+      toast.error('This app is in a different workspace. Please switch workspaces first.');
+      return;
     }
-    // FIXME: Wire to workspace chat once app context handoff is supported.
-    toast(`Chat for ${app.script_name} is coming soon.`);
-  };
 
-  const handleViewSource = (app: WorkerScriptWithCreator) => {
-    // FIXME: Deep link to the Computer tab once source_path is available.
-    toast(`Source view for ${app.script_name} is coming soon.`);
-  };
+    if (!currentWorkspace?.id) {
+      toast.error('No workspace selected');
+      return;
+    }
+
+    // Prevent double-clicks while fetcher is busy
+    if (chatFetcher.state !== 'idle') return;
+    if (pendingChatAppRef.current === app.script_name) return;
+    pendingChatAppRef.current = app.script_name;
+
+    chatFetcher.submit(
+      {
+        intent: 'startChatForApp',
+        appName: app.script_name,
+        workspaceId: app.workspace_id,
+        hostname: hostname ?? '',
+        configPath: app.config_path ?? '',
+      },
+      { method: 'post' }
+    );
+  }, [currentWorkspace?.id, chatFetcher, hostname]);
+
+  const handleViewSource = useCallback((app: WorkerScriptWithCreator) => {
+    if (!app.config_path) {
+      toast.error('Source file location not available for this app');
+      return;
+    }
+
+    // Navigate to computer tab with the file path
+    const filePath = encodeURIComponent(app.config_path);
+    navigate(`/computer/${app.workspace_id}?file=${filePath}`);
+  }, [navigate]);
 
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';

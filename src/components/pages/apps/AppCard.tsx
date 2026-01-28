@@ -15,6 +15,7 @@ import {
   Check,
   Copy,
   ExternalLink,
+  FileCode,
   Globe,
   Lock,
   MessageSquare,
@@ -98,8 +99,10 @@ export function AppCard({
         color: getContrastTextColor(creatorAvatar.color),
       }
     : undefined;
-  // FIXME: Derive from source_path once deployment metadata is available.
-  const sourceLabel = 'index.html';
+  // Extract filename from config_path (e.g., "/home/claude/my-app/wrangler.jsonc" -> "wrangler.jsonc")
+  const sourceLabel = app.config_path
+    ? app.config_path.split('/').pop() ?? 'wrangler.jsonc'
+    : null;
   const previewVersion = app.preview_updated_at ?? app.updated_at;
   const previewUrl = app.preview_status === 'ready' && app.preview_key
     ? `/api/apps/${encodeURIComponent(app.script_name)}/preview?v=${previewVersion}`
@@ -204,20 +207,23 @@ export function AppCard({
             <CardTitle className="truncate text-base font-semibold">
               {app.script_name}
             </CardTitle>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 px-0 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
-                  onClick={() => onViewSource(app)}
-                >
-                  <span>{sourceLabel}</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>View source file</TooltipContent>
-            </Tooltip>
+            {sourceLabel && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 gap-1.5 px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                    onClick={() => onViewSource(app)}
+                  >
+                    <FileCode className="size-3" />
+                    <span>{sourceLabel}</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>View source file</TooltipContent>
+              </Tooltip>
+            )}
           </div>
           <Badge
             variant={app.is_public ? 'default' : 'secondary'}

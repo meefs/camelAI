@@ -1,3 +1,4 @@
+import { waitUntil } from 'cloudflare:workers';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.apps';
 import { requireAuthContext } from '@/lib/auth.server';
@@ -7,6 +8,9 @@ import {
   setWorkerScriptPublic,
   deleteWorkerScript,
 } from '@/lib/auth-do';
+import * as chatDO from '@/lib/chat-do.server';
+import { getWorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
+import { getAppUrl } from '@/lib/app-url';
 import AppsClient from '@/components/pages/apps/apps-client';
 import { AppsLoadingSkeleton } from '@/components/pages/apps/apps-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
@@ -80,6 +84,96 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
   }
 
+  if (intent === 'startChatForApp') {
+    const appName = formData.get('appName') as string;
+    const workspaceId = formData.get('workspaceId') as string;
+    const hostname = formData.get('hostname') as string | null;
+    const configPath = formData.get('configPath') as string | null;
+
+    if (!appName || !workspaceId) {
+      return { error: 'appName and workspaceId are required' };
+    }
+
+    // Verify the app is in the current workspace
+    if (workspaceId !== authContext.currentWorkspace?.id) {
+      return { error: 'App is in a different workspace. Please switch workspaces first.' };
+    }
+
+    try {
+      // 1. Create the thread
+      const thread = await chatDO.createThread(
+        context,
+        workspaceId,
+        `Chat about ${appName}`,
+        authContext.user?.id
+      );
+
+      // 2. Set the app as a preview worker
+      await chatDO.setThreadPreview(context, thread.id, [appName]);
+
+      // 3. Seed the thread with a system message for the agent
+      const appUrl = getAppUrl(appName, hostname ?? undefined);
+      const sourceInfo = configPath ? ` The app's wrangler config is at "${configPath}".` : '';
+      const seedMessage = `<chiridion system message>The user is currently previewing the app "${appName}" at ${appUrl}.${sourceInfo} They clicked on this app from the Apps page to start a conversation about it.</chiridion system message>`;
+
+      // Write the JSONL file with the seeded message
+      const containerEnv = env as unknown as WorkspaceContainerEnv;
+      const container = getWorkspaceContainer(containerEnv, workspaceId);
+
+      // Get workspace info for org_id
+      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+      const wsInfo = await wsStub.getInfo();
+      if (!wsInfo) {
+        return { error: 'Workspace not found' };
+      }
+
+      // Ensure container is running
+      await container.startForWorkspace(workspaceId, wsInfo.org_id);
+
+      // Create the JSONL entry
+      const uuid = crypto.randomUUID();
+      const timestamp = new Date().toISOString();
+      const jsonlEntry = {
+        parentUuid: null,
+        isSidechain: false,
+        userType: 'external',
+        cwd: '/home/claude',
+        sessionId: thread.id,
+        type: 'user',
+        message: {
+          role: 'user',
+          content: seedMessage,
+        },
+        isMeta: true,
+        uuid,
+        timestamp,
+      };
+
+      // Write the JSONL file
+      const jsonlPath = `/home/claude/.claude/projects/-home-claude/${thread.id}.jsonl`;
+
+      // Ensure the directory exists and write the seed message
+      await container.exec(`mkdir -p /home/claude/.claude/projects/-home-claude`);
+      const jsonlContent = JSON.stringify(jsonlEntry);
+      await container.writeFile(jsonlPath, jsonlContent + '\n');
+
+      // Generate title in background
+      waitUntil(
+        chatDO.generateThreadTitle(
+          context,
+          thread.id,
+          workspaceId,
+          `Chat about ${appName}`
+        )
+      );
+
+      return { success: true, thread, appUrl };
+    } catch (err) {
+      console.error('Failed to create thread for app:', err);
+      return { error: err instanceof Error ? err.message : 'Failed to create thread' };
+    }
+  }
+
   return { error: 'Unknown action' };
 }
 
@@ -132,6 +226,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       preview_updated_at: script.preview_updated_at,
       preview_status: script.preview_status,
       preview_error: script.preview_error,
+      config_path: script.config_path,
       creator: creator
         ? {
             id: creator.id,
