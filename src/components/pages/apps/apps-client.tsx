@@ -86,7 +86,19 @@ export default function AppsClient({
   useEffect(() => {
     if (chatFetcher.state !== 'idle') return;
     const responseRequestId = chatFetcher.data?.requestId;
-    if (!responseRequestId || responseRequestId !== activeChatRequestIdRef.current) return;
+    if (!responseRequestId) {
+      if (activeChatRequestIdRef.current || pendingChatAppRef.current) {
+        activeChatRequestIdRef.current = null;
+        pendingChatAppRef.current = null;
+        setContainerDialog({ open: false, workspace: null, action: null });
+      }
+      return;
+    }
+
+    if (responseRequestId !== activeChatRequestIdRef.current) {
+      pendingChatAppRef.current = null;
+      return;
+    }
 
     if (chatFetcher.data?.success && chatFetcher.data.thread) {
       navigate(`/chat/${chatFetcher.data.thread.id}`);
