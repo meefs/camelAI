@@ -1,15 +1,17 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams, useRevalidator } from 'react-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useFetcher, useSearchParams, useRevalidator, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
+import type { Thread, WorkspaceWithAccess } from '@/types';
 
 import type { WorkerScriptWithCreator } from '@/types';
 import { PageHeader } from '@/components/page-header';
 import { AppCard } from './AppCard';
 import { AppSettingsDialog } from './AppSettingsDialog';
 import { AppCardSkeleton } from './AppCardSkeleton';
+import { SwitchWorkspaceDialog } from '@/components/history/switch-workspace-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LayoutGrid } from 'lucide-react';
@@ -33,15 +35,28 @@ export default function AppsClient({
     orgs,
     workspaces,
     loading: authLoading,
+    switchWorkspace,
   } = useAuth();
 
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const revalidator = useRevalidator();
+  const chatFetcher = useFetcher<{ success?: boolean; thread?: Thread; error?: string }>();
   const filter = (searchParams.get('filter') as 'this-workspace' | 'all-workspaces') || 'this-workspace';
 
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<WorkerScriptWithCreator | null>(null);
   const [referenceTime, setReferenceTime] = useState(initialNow);
+  const pendingChatAppRef = useRef<string | null>(null);
+
+  // Switch workspace dialog state
+  const [switchDialog, setSwitchDialog] = useState<{
+    open: boolean;
+    app: WorkerScriptWithCreator | null;
+    workspace: WorkspaceWithAccess | null;
+    action: 'chat' | 'viewSource' | null;
+  }>({ open: false, app: null, workspace: null, action: null });
+  const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
   const workspaceMap = useMemo(
     () => new Map((workspaces ?? []).map((workspace) => [workspace.id, workspace])),
     [workspaces]
@@ -54,6 +69,19 @@ export default function AppsClient({
       setReferenceTime(Date.now());
     }
   }, [currentOrg?.id, currentWorkspace?.id]);
+
+  // Handle chat creation result
+  useEffect(() => {
+    if (chatFetcher.state !== 'idle') return;
+
+    if (chatFetcher.data?.success && chatFetcher.data.thread) {
+      navigate(`/chat/${chatFetcher.data.thread.id}`);
+    } else if (chatFetcher.data?.error) {
+      toast.error(chatFetcher.data.error);
+    }
+
+    pendingChatAppRef.current = null;
+  }, [chatFetcher.state, chatFetcher.data, navigate]);
 
   const loading = authLoading || revalidator.state === 'loading';
   const apps = initialApps;
@@ -77,19 +105,61 @@ export default function AppsClient({
     }
   };
 
-  const handleStartChat = (app: WorkerScriptWithCreator) => {
-    // FIXME: Check if app.workspace_id !== currentWorkspace?.id and prompt workspace switch.
-    if (currentWorkspace?.id && app.workspace_id !== currentWorkspace.id) {
-      console.log('Start chat with app:', app.script_name, 'workspace:', app.workspace_id);
+  const handleStartChat = useCallback((app: WorkerScriptWithCreator) => {
+    if (!currentWorkspace?.id) {
+      toast.error('No workspace selected');
+      return;
     }
-    // FIXME: Wire to workspace chat once app context handoff is supported.
-    toast(`Chat for ${app.script_name} is coming soon.`);
-  };
 
-  const handleViewSource = (app: WorkerScriptWithCreator) => {
-    // FIXME: Deep link to the Computer tab once source_path is available.
-    toast(`Source view for ${app.script_name} is coming soon.`);
-  };
+    // Check if app is in a different workspace - open switch dialog
+    if (app.workspace_id !== currentWorkspace.id) {
+      const targetWorkspace = workspaceMap.get(app.workspace_id);
+      if (targetWorkspace) {
+        setSwitchDialog({ open: true, app, workspace: targetWorkspace, action: 'chat' });
+      } else {
+        toast.error('Could not find target workspace');
+      }
+      return;
+    }
+
+    // Prevent double-clicks while fetcher is busy
+    if (chatFetcher.state !== 'idle') return;
+    if (pendingChatAppRef.current === app.script_name) return;
+    pendingChatAppRef.current = app.script_name;
+
+    chatFetcher.submit(
+      {
+        intent: 'startChatForApp',
+        appName: app.script_name,
+        workspaceId: app.workspace_id,
+        hostname: hostname ?? '',
+        configPath: app.config_path ?? '',
+      },
+      { method: 'post' }
+    );
+  }, [currentWorkspace?.id, chatFetcher, hostname, workspaceMap]);
+
+  const handleViewSource = useCallback((app: WorkerScriptWithCreator) => {
+    if (!app.config_path) {
+      toast.error('Source file location not available for this app');
+      return;
+    }
+
+    // Check if app is in a different workspace - open switch dialog
+    if (currentWorkspace?.id && app.workspace_id !== currentWorkspace.id) {
+      const targetWorkspace = workspaceMap.get(app.workspace_id);
+      if (targetWorkspace) {
+        setSwitchDialog({ open: true, app, workspace: targetWorkspace, action: 'viewSource' });
+      } else {
+        toast.error('Could not find target workspace');
+      }
+      return;
+    }
+
+    // Navigate to computer tab with the file path
+    const filePath = encodeURIComponent(app.config_path);
+    navigate(`/computer/${app.workspace_id}?file=${filePath}`);
+  }, [navigate, currentWorkspace?.id, workspaceMap]);
 
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
@@ -101,6 +171,40 @@ export default function AppsClient({
     },
     [setSearchParams]
   );
+
+  // Handle workspace switch confirmation
+  const handleConfirmSwitch = useCallback(async () => {
+    if (!switchDialog.workspace || !switchDialog.app) return;
+
+    setSwitchingWorkspace(true);
+    try {
+      await switchWorkspace(switchDialog.workspace.id);
+
+      // After switch, perform the original action
+      if (switchDialog.action === 'chat') {
+        // Re-trigger chat start - workspace is now correct
+        chatFetcher.submit(
+          {
+            intent: 'startChatForApp',
+            appName: switchDialog.app.script_name,
+            workspaceId: switchDialog.app.workspace_id,
+            hostname: hostname ?? '',
+            configPath: switchDialog.app.config_path ?? '',
+          },
+          { method: 'post' }
+        );
+      } else if (switchDialog.action === 'viewSource' && switchDialog.app.config_path) {
+        const filePath = encodeURIComponent(switchDialog.app.config_path);
+        navigate(`/computer/${switchDialog.app.workspace_id}?file=${filePath}`);
+      }
+    } catch (error) {
+      toast.error('Failed to switch workspace');
+      console.error('Failed to switch workspace:', error);
+    } finally {
+      setSwitchingWorkspace(false);
+      setSwitchDialog({ open: false, app: null, workspace: null, action: null });
+    }
+  }, [switchDialog, switchWorkspace, chatFetcher, hostname, navigate]);
 
   return (
     <>
@@ -189,6 +293,25 @@ export default function AppsClient({
           isAdmin={isAdmin}
           hostname={hostname}
           onSuccess={handleSettingsSuccess}
+        />
+      )}
+
+      {switchDialog.workspace && (
+        <SwitchWorkspaceDialog
+          open={switchDialog.open}
+          onOpenChange={(open) => {
+            if (!open) {
+              setSwitchDialog({ open: false, app: null, workspace: null, action: null });
+            }
+          }}
+          workspace={switchDialog.workspace}
+          onConfirm={handleConfirmSwitch}
+          loading={switchingWorkspace}
+          description={
+            switchDialog.action === 'chat'
+              ? 'This app belongs to a different workspace. Switch to {workspace} to start a chat about this app.'
+              : 'This app belongs to a different workspace. Switch to {workspace} to view the source file.'
+          }
         />
       )}
     </>

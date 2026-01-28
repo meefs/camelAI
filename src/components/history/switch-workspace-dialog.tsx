@@ -20,6 +20,8 @@ interface SwitchWorkspaceDialogProps {
   workspace: Workspace;
   onConfirm: () => void;
   loading?: boolean;
+  /** Custom description. Use {workspace} as placeholder for the workspace name with avatar. */
+  description?: string;
 }
 
 export function SwitchWorkspaceDialog({
@@ -28,29 +30,56 @@ export function SwitchWorkspaceDialog({
   workspace,
   onConfirm,
   loading = false,
+  description,
 }: SwitchWorkspaceDialogProps) {
+  const workspaceElement = (
+    <span className="inline-flex items-center gap-1 font-medium text-foreground">
+      <Avatar size="xs">
+        <AvatarFallback
+          content={workspace.avatar.content}
+          style={{
+            backgroundColor: workspace.avatar.color,
+            color: getContrastTextColor(workspace.avatar.color),
+          }}
+        >
+          {workspace.avatar.content}
+        </AvatarFallback>
+      </Avatar>
+      {workspace.name}
+    </span>
+  );
+
+  // Default description for chat history
+  const defaultDescription = (
+    <>
+      This chat belongs to a different workspace. Switch to {workspaceElement} to
+      continue this conversation.
+    </>
+  );
+
+  // Parse custom description and replace {workspace} placeholder
+  const renderDescription = () => {
+    if (!description) return defaultDescription;
+
+    const parts = description.split('{workspace}');
+    if (parts.length === 1) return description;
+
+    return (
+      <>
+        {parts[0]}
+        {workspaceElement}
+        {parts[1]}
+      </>
+    );
+  };
+
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Switch workspace?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This chat belongs to a different workspace. Switch to{' '}
-            <span className="inline-flex items-center gap-1 font-medium text-foreground">
-              <Avatar size="xs">
-                <AvatarFallback
-                  content={workspace.avatar.content}
-                  style={{
-                    backgroundColor: workspace.avatar.color,
-                    color: getContrastTextColor(workspace.avatar.color),
-                  }}
-                >
-                  {workspace.avatar.content}
-                </AvatarFallback>
-              </Avatar>
-              {workspace.name}
-            </span>{' '}
-            to continue this conversation.
+          <AlertDialogDescription asChild>
+            <p>{renderDescription()}</p>
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
