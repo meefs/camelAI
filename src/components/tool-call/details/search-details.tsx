@@ -78,7 +78,7 @@ export function SearchDetails({ tool, result, mode }: SearchDetailsProps) {
             <CopyButton
               value={copyValue}
               label="Copy list"
-              hoverClassName="group-hover/filelist:opacity-100"
+              hoverClassName="group-hover/details:opacity-100"
             />
           </div>
           <div className="bg-muted/30 rounded p-2 max-h-32 overflow-auto text-xs">

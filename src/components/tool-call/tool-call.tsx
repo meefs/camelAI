@@ -37,14 +37,16 @@ function ToolCallSummary({
   tool,
   result,
   isStreaming,
+  status,
 }: {
   tool?: ToolUseBlock;
   result?: ToolResultBlock;
   isStreaming?: boolean;
+  status: ToolStatus;
 }) {
   const parts = useMemo(
-    () => getToolSummaryParts(tool, result, isStreaming),
-    [tool, result, isStreaming]
+    () => getToolSummaryParts(tool, result, isStreaming, status),
+    [tool, result, isStreaming, status]
   );
 
   if (!parts.path || !parts.filename) {
@@ -113,7 +115,7 @@ export function ToolCall({
           }}
         >
           <span className={cn("tool-call__dot w-1.5 h-1.5 rounded-full shrink-0", getStatusClass(status))} />
-          <ToolCallSummary tool={tool} result={result} isStreaming={isStreaming} />
+          <ToolCallSummary tool={tool} result={result} isStreaming={isStreaming} status={status} />
           <div className="ml-auto flex items-center gap-2">
             {resultCountLabel ? (
               <span className="text-xs text-muted-foreground/70">{resultCountLabel}</span>
@@ -130,7 +132,7 @@ export function ToolCall({
       </CollapsibleTrigger>
       <CollapsibleContent
         className={cn(
-          "overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up",
+          "group/details overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up",
           "motion-reduce:animate-none"
         )}
       >

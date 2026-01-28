@@ -1,5 +1,11 @@
 import type { Route } from './+types/workspaces.$id.fs.move';
-import { requireWorkspaceAuth, toContainerPath, normalizeWorkspacePath } from './workspaces.utils';
+import {
+  requireWorkspaceAuth,
+  resolveContainerPath,
+  resolveContainerPathForWrite,
+  toContainerPath,
+  normalizeWorkspacePath,
+} from './workspaces.utils';
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   try {
@@ -17,8 +23,13 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return Response.json({ error: 'Both from and to paths required' }, { status: 400 });
     }
 
-    const fromPath = toContainerPath(normalizeWorkspacePath(body.from));
-    const toPath = toContainerPath(normalizeWorkspacePath(body.to));
+    const fromWorkspacePath = normalizeWorkspacePath(body.from);
+    const toWorkspacePath = normalizeWorkspacePath(body.to);
+    const resolvedFrom = await resolveContainerPath(container, fromWorkspacePath);
+    const fromPath = resolvedFrom ?? toContainerPath(fromWorkspacePath);
+    const toPath = await resolveContainerPathForWrite(container, toWorkspacePath, {
+      allowExisting: false,
+    });
     const result = await container.moveFile(fromPath, toPath);
 
     return Response.json(result);

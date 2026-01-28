@@ -5,6 +5,8 @@ import {
   getPathParam,
   parseBooleanParam,
   toContainerPath,
+  normalizeWhitespace,
+  resolveContainerPath,
 } from './workspaces.utils';
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -18,7 +20,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
     const url = new URL(request.url);
     const path = getPathParam(url);
-    const containerPath = toContainerPath(path);
+    const resolvedPath = await resolveContainerPath(container, path);
+    const containerPath = resolvedPath ?? toContainerPath(path);
     const recursive = parseBooleanParam(url.searchParams.get('recursive'), false);
     const includeHidden = parseBooleanParam(url.searchParams.get('includeHidden'), true);
 
@@ -28,13 +31,16 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     // Entry paths must be workspace-relative (e.g., '/.claude/projects' not just 'projects')
     const response: WorkspaceListResponse = {
       path,
-      entries: (listing.files || []).map((file) => ({
-        path: path === '/' ? `/${file.name}` : `${path}/${file.name}`,
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        modifiedAt: file.modifiedAt,
-      })),
+      entries: (listing.files || []).map((file) => {
+        const name = normalizeWhitespace(file.name);
+        return {
+          path: path === '/' ? `/${name}` : `${path}/${name}`,
+          name,
+          type: file.type,
+          size: file.size,
+          modifiedAt: file.modifiedAt,
+        };
+      }),
       count: listing.count,
       timestamp: new Date().toISOString(),
       recursive,
