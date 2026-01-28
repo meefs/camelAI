@@ -21,6 +21,7 @@ import {
   ChevronDown,
   ChevronRight,
   File,
+  FileQuestion,
   FileArchive,
   FileAudio,
   FileCode2,
@@ -125,6 +126,7 @@ type OpenTab = {
   isDirty: boolean;
   isBinary?: boolean;
   isTooLarge?: boolean;
+  notFound?: boolean;
   version?: string;
 };
 
@@ -732,23 +734,6 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
     versionsRef.current.delete(path);
   }, []);
 
-  const removeMissingTab = useCallback(
-    (path: string) => {
-      setOpenTabs((prev) => {
-        const index = prev.findIndex((tab) => tab.path === path);
-        if (index === -1) return prev;
-        const nextTabs = prev.filter((tab) => tab.path !== path);
-        if (activePathRef.current === path) {
-          const nextActive = nextTabs[index] ?? nextTabs[index - 1] ?? null;
-          setActivePath(nextActive?.path ?? null);
-        }
-        return nextTabs;
-      });
-      disposeModel(path);
-    },
-    [disposeModel]
-  );
-
   const syncDirtyState = useCallback(
     (path: string) => {
       const model = modelsRef.current.get(path);
@@ -841,7 +826,10 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         );
         if (!res.ok) {
           if (res.status === 404) {
-            removeMissingTab(normalizedPath);
+            updateTab(normalizedPath, (tab) => ({
+              ...tab,
+              notFound: true,
+            }));
             return;
           }
           const payload = (await res
@@ -869,9 +857,13 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         versionsRef.current.set(normalizedPath, data.version);
       } catch (error) {
         console.error('Failed to open file', error);
+        updateTab(normalizedPath, (tab) => ({
+          ...tab,
+          notFound: true,
+        }));
       }
     },
-    [apiBase, ensureModel, nodesByPath, removeMissingTab, updateTab]
+    [apiBase, ensureModel, nodesByPath, updateTab]
   );
 
   useEffect(() => {
@@ -2151,7 +2143,16 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                   </Button>
                 </div>
               )}
-              {activeTab && !activeTab.isTooLarge && !activeTab.isBinary && (
+              {activeTab?.notFound && (
+                <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+                  <FileQuestion className="size-5" />
+                  <div>File not found.</div>
+                  <div className="text-xs text-muted-foreground/60">
+                    This file may have been moved, renamed, or deleted.
+                  </div>
+                </div>
+              )}
+              {activeTab && !activeTab.isTooLarge && !activeTab.isBinary && !activeTab.notFound && (
                 <div className="relative h-full">
                   {readOnlyHintOpen && !editingEnabled && (
                     <div className="pointer-events-none absolute right-4 top-4 z-10">

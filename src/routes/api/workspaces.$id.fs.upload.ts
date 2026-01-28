@@ -1,5 +1,9 @@
 import type { Route } from './+types/workspaces.$id.fs.upload';
-import { requireWorkspaceAuth, toContainerPath, normalizeWorkspacePath } from './workspaces.utils';
+import {
+  requireWorkspaceAuth,
+  resolveContainerPathForWrite,
+  normalizeWorkspacePath,
+} from './workspaces.utils';
 
 /** Maximum file size for uploads (50MB) */
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -41,7 +45,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     const normalizedDir = normalizeWorkspacePath(targetDir || '/');
     const filename = file.name;
     const fullPath = normalizedDir === '/' ? `/${filename}` : `${normalizedDir}/${filename}`;
-    const containerPath = toContainerPath(fullPath);
+    const containerPath = await resolveContainerPathForWrite(container, fullPath);
 
     // Read file as ArrayBuffer and convert to base64
     const arrayBuffer = await file.arrayBuffer();

@@ -1,5 +1,10 @@
 import type { Route } from './+types/workspaces.$id.fs.delete';
-import { requireWorkspaceAuth, toContainerPath, normalizeWorkspacePath } from './workspaces.utils';
+import {
+  requireWorkspaceAuth,
+  resolveContainerPath,
+  toContainerPath,
+  normalizeWorkspacePath,
+} from './workspaces.utils';
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   try {
@@ -17,7 +22,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return Response.json({ error: 'Path required' }, { status: 400 });
     }
 
-    const containerPath = toContainerPath(normalizeWorkspacePath(body.path));
+    const workspacePath = normalizeWorkspacePath(body.path);
+    const resolvedPath = await resolveContainerPath(container, workspacePath);
+    const containerPath = resolvedPath ?? toContainerPath(workspacePath);
     const result = await container.deleteFile(containerPath);
 
     return Response.json(result);

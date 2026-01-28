@@ -1,5 +1,9 @@
 import type { Route } from './+types/workspaces.$id.fs.write';
-import { requireWorkspaceAuth, toContainerPath, normalizeWorkspacePath } from './workspaces.utils';
+import {
+  requireWorkspaceAuth,
+  resolveContainerPathForWrite,
+  normalizeWorkspacePath,
+} from './workspaces.utils';
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   try {
@@ -17,7 +21,8 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return Response.json({ error: 'Path required' }, { status: 400 });
     }
 
-    const containerPath = toContainerPath(normalizeWorkspacePath(body.path));
+    const workspacePath = normalizeWorkspacePath(body.path);
+    const containerPath = await resolveContainerPathForWrite(container, workspacePath);
     const result = await container.writeFile(containerPath, body.content ?? '');
 
     return Response.json(result);
