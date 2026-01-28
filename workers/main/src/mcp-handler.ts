@@ -491,8 +491,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
       {
         integration_type: z
           .string()
-          .optional()
-          .describe('Optional: Pre-select a specific integration type (e.g., "stripe", "notion"). If not provided, user can choose from all available types.'),
+          .describe('The type of integration to set up (e.g., "stripe", "notion", "slack", "github"). Use list_integration_types to see available types.'),
         suggested_name: z
           .string()
           .optional()
