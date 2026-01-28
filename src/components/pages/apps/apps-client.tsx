@@ -12,6 +12,7 @@ import { AppCard } from './AppCard';
 import { AppSettingsDialog } from './AppSettingsDialog';
 import { AppCardSkeleton } from './AppCardSkeleton';
 import { SwitchWorkspaceDialog } from '@/components/history/switch-workspace-dialog';
+import { ContainerLoadingDialog } from '@/components/container-loading-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LayoutGrid } from 'lucide-react';
@@ -41,13 +42,19 @@ export default function AppsClient({
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const revalidator = useRevalidator();
-  const chatFetcher = useFetcher<{ success?: boolean; thread?: Thread; error?: string }>();
+  const chatFetcher = useFetcher<{
+    success?: boolean;
+    thread?: Thread;
+    error?: string;
+    requestId?: string;
+  }>();
   const filter = (searchParams.get('filter') as 'this-workspace' | 'all-workspaces') || 'this-workspace';
 
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<WorkerScriptWithCreator | null>(null);
   const [referenceTime, setReferenceTime] = useState(initialNow);
   const pendingChatAppRef = useRef<string | null>(null);
+  const activeChatRequestIdRef = useRef<string | null>(null);
 
   // Switch workspace dialog state
   const [switchDialog, setSwitchDialog] = useState<{
@@ -57,6 +64,11 @@ export default function AppsClient({
     action: 'chat' | 'viewSource' | null;
   }>({ open: false, app: null, workspace: null, action: null });
   const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
+  const [containerDialog, setContainerDialog] = useState<{
+    open: boolean;
+    workspace: WorkspaceWithAccess | null;
+    action: 'chat' | 'viewSource' | null;
+  }>({ open: false, workspace: null, action: null });
   const workspaceMap = useMemo(
     () => new Map((workspaces ?? []).map((workspace) => [workspace.id, workspace])),
     [workspaces]
@@ -73,13 +85,17 @@ export default function AppsClient({
   // Handle chat creation result
   useEffect(() => {
     if (chatFetcher.state !== 'idle') return;
+    const responseRequestId = chatFetcher.data?.requestId;
+    if (!responseRequestId || responseRequestId !== activeChatRequestIdRef.current) return;
 
     if (chatFetcher.data?.success && chatFetcher.data.thread) {
       navigate(`/chat/${chatFetcher.data.thread.id}`);
     } else if (chatFetcher.data?.error) {
       toast.error(chatFetcher.data.error);
+      setContainerDialog({ open: false, workspace: null, action: null });
     }
 
+    activeChatRequestIdRef.current = null;
     pendingChatAppRef.current = null;
   }, [chatFetcher.state, chatFetcher.data, navigate]);
 
@@ -127,6 +143,8 @@ export default function AppsClient({
     if (pendingChatAppRef.current === app.script_name) return;
     pendingChatAppRef.current = app.script_name;
 
+    const requestId = crypto.randomUUID();
+    activeChatRequestIdRef.current = requestId;
     chatFetcher.submit(
       {
         intent: 'startChatForApp',
@@ -134,6 +152,7 @@ export default function AppsClient({
         workspaceId: app.workspace_id,
         hostname: hostname ?? '',
         configPath: app.config_path ?? '',
+        requestId,
       },
       { method: 'post' }
     );
@@ -172,37 +191,58 @@ export default function AppsClient({
     [setSearchParams]
   );
 
+  const handleCancelContainerLoading = useCallback(() => {
+    setContainerDialog({ open: false, workspace: null, action: null });
+    pendingChatAppRef.current = null;
+    activeChatRequestIdRef.current = null;
+
+    if (containerDialog.action === 'viewSource') {
+      const query = searchParams.toString();
+      navigate(query ? `/apps?${query}` : '/apps', {
+        replace: true,
+        state: { cancelledAt: Date.now() },
+      });
+    }
+  }, [containerDialog.action, navigate, searchParams]);
+
   // Handle workspace switch confirmation
   const handleConfirmSwitch = useCallback(async () => {
     if (!switchDialog.workspace || !switchDialog.app) return;
+    const targetWorkspace = switchDialog.workspace;
+    const targetApp = switchDialog.app;
+    const targetAction = switchDialog.action;
 
     setSwitchingWorkspace(true);
     try {
-      await switchWorkspace(switchDialog.workspace.id);
+      await switchWorkspace(targetWorkspace.id);
+      setSwitchDialog({ open: false, app: null, workspace: null, action: null });
+      setContainerDialog({ open: true, workspace: targetWorkspace, action: targetAction });
 
       // After switch, perform the original action
-      if (switchDialog.action === 'chat') {
+      if (targetAction === 'chat') {
         // Re-trigger chat start - workspace is now correct
+        const requestId = crypto.randomUUID();
+        activeChatRequestIdRef.current = requestId;
         chatFetcher.submit(
           {
             intent: 'startChatForApp',
-            appName: switchDialog.app.script_name,
-            workspaceId: switchDialog.app.workspace_id,
+            appName: targetApp.script_name,
+            workspaceId: targetApp.workspace_id,
             hostname: hostname ?? '',
-            configPath: switchDialog.app.config_path ?? '',
+            configPath: targetApp.config_path ?? '',
+            requestId,
           },
           { method: 'post' }
         );
-      } else if (switchDialog.action === 'viewSource' && switchDialog.app.config_path) {
-        const filePath = encodeURIComponent(switchDialog.app.config_path);
-        navigate(`/computer/${switchDialog.app.workspace_id}?file=${filePath}`);
+      } else if (targetAction === 'viewSource' && targetApp.config_path) {
+        const filePath = encodeURIComponent(targetApp.config_path);
+        navigate(`/computer/${targetApp.workspace_id}?file=${filePath}`);
       }
     } catch (error) {
       toast.error('Failed to switch workspace');
       console.error('Failed to switch workspace:', error);
     } finally {
       setSwitchingWorkspace(false);
-      setSwitchDialog({ open: false, app: null, workspace: null, action: null });
     }
   }, [switchDialog, switchWorkspace, chatFetcher, hostname, navigate]);
 
@@ -314,6 +354,29 @@ export default function AppsClient({
           }
         />
       )}
+
+      {containerDialog.workspace ? (
+        <ContainerLoadingDialog
+          open={containerDialog.open}
+          onOpenChange={(open) => {
+            if (!open) {
+              handleCancelContainerLoading();
+            }
+          }}
+          workspace={containerDialog.workspace}
+          title="Starting workspace..."
+          description={
+            containerDialog.action === 'chat'
+              ? "We're spinning up the {workspace} container to start your chat. This can take up to 20 seconds."
+              : containerDialog.action === 'viewSource'
+                ? "We're spinning up the {workspace} container to open the file browser. This can take up to 20 seconds."
+                : "We're spinning up the {workspace} container. This can take up to 20 seconds."
+          }
+          statusLabel="Warming container..."
+          cancelLabel="Cancel switch"
+          onCancel={handleCancelContainerLoading}
+        />
+      ) : null}
     </>
   );
 }

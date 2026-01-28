@@ -89,14 +89,15 @@ export async function action({ request, context }: Route.ActionArgs) {
     const workspaceId = formData.get('workspaceId') as string;
     const hostname = formData.get('hostname') as string | null;
     const configPath = formData.get('configPath') as string | null;
+    const requestId = formData.get('requestId') as string | null;
 
     if (!appName || !workspaceId) {
-      return { error: 'appName and workspaceId are required' };
+      return { error: 'appName and workspaceId are required', requestId };
     }
 
     // Verify the app is in the current workspace
     if (workspaceId !== authContext.currentWorkspace?.id) {
-      return { error: 'App is in a different workspace. Please switch workspaces first.' };
+      return { error: 'App is in a different workspace. Please switch workspaces first.', requestId };
     }
 
     try {
@@ -124,7 +125,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
       const wsInfo = await wsStub.getInfo();
       if (!wsInfo) {
-        return { error: 'Workspace not found' };
+        return { error: 'Workspace not found', requestId };
       }
 
       // Ensure container is running
@@ -167,10 +168,10 @@ export async function action({ request, context }: Route.ActionArgs) {
         )
       );
 
-      return { success: true, thread, appUrl };
+      return { success: true, thread, appUrl, requestId };
     } catch (err) {
       console.error('Failed to create thread for app:', err);
-      return { error: err instanceof Error ? err.message : 'Failed to create thread' };
+      return { error: err instanceof Error ? err.message : 'Failed to create thread', requestId };
     }
   }
 
