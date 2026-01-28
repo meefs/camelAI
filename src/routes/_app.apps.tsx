@@ -16,39 +16,6 @@ import { AppsLoadingSkeleton } from '@/components/pages/apps/apps-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { WorkerScriptWithCreator } from '@/types';
 
-const CHAT_CANCEL_TTL_MS = 5 * 60 * 1000;
-const canceledChatRequests = new Map<string, number>();
-
-function pruneCanceledChatRequests(now = Date.now()) {
-  for (const [requestId, timestamp] of canceledChatRequests) {
-    if (now - timestamp > CHAT_CANCEL_TTL_MS) {
-      canceledChatRequests.delete(requestId);
-    }
-  }
-}
-
-function markChatRequestCanceled(requestId: string) {
-  pruneCanceledChatRequests();
-  canceledChatRequests.set(requestId, Date.now());
-}
-
-function isChatRequestCanceled(requestId: string | null) {
-  if (!requestId) return false;
-  pruneCanceledChatRequests();
-  const timestamp = canceledChatRequests.get(requestId);
-  if (!timestamp) return false;
-  if (Date.now() - timestamp > CHAT_CANCEL_TTL_MS) {
-    canceledChatRequests.delete(requestId);
-    return false;
-  }
-  return true;
-}
-
-function clearChatRequestCanceled(requestId: string | null) {
-  if (!requestId) return;
-  canceledChatRequests.delete(requestId);
-}
-
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
   return {
     USER: env.USER as AuthEnv['USER'],
@@ -117,32 +84,6 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
   }
 
-  if (intent === 'cancelChatForApp') {
-    const requestId = formData.get('requestId') as string;
-    if (!requestId) {
-      return { error: 'requestId is required' };
-    }
-
-    markChatRequestCanceled(requestId);
-    return { success: true, requestId };
-  }
-
-  if (intent === 'deleteThread') {
-    const threadId = formData.get('threadId') as string;
-    const workspaceId = formData.get('workspaceId') as string;
-
-    if (!threadId || !workspaceId) {
-      return { error: 'threadId and workspaceId are required' };
-    }
-
-    try {
-      await chatDO.deleteThread(context, threadId, workspaceId);
-      return { success: true };
-    } catch (err) {
-      return { error: err instanceof Error ? err.message : 'Failed to delete thread' };
-    }
-  }
-
   if (intent === 'startChatForApp') {
     const appName = formData.get('appName') as string;
     const workspaceId = formData.get('workspaceId') as string;
@@ -154,17 +95,29 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: 'appName and workspaceId are required', requestId };
     }
 
-    if (isChatRequestCanceled(requestId)) {
-      return { cancelled: true, requestId };
-    }
-
     // Verify the app is in the current workspace
     if (workspaceId !== authContext.currentWorkspace?.id) {
       return { error: 'App is in a different workspace. Please switch workspaces first.', requestId };
     }
 
     try {
-      // Prepare container to avoid creating threads the user canceled.
+      // 1. Create the thread
+      const thread = await chatDO.createThread(
+        context,
+        workspaceId,
+        `Chat about ${appName}`,
+        authContext.user?.id
+      );
+
+      // 2. Set the app as a preview worker
+      await chatDO.setThreadPreview(context, thread.id, [appName]);
+
+      // 3. Seed the thread with a system message for the agent
+      const appUrl = getAppUrl(appName, hostname ?? undefined);
+      const sourceInfo = configPath ? ` The app's wrangler config is at "${configPath}".` : '';
+      const seedMessage = `<chiridion system message>The user is currently previewing the app "${appName}" at ${appUrl}.${sourceInfo} They clicked on this app from the Apps page to start a conversation about it.</chiridion system message>`;
+
+      // Write the JSONL file with the seeded message
       const containerEnv = env as unknown as WorkspaceContainerEnv;
       const container = getWorkspaceContainer(containerEnv, workspaceId);
 
@@ -178,32 +131,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       // Ensure container is running
       await container.startForWorkspace(workspaceId, wsInfo.org_id);
 
-      if (isChatRequestCanceled(requestId)) {
-        return { cancelled: true, requestId };
-      }
-
-      // 1. Create the thread
-      const thread = await chatDO.createThread(
-        context,
-        workspaceId,
-        `Chat about ${appName}`,
-        authContext.user?.id
-      );
-
-      if (isChatRequestCanceled(requestId)) {
-        await chatDO.deleteThread(context, thread.id, workspaceId);
-        return { cancelled: true, requestId };
-      }
-
-      // 2. Set the app as a preview worker
-      await chatDO.setThreadPreview(context, thread.id, [appName]);
-
-      // 3. Seed the thread with a system message for the agent
-      const appUrl = getAppUrl(appName, hostname ?? undefined);
-      const sourceInfo = configPath ? ` The app's wrangler config is at "${configPath}".` : '';
-      const seedMessage = `<chiridion system message>The user is currently previewing the app "${appName}" at ${appUrl}.${sourceInfo} They clicked on this app from the Apps page to start a conversation about it.</chiridion system message>`;
-
-      // Write the JSONL file with the seeded message
       // Create the JSONL entry
       const uuid = crypto.randomUUID();
       const timestamp = new Date().toISOString();
@@ -241,7 +168,6 @@ export async function action({ request, context }: Route.ActionArgs) {
         )
       );
 
-      clearChatRequestCanceled(requestId);
       return { success: true, thread, appUrl, requestId };
     } catch (err) {
       console.error('Failed to create thread for app:', err);

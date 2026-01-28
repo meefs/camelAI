@@ -4,11 +4,9 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Loader2 } from 'lucide-react';
 import type { Workspace } from '@/types';
@@ -21,8 +19,6 @@ interface ContainerLoadingDialogProps {
   title?: string;
   description?: string;
   statusLabel?: string;
-  cancelLabel?: string;
-  onCancel?: () => void;
 }
 
 export function ContainerLoadingDialog({
@@ -32,17 +28,7 @@ export function ContainerLoadingDialog({
   title = 'Starting workspace...',
   description,
   statusLabel = 'Starting container...',
-  cancelLabel = 'Cancel',
-  onCancel,
 }: ContainerLoadingDialogProps) {
-  const handleCancel = () => {
-    if (onCancel) {
-      onCancel();
-      return;
-    }
-    onOpenChange(false);
-  };
-
   const workspaceElement = (
     <span className="inline-flex items-center gap-1 font-medium text-foreground">
       <Avatar size="xs">
@@ -92,11 +78,6 @@ export function ContainerLoadingDialog({
             <span>{statusLabel}</span>
           </div>
         </div>
-        <DialogFooter className="mt-2">
-          <Button type="button" variant="outline" onClick={handleCancel}>
-            {cancelLabel}
-          </Button>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

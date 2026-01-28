@@ -111,15 +111,6 @@ export default function HistoryClient({
     [setSearchParams]
   );
 
-  const handleCancelContainerLoading = useCallback(() => {
-    setContainerDialog({ open: false, workspace: null });
-    const query = searchParams.toString();
-    navigate(query ? `/history?${query}` : '/history', {
-      replace: true,
-      state: { cancelledAt: Date.now() },
-    });
-  }, [navigate, searchParams]);
-
   const enterSelectMode = useCallback((mode: 'manual' | 'implicit') => {
     setSelectMode((prev) => (prev === 'manual' ? prev : mode));
   }, []);
@@ -301,15 +292,13 @@ export default function HistoryClient({
           open={containerDialog.open}
           onOpenChange={(open) => {
             if (!open) {
-              handleCancelContainerLoading();
+              setContainerDialog({ open: false, workspace: null });
             }
           }}
           workspace={containerDialog.workspace}
           title="Starting workspace..."
           description="We're spinning up the {workspace} container to open this chat. This can take up to 20 seconds."
           statusLabel="Warming container..."
-          cancelLabel="Cancel switch"
-          onCancel={handleCancelContainerLoading}
         />
       ) : null}
     </>
