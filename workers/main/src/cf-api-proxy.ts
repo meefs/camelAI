@@ -40,6 +40,7 @@ export interface DeploySideEffectsInfo {
   workspaceId: string;
   hostname: string;
   threadId?: string;
+  configPath?: string;
 }
 
 /**
@@ -201,6 +202,7 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
     preview: string;
     truncated: boolean;
   }> = [];
+  let configPath: string | undefined;
   const maxConfigLogChars = 20000;
   const maxPartLogChars = 2000;
 
@@ -229,6 +231,18 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
       files.push(filename);
     }
 
+    // Extract config_path from metadata JSON
+    if (name === 'metadata' && !filename) {
+      try {
+        const metadata = JSON.parse(bodyText) as { config_path?: string };
+        if (metadata.config_path) {
+          configPath = metadata.config_path;
+        }
+      } catch {
+        // Ignore JSON parse errors
+      }
+    }
+
     const previewTruncated = bodyText.length > maxPartLogChars;
     const preview = previewTruncated ? `${bodyText.slice(0, maxPartLogChars)}\n...[truncated]` : bodyText;
     formParts.push({
@@ -253,7 +267,7 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
     }
   }
 
-  return { files, wranglerConfigs, formParts };
+  return { files, wranglerConfigs, formParts, configPath };
 }
 
 async function callCloudflareApi<T>(
@@ -578,10 +592,15 @@ export async function proxyCloudflareApi(
       ? undefined
       : await request.arrayBuffer();
 
+  // Extract configPath from metadata if present in upload
+  let configPath: string | undefined;
   if (body && isUploadRequest(pathname, method)) {
     const contentType = request.headers.get('Content-Type') ?? '';
     if (contentType.toLowerCase().includes('multipart/form-data')) {
       const uploadInfo = parseMultipartUploads(body, contentType);
+      if (uploadInfo?.configPath) {
+        configPath = uploadInfo.configPath;
+      }
       if (uploadInfo?.files.length) {
         console.log('[cf-api-proxy] upload files', {
           method,
@@ -651,6 +670,7 @@ export async function proxyCloudflareApi(
           workspaceId,
           hostname: url.hostname,
           threadId,
+          configPath,
         }).catch(err => {
           console.error('[cf-api-proxy] failed to process deploy side effects', {
             scriptName,

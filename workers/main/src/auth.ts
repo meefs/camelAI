@@ -84,6 +84,7 @@ export interface WorkerScript {
   preview_updated_at: number | null;
   preview_status: WorkerScriptPreviewStatus | null;
   preview_error: string | null;
+  config_path: string | null;
 }
 
 export interface WorkerScriptPreviewUpdateInput {
@@ -112,6 +113,7 @@ interface WorkerScriptRow {
   preview_updated_at: number | null;
   preview_status: WorkerScriptPreviewStatus | null;
   preview_error: string | null;
+  config_path: string | null;
 }
 
 export interface WorkerScriptAccess {
@@ -876,6 +878,16 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.sql.exec('UPDATE _schema_version SET version = 10');
     }
 
+    if (version < 11) {
+      // V11: Add config_path column to worker_scripts for tracking source directory
+      try {
+        this.sql.exec('ALTER TABLE worker_scripts ADD COLUMN config_path TEXT');
+      } catch {
+        // Column may already exist
+      }
+      this.sql.exec('UPDATE _schema_version SET version = 11');
+    }
+
     this.workerScriptsHasPreviewColumns = this.detectWorkerScriptPreviewColumns();
     if (!this.workerScriptsHasPreviewColumns) {
       console.warn('[OrgDO] worker_scripts missing preview columns - preview updates will be skipped');
@@ -924,6 +936,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       preview_updated_at: row.preview_updated_at ?? null,
       preview_status: row.preview_status ?? null,
       preview_error: row.preview_error ?? null,
+      config_path: row.config_path ?? null,
     };
   }
 
@@ -1295,35 +1308,39 @@ export class OrgDO extends DurableObject<DOEnv> {
   async registerWorkerScript(
     scriptName: string,
     workspaceId: string,
-    createdBy: string
+    createdBy: string,
+    configPath?: string
   ): Promise<WorkerScript> {
     const now = Date.now();
     const existing = await this.getWorkerScript(scriptName);
 
     if (existing) {
       this.sql.exec(
-        'UPDATE worker_scripts SET workspace_id = ?, updated_at = ? WHERE script_name = ?',
+        'UPDATE worker_scripts SET workspace_id = ?, updated_at = ?, config_path = ? WHERE script_name = ?',
         workspaceId,
         now,
+        configPath ?? null,
         scriptName
       );
-      this.log('worker_script_updated', createdBy, scriptName, { workspace_id: workspaceId });
+      this.log('worker_script_updated', createdBy, scriptName, { workspace_id: workspaceId, config_path: configPath });
       return {
         ...existing,
         workspace_id: workspaceId,
         updated_at: now,
+        config_path: configPath ?? existing.config_path,
       };
     }
 
     this.sql.exec(
-      'INSERT INTO worker_scripts (script_name, workspace_id, created_by, created_at, updated_at, is_public) VALUES (?, ?, ?, ?, ?, 1)',
+      'INSERT INTO worker_scripts (script_name, workspace_id, created_by, created_at, updated_at, is_public, config_path) VALUES (?, ?, ?, ?, ?, 1, ?)',
       scriptName,
       workspaceId,
       createdBy,
       now,
-      now
+      now,
+      configPath ?? null
     );
-    this.log('worker_script_registered', createdBy, scriptName, { workspace_id: workspaceId });
+    this.log('worker_script_registered', createdBy, scriptName, { workspace_id: workspaceId, config_path: configPath });
     return {
       script_name: scriptName,
       workspace_id: workspaceId,
@@ -1335,15 +1352,16 @@ export class OrgDO extends DurableObject<DOEnv> {
       preview_updated_at: null,
       preview_status: 'pending',
       preview_error: null,
+      config_path: configPath ?? null,
     };
   }
 
   async getWorkerScript(scriptName: string): Promise<WorkerScript | null> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                                     preview_key, preview_updated_at, preview_status, preview_error
+                                     preview_key, preview_updated_at, preview_status, preview_error, config_path
                               FROM worker_scripts WHERE script_name = ?`;
     const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path
                        FROM worker_scripts WHERE script_name = ?`;
     const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [scriptName]);
     if (rows.length === 0) return null;
@@ -1352,10 +1370,10 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async listWorkerScripts(): Promise<WorkerScript[]> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                                     preview_key, preview_updated_at, preview_status, preview_error
+                                     preview_key, preview_updated_at, preview_status, preview_error, config_path
                               FROM worker_scripts ORDER BY updated_at DESC`;
     const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path
                        FROM worker_scripts ORDER BY updated_at DESC`;
     const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, []);
     return rows.map((row) => this.toWorkerScript(row));
@@ -1380,10 +1398,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     const total = countRows[0]?.count ?? 0;
 
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                                     preview_key, preview_updated_at, preview_status, preview_error
+                                     preview_key, preview_updated_at, preview_status, preview_error, config_path
                               FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
     const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path
                        FROM worker_scripts ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
     const items = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [...params, limit, offset]);
     return {
@@ -1394,10 +1412,10 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async listWorkerScriptsByWorkspace(workspaceId: string): Promise<WorkerScript[]> {
     const queryWithPreview = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                                     preview_key, preview_updated_at, preview_status, preview_error
+                                     preview_key, preview_updated_at, preview_status, preview_error, config_path
                               FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC`;
     const queryBase = `SELECT script_name, workspace_id, created_by, created_at, updated_at, is_public,
-                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error
+                              NULL AS preview_key, NULL AS preview_updated_at, NULL AS preview_status, NULL AS preview_error, NULL AS config_path
                        FROM worker_scripts WHERE workspace_id = ? ORDER BY updated_at DESC`;
     const rows = this.execWorkerScriptsQuery(queryWithPreview, queryBase, [workspaceId]);
     return rows.map((row) => this.toWorkerScript(row));

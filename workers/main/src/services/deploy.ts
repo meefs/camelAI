@@ -11,7 +11,7 @@ import { createScreenshotToken } from '../worker-auth.js';
 import { getOrgStub } from '../helpers/stubs.js';
 
 export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsInfo): Promise<void> {
-  const { scriptName, orgId, workspaceId, hostname, threadId } = info;
+  const { scriptName, orgId, workspaceId, hostname, threadId, configPath } = info;
   const orgStub = getOrgStub(env, orgId);
 
   // Register ownership
@@ -25,7 +25,7 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
     } catch {}
   }
 
-  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy);
+  const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy, configPath);
   await env.API_TOKENS.put(
     `${SCRIPT_ORG_PREFIX}${scriptName}`,
     JSON.stringify({ org_id: orgId, is_public: script.is_public })
