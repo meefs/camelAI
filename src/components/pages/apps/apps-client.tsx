@@ -72,14 +72,15 @@ export default function AppsClient({
 
   // Handle chat creation result
   useEffect(() => {
-    if (chatFetcher.state === 'idle' && chatFetcher.data) {
-      if (chatFetcher.data.success && chatFetcher.data.thread) {
-        navigate(`/chat/${chatFetcher.data.thread.id}`);
-      } else if (chatFetcher.data.error) {
-        toast.error(chatFetcher.data.error);
-      }
-      pendingChatAppRef.current = null;
+    if (chatFetcher.state !== 'idle') return;
+
+    if (chatFetcher.data?.success && chatFetcher.data.thread) {
+      navigate(`/chat/${chatFetcher.data.thread.id}`);
+    } else if (chatFetcher.data?.error) {
+      toast.error(chatFetcher.data.error);
     }
+
+    pendingChatAppRef.current = null;
   }, [chatFetcher.state, chatFetcher.data, navigate]);
 
   const loading = authLoading || revalidator.state === 'loading';
