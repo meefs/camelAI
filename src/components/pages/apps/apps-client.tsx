@@ -4,13 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFetcher, useSearchParams, useRevalidator, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
-import type { Thread } from '@/types';
+import type { Thread, WorkspaceWithAccess } from '@/types';
 
 import type { WorkerScriptWithCreator } from '@/types';
 import { PageHeader } from '@/components/page-header';
 import { AppCard } from './AppCard';
 import { AppSettingsDialog } from './AppSettingsDialog';
 import { AppCardSkeleton } from './AppCardSkeleton';
+import { SwitchWorkspaceDialog } from '@/components/history/switch-workspace-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LayoutGrid } from 'lucide-react';
@@ -34,6 +35,7 @@ export default function AppsClient({
     orgs,
     workspaces,
     loading: authLoading,
+    switchWorkspace,
   } = useAuth();
 
   const navigate = useNavigate();
@@ -46,6 +48,15 @@ export default function AppsClient({
   const [selectedApp, setSelectedApp] = useState<WorkerScriptWithCreator | null>(null);
   const [referenceTime, setReferenceTime] = useState(initialNow);
   const pendingChatAppRef = useRef<string | null>(null);
+
+  // Switch workspace dialog state
+  const [switchDialog, setSwitchDialog] = useState<{
+    open: boolean;
+    app: WorkerScriptWithCreator | null;
+    workspace: WorkspaceWithAccess | null;
+    action: 'chat' | 'viewSource' | null;
+  }>({ open: false, app: null, workspace: null, action: null });
+  const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
   const workspaceMap = useMemo(
     () => new Map((workspaces ?? []).map((workspace) => [workspace.id, workspace])),
     [workspaces]
@@ -94,14 +105,19 @@ export default function AppsClient({
   };
 
   const handleStartChat = useCallback((app: WorkerScriptWithCreator) => {
-    // Check if app is in a different workspace
-    if (currentWorkspace?.id && app.workspace_id !== currentWorkspace.id) {
-      toast.error('This app is in a different workspace. Please switch workspaces first.');
+    if (!currentWorkspace?.id) {
+      toast.error('No workspace selected');
       return;
     }
 
-    if (!currentWorkspace?.id) {
-      toast.error('No workspace selected');
+    // Check if app is in a different workspace - open switch dialog
+    if (app.workspace_id !== currentWorkspace.id) {
+      const targetWorkspace = workspaceMap.get(app.workspace_id);
+      if (targetWorkspace) {
+        setSwitchDialog({ open: true, app, workspace: targetWorkspace, action: 'chat' });
+      } else {
+        toast.error('Could not find target workspace');
+      }
       return;
     }
 
@@ -120,7 +136,7 @@ export default function AppsClient({
       },
       { method: 'post' }
     );
-  }, [currentWorkspace?.id, chatFetcher, hostname]);
+  }, [currentWorkspace?.id, chatFetcher, hostname, workspaceMap]);
 
   const handleViewSource = useCallback((app: WorkerScriptWithCreator) => {
     if (!app.config_path) {
@@ -128,10 +144,21 @@ export default function AppsClient({
       return;
     }
 
+    // Check if app is in a different workspace - open switch dialog
+    if (currentWorkspace?.id && app.workspace_id !== currentWorkspace.id) {
+      const targetWorkspace = workspaceMap.get(app.workspace_id);
+      if (targetWorkspace) {
+        setSwitchDialog({ open: true, app, workspace: targetWorkspace, action: 'viewSource' });
+      } else {
+        toast.error('Could not find target workspace');
+      }
+      return;
+    }
+
     // Navigate to computer tab with the file path
     const filePath = encodeURIComponent(app.config_path);
     navigate(`/computer/${app.workspace_id}?file=${filePath}`);
-  }, [navigate]);
+  }, [navigate, currentWorkspace?.id, workspaceMap]);
 
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
@@ -143,6 +170,40 @@ export default function AppsClient({
     },
     [setSearchParams]
   );
+
+  // Handle workspace switch confirmation
+  const handleConfirmSwitch = useCallback(async () => {
+    if (!switchDialog.workspace || !switchDialog.app) return;
+
+    setSwitchingWorkspace(true);
+    try {
+      await switchWorkspace(switchDialog.workspace.id);
+
+      // After switch, perform the original action
+      if (switchDialog.action === 'chat') {
+        // Re-trigger chat start - workspace is now correct
+        chatFetcher.submit(
+          {
+            intent: 'startChatForApp',
+            appName: switchDialog.app.script_name,
+            workspaceId: switchDialog.app.workspace_id,
+            hostname: hostname ?? '',
+            configPath: switchDialog.app.config_path ?? '',
+          },
+          { method: 'post' }
+        );
+      } else if (switchDialog.action === 'viewSource' && switchDialog.app.config_path) {
+        const filePath = encodeURIComponent(switchDialog.app.config_path);
+        navigate(`/computer/${switchDialog.app.workspace_id}?file=${filePath}`);
+      }
+    } catch (error) {
+      toast.error('Failed to switch workspace');
+      console.error('Failed to switch workspace:', error);
+    } finally {
+      setSwitchingWorkspace(false);
+      setSwitchDialog({ open: false, app: null, workspace: null, action: null });
+    }
+  }, [switchDialog, switchWorkspace, chatFetcher, hostname, navigate]);
 
   return (
     <>
@@ -231,6 +292,25 @@ export default function AppsClient({
           isAdmin={isAdmin}
           hostname={hostname}
           onSuccess={handleSettingsSuccess}
+        />
+      )}
+
+      {switchDialog.workspace && (
+        <SwitchWorkspaceDialog
+          open={switchDialog.open}
+          onOpenChange={(open) => {
+            if (!open) {
+              setSwitchDialog({ open: false, app: null, workspace: null, action: null });
+            }
+          }}
+          workspace={switchDialog.workspace}
+          onConfirm={handleConfirmSwitch}
+          loading={switchingWorkspace}
+          description={
+            switchDialog.action === 'chat'
+              ? 'This app belongs to a different workspace. Switch to {workspace} to start a chat about this app.'
+              : 'This app belongs to a different workspace. Switch to {workspace} to view the source file.'
+          }
         />
       )}
     </>
