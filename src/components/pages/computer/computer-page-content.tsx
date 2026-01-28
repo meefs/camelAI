@@ -845,6 +845,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
           isTooLarge: false,
           version: data.version,
           isDirty: false,
+          notFound: false,
         }));
 
         if (data.isBinary) {
@@ -857,10 +858,6 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         versionsRef.current.set(normalizedPath, data.version);
       } catch (error) {
         console.error('Failed to open file', error);
-        updateTab(normalizedPath, (tab) => ({
-          ...tab,
-          notFound: true,
-        }));
       }
     },
     [apiBase, ensureModel, nodesByPath, updateTab]
