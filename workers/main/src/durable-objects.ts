@@ -103,15 +103,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // Restore state from storage
     ctx.blockConcurrencyWhile(async () => {
-      const stored = await ctx.storage.get<string[]>('previewWorkers');
+      const stored = ctx.storage.kv.get<string[]>('previewWorkers');
       if (stored) {
         this.previewWorkers = stored;
       }
-      const version = await ctx.storage.get<number>('previewVersion');
-      if (version) {
+      const version = ctx.storage.kv.get<number>('previewVersion');
+      if (typeof version === 'number') {
         this.previewVersion = version;
       }
-      const storedIsPublic = await ctx.storage.get<boolean>('previewIsPublic');
+      const storedIsPublic = ctx.storage.kv.get<boolean>('previewIsPublic');
       if (typeof storedIsPublic === 'boolean') {
         this.previewIsPublic = storedIsPublic;
       }
@@ -261,11 +261,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // Set preview workers and broadcast to all connected clients
   async setPreviewWorkers(workers: string[], isPublic?: boolean): Promise<void> {
     this.previewWorkers = workers;
-    this.previewIsPublic = typeof isPublic === 'boolean' ? isPublic : false;
+    if (workers.length === 0) {
+      this.previewIsPublic = false;
+    } else if (typeof isPublic === 'boolean') {
+      this.previewIsPublic = isPublic;
+    }
     this.previewVersion++;
-    await this.ctx.storage.put('previewWorkers', workers);
-    await this.ctx.storage.put('previewVersion', this.previewVersion);
-    await this.ctx.storage.put('previewIsPublic', this.previewIsPublic);
+    this.ctx.storage.kv.put('previewWorkers', workers);
+    this.ctx.storage.kv.put('previewVersion', this.previewVersion);
+    this.ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
     this.broadcast({
       type: 'preview_state',
       workers: this.previewWorkers,
@@ -277,7 +281,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // Update preview visibility without bumping version (avoid iframe reloads)
   async setPreviewVisibility(isPublic: boolean): Promise<void> {
     this.previewIsPublic = isPublic;
-    await this.ctx.storage.put('previewIsPublic', this.previewIsPublic);
+    this.ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
     this.broadcast({
       type: 'preview_state',
       workers: this.previewWorkers,
@@ -290,7 +294,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   async addPreviewWorker(worker: string): Promise<void> {
     if (!this.previewWorkers.includes(worker)) {
       this.previewWorkers.push(worker);
-      await this.ctx.storage.put('previewWorkers', this.previewWorkers);
+      this.ctx.storage.kv.put('previewWorkers', this.previewWorkers);
       this.broadcast({
         type: 'preview_state',
         workers: this.previewWorkers,
@@ -306,9 +310,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.previewWorkers.splice(index, 1);
       if (this.previewWorkers.length === 0) {
         this.previewIsPublic = false;
-        await this.ctx.storage.put('previewIsPublic', this.previewIsPublic);
+        this.ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
       }
-      await this.ctx.storage.put('previewWorkers', this.previewWorkers);
+      this.ctx.storage.kv.put('previewWorkers', this.previewWorkers);
       this.broadcast({
         type: 'preview_state',
         workers: this.previewWorkers,
