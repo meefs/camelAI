@@ -421,12 +421,23 @@ export async function getMessages(
 export async function setThreadPreview(
   context: AppLoadContext,
   threadId: string,
-  workers: string[]
+  workers: string[],
+  isPublic?: boolean
 ): Promise<string[]> {
   const env = getEnv(context);
   const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  await stub.setPreviewWorkers(workers);
+  await stub.setPreviewWorkers(workers, isPublic);
   return stub.getPreviewWorkers();
+}
+
+export async function setThreadPreviewVisibility(
+  context: AppLoadContext,
+  threadId: string,
+  isPublic: boolean
+): Promise<void> {
+  const env = getEnv(context);
+  const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+  await stub.setPreviewVisibility(isPublic);
 }
 
 export async function getThreadPreview(

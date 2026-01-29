@@ -9,6 +9,7 @@ import { waitUntil } from 'cloudflare:workers';
 import { isSignedToken, validateSignedToken } from './signed-tokens.js';
 import { mapCredentialsToEnvVars } from './integration-env.js';
 import { decryptCredentials } from '../../../src/lib/integration-crypto.js';
+import type { OrgDO } from './auth.js';
 import type { WorkspaceDO } from './workspace.js';
 
 // Re-export for index.ts to use
@@ -29,7 +30,7 @@ export interface CfApiProxyEnv {
   EMAIL_TO_USER: KVNamespace;
   API_TOKENS: KVNamespace;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
-  ORG: DurableObjectNamespace;
+  ORG: DurableObjectNamespace<OrgDO>;
   CHAT_THREAD: DurableObjectNamespace;
   WORKER_BASE_URL?: string;
 }
@@ -702,10 +703,42 @@ export async function proxyCloudflareApi(
           (async () => {
             try {
               const threadStub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
+              let isPublic = false;
+              try {
+                const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+                const script = await orgStub.getWorkerScript(scriptName);
+                if (script) {
+                  isPublic = script.is_public;
+                } else {
+                  const stored = await env.API_TOKENS.get(`${SCRIPT_ORG_PREFIX}${scriptName}`);
+                  if (stored) {
+                    try {
+                      const parsed = JSON.parse(stored) as { is_public?: boolean };
+                      if (typeof parsed.is_public === 'boolean') {
+                        isPublic = parsed.is_public;
+                      } else {
+                        isPublic = true;
+                      }
+                    } catch {
+                      isPublic = true;
+                    }
+                  } else {
+                    // Default for newly registered scripts
+                    isPublic = true;
+                  }
+                }
+              } catch (err) {
+                console.error('[cf-api-proxy] failed to load app visibility', {
+                  threadId,
+                  scriptName,
+                  orgId,
+                  error: String(err),
+                });
+              }
               await threadStub.fetch(new Request('http://internal/preview', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workers: [scriptName] }),
+                body: JSON.stringify({ workers: [scriptName], isPublic }),
               }));
               console.log('[cf-api-proxy] auto-set preview', {
                 threadId,
