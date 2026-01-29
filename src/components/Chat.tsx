@@ -22,6 +22,7 @@ import {
   type ConnectionSetupPromptData,
   type ConnectionSetupResponse,
 } from '@/components/connection-setup-prompt';
+import { BugReportDialog, type BugReportStatus } from '@/components/bug-report-dialog';
 import type { Attachment } from '@/components/attachment-list';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -320,6 +321,10 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
   const [pendingQuestion, setPendingQuestion] = useState<AskUserQuestionData | null>(null);
   const [connectionSetupPrompt, setConnectionSetupPrompt] = useState<ConnectionSetupPromptData | null>(null);
+  const [bugReportOpen, setBugReportOpen] = useState(false);
+  const [bugReportStatus, setBugReportStatus] = useState<BugReportStatus>('idle');
+  const [bugReportError, setBugReportError] = useState<string | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const normalizedMessages = useMemo(
     () => normalizeToolResultMessages(messages),
     [messages]
@@ -1657,6 +1662,214 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     setConnectionSetupPrompt(null);
   }, []);
 
+  // Bug report submission
+  const submitBugReport = useCallback(async (report: { expected: string; actual: string }) => {
+    if (!deployedApp || !resolvedWorkspaceId || !threadId) return;
+
+    setBugReportStatus('capturing');
+    setBugReportError(null);
+
+    // Generate unique request ID
+    const requestId = `bug_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+    // Set up response listener with timeout (10s to allow for screenshot capture)
+    const debugDataPromise = new Promise<{
+      domSnapshot: string;
+      pageState: { url: string; scrollX: number; scrollY: number; viewportWidth?: number; viewportHeight?: number; documentTitle?: string };
+      consoleLogs: Array<{ level: string; timestamp: number; deltaMs: number; sinceStartMs: number; args: string[] }>;
+      networkRequests: Array<{ type: string; method: string; url: string; status: number; statusText: string; ok: boolean; failed?: boolean; error?: string; timestamp: number; durationMs: number }>;
+      storage: { localStorage: Record<string, string | null>; sessionStorage: Record<string, string | null> };
+      screenshot: string | null;
+      sessionRecording: { events: unknown[]; durationMs: number; eventCount: number } | null;
+      capturedAt: number;
+      sessionDurationMs: number;
+    } | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        window.removeEventListener('message', handler);
+        resolve(null);
+      }, 10000);
+
+      function handler(event: MessageEvent) {
+        if (
+          event.data?.type === 'chiridion:bug-report-response' &&
+          event.data?.requestId === requestId
+        ) {
+          clearTimeout(timeout);
+          window.removeEventListener('message', handler);
+          if (event.data.success) {
+            resolve(event.data.data);
+          } else {
+            resolve(null);
+          }
+        }
+      }
+
+      window.addEventListener('message', handler);
+    });
+
+    // Send request to iframe
+    if (iframeRef.current?.contentWindow) {
+      iframeRef.current.contentWindow.postMessage(
+        { type: 'chiridion:bug-report-request', requestId },
+        '*'
+      );
+    }
+
+    // Wait for response
+    const debugData = await debugDataPromise;
+
+    // Upload to R2
+    setBugReportStatus('uploading');
+    try {
+      const reportId = `bug-report-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      let screenshotPath: string | null = null;
+      let sessionRecordingPath: string | null = null;
+
+      // Upload screenshot as separate image file if available
+      if (debugData?.screenshot) {
+        const base64Data = debugData.screenshot.split(',')[1];
+        const binaryData = atob(base64Data);
+        const bytes = new Uint8Array(binaryData.length);
+        for (let i = 0; i < binaryData.length; i++) {
+          bytes[i] = binaryData.charCodeAt(i);
+        }
+        const screenshotBlob = new Blob([bytes], { type: 'image/jpeg' });
+        const screenshotFile = new File([screenshotBlob], `${reportId}-screenshot.jpg`, { type: 'image/jpeg' });
+
+        const screenshotFormData = new FormData();
+        screenshotFormData.append('file', screenshotFile);
+
+        const screenshotResponse = await fetch(`/api/workspaces/${resolvedWorkspaceId}/upload`, {
+          method: 'POST',
+          body: screenshotFormData,
+        });
+
+        if (screenshotResponse.ok) {
+          const screenshotData = await screenshotResponse.json() as { path: string };
+          screenshotPath = screenshotData.path;
+        }
+      }
+
+      // Upload session recording as separate JSON file if available
+      if (debugData?.sessionRecording && debugData.sessionRecording.events.length > 0) {
+        const recordingBlob = new Blob(
+          [JSON.stringify(debugData.sessionRecording, null, 2)],
+          { type: 'application/json' }
+        );
+        const recordingFile = new File([recordingBlob], `${reportId}-session.json`, { type: 'application/json' });
+
+        const recordingFormData = new FormData();
+        recordingFormData.append('file', recordingFile);
+
+        const recordingResponse = await fetch(`/api/workspaces/${resolvedWorkspaceId}/upload`, {
+          method: 'POST',
+          body: recordingFormData,
+        });
+
+        if (recordingResponse.ok) {
+          const recordingData = await recordingResponse.json() as { path: string };
+          sessionRecordingPath = recordingData.path;
+        }
+      }
+
+      // Create bug report bundle (without large data, using file references)
+      const vanityHost = `${deployedApp}.${getVanityDomain(hostname)}`;
+      const vanityUrl = `https://${vanityHost}`;
+      const debugDataClean = debugData ? {
+        ...debugData,
+        screenshot: undefined, // Remove base64 from JSON
+        screenshotPath, // Add file path reference
+        sessionRecording: debugData.sessionRecording ? {
+          durationMs: debugData.sessionRecording.durationMs,
+          eventCount: debugData.sessionRecording.eventCount,
+          events: undefined, // Remove events array from main JSON
+        } : null,
+        sessionRecordingPath, // Add file path reference
+      } : null;
+
+      const bugReport = {
+        version: 1,
+        createdAt: new Date().toISOString(),
+        appName: deployedApp,
+        appUrl: vanityUrl,
+        userReport: {
+          expected: report.expected,
+          actual: report.actual,
+        },
+        debugData: debugDataClean,
+      };
+
+      const fileName = `${reportId}.json`;
+      const blob = new Blob([JSON.stringify(bugReport, null, 2)], { type: 'application/json' });
+      const file = new File([blob], fileName, { type: 'application/json' });
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const uploadResponse = await fetch(`/api/workspaces/${resolvedWorkspaceId}/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error('Failed to upload bug report');
+      }
+
+      const uploadData = await uploadResponse.json() as { path: string };
+
+      // Send message to agent
+      setBugReportStatus('sending');
+
+      const agentMessage = `I found a bug in the deployed app "${deployedApp}".
+
+**What I expected:** ${report.expected}
+
+**What actually happened:** ${report.actual}
+
+I've captured a debug report with the DOM snapshot and console logs. Please investigate and fix this bug.
+
+(bug report: ${uploadData.path})`;
+
+      // Send via WebSocket if connected
+      if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
+        wsRef.current.send(JSON.stringify({
+          type: 'message',
+          content: agentMessage,
+          sessionId: sessionIdRef.current,
+          threadId,
+        }));
+        setLoading(true);
+      } else {
+        // Queue the message
+        const userMsg: Message = {
+          id: `local_${Date.now()}`,
+          thread_id: threadId,
+          role: 'user',
+          content: agentMessage,
+          created_at: Date.now(),
+        };
+        setPendingMessages(prev => [...prev, userMsg]);
+        setMessages(prev => [...prev, userMsg]);
+        setLoading(true);
+
+        // Trigger reconnect if needed
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+          connectWebSocketRef.current?.(threadId, true);
+        }
+      }
+
+      setBugReportStatus('done');
+      setTimeout(() => {
+        setBugReportOpen(false);
+        setBugReportStatus('idle');
+      }, 1000);
+    } catch (e) {
+      console.error('Bug report submission failed:', e);
+      setBugReportStatus('error');
+      setBugReportError(e instanceof Error ? e.message : 'Failed to submit bug report');
+    }
+  }, [deployedApp, resolvedWorkspaceId, threadId, hostname, ready, setLoading, setPendingMessages, setMessages]);
+
   function sendMessage() {
     if (!input.trim() || !shouldShowChat || !resolvedWorkspaceId || !threadId) {
       return;
@@ -1773,9 +1986,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
                 variant="ghost"
                 size="icon-sm"
                 onClick={() => {
-                  // FIXME(@Miguel): Implement bug report creation
-                  // This should create a bug report for the agent about the current app
-                  console.log('Bug report placeholder - to be implemented');
+                  setBugReportOpen(true);
+                  setBugReportStatus('idle');
+                  setBugReportError(null);
                 }}
               >
                 <Bug className="h-4 w-4" />
@@ -1825,6 +2038,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
           </div>
         ) : (
           <iframe
+            ref={iframeRef}
             key={iframeKey}
             src={previewUrl || 'about:blank'}
             className="w-full h-full bg-white"
@@ -2098,6 +2312,16 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
           onCancel={handleConnectionSetupCancel}
         />
       )}
+
+      {/* Bug Report Dialog */}
+      <BugReportDialog
+        open={bugReportOpen}
+        onOpenChange={setBugReportOpen}
+        onSubmit={submitBugReport}
+        status={bugReportStatus}
+        error={bugReportError}
+        appName={deployedApp || undefined}
+      />
     </TooltipProvider>
   );
 }

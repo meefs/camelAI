@@ -1,0 +1,414 @@
+/**
+ * Chiridion Debug Bridge
+ *
+ * This script is injected into deployed apps to enable bug reporting.
+ * It intercepts console logs, network requests, records user sessions with rrweb,
+ * and responds to postMessage requests for debug data.
+ */
+(function () {
+  'use strict';
+
+  // Only initialize once
+  if (window.__chiridionDebugBridge) {
+    return;
+  }
+  window.__chiridionDebugBridge = true;
+
+  // Store last N console entries and network requests
+  const MAX_LOG_ENTRIES = 500;
+  const MAX_NETWORK_ENTRIES = 100;
+  const SESSION_BUFFER_MS = 30000; // Keep last 30 seconds of session recording
+  const consoleLogs = [];
+  const networkRequests = [];
+  const sessionEvents = [];
+  const startTime = Date.now();
+  let rrwebStopFn = null;
+
+  // Allowed parent origins for postMessage
+  const ALLOWED_ORIGINS = [
+    /\.chiridion\.ai$/,
+    /\.chiridion\.app$/,
+    /^https?:\/\/localhost(:\d+)?$/,
+    /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
+  ];
+
+  function isAllowedOrigin(origin) {
+    return ALLOWED_ORIGINS.some((pattern) => pattern.test(origin));
+  }
+
+  // Intercept console methods
+  const originalConsole = {
+    log: console.log,
+    warn: console.warn,
+    error: console.error,
+    info: console.info,
+    debug: console.debug,
+  };
+
+  function captureLog(level, args) {
+    const now = Date.now();
+    const lastEntry = consoleLogs[consoleLogs.length - 1];
+    const entry = {
+      level,
+      timestamp: now,
+      deltaMs: lastEntry ? now - lastEntry.timestamp : 0,
+      sinceStartMs: now - startTime,
+      args: Array.from(args).map((arg) => {
+        try {
+          if (arg instanceof Error) {
+            return `${arg.name}: ${arg.message}\n${arg.stack || ''}`;
+          }
+          if (typeof arg === 'object') {
+            return JSON.stringify(arg, null, 2);
+          }
+          return String(arg);
+        } catch (e) {
+          return '[Unserializable]';
+        }
+      }),
+    };
+
+    consoleLogs.push(entry);
+
+    // Keep only last N entries
+    if (consoleLogs.length > MAX_LOG_ENTRIES) {
+      consoleLogs.shift();
+    }
+  }
+
+  // Override console methods
+  console.log = function (...args) {
+    captureLog('log', args);
+    originalConsole.log.apply(console, args);
+  };
+
+  console.warn = function (...args) {
+    captureLog('warn', args);
+    originalConsole.warn.apply(console, args);
+  };
+
+  console.error = function (...args) {
+    captureLog('error', args);
+    originalConsole.error.apply(console, args);
+  };
+
+  console.info = function (...args) {
+    captureLog('info', args);
+    originalConsole.info.apply(console, args);
+  };
+
+  console.debug = function (...args) {
+    captureLog('debug', args);
+    originalConsole.debug.apply(console, args);
+  };
+
+  // Capture unhandled errors
+  window.addEventListener('error', function (event) {
+    captureLog('error', [
+      `Uncaught ${event.error?.name || 'Error'}: ${event.message}`,
+      `at ${event.filename}:${event.lineno}:${event.colno}`,
+      event.error?.stack || '',
+    ]);
+  });
+
+  // Capture unhandled promise rejections
+  window.addEventListener('unhandledrejection', function (event) {
+    const reason = event.reason;
+    captureLog('error', [
+      'Unhandled Promise Rejection:',
+      reason instanceof Error
+        ? `${reason.name}: ${reason.message}\n${reason.stack || ''}`
+        : String(reason),
+    ]);
+  });
+
+  // Network request capture helper
+  function captureNetworkRequest(entry) {
+    networkRequests.push(entry);
+    if (networkRequests.length > MAX_NETWORK_ENTRIES) {
+      networkRequests.shift();
+    }
+  }
+
+  // Intercept fetch
+  const originalFetch = window.fetch;
+  window.fetch = async function (input, init) {
+    const url = typeof input === 'string' ? input : input.url;
+    const method = init?.method || (typeof input === 'object' ? input.method : 'GET') || 'GET';
+    const startTs = Date.now();
+
+    try {
+      const response = await originalFetch.apply(this, arguments);
+      const entry = {
+        type: 'fetch',
+        method: method.toUpperCase(),
+        url,
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        timestamp: startTs,
+        durationMs: Date.now() - startTs,
+      };
+      if (!response.ok) {
+        entry.failed = true;
+      }
+      captureNetworkRequest(entry);
+      return response;
+    } catch (error) {
+      captureNetworkRequest({
+        type: 'fetch',
+        method: method.toUpperCase(),
+        url,
+        status: 0,
+        statusText: 'Network Error',
+        ok: false,
+        failed: true,
+        error: error.message,
+        timestamp: startTs,
+        durationMs: Date.now() - startTs,
+      });
+      throw error;
+    }
+  };
+
+  // Intercept XMLHttpRequest
+  const originalXHROpen = XMLHttpRequest.prototype.open;
+  const originalXHRSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function (method, url) {
+    this._chiridionMethod = method;
+    this._chiridionUrl = url;
+    return originalXHROpen.apply(this, arguments);
+  };
+
+  XMLHttpRequest.prototype.send = function () {
+    const xhr = this;
+    const startTs = Date.now();
+
+    xhr.addEventListener('loadend', function () {
+      const entry = {
+        type: 'xhr',
+        method: (xhr._chiridionMethod || 'GET').toUpperCase(),
+        url: xhr._chiridionUrl,
+        status: xhr.status,
+        statusText: xhr.statusText,
+        ok: xhr.status >= 200 && xhr.status < 300,
+        timestamp: startTs,
+        durationMs: Date.now() - startTs,
+      };
+      if (!entry.ok) {
+        entry.failed = true;
+      }
+      captureNetworkRequest(entry);
+    });
+
+    xhr.addEventListener('error', function () {
+      captureNetworkRequest({
+        type: 'xhr',
+        method: (xhr._chiridionMethod || 'GET').toUpperCase(),
+        url: xhr._chiridionUrl,
+        status: 0,
+        statusText: 'Network Error',
+        ok: false,
+        failed: true,
+        timestamp: startTs,
+        durationMs: Date.now() - startTs,
+      });
+    });
+
+    return originalXHRSend.apply(this, arguments);
+  };
+
+  // Capture storage state
+  function captureStorage() {
+    const storage = {
+      localStorage: {},
+      sessionStorage: {},
+    };
+
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key) {
+          try {
+            storage.localStorage[key] = localStorage.getItem(key);
+          } catch (e) {
+            storage.localStorage[key] = '[Error reading value]';
+          }
+        }
+      }
+    } catch (e) {
+      storage.localStorage = { _error: 'Access denied' };
+    }
+
+    try {
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        if (key) {
+          try {
+            storage.sessionStorage[key] = sessionStorage.getItem(key);
+          } catch (e) {
+            storage.sessionStorage[key] = '[Error reading value]';
+          }
+        }
+      }
+    } catch (e) {
+      storage.sessionStorage = { _error: 'Access denied' };
+    }
+
+    return storage;
+  }
+
+  // Initialize rrweb session recording
+  async function initSessionRecording() {
+    try {
+      // Load rrweb from CDN
+      if (!window.rrweb) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://cdn.jsdelivr.net/npm/rrweb@1.1.3/dist/rrweb.min.js';
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      }
+
+      // Start recording
+      rrwebStopFn = window.rrweb.record({
+        emit: function (event) {
+          sessionEvents.push(event);
+
+          // Prune old events (keep last 30 seconds)
+          const cutoffTime = Date.now() - SESSION_BUFFER_MS;
+          while (sessionEvents.length > 0 && sessionEvents[0].timestamp < cutoffTime) {
+            sessionEvents.shift();
+          }
+        },
+        // Record user interactions
+        recordCanvas: false, // Skip canvas for performance
+        recordCrossOriginIframes: false, // Can't access cross-origin anyway
+        maskAllInputs: false, // Don't mask - we want to see what user typed
+        slimDOMOptions: {
+          script: true, // Don't record script content
+          comment: true, // Don't record comments
+        },
+      });
+    } catch (e) {
+      originalConsole.error('[ChiridionDebugBridge] Failed to init session recording:', e);
+    }
+  }
+
+  // Start session recording immediately
+  initSessionRecording();
+
+  // Dynamically load html2canvas for screenshots
+  async function captureScreenshot() {
+    try {
+      if (!window.html2canvas) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      }
+
+      const canvas = await window.html2canvas(document.body, {
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        scale: 1,
+      });
+
+      return canvas.toDataURL('image/jpeg', 0.8);
+    } catch (e) {
+      originalConsole.error('[ChiridionDebugBridge] Screenshot failed:', e);
+      return null;
+    }
+  }
+
+  // Get session recording events
+  function getSessionRecording() {
+    if (sessionEvents.length === 0) {
+      return null;
+    }
+
+    // Return a copy of the events
+    return {
+      events: sessionEvents.slice(),
+      durationMs: sessionEvents.length > 1
+        ? sessionEvents[sessionEvents.length - 1].timestamp - sessionEvents[0].timestamp
+        : 0,
+      eventCount: sessionEvents.length,
+    };
+  }
+
+  // Handle postMessage requests
+  window.addEventListener('message', async function (event) {
+    if (!isAllowedOrigin(event.origin)) {
+      return;
+    }
+
+    const data = event.data;
+
+    if (data && data.type === 'chiridion:bug-report-request') {
+      const requestId = data.requestId;
+
+      try {
+        // Capture screenshot first (async)
+        const screenshot = await captureScreenshot();
+
+        // Capture DOM snapshot
+        const domSnapshot = document.documentElement.outerHTML;
+
+        // Capture page state
+        const pageState = {
+          url: window.location.href,
+          scrollX: window.scrollX,
+          scrollY: window.scrollY,
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
+          documentTitle: document.title,
+        };
+
+        // Capture storage
+        const storage = captureStorage();
+
+        // Get session recording
+        const sessionRecording = getSessionRecording();
+
+        // Send response back to parent
+        event.source.postMessage(
+          {
+            type: 'chiridion:bug-report-response',
+            requestId,
+            success: true,
+            data: {
+              domSnapshot,
+              pageState,
+              consoleLogs: consoleLogs.slice(),
+              networkRequests: networkRequests.slice(),
+              storage,
+              screenshot,
+              sessionRecording,
+              capturedAt: Date.now(),
+              sessionDurationMs: Date.now() - startTime,
+            },
+          },
+          event.origin
+        );
+      } catch (e) {
+        event.source.postMessage(
+          {
+            type: 'chiridion:bug-report-response',
+            requestId,
+            success: false,
+            error: e instanceof Error ? e.message : String(e),
+          },
+          event.origin
+        );
+      }
+    }
+  });
+})();
