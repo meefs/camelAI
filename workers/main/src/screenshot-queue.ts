@@ -15,7 +15,7 @@ export interface AppScreenshotJob {
 export interface ScreenshotEnv {
   BROWSER?: Fetcher;
   R2_BUCKET: R2Bucket;
-  API_TOKENS: KVNamespace;
+  APP_KV: KVNamespace;
   LOCAL_APP_PREVIEW_URL?: string;
   ORG: DurableObjectNamespace<OrgDO>;
 }
@@ -298,7 +298,7 @@ export async function handleScreenshotQueue(
       let screenshotToken = job.screenshot_token;
       if (!job.is_public && job.env_prefix !== 'local') {
         if (!screenshotToken || attempt > 1) {
-          screenshotToken = await createScreenshotToken(env.API_TOKENS, {
+          screenshotToken = await createScreenshotToken(env.APP_KV, {
             script_name: job.script_name,
             org_id: job.org_id,
           });

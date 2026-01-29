@@ -309,22 +309,36 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     const userId = orgInfo?.created_by || 'system';
     const orgName = orgInfo?.name || orgId;
 
-    // Get or create per-org OpenRouter API key
-    let openRouterKey: string | null = null;
+    // Claude API Proxy config - create signed token for LLM access
+    if (!this.env.WORKER_BASE_URL) {
+      throw new Error('WORKER_BASE_URL is required for Claude API proxy');
+    }
 
-    // Try to get existing org-specific key
+    const claudeApiToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
+      org_id: orgId,
+      user_id: userId,
+      scopes: ['claude_api'],
+      exp: Date.now() + TOKEN_TTL_MS,
+      workspace_id: workspaceId,
+      name: `claude-api-${workspaceId}`,
+    });
+    envVars.ANTHROPIC_BASE_URL = `${this.env.WORKER_BASE_URL}/api/claude`;
+    envVars.ANTHROPIC_API_KEY = claudeApiToken;
+    console.log('[WorkspaceContainer] Configured Claude API proxy for workspace', { workspaceId, orgId });
+
+    // OpenRouter key available for agent's other uses (optional)
+    let openRouterKey: string | null = null;
     const keyRecord = await orgStub.getOpenRouterKeyRecord();
     if (keyRecord) {
       try {
         openRouterKey = await decryptOpenRouterKey(keyRecord.key_encrypted, this.env.INTEGRATION_SECRET_KEY);
-        console.log('[WorkspaceContainer] Using existing org OpenRouter key', { orgId, keyHash: keyRecord.key_hash });
+        envVars.OPENROUTER_API_KEY = openRouterKey;
+        console.log('[WorkspaceContainer] OpenRouter key available for agent', { orgId, keyHash: keyRecord.key_hash });
       } catch (e) {
         console.error('[WorkspaceContainer] Failed to decrypt org OpenRouter key:', e);
       }
-    }
-
-    // If no org key exists and we have a provisioning key, create one
-    if (!openRouterKey && this.env.OPENROUTER_PROVISIONING_KEY) {
+    } else if (this.env.OPENROUTER_PROVISIONING_KEY) {
+      // Create OpenRouter key for org if provisioning is available
       try {
         console.log('[WorkspaceContainer] Creating new OpenRouter key for org', { orgId, orgName });
         const keyResponse = await createOpenRouterKey(this.env.OPENROUTER_PROVISIONING_KEY, {
@@ -342,23 +356,12 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
           keyResponse.data.hash,
           null
         );
+        envVars.OPENROUTER_API_KEY = openRouterKey;
         console.log('[WorkspaceContainer] Created and stored new org OpenRouter key', { orgId, keyHash });
       } catch (e) {
         console.error('[WorkspaceContainer] Failed to create org OpenRouter key:', e);
       }
     }
-
-    // Require org-specific key (no fallback)
-    if (!openRouterKey) {
-      throw new Error('No OpenRouter API key available. Ensure OPENROUTER_PROVISIONING_KEY is set.');
-    }
-
-    // OpenRouter LLM config
-    envVars.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api';
-    envVars.ANTHROPIC_AUTH_TOKEN = openRouterKey;
-    envVars.ANTHROPIC_API_KEY = ''; // Must be empty for OpenRouter
-    envVars.CLAUDE_CODE_ATTRIBUTION_HEADER = '0'; // Disable billing header for OpenRouter compatibility
-    console.log('[WorkspaceContainer] Configured OpenRouter for workspace', { workspaceId, orgId });
 
     // Cloudflare API proxy config
     // Create a workspace-scoped deploy token for container to use with Cloudflare API

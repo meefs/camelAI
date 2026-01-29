@@ -17,7 +17,7 @@ export interface TestEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   EMAIL_TO_USER: KVNamespace;
   SESSIONS: KVNamespace;
-  API_TOKENS: KVNamespace;
+  APP_KV: KVNamespace;
   INTEGRATION_SECRET_KEY?: string;
 }
 

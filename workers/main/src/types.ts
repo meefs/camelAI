@@ -27,6 +27,10 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, CfApiProxyEn
   NOTION_CLIENT_ID?: string;
   NOTION_CLIENT_SECRET?: string;
   INTEGRATION_SECRET_KEY: string;
+  // Claude API Proxy (CF AI Gateway)
+  CF_GATEWAY_NAME?: string;
+  CF_GATEWAY_TOKEN?: string;
+  BEDROCK_REGION?: string;
 }
 
 export interface RouteContext {

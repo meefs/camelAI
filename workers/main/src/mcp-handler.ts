@@ -23,7 +23,7 @@ import { isSignedToken, validateSignedToken } from './signed-tokens';
 export interface McpEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
-  API_TOKENS: KVNamespace;
+  APP_KV: KVNamespace;
 }
 
 type AuthContext = {
@@ -250,7 +250,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
       },
       async ({ script_name }) => {
         // Use KV lookup for fast check (no auth context needed for availability check)
-        const data = await this.env.API_TOKENS.get(`script_org:${script_name}`);
+        const data = await this.env.APP_KV.get(`script_org:${script_name}`);
 
         if (data) {
           const { org_id } = JSON.parse(data) as { org_id: string; is_public: boolean };

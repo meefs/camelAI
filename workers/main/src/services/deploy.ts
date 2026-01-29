@@ -26,7 +26,7 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
   }
 
   const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy, configPath);
-  await env.API_TOKENS.put(
+  await env.APP_KV.put(
     `${SCRIPT_ORG_PREFIX}${scriptName}`,
     JSON.stringify({ org_id: orgId, is_public: script.is_public })
   );
@@ -61,7 +61,7 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
 
   const screenshotToken = script.is_public
     ? undefined
-    : await createScreenshotToken(env.API_TOKENS, { script_name: scriptName, org_id: orgId });
+    : await createScreenshotToken(env.APP_KV, { script_name: scriptName, org_id: orgId });
 
   try {
     await env.APP_SCREENSHOT_QUEUE.send(

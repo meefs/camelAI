@@ -5,7 +5,7 @@ import { WebSocketServer } from 'ws';
 import os from 'os';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-28-sdk-rewrite-v17-add-uv';
+const VERSION = '2026-01-29-claude-api-proxy';
 
 // Sleep helper (replaces sleep)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -46,9 +46,9 @@ const MCP_SERVER_URL = process.env.MCP_SERVER_URL;
 
 log('[ws-server]', 'Starting', { version: VERSION, port: PORT });
 
-// Auth via ANTHROPIC_AUTH_TOKEN (OpenRouter) or ANTHROPIC_API_KEY (direct Anthropic)
-if (!process.env.ANTHROPIC_AUTH_TOKEN && !process.env.ANTHROPIC_API_KEY) {
-  console.error('ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY required');
+// Auth via ANTHROPIC_API_KEY (Claude API proxy with signed token)
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error('ANTHROPIC_API_KEY required');
   process.exit(1);
 }
 

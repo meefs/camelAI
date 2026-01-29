@@ -36,7 +36,7 @@
 	],
 	"kv_namespaces": [
 		{ "binding": "EMAIL_TO_USER", "id": "ab267c4f44b847dda8bdca400a4e1884" },
-		{ "binding": "API_TOKENS", "id": "e894eb2caf1641ad8870da994b992fce" },
+		{ "binding": "APP_KV", "id": "e894eb2caf1641ad8870da994b992fce" },
 		{ "binding": "SESSIONS", "id": "f5ab08fdb1d7404fbc45a171217b4a27" }
 	],
 	"queues": {

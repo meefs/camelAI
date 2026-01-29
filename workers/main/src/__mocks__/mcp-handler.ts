@@ -11,7 +11,7 @@ export interface McpEnv {
   ORG: DurableObjectNamespace;
   WORKSPACE: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
-  API_TOKENS: KVNamespace;
+  APP_KV: KVNamespace;
   TOKEN_SIGNING_SECRET: string;
 }
 

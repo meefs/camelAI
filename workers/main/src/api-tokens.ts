@@ -1,7 +1,7 @@
 /**
  * API Token utilities with direct KV access.
  *
- * Tokens are stored in the API_TOKENS KV namespace with automatic TTL expiration.
+ * Tokens are stored in the APP_KV KV namespace with automatic TTL expiration.
  * No DO coordination needed - KV faults to origin if key isn't in local cache.
  */
 

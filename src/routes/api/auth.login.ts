@@ -18,7 +18,7 @@ function getAuthEnv(env: CloudflareEnv): AuthEnv {
     WORKSPACE: env.WORKSPACE as AuthEnv['WORKSPACE'],
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,
-    API_TOKENS: env.API_TOKENS,
+    APP_KV: env.APP_KV,
   };
 }
 

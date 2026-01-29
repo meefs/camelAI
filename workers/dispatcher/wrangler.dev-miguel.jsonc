@@ -15,7 +15,7 @@
 		}
 	],
 	"kv_namespaces": [
-		{ "binding": "API_TOKENS", "id": "e894eb2caf1641ad8870da994b992fce" },
+		{ "binding": "APP_KV", "id": "e894eb2caf1641ad8870da994b992fce" },
 		{ "binding": "SESSIONS", "id": "a38773869d2e465fbf705c81fa2e01eb" }
 	],
 	"durable_objects": {

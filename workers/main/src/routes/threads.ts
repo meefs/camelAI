@@ -35,7 +35,7 @@ export async function handleThreadPreview({ req, env, match }: RouteContext): Pr
       if (script) {
         isPublic = script.is_public;
       } else {
-        const stored = await env.API_TOKENS.get(`script_org:${workers[0]}`);
+        const stored = await env.APP_KV.get(`script_org:${workers[0]}`);
         if (stored) {
           try {
             const parsed = JSON.parse(stored) as { is_public?: boolean };

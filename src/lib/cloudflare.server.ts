@@ -18,7 +18,7 @@ export interface CloudflareEnv {
 
   // KV Namespaces
   EMAIL_TO_USER: KVNamespace;
-  API_TOKENS: KVNamespace;
+  APP_KV: KVNamespace;
   SESSIONS: KVNamespace;
 
   // R2

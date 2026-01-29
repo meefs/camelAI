@@ -23,7 +23,7 @@ export interface AuthEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   SESSIONS: KVNamespace;
   EMAIL_TO_USER: KVNamespace;
-  API_TOKENS: KVNamespace;
+  APP_KV: KVNamespace;
 }
 
 /**
@@ -36,7 +36,7 @@ export function getAuthEnv(env: CloudflareEnv): AuthEnv {
     WORKSPACE: env.WORKSPACE as AuthEnv['WORKSPACE'],
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,
-    API_TOKENS: env.API_TOKENS,
+    APP_KV: env.APP_KV,
   };
 }
 

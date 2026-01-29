@@ -74,7 +74,7 @@ export interface ChatEnv {
   SANDBOX: DurableObjectNamespace<WorkspaceContainer>;
   ORG: DurableObjectNamespace<OrgDO>;
   MCP_OBJECT: DurableObjectNamespace;
-  API_TOKENS: KVNamespace;
+  APP_KV: KVNamespace;
   R2_BUCKET: R2Bucket;
   AI: Ai;
   ANTHROPIC_API_KEY: string;
@@ -135,7 +135,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.previewIsPublic = storedIsPublic;
       } else if (this.previewWorkers[0]) {
         try {
-          const stored = await this.env.API_TOKENS.get(`script_org:${this.previewWorkers[0]}`);
+          const stored = await this.env.APP_KV.get(`script_org:${this.previewWorkers[0]}`);
           if (stored) {
             try {
               const parsed = JSON.parse(stored) as { is_public?: boolean };

@@ -20,6 +20,7 @@ function buildEnvVarsForTest(workspaceId: string, orgId: string) {
   const fakeEnv = {
     TOKEN_SIGNING_SECRET: 'test-signing-secret-for-unit-tests-only',
     INTEGRATION_SECRET_KEY: 'test-integration-secret-key',
+    WORKER_BASE_URL: 'https://test.chiridion.app',
     ORG: {
       get: () => ({
         getInfo: async () => ({ created_by: 'user-1', name: 'Test Org' }),

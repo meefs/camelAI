@@ -15,7 +15,7 @@
 			"id": "test-email-to-user"
 		},
 		{
-			"binding": "API_TOKENS",
+			"binding": "APP_KV",
 			"id": "test-api-tokens"
 		},
 		{

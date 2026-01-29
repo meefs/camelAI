@@ -28,6 +28,7 @@ import {
   handleNotionOAuthCallback,
 } from './routes/integrations.js';
 import { handleThreadWebSocket, handleChatWebSocket } from './routes/websocket.js';
+import { handleClaudeProxy, handleCountTokens } from './routes/claude-proxy.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
@@ -50,6 +51,10 @@ declare module 'react-router' {
 const routes: Route[] = [
   // CF API Proxy
   { method: 'ALL', path: /^\/client\/v4\//, handler: handleCfProxy },
+
+  // Claude API Proxy (for sandbox containers)
+  { method: 'POST', path: /^\/api\/claude\/v1\/messages\/count_tokens$/, handler: handleCountTokens },
+  { method: 'POST', path: /^\/api\/claude\/v1\/messages$/, handler: handleClaudeProxy },
 
   // MCP
   { method: 'ALL', path: /^\/mcp(\/|$)/, handler: handleMcp },

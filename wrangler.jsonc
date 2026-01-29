@@ -17,7 +17,11 @@
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-local",
 		// For containers, use host.docker.internal to reach the host (Vite dev on port 3001)
-		"WORKER_BASE_URL": "http://host.docker.internal:3001"
+		"WORKER_BASE_URL": "http://host.docker.internal:3001",
+		// Claude API proxy (CF AI Gateway)
+		"CF_GATEWAY_NAME": "chiridion",
+		"BEDROCK_REGION": "us-west-2"
+		// CF_GATEWAY_TOKEN is set via .dev.vars
 		// OPENROUTER_PROVISIONING_KEY (for per-org keys) is set via .dev.vars
 	},
 	"assets": {
@@ -54,7 +58,7 @@
 			"id": "ab267c4f44b847dda8bdca400a4e1884"
 		},
 		{
-			"binding": "API_TOKENS",
+			"binding": "APP_KV",
 			"id": "e894eb2caf1641ad8870da994b992fce"
 		},
 		{
@@ -129,7 +133,10 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform",
-				"WORKER_BASE_URL": "https://chiridion.ai"
+				"WORKER_BASE_URL": "https://chiridion.ai",
+				"CF_GATEWAY_NAME": "chiridion",
+				"BEDROCK_REGION": "us-west-2"
+				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
 			"images": {
@@ -155,7 +162,7 @@
 					"id": "45b452b3b19c42f6991408c140149a70"
 				},
 				{
-					"binding": "API_TOKENS",
+					"binding": "APP_KV",
 					"id": "0ee80299e67c4c7fa0c1ad618b7e7a9c"
 				},
 				{
@@ -223,7 +230,10 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
-				"WORKER_BASE_URL": "https://staging.chiridion.ai"
+				"WORKER_BASE_URL": "https://staging.chiridion.ai",
+				"CF_GATEWAY_NAME": "chiridion",
+				"BEDROCK_REGION": "us-west-2"
+				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
 			"assets": {
@@ -258,7 +268,7 @@
 					"id": "ab267c4f44b847dda8bdca400a4e1884"
 				},
 				{
-					"binding": "API_TOKENS",
+					"binding": "APP_KV",
 					"id": "e894eb2caf1641ad8870da994b992fce"
 				},
 				{
@@ -320,7 +330,10 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
-				"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai"
+				"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai",
+				"CF_GATEWAY_NAME": "chiridion",
+				"BEDROCK_REGION": "us-west-2"
+				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
 			"assets": {
@@ -356,7 +369,7 @@
 					"id": "06c511f882d041ea89a98cb413f4b2f3"
 				},
 				{
-					"binding": "API_TOKENS",
+					"binding": "APP_KV",
 					"id": "e894eb2caf1641ad8870da994b992fce"
 				},
 				{
@@ -418,7 +431,10 @@
 				"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
-				"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai"
+				"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai",
+				"CF_GATEWAY_NAME": "chiridion",
+				"BEDROCK_REGION": "us-west-2"
+				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
 			"assets": {
@@ -454,7 +470,7 @@
 					"id": "b5d67155aac54d208f00fc5d51f2d080"
 				},
 				{
-					"binding": "API_TOKENS",
+					"binding": "APP_KV",
 					"id": "e894eb2caf1641ad8870da994b992fce"
 				},
 				{

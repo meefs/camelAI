@@ -13,6 +13,7 @@ export interface DOEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   EMAIL_TO_USER: KVNamespace;
+  APP_KV: KVNamespace; // Also used for spend tracking with prefix "spend:"
 }
 
 const SUPERUSER_EMAILS = new Set([
@@ -1900,6 +1901,16 @@ export class OrgDO extends DurableObject<DOEnv> {
       tokenId ?? null,
       now
     );
+  }
+
+  // Spend tracking (writes to KV for rate limiting)
+
+  /**
+   * Record spend to KV. Called from proxy via RPC to ensure ordered writes.
+   */
+  async recordSpend(orgId: string, costCents: number): Promise<void> {
+    const { recordSpendToKV } = await import('./lib/cost-calculation.js');
+    await recordSpendToKV(this.env.APP_KV, orgId, costCents);
   }
 
   // OpenRouter API key methods

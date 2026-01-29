@@ -703,7 +703,7 @@ export async function getOrgInvitations(env: AuthEnv, orgId: string): Promise<Ar
 
 // API Token functions
 export async function validateApiToken(env: AuthEnv, tokenId: string): Promise<ApiTokenData | null> {
-  return validateApiTokenKV(env.API_TOKENS, tokenId);
+  return validateApiTokenKV(env.APP_KV, tokenId);
 }
 
 // Worker script functions
@@ -716,7 +716,7 @@ export interface WorkerScriptAccess {
 
 export async function getWorkerAccessInfo(env: AuthEnv, scriptName: string): Promise<WorkerScriptAccess | null> {
   // Look up from denormalized global index (single KV read, no DO query)
-  const data = await env.API_TOKENS.get(`script_org:${scriptName}`);
+  const data = await env.APP_KV.get(`script_org:${scriptName}`);
   if (!data) return null;
 
   const { org_id, is_public } = JSON.parse(data) as { org_id: string; is_public: boolean };
@@ -759,7 +759,7 @@ export async function deleteWorkerScript(
   const result = await stub.deleteWorkerScript(scriptName, actorId);
   if (result) {
     // Remove from global script→org index
-    await env.API_TOKENS.delete(`script_org:${scriptName}`);
+    await env.APP_KV.delete(`script_org:${scriptName}`);
   }
   return result;
 }
@@ -775,7 +775,7 @@ export async function setWorkerScriptPublic(
   const script = await stub.setWorkerScriptPublic(scriptName, isPublic, actorId);
   if (script) {
     // Update the denormalized KV index
-    await env.API_TOKENS.put(
+    await env.APP_KV.put(
       `script_org:${scriptName}`,
       JSON.stringify({ org_id: orgId, is_public: script.is_public })
     );

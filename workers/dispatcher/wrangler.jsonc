@@ -16,7 +16,7 @@
 	],
 	"kv_namespaces": [
 		{
-			"binding": "API_TOKENS",
+			"binding": "APP_KV",
 			"id": "e894eb2caf1641ad8870da994b992fce"
 		},
 		{
@@ -44,7 +44,7 @@
 			],
 			"kv_namespaces": [
 				{
-					"binding": "API_TOKENS",
+					"binding": "APP_KV",
 					"id": "0ee80299e67c4c7fa0c1ad618b7e7a9c"
 				},
 				{
@@ -72,7 +72,7 @@
 			],
 			"kv_namespaces": [
 				{
-					"binding": "API_TOKENS",
+					"binding": "APP_KV",
 					"id": "e894eb2caf1641ad8870da994b992fce"
 				},
 				{
@@ -100,7 +100,7 @@
 			],
 			"kv_namespaces": [
 				{
-					"binding": "API_TOKENS",
+					"binding": "APP_KV",
 					"id": "e894eb2caf1641ad8870da994b992fce"
 				},
 				{
@@ -128,7 +128,7 @@
 			],
 			"kv_namespaces": [
 				{
-					"binding": "API_TOKENS",
+					"binding": "APP_KV",
 					"id": "e894eb2caf1641ad8870da994b992fce"
 				},
 				{
@@ -159,7 +159,7 @@
 			],
 			"kv_namespaces": [
 				{
-					"binding": "API_TOKENS",
+					"binding": "APP_KV",
 					"id": "e894eb2caf1641ad8870da994b992fce"
 				},
 				{

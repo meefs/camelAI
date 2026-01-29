@@ -28,7 +28,7 @@ export interface CfApiProxyEnv {
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
   EMAIL_TO_USER: KVNamespace;
-  API_TOKENS: KVNamespace;
+  APP_KV: KVNamespace;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   CHAT_THREAD: DurableObjectNamespace;
@@ -562,7 +562,7 @@ export async function proxyCloudflareApi(
   // Enforce script ownership - prevent org A from deploying to a script owned by org B
   const scriptName = extractScriptName(pathname);
   if (scriptName) {
-    const ownership = await checkScriptOwnership(env.API_TOKENS, scriptName, orgId);
+    const ownership = await checkScriptOwnership(env.APP_KV, scriptName, orgId);
     if (ownership.owned && ownership.orgId !== orgId) {
       console.warn('[cf-api-proxy] script ownership violation', {
         method: request.method,
@@ -710,7 +710,7 @@ export async function proxyCloudflareApi(
                 if (script) {
                   isPublic = script.is_public;
                 } else {
-                  const stored = await env.API_TOKENS.get(`${SCRIPT_ORG_PREFIX}${scriptName}`);
+                  const stored = await env.APP_KV.get(`${SCRIPT_ORG_PREFIX}${scriptName}`);
                   if (stored) {
                     try {
                       const parsed = JSON.parse(stored) as { is_public?: boolean };

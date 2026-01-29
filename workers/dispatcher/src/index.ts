@@ -47,7 +47,7 @@ interface Env {
       fetch(request: Request): Promise<Response>;
     };
   };
-  API_TOKENS: KVNamespace;
+  APP_KV: KVNamespace;
   SESSIONS: KVNamespace;
   ORG: DurableObjectNamespace<OrgDO>;
   // Set to "true" to skip all auth checks (local development only)
@@ -212,7 +212,7 @@ async function handleAuthCallback(request: Request, env: Env, scriptName: string
   }
 
   // Validate and consume the one-time token
-  const tokenData = await validateAndConsumeAuthToken(env.API_TOKENS, token);
+  const tokenData = await validateAndConsumeAuthToken(env.APP_KV, token);
   if (!tokenData) {
     return new Response('Invalid or expired token', { status: 400 });
   }
@@ -285,7 +285,7 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
   }
 
   if (screenshotToken?.startsWith('stkn_')) {
-    const tokenData = await validateAndConsumeScreenshotToken(env.API_TOKENS, screenshotToken);
+    const tokenData = await validateAndConsumeScreenshotToken(env.APP_KV, screenshotToken);
     if (!tokenData || tokenData.script_name !== scriptName) {
       return new Response('Invalid screenshot token', { status: 401 });
     }
@@ -316,7 +316,7 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
   // Get worker access info from KV index
   let accessInfo: { is_public: boolean; org_id: string } | null = null;
   try {
-    accessInfo = await getWorkerAccessInfo(env.API_TOKENS, scriptName);
+    accessInfo = await getWorkerAccessInfo(env.APP_KV, scriptName);
   } catch (e) {
     // Fail closed on errors - don't bypass auth
     console.error(`[dispatcher] Error getting worker access info: ${e}`);
@@ -476,7 +476,7 @@ async function redirectToAuth(
 ): Promise<Response> {
   // Create auth state with return URL
   const returnUrl = url.origin; // Just the origin, callback will add the path
-  const state = await createAuthState(env.API_TOKENS, {
+  const state = await createAuthState(env.APP_KV, {
     return_url: returnUrl,
     script_name: scriptName,
     required_org_id: requiredOrgId,

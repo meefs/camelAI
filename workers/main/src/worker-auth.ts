@@ -7,9 +7,9 @@
  * - Dispatcher sessions: Sessions for authenticated access to workers
  *
  * All stored in existing KV namespaces with prefixes:
- * - Auth state: wauth_state:{uuid} in API_TOKENS KV (60s TTL)
- * - One-time token: wauth_token:{token} in API_TOKENS KV (60s TTL)
- * - Screenshot token: screenshot_token:{token} in API_TOKENS KV (5m TTL)
+ * - Auth state: wauth_state:{uuid} in APP_KV KV (60s TTL)
+ * - One-time token: wauth_token:{token} in APP_KV KV (60s TTL)
+ * - Screenshot token: screenshot_token:{token} in APP_KV KV (5m TTL)
  * - Screenshot session: screenshot_session:{uuid} in SESSIONS KV (5m TTL)
  * - Dispatcher session: worker_session:{uuid} in SESSIONS KV (30d TTL)
  */
@@ -94,7 +94,7 @@ function generateSecureToken(prefix: string = ''): string {
 }
 
 // ============================================================================
-// Auth State Functions (stored in API_TOKENS KV)
+// Auth State Functions (stored in APP_KV KV)
 // ============================================================================
 
 /**
@@ -144,7 +144,7 @@ export async function validateAndConsumeAuthState(
 }
 
 // ============================================================================
-// One-Time Token Functions (stored in API_TOKENS KV)
+// One-Time Token Functions (stored in APP_KV KV)
 // ============================================================================
 
 /**
@@ -199,7 +199,7 @@ export async function validateAndConsumeAuthToken(
 }
 
 // ============================================================================
-// Screenshot Token Functions (stored in API_TOKENS KV)
+// Screenshot Token Functions (stored in APP_KV KV)
 // ============================================================================
 
 /**
