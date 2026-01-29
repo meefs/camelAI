@@ -20,12 +20,15 @@ interface PromptInputProps {
   onSubmit: () => void;
   onStop?: () => void;
   placeholder?: string;
+  animatedPlaceholder?: string;
   disabled?: boolean;
   isLoading?: boolean;
   isAssistantRunning?: boolean;
   minHeight?: string;
   className?: string;
   autoFocus?: boolean;
+  onFocus?: () => void;
+  onBlur?: () => void;
   // File upload props
   attachments?: Attachment[];
   onFilesSelected?: (files: File[]) => void;
@@ -40,12 +43,15 @@ export function PromptInput({
   onSubmit,
   onStop,
   placeholder = 'Type a message...',
+  animatedPlaceholder,
   disabled = false,
   isLoading = false,
   isAssistantRunning = false,
   minHeight = '44px',
   className,
   autoFocus = false,
+  onFocus,
+  onBlur,
   attachments = [],
   onFilesSelected,
   onAttachmentRemove,
@@ -87,6 +93,7 @@ export function PromptInput({
 
   // Show stop button when assistant is running and input is empty
   const showStopButton = isAssistantRunning && !value.trim() && onStop;
+  const effectivePlaceholder = animatedPlaceholder ?? placeholder;
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -239,9 +246,11 @@ export function PromptInput({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={placeholder}
+            placeholder={effectivePlaceholder}
             disabled={disabled || isActiveRecording}
             autoFocus={autoFocus}
+            onFocus={onFocus}
+            onBlur={onBlur}
             className={cn(
               'text-base p-3.5 max-h-96 overflow-y-auto',
               isActiveRecording && 'opacity-50'

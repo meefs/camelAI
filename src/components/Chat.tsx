@@ -4,7 +4,15 @@ import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } fr
 import { useNavigate, useFetcher, useRevalidator } from 'react-router';
 import { ArrowDown, RefreshCw, ExternalLink, X, Bug, ChevronDown, Globe, Lock } from 'lucide-react';
 import { toast } from 'sonner';
-import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock } from '@/types';
+import type {
+  Message,
+  ContentBlock,
+  ToolResultBlock,
+  ToolUseBlock,
+  Thread,
+  WorkerScriptWithCreator,
+  Integration,
+} from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
@@ -41,6 +49,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
+import { WelcomeScreen } from '@/components/welcome-screen';
 import { cn } from '@/lib/utils';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
 import {
@@ -62,6 +71,13 @@ interface ChatProps {
   hostname?: string;
   /** True when messages are still loading (deferred data) */
   isLoadingMessages?: boolean;
+  welcomeData?: {
+    userId: string | null;
+    userName: string | null;
+    allApps: WorkerScriptWithCreator[];
+    connections: Integration[];
+    renderedAt: number;
+  };
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -297,10 +313,26 @@ function ShareStatusButton({
 }
 
 
-export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false, hostname, isLoadingMessages = false }: ChatProps) {
+export default function Chat({
+  threadId,
+  workspaceId,
+  initialMessages,
+  threadTitle,
+  initialDeployedApp,
+  isNewThread = false,
+  hostname,
+  isLoadingMessages = false,
+  welcomeData,
+}: ChatProps) {
   const navigate = useNavigate();
   const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
+  const startChatFetcher = useFetcher<{
+    success?: boolean;
+    thread?: Thread;
+    error?: string;
+    requestId?: string;
+  }>();
   const touchFetcher = useFetcher();
   const { user, currentWorkspace, currentOrg, orgs, loading: authLoading } = useAuth();
   const isMobile = useIsMobile();
@@ -448,6 +480,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const lastEventIdRef = useRef(0);
   const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
   const previewConnectionStartedAtRef = useRef<number | null>(null);
+  const pendingChatAppRef = useRef<string | null>(null);
+  const activeChatRequestIdRef = useRef<string | null>(null);
+  const fallbackRenderedAtRef = useRef<number>(Date.now());
 
   useEffect(() => {
     initialScrollDoneRef.current = false;
@@ -490,6 +525,13 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   // Ref to hold stable connect function for effect
   const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
   const resolvedWorkspaceId = currentWorkspace?.id ?? workspaceId;
+  const resolvedWelcomeData = welcomeData ?? {
+    userId: user?.id ?? null,
+    userName: user?.name ?? null,
+    allApps: [],
+    connections: [],
+    renderedAt: fallbackRenderedAtRef.current,
+  };
   // Use static key for pending messages - threadId in payload ensures correct matching
   // This avoids issues when workspace changes between welcome screen and chat page
   const pendingMessageKey = 'pendingMessage:newThread';
@@ -1586,8 +1628,66 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     }
   }, [createThreadFetcher.state, createThreadFetcher.data, navigate]);
 
+  // Handle chat creation result when starting from an app card
+  useEffect(() => {
+    if (startChatFetcher.state !== 'idle') return;
+    const responseRequestId = startChatFetcher.data?.requestId;
+    if (!responseRequestId) {
+      if (activeChatRequestIdRef.current || pendingChatAppRef.current) {
+        activeChatRequestIdRef.current = null;
+        pendingChatAppRef.current = null;
+      }
+      return;
+    }
+
+    if (responseRequestId !== activeChatRequestIdRef.current) {
+      pendingChatAppRef.current = null;
+      return;
+    }
+
+    if (startChatFetcher.data?.success && startChatFetcher.data.thread) {
+      navigate(`/chat/${startChatFetcher.data.thread.id}`);
+    } else if (startChatFetcher.data?.error) {
+      toast.error(startChatFetcher.data.error);
+    }
+
+    activeChatRequestIdRef.current = null;
+    pendingChatAppRef.current = null;
+  }, [startChatFetcher.state, startChatFetcher.data, navigate]);
+
+  const handleStartChatForApp = useCallback((app: WorkerScriptWithCreator) => {
+    if (!resolvedWorkspaceId) {
+      toast.error('No workspace selected');
+      return;
+    }
+
+    if (app.workspace_id !== resolvedWorkspaceId) {
+      toast.error('App is in a different workspace. Please switch workspaces first.');
+      return;
+    }
+
+    if (startChatFetcher.state !== 'idle') return;
+    if (pendingChatAppRef.current === app.script_name) return;
+    pendingChatAppRef.current = app.script_name;
+
+    const requestId = crypto.randomUUID();
+    activeChatRequestIdRef.current = requestId;
+    startChatFetcher.submit(
+      {
+        intent: 'startChatForApp',
+        appName: app.script_name,
+        workspaceId: app.workspace_id,
+        hostname: hostname ?? '',
+        configPath: app.config_path ?? '',
+        isPublic: String(app.is_public),
+        requestId,
+      },
+      { method: 'post', action: '/apps' }
+    );
+  }, [hostname, resolvedWorkspaceId, startChatFetcher]);
+
   function startNewChat() {
-    if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId) return;
+    if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId || startChatFetcher.state !== 'idle') return;
 
     // Don't allow sending while uploads are in progress
     const hasUploadingAttachments = attachments.some(a => a.status === 'uploading');
@@ -2267,7 +2367,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             <PageHeader breadcrumbs={[{ label: 'Home' }]} />
             {/* Welcome Screen */}
             <div
-              className="flex-1 flex flex-col items-center justify-center px-4 relative"
+              className="flex-1 flex flex-col items-center px-4 py-8 relative overflow-y-auto"
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
@@ -2280,25 +2380,21 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   </div>
                 </div>
               )}
-              <div className="w-full max-w-3xl space-y-8">
-                <div className="text-center">
-                  <h2 className="text-2xl font-semibold mb-2 text-foreground">Welcome to Chiridion</h2>
-                  <p className="text-muted-foreground">What would you like to explore today?</p>
-                </div>
-
-                <PromptInput
-                  value={welcomeInput}
-                  onChange={setWelcomeInput}
-                  onSubmit={startNewChat}
-                  placeholder="Ask anything..."
-                  isLoading={isCreatingThread}
-                  minHeight="80px"
-                  autoFocus
-                  attachments={attachments}
-                  onFilesSelected={handleFilesSelected}
-                  onAttachmentRemove={handleAttachmentRemove}
-                />
-              </div>
+              <WelcomeScreen
+                userId={resolvedWelcomeData.userId}
+                userName={resolvedWelcomeData.userName}
+                allApps={resolvedWelcomeData.allApps}
+                connections={resolvedWelcomeData.connections}
+                renderedAt={resolvedWelcomeData.renderedAt}
+                inputValue={welcomeInput}
+                onPromptChange={setWelcomeInput}
+                onSubmit={startNewChat}
+                onStartChatForApp={handleStartChatForApp}
+                attachments={attachments}
+                onFilesSelected={handleFilesSelected}
+                onAttachmentRemove={handleAttachmentRemove}
+                isCreatingThread={isCreatingThread || startChatFetcher.state !== 'idle'}
+              />
             </div>
           </>
         )}
