@@ -5,6 +5,11 @@
  * The message format is identical - only transport differs.
  */
 
+// Beta flags not supported by Bedrock (filter these out)
+const UNSUPPORTED_BEDROCK_BETAS = new Set([
+  'prompt-caching-scope-2026-01-05',
+]);
+
 // Map Anthropic model IDs to Bedrock model IDs
 const MODEL_MAP: Record<string, string> = {
   // Claude 4.5 models
@@ -70,9 +75,16 @@ export function transformRequestForBedrock(
   };
 
   // Convert anthropic-beta header to body array (comma-separated -> array)
+  // Filter out betas not supported by Bedrock
   const betaHeader = clientHeaders['anthropic-beta'];
   if (betaHeader) {
-    bedrockBody.anthropic_beta = betaHeader.split(',').map((s) => s.trim());
+    const betas = betaHeader
+      .split(',')
+      .map((s) => s.trim())
+      .filter((b) => !UNSUPPORTED_BEDROCK_BETAS.has(b));
+    if (betas.length > 0) {
+      bedrockBody.anthropic_beta = betas;
+    }
   }
 
   // Copy optional fields
