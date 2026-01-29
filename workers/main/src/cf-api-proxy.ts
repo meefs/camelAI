@@ -351,6 +351,52 @@ async function deleteDispatchScriptSecret(
   );
 }
 
+/**
+ * Delete a worker script from the Cloudflare dispatch namespace.
+ * Returns true if successful, false if the script didn't exist or deletion failed.
+ */
+export async function deleteDispatchScript(
+  accountId: string,
+  dispatchNamespace: string,
+  scriptName: string,
+  apiToken: string
+): Promise<boolean> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+    `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
+    `/scripts/${encodeURIComponent(scriptName)}`;
+  const headers = { Authorization: `Bearer ${apiToken}` };
+  const resp = await fetch(url, { method: 'DELETE', headers });
+
+  if (!resp.ok) {
+    // 404 means script doesn't exist - that's OK for delete
+    if (resp.status === 404) {
+      console.log('[cf-api] script not found in dispatch namespace (already deleted)', {
+        accountId,
+        dispatchNamespace,
+        scriptName,
+      });
+      return true;
+    }
+    const bodyText = await resp.text();
+    console.error('[cf-api] failed to delete dispatch script', {
+      status: resp.status,
+      statusText: resp.statusText,
+      bodyPreview: bodyText.slice(0, 512),
+      accountId,
+      dispatchNamespace,
+      scriptName,
+    });
+    return false;
+  }
+
+  console.log('[cf-api] deleted dispatch script', {
+    accountId,
+    dispatchNamespace,
+    scriptName,
+  });
+  return true;
+}
+
 async function syncDispatchScriptSecrets(
   env: CfApiProxyEnv,
   workspaceId: string,

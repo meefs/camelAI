@@ -4,6 +4,7 @@ import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
 import { setWorkerScriptPublic, deleteWorkerScript } from '@/lib/auth-do';
+import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 import { getVanityDomain } from '@/lib/app-url.server';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AppEditForm } from '@/components/admin/app-edit-form';
@@ -51,6 +52,29 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   }
 
   if (intent === 'deleteApp') {
+    const env = getEnv(context);
+    const accountId = env.CF_ACCOUNT_ID;
+    const dispatchNamespace = env.CF_DISPATCH_NAMESPACE;
+    const apiToken = env.CF_API_TOKEN;
+
+    if (!accountId || !dispatchNamespace || !apiToken) {
+      console.error('[admin/deleteApp] Missing Cloudflare credentials');
+      return { error: 'Server configuration error: Missing Cloudflare credentials' };
+    }
+
+    // First, delete from Cloudflare Workers for Platforms
+    const cfDeleteSuccess = await deleteDispatchScript(
+      accountId,
+      dispatchNamespace,
+      decodedScriptName,
+      apiToken
+    );
+
+    if (!cfDeleteSuccess) {
+      return { error: 'Failed to delete app from Cloudflare' };
+    }
+
+    // Then, delete from database and KV index
     await deleteWorkerScript(authEnv, app.org_id, decodedScriptName, 'system-admin');
     return redirect('/qaml-backdoor/apps');
   }

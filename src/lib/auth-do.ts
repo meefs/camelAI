@@ -749,6 +749,15 @@ export async function listWorkerScriptsByWorkspace(env: AuthEnv, workspaceId: st
   return orgStub.listWorkerScriptsByWorkspace(workspaceId);
 }
 
+export async function getWorkerScript(
+  env: AuthEnv,
+  orgId: string,
+  scriptName: string
+): Promise<WorkerScript | null> {
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
+  return stub.getWorkerScript(scriptName);
+}
+
 export async function deleteWorkerScript(
   env: AuthEnv,
   orgId: string,

@@ -7,7 +7,9 @@ import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   setWorkerScriptPublic,
   deleteWorkerScript,
+  getWorkerScript,
 } from '@/lib/auth-do';
+import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 import * as chatDO from '@/lib/chat-do.server';
 import { getWorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 import { getAppUrl } from '@/lib/app-url';
@@ -84,13 +86,59 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: 'Script name is required' };
     }
 
+    const accountId = env.CF_ACCOUNT_ID;
+    const dispatchNamespace = env.CF_DISPATCH_NAMESPACE;
+    const apiToken = env.CF_API_TOKEN;
+
+    if (!accountId || !dispatchNamespace || !apiToken) {
+      console.error('[deleteApp] Missing Cloudflare credentials', {
+        hasAccountId: !!accountId,
+        hasDispatchNamespace: !!dispatchNamespace,
+        hasApiToken: !!apiToken,
+      });
+      return { error: 'Server configuration error: Missing Cloudflare credentials' };
+    }
+
     try {
+      // First, verify the script belongs to the current org (without deleting)
+      const script = await getWorkerScript(
+        authEnv,
+        authContext.currentOrg.id,
+        scriptName
+      );
+
+      if (!script) {
+        console.warn('[deleteApp] Script not found in org database', {
+          scriptName,
+          orgId: authContext.currentOrg.id,
+        });
+        return { error: 'App not found or you do not have permission to delete it' };
+      }
+
+      // Delete from Cloudflare first - if this fails, user can retry
+      const cfDeleteSuccess = await deleteDispatchScript(
+        accountId,
+        dispatchNamespace,
+        scriptName,
+        apiToken
+      );
+
+      if (!cfDeleteSuccess) {
+        console.error('[deleteApp] Failed to delete from Cloudflare', {
+          scriptName,
+          orgId: authContext.currentOrg.id,
+        });
+        return { error: 'Failed to delete app from Cloudflare. Please try again.' };
+      }
+
+      // Finally, delete from database and KV index
       await deleteWorkerScript(
         authEnv,
         authContext.currentOrg.id,
         scriptName,
         authContext.user.id
       );
+
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to delete app' };

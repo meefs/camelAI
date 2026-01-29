@@ -42,6 +42,7 @@ export interface CloudflareEnv {
   R2_PARENT_ACCESS_KEY_ID: string;
   CF_ACCOUNT_ID: string;
   CF_DISPATCH_NAMESPACE: string;
+  CF_API_TOKEN?: string;
   WORKER_BASE_URL: string;
   OPENROUTER_API_KEY: string; // Fallback global key
   OPENROUTER_PROVISIONING_KEY?: string; // Parent key for creating per-org keys
