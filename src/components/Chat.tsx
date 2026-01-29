@@ -196,7 +196,7 @@ function ShareStatusButton({
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const pendingValueRef = useRef<boolean | null>(null);
   const isPending = fetcher.state !== 'idle';
-  const optimisticIsPublic = fetcher.formData
+  const optimisticIsPublic = isPending && fetcher.formData
     ? fetcher.formData.get('isPublic') === 'true'
     : (fetcher.data?.success && pendingValueRef.current !== null
         ? pendingValueRef.current
