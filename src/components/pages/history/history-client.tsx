@@ -8,6 +8,7 @@ import { PageHeader } from '@/components/page-header';
 import { ChatsToolbar } from '@/components/history/chats-toolbar';
 import { ChatsList } from '@/components/history/chats-list';
 import { SwitchWorkspaceDialog } from '@/components/history/switch-workspace-dialog';
+import { ContainerLoadingDialog } from '@/components/container-loading-dialog';
 
 // Note: Auth is handled by the (app) layout - no need to check here
 
@@ -53,6 +54,10 @@ export default function HistoryClient({
     workspace: WorkspaceWithAccess | null;
   }>({ open: false, threadId: null, workspace: null });
   const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
+  const [containerDialog, setContainerDialog] = useState<{
+    open: boolean;
+    workspace: WorkspaceWithAccess | null;
+  }>({ open: false, workspace: null });
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const isSelecting = selectMode !== 'off';
@@ -207,16 +212,19 @@ export default function HistoryClient({
 
   const handleConfirmSwitch = async () => {
     if (!switchDialog.workspace || !switchDialog.threadId) return;
+    const targetWorkspace = switchDialog.workspace;
+    const targetThreadId = switchDialog.threadId;
 
     setSwitchingWorkspace(true);
     try {
-      await switchWorkspace(switchDialog.workspace.id);
-      navigate(`/chat/${switchDialog.threadId}`);
+      await switchWorkspace(targetWorkspace.id);
+      setSwitchDialog({ open: false, threadId: null, workspace: null });
+      setContainerDialog({ open: true, workspace: targetWorkspace });
+      navigate(`/chat/${targetThreadId}`);
     } catch (error) {
       console.error('Failed to switch workspace:', error);
     } finally {
       setSwitchingWorkspace(false);
-      setSwitchDialog({ open: false, threadId: null, workspace: null });
     }
   };
 
@@ -276,6 +284,21 @@ export default function HistoryClient({
           workspace={switchDialog.workspace}
           onConfirm={handleConfirmSwitch}
           loading={switchingWorkspace}
+        />
+      ) : null}
+
+      {containerDialog.workspace ? (
+        <ContainerLoadingDialog
+          open={containerDialog.open}
+          onOpenChange={(open) => {
+            if (!open) {
+              setContainerDialog({ open: false, workspace: null });
+            }
+          }}
+          workspace={containerDialog.workspace}
+          title="Starting workspace..."
+          description="We're spinning up the {workspace} container to open this chat. This can take up to 20 seconds."
+          statusLabel="Warming container..."
         />
       ) : null}
     </>
