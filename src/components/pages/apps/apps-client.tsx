@@ -164,6 +164,7 @@ export default function AppsClient({
         workspaceId: app.workspace_id,
         hostname: hostname ?? '',
         configPath: app.config_path ?? '',
+        isPublic: String(app.is_public),
         requestId,
       },
       { method: 'post' }
@@ -228,6 +229,7 @@ export default function AppsClient({
             workspaceId: targetApp.workspace_id,
             hostname: hostname ?? '',
             configPath: targetApp.config_path ?? '',
+            isPublic: String(targetApp.is_public),
             requestId,
           },
           { method: 'post' }

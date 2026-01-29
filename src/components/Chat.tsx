@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
 import { useNavigate, useFetcher, useRevalidator } from 'react-router';
-import { ArrowDown, RefreshCw, ExternalLink, X } from 'lucide-react';
+import { ArrowDown, RefreshCw, ExternalLink, X, Bug, ChevronDown, Globe, Lock } from 'lucide-react';
+import { toast } from 'sonner';
 import type { Message, ContentBlock, ToolResultBlock, ToolUseBlock } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -29,9 +30,18 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
 import { cn } from '@/lib/utils';
+import { buildSetAppPublicPayload } from '@/lib/app-visibility';
 import {
   type SDKEvent,
   applyStreamingEventToMessage,
@@ -166,13 +176,132 @@ function MobileViewSwitcher({
   );
 }
 
+interface ShareStatusButtonProps {
+  threadId?: string;
+  scriptName: string;
+  isPublic: boolean;
+  isAdmin: boolean;
+  disabled?: boolean;
+  onStatusChange?: (isPublic: boolean) => void;
+}
+
+function ShareStatusButton({
+  threadId,
+  scriptName,
+  isPublic,
+  isAdmin,
+  disabled,
+  onStatusChange,
+}: ShareStatusButtonProps) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const pendingValueRef = useRef<boolean | null>(null);
+  const isPending = fetcher.state !== 'idle';
+  const optimisticIsPublic = isPending && fetcher.formData
+    ? fetcher.formData.get('isPublic') === 'true'
+    : (fetcher.data?.success && pendingValueRef.current !== null
+        ? pendingValueRef.current
+        : isPublic);
+
+  useEffect(() => {
+    if (fetcher.state !== 'idle' || !fetcher.data) return;
+
+    if (fetcher.data.success && pendingValueRef.current !== null) {
+      onStatusChange?.(pendingValueRef.current);
+    } else if (fetcher.data.error) {
+      toast.error(fetcher.data.error);
+    }
+
+    pendingValueRef.current = null;
+  }, [fetcher.state, fetcher.data, onStatusChange]);
+
+  useEffect(() => {
+    pendingValueRef.current = null;
+  }, [scriptName, threadId]);
+
+  const handleChange = (value: string) => {
+    if (!isAdmin || disabled || isPending) return;
+    if (!scriptName) return;
+
+    const nextIsPublic = value === 'true';
+    if (nextIsPublic === isPublic) return;
+
+    pendingValueRef.current = nextIsPublic;
+    fetcher.submit(
+      buildSetAppPublicPayload({
+        scriptName,
+        isPublic: nextIsPublic,
+        threadId,
+      }),
+      { method: 'POST', action: '/apps' }
+    );
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={disabled || isPending}
+          className={cn(
+            "h-6 gap-1.5 rounded-full border px-2 text-xs font-medium",
+            optimisticIsPublic
+              ? "border-green-200 bg-green-50 text-green-700 hover:bg-green-100/80 hover:text-green-800 dark:border-green-900/70 dark:bg-green-950/30 dark:text-green-300 dark:hover:bg-green-950/60"
+              : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+          )}
+        >
+          {optimisticIsPublic ? (
+            <Globe className="h-3.5 w-3.5" />
+          ) : (
+            <Lock className="h-3.5 w-3.5" />
+          )}
+          {optimisticIsPublic ? 'Public' : 'Private'}
+          <ChevronDown className="h-3 w-3 opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuLabel>Visibility</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={optimisticIsPublic ? 'true' : 'false'}
+          onValueChange={handleChange}
+        >
+          <DropdownMenuRadioItem
+            value="false"
+            disabled={!isAdmin || disabled || isPending}
+            className="items-start"
+          >
+            <div className="flex flex-col gap-0.5">
+              <span className="font-medium">Private</span>
+              <span className="text-muted-foreground text-[10px]">
+                Only workspace members can view
+              </span>
+            </div>
+          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem
+            value="true"
+            disabled={!isAdmin || disabled || isPending}
+            className="items-start"
+          >
+            <div className="flex flex-col gap-0.5">
+              <span className="font-medium">Public</span>
+              <span className="text-muted-foreground text-[10px]">
+                Anyone with the link can view
+              </span>
+            </div>
+          </DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 
 export default function Chat({ threadId, workspaceId, initialMessages, threadTitle, initialDeployedApp, isNewThread = false, hostname, isLoadingMessages = false }: ChatProps) {
   const navigate = useNavigate();
   const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
   const touchFetcher = useFetcher();
-  const { user, currentWorkspace, loading: authLoading } = useAuth();
+  const { user, currentWorkspace, currentOrg, orgs, loading: authLoading } = useAuth();
   const isMobile = useIsMobile();
   // Anchor to last message for existing threads with messages (not new threads)
   const shouldAnchorToLastMessage = !isNewThread && initialMessages && initialMessages.length > 0;
@@ -285,6 +414,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [deployedApp, setDeployedApp] = useState<string | null>(initialDeployedApp ?? null);
+  const [appIsPublic, setAppIsPublic] = useState(false);
   const [iframeKey, setIframeKey] = useState(0);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
@@ -319,6 +449,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
     stickToBottomRef.current = true;
     setCurrentTodos([]);
     setPendingQuestion(null);
+    setAppIsPublic(false);
   }, [threadId]);
 
   useEffect(() => {
@@ -933,6 +1064,9 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
           previewVersionRef.current = newVersion;
 
           setDeployedApp(firstWorker);
+          setAppIsPublic((prev) =>
+            typeof data.isPublic === 'boolean' ? data.isPublic : prev
+          );
 
           // Add delay before showing iframe to allow worker to fully initialize
           if (firstWorker && isNewDeploy) {
@@ -1003,6 +1137,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
         previewWsRef.current = null;
       }
       setDeployedApp(null);
+      setAppIsPublic(false);
       return;
     }
 
@@ -1612,6 +1747,8 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
   const previewUrl = previewDomains.iframeHost ? `https://${previewDomains.iframeHost}` : '';
   const previewVanityUrl = previewDomains.vanityHost ? `https://${previewDomains.vanityHost}` : '';
   const showMobilePreview = Boolean(deployedApp) && mobileView === 'preview';
+  const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
+  const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
 
   const previewPanelBody = deployedApp ? (
     <>
@@ -1620,7 +1757,31 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
           <div className="w-2 h-2 bg-green-500 rounded-full" />
           <span className="text-sm font-medium">{previewDomains.vanityHost}</span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
+          <ShareStatusButton
+            threadId={threadId}
+            scriptName={deployedApp}
+            isPublic={appIsPublic}
+            isAdmin={Boolean(isAdmin)}
+            disabled={authLoading}
+            onStatusChange={setAppIsPublic}
+          />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => {
+                  // FIXME(@Miguel): Implement bug report creation
+                  // This should create a bug report for the agent about the current app
+                  console.log('Bug report placeholder - to be implemented');
+                }}
+              >
+                <Bug className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Report a bug</TooltipContent>
+          </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

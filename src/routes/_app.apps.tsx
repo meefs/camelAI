@@ -45,6 +45,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (intent === 'setAppPublic') {
     const scriptName = formData.get('scriptName') as string;
     const isPublic = formData.get('isPublic') === 'true';
+    const threadId = formData.get('threadId') as string | null;
 
     if (!scriptName) {
       return { error: 'Script name is required' };
@@ -58,6 +59,18 @@ export async function action({ request, context }: Route.ActionArgs) {
         isPublic,
         authContext.user.id
       );
+
+      if (threadId && authContext.currentWorkspace?.id) {
+        try {
+          const thread = await chatDO.getThread(context, threadId, authContext.currentWorkspace.id);
+          if (thread) {
+            await chatDO.setThreadPreviewVisibility(context, threadId, isPublic);
+          }
+        } catch (err) {
+          console.error('Failed to update preview visibility:', err);
+        }
+      }
+
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to update app' };
@@ -90,6 +103,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     const hostname = formData.get('hostname') as string | null;
     const configPath = formData.get('configPath') as string | null;
     const requestId = formData.get('requestId') as string | null;
+    const isPublic = formData.get('isPublic') === 'true';
 
     if (!appName || !workspaceId) {
       return { error: 'appName and workspaceId are required', requestId };
@@ -110,7 +124,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       );
 
       // 2. Set the app as a preview worker
-      await chatDO.setThreadPreview(context, thread.id, [appName]);
+      await chatDO.setThreadPreview(context, thread.id, [appName], isPublic);
 
       // 3. Seed the thread with a system message for the agent
       const appUrl = getAppUrl(appName, hostname ?? undefined);

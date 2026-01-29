@@ -5,6 +5,7 @@ import type { OrgDO } from './auth';
 // Preview state for a thread
 export interface PreviewState {
   workers: string[]; // Worker script names to preview
+  isPublic?: boolean;
 }
 
 // Connection setup prompt request
@@ -84,6 +85,7 @@ interface PendingConnectionSetupInfo {
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private previewWorkers: string[] = [];
   private previewVersion: number = 0;
+  private previewIsPublic: boolean = false;
   // Pending connection setup requests (requestId -> MCP DO callback info)
   // This is also persisted to storage to survive hibernation
   private pendingConnectionSetups: Map<string, PendingConnectionSetupInfo> = new Map();
@@ -101,13 +103,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // Restore state from storage
     ctx.blockConcurrencyWhile(async () => {
-      const stored = await ctx.storage.get<string[]>('previewWorkers');
+      const stored = ctx.storage.kv.get<string[]>('previewWorkers');
       if (stored) {
         this.previewWorkers = stored;
       }
-      const version = await ctx.storage.get<number>('previewVersion');
-      if (version) {
+      const version = ctx.storage.kv.get<number>('previewVersion');
+      if (typeof version === 'number') {
         this.previewVersion = version;
+      }
+      const storedIsPublic = ctx.storage.kv.get<boolean>('previewIsPublic');
+      if (typeof storedIsPublic === 'boolean') {
+        this.previewIsPublic = storedIsPublic;
+      } else if (this.previewWorkers[0]) {
+        try {
+          const stored = await this.env.API_TOKENS.get(`script_org:${this.previewWorkers[0]}`);
+          if (stored) {
+            try {
+              const parsed = JSON.parse(stored) as { is_public?: boolean };
+              if (typeof parsed.is_public === 'boolean') {
+                this.previewIsPublic = parsed.is_public;
+              } else {
+                this.previewIsPublic = true;
+              }
+              ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
+            } catch {
+              this.previewIsPublic = true;
+              ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
+            }
+          }
+        } catch (err) {
+          console.error('[ChatThreadDO] Failed to backfill preview visibility', err);
+        }
       }
 
       // Restore pending connection setups from storage (sync KV)
@@ -142,6 +168,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         type: 'preview_state',
         workers: this.previewWorkers,
         version: this.previewVersion,
+        isPublic: this.previewIsPublic,
       }));
 
       return new Response(null, { status: 101, webSocket: client });
@@ -149,17 +176,23 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // HTTP API for setting preview state
     if (url.pathname === '/preview' && request.method === 'POST') {
-      const body = await request.json() as { workers?: string[] };
+      const body = await request.json() as { workers?: string[]; isPublic?: boolean };
       if (body.workers) {
-        await this.setPreviewWorkers(body.workers);
+        await this.setPreviewWorkers(body.workers, body.isPublic);
       }
-      return new Response(JSON.stringify({ workers: this.previewWorkers }), {
+      return new Response(JSON.stringify({
+        workers: this.previewWorkers,
+        isPublic: this.previewIsPublic,
+      }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
     if (url.pathname === '/preview' && request.method === 'GET') {
-      return new Response(JSON.stringify({ workers: this.previewWorkers }), {
+      return new Response(JSON.stringify({
+        workers: this.previewWorkers,
+        isPublic: this.previewIsPublic,
+      }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -246,15 +279,34 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   // Set preview workers and broadcast to all connected clients
-  async setPreviewWorkers(workers: string[]): Promise<void> {
+  async setPreviewWorkers(workers: string[], isPublic?: boolean): Promise<void> {
     this.previewWorkers = workers;
+    if (workers.length === 0) {
+      this.previewIsPublic = false;
+    } else if (typeof isPublic === 'boolean') {
+      this.previewIsPublic = isPublic;
+    }
     this.previewVersion++;
-    await this.ctx.storage.put('previewWorkers', workers);
-    await this.ctx.storage.put('previewVersion', this.previewVersion);
+    this.ctx.storage.kv.put('previewWorkers', workers);
+    this.ctx.storage.kv.put('previewVersion', this.previewVersion);
+    this.ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
     this.broadcast({
       type: 'preview_state',
       workers: this.previewWorkers,
       version: this.previewVersion,
+      isPublic: this.previewIsPublic,
+    });
+  }
+
+  // Update preview visibility without bumping version (avoid iframe reloads)
+  async setPreviewVisibility(isPublic: boolean): Promise<void> {
+    this.previewIsPublic = isPublic;
+    this.ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
+    this.broadcast({
+      type: 'preview_state',
+      workers: this.previewWorkers,
+      version: this.previewVersion,
+      isPublic: this.previewIsPublic,
     });
   }
 
@@ -262,10 +314,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   async addPreviewWorker(worker: string): Promise<void> {
     if (!this.previewWorkers.includes(worker)) {
       this.previewWorkers.push(worker);
-      await this.ctx.storage.put('previewWorkers', this.previewWorkers);
+      this.ctx.storage.kv.put('previewWorkers', this.previewWorkers);
       this.broadcast({
         type: 'preview_state',
         workers: this.previewWorkers,
+        isPublic: this.previewIsPublic,
       });
     }
   }
@@ -275,10 +328,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const index = this.previewWorkers.indexOf(worker);
     if (index !== -1) {
       this.previewWorkers.splice(index, 1);
-      await this.ctx.storage.put('previewWorkers', this.previewWorkers);
+      if (this.previewWorkers.length === 0) {
+        this.previewIsPublic = false;
+        this.ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
+      }
+      this.ctx.storage.kv.put('previewWorkers', this.previewWorkers);
       this.broadcast({
         type: 'preview_state',
         workers: this.previewWorkers,
+        isPublic: this.previewIsPublic,
       });
     }
   }

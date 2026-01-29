@@ -4,7 +4,7 @@
 
 import type { RouteContext } from '../types.js';
 import { isSignedToken, validateSignedToken } from '../signed-tokens.js';
-import { getThreadStub } from '../helpers/stubs.js';
+import { getOrgStub, getThreadStub } from '../helpers/stubs.js';
 import { json } from '../helpers/response.js';
 
 export async function handleThreadPreview({ req, env, match }: RouteContext): Promise<Response> {
@@ -27,11 +27,40 @@ export async function handleThreadPreview({ req, env, match }: RouteContext): Pr
   }
 
   const workers = body.workers.map((n) => n.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 63));
+  let isPublic = false;
+  if (workers[0]) {
+    try {
+      const orgStub = getOrgStub(env, payload.org_id);
+      const script = await orgStub.getWorkerScript(workers[0]);
+      if (script) {
+        isPublic = script.is_public;
+      } else {
+        const stored = await env.API_TOKENS.get(`script_org:${workers[0]}`);
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored) as { is_public?: boolean };
+            if (typeof parsed.is_public === 'boolean') {
+              isPublic = parsed.is_public;
+            } else {
+              isPublic = true;
+            }
+          } catch {
+            isPublic = true;
+          }
+        } else {
+          // Default for newly registered scripts
+          isPublic = true;
+        }
+      }
+    } catch (err) {
+      console.error('[handleThreadPreview] Failed to load app visibility', err);
+    }
+  }
   const res = await getThreadStub(env, threadId).fetch(
     new Request('http://internal/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workers }),
+      body: JSON.stringify({ workers, isPublic }),
     })
   );
 
