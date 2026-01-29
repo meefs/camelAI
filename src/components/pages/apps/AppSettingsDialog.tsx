@@ -20,6 +20,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AlertCircle, ExternalLink, Trash2 } from 'lucide-react';
 import { getAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
+import { buildSetAppPublicPayload } from '@/lib/app-visibility';
 
 interface AppSettingsDialogProps {
   open: boolean;
@@ -132,11 +133,10 @@ export function AppSettingsDialog({
 
     setPendingAction('save');
     fetcher.submit(
-      {
-        intent: 'setAppPublic',
+      buildSetAppPublicPayload({
         scriptName: app.script_name,
-        isPublic: String(isPublic),
-      },
+        isPublic,
+      }),
       { method: 'POST', action: '/apps' }
     );
   };

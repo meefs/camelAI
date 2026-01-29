@@ -41,6 +41,7 @@ import {
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
 import { cn } from '@/lib/utils';
+import { buildSetAppPublicPayload } from '@/lib/app-visibility';
 import {
   type SDKEvent,
   applyStreamingEventToMessage,
@@ -226,12 +227,11 @@ function ShareStatusButton({
 
     pendingValueRef.current = nextIsPublic;
     fetcher.submit(
-      {
-        intent: 'setAppPublic',
+      buildSetAppPublicPayload({
         scriptName,
-        isPublic: value,
-        ...(threadId ? { threadId } : {}),
-      },
+        isPublic: nextIsPublic,
+        threadId,
+      }),
       { method: 'POST', action: '/apps' }
     );
   };

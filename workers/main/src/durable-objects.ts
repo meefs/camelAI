@@ -114,6 +114,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const storedIsPublic = ctx.storage.kv.get<boolean>('previewIsPublic');
       if (typeof storedIsPublic === 'boolean') {
         this.previewIsPublic = storedIsPublic;
+      } else if (this.previewWorkers[0]) {
+        try {
+          const stored = await this.env.API_TOKENS.get(`script_org:${this.previewWorkers[0]}`);
+          if (stored) {
+            const parsed = JSON.parse(stored) as { is_public?: boolean };
+            if (typeof parsed.is_public === 'boolean') {
+              this.previewIsPublic = parsed.is_public;
+              ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
+            }
+          }
+        } catch (err) {
+          console.error('[ChatThreadDO] Failed to backfill preview visibility', err);
+        }
       }
 
       // Restore pending connection setups from storage (sync KV)
