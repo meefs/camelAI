@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Image } from 'lucide-react';
+import { ArrowRight, Image } from 'lucide-react';
 import type { WorkerScriptWithCreator } from '@/types';
 import { cn } from '@/lib/utils';
 
@@ -43,36 +43,57 @@ export function SlimAppCard({ app, renderedAt, onStartChat }: SlimAppCardProps) 
       type="button"
       onClick={() => onStartChat(app)}
       className={cn(
-        'group flex flex-col overflow-hidden rounded-xl',
-        'border border-border bg-card',
-        'hover:shadow-md transition-all duration-200',
-        'w-[180px] shrink-0'
+        'group relative aspect-video overflow-hidden rounded-xl',
+        'border border-border cursor-pointer shadow-sm',
+        'transition-all duration-[250ms] ease-in-out',
+        'hover:border-ring',
+        'hover:shadow-md',
+        'w-[260px] shrink-0'
       )}
     >
-      <div className="relative aspect-video bg-gradient-to-br from-muted/60 to-muted overflow-hidden">
+      <div className="absolute inset-0">
         {previewUrl && !previewFailed ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={previewUrl}
             alt={app.script_name}
-            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+            className="w-full h-full object-cover transition-transform duration-[250ms] ease-in-out group-hover:scale-105"
             onError={() => setPreviewFailed(true)}
           />
         ) : (
-          <div className="flex items-center justify-center h-full">
+          <div className="flex items-center justify-center h-full bg-gradient-to-br from-muted/60 to-muted">
             <Image className="size-6 text-muted-foreground/40" />
           </div>
         )}
       </div>
 
-      <div className="p-3">
-        <p className="font-medium text-sm truncate">{app.script_name}</p>
-        <div className="flex items-center gap-1.5 mt-1">
-          <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-          <span className="text-xs text-muted-foreground">
-            {getRelativeTime(app.updated_at, renderedAt)}
-          </span>
+      <div
+        className={cn(
+          'absolute bottom-3 left-3 right-3',
+          'bg-background/65 backdrop-blur-md border border-white/10',
+          'rounded-lg px-3 py-2 flex items-center justify-between',
+          'shadow-[0_10px_25px_rgba(0,0,0,0.28)]',
+          'transition-colors duration-[250ms] ease-in-out',
+          'group-hover:bg-background/75'
+        )}
+      >
+        <div className="min-w-0">
+          <p className="font-medium text-sm truncate text-foreground">{app.script_name}</p>
+          <div className="flex items-center gap-1.5">
+            <div className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+            <span className="text-xs text-muted-foreground">
+              {getRelativeTime(app.updated_at, renderedAt)}
+            </span>
+          </div>
         </div>
+        <ArrowRight
+          className={cn(
+            'size-4 text-muted-foreground shrink-0',
+            'transition-all duration-[250ms] ease-in-out',
+            'opacity-0 translate-x-2',
+            'group-hover:opacity-100 group-hover:translate-x-0'
+          )}
+        />
       </div>
     </button>
   );

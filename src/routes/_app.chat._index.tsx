@@ -1,5 +1,6 @@
 import { waitUntil } from 'cloudflare:workers';
-import { useLoaderData } from 'react-router';
+import { useEffect, useRef } from 'react';
+import { useLoaderData, useRevalidator } from 'react-router';
 import type { Route } from './+types/_app.chat._index';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
@@ -8,6 +9,7 @@ import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { Integration, WorkerScriptWithCreator } from '@/types';
+import { useAuth } from '@/contexts/AuthContext';
 
 export function meta() {
   return [
@@ -145,6 +147,17 @@ export default function NewChatPage() {
     connections,
     renderedAt,
   } = useLoaderData<typeof loader>();
+  const { currentWorkspace } = useAuth();
+  const revalidator = useRevalidator();
+  const prevWorkspaceRef = useRef(currentWorkspace?.id);
+
+  useEffect(() => {
+    const nextWorkspaceId = currentWorkspace?.id;
+    if (nextWorkspaceId && nextWorkspaceId !== prevWorkspaceRef.current) {
+      prevWorkspaceRef.current = nextWorkspaceId;
+      revalidator.revalidate();
+    }
+  }, [currentWorkspace?.id, revalidator]);
 
   if (!workspaceId) {
     return <NoWorkspacesError />;

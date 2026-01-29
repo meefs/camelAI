@@ -20,9 +20,10 @@ export function ConnectedTools({ connections, onSelect }: ConnectedToolsProps) {
             type="button"
             onClick={() => onSelect(connection)}
             className={cn(
-              'inline-flex items-center gap-2 px-4 py-2.5 rounded-lg',
+              'inline-flex items-center gap-2 px-4 py-2.5 rounded-lg cursor-pointer',
               'border border-border bg-card hover:bg-accent/50',
-              'transition-all duration-200 text-sm'
+              'transition-all duration-200 ease-out text-sm',
+              'hover:border-ring hover:shadow-md'
             )}
           >
             <IntegrationIcon type={connection.integration_type} size={16} />

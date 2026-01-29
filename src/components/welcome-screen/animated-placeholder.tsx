@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 
 export const PLACEHOLDER_PROMPTS = [
@@ -12,6 +12,28 @@ export const PLACEHOLDER_PROMPTS = [
   'Create a landing page for my product...',
   'Make an internal tool to manage users...',
   'Build a simple CRM for my business...',
+  
+  // Specific SaaS replacements
+  'Make an NPS survey that triggers after signup...',
+  'Build a booking page that checks my calendar...',
+  'Create an invoice generator that pulls from Stripe...',
+  'Make a changelog page I can update easily...',
+  
+  // Data-forward (camelAI heritage)
+  'Show me which customers churned last month...',
+  'Build a report combining Stripe and PostHog data...',
+  'Create a dashboard for my Snowflake metrics...',
+  
+  // Delightfully specific
+  'Make a "link in bio" page with click tracking...',
+  'Build a bug report form for my team...',
+  'Create a status page for my API...',
+  'Make a simple poll I can share on Twitter...',
+  
+  // Shows the "just ask" magic
+  'Help me figure out why signups dropped...',
+  'I need to send a personalized email to 50 users...',
+  'Can you connect to my Postgres and show me...',
 ];
 
 const TYPING_SPEED = 50;
@@ -26,15 +48,56 @@ interface UseAnimatedPlaceholderOptions {
   prompts?: string[];
 }
 
+function shuffleArray(items: string[]) {
+  const list = [...items];
+  for (let i = list.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [list[i], list[j]] = [list[j], list[i]];
+  }
+  return list;
+}
+
+function ensureNoAdjacentDuplicates(items: string[]) {
+  const list = [...items];
+  for (let i = 1; i < list.length; i += 1) {
+    if (list[i] !== list[i - 1]) continue;
+    const swapIndex = list.findIndex((item, idx) => idx > i && item !== list[i - 1]);
+    if (swapIndex !== -1) {
+      [list[i], list[swapIndex]] = [list[swapIndex], list[i]];
+    }
+  }
+  if (list.length > 1 && list[0] === list[list.length - 1]) {
+    const swapIndex = list.findIndex((item, idx) => idx > 0 && idx < list.length - 1 && item !== list[0]);
+    if (swapIndex !== -1) {
+      [list[list.length - 1], list[swapIndex]] = [list[swapIndex], list[list.length - 1]];
+    }
+  }
+  return list;
+}
+
+function buildSequence(prompts: string[]) {
+  if (prompts.length <= 1) return [...prompts];
+  const shuffled = ensureNoAdjacentDuplicates(shuffleArray(prompts));
+  const startIndex = Math.floor(Math.random() * shuffled.length);
+  const rotated = startIndex
+    ? [...shuffled.slice(startIndex), ...shuffled.slice(0, startIndex)]
+    : shuffled;
+  return ensureNoAdjacentDuplicates(rotated);
+}
+
 function useAnimatedPlaceholder({ isActive, prompts = PLACEHOLDER_PROMPTS }: UseAnimatedPlaceholderOptions) {
+  const [sequence, setSequence] = useState(() => buildSequence(prompts));
   const [text, setText] = useState('');
   const [state, setState] = useState<AnimationState>('typing');
   const [promptIndex, setPromptIndex] = useState(0);
   const [charIndex, setCharIndex] = useState(0);
-  const promptsRef = useRef(prompts);
 
   useEffect(() => {
-    promptsRef.current = prompts;
+    setSequence(buildSequence(prompts));
+    setText('');
+    setState('typing');
+    setPromptIndex(0);
+    setCharIndex(0);
   }, [prompts]);
 
   useEffect(() => {
@@ -46,7 +109,7 @@ function useAnimatedPlaceholder({ isActive, prompts = PLACEHOLDER_PROMPTS }: Use
       return;
     }
 
-    const list = promptsRef.current;
+    const list = sequence;
     if (!list.length) return;
 
     const currentPrompt = list[promptIndex % list.length];
@@ -94,7 +157,7 @@ function useAnimatedPlaceholder({ isActive, prompts = PLACEHOLDER_PROMPTS }: Use
     }, delay);
 
     return () => window.clearTimeout(timeout);
-  }, [isActive, state, promptIndex, charIndex]);
+  }, [isActive, state, promptIndex, charIndex, sequence]);
 
   return text;
 }
