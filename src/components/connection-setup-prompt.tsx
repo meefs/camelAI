@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
+import { INTEGRATION_REGISTRY, type DynamicField, type DynamicIntegrationSchema } from '@/lib/integration-registry';
 import {
   Dialog,
   DialogContent,
@@ -23,12 +23,14 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { AlertCircle, Plug } from 'lucide-react';
+import { MarkdownRenderer } from '@/components/markdown-renderer';
 
 export interface ConnectionSetupPromptData {
   requestId: string;
   integrationType: string;
   suggestedName?: string;
   message?: string;
+  dynamicSchema?: DynamicIntegrationSchema;
 }
 
 export interface ConnectionSetupResponse {
@@ -63,9 +65,13 @@ export function ConnectionSetupPrompt({
 
   const typeDef = integrationTypes.find((t) => t.type === data.integrationType);
 
+  // Check if this is a dynamic "other" integration with custom fields
+  const isDynamic = data.integrationType === 'other' && data.dynamicSchema && data.dynamicSchema.fields.length > 0;
+  const dynamicSchema = data.dynamicSchema;
+
   // Set defaults from config schema on mount
   useEffect(() => {
-    if (typeDef) {
+    if (typeDef && !isDynamic) {
       const defaultConfig: Record<string, unknown> = {};
       for (const field of typeDef.configSchema) {
         if (field.default !== undefined) {
@@ -74,7 +80,7 @@ export function ConnectionSetupPrompt({
       }
       setConfig(defaultConfig);
     }
-  }, [typeDef]);
+  }, [typeDef, isDynamic]);
 
   const handleCancel = () => {
     onSubmit({
@@ -87,7 +93,9 @@ export function ConnectionSetupPrompt({
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
-      if (!typeDef) return;
+
+      // For dynamic mode, we don't need typeDef
+      if (!isDynamic && !typeDef) return;
 
       setError(null);
       setIsSubmitting(true);
@@ -99,35 +107,63 @@ export function ConnectionSetupPrompt({
         return;
       }
 
-      // Validate required fields
-      for (const field of typeDef.configSchema) {
-        if (field.required && !config[field.name]) {
-          setError(`${field.label} is required`);
-          setIsSubmitting(false);
-          return;
+      if (isDynamic && dynamicSchema) {
+        // Validate dynamic fields
+        for (const field of dynamicSchema.fields) {
+          const value = credentials[field.name];
+          // Check for undefined, null, or empty string, but allow 0
+          if (field.required && (value == null || value === '')) {
+            setError(`${field.label} is required`);
+            setIsSubmitting(false);
+            return;
+          }
         }
-      }
 
-      for (const field of typeDef.credentialSchema) {
-        if (field.required && !credentials[field.name]) {
-          setError(`${field.label} is required`);
-          setIsSubmitting(false);
-          return;
+        onSubmit({
+          requestId: data.requestId,
+          cancelled: false,
+          integration: {
+            type: data.integrationType,
+            name: name.trim(),
+            config: {}, // Config is handled server-side for dynamic integrations
+            credentials,
+          },
+        });
+      } else if (typeDef) {
+        // Validate required fields for static integrations
+        for (const field of typeDef.configSchema) {
+          const value = config[field.name];
+          // Check for undefined, null, or empty string, but allow 0
+          if (field.required && (value == null || value === '')) {
+            setError(`${field.label} is required`);
+            setIsSubmitting(false);
+            return;
+          }
         }
-      }
 
-      onSubmit({
-        requestId: data.requestId,
-        cancelled: false,
-        integration: {
-          type: data.integrationType,
-          name: name.trim(),
-          config,
-          credentials,
-        },
-      });
+        for (const field of typeDef.credentialSchema) {
+          const value = credentials[field.name];
+          // Check for undefined, null, or empty string, but allow 0
+          if (field.required && (value == null || value === '')) {
+            setError(`${field.label} is required`);
+            setIsSubmitting(false);
+            return;
+          }
+        }
+
+        onSubmit({
+          requestId: data.requestId,
+          cancelled: false,
+          integration: {
+            type: data.integrationType,
+            name: name.trim(),
+            config,
+            credentials,
+          },
+        });
+      }
     },
-    [data.requestId, data.integrationType, typeDef, name, config, credentials, onSubmit]
+    [data.requestId, data.integrationType, typeDef, isDynamic, dynamicSchema, name, config, credentials, onSubmit]
   );
 
   const updateConfig = (field: string, value: unknown) => {
@@ -138,7 +174,8 @@ export function ConnectionSetupPrompt({
     setCredentials((prev) => ({ ...prev, [field]: value }));
   };
 
-  if (!typeDef) {
+  // Allow dynamic mode even without typeDef
+  if (!typeDef && !isDynamic) {
     return (
       <Dialog open onOpenChange={(open) => !open && handleCancel()}>
         <DialogContent className="sm:max-w-lg">
@@ -161,16 +198,21 @@ export function ConnectionSetupPrompt({
     );
   }
 
+  // Get display info - use dynamic schema for dynamic mode, or typeDef for static mode
+  const displayName = isDynamic && dynamicSchema ? dynamicSchema.displayName : typeDef?.displayName ?? 'Integration';
+  const description = data.message || (isDynamic && dynamicSchema ? dynamicSchema.description : typeDef?.description) || '';
+  const instructions = isDynamic && dynamicSchema ? dynamicSchema.instructions : undefined;
+
   return (
     <Dialog open onOpenChange={(open) => !open && handleCancel()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Plug className="size-5" />
-            Add {typeDef.displayName}
+            Add {displayName}
           </DialogTitle>
           <DialogDescription>
-            {data.message || typeDef.description}
+            {description}
           </DialogDescription>
         </DialogHeader>
 
@@ -184,6 +226,13 @@ export function ConnectionSetupPrompt({
                 </Alert>
               )}
 
+              {/* Instructions for dynamic integrations (rendered as markdown) */}
+              {instructions && (
+                <div className="rounded-md border bg-muted/50 p-3 text-sm">
+                  <MarkdownRenderer content={instructions} />
+                </div>
+              )}
+
               {/* Name field */}
               <div className="grid gap-1.5">
                 <Label htmlFor="name">
@@ -194,7 +243,7 @@ export function ConnectionSetupPrompt({
                   id="name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder={typeDef.displayName}
+                  placeholder={displayName}
                   required
                 />
                 <p className="text-xs text-muted-foreground">
@@ -202,8 +251,35 @@ export function ConnectionSetupPrompt({
                 </p>
               </div>
 
-              {/* Config fields */}
-              {typeDef.configSchema.map((field) => (
+              {/* Dynamic fields for "other" integrations with custom schema */}
+              {isDynamic && dynamicSchema && (
+                <>
+                  <div className="mt-2 border-t pt-4">
+                    <p className="mb-3 text-sm font-medium">Credentials</p>
+                  </div>
+                  {dynamicSchema.fields.map((field) => (
+                    <div key={field.name} className="grid gap-1.5">
+                      <Label htmlFor={`dyn-${field.name}`}>
+                        {field.label}
+                        {field.required && <span className="ml-1 text-red-400">*</span>}
+                      </Label>
+                      <Input
+                        id={`dyn-${field.name}`}
+                        type={field.type === 'password' ? 'password' : field.type === 'number' ? 'number' : field.type === 'url' ? 'url' : 'text'}
+                        value={(credentials[field.name] as string) || ''}
+                        onChange={(e) => updateCredentials(field.name, field.type === 'number' ? (e.target.value === '' ? undefined : Number(e.target.value)) : e.target.value)}
+                        placeholder={field.placeholder}
+                      />
+                      {field.description && (
+                        <p className="text-xs text-muted-foreground">{field.description}</p>
+                      )}
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Static config fields (non-dynamic mode) */}
+              {!isDynamic && typeDef && typeDef.configSchema.map((field) => (
                 <div key={field.name} className="grid gap-1.5">
                   <Label htmlFor={field.name}>
                     {field.label}
@@ -233,7 +309,7 @@ export function ConnectionSetupPrompt({
                       onChange={(e) =>
                         updateConfig(
                           field.name,
-                          field.type === 'number' ? Number(e.target.value) : e.target.value
+                          field.type === 'number' ? (e.target.value === '' ? undefined : Number(e.target.value)) : e.target.value
                         )
                       }
                       placeholder={field.placeholder}
@@ -242,8 +318,8 @@ export function ConnectionSetupPrompt({
                 </div>
               ))}
 
-              {/* Credential fields */}
-              {typeDef.credentialSchema.length > 0 && (
+              {/* Static credential fields (non-dynamic mode) */}
+              {!isDynamic && typeDef && typeDef.credentialSchema.length > 0 && (
                 <>
                   <div className="mt-2 border-t pt-4">
                     <p className="mb-3 text-sm font-medium">Credentials</p>
@@ -266,8 +342,8 @@ export function ConnectionSetupPrompt({
                 </>
               )}
 
-              {/* OAuth notice */}
-              {typeDef.authMethod === 'oauth2' && (
+              {/* OAuth notice (non-dynamic mode only) */}
+              {!isDynamic && typeDef?.authMethod === 'oauth2' && (
                 <Alert>
                   <AlertDescription>
                     This connection uses OAuth 2.0. After saving, you may need to

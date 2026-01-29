@@ -8,6 +8,24 @@ export interface PreviewState {
   isPublic?: boolean;
 }
 
+// Dynamic field for custom integrations (matches src/lib/integration-registry.ts)
+export interface DynamicField {
+  name: string;
+  label: string;
+  type: 'password' | 'text' | 'url' | 'number';
+  required: boolean;
+  placeholder?: string;
+  description?: string;
+}
+
+// Dynamic schema for custom "other" integrations
+export interface DynamicIntegrationSchema {
+  displayName: string;
+  description?: string;
+  instructions?: string;
+  fields: DynamicField[];
+}
+
 // Connection setup prompt request
 export interface ConnectionSetupRequest {
   requestId: string;
@@ -15,6 +33,7 @@ export interface ConnectionSetupRequest {
   suggestedName?: string; // Optional: suggested name for the connection
   message?: string; // Optional: message to show user
   createdAt: number;
+  dynamicSchema?: DynamicIntegrationSchema; // Optional: custom fields for "other" type
 }
 
 // Connection setup response from user
@@ -199,7 +218,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // HTTP API for connection setup prompts (called by MCP server)
     if (url.pathname === '/connection-setup/prompt' && request.method === 'POST') {
-      const body = await request.json() as ConnectionSetupRequest & { mcpDoId?: string };
+      const body = await request.json() as ConnectionSetupRequest & { mcpDoId?: string; dynamicSchema?: DynamicIntegrationSchema };
       const requestId = body.requestId || crypto.randomUUID();
       const mcpDoId = body.mcpDoId;
 
@@ -232,6 +251,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         integrationType: body.integrationType,
         suggestedName: body.suggestedName,
         message: body.message,
+        dynamicSchema: body.dynamicSchema,
       });
 
       return new Response(JSON.stringify({ requestId }), {

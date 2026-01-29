@@ -11,7 +11,7 @@ import { z } from 'zod';
 import type { ApiTokenData } from './api-tokens';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
-import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse } from './durable-objects';
+import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField } from './durable-objects';
 import type { WorkspaceContainer, WorkspaceContainerEnv } from './workspace-container';
 import { getWorkspaceContainer } from './workspace-container';
 import type { Integration } from '../../../src/types';
@@ -302,18 +302,27 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         const workspaceStub = this.getWorkspaceStub(workspaceId);
         const rawIntegrations = await workspaceStub.getIntegrations();
 
-        // Map from DO format to Integration type
-        const integrations = rawIntegrations.map(r => ({
-          id: r.id,
-          integration_type: r.integration_type,
-          name: r.name,
-          category: r.category,
-          auth_method: r.auth_method,
-          enabled: Boolean(r.enabled),
-          has_credentials: Boolean(r.credentials_encrypted),
-          created_at: r.created_at,
-          updated_at: r.updated_at,
-        }));
+        // Map from DO format to Integration type (including config for dynamic field detection)
+        const integrations = rawIntegrations.map(r => {
+          let parsedConfig: Record<string, unknown> = {};
+          try {
+            parsedConfig = r.config ? JSON.parse(r.config) : {};
+          } catch {
+            // Ignore parse errors
+          }
+          return {
+            id: r.id,
+            integration_type: r.integration_type,
+            name: r.name,
+            category: r.category,
+            auth_method: r.auth_method,
+            enabled: Boolean(r.enabled),
+            has_credentials: Boolean(r.credentials_encrypted),
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            config: parsedConfig,
+          };
+        });
 
         let filtered = integrations;
         if (category) {
@@ -324,8 +333,12 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         }
 
         const result = filtered.map((i) => {
+          // For "other" type with dynamic_fields, use those for env var suffixes
+          const dynamicFields = i.integration_type === 'other' && i.config.dynamic_fields
+            ? (i.config.dynamic_fields as DynamicField[])
+            : undefined;
           const envVarPrefix = `INT_${normalizeEnvVarName(i.integration_type)}_${normalizeEnvVarName(i.name)}`;
-          const envVarSuffixes = getEnvVarSuffixesForType(i.integration_type);
+          const envVarSuffixes = getEnvVarSuffixesForType(i.integration_type, dynamicFields);
           return {
             id: i.id,
             type: i.integration_type,
@@ -339,6 +352,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             // Env var info for accessing credentials
             env_var_prefix: envVarPrefix,
             env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
+            // For dynamic "other" integrations, include the display name
+            display_name: i.integration_type === 'other' && i.config.display_name
+              ? (i.config.display_name as string)
+              : undefined,
           };
         });
 
@@ -499,11 +516,11 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     // Prompt user to set up a connection via UI modal
     this.server.tool(
       'prompt_connection_setup',
-      'Prompt the user to set up a new integration/connection through a UI modal in the chat interface. This allows the user to securely enter credentials without exposing them in the chat. The tool will wait for the user to complete the setup and return the result.',
+      'Prompt the user to set up a new integration/connection through a UI modal in the chat interface. This allows the user to securely enter credentials without exposing them in the chat. The tool will wait for the user to complete the setup and return the result. For custom integrations, use integration_type="other" with the fields parameter to define custom credential fields.',
       {
         integration_type: z
           .string()
-          .describe('The type of integration to set up (e.g., "stripe", "notion", "slack", "github"). Use list_integration_types to see available types.'),
+          .describe('The type of integration to set up (e.g., "stripe", "notion", "slack", "github", "other"). Use "other" for custom APIs not in the registry.'),
         suggested_name: z
           .string()
           .optional()
@@ -512,8 +529,32 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           .string()
           .optional()
           .describe('Optional: A message to show the user explaining why this connection is needed.'),
+        display_name: z
+          .string()
+          .optional()
+          .describe('Optional: Display name for custom integrations (when integration_type="other"). E.g., "Acme API"'),
+        description: z
+          .string()
+          .optional()
+          .describe('Optional: Description for custom integrations. E.g., "Connect to Acme\'s product catalog API"'),
+        instructions: z
+          .string()
+          .optional()
+          .describe('Optional: Setup instructions shown above the form. Supports markdown. E.g., "Find your API key in Acme dashboard under Settings > API Keys"'),
+        fields: z
+          .array(z.object({
+            name: z.string().describe('Field name for env var suffix (e.g., "api_key" becomes _API_KEY)'),
+            label: z.string().describe('Display label shown in UI'),
+            type: z.enum(['password', 'text', 'url', 'number']).describe('Input type'),
+            required: z.boolean().describe('Whether the field is required'),
+            placeholder: z.string().optional().describe('Placeholder text'),
+            description: z.string().optional().describe('Help text below input'),
+          }))
+          .max(10)
+          .optional()
+          .describe('Optional: Custom credential fields for "other" integrations. Max 10 fields.'),
       },
-      async ({ integration_type, suggested_name, message }) => {
+      async ({ integration_type, suggested_name, message, display_name, description, instructions, fields }) => {
         const { userId, workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ error: 'No workspace context available' });
@@ -528,9 +569,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           });
         }
 
-        // Get workspace stub for creating integration later
-        const workspaceStub = this.getWorkspaceStub(workspaceId);
-
         // Validate integration type and get definition for default name
         const definition = getIntegrationDefinition(integration_type);
         if (!definition) {
@@ -540,8 +578,20 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           });
         }
 
+        // Build dynamic schema for "other" type with custom fields
+        let dynamicSchema: DynamicIntegrationSchema | undefined;
+        if (integration_type === 'other' && fields && fields.length > 0) {
+          dynamicSchema = {
+            displayName: display_name || suggested_name || 'Custom Integration',
+            description: description,
+            instructions: instructions,
+            fields: fields,
+          };
+        }
+
         // Generate default name if not provided (e.g., "Stripe", "Notion")
-        const defaultName = suggested_name || definition.displayName;
+        // For dynamic "other" integrations, prefer the display_name
+        const defaultName = suggested_name || (integration_type === 'other' && display_name) || definition.displayName;
 
         const requestId = crypto.randomUUID();
         const timeoutMs = 30 * 60 * 1000; // 30 minutes
@@ -570,7 +620,9 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                 createdAt: Date.now(),
                 // Callback info for RPC
                 mcpDoId,
-              } as ConnectionSetupRequest & { mcpDoId: string }),
+                // Dynamic schema for custom "other" integrations
+                dynamicSchema,
+              } as ConnectionSetupRequest & { mcpDoId: string; dynamicSchema?: DynamicIntegrationSchema }),
             })
           );
 
@@ -608,26 +660,39 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
           // Create the integration
           const { type, name, config, credentials } = userResponse.integration;
-          const definition = getIntegrationDefinition(type);
+          const intDefinition = getIntegrationDefinition(type);
 
-          if (!definition) {
+          if (!intDefinition) {
             return this.textResponse({
               success: false,
               error: `Unknown integration type from user response: ${type}`,
             });
           }
 
+          // For dynamic "other" integrations, store the field definitions in config
+          // so env var mapping can use them later
+          let finalConfig = config;
+          if (type === 'other' && dynamicSchema && dynamicSchema.fields.length > 0) {
+            finalConfig = {
+              ...config,
+              display_name: dynamicSchema.displayName,
+              dynamic_fields: dynamicSchema.fields,
+            };
+          }
+
           // Encrypt credentials and create integration
           const credentialsEncrypted = await encryptCredentials(credentials, this.env.INTEGRATION_SECRET_KEY);
           const integrationId = crypto.randomUUID();
 
+          // Get workspace stub for creating integration
+          const workspaceStub = this.getWorkspaceStub(workspaceId);
           await workspaceStub.createIntegration(
             integrationId,
             type,
             name,
-            definition.category,
-            definition.authMethod,
-            JSON.stringify(config),
+            intDefinition.category,
+            intDefinition.authMethod,
+            JSON.stringify(finalConfig),
             credentialsEncrypted,
             userId
           );
@@ -637,8 +702,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             .refreshIntegrationEnvVars(workspaceId)
             .catch(() => {});
 
+          // For dynamic "other" integrations, generate env var suffixes from field names
+          const dynamicFields = type === 'other' && dynamicSchema?.fields ? dynamicSchema.fields : undefined;
           const envVarPrefix = `INT_${normalizeEnvVarName(type)}_${normalizeEnvVarName(name)}`;
-          const envVarSuffixes = getEnvVarSuffixesForType(type);
+          const envVarSuffixes = getEnvVarSuffixesForType(type, dynamicFields);
           return this.textResponse({
             success: true,
             integration: {

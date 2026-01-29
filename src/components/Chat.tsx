@@ -1091,6 +1091,7 @@ export default function Chat({ threadId, workspaceId, initialMessages, threadTit
             integrationType: data.integrationType as string,
             suggestedName: data.suggestedName as string | undefined,
             message: data.message as string | undefined,
+            dynamicSchema: data.dynamicSchema as ConnectionSetupPromptData['dynamicSchema'],
           });
         }
       } catch (e) {

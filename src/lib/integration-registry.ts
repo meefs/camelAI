@@ -1,5 +1,29 @@
 import type { IntegrationCategory, IntegrationAuthMethod } from '@/types';
 
+/**
+ * Dynamic field definition for custom "other" integrations.
+ * Allows AI agents to define custom credential fields at runtime.
+ */
+export interface DynamicField {
+  name: string;           // Field name for env var suffix (e.g., "api_key" -> "_API_KEY")
+  label: string;          // Display label shown in UI
+  type: 'password' | 'text' | 'url' | 'number';
+  required: boolean;
+  placeholder?: string;
+  description?: string;   // Help text displayed below input
+}
+
+/**
+ * Dynamic integration schema for custom "other" integrations.
+ * Passed from MCP tool to UI to render custom form fields.
+ */
+export interface DynamicIntegrationSchema {
+  displayName: string;
+  description?: string;
+  instructions?: string;  // Setup instructions shown above form
+  fields: DynamicField[];
+}
+
 export interface ConfigField {
   name: string;
   label: string;

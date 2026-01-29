@@ -53,6 +53,27 @@ describe('getEnvVarSuffixesForType', () => {
   it('returns API_KEY for unknown types', () => {
     expect(getEnvVarSuffixesForType('some_unknown_type')).toEqual(['API_KEY']);
   });
+
+  it('returns default "other" suffixes when no dynamic fields', () => {
+    expect(getEnvVarSuffixesForType('other')).toEqual(['API_KEY', 'API_SECRET', 'CLIENT_ID', 'CLIENT_SECRET', 'BASE_URL']);
+  });
+
+  it('returns suffixes from dynamic fields for "other" type', () => {
+    const dynamicFields = [
+      { name: 'api_key', label: 'API Key', type: 'password' as const, required: true },
+      { name: 'store_id', label: 'Store ID', type: 'text' as const, required: true },
+      { name: 'webhook_secret', label: 'Webhook Secret', type: 'password' as const, required: false },
+    ];
+    expect(getEnvVarSuffixesForType('other', dynamicFields)).toEqual(['API_KEY', 'STORE_ID', 'WEBHOOK_SECRET']);
+  });
+
+  it('normalizes dynamic field names to valid env var suffixes', () => {
+    const dynamicFields = [
+      { name: 'api-key', label: 'API Key', type: 'password' as const, required: true },
+      { name: 'My Custom Field', label: 'Custom', type: 'text' as const, required: false },
+    ];
+    expect(getEnvVarSuffixesForType('other', dynamicFields)).toEqual(['API_KEY', 'MY_CUSTOM_FIELD']);
+  });
 });
 
 describe('mapCredentialsToEnvVars', () => {
@@ -225,6 +246,54 @@ describe('mapCredentialsToEnvVars', () => {
     );
     expect(env).toEqual({
       INT_UNKNOWN_SERVICE_MY_SERVICE_API_KEY: 'key789',
+    });
+  });
+
+  it('handles dynamic "other" integration with custom fields', () => {
+    const dynamicFields = [
+      { name: 'api_key', label: 'API Key', type: 'password' as const, required: true },
+      { name: 'store_id', label: 'Store ID', type: 'text' as const, required: true },
+    ];
+    const env = mapCredentialsToEnvVars(
+      'Acme API',
+      'other',
+      { api_key: 'acme_key_123', store_id: 'store_456' },
+      { dynamic_fields: dynamicFields, display_name: 'Acme API' }
+    );
+    expect(env).toEqual({
+      INT_OTHER_ACME_API_API_KEY: 'acme_key_123',
+      INT_OTHER_ACME_API_STORE_ID: 'store_456',
+    });
+  });
+
+  it('handles dynamic fields with special characters in names', () => {
+    const dynamicFields = [
+      { name: 'api-key', label: 'API Key', type: 'password' as const, required: true },
+      { name: 'webhook_secret', label: 'Secret', type: 'password' as const, required: false },
+    ];
+    const env = mapCredentialsToEnvVars(
+      'My Service',
+      'other',
+      { 'api-key': 'key123', 'webhook_secret': 'secret456' },
+      { dynamic_fields: dynamicFields }
+    );
+    expect(env).toEqual({
+      INT_OTHER_MY_SERVICE_API_KEY: 'key123',
+      INT_OTHER_MY_SERVICE_WEBHOOK_SECRET: 'secret456',
+    });
+  });
+
+  it('falls back to legacy behavior for "other" without dynamic_fields', () => {
+    const env = mapCredentialsToEnvVars(
+      'Legacy Custom',
+      'other',
+      { api_key: 'key123', api_secret: 'secret456' },
+      { base_url: 'https://api.legacy.com' }
+    );
+    expect(env).toEqual({
+      INT_OTHER_LEGACY_CUSTOM_API_KEY: 'key123',
+      INT_OTHER_LEGACY_CUSTOM_API_SECRET: 'secret456',
+      INT_OTHER_LEGACY_CUSTOM_BASE_URL: 'https://api.legacy.com',
     });
   });
 });

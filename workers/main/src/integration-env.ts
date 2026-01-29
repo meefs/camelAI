@@ -10,10 +10,30 @@
  */
 
 /**
+ * Dynamic field definition (matches DynamicField from durable-objects.ts)
+ */
+export interface DynamicFieldForEnv {
+  name: string;
+  label: string;
+  type: 'password' | 'text' | 'url' | 'number';
+  required: boolean;
+  placeholder?: string;
+  description?: string;
+}
+
+/**
  * Get the env var suffixes that will be generated for a given integration type.
  * Used to inform users/agents what env vars will be available.
+ *
+ * @param integrationType - The integration type (e.g., "stripe", "other")
+ * @param dynamicFields - Optional: For "other" type, the dynamic field definitions
  */
-export function getEnvVarSuffixesForType(integrationType: string): string[] {
+export function getEnvVarSuffixesForType(integrationType: string, dynamicFields?: DynamicFieldForEnv[]): string[] {
+  // For "other" type with dynamic fields, generate suffixes from field names
+  if (integrationType === 'other' && dynamicFields && dynamicFields.length > 0) {
+    return dynamicFields.map(f => normalizeEnvVarName(f.name));
+  }
+
   switch (integrationType) {
     case 'stripe':
       return ['API_KEY', 'SECRET_KEY'];
@@ -79,7 +99,7 @@ export function normalizeEnvVarName(name: string): string {
  * @param integrationName - User-provided name for the integration (e.g., "My Stripe Account")
  * @param integrationType - Integration type (e.g., "stripe", "postgres")
  * @param credentials - Decrypted credentials
- * @param config - Integration config
+ * @param config - Integration config (may include dynamic_fields for "other" type)
  */
 export function mapCredentialsToEnvVars(
   integrationName: string,
@@ -240,12 +260,25 @@ export function mapCredentialsToEnvVars(
       break;
 
     case 'other': {
-      // Generic "other" integration - expose all provided credentials and config
-      if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
-      if (str(credentials.api_secret)) set('API_SECRET', str(credentials.api_secret)!);
-      if (str(credentials.client_id)) set('CLIENT_ID', str(credentials.client_id)!);
-      if (str(credentials.client_secret)) set('CLIENT_SECRET', str(credentials.client_secret)!);
-      if (str(config.base_url)) set('BASE_URL', str(config.base_url)!);
+      // Check for dynamic fields in config (set during dynamic integration creation)
+      const dynamicFields = config.dynamic_fields as DynamicFieldForEnv[] | undefined;
+
+      if (dynamicFields && Array.isArray(dynamicFields) && dynamicFields.length > 0) {
+        // Dynamic "other" integration - map each dynamic field to an env var
+        for (const field of dynamicFields) {
+          const value = str(credentials[field.name]);
+          if (value) {
+            set(normalizeEnvVarName(field.name), value);
+          }
+        }
+      } else {
+        // Legacy "other" integration - expose standard credential fields
+        if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+        if (str(credentials.api_secret)) set('API_SECRET', str(credentials.api_secret)!);
+        if (str(credentials.client_id)) set('CLIENT_ID', str(credentials.client_id)!);
+        if (str(credentials.client_secret)) set('CLIENT_SECRET', str(credentials.client_secret)!);
+        if (str(config.base_url)) set('BASE_URL', str(config.base_url)!);
+      }
       break;
     }
 
