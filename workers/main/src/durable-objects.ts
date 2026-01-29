@@ -118,9 +118,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         try {
           const stored = await this.env.API_TOKENS.get(`script_org:${this.previewWorkers[0]}`);
           if (stored) {
-            const parsed = JSON.parse(stored) as { is_public?: boolean };
-            if (typeof parsed.is_public === 'boolean') {
-              this.previewIsPublic = parsed.is_public;
+            try {
+              const parsed = JSON.parse(stored) as { is_public?: boolean };
+              if (typeof parsed.is_public === 'boolean') {
+                this.previewIsPublic = parsed.is_public;
+              } else {
+                this.previewIsPublic = true;
+              }
+              ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
+            } catch {
+              this.previewIsPublic = true;
               ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
             }
           }
