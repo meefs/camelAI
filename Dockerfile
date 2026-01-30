@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-29-v46-bundle-yarn-berry
+# Version: 2026-01-29-v47-curl-yarn-release
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -97,7 +97,8 @@ RUN bash -c '\
   cp -r /app/skills/deploy-software/templates/react-router/.* /tmp/template-build/ 2>/dev/null || true && \
   cd /tmp/template-build && \
   echo "Downloading Yarn Berry release..." && \
-corepack yarn set version 4.6.0 && \
+  mkdir -p .yarn/releases && \
+  curl -fsSL -o .yarn/releases/yarn-4.6.0.cjs https://repo.yarnpkg.com/4.6.0/packages/yarnpkg-cli/bin/yarn.js && \
   echo "Installing in isolated /tmp/template-build..." && \
   yarn install 2>&1 && \
   echo "=== Yarn install complete ===" && \
