@@ -17,7 +17,7 @@
  *   --help                  Show this help message
  */
 
-import { spawn, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { writeFileSync, existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -168,35 +168,6 @@ function buildPresetUrl(options) {
   return `https://ui.shadcn.com/init?${params.toString()}`;
 }
 
-function runCommand(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(command, args, {
-      stdio: options.silent ? 'pipe' : 'inherit',
-      shell: true,
-      cwd: options.cwd,
-      ...options,
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    if (options.silent) {
-      proc.stdout?.on('data', (data) => { stdout += data; });
-      proc.stderr?.on('data', (data) => { stderr += data; });
-    }
-
-    proc.on('close', (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-      } else {
-        reject(new Error(`Command failed with exit code ${code}\n${stderr}`));
-      }
-    });
-
-    proc.on('error', reject);
-  });
-}
-
 function createComponentsJson(projectDir, options) {
   const componentsJson = {
     "$schema": "https://ui.shadcn.com/schema.json",
@@ -226,22 +197,14 @@ function createComponentsJson(projectDir, options) {
   writeFileSync(join(projectDir, 'components.json'), JSON.stringify(componentsJson, null, 2) + '\n');
 }
 
-function updatePackageJson(projectDir, projectName) {
+function updatePackageJson(projectDir) {
   const pkgPath = join(projectDir, 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-
-  // Update name
-  pkg.name = projectName;
 
   // Remove resolutions (only needed for Docker build with local Verdaccio)
   delete pkg.resolutions;
 
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-}
-
-function getFontPackage(options) {
-  const fontConfig = FONT_CONFIG[options.font] || FONT_CONFIG['inter'];
-  return `${fontConfig.package}@^5.2.5`;
 }
 
 async function fetchPresetConfig(url) {
@@ -370,7 +333,7 @@ async function createProject(projectName, options) {
   createComponentsJson(projectDir, options);
 
   // Update package.json (name, remove resolutions)
-  updatePackageJson(projectDir, projectName);
+  updatePackageJson(projectDir);
 
   // Strip Verdaccio registry from .yarnrc.yml (only needed for Docker build)
   const yarnrcPath = join(projectDir, '.yarnrc.yml');
@@ -385,15 +348,6 @@ async function createProject(projectName, options) {
       .join('\n')
       .replace(/\n{3,}/g, '\n\n'); // Clean up extra blank lines
     writeFileSync(yarnrcPath, yarnrc);
-  }
-
-  // Add font package with yarn add (other shadcn deps are pre-installed in template)
-  console.log('\nInstalling font package...');
-  const fontPkg = getFontPackage(options);
-  try {
-    await runCommand('yarn', ['add', fontPkg], { cwd: projectDir });
-  } catch {
-    console.warn(`Note: Run \`yarn add ${fontPkg}\` in your project directory`);
   }
 
   console.log(`

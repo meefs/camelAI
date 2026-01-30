@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-29-v47-curl-yarn-release
+# Version: 2026-01-30-v48-preinstall-fonts-dedup-wrangler
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
