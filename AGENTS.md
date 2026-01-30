@@ -354,6 +354,18 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 | `/api/auth/switch-org` | POST | Switch active organization |
 | `/api/auth/switch-workspace` | POST | Switch active workspace |
 
+### Organization Routes
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/orgs/:id/invite` | POST | Create an invitation for an organization |
+| `/api/orgs/:id/invite` | DELETE | Cancel or decline an invitation |
+
+### Invitation Routes
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/invitations/:orgId/:invitationId` | GET | Fetch invitation details |
+| `/api/invitations/:orgId/:invitationId` | POST | Accept invitation |
+
 ### Workspace Routes
 | Route | Method | Purpose |
 |-------|--------|---------|

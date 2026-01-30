@@ -12,11 +12,13 @@ export default [
     route('signup', 'routes/_auth.signup.tsx'),
   ]),
 
-  // Public invitation page
-  route(
-    'invitations/:orgId/:invitationId',
-    'routes/invitations.$orgId.$invitationId.tsx'
-  ),
+  // Public invitation page (needs AuthProvider for auth state)
+  layout('routes/_invite.tsx', [
+    route(
+      'invitations/:orgId/:invitationId',
+      'routes/invitations.$orgId.$invitationId.tsx'
+    ),
+  ]),
 
   // Protected app routes
   layout('routes/_app.tsx', [
@@ -126,14 +128,16 @@ export default [
   // Speech API routes
   route('api/speech/transcribe', 'routes/api/speech.transcribe.ts'),
 
+  // Organization & invitation API routes
+  route('api/orgs/:id/invite', 'routes/api/orgs.$id.invite.ts'),
+  route('api/invitations/:orgId/:invitationId', 'routes/api/invitations.$orgId.$invitationId.ts'),
+
   // API resource routes (to be created)
   // route('api/orgs/:id', 'routes/api/orgs.$id.ts'),
   // route('api/orgs/:id/members', 'routes/api/orgs.$id.members.ts'),
-  // route('api/orgs/:id/invite', 'routes/api/orgs.$id.invite.ts'),
   // route('api/orgs/:id/integrations', 'routes/api/orgs.$id.integrations.ts'),
   // route('api/orgs/:id/integrations/:integrationId', 'routes/api/orgs.$id.integrations.$integrationId.ts'),
   // route('api/integrations/types', 'routes/api/integrations.types.ts'),
-  // route('api/invitations/:orgId/:invitationId', 'routes/api/invitations.$orgId.$invitationId.ts'),
   // route('api/threads', 'routes/api/threads.ts'),
   // route('api/threads/:id', 'routes/api/threads.$id.ts'),
   // route('api/threads/:id/messages', 'routes/api/threads.$id.messages.ts'),

@@ -652,7 +652,7 @@ export async function getInvitation(env: AuthEnv, orgId: string, invitationId: s
   if (!invitation) return null;
 
   const orgInfo = await orgStub.getInfo();
-  if (!orgInfo) return null;
+  if (!orgInfo || orgInfo.archived) return null;
 
   return {
     id: invitation.id,
@@ -663,10 +663,10 @@ export async function getInvitation(env: AuthEnv, orgId: string, invitationId: s
 }
 
 export async function acceptInvitation(env: AuthEnv, orgId: string, invitationId: string, userId: string): Promise<boolean> {
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  const invitation = await orgStub.getInvitation(invitationId);
+  const invitation = await getInvitation(env, orgId, invitationId);
   if (!invitation) return false;
 
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const accepted = await orgStub.acceptInvitation(invitationId, userId);
   if (!accepted) return false;
 
@@ -791,5 +791,4 @@ export async function setWorkerScriptPublic(
   }
   return script;
 }
-
 
