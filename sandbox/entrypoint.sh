@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-28-v35-add-uv
+# Version: 2026-01-29-v36-limit-juicefs-cache
 set -eu
 
 # Trap errors and show what failed
@@ -24,6 +24,7 @@ JUICEFS_META_DIR="${JUICEFS_META_DIR:-/var/lib/juicefs}"
 JUICEFS_CACHE_DIR="${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}"
 JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-5s}"
 JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-1024}"
+JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-4096}"  # 4GB max cache (container has 8GB disk)
 
 # Track PIDs for cleanup (Verdaccio managed by pm2)
 WS_PID=""
@@ -438,6 +439,7 @@ mount_juicefs() {
   MOUNT_CMD="juicefs mount \"$JFS_META_URL\" \"$TARGET_DIR\" \
     --backup-meta 0 \
     --cache-dir \"$JUICEFS_CACHE_DIR\" \
+    --cache-size \"$JUICEFS_CACHE_SIZE\" \
     --upload-delay \"$JUICEFS_UPLOAD_DELAY\" \
     --buffer-size \"$JUICEFS_BUFFER_SIZE\" \
     --prefix-internal \
