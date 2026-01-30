@@ -283,8 +283,9 @@ function copyTemplate(templateName, projectDir) {
   if (!existsSync(templatePath)) {
     throw new Error(`Template '${templateName}' not found at ${templatePath}`);
   }
-  // Use execFileSync to avoid shell parsing of project name
-  execFileSync('cp', ['-a', templatePath, projectDir], { stdio: 'pipe' });
+  // Use juicefs sync for fast copying on JuiceFS filesystem
+  // Trailing slashes ensure we copy contents into projectDir
+  execFileSync('juicefs', ['sync', `${templatePath}/`, `${projectDir}/`], { stdio: 'pipe' });
 }
 
 async function createProject(projectName, options) {
