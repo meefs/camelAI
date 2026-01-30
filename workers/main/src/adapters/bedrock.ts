@@ -160,6 +160,17 @@ export interface UsageInfo {
 }
 
 /**
+ * Decode Base64 to UTF-8 string properly.
+ * atob() returns a binary string (each char = 1 byte), not a UTF-8 string.
+ * This function properly decodes multi-byte UTF-8 characters.
+ */
+function base64ToUtf8(base64: string): string {
+  const binaryString = atob(base64);
+  const bytes = Uint8Array.from(binaryString, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+/**
  * Create a TransformStream that converts Bedrock's AWS event stream to Anthropic SSE.
  * Also extracts usage information and calls onUsage callback when complete.
  *
@@ -197,7 +208,7 @@ export function createBedrockStreamAdapter(onUsage?: (usage: UsageInfo) => void)
 
       while ((match = regex.exec(buffer)) !== null) {
         try {
-          const decoded = atob(match[1]);
+          const decoded = base64ToUtf8(match[1]);
           const event = JSON.parse(decoded);
           processEvent(event);
 
@@ -220,7 +231,7 @@ export function createBedrockStreamAdapter(onUsage?: (usage: UsageInfo) => void)
         let match;
         while ((match = regex.exec(buffer)) !== null) {
           try {
-            const decoded = atob(match[1]);
+            const decoded = base64ToUtf8(match[1]);
             const event = JSON.parse(decoded);
             processEvent(event);
 
