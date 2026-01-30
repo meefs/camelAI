@@ -285,7 +285,7 @@ function copyTemplate(templateName, projectDir) {
   }
   // Use juicefs sync for fast copying on JuiceFS filesystem
   // Trailing slashes ensure we copy contents into projectDir
-  execFileSync('juicefs', ['sync', `${templatePath}/`, `${projectDir}/`], { stdio: 'pipe' });
+  execFileSync('juicefs', ['sync', '--threads', '40', '--list-threads', '4', `${templatePath}/`, `${projectDir}/`], { stdio: 'pipe' });
 }
 
 async function createProject(projectName, options) {
