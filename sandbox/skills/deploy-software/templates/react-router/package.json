@@ -2,6 +2,7 @@
 	"name": "rr7-template",
 	"private": true,
 	"type": "module",
+	"packageManager": "yarn@4.6.0",
 	"overrides": {
 		"wrangler": "*"
 	},
