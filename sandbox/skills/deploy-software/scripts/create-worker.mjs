@@ -17,8 +17,8 @@
  *   --help                  Show this help message
  */
 
-import { spawn } from 'child_process';
-import { mkdirSync, writeFileSync, existsSync, readFileSync, cpSync } from 'fs';
+import { spawn, execFileSync } from 'child_process';
+import { writeFileSync, existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -226,22 +226,7 @@ function createComponentsJson(projectDir, options) {
   writeFileSync(join(projectDir, 'components.json'), JSON.stringify(componentsJson, null, 2) + '\n');
 }
 
-function createUtilsFile(projectDir) {
-  const utilsDir = join(projectDir, 'app', 'lib');
-  mkdirSync(utilsDir, { recursive: true });
-
-  const utilsContent = `import { clsx, type ClassValue } from "clsx"
-import { twMerge } from "tailwind-merge"
-
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs))
-}
-`;
-
-  writeFileSync(join(utilsDir, 'utils.ts'), utilsContent);
-}
-
-function updatePackageJson(projectDir, projectName, options) {
+function updatePackageJson(projectDir, projectName) {
   const pkgPath = join(projectDir, 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
 
@@ -251,42 +236,12 @@ function updatePackageJson(projectDir, projectName, options) {
   // Remove resolutions (only needed for Docker build with local Verdaccio)
   delete pkg.resolutions;
 
-  // Get the font package based on selected font
-  const fontConfig = FONT_CONFIG[options.font] || FONT_CONFIG['inter'];
-  const fontPackage = fontConfig.package;
-
-  // Add shadcn dependencies
-  pkg.dependencies = {
-    ...pkg.dependencies,
-    [fontPackage]: "^5.2.5",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^3.4.0",
-    "tw-animate-css": "^1.4.0",
-    "shadcn": "^3.7.0",
-  };
-
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
 }
 
-function _updateViteConfig(projectDir) {
-  const vitePath = join(projectDir, 'vite.config.ts');
-  let content = readFileSync(vitePath, 'utf-8');
-
-  // Add vite-tsconfig-paths if not present (for ~ alias support)
-  if (!content.includes('tsconfigPaths')) {
-    // Already included in the RR7 template
-  }
-
-  writeFileSync(vitePath, content);
-}
-
-function stripJsonComments(str) {
-  // Remove block comments /* ... */
-  str = str.replace(/\/\*[\s\S]*?\*\//g, '');
-  // Remove line comments // ...
-  str = str.replace(/\/\/.*$/gm, '');
-  return str;
+function getFontPackage(options) {
+  const fontConfig = FONT_CONFIG[options.font] || FONT_CONFIG['inter'];
+  return `${fontConfig.package}@^5.2.5`;
 }
 
 async function fetchPresetConfig(url) {
@@ -365,44 +320,8 @@ function copyTemplate(templateName, projectDir) {
   if (!existsSync(templatePath)) {
     throw new Error(`Template '${templateName}' not found at ${templatePath}`);
   }
-  cpSync(templatePath, projectDir, { recursive: true });
-}
-
-function updateTsConfig(projectDir) {
-  // shadcn CLI reads the main tsconfig.json for path aliases
-  // We need to add paths to both the main tsconfig.json and tsconfig.cloudflare.json
-
-  // Update main tsconfig.json for shadcn CLI
-  const tsconfigPath = join(projectDir, 'tsconfig.json');
-  if (existsSync(tsconfigPath)) {
-    let content = readFileSync(tsconfigPath, 'utf-8');
-    const config = JSON.parse(stripJsonComments(content));
-
-    // Add paths for ~ alias so shadcn CLI can resolve them
-    config.compilerOptions = config.compilerOptions || {};
-    config.compilerOptions.baseUrl = ".";
-    config.compilerOptions.paths = {
-      "~/*": ["./app/*"]
-    };
-
-    writeFileSync(tsconfigPath, JSON.stringify(config, null, 2) + '\n');
-  }
-
-  // Also update tsconfig.cloudflare.json for TypeScript/Vite
-  const cloudflareConfigPath = join(projectDir, 'tsconfig.cloudflare.json');
-  if (existsSync(cloudflareConfigPath)) {
-    let cfContent = readFileSync(cloudflareConfigPath, 'utf-8');
-    const cfConfig = JSON.parse(stripJsonComments(cfContent));
-
-    // Add paths for ~ alias
-    cfConfig.compilerOptions = cfConfig.compilerOptions || {};
-    cfConfig.compilerOptions.baseUrl = ".";
-    cfConfig.compilerOptions.paths = {
-      "~/*": ["./app/*"]
-    };
-
-    writeFileSync(cloudflareConfigPath, JSON.stringify(cfConfig, null, 2) + '\n');
-  }
+  // Use execFileSync to avoid shell parsing of project name
+  execFileSync('cp', ['-a', templatePath, projectDir], { stdio: 'pipe' });
 }
 
 async function createProject(projectName, options) {
@@ -447,35 +366,34 @@ async function createProject(projectName, options) {
   // Step 4: Configure project for shadcn
   console.log('\nStep 4/4: Configuring project...');
 
-  // Create components.json
+  // Create components.json (dynamic based on user options)
   createComponentsJson(projectDir, options);
 
-  // Create utils.ts
-  createUtilsFile(projectDir);
+  // Update package.json (name, remove resolutions)
+  updatePackageJson(projectDir, projectName);
 
-  // Update package.json
-  updatePackageJson(projectDir, projectName, options);
-
-  // Update tsconfig for ~ alias
-  updateTsConfig(projectDir);
-
-  // Update .yarnrc.yml to remove Verdaccio registry (only needed for Docker build)
+  // Strip Verdaccio registry from .yarnrc.yml (only needed for Docker build)
   const yarnrcPath = join(projectDir, '.yarnrc.yml');
   if (existsSync(yarnrcPath)) {
-    const yarnrcContent = `nodeLinker: pnp
-
-# Store cache locally for portability
-enableGlobalCache: false
-`;
-    writeFileSync(yarnrcPath, yarnrcContent);
+    let yarnrc = readFileSync(yarnrcPath, 'utf-8');
+    // Remove Verdaccio-related lines
+    yarnrc = yarnrc
+      .split('\n')
+      .filter(line => !line.includes('npmRegistryServer') &&
+                      !line.includes('unsafeHttpWhitelist') &&
+                      !line.includes('localhost'))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n'); // Clean up extra blank lines
+    writeFileSync(yarnrcPath, yarnrc);
   }
 
-  // Install dependencies with Yarn PnP
-  console.log('\nInstalling dependencies with Yarn...');
+  // Add font package with yarn add (other shadcn deps are pre-installed in template)
+  console.log('\nInstalling font package...');
+  const fontPkg = getFontPackage(options);
   try {
-    await runCommand('yarn', ['install'], { cwd: projectDir });
+    await runCommand('yarn', ['add', fontPkg], { cwd: projectDir });
   } catch {
-    console.warn('Note: Run `yarn install` in your project directory to install dependencies');
+    console.warn(`Note: Run \`yarn add ${fontPkg}\` in your project directory`);
   }
 
   console.log(`

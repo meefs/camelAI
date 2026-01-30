@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-28-v44-add-uv
+# Version: 2026-01-29-v45-fix-yarn-pnp
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -77,7 +77,11 @@ RUN npm install
 # Layer 5: Template files + Yarn PnP setup (cached unless template files change)
 # Copy ONLY template files first, before frequently-changing sandbox code
 # This ensures template yarn install is cached when only ws-server.mjs changes
-RUN corepack enable && corepack prepare yarn@stable --activate
+# Remove npm's yarn classic and install Yarn Berry via corepack
+RUN npm uninstall -g yarn 2>/dev/null || true \
+  && rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg 2>/dev/null || true \
+  && corepack enable \
+  && corepack prepare yarn@stable --activate
 COPY sandbox/skills/deploy-software/templates ./skills/deploy-software/templates
 
 # Pre-install template dependencies with Yarn PnP (minimal files for fast JuiceFS copy)
@@ -97,10 +101,11 @@ RUN bash -c '\
   echo "=== Yarn install complete ===" && \
   echo "=== PnP files created ===" && \
   ls -la .pnp.* 2>/dev/null || echo "No PnP files" && \
-  echo "=== Copying PnP files back ===" && \
+  echo "=== Copying PnP files and generated types back ===" && \
   cp -r .pnp.* /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
   cp -r .yarn /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
   cp yarn.lock /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
+  cp worker-configuration.d.ts /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
   rm -rf /tmp/template-build && \
   kill $(pgrep -f verdaccio) 2>/dev/null || true \
 '
