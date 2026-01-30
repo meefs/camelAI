@@ -78,7 +78,8 @@ RUN npm install
 # Install with uv for speed, using system Python (--system flag)
 # These are pre-installed so users have immediate access to data analysis tools
 COPY sandbox/requirements.txt ./
-RUN uv pip install --system -r requirements.txt
+# Debian marks /usr as externally managed (PEP 668); allow system installs for baked-in tools.
+RUN PIP_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --break-system-packages -r requirements.txt
 
 # Layer 5: Template files + Yarn PnP setup (cached unless template files change)
 # Copy ONLY template files first, before frequently-changing sandbox code
