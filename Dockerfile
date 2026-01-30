@@ -97,7 +97,7 @@ RUN bash -c '\
   cp -r /app/skills/deploy-software/templates/react-router/.* /tmp/template-build/ 2>/dev/null || true && \
   cd /tmp/template-build && \
   echo "Downloading Yarn Berry release..." && \
-  yarn set version 4.6.0 && \
+corepack yarn set version 4.6.0 && \
   echo "Installing in isolated /tmp/template-build..." && \
   yarn install 2>&1 && \
   echo "=== Yarn install complete ===" && \
