@@ -284,8 +284,10 @@ function copyTemplate(templateName, projectDir) {
     throw new Error(`Template '${templateName}' not found at ${templatePath}`);
   }
   // Use juicefs sync for fast copying on JuiceFS filesystem
+  // --perms preserves execute bits (needed for esbuild binary)
+  // --links preserves symlinks
   // Trailing slashes ensure we copy contents into projectDir
-  execFileSync('juicefs', ['sync', '--threads', '40', '--list-threads', '4', `${templatePath}/`, `${projectDir}/`], { stdio: 'pipe' });
+  execFileSync('juicefs', ['sync', '--threads', '40', '--list-threads', '4', '--perms', '--links', `${templatePath}/`, `${projectDir}/`], { stdio: 'pipe' });
 }
 
 async function createProject(projectName, options) {
