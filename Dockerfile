@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-30-v48-preinstall-fonts-dedup-wrangler
+# Version: 2026-01-30-v49-add-data-analysis-tools
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -73,6 +73,12 @@ RUN bash -c '\
 WORKDIR /app
 COPY sandbox/package.json ./
 RUN npm install
+
+# Layer 4.5: Python data analysis packages - cached unless requirements.txt changes
+# Install with uv for speed, using system Python (--system flag)
+# These are pre-installed so users have immediate access to data analysis tools
+COPY sandbox/requirements.txt ./
+RUN uv pip install --system -r requirements.txt
 
 # Layer 5: Template files + Yarn PnP setup (cached unless template files change)
 # Copy ONLY template files first, before frequently-changing sandbox code

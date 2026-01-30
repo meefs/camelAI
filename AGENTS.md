@@ -112,6 +112,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 | `sandbox/entrypoint.sh` | Container startup script |
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK |
 | `sandbox/control-plane.mjs` | Container exec/filesystem API |
+| `sandbox/requirements.txt` | Python data analysis packages |
 | `sandbox/skills/deploy-software/SKILL.md` | Deployment skill documentation |
 
 ## Configuration Files
@@ -139,6 +140,111 @@ This project uses [shadcn/ui](https://ui.shadcn.com) for UI components. **When d
 - **Style:** radix-mira, zinc, Inter font, 0.5rem radius, Lucide icons
 - **Install:** `npx shadcn@latest add <component>`
 - **Styling:** Use `cn()` from `@/lib/utils`, theme vars in `globals.css`
+
+## Data Analysis Tools
+
+The sandbox container comes pre-installed with a comprehensive suite of Python data analysis tools. These are available immediately without any installation required.
+
+### Package Manager
+- **uv** - Fast Python package manager (pre-installed at `/usr/local/bin/uv`)
+- Install additional packages: `uv pip install --system <package>`
+
+### Core Data Processing
+| Package | Purpose |
+|---------|---------|
+| `pandas` | DataFrames and data manipulation |
+| `numpy` | Numerical computing and arrays |
+| `polars` | Fast DataFrame library (Rust-based) |
+| `duckdb` | In-process SQL analytics database |
+| `scipy` | Scientific computing |
+
+### Data Formats & I/O
+| Package | Purpose |
+|---------|---------|
+| `pyarrow` | Columnar data, Parquet/Arrow files |
+| `openpyxl` | Read/write Excel files (.xlsx) |
+| `xlsxwriter` | Excel file creation with formatting |
+| `python-pptx` | PowerPoint file manipulation |
+| `python-docx` | Word document manipulation |
+| `pdfplumber` | PDF text and table extraction |
+| `camelot-py` | PDF table extraction (with OpenCV) |
+| `pillow` | Image processing |
+
+### Visualization
+| Package | Purpose |
+|---------|---------|
+| `matplotlib` | Static plotting |
+| `seaborn` | Statistical visualization |
+| `plotly` | Interactive charts |
+
+### Statistics & Machine Learning
+| Package | Purpose |
+|---------|---------|
+| `scikit-learn` | Machine learning algorithms |
+| `statsmodels` | Statistical modeling |
+| `xgboost` | Gradient boosting |
+
+### Data Sources & Web
+| Package | Purpose |
+|---------|---------|
+| `requests` | HTTP client |
+| `httpx` | Modern async HTTP client |
+| `beautifulsoup4` | HTML/XML parsing |
+| `lxml` | Fast XML/HTML parser |
+| `aiohttp` | Async HTTP client/server |
+| `sqlalchemy` | Database ORM and toolkit |
+
+### Geospatial & Network
+| Package | Purpose |
+|---------|---------|
+| `geopandas` | Geospatial data analysis |
+| `shapely` | Geometric operations |
+| `networkx` | Graph/network analysis |
+
+### Utilities
+| Package | Purpose |
+|---------|---------|
+| `tqdm` | Progress bars |
+| `rich` | Beautiful terminal output |
+| `tabulate` | Text table formatting |
+| `ipython` | Enhanced Python REPL |
+| `click` / `typer` | CLI frameworks |
+| `pyyaml` / `toml` | Config file parsing |
+| `jmespath` / `jsonpath-ng` | JSON querying |
+
+### Quick Examples
+
+**DuckDB SQL on CSV:**
+```python
+import duckdb
+result = duckdb.sql("SELECT * FROM 'data.csv' WHERE amount > 1000")
+print(result.df())
+```
+
+**Pandas + Polars:**
+```python
+import pandas as pd
+import polars as pl
+
+# Pandas
+df = pd.read_csv("data.csv")
+df.groupby("category").sum()
+
+# Polars (faster for large data)
+df = pl.read_csv("data.csv")
+df.group_by("category").agg(pl.sum("amount"))
+```
+
+**PDF Table Extraction:**
+```python
+import pdfplumber
+
+with pdfplumber.open("report.pdf") as pdf:
+    for page in pdf.pages:
+        tables = page.extract_tables()
+        for table in tables:
+            print(table)
+```
 
 ## Data Flow
 
