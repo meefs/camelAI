@@ -1,32 +1,13 @@
 'use client';
 
 import { memo, useMemo, useState, useCallback, useEffect } from 'react';
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
 import { cn } from '@/lib/utils';
 import { Check, Copy } from 'lucide-react';
 import { codeToHtml } from 'shiki';
-import { isChiridionUrl } from '@/lib/chiridion-url';
-import { ChiridionLink } from '@/components/chiridion-link';
 import { SHIKI_DEFAULT_THEMES, PRELOAD_LANGUAGES } from '@/lib/shiki-config';
-
-/**
- * Custom URL transform that allows chiridion:// protocol for file downloads.
- * Falls back to default transform for all other URLs.
- */
-function urlTransform(url: string): string {
-  // Allow chiridion:// protocol for internal file downloads
-  if (url.startsWith('chiridion://')) {
-    return url;
-  }
-  // Allow /mnt/user-outputs/ paths
-  if (url.startsWith('/mnt/user-outputs/')) {
-    return url;
-  }
-  // Use default sanitization for all other URLs
-  return defaultUrlTransform(url);
-}
 
 interface MarkdownRendererProps {
   content: string;
@@ -160,29 +141,16 @@ const createComponents = (variant: 'default' | 'user'): Components => ({
   // Code blocks - pre wraps code, handles syntax highlighting and copy
   pre: CodeBlockPre as Components['pre'],
 
-  // Links - handle chiridion:// protocol for downloads
+  // Links
   a: ({ href, children }) => {
-    // Check for chiridion:// protocol
-    if (isChiridionUrl(href)) {
-      return (
-        <ChiridionLink
-          href={href!}
-          className={cn(
-            'underline underline-offset-2 hover:no-underline',
-            variant === 'user' ? 'text-primary-foreground/90' : 'text-primary'
-          )}
-        >
-          {children}
-        </ChiridionLink>
-      );
-    }
+    // Internal API links (workspace outputs) should not open in new tab
+    const isInternal = href?.startsWith('/api/');
 
-    // Regular link
     return (
       <a
         href={href}
-        target="_blank"
-        rel="noopener noreferrer"
+        target={isInternal ? undefined : '_blank'}
+        rel={isInternal ? undefined : 'noopener noreferrer'}
         className={cn(
           'underline underline-offset-2 hover:no-underline',
           variant === 'user' ? 'text-primary-foreground/90' : 'text-primary'
@@ -295,7 +263,6 @@ function MarkdownRendererBase({
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={components}
-        urlTransform={urlTransform}
       >
         {processedContent}
       </ReactMarkdown>

@@ -557,15 +557,18 @@ You have access to two special directories for exchanging files with the user:
 
 - **\`/mnt/user-uploads/\`** - Files uploaded by the user. When a user uploads a file, you'll see a message like "(user uploaded file to /mnt/user-uploads/filename.png)". Read files from this directory to access what they shared.
 
-- **\`/mnt/user-outputs/\`** - Files you create for the user to download. Save files here when you want the user to be able to download them.
+- **\`/mnt/user-outputs/\`** - Files you create for the user to download or preview. Save files here when you want the user to access them.
 
-**Creating downloadable files:**
-When you save a file for the user to download in /mnt/user-outputs/, provide a link using the chiridion:// protocol:
-- Format: \`[Link Text](chiridion://outputs/filename)\`
-- Example: \`[Download Report](chiridion://outputs/report.pdf)\`
-- Example: \`[Download Chart](chiridion://outputs/analysis/chart.png)\`
+**Creating downloadable/previewable files:**
+When you save a file to /mnt/user-outputs/, provide a URL so the user can access it:
+- Use the workspace outputs URL: \`/api/workspaces/${process.env.WORKSPACE_ID}/outputs/\`
+- For images: \`![Description](/api/workspaces/${process.env.WORKSPACE_ID}/outputs/chart.png)\` - displays inline
+- For downloads: \`[Download Report](/api/workspaces/${process.env.WORKSPACE_ID}/outputs/report.pdf)\` - triggers download
 
-The user can click these links to download the file directly.
+Examples:
+- Image preview: \`![Analysis Chart](/api/workspaces/${process.env.WORKSPACE_ID}/outputs/charts/analysis.png)\`
+- Download link: \`[Download CSV](/api/workspaces/${process.env.WORKSPACE_ID}/outputs/data.csv)\`
+- Download link: \`[Get Full Report](/api/workspaces/${process.env.WORKSPACE_ID}/outputs/report.pdf)\`
 
 ## Python Environment
 

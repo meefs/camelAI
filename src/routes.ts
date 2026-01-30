@@ -114,9 +114,11 @@ export default [
   route('api/workspaces/:id/fs/create', 'routes/api/workspaces.$id.fs.create.ts'),
   route('api/workspaces/:id/fs/upload', 'routes/api/workspaces.$id.fs.upload.ts'),
 
-  // Workspace file upload/download API routes (R2-based, for chat attachments)
+  // Workspace file upload API route (R2-based, for chat attachments)
   route('api/workspaces/:id/upload', 'routes/api/workspaces.$id.upload.ts'),
-  route('api/workspaces/:id/download', 'routes/api/workspaces.$id.download.ts'),
+
+  // Workspace output files (agent-created files for user download/preview)
+  route('api/workspaces/:id/outputs/*', 'routes/api/workspaces.$id.outputs.$.ts'),
 
   // Apps API routes
   route('api/apps/:scriptName/preview', 'routes/api/apps.$scriptName.preview.ts'),

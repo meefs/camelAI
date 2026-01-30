@@ -1,6 +1,6 @@
 ---
 name: file-sharing
-description: Exchange files with users through the Chiridion chat interface. Read files they upload and create downloadable files for them.
+description: Exchange files with users through the Chiridion chat interface. Read files they upload and create downloadable/previewable files for them.
 license: Complete terms in LICENSE.txt
 ---
 
@@ -31,9 +31,9 @@ file /mnt/user-uploads/image.png
 
 Files persist across sessions, so users can reference previously uploaded files.
 
-## Creating Downloads
+## Creating Output Files
 
-To create a file the user can download, save it to `/mnt/user-outputs/`:
+To create a file the user can download or preview, save it to `/mnt/user-outputs/`:
 
 ```bash
 # Save a text file
@@ -47,18 +47,21 @@ mkdir -p /mnt/user-outputs/charts
 cp chart.png /mnt/user-outputs/charts/analysis.png
 ```
 
-### Providing Download Links
+### Providing Links
 
-After saving a file, provide a clickable download link using the `chiridion://` protocol:
+After saving a file, provide a URL so the user can access it. The URL format uses the workspace outputs API. Check your system prompt for the exact URL pattern with your workspace ID.
 
-**Syntax:** `[Link Text](chiridion://outputs/path/to/file.ext)`
+**For images** - Use markdown image syntax for inline preview:
+```markdown
+![Chart Description](/api/workspaces/{workspace-id}/outputs/chart.png)
+```
 
-**Examples:**
-- `[Download Report](chiridion://outputs/report.pdf)`
-- `[Download CSV Data](chiridion://outputs/data.csv)`
-- `[View Chart](chiridion://outputs/charts/analysis.png)`
+**For downloads** - Use markdown link syntax:
+```markdown
+[Download Report](/api/workspaces/{workspace-id}/outputs/report.pdf)
+```
 
-The user can click these links to download the file directly from the chat.
+Images will display inline in the chat, other files will download when clicked.
 
 ## Best Practices
 
@@ -66,15 +69,17 @@ The user can click these links to download the file directly from the chat.
 
 2. **Use descriptive filenames** - When creating output files, use clear names like `sales-report-2024.pdf` instead of `output.pdf`.
 
-3. **Always provide links** - Don't just say "I've saved the file". Provide a `chiridion://` link so users can easily download it.
+3. **Always provide links** - Don't just say "I've saved the file". Provide a URL so users can easily access it.
 
-4. **Handle large files** - For very large outputs, consider creating a zip archive:
+4. **Use inline images** - For charts, diagrams, and visual outputs, use the image markdown syntax so users see them directly in the chat.
+
+5. **Handle large files** - For very large outputs, consider creating a zip archive:
    ```bash
    zip -r /mnt/user-outputs/all-files.zip generated-files/
    ```
-   Then link: `[Download All Files](chiridion://outputs/all-files.zip)`
+   Then provide a download link.
 
-5. **Clean up** - If you create temporary files during processing, remove them when done. Only keep files in `/mnt/user-outputs/` that the user needs.
+6. **Clean up** - If you create temporary files during processing, remove them when done. Only keep files in `/mnt/user-outputs/` that the user needs.
 
 ## Directory Structure
 
@@ -83,7 +88,7 @@ The user can click these links to download the file directly from the chat.
   user-uploads/     # Read-only for you - user's uploaded files
     document.pdf
     image.png
-  user-outputs/     # Write here - files for user to download
+  user-outputs/     # Write here - files for user to download/preview
     report.pdf
     data.csv
     charts/
