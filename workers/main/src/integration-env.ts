@@ -38,7 +38,21 @@ export function getEnvVarSuffixesForType(integrationType: string, dynamicFields?
     case 'stripe':
       return ['API_KEY', 'SECRET_KEY'];
     case 'openai':
+      return ['API_KEY', 'ORGANIZATION_ID'];
     case 'anthropic':
+      return ['API_KEY'];
+    case 'supabase':
+      return ['API_KEY', 'PROJECT_URL', 'KEY_TYPE'];
+    case 'databricks':
+      return ['API_KEY', 'WORKSPACE_URL'];
+    case 'sentry':
+      return ['API_KEY', 'ORGANIZATION'];
+    case 'mailchimp':
+      return ['API_KEY', 'DATA_CENTER'];
+    case 'posthog':
+      return ['API_KEY', 'HOST', 'PROJECT_ID'];
+    case 'mixpanel':
+      return ['USERNAME', 'SECRET', 'PROJECT_ID', 'REGION'];
     case 'linear':
     case 'sendgrid':
     case 'airtable':
@@ -130,10 +144,45 @@ export function mapCredentialsToEnvVars(
 
     case 'openai':
       if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      if (str(config.organization_id)) set('ORGANIZATION_ID', str(config.organization_id)!);
       break;
 
     case 'anthropic':
       if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'supabase':
+      if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      if (str(config.project_url)) set('PROJECT_URL', str(config.project_url)!);
+      if (str(config.key_type)) set('KEY_TYPE', str(config.key_type)!);
+      break;
+
+    case 'databricks':
+      if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      if (str(config.workspace_url)) set('WORKSPACE_URL', str(config.workspace_url)!);
+      break;
+
+    case 'sentry':
+      if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      if (str(config.organization)) set('ORGANIZATION', str(config.organization)!);
+      break;
+
+    case 'mailchimp':
+      if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      if (str(config.data_center)) set('DATA_CENTER', str(config.data_center)!);
+      break;
+
+    case 'posthog':
+      if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      if (str(config.host)) set('HOST', str(config.host)!);
+      if (str(config.project_id)) set('PROJECT_ID', str(config.project_id)!);
+      break;
+
+    case 'mixpanel':
+      if (str(credentials.api_key)) set('USERNAME', str(credentials.api_key)!);
+      if (str(credentials.api_secret)) set('SECRET', str(credentials.api_secret)!);
+      if (str(config.project_id)) set('PROJECT_ID', str(config.project_id)!);
+      if (str(config.region)) set('REGION', str(config.region)!);
       break;
 
     case 'github':

@@ -36,6 +36,21 @@ interface AddConnectionDialogProps {
 // OAuth integration types that have worker routes
 const OAUTH_INTEGRATIONS = ['slack', 'notion'] as const;
 
+const applyDefaults = (
+  schema: IntegrationDefinition['configSchema'],
+  current: Record<string, unknown>
+) => {
+  const next = { ...current };
+  for (const field of schema) {
+    if (field.default === undefined) continue;
+    const value = next[field.name];
+    if (value === undefined || value === null || value === '') {
+      next[field.name] = field.default;
+    }
+  }
+  return next;
+};
+
 export function AddConnectionDialog({
   open,
   onOpenChange,
@@ -71,12 +86,14 @@ export function AddConnectionDialog({
     e.preventDefault();
     setError(null);
 
+    const nextConfig = typeDef ? applyDefaults(typeDef.configSchema, config) : config;
+
     fetcher.submit(
       {
         intent: 'createIntegration',
         integration_type: connectionType,
         name: name.trim() || typeDef?.displayName || connectionType,
-        config: JSON.stringify(config),
+        config: JSON.stringify(nextConfig),
         credentials: JSON.stringify(credentials),
       },
       { method: 'POST' }
@@ -98,6 +115,11 @@ export function AddConnectionDialog({
   const updateCredentials = (field: string, value: unknown) => {
     setCredentials((prev) => ({ ...prev, [field]: value }));
   };
+
+  useEffect(() => {
+    if (!open || !typeDef) return;
+    setConfig((prev) => applyDefaults(typeDef.configSchema, prev));
+  }, [open, typeDef]);
 
   if (!typeDef) return null;
 
@@ -170,6 +192,9 @@ export function AddConnectionDialog({
                     required={field.required}
                   />
                 )}
+                {field.description && (
+                  <p className="text-xs text-muted-foreground">{field.description}</p>
+                )}
               </div>
             ))}
 
@@ -195,6 +220,9 @@ export function AddConnectionDialog({
                       placeholder={field.placeholder}
                       required={field.required}
                     />
+                    {field.description && (
+                      <p className="text-xs text-muted-foreground">{field.description}</p>
+                    )}
                   </div>
                 ))}
               </>

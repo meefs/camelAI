@@ -15,20 +15,32 @@ const logoRegistry: Record<string, 'single' | 'themed'> = {
   // Themed (light/dark variants)
   anthropic: 'themed',
   aws: 'themed',
+  clickhouse: 'themed',
   github: 'themed',
   mysql: 'themed',
   openai: 'themed',
+  openrouter: 'themed', // NOTE: dark variant may look off — might swap to light icon in white
+  typeform: 'themed',
+  x: 'themed',
   // Single (works for both themes)
   airtable: 'single',
   bigquery: 'single',
+  databricks: 'single',
   hubspot: 'single',
   linear: 'single',
+  mailchimp: 'single',
+  mixpanel: 'single',
+  neon: 'single',
   notion: 'single',
+  posthog: 'single',
   postgres: 'single',
   salesforce: 'single',
   sendgrid: 'single',
+  sentry: 'single',
   slack: 'single',
+  snowflake: 'single',
   stripe: 'single',
+  supabase: 'single',
   twilio: 'single',
 };
 

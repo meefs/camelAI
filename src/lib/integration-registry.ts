@@ -32,6 +32,7 @@ export interface ConfigField {
   default?: unknown;
   options?: { value: string; label: string }[];
   placeholder?: string;
+  description?: string;
 }
 
 export interface CredentialField {
@@ -40,41 +41,13 @@ export interface CredentialField {
   type: 'password' | 'text';
   required: boolean;
   placeholder?: string;
+  description?: string;
 }
 
 export interface OAuthConfig {
   authorizationUrl: string;
   tokenUrl: string;
   scopes: string[];
-}
-
-/**
- * Proxy configuration for HTTP passthrough integrations
- */
-export interface ProxyConfig {
-  /** Base URL for the API */
-  baseUrl: string;
-
-  /**
-   * How to format the auth header:
-   * - 'bearer': Authorization: Bearer {api_key}
-   * - 'basic': Authorization: Basic base64({api_key}:{api_secret})
-   * - 'header': {authHeader}: {api_key}
-   * - 'query': Append api_key as query param (not recommended)
-   */
-  authType: 'bearer' | 'basic' | 'header' | 'query';
-
-  /** Custom auth header name (for authType: 'header') */
-  authHeader?: string;
-
-  /** Default headers to include with every request */
-  defaultHeaders?: Record<string, string>;
-
-  /**
-   * Header to set from config field (e.g., { 'Stripe-Version': 'api_version' })
-   * Maps header name -> config field name
-   */
-  configHeaders?: Record<string, string>;
 }
 
 export interface IntegrationDefinition {
@@ -86,17 +59,11 @@ export interface IntegrationDefinition {
   configSchema: ConfigField[];
   credentialSchema: CredentialField[];
   oauthConfig?: OAuthConfig;
-
-  /**
-   * Proxy config for HTTP passthrough.
-   * If undefined, integration requires special handling (e.g., databases)
-   */
-  proxyConfig?: ProxyConfig;
 }
 
 export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
   // ============================================
-  // DATABASE INTEGRATIONS (no proxy - need container)
+  // DATABASE INTEGRATIONS (container execution)
   // ============================================
 
   postgres: {
@@ -128,7 +95,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
       { name: 'username', label: 'Username', type: 'text', required: true },
       { name: 'password', label: 'Password', type: 'password', required: true },
     ],
-    // No proxyConfig - requires container execution
+    // Requires container execution.
   },
 
   mysql: {
@@ -146,11 +113,70 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
       { name: 'username', label: 'Username', type: 'text', required: true },
       { name: 'password', label: 'Password', type: 'password', required: true },
     ],
-    // No proxyConfig - requires container execution
+    // Requires container execution.
+  },
+
+  supabase: {
+    type: 'supabase',
+    displayName: 'Supabase',
+    description: 'Connect to a Supabase project',
+    category: 'databases',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'project_url',
+        label: 'Project URL',
+        type: 'string',
+        required: true,
+        placeholder: 'https://your-project.supabase.co',
+      },
+      {
+        name: 'key_type',
+        label: 'Key Type',
+        type: 'select',
+        required: true,
+        default: 'anon',
+        options: [
+          { value: 'anon', label: 'Anon Key (respects RLS)' },
+          { value: 'service_role', label: 'Service Role Key (bypasses RLS)' },
+        ],
+        description:
+          'Service role keys bypass Row Level Security and have full access. Prefer anon keys for client-facing apps.',
+      },
+    ],
+    credentialSchema: [
+      { name: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: 'eyJ...' },
+    ],
+  },
+
+  databricks: {
+    type: 'databricks',
+    displayName: 'Databricks',
+    description: 'Connect to a Databricks workspace',
+    category: 'databases',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'workspace_url',
+        label: 'Workspace URL',
+        type: 'string',
+        required: true,
+        placeholder: 'https://dbc-abc123.cloud.databricks.com',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Personal Access Token',
+        type: 'password',
+        required: true,
+        placeholder: 'dapi...',
+      },
+    ],
   },
 
   // ============================================
-  // HTTP PASSTHROUGH INTEGRATIONS
+  // API KEY / OAUTH INTEGRATIONS (env vars only)
   // ============================================
 
   stripe: {
@@ -159,26 +185,10 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     description: 'Accept payments with Stripe',
     category: 'saas',
     authMethod: 'api_key',
-    configSchema: [
-      {
-        name: 'api_version',
-        label: 'API Version',
-        type: 'string',
-        required: false,
-        default: '2024-12-18.acacia',
-        placeholder: '2024-12-18.acacia',
-      },
-    ],
+    configSchema: [],
     credentialSchema: [
       { name: 'api_key', label: 'Secret Key', type: 'password', required: true, placeholder: 'sk_...' },
     ],
-    proxyConfig: {
-      baseUrl: 'https://api.stripe.com',
-      authType: 'bearer',
-      configHeaders: {
-        'Stripe-Version': 'api_version',
-      },
-    },
   },
 
   notion: {
@@ -193,13 +203,6 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
       authorizationUrl: 'https://api.notion.com/v1/oauth/authorize',
       tokenUrl: 'https://api.notion.com/v1/oauth/token',
       scopes: [], // Notion doesn't use traditional scopes - capabilities are set in integration settings
-    },
-    proxyConfig: {
-      baseUrl: 'https://api.notion.com',
-      authType: 'bearer',
-      defaultHeaders: {
-        'Notion-Version': '2022-06-28',
-      },
     },
   },
 
@@ -272,10 +275,6 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
         'dnd:read',
       ],
     },
-    proxyConfig: {
-      baseUrl: 'https://slack.com/api',
-      authType: 'bearer',
-    },
   },
 
   openai: {
@@ -286,18 +285,10 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     authMethod: 'api_key',
     configSchema: [
       { name: 'organization_id', label: 'Organization ID', type: 'string', required: false },
-      { name: 'default_model', label: 'Default Model', type: 'string', required: false, default: 'gpt-4' },
     ],
     credentialSchema: [
       { name: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: 'sk-...' },
     ],
-    proxyConfig: {
-      baseUrl: 'https://api.openai.com',
-      authType: 'bearer',
-      configHeaders: {
-        'OpenAI-Organization': 'organization_id',
-      },
-    },
   },
 
   anthropic: {
@@ -310,14 +301,18 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     credentialSchema: [
       { name: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: 'sk-ant-...' },
     ],
-    proxyConfig: {
-      baseUrl: 'https://api.anthropic.com',
-      authType: 'header',
-      authHeader: 'x-api-key',
-      defaultHeaders: {
-        'anthropic-version': '2023-06-01',
-      },
-    },
+  },
+
+  openrouter: {
+    type: 'openrouter',
+    displayName: 'OpenRouter',
+    description: 'Access LLMs via OpenRouter',
+    category: 'ai_services',
+    authMethod: 'api_key',
+    configSchema: [],
+    credentialSchema: [
+      { name: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: 'sk-or-...' },
+    ],
   },
 
   github: {
@@ -330,14 +325,6 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     credentialSchema: [
       { name: 'api_key', label: 'Personal Access Token', type: 'password', required: true, placeholder: 'ghp_...' },
     ],
-    proxyConfig: {
-      baseUrl: 'https://api.github.com',
-      authType: 'bearer',
-      defaultHeaders: {
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    },
   },
 
   linear: {
@@ -350,10 +337,118 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     credentialSchema: [
       { name: 'api_key', label: 'API Key', type: 'password', required: true },
     ],
-    proxyConfig: {
-      baseUrl: 'https://api.linear.app',
-      authType: 'bearer',
-    },
+  },
+
+  sentry: {
+    type: 'sentry',
+    displayName: 'Sentry',
+    description: 'Error monitoring with Sentry',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      { name: 'organization', label: 'Organization Slug', type: 'string', required: false, placeholder: 'my-org' },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Auth Token',
+        type: 'password',
+        required: true,
+        placeholder: 'sntrys_...',
+        description:
+          'Create an Organization Auth Token at Settings > Auth Tokens. Recommended scopes: project:read, org:read, event:read.',
+      },
+    ],
+  },
+
+  mailchimp: {
+    type: 'mailchimp',
+    displayName: 'Mailchimp',
+    description: 'Email marketing with Mailchimp',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'data_center',
+        label: 'Data Center',
+        type: 'string',
+        required: true,
+        placeholder: 'us21',
+        description:
+          'The suffix after the dash in your API key (e.g., key abc123-us21 means data center us21). API base: https://{dc}.api.mailchimp.com/3.0',
+      },
+    ],
+    credentialSchema: [
+      { name: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: 'abc123def-us21' },
+    ],
+  },
+
+  posthog: {
+    type: 'posthog',
+    displayName: 'PostHog',
+    description: 'Product analytics with PostHog',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'host',
+        label: 'Host URL',
+        type: 'string',
+        required: true,
+        placeholder: 'https://us.posthog.com',
+        description:
+          'US Cloud: https://us.posthog.com | EU Cloud: https://eu.posthog.com | Self-hosted: your instance URL',
+      },
+      { name: 'project_id', label: 'Project ID', type: 'string', required: false, placeholder: '12345' },
+    ],
+    credentialSchema: [
+      { name: 'api_key', label: 'Personal API Key', type: 'password', required: true, placeholder: 'phx_...' },
+    ],
+  },
+
+  mixpanel: {
+    type: 'mixpanel',
+    displayName: 'Mixpanel',
+    description: 'Product analytics with Mixpanel',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      { name: 'project_id', label: 'Project ID', type: 'string', required: true, placeholder: '1234567' },
+      {
+        name: 'region',
+        label: 'Region',
+        type: 'select',
+        required: true,
+        default: 'us',
+        options: [
+          { value: 'us', label: 'US (mixpanel.com)' },
+          { value: 'eu', label: 'EU (eu.mixpanel.com)' },
+        ],
+      },
+    ],
+    credentialSchema: [
+      { name: 'api_key', label: 'Service Account Username', type: 'text', required: true },
+      {
+        name: 'api_secret',
+        label: 'Service Account Secret',
+        type: 'password',
+        required: true,
+        description:
+          'Create a Service Account in Organization Settings > Service Accounts. The secret is shown only once at creation time.',
+      },
+    ],
+  },
+
+  typeform: {
+    type: 'typeform',
+    displayName: 'Typeform',
+    description: 'Forms and surveys with Typeform',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [],
+    credentialSchema: [
+      { name: 'api_key', label: 'Personal Access Token', type: 'password', required: true, placeholder: 'tfp_...' },
+    ],
   },
 
   sendgrid: {
@@ -366,10 +461,6 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     credentialSchema: [
       { name: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: 'SG...' },
     ],
-    proxyConfig: {
-      baseUrl: 'https://api.sendgrid.com',
-      authType: 'bearer',
-    },
   },
 
   twilio: {
@@ -378,17 +469,11 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     description: 'Send SMS and make calls',
     category: 'communication',
     authMethod: 'api_key',
-    configSchema: [
-      { name: 'account_sid', label: 'Account SID', type: 'string', required: true },
-    ],
+    configSchema: [],
     credentialSchema: [
-      { name: 'api_key', label: 'Account SID', type: 'text', required: true },
-      { name: 'api_secret', label: 'Auth Token', type: 'password', required: true },
+      { name: 'account_sid', label: 'Account SID', type: 'text', required: true },
+      { name: 'auth_token', label: 'Auth Token', type: 'password', required: true },
     ],
-    proxyConfig: {
-      baseUrl: 'https://api.twilio.com',
-      authType: 'basic',
-    },
   },
 
   salesforce: {
@@ -406,11 +491,6 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
       tokenUrl: 'https://login.salesforce.com/services/oauth2/token',
       scopes: ['api', 'refresh_token'],
     },
-    // Salesforce uses instance_url from config as base URL
-    proxyConfig: {
-      baseUrl: '', // Will be set from config.instance_url
-      authType: 'bearer',
-    },
   },
 
   airtable: {
@@ -423,10 +503,6 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     credentialSchema: [
       { name: 'api_key', label: 'Personal Access Token', type: 'password', required: true, placeholder: 'pat...' },
     ],
-    proxyConfig: {
-      baseUrl: 'https://api.airtable.com',
-      authType: 'bearer',
-    },
   },
 
   hubspot: {
@@ -439,10 +515,6 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     credentialSchema: [
       { name: 'api_key', label: 'Private App Token', type: 'password', required: true },
     ],
-    proxyConfig: {
-      baseUrl: 'https://api.hubapi.com',
-      authType: 'bearer',
-    },
   },
 
   // ============================================
@@ -479,7 +551,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
       { name: 'access_key_id', label: 'Access Key ID', type: 'text', required: true },
       { name: 'secret_access_key', label: 'Secret Access Key', type: 'password', required: true },
     ],
-    // No proxyConfig - requires SigV4 signing (special handler)
+    // Requires SigV4 signing (special handler).
   },
 
   bigquery: {
@@ -495,7 +567,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     credentialSchema: [
       { name: 'service_account_json', label: 'Service Account JSON', type: 'password', required: true },
     ],
-    // No proxyConfig - requires Google auth
+    // Requires Google auth.
   },
 
   // ============================================
@@ -533,8 +605,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
       { name: 'client_id', label: 'Client ID', type: 'text', required: false },
       { name: 'client_secret', label: 'Client Secret', type: 'password', required: false },
     ],
-    // proxyConfig is dynamic based on config.auth_type and config.base_url
-    // Will be handled specially in the proxy handler
+    // Exposes config/credential fields for custom API connections.
   },
 };
 
@@ -553,14 +624,6 @@ export function getAllCategories(): IntegrationCategory[] {
 
 export function getAllIntegrations(): IntegrationDefinition[] {
   return Object.values(INTEGRATION_REGISTRY);
-}
-
-/**
- * Check if an integration supports HTTP proxy passthrough
- */
-export function isProxyable(type: string): boolean {
-  const def = INTEGRATION_REGISTRY[type];
-  return def?.proxyConfig !== undefined;
 }
 
 export function validateConfig(type: string, config: Record<string, unknown>): string[] {
