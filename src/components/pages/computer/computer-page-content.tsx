@@ -1487,9 +1487,6 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
     const model = modelsRef.current.get(activeTab.path);
     if (!model) {
       void openFile(activeTab.path, { focus: false });
-      const language = getLanguageForPath(activeTab.path);
-      savedHashesRef.current.set(activeTab.path, hashString(''));
-      ensureModel(activeTab.path, '', language);
       return;
     }
     if (model) {
@@ -1503,7 +1500,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       }
       editorRef.current.focus();
     }
-  }, [activeTab, disposeModel, ensureModel, openFile]);
+  }, [activeTab, disposeModel, openFile]);
 
   const breadcrumbItems = useMemo(() => {
     if (!activePath) return [] as { label: string; path: string }[];
