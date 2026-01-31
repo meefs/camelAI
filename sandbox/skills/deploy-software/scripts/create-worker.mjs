@@ -353,6 +353,15 @@ async function createProject(projectName, options) {
   // Create components.json (dynamic based on user options)
   createComponentsJson(projectDir, options);
 
+  // Update wrangler.jsonc with project name
+  const wranglerPath = join(projectDir, 'wrangler.jsonc');
+  if (existsSync(wranglerPath)) {
+    let wranglerConfig = readFileSync(wranglerPath, 'utf-8');
+    // Replace the name field (JSONC so can't use JSON.parse)
+    wranglerConfig = wranglerConfig.replace(/"name":\s*"rr7-template"/, `"name": "${projectName}"`);
+    writeFileSync(wranglerPath, wranglerConfig);
+  }
+
   console.log(`
 Project created successfully!
 
