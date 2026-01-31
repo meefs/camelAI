@@ -590,7 +590,7 @@ When deploying software to the internet or for the user to access:
 3. **Use Durable Objects with SQLite** - For persistence, use SQLite-backed Durable Objects (not KV)
 4. **Use \`wrangler deploy\`** - Deploy with the global wrangler binary
 
-The infrastructure is already configured for Worker deployments. For fullstack apps, use Next.js with OpenNext for Cloudflare.
+The infrastructure is already configured for Worker deployments. For simple or lightweight apps, create a worker project manually without a framework. For larger, more sophisticated fullstack apps, read the deploy-software skill and use the \`create-worker\` template which includes React Router 7 in framework mode—comparable to Next.js but optimized for our stack.
 `;
 
 // Handle AskUserQuestion via canUseTool callback
