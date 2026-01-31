@@ -323,9 +323,9 @@ This last test file is purely structural — it validates the registry against i
 
 ## Checklist
 
-- [ ] Verify `ProxyConfig` / `isProxyable()` dead code is deleted
-- [ ] Fix broken OpenAI suffix test (`['API_KEY']` -> `['API_KEY', 'ORGANIZATION_ID']`)
-- [ ] Add suffix tests for 6 new types
-- [ ] Add env var mapping tests for 8 new/updated types (supabase, databricks, sentry, mailchimp, posthog, mixpanel, openrouter, typeform) + openai update
-- [ ] Optionally add registry consistency tests
-- [ ] Run `bun run test:run` to confirm all tests pass
+- [x] Verify `ProxyConfig` / `isProxyable()` dead code is deleted — confirmed, no matches in src/ workers/ or tests/
+- [x] Fix broken OpenAI suffix test (`['API_KEY']` -> `['API_KEY', 'ORGANIZATION_ID']`) — done
+- [x] Add suffix tests for 6 new types — done
+- [x] Add env var mapping tests for 8 new/updated types — done
+- [ ] Optionally add registry consistency tests — not yet added (see section D above)
+- [x] Run `bun run test:run` — 199 tests pass across 14 files, 46 in integration-env.test.ts

@@ -34,6 +34,21 @@ interface EditConnectionDialogProps {
   onSuccess: () => void;
 }
 
+const applyDefaults = (
+  schema: IntegrationDefinition['configSchema'],
+  current: Record<string, unknown>
+) => {
+  const next = { ...current };
+  for (const field of schema) {
+    if (field.default === undefined) continue;
+    const value = next[field.name];
+    if (value === undefined || value === null || value === '') {
+      next[field.name] = field.default;
+    }
+  }
+  return next;
+};
+
 export function EditConnectionDialog({
   open,
   onOpenChange,
@@ -55,11 +70,11 @@ export function EditConnectionDialog({
   // Reset form when connection changes
   useEffect(() => {
     setName(connection.name);
-    setConfig(connection.config);
+    setConfig(typeDef ? applyDefaults(typeDef.configSchema, connection.config) : connection.config);
     setCredentials({});
     setShouldUpdateCredentials(false);
     setError(null);
-  }, [connection]);
+  }, [connection, typeDef]);
 
   useEffect(() => {
     if (fetcher.state === 'idle' && fetcher.data) {
@@ -75,12 +90,14 @@ export function EditConnectionDialog({
     e.preventDefault();
     setError(null);
 
+    const nextConfig = typeDef ? applyDefaults(typeDef.configSchema, config) : config;
+
     fetcher.submit(
       {
         intent: 'updateIntegration',
         integrationId: connection.id,
         name: name.trim(),
-        config: JSON.stringify(config),
+        config: JSON.stringify(nextConfig),
         ...(shouldUpdateCredentials ? { credentials: JSON.stringify(credentials) } : {}),
       },
       { method: 'POST' }
