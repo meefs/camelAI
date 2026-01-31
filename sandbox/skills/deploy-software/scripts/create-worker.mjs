@@ -197,16 +197,6 @@ function createComponentsJson(projectDir, options) {
   writeFileSync(join(projectDir, 'components.json'), JSON.stringify(componentsJson, null, 2) + '\n');
 }
 
-function updatePackageJson(projectDir) {
-  const pkgPath = join(projectDir, 'package.json');
-  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-
-  // Remove resolutions (only needed for Docker build with local Verdaccio)
-  delete pkg.resolutions;
-
-  writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-}
-
 async function fetchPresetConfig(url) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -334,24 +324,6 @@ async function createProject(projectName, options) {
 
   // Create components.json (dynamic based on user options)
   createComponentsJson(projectDir, options);
-
-  // Update package.json (name, remove resolutions)
-  updatePackageJson(projectDir);
-
-  // Strip Verdaccio registry from .yarnrc.yml (only needed for Docker build)
-  const yarnrcPath = join(projectDir, '.yarnrc.yml');
-  if (existsSync(yarnrcPath)) {
-    let yarnrc = readFileSync(yarnrcPath, 'utf-8');
-    // Remove Verdaccio-related lines
-    yarnrc = yarnrc
-      .split('\n')
-      .filter(line => !line.includes('npmRegistryServer') &&
-                      !line.includes('unsafeHttpWhitelist') &&
-                      !line.includes('localhost'))
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n'); // Clean up extra blank lines
-    writeFileSync(yarnrcPath, yarnrc);
-  }
 
   console.log(`
 Project created successfully!

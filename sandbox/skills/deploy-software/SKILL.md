@@ -391,16 +391,17 @@ create-worker my-app --style nova --theme blue
 create-worker my-app --auth
 
 cd my-app
-npm install
+
+# Dependencies come preinstalled - do not run yarn install
 
 # Add shadcn/ui components (already configured)
 npx shadcn@latest add button card form input
 
 # Local development
-npm run dev
+yarn dev
 
 # Deploy
-npm run deploy
+yarn deploy
 ```
 
 The template includes:
