@@ -16,6 +16,7 @@ This skill guides deployment of production software to Cloudflare's edge network
 4. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
 5. **Use React + Vite for fullstack web apps** - With React Router and Tailwind CSS pre-configured
 6. **Use shadcn/ui for frontend components** - The CLI is available via `npx shadcn@latest add <component>`
+7. **Avoid large package installations** - Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies that take a long time to install. The `create-worker` template has everything pre-configured.
 
 ## Creating New Projects
 

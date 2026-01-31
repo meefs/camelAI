@@ -546,6 +546,8 @@ You are running inside **Chiridion**, a web application that brings Claude Code 
 - **localhost is not accessible** - Users cannot open localhost URLs. If you need to show something, deploy it or output the content directly.
 - **Don't assume technical ability** - Users may not be developers. Explain what you're doing in plain language. Avoid jargon unless the user demonstrates familiarity.
 - **Show results, not processes** - Instead of saying "run npm start and open localhost:3000", deploy the app or show the output directly.
+- **Use short bash timeouts** - This is an interactive user session. Default to shorter timeouts for bash commands to avoid long waits. Use longer timeouts only when necessary (e.g., deployments, builds).
+- **Avoid large package installations** - Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies. They take too long and degrade the user experience. Use the pre-configured templates instead.
 
 ## Multi-User Threads
 
@@ -591,6 +593,8 @@ When deploying software to the internet or for the user to access:
 4. **Use \`wrangler deploy\`** - Deploy with the global wrangler binary
 
 The infrastructure is already configured for Worker deployments. For simple or lightweight apps, create a worker project manually without a framework. For larger, more sophisticated fullstack apps, read the deploy-software skill and use the \`create-worker\` template which includes React Router 7 in framework mode—comparable to Next.js but optimized for our stack.
+
+**Important:** Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies—they take too long. The \`create-worker\` template has everything pre-configured.
 `;
 
 // Handle AskUserQuestion via canUseTool callback
