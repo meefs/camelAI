@@ -273,11 +273,39 @@ function copyTemplate(templateName, projectDir) {
   if (!existsSync(templatePath)) {
     throw new Error(`Template '${templateName}' not found at ${templatePath}`);
   }
+
+  // Get JuiceFS volume name from config
+  const jfsConfigPath = join(process.env.HOME || '/home/claude', '.jfs.config');
+  let volumeName, metaUrl;
+  try {
+    volumeName = execFileSync('jq', ['-r', '.Format.Name', jfsConfigPath], { encoding: 'utf-8' }).trim();
+    // Find the meta DB file in /var/lib/juicefs/
+    const metaDir = '/var/lib/juicefs';
+    const dbFiles = execFileSync('ls', [metaDir], { encoding: 'utf-8' }).trim().split('\n').filter(f => f.endsWith('.db'));
+    if (dbFiles.length > 0) {
+      metaUrl = `sqlite3://${metaDir}/${dbFiles[0]}`;
+    }
+  } catch {
+    volumeName = null;
+    metaUrl = null;
+  }
+
+  // Use jfs:// protocol if JuiceFS is configured (bypasses FUSE for better performance)
+  // Otherwise fall back to regular path
+  const useJfs = volumeName && metaUrl;
+  const destPath = useJfs ? `jfs://${volumeName}${projectDir}/` : `${projectDir}/`;
+
+  // Set up environment with volume name pointing to meta URL
+  const env = { ...process.env };
+  if (useJfs) {
+    env[volumeName] = metaUrl;
+  }
+
   // Use juicefs sync for fast copying on JuiceFS filesystem
   // --perms preserves execute bits (needed for esbuild binary)
   // --links preserves symlinks
-  // Trailing slashes ensure we copy contents into projectDir
-  execFileSync('juicefs', ['sync', '--threads', '40', '--list-threads', '4', '--perms', '--links', `${templatePath}/`, `${projectDir}/`], { stdio: 'pipe' });
+  // --dirs copies empty directories
+  execFileSync('juicefs', ['sync', '--threads', '40', '--list-threads', '4', '--perms', '--links', '--dirs', `${templatePath}/`, destPath], { stdio: 'pipe', env });
 }
 
 async function createProject(projectName, options) {
