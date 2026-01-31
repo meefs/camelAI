@@ -869,9 +869,9 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         }
 
         const language = getLanguageForPath(normalizedPath);
+        ensureModel(normalizedPath, data.content, language);
         savedHashesRef.current.set(normalizedPath, hashString(data.content));
         versionsRef.current.set(normalizedPath, data.version);
-        ensureModel(normalizedPath, data.content, language);
       } catch (error) {
         console.error('Failed to open file', error);
       }
