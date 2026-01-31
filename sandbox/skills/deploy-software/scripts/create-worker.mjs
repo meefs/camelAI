@@ -293,7 +293,11 @@ function copyTemplate(templateName, projectDir) {
   // Use jfs:// protocol if JuiceFS is configured (bypasses FUSE for better performance)
   // Otherwise fall back to regular path
   const useJfs = volumeName && metaUrl;
-  const destPath = useJfs ? `jfs://${volumeName}${projectDir}/` : `${projectDir}/`;
+  // jfs:// paths are relative to the JuiceFS root (mounted at $HOME)
+  // So /home/claude/project becomes jfs://volume/project
+  const homeDir = process.env.HOME || '/home/claude';
+  const relativePath = projectDir.startsWith(homeDir) ? projectDir.slice(homeDir.length) : projectDir;
+  const destPath = useJfs ? `jfs://${volumeName}${relativePath}/` : `${projectDir}/`;
 
   if (useJfs) {
     console.log(`         Using jfs:// protocol (bypassing FUSE)`);
