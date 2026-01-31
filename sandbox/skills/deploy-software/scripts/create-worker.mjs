@@ -18,7 +18,7 @@
  */
 
 import { execFileSync } from 'child_process';
-import { writeFileSync, existsSync, readFileSync } from 'fs';
+import { writeFileSync, existsSync, readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -277,11 +277,12 @@ function copyTemplate(templateName, projectDir) {
   // Get JuiceFS volume name from config
   const homeDir = process.env.HOME || '/home/claude';
   const jfsConfigPath = join(homeDir, '.jfs.config');
-  const volumeName = execFileSync('jq', ['-r', '.Format.Name', jfsConfigPath], { encoding: 'utf-8' }).trim();
+  const jfsConfig = JSON.parse(readFileSync(jfsConfigPath, 'utf-8'));
+  const volumeName = jfsConfig.Format.Name;
 
   // Find the meta DB file in /var/lib/juicefs/
   const metaDir = '/var/lib/juicefs';
-  const dbFiles = execFileSync('ls', [metaDir], { encoding: 'utf-8' }).trim().split('\n').filter(f => f.endsWith('.db'));
+  const dbFiles = readdirSync(metaDir).filter(f => f.endsWith('.db'));
   if (dbFiles.length === 0) {
     throw new Error('No JuiceFS metadata DB found in /var/lib/juicefs/');
   }
