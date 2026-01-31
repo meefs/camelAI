@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-29-v36-limit-juicefs-cache
+# Version: 2026-01-31-v37-remove-litestream
 set -eu
 
 # Trap errors and show what failed
@@ -29,8 +29,7 @@ JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-2048}"  # 2GB max cache
 # Track PIDs for cleanup (Verdaccio managed by pm2)
 WS_PID=""
 CONTROL_PID=""
-LITESTREAM_PID=""
-DISK_MONITOR_PID=""
+BACKUP_PID=""
 MOUNT_SUCCEEDED=""
 
 # Check if R2 is configured
@@ -55,64 +54,70 @@ ensure_trailing_slash() {
   esac
 }
 
-# Periodic disk usage monitoring to debug "no space left on device" errors
-# Logs every 60s to stderr. Excludes /home/claude (JuiceFS mount - data is on R2)
-log_disk_usage() {
-  echo "[disk-monitor] === Disk Usage Report ===" >&2
+# Backup SQLite metadata to R2
+# Uses sqlite3's .backup command for a consistent snapshot
+backup_metadata_to_r2() {
+  if ! has_r2_config; then
+    return 1
+  fi
 
-  # Overall filesystem usage
-  echo "[disk-monitor] Filesystem overview:" >&2
-  df -h / /tmp 2>/dev/null | sed 's/^/[disk-monitor]   /' >&2
+  ORG_SAFE="$(sanitize_name "${ORG_ID:-org}")"
+  WS_SAFE="$(sanitize_name "${WORKSPACE_ID:-ws}")"
+  JFS_META_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.db"
+  R2_BASE="$(ensure_trailing_slash "${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}")"
+  BACKUP_KEY="${R2_BASE}juicefs-metadata.db"
+  BACKUP_TMP="/tmp/metadata-backup.db"
 
-  # Key directories on local disk (not JuiceFS)
-  echo "[disk-monitor] Local disk breakdown:" >&2
+  if [ ! -f "$JFS_META_FILE" ]; then
+    echo "[backup] No metadata file to backup" >&2
+    return 1
+  fi
 
-  # /tmp total (includes JuiceFS cache)
-  TMP_SIZE="$(du -sh /tmp 2>/dev/null | cut -f1)"
-  echo "[disk-monitor]   /tmp: ${TMP_SIZE:-unknown}" >&2
+  # Create consistent backup using SQLite's backup API
+  if ! sqlite3 "$JFS_META_FILE" ".backup '$BACKUP_TMP'" 2>/dev/null; then
+    echo "[backup] SQLite backup failed" >&2
+    return 1
+  fi
 
-  # JuiceFS FUSE cache specifically
-  JFS_CACHE_SIZE="$(du -sh "${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}" 2>/dev/null | cut -f1)"
-  echo "[disk-monitor]   ${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}: ${JFS_CACHE_SIZE:-unknown}" >&2
+  BACKUP_SIZE="$(stat -c%s "$BACKUP_TMP" 2>/dev/null || stat -f%z "$BACKUP_TMP")"
+  echo "[backup] Uploading metadata backup (${BACKUP_SIZE} bytes) to R2..." >&2
 
-  # JuiceFS metadata directory (includes Litestream LTX files)
-  JFS_META_SIZE="$(du -sh "${JUICEFS_META_DIR:-/var/lib/juicefs}" 2>/dev/null | cut -f1)"
-  echo "[disk-monitor]   ${JUICEFS_META_DIR:-/var/lib/juicefs}: ${JFS_META_SIZE:-unknown}" >&2
-
-  # Litestream LTX files specifically (the likely culprit)
-  LTX_COUNT="$(find "${JUICEFS_META_DIR:-/var/lib/juicefs}" -name "*.ltx*" 2>/dev/null | wc -l)"
-  LTX_SIZE="$(find "${JUICEFS_META_DIR:-/var/lib/juicefs}" -name "*.ltx*" -exec du -ch {} + 2>/dev/null | tail -1 | cut -f1)"
-  echo "[disk-monitor]   Litestream LTX files: ${LTX_COUNT} files, ${LTX_SIZE:-unknown}" >&2
-
-  # /var total
-  VAR_SIZE="$(du -sh /var 2>/dev/null | cut -f1)"
-  echo "[disk-monitor]   /var: ${VAR_SIZE:-unknown}" >&2
-
-  # npm/yarn cache (can grow)
-  NPM_CACHE="$(du -sh /root/.npm 2>/dev/null | cut -f1)"
-  echo "[disk-monitor]   /root/.npm: ${NPM_CACHE:-none}" >&2
-
-  # Verdaccio storage
-  VERDACCIO_SIZE="$(du -sh /verdaccio/storage 2>/dev/null | cut -f1)"
-  echo "[disk-monitor]   /verdaccio/storage: ${VERDACCIO_SIZE:-unknown}" >&2
-
-  echo "[disk-monitor] === End Report ===" >&2
+  # Upload to R2 using AWS SDK (run from /app where @aws-sdk is installed)
+  if cd /app && node -e "
+    const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+    const fs = require('fs');
+    const client = new S3Client({
+      endpoint: 'https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+      region: 'auto',
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN }),
+      },
+    });
+    async function upload() {
+      const body = fs.readFileSync('$BACKUP_TMP');
+      await client.send(new PutObjectCommand({
+        Bucket: '${R2_BUCKET_NAME}',
+        Key: '${BACKUP_KEY}',
+        Body: body,
+        ContentType: 'application/x-sqlite3',
+      }));
+      console.error('[backup] Uploaded to R2: ${BACKUP_KEY}');
+    }
+    upload().catch(e => { console.error('[backup] Upload failed:', e.message); process.exit(1); });
+  " 2>&1; then
+    rm -f "$BACKUP_TMP"
+    return 0
+  else
+    rm -f "$BACKUP_TMP"
+    return 1
+  fi
 }
 
-# Background disk monitoring loop
-start_disk_monitor() {
-  (
-    while true; do
-      sleep 60
-      log_disk_usage
-    done
-  ) &
-  DISK_MONITOR_PID=$!
-  echo "[entrypoint] Disk monitor PID: $DISK_MONITOR_PID" >&2
-}
-
-# Create Litestream config for continuous SQLite replication to R2
-create_litestream_config() {
+# Migrate from old Litestream backup (one-time migration)
+# Returns 0 if migration succeeded, 1 if no Litestream backup exists
+migrate_from_litestream() {
   if ! has_r2_config; then
     return 1
   fi
@@ -122,19 +127,10 @@ create_litestream_config() {
   JFS_META_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.db"
   R2_BASE="$(ensure_trailing_slash "${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}")"
 
-  # Litestream config with R2 as S3-compatible endpoint
-  # Uses environment variables for credentials (including AWS_SESSION_TOKEN for temp creds)
-  # retention: 1h (down from 24h default) - prevents LTX file accumulation
-  # snapshot-interval: 5m - triggers LTX cleanup every 5 minutes
-  # checkpoint-interval: 1m - force WAL checkpoint every minute
-  # truncate-page-n: 30000 (~120MB) - lower emergency threshold
-  cat > /tmp/litestream.yml << LSEOF
+  # Create temporary Litestream config for restore
+  cat > /tmp/litestream-migrate.yml << LSEOF
 dbs:
   - path: ${JFS_META_FILE}
-    retention: 1h
-    snapshot-interval: 5m
-    checkpoint-interval: 1m
-    truncate-page-n: 30000
     replica:
       type: s3
       bucket: ${R2_BUCKET_NAME}
@@ -142,13 +138,99 @@ dbs:
       endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
       region: auto
       force-path-style: true
-      sync-interval: 1s
 LSEOF
-  echo "[entrypoint] Created Litestream config for ${JFS_META_FILE}" >&2
+
+  echo "[entrypoint] Checking for Litestream backup to migrate..." >&2
+  RESTORE_LOG="/tmp/litestream-restore.log"
+  if litestream restore -config /tmp/litestream-migrate.yml -if-replica-exists "$JFS_META_FILE" >"$RESTORE_LOG" 2>&1; then
+    if [ -s "$JFS_META_FILE" ]; then
+      # Verify the database is valid
+      if sqlite3 "$JFS_META_FILE" "SELECT count(*) FROM sqlite_master;" >/dev/null 2>&1; then
+        FILE_SIZE="$(stat -c%s "$JFS_META_FILE" 2>/dev/null || stat -f%z "$JFS_META_FILE")"
+        echo "[entrypoint] Migrated from Litestream backup ($FILE_SIZE bytes)" >&2
+        chown claude:claude "$JFS_META_FILE" 2>/dev/null || true
+        chmod u+rw "$JFS_META_FILE" 2>/dev/null || true
+        sync
+
+        # Backup to new format immediately
+        echo "[entrypoint] Converting to new backup format..." >&2
+        backup_metadata_to_r2 || echo "[entrypoint] WARNING: Failed to create new format backup" >&2
+
+        # Delete old Litestream data from R2
+        echo "[entrypoint] Cleaning up old Litestream data..." >&2
+        delete_litestream_data || true
+
+        rm -f /tmp/litestream-migrate.yml
+        return 0
+      else
+        echo "[entrypoint] WARNING: Litestream restore produced invalid database" >&2
+        rm -f "$JFS_META_FILE"
+      fi
+    fi
+  fi
+
+  # Check restore log for useful info
+  if [ -s "$RESTORE_LOG" ] && grep -q "no matching" "$RESTORE_LOG"; then
+    echo "[entrypoint] No Litestream backup found" >&2
+  elif [ -s "$RESTORE_LOG" ]; then
+    cat "$RESTORE_LOG" >&2
+  fi
+
+  rm -f /tmp/litestream-migrate.yml
+  return 1
 }
 
-# Restore SQLite metadata from Litestream replica
-restore_from_litestream() {
+# Delete old Litestream data from R2 after migration
+delete_litestream_data() {
+  if ! has_r2_config; then
+    return 0
+  fi
+
+  R2_BASE="$(ensure_trailing_slash "${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}")"
+  LITESTREAM_PREFIX="${R2_BASE}litestream/"
+
+  echo "[entrypoint] Deleting Litestream data at ${LITESTREAM_PREFIX}..." >&2
+  cd /app && node -e "
+    const { S3Client, ListObjectsV2Command, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
+    const client = new S3Client({
+      endpoint: 'https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+      region: 'auto',
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN }),
+      },
+    });
+    async function cleanup() {
+      let cont = true, token;
+      let deleted = 0;
+      while (cont) {
+        const list = await client.send(new ListObjectsV2Command({
+          Bucket: '${R2_BUCKET_NAME}',
+          Prefix: '${LITESTREAM_PREFIX}',
+          ContinuationToken: token,
+        }));
+        if (list.Contents && list.Contents.length > 0) {
+          await client.send(new DeleteObjectsCommand({
+            Bucket: '${R2_BUCKET_NAME}',
+            Delete: { Objects: list.Contents.map(o => ({ Key: o.Key })) },
+          }));
+          deleted += list.Contents.length;
+        }
+        token = list.NextContinuationToken;
+        cont = list.IsTruncated;
+      }
+      if (deleted > 0) {
+        console.error('[entrypoint] Deleted', deleted, 'Litestream objects from R2');
+      }
+    }
+    cleanup().catch(e => { console.error('[entrypoint] Cleanup error:', e.message); process.exit(1); });
+  " 2>&1
+}
+
+# Restore SQLite metadata from R2 backup
+# Tries new format first, then falls back to Litestream migration
+restore_metadata_from_r2() {
   if ! has_r2_config; then
     return 1
   fi
@@ -156,65 +238,97 @@ restore_from_litestream() {
   ORG_SAFE="$(sanitize_name "${ORG_ID:-org}")"
   WS_SAFE="$(sanitize_name "${WORKSPACE_ID:-ws}")"
   JFS_META_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.db"
+  R2_BASE="$(ensure_trailing_slash "${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}")"
+  BACKUP_KEY="${R2_BASE}juicefs-metadata.db"
 
-  create_litestream_config
+  echo "[entrypoint] Restoring JuiceFS metadata..." >&2
 
-  echo "[entrypoint] Restoring JuiceFS metadata from Litestream..." >&2
-  RESTORE_LOG="/tmp/litestream-restore.log"
-  if litestream restore -config /tmp/litestream.yml -if-replica-exists "$JFS_META_FILE" >"$RESTORE_LOG" 2>&1; then
-    RESTORE_EXIT=0
-  else
-    RESTORE_EXIT=$?
-  fi
-
-  # Log restore output for debugging
-  if [ -s "$RESTORE_LOG" ]; then
-    echo "[entrypoint] Litestream restore output:" >&2
-    cat "$RESTORE_LOG" >&2
-  fi
-
-  if [ "$RESTORE_EXIT" -eq 0 ] && [ -s "$JFS_META_FILE" ]; then
-    FILE_SIZE="$(stat -c%s "$JFS_META_FILE" 2>/dev/null || stat -f%z "$JFS_META_FILE")"
-    echo "[entrypoint] Restored SQLite metadata ($FILE_SIZE bytes)" >&2
+  # Try new backup format first (run from /app where @aws-sdk is installed)
+  if cd /app && node -e "
+    const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+    const fs = require('fs');
+    const { pipeline } = require('stream/promises');
+    const client = new S3Client({
+      endpoint: 'https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+      region: 'auto',
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN }),
+      },
+    });
+    async function download() {
+      const response = await client.send(new GetObjectCommand({
+        Bucket: '${R2_BUCKET_NAME}',
+        Key: '${BACKUP_KEY}',
+      }));
+      await pipeline(response.Body, fs.createWriteStream('${JFS_META_FILE}'));
+      console.error('[entrypoint] Downloaded metadata from new backup format');
+    }
+    download().catch(e => {
+      if (e.name === 'NoSuchKey') process.exit(1);
+      console.error('[entrypoint] Download failed:', e.message);
+      process.exit(1);
+    });
+  " 2>&1; then
     # Verify the database is valid
     if sqlite3 "$JFS_META_FILE" "SELECT count(*) FROM sqlite_master;" >/dev/null 2>&1; then
-      echo "[entrypoint] SQLite metadata verified OK" >&2
+      FILE_SIZE="$(stat -c%s "$JFS_META_FILE" 2>/dev/null || stat -f%z "$JFS_META_FILE")"
+      echo "[entrypoint] Restored SQLite metadata ($FILE_SIZE bytes)" >&2
       chown claude:claude "$JFS_META_FILE" 2>/dev/null || true
       chmod u+rw "$JFS_META_FILE" 2>/dev/null || true
-      # Ensure file is fully flushed to disk before JuiceFS reads it
       sync
       return 0
     else
-      echo "[entrypoint] WARNING: Restored file failed SQLite validation" >&2
+      echo "[entrypoint] WARNING: Downloaded file failed SQLite validation" >&2
+      rm -f "$JFS_META_FILE"
     fi
   fi
 
-  if [ "$RESTORE_EXIT" -ne 0 ]; then
-    echo "[entrypoint] Litestream restore failed (exit code: $RESTORE_EXIT)" >&2
-  elif [ ! -f "$JFS_META_FILE" ]; then
-    echo "[entrypoint] No Litestream replica found (file not created)" >&2
-  elif [ ! -s "$JFS_META_FILE" ]; then
-    echo "[entrypoint] Litestream restored empty file (0 bytes)" >&2
-    rm -f "$JFS_META_FILE"
+  # Fall back to Litestream migration (for existing workspaces)
+  echo "[entrypoint] No new-format backup found, checking for Litestream backup..." >&2
+  if migrate_from_litestream; then
+    return 0
   fi
+
+  echo "[entrypoint] No backup found (new workspace)" >&2
   return 1
 }
 
-# Start Litestream continuous replication (runs in background)
-start_litestream_replication() {
+# Start periodic metadata backup loop (runs in background)
+# Backs up every 1 minute to R2, skipping if no changes detected
+start_periodic_backup() {
   if ! has_r2_config; then
     return 0
   fi
-  if [ -n "${LITESTREAM_PID:-}" ] && kill -0 "$LITESTREAM_PID" 2>/dev/null; then
-    return 0
-  fi
 
-  create_litestream_config
+  ORG_SAFE="$(sanitize_name "${ORG_ID:-org}")"
+  WS_SAFE="$(sanitize_name "${WORKSPACE_ID:-ws}")"
+  JFS_META_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.db"
 
-  echo "[entrypoint] Starting Litestream replication..." >&2
-  litestream replicate -config /tmp/litestream.yml &
-  LITESTREAM_PID=$!
-  echo "[entrypoint] Litestream PID: $LITESTREAM_PID" >&2
+  echo "[entrypoint] Starting periodic metadata backup (every 1 min)..." >&2
+  (
+    LAST_MTIME=""
+    while true; do
+      sleep 60  # 1 minute
+
+      # Get current modification time of the metadata file
+      if [ -f "$JFS_META_FILE" ]; then
+        CURRENT_MTIME="$(stat -c%Y "$JFS_META_FILE" 2>/dev/null || stat -f%m "$JFS_META_FILE" 2>/dev/null)"
+
+        # Skip backup if file hasn't changed since last backup
+        if [ "$CURRENT_MTIME" = "$LAST_MTIME" ]; then
+          continue
+        fi
+
+        if backup_metadata_to_r2; then
+          LAST_MTIME="$CURRENT_MTIME"
+        fi
+      fi
+    done
+  ) &
+  BACKUP_PID=$!
+  echo "[entrypoint] Backup loop PID: $BACKUP_PID" >&2
 }
 
 # Check if a tar backup exists in R2 (for migration)
@@ -226,8 +340,8 @@ check_tar_backup_exists() {
   R2_BASE="$(ensure_trailing_slash "${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}")"
   TAR_KEY="${R2_BASE}workspace.tar.zst"
 
-  # Use sync.mjs to check if tar backup exists by attempting to get its size
-  if node -e "
+  # Check if tar backup exists by attempting to get its size
+  if cd /app && node -e "
     import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
     const client = new S3Client({
       endpoint: 'https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
@@ -261,7 +375,7 @@ delete_tar_backup() {
   TAR_KEY="${R2_BASE}workspace.tar.zst"
 
   echo "[entrypoint] Deleting old tar backup after migration..." >&2
-  node -e "
+  cd /app && node -e "
     import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
     const client = new S3Client({
       endpoint: 'https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
@@ -354,7 +468,7 @@ mount_juicefs() {
   META_START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
   NEEDS_MIGRATION=""
 
-  # Export R2_PREFIX for Litestream config (defaults to org/workspace path)
+  # Export R2_PREFIX for backup config (defaults to org/workspace path)
   export R2_PREFIX="${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}"
   echo "[entrypoint] R2_PREFIX=$R2_PREFIX" >&2
 
@@ -363,8 +477,8 @@ mount_juicefs() {
     unset AWS_SESSION_TOKEN
   fi
 
-  # Restore SQLite metadata from Litestream continuous replication
-  restore_from_litestream || true
+  # Restore SQLite metadata from R2 backup
+  restore_metadata_from_r2 || true
 
   # If no JuiceFS metadata exists, check for tar backup to migrate
   if [ ! -f "$JFS_META_FILE" ] || [ ! -s "$JFS_META_FILE" ]; then
@@ -596,15 +710,13 @@ mount_juicefs() {
 
 # Cleanup function for shutdown (runs on EXIT, which fires for all termination paths)
 # Cloudflare gives containers ~15 minutes for graceful shutdown, so we can take our time
-# to ensure data is properly flushed and replicated.
+# to ensure data is properly flushed and backed up.
 #
-# CRITICAL: Shutdown order matters for data integrity!
+# Shutdown order:
 # 1. Stop application processes (ws-server, control-plane, Verdaccio)
-# 2. Unmount JuiceFS FIRST (flushes writeback cache to R2, updates SQLite metadata)
-# 3. Stop Litestream LAST (replicates final metadata state to R2)
-#
-# If we stop Litestream before unmounting JuiceFS, the final metadata changes
-# from the unmount won't be replicated, causing corruption on next startup.
+# 2. Stop periodic backup loop
+# 3. Unmount JuiceFS (flushes writeback cache to R2, updates SQLite metadata)
+# 4. Final backup of metadata to R2
 cleanup() {
   echo "[entrypoint] Shutting down... (reason: ${SHUTDOWN_REASON:-unknown})" >&2
   CLEANUP_START_TS="$(date +%s)"
@@ -617,9 +729,9 @@ cleanup() {
     wait "$WS_PID" 2>/dev/null || true
   fi
 
-  # Kill disk monitor if running
-  if [ -n "${DISK_MONITOR_PID:-}" ] && kill -0 "$DISK_MONITOR_PID" 2>/dev/null; then
-    kill "$DISK_MONITOR_PID" 2>/dev/null || true
+  # Kill periodic backup loop if running
+  if [ -n "${BACKUP_PID:-}" ] && kill -0 "$BACKUP_PID" 2>/dev/null; then
+    kill "$BACKUP_PID" 2>/dev/null || true
   fi
 
   # Kill control-plane if running
@@ -633,9 +745,7 @@ cleanup() {
   echo "[entrypoint] Stopping Verdaccio (pm2)..." >&2
   pm2 stop verdaccio 2>/dev/null || true
 
-  # Step 2: Unmount JuiceFS FIRST (before stopping Litestream!)
-  # This flushes the writeback cache to R2 and updates the SQLite metadata.
-  # Litestream must still be running to replicate these final changes.
+  # Step 2: Unmount JuiceFS (flushes writeback cache to R2, updates SQLite metadata)
   if grep -q " $TARGET_DIR " /proc/mounts 2>/dev/null; then
     echo "[entrypoint] Unmounting JuiceFS (flushing writeback cache)..." >&2
     # juicefs umount flushes all dirty data before unmounting
@@ -644,32 +754,12 @@ cleanup() {
       fusermount -u "$TARGET_DIR" 2>/dev/null || true
     fi
     echo "[entrypoint] JuiceFS unmounted" >&2
-    # Sync to ensure metadata changes are visible to Litestream
     sync
-    # Give Litestream time to replicate final metadata changes (sync interval is 1s)
-    echo "[entrypoint] Waiting for Litestream to replicate final changes..." >&2
-    sleep 3
   fi
 
-  # Step 3: Stop Litestream LAST (after JuiceFS unmount completes)
-  # This ensures the final metadata changes from unmount are replicated to R2.
-  # Use SIGINT for graceful shutdown which flushes pending WAL frames.
-  if [ -n "${LITESTREAM_PID:-}" ] && kill -0 "$LITESTREAM_PID" 2>/dev/null; then
-    echo "[entrypoint] Stopping Litestream (PID: $LITESTREAM_PID)..." >&2
-    kill -INT "$LITESTREAM_PID" 2>/dev/null || true
-    # Wait up to 60 seconds for Litestream to finish graceful shutdown
-    LITESTREAM_WAIT=0
-    while kill -0 "$LITESTREAM_PID" 2>/dev/null && [ "$LITESTREAM_WAIT" -lt 60 ]; do
-      sleep 1
-      LITESTREAM_WAIT=$((LITESTREAM_WAIT + 1))
-    done
-    if kill -0 "$LITESTREAM_PID" 2>/dev/null; then
-      echo "[entrypoint] Litestream didn't exit gracefully, forcing..." >&2
-      kill -9 "$LITESTREAM_PID" 2>/dev/null || true
-    fi
-    wait "$LITESTREAM_PID" 2>/dev/null || true
-    echo "[entrypoint] Litestream stopped (waited ${LITESTREAM_WAIT}s)" >&2
-  fi
+  # Step 3: Final backup of metadata to R2
+  echo "[entrypoint] Performing final metadata backup..." >&2
+  backup_metadata_to_r2 || echo "[entrypoint] WARNING: Final backup failed" >&2
 
   # Unmount R2 goofys mounts
   fusermount -u /mnt/user-uploads 2>/dev/null || true
@@ -705,12 +795,11 @@ else
     exit 1
   fi
 
-  # Sync metadata to disk before starting Litestream replication
-  # This ensures any JuiceFS format/mount changes are flushed
+  # Sync metadata to disk
   sync
 
-  # Start Litestream continuous replication to R2
-  start_litestream_replication
+  # Start periodic metadata backup to R2 (every 1 minute, skips if no changes)
+  start_periodic_backup
 
   # Mount R2 paths via goofys for file sharing with user
   if has_r2_config; then
@@ -805,10 +894,6 @@ echo "[entrypoint] ws-server PID: $WS_PID" >&2
 
 END_TS="$(date +%s%3N 2>/dev/null || date +%s)"
 echo "[entrypoint] Initialization complete (ms: $((END_TS - START_TS)))" >&2
-
-# Start disk usage monitoring (logs every 60s to help debug disk full issues)
-log_disk_usage  # Initial report
-start_disk_monitor
 
 # Wait for ws-server - when it exits, the cleanup trap will run
 wait "$WS_PID"

@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-30-v49-add-data-analysis-tools
+# Version: 2026-01-31-v51-remove-litestream
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
