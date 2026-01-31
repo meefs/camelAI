@@ -23,7 +23,7 @@ TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
 JUICEFS_META_DIR="${JUICEFS_META_DIR:-/var/lib/juicefs}"
 JUICEFS_CACHE_DIR="${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}"
 JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-5s}"
-JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-2048}"
+JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-1024}"
 JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-4096}"  # 4GB max cache (container has 8GB disk)
 
 # Track PIDs for cleanup (Verdaccio managed by pm2)
@@ -67,9 +67,13 @@ create_litestream_config() {
 
   # Litestream config with R2 as S3-compatible endpoint
   # Uses environment variables for credentials (including AWS_SESSION_TOKEN for temp creds)
+  # retention: 1h (down from 24h default) - prevents LTX file accumulation
+  # snapshot-interval: 5m - triggers LTX cleanup every 5 minutes
   cat > /tmp/litestream.yml << LSEOF
 dbs:
   - path: ${JFS_META_FILE}
+    retention: 1h
+    snapshot-interval: 5m
     replica:
       type: s3
       bucket: ${R2_BUCKET_NAME}
