@@ -41,6 +41,7 @@ const INLINE_MIME_TYPES = new Set([
   'image/svg+xml',
   'image/x-icon',
   'image/bmp',
+  'application/pdf',
   'text/plain',
   'text/html',
   'text/css',
