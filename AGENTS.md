@@ -381,6 +381,7 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 | `/api/workspaces/:id/upload` | POST | Upload files to R2 (chat attachments) |
 | `/api/workspaces/:id/download` | GET | Download files from R2 |
 | `/api/workspaces/:id/uploads/*` | GET | Serve user-uploaded files from R2 (preview/download) |
+| `/api/workspaces/:id/outputs/*` | GET | Stream agent-created output files for download/preview |
 
 ### Apps Routes
 | Route | Method | Purpose |
