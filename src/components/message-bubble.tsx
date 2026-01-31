@@ -360,7 +360,6 @@ export function MessageBubble({
           <BugReportCard
             appName={bugReport.appName}
             description={bugReport.description}
-            reportPath={bugReport.reportPath}
             timestamp={message.created_at}
           />
           <div

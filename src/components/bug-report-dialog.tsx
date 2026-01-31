@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { Loader2, Bug, AlertCircle, Mic } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -88,25 +88,17 @@ export function BugReportDialog({
     onOpenChange(nextOpen);
   }
 
-  useEffect(() => {
-    if (!isActiveRecording) return;
-
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        cancelRecording();
-      }
-    };
-
-    window.addEventListener('keydown', handleEscape);
-    return () => {
-      window.removeEventListener('keydown', handleEscape);
-    };
-  }, [isActiveRecording, cancelRecording]);
-
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent
+        className="sm:max-w-[500px]"
+        onEscapeKeyDown={(event) => {
+          if (isActiveRecording || isTranscribing) {
+            event.preventDefault();
+            cancelRecording();
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Bug className="h-5 w-5" />

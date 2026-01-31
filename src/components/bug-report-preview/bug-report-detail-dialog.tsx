@@ -8,6 +8,7 @@ import {
   DialogContent,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { getVanityDomain } from '@/lib/app-url';
 
 export interface BugReportDetailDialogProps {
   open: boolean;
@@ -39,6 +40,8 @@ export function BugReportDetailDialog({
   description,
   timestamp,
 }: BugReportDetailDialogProps) {
+  const vanityHost = `${appName}.${getVanityDomain()}`;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent showCloseButton={false} className="sm:max-w-[520px] p-0 gap-0">
@@ -56,19 +59,19 @@ export function BugReportDetailDialog({
         <div className="grid gap-4 px-4 py-4">
           <div className="grid gap-1">
             <span className="text-xs text-muted-foreground">App</span>
-            <span className="text-sm font-medium">{appName}</span>
+            <span className="text-sm font-medium">{vanityHost}</span>
           </div>
           <div className="grid gap-1">
             <span className="text-xs text-muted-foreground">Reported</span>
             <span className="text-sm">{formatBugReportTimestamp(timestamp)}</span>
           </div>
           {description && (
-            <div className="rounded-md bg-muted/30 p-3 text-sm italic text-foreground whitespace-pre-wrap">
+            <div className="max-h-48 overflow-y-auto rounded-md bg-muted/30 p-3 pr-4 text-sm italic text-foreground whitespace-pre-wrap">
               "{description}"
             </div>
           )}
           <div className="text-xs text-muted-foreground">
-            Screenshot captured - DOM snapshot captured - Console logs captured
+            Screenshot captured &middot; DOM snapshot captured &middot; Console logs captured
           </div>
         </div>
       </DialogContent>
