@@ -340,6 +340,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const monacoRef = useRef<Monaco | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<monacoEditor.editor.IStandaloneCodeEditor | null>(null);
+  const editorDisposedRef = useRef(true);
   const modelsRef = useRef<Map<string, monacoEditor.editor.ITextModel>>(new Map());
   const modelDisposablesRef = useRef<Map<string, monacoEditor.IDisposable>>(
     new Map()
@@ -360,6 +361,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
     async () => {}
   );
   const restoredTabsRef = useRef(false);
+  const openingFilesRef = useRef<Set<string>>(new Set());
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
   const readOnlyHintTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingEnabledRef = useRef(editingEnabled);
@@ -722,7 +724,12 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const disposeModel = useCallback((path: string) => {
     const model = modelsRef.current.get(path);
     if (model) {
-      model.dispose();
+      if (!editorDisposedRef.current && editorRef.current?.getModel() === model) {
+        editorRef.current?.setModel(null);
+      }
+      if (!model.isDisposed()) {
+        model.dispose();
+      }
       modelsRef.current.delete(path);
     }
     const disposable = modelDisposablesRef.current.get(path);
@@ -737,7 +744,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const syncDirtyState = useCallback(
     (path: string) => {
       const model = modelsRef.current.get(path);
-      if (!model) return;
+      if (!model || model.isDisposed()) return;
       const currentHash = hashString(model.getValue());
       const savedHash = savedHashesRef.current.get(path);
       const isDirty = savedHash ? savedHash !== currentHash : currentHash.length > 0;
@@ -756,6 +763,10 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
 
       const uri = monaco.Uri.parse(`file://${path}`);
       let model = monaco.editor.getModel(uri);
+      if (model?.isDisposed()) {
+        disposeModel(path);
+        model = null;
+      }
       if (!model) {
         model = monaco.editor.createModel(content, language, uri);
       } else if (model.getValue() !== content) {
@@ -770,11 +781,13 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       }
 
       if (editorRef.current && activePathRef.current === path) {
-        editorRef.current.setModel(model);
-        editorRef.current.focus();
+        if (!editorDisposedRef.current) {
+          editorRef.current.setModel(model);
+          editorRef.current.focus();
+        }
       }
     },
-    [syncDirtyState]
+    [disposeModel, syncDirtyState]
   );
 
   const openFile = useCallback(
@@ -817,8 +830,17 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       }
 
       if (modelsRef.current.has(normalizedPath)) {
+        const existingModel = modelsRef.current.get(normalizedPath);
+        if (!existingModel || !existingModel.isDisposed()) {
+          return;
+        }
+        disposeModel(normalizedPath);
+      }
+
+      if (openingFilesRef.current.has(normalizedPath)) {
         return;
       }
+      openingFilesRef.current.add(normalizedPath);
 
       try {
         const res = await fetch(
@@ -858,6 +880,8 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         versionsRef.current.set(normalizedPath, data.version);
       } catch (error) {
         console.error('Failed to open file', error);
+      } finally {
+        openingFilesRef.current.delete(normalizedPath);
       }
     },
     [apiBase, ensureModel, nodesByPath, updateTab]
@@ -876,7 +900,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const saveFile = useCallback(
     async (path: string, force?: boolean) => {
       const model = modelsRef.current.get(path);
-      if (!model) return;
+      if (!model || model.isDisposed()) return;
 
       const content = model.getValue();
       const baseVersion = force ? undefined : versionsRef.current.get(path) ?? null;
@@ -1224,6 +1248,10 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         const shouldRemap =
           oldPath === fromPath || oldPath.startsWith(fromPrefix);
         if (!shouldRemap) return;
+        if (model.isDisposed()) {
+          disposeModel(oldPath);
+          return;
+        }
         const nextPath = toPath + oldPath.slice(fromPath.length);
         const content = model.getValue();
         const language = model.getLanguageId();
@@ -1462,15 +1490,25 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   );
 
   useEffect(() => {
-    if (!activeTab || !editorRef.current) return;
+    if (!activeTab || !editorRef.current || editorDisposedRef.current) return;
+    if (activeTab.isTooLarge || activeTab.isBinary || activeTab.notFound) return;
     const model = modelsRef.current.get(activeTab.path);
+    if (!model) {
+      void openFile(activeTab.path, { focus: false });
+      return;
+    }
     if (model) {
+      if (model.isDisposed()) {
+        disposeModel(activeTab.path);
+        void openFile(activeTab.path, { focus: false });
+        return;
+      }
       if (editorRef.current.getModel() !== model) {
         editorRef.current.setModel(model);
       }
       editorRef.current.focus();
     }
-  }, [activeTab]);
+  }, [activeTab, disposeModel, openFile]);
 
   const breadcrumbItems = useMemo(() => {
     if (!activePath) return [] as { label: string; path: string }[];
@@ -2166,18 +2204,26 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                       theme={resolvedTheme === 'dark' ? 'vs-dark' : 'vs'}
                       language={getLanguageForPath(activeTab.path)}
                       options={editorOptions}
+                      keepCurrentModel
                       height="100%"
                       onMount={(editor, monaco) => {
-                      editorRef.current = editor;
-                      monacoRef.current = monaco;
-                      setMonacoReady(true);
-                      const readOnlyContribution = editor.getContribution(
-                        'editor.contrib.readOnlyMessageController'
-                      ) as { dispose?: () => void } | null;
-                      readOnlyContribution?.dispose?.();
-                      editor.onDidAttemptReadOnlyEdit(() => {
-                        showReadOnlyHint();
-                      });
+                        editorRef.current = editor;
+                        monacoRef.current = monaco;
+                        editorDisposedRef.current = false;
+                        editor.onDidDispose(() => {
+                          if (editorRef.current === editor) {
+                            editorDisposedRef.current = true;
+                            editorRef.current = null;
+                          }
+                        });
+                        setMonacoReady(true);
+                        const readOnlyContribution = editor.getContribution(
+                          'editor.contrib.readOnlyMessageController'
+                        ) as { dispose?: () => void } | null;
+                        readOnlyContribution?.dispose?.();
+                        editor.onDidAttemptReadOnlyEdit(() => {
+                          showReadOnlyHint();
+                        });
                         editor.addCommand(
                           monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
                           () => {
@@ -2188,7 +2234,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                           }
                         );
                         const model = modelsRef.current.get(activeTab.path);
-                        if (model) {
+                        if (model && !model.isDisposed()) {
                           editor.setModel(model);
                         }
                       }}
@@ -2400,7 +2446,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                   variant="outline"
                   onClick={() => {
                     const model = modelsRef.current.get(conflictState.path);
-                    if (model) {
+                    if (model && !model.isDisposed()) {
                       model.setValue(conflictState.remoteContent);
                       savedHashesRef.current.set(
                         conflictState.path,
@@ -2414,6 +2460,8 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                         ...tab,
                         isDirty: false,
                       }));
+                    } else {
+                      void openFile(conflictState.path, { focus: false });
                     }
                     setConflictState(null);
                   }}
