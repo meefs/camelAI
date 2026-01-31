@@ -24,12 +24,13 @@ JUICEFS_META_DIR="${JUICEFS_META_DIR:-/var/lib/juicefs}"
 JUICEFS_CACHE_DIR="${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}"
 JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-5s}"
 JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-1024}"
-JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-4096}"  # 4GB max cache (container has 8GB disk)
+JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-2048}"  # 2GB max cache
 
 # Track PIDs for cleanup (Verdaccio managed by pm2)
 WS_PID=""
 CONTROL_PID=""
 LITESTREAM_PID=""
+DISK_MONITOR_PID=""
 MOUNT_SUCCEEDED=""
 
 # Check if R2 is configured
@@ -54,6 +55,62 @@ ensure_trailing_slash() {
   esac
 }
 
+# Periodic disk usage monitoring to debug "no space left on device" errors
+# Logs every 60s to stderr. Excludes /home/claude (JuiceFS mount - data is on R2)
+log_disk_usage() {
+  echo "[disk-monitor] === Disk Usage Report ===" >&2
+
+  # Overall filesystem usage
+  echo "[disk-monitor] Filesystem overview:" >&2
+  df -h / /tmp 2>/dev/null | sed 's/^/[disk-monitor]   /' >&2
+
+  # Key directories on local disk (not JuiceFS)
+  echo "[disk-monitor] Local disk breakdown:" >&2
+
+  # /tmp total (includes JuiceFS cache)
+  TMP_SIZE="$(du -sh /tmp 2>/dev/null | cut -f1)"
+  echo "[disk-monitor]   /tmp: ${TMP_SIZE:-unknown}" >&2
+
+  # JuiceFS FUSE cache specifically
+  JFS_CACHE_SIZE="$(du -sh "${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}" 2>/dev/null | cut -f1)"
+  echo "[disk-monitor]   ${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}: ${JFS_CACHE_SIZE:-unknown}" >&2
+
+  # JuiceFS metadata directory (includes Litestream LTX files)
+  JFS_META_SIZE="$(du -sh "${JUICEFS_META_DIR:-/var/lib/juicefs}" 2>/dev/null | cut -f1)"
+  echo "[disk-monitor]   ${JUICEFS_META_DIR:-/var/lib/juicefs}: ${JFS_META_SIZE:-unknown}" >&2
+
+  # Litestream LTX files specifically (the likely culprit)
+  LTX_COUNT="$(find "${JUICEFS_META_DIR:-/var/lib/juicefs}" -name "*.ltx*" 2>/dev/null | wc -l)"
+  LTX_SIZE="$(find "${JUICEFS_META_DIR:-/var/lib/juicefs}" -name "*.ltx*" -exec du -ch {} + 2>/dev/null | tail -1 | cut -f1)"
+  echo "[disk-monitor]   Litestream LTX files: ${LTX_COUNT} files, ${LTX_SIZE:-unknown}" >&2
+
+  # /var total
+  VAR_SIZE="$(du -sh /var 2>/dev/null | cut -f1)"
+  echo "[disk-monitor]   /var: ${VAR_SIZE:-unknown}" >&2
+
+  # npm/yarn cache (can grow)
+  NPM_CACHE="$(du -sh /root/.npm 2>/dev/null | cut -f1)"
+  echo "[disk-monitor]   /root/.npm: ${NPM_CACHE:-none}" >&2
+
+  # Verdaccio storage
+  VERDACCIO_SIZE="$(du -sh /verdaccio/storage 2>/dev/null | cut -f1)"
+  echo "[disk-monitor]   /verdaccio/storage: ${VERDACCIO_SIZE:-unknown}" >&2
+
+  echo "[disk-monitor] === End Report ===" >&2
+}
+
+# Background disk monitoring loop
+start_disk_monitor() {
+  (
+    while true; do
+      sleep 60
+      log_disk_usage
+    done
+  ) &
+  DISK_MONITOR_PID=$!
+  echo "[entrypoint] Disk monitor PID: $DISK_MONITOR_PID" >&2
+}
+
 # Create Litestream config for continuous SQLite replication to R2
 create_litestream_config() {
   if ! has_r2_config; then
@@ -69,11 +126,15 @@ create_litestream_config() {
   # Uses environment variables for credentials (including AWS_SESSION_TOKEN for temp creds)
   # retention: 1h (down from 24h default) - prevents LTX file accumulation
   # snapshot-interval: 5m - triggers LTX cleanup every 5 minutes
+  # checkpoint-interval: 1m - force WAL checkpoint every minute
+  # truncate-page-n: 30000 (~120MB) - lower emergency threshold
   cat > /tmp/litestream.yml << LSEOF
 dbs:
   - path: ${JFS_META_FILE}
     retention: 1h
     snapshot-interval: 5m
+    checkpoint-interval: 1m
+    truncate-page-n: 30000
     replica:
       type: s3
       bucket: ${R2_BUCKET_NAME}
@@ -556,6 +617,11 @@ cleanup() {
     wait "$WS_PID" 2>/dev/null || true
   fi
 
+  # Kill disk monitor if running
+  if [ -n "${DISK_MONITOR_PID:-}" ] && kill -0 "$DISK_MONITOR_PID" 2>/dev/null; then
+    kill "$DISK_MONITOR_PID" 2>/dev/null || true
+  fi
+
   # Kill control-plane if running
   if [ -n "${CONTROL_PID:-}" ] && kill -0 "$CONTROL_PID" 2>/dev/null; then
     echo "[entrypoint] Stopping control-plane (PID: $CONTROL_PID)..." >&2
@@ -739,6 +805,10 @@ echo "[entrypoint] ws-server PID: $WS_PID" >&2
 
 END_TS="$(date +%s%3N 2>/dev/null || date +%s)"
 echo "[entrypoint] Initialization complete (ms: $((END_TS - START_TS)))" >&2
+
+# Start disk usage monitoring (logs every 60s to help debug disk full issues)
+log_disk_usage  # Initial report
+start_disk_monitor
 
 # Wait for ws-server - when it exits, the cleanup trap will run
 wait "$WS_PID"
