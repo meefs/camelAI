@@ -175,6 +175,9 @@ export function EditConnectionDialog({
                     required={field.required}
                   />
                 )}
+                {field.description && (
+                  <p className="text-xs text-muted-foreground">{field.description}</p>
+                )}
               </div>
             ))}
 
@@ -223,6 +226,9 @@ export function EditConnectionDialog({
                           placeholder={field.placeholder}
                           required={shouldUpdateCredentials && field.required}
                         />
+                        {field.description && (
+                          <p className="text-xs text-muted-foreground">{field.description}</p>
+                        )}
                       </div>
                     ))
                   )}

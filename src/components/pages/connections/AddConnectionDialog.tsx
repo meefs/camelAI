@@ -170,6 +170,9 @@ export function AddConnectionDialog({
                     required={field.required}
                   />
                 )}
+                {field.description && (
+                  <p className="text-xs text-muted-foreground">{field.description}</p>
+                )}
               </div>
             ))}
 
@@ -195,6 +198,9 @@ export function AddConnectionDialog({
                       placeholder={field.placeholder}
                       required={field.required}
                     />
+                    {field.description && (
+                      <p className="text-xs text-muted-foreground">{field.description}</p>
+                    )}
                   </div>
                 ))}
               </>

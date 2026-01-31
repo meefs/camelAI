@@ -395,7 +395,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             required: f.required,
             description: f.description,
           })),
-          supports_proxy: !!def.proxyConfig,
+          supports_proxy: false,
         }));
 
         // Group by category for easier reading
