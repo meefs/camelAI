@@ -361,6 +361,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
     async () => {}
   );
   const restoredTabsRef = useRef(false);
+  const openingFilesRef = useRef<Set<string>>(new Set());
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
   const readOnlyHintTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingEnabledRef = useRef(editingEnabled);
@@ -836,6 +837,11 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         disposeModel(normalizedPath);
       }
 
+      if (openingFilesRef.current.has(normalizedPath)) {
+        return;
+      }
+      openingFilesRef.current.add(normalizedPath);
+
       try {
         const res = await fetch(
           `${apiBase}/read?path=${encodeURIComponent(normalizedPath)}`
@@ -874,6 +880,8 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         versionsRef.current.set(normalizedPath, data.version);
       } catch (error) {
         console.error('Failed to open file', error);
+      } finally {
+        openingFilesRef.current.delete(normalizedPath);
       }
     },
     [apiBase, ensureModel, nodesByPath, updateTab]
