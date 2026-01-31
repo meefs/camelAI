@@ -33,7 +33,7 @@ Example: `aws_light.svg`, `aws_dark.svg`
 
 ## Integration Types
 
-These are the integration types from the registry that need logos:
+These are the integration types from the registry that have logos:
 
 | Type        | Display Name         | Notes                    |
 |-------------|---------------------|--------------------------|
@@ -53,11 +53,15 @@ These are the integration types from the registry that need logos:
 | `hubspot`   | HubSpot             |                          |
 | `aws`       | Amazon Web Services | Likely needs themed      |
 | `bigquery`  | Google BigQuery     |                          |
-
-## Where to Find Official Logos
-
-- **AWS**: https://aws.amazon.com/architecture/icons/
-- **Google Cloud (BigQuery, etc.)**: https://cloud.google.com/icons
-- **GitHub**: https://github.com/logos
-- **Stripe**: https://stripe.com/newsroom/brand-assets
-- **Others**: Check each company's brand/press page
+| `clickhouse`| ClickHouse          | Themed (dark = white)    |
+| `databricks`| Databricks          |                          |
+| `mailchimp` | Mailchimp           |                          |
+| `mixpanel`  | Mixpanel            |                          |
+| `neon`      | Neon                |                          |
+| `openrouter`| OpenRouter          | Themed; dark variant TBD |
+| `posthog`   | PostHog             |                          |
+| `sentry`    | Sentry              |                          |
+| `snowflake` | Snowflake           |                          |
+| `supabase`  | Supabase            |                          |
+| `typeform`  | Typeform            | Themed (dark = white)    |
+| `x`         | X                   | Themed (dark = white)    |
