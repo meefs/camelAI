@@ -615,6 +615,7 @@ chiridion-app/
 │   ├── components/
 │   │   ├── ui/                # shadcn/ui components
 │   │   ├── Chat.tsx           # Chat with WebSocket
+│   │   ├── bug-report-preview/ # Bug report card + detail dialog
 │   │   ├── sidebar/           # Navigation
 │   │   ├── settings/          # Settings components
 │   │   ├── admin/             # Admin components

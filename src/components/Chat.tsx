@@ -1777,7 +1777,7 @@ export default function Chat({
   }, []);
 
   // Bug report submission
-  const submitBugReport = useCallback(async (report: { expected: string; actual: string }) => {
+  const submitBugReport = useCallback(async (report: { description: string }) => {
     if (!deployedApp || !resolvedWorkspaceId || !threadId) return;
 
     setBugReportStatus('capturing');
@@ -1907,8 +1907,7 @@ export default function Chat({
         appName: deployedApp,
         appUrl: vanityUrl,
         userReport: {
-          expected: report.expected,
-          actual: report.actual,
+          description: report.description,
         },
         debugData: debugDataClean,
       };
@@ -1934,15 +1933,30 @@ export default function Chat({
       // Send message to agent
       setBugReportStatus('sending');
 
-      const agentMessage = `I found a bug in the deployed app "${deployedApp}".
+      const description = report.description.trim();
+      const agentMessage = description
+        ? `I found a bug in the deployed app "${deployedApp}".
 
-**What I expected:** ${report.expected}
+**Description:** ${description}
 
-**What actually happened:** ${report.actual}
+I've captured a debug report with the DOM snapshot and console logs. Please investigate and fix this bug.
+
+(bug report: ${uploadData.path})`
+        : `I found a bug in the deployed app "${deployedApp}".
 
 I've captured a debug report with the DOM snapshot and console logs. Please investigate and fix this bug.
 
 (bug report: ${uploadData.path})`;
+
+      const userMsg: Message = {
+        id: `local_${Date.now()}`,
+        thread_id: threadId,
+        role: 'user',
+        content: agentMessage,
+        created_at: Date.now(),
+      };
+      forceScrollOnNextUpdate.current = true;
+      setMessages(prev => [...prev, userMsg]);
 
       // Send via WebSocket if connected
       if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
@@ -1955,15 +1969,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         setLoading(true);
       } else {
         // Queue the message
-        const userMsg: Message = {
-          id: `local_${Date.now()}`,
-          thread_id: threadId,
-          role: 'user',
-          content: agentMessage,
-          created_at: Date.now(),
-        };
         setPendingMessages(prev => [...prev, userMsg]);
-        setMessages(prev => [...prev, userMsg]);
         setLoading(true);
 
         // Trigger reconnect if needed
@@ -2429,7 +2435,6 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         onSubmit={submitBugReport}
         status={bugReportStatus}
         error={bugReportError}
-        appName={deployedApp || undefined}
       />
     </TooltipProvider>
   );

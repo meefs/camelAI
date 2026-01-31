@@ -14,6 +14,7 @@ import { LoadingDots } from '@/components/loading-dots';
 import type { ReactNode } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
+import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
 
 // Format timestamp to readable time (e.g., "12:25 PM")
 function formatMessageTime(timestamp: number): string {
@@ -321,6 +322,15 @@ export function MessageBubble({
       displayContent = stripped.blocks;
     }
 
+    const rawText = typeof displayContent === 'string'
+      ? displayContent
+      : displayContent
+        .map(block => (block.type === 'text' ? block.text : ''))
+        .filter(Boolean)
+        .join('\n');
+
+    const bugReport = rawText ? parseBugReport(rawText) : null;
+
     const uploadInfo = typeof displayContent === 'string'
       ? parseUploadRefs(displayContent)
       : { refs: [] as ReturnType<typeof parseUploadRefs>['refs'], cleanContent: displayContent };
@@ -332,6 +342,59 @@ export function MessageBubble({
     const hasCleanContent = typeof cleanedContent === 'string'
       ? cleanedContent.length > 0
       : cleanedContent.length > 0;
+
+    if (bugReport) {
+      return (
+        <div className="flex flex-col items-end gap-2">
+          {previewRefs.length > 0 && workspaceId && (
+            <div className="flex flex-wrap gap-2">
+              {previewRefs.map(ref => (
+                <FilePreviewChip
+                  key={ref.mountPath}
+                  filename={ref.originalName}
+                  previewUrl={`/api/workspaces/${workspaceId}/uploads/${encodePathSegments(ref.filename)}`}
+                />
+              ))}
+            </div>
+          )}
+          <BugReportCard
+            appName={bugReport.appName}
+            description={bugReport.description}
+            reportPath={bugReport.reportPath}
+            timestamp={message.created_at}
+          />
+          <div
+            className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+            role="group"
+            aria-label="Message actions"
+          >
+            {author && (
+              <span className="text-muted-foreground text-xs mr-1">
+                Sent by {author.displayName} at{' '}
+              </span>
+            )}
+            <span className="text-muted-foreground text-xs mr-1">
+              {formatMessageTime(message.created_at)}
+            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground"
+                  onClick={() => onCopy(message.id, bugReport.originalText)}
+                >
+                  {isCopied ? <Check /> : <Copy />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {isCopied ? 'Copied!' : 'Copy message'}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
+      );
+    }
 
     return (
       <div className="flex flex-col items-end gap-2">

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Loader2, Bug, AlertCircle } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Loader2, Bug, AlertCircle, Mic } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -9,19 +9,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { useVoiceRecording } from '@/hooks/use-voice-recording';
+import { VoiceRecorderBar } from '@/components/voice-recorder';
 
 export type BugReportStatus = 'idle' | 'capturing' | 'uploading' | 'sending' | 'done' | 'error';
 
 interface BugReportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (report: { expected: string; actual: string }) => void;
+  onSubmit: (report: { description: string }) => void;
   status: BugReportStatus;
   error?: string | null;
-  appName?: string;
 }
 
 const statusMessages: Record<BugReportStatus, string> = {
@@ -39,28 +40,69 @@ export function BugReportDialog({
   onSubmit,
   status,
   error,
-  appName,
 }: BugReportDialogProps) {
-  const [expected, setExpected] = useState('');
-  const [actual, setActual] = useState('');
+  const [description, setDescription] = useState('');
+  const descriptionRef = useRef(description);
+  descriptionRef.current = description;
+
+  const {
+    state: voiceState,
+    startRecording,
+    stopRecording,
+    cancelRecording,
+    isSupported: isVoiceSupported,
+    analyser,
+    recordingStartTime,
+  } = useVoiceRecording({
+    onTranscript: (text) => {
+      const currentValue = descriptionRef.current;
+      const nextValue = currentValue.trim() ? `${currentValue} ${text}` : text;
+      setDescription(nextValue);
+    },
+    onError: (voiceError) => {
+      console.error('[BugReportDialog] Voice error:', voiceError);
+    },
+  });
 
   const isLoading = status === 'capturing' || status === 'uploading' || status === 'sending';
-  const canSubmit = expected.trim() && actual.trim() && !isLoading;
+  const isWarmingUp = voiceState === 'warming_up';
+  const isRecording = voiceState === 'recording';
+  const isTranscribing = voiceState === 'transcribing';
+  const isActiveRecording = isWarmingUp || isRecording;
+  const canSubmit = !isLoading && !isActiveRecording && !isTranscribing;
 
   function handleSubmit() {
     if (!canSubmit) return;
-    onSubmit({ expected: expected.trim(), actual: actual.trim() });
+    onSubmit({ description: description.trim() });
   }
 
   function handleOpenChange(nextOpen: boolean) {
     if (isLoading) return; // Prevent closing while loading
     if (!nextOpen) {
       // Reset form when closing
-      setExpected('');
-      setActual('');
+      if (isActiveRecording || isTranscribing) {
+        cancelRecording();
+      }
+      setDescription('');
     }
     onOpenChange(nextOpen);
   }
+
+  useEffect(() => {
+    if (!isActiveRecording) return;
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelRecording();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => {
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [isActiveRecording, cancelRecording]);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -71,38 +113,53 @@ export function BugReportDialog({
             Report a Bug
           </DialogTitle>
           <DialogDescription>
-            {appName ? (
-              <>Describe the issue with <span className="font-medium">{appName}</span>. The agent will investigate and fix it.</>
-            ) : (
-              <>Describe the issue you encountered. The agent will investigate and fix it.</>
-            )}
+            Tell us what went wrong - what you expected vs what actually happened, steps to reproduce, or anything else that might help.
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4 py-4">
-          <div className="grid gap-2">
-            <Label htmlFor="expected">What did you expect to happen?</Label>
+          <div className="relative">
             <Textarea
-              id="expected"
-              placeholder="I expected the button to..."
-              value={expected}
-              onChange={(e) => setExpected(e.target.value)}
-              disabled={isLoading}
-              className="min-h-[80px] resize-none"
+              placeholder='e.g. "I clicked the submit button but nothing happened - I expected it to save my changes"'
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              disabled={isLoading || isActiveRecording}
+              className="min-h-[100px] resize-none pr-10"
             />
+            {isVoiceSupported && voiceState === 'idle' && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      void startRecording();
+                    }}
+                    disabled={isLoading}
+                    className="absolute bottom-2 right-2 rounded-full text-muted-foreground hover:text-foreground"
+                    aria-label="Dictate"
+                  >
+                    <Mic className="size-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Dictate</TooltipContent>
+              </Tooltip>
+            )}
           </div>
 
-          <div className="grid gap-2">
-            <Label htmlFor="actual">What actually happened?</Label>
-            <Textarea
-              id="actual"
-              placeholder="Instead, when I clicked it..."
-              value={actual}
-              onChange={(e) => setActual(e.target.value)}
-              disabled={isLoading}
-              className="min-h-[80px] resize-none"
+          {(isActiveRecording || isTranscribing) && (
+            <VoiceRecorderBar
+              analyser={analyser}
+              recordingStartTime={recordingStartTime}
+              isWarmingUp={isWarmingUp}
+              isTranscribing={isTranscribing}
+              onCancel={cancelRecording}
+              onConfirm={stopRecording}
+              className="w-full"
             />
-          </div>
+          )}
 
           {/* Status display */}
           {status !== 'idle' && (
