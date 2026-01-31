@@ -275,41 +275,28 @@ function copyTemplate(templateName, projectDir) {
   }
 
   // Get JuiceFS volume name from config
-  const jfsConfigPath = join(process.env.HOME || '/home/claude', '.jfs.config');
-  let volumeName, metaUrl;
-  try {
-    volumeName = execFileSync('jq', ['-r', '.Format.Name', jfsConfigPath], { encoding: 'utf-8' }).trim();
-    // Find the meta DB file in /var/lib/juicefs/
-    const metaDir = '/var/lib/juicefs';
-    const dbFiles = execFileSync('ls', [metaDir], { encoding: 'utf-8' }).trim().split('\n').filter(f => f.endsWith('.db'));
-    if (dbFiles.length > 0) {
-      metaUrl = `sqlite3://${metaDir}/${dbFiles[0]}`;
-    }
-  } catch {
-    volumeName = null;
-    metaUrl = null;
-  }
+  const homeDir = process.env.HOME || '/home/claude';
+  const jfsConfigPath = join(homeDir, '.jfs.config');
+  const volumeName = execFileSync('jq', ['-r', '.Format.Name', jfsConfigPath], { encoding: 'utf-8' }).trim();
 
-  // Use jfs:// protocol if JuiceFS is configured (bypasses FUSE for better performance)
-  // Otherwise fall back to regular path
-  const useJfs = volumeName && metaUrl;
+  // Find the meta DB file in /var/lib/juicefs/
+  const metaDir = '/var/lib/juicefs';
+  const dbFiles = execFileSync('ls', [metaDir], { encoding: 'utf-8' }).trim().split('\n').filter(f => f.endsWith('.db'));
+  if (dbFiles.length === 0) {
+    throw new Error('No JuiceFS metadata DB found in /var/lib/juicefs/');
+  }
+  const metaUrl = `sqlite3://${metaDir}/${dbFiles[0]}`;
+
   // jfs:// paths are relative to the JuiceFS root (mounted at $HOME)
   // So /home/claude/project becomes jfs://volume/project
-  const homeDir = process.env.HOME || '/home/claude';
   const relativePath = projectDir.startsWith(homeDir) ? projectDir.slice(homeDir.length) : projectDir;
-  const destPath = useJfs ? `jfs://${volumeName}${relativePath}/` : `${projectDir}/`;
+  const destPath = `jfs://${volumeName}${relativePath}/`;
 
-  if (useJfs) {
-    console.log(`         Using jfs:// protocol (bypassing FUSE)`);
-  } else {
-    console.log(`         Using FUSE mount path`);
-  }
+  console.log(`         Using jfs:// protocol (bypassing FUSE)`);
 
   // Set up environment with volume name pointing to meta URL
   const env = { ...process.env };
-  if (useJfs) {
-    env[volumeName] = metaUrl;
-  }
+  env[volumeName] = metaUrl;
 
   // Use juicefs sync for fast copying on JuiceFS filesystem
   // --perms preserves execute bits (needed for esbuild binary)
