@@ -56,10 +56,7 @@ create-worker --help
 
 ```bash
 # Deploy to production
-wrangler deploy
-
-# Deploy to staging/preview
-wrangler deploy --env staging
+yarn deploy
 
 # View logs
 wrangler tail
