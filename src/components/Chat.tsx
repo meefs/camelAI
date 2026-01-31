@@ -1530,6 +1530,8 @@ export default function Chat({
         name: file.name,
         path: '',
         size: file.size,
+        contentType: file.type || undefined,
+        originalName: file.name,
         status: 'uploading',
       }]);
 
@@ -1546,12 +1548,24 @@ export default function Chat({
           throw new Error('Upload failed');
         }
 
-        const data = await response.json() as { path: string; size: number };
+        const data = await response.json() as {
+          path: string;
+          size: number;
+          contentType?: string;
+          originalName?: string;
+        };
 
         // Update state to complete
         setAttachments(prev => prev.map(a =>
           a.id === id
-            ? { ...a, path: data.path, size: data.size, status: 'complete' as const }
+            ? {
+              ...a,
+              path: data.path,
+              size: data.size,
+              contentType: data.contentType ?? a.contentType,
+              originalName: data.originalName ?? a.originalName,
+              status: 'complete' as const,
+            }
             : a
         ));
       } catch (err) {
@@ -2006,12 +2020,11 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     );
 
     // Add user message to state immediately (optimistic)
-    // Display only the user's typed text (not file references)
     const userMsg: Message = {
       id: `local_${Date.now()}`,
       thread_id: threadId,
       role: 'user',
-      content: userMessage,
+      content: finalContent,
       created_at: Date.now(),
       sentDuringStreaming: wasSentDuringStreaming,
     };

@@ -121,6 +121,7 @@ export default [
 
   // Workspace output files (agent-created files for user download/preview)
   route('api/workspaces/:id/outputs/*', 'routes/api/workspaces.$id.outputs.$.ts'),
+  route('api/workspaces/:id/uploads/*', 'routes/api/workspaces.$id.uploads.$.ts'),
 
   // Apps API routes
   route('api/apps/:scriptName/preview', 'routes/api/apps.$scriptName.preview.ts'),
