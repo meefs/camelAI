@@ -8,6 +8,8 @@ export interface Attachment {
   name: string;
   path: string;
   size: number;
+  contentType?: string;
+  originalName?: string;
   status: 'uploading' | 'complete' | 'error';
   error?: string;
 }

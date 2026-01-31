@@ -12,6 +12,8 @@ import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ThinkingBlock, ToolCall } from '@/components/tool-call';
 import { LoadingDots } from '@/components/loading-dots';
 import type { ReactNode } from 'react';
+import { useAuth } from '@/contexts/AuthContext';
+import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
 
 // Format timestamp to readable time (e.g., "12:25 PM")
 function formatMessageTime(timestamp: number): string {
@@ -132,6 +134,13 @@ function normalizeToolResultContent(content: unknown): string {
       .join('\n\n');
   }
   return safeJsonStringify(content);
+}
+
+function encodePathSegments(path: string): string {
+  return path
+    .split('/')
+    .map(segment => encodeURIComponent(segment))
+    .join('/');
 }
 
 // Convert content to string for copy functionality
@@ -290,6 +299,7 @@ export function MessageBubble({
     return null;
   }
 
+  const { currentWorkspace } = useAuth();
   const isCopied = copiedId === message.id;
   const isStreaming = message.isStreaming ?? false;
   const hasContent = typeof message.content === 'string'
@@ -311,11 +321,36 @@ export function MessageBubble({
       displayContent = stripped.blocks;
     }
 
+    const uploadInfo = typeof displayContent === 'string'
+      ? parseUploadRefs(displayContent)
+      : { refs: [] as ReturnType<typeof parseUploadRefs>['refs'], cleanContent: displayContent };
+
+    const previewRefs = uploadInfo.refs;
+    const cleanedContent = uploadInfo.cleanContent;
+    const workspaceId = currentWorkspace?.id;
+
+    const hasCleanContent = typeof cleanedContent === 'string'
+      ? cleanedContent.length > 0
+      : cleanedContent.length > 0;
+
     return (
-      <div className="flex flex-col items-end gap-1">
-        <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
-          <ContentBlockRenderer content={displayContent} skillSheets={skillSheets} />
-        </div>
+      <div className="flex flex-col items-end gap-2">
+        {previewRefs.length > 0 && workspaceId && (
+          <div className="flex flex-wrap gap-2">
+            {previewRefs.map(ref => (
+              <FilePreviewChip
+                key={ref.mountPath}
+                filename={ref.originalName}
+                previewUrl={`/api/workspaces/${workspaceId}/uploads/${encodePathSegments(ref.filename)}`}
+              />
+            ))}
+          </div>
+        )}
+        {hasCleanContent && (
+          <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
+            <ContentBlockRenderer content={cleanedContent} skillSheets={skillSheets} />
+          </div>
+        )}
         {/* Hover action row */}
         <div
           className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
@@ -336,7 +371,7 @@ export function MessageBubble({
                 variant="ghost"
                 size="icon-sm"
                 className="text-muted-foreground"
-                onClick={() => onCopy(message.id, contentToString(displayContent))}
+                onClick={() => onCopy(message.id, contentToString(cleanedContent))}
               >
                 {isCopied ? <Check /> : <Copy />}
               </Button>

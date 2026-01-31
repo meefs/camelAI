@@ -2,10 +2,17 @@
 
 import { ExternalLink } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
+import { FilePreviewPopover } from '@/components/chat-file-preview';
 
 const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
+
+const TEMP_FILE_PREFIXES = [
+  { prefix: '/mnt/user-uploads/', type: 'upload' as const, urlSegment: 'uploads' },
+  { prefix: '/mnt/user-outputs/', type: 'output' as const, urlSegment: 'outputs' },
+];
 
 function normalizeWorkspacePath(input: string): string {
   const trimmed = input?.trim?.() ?? '';
@@ -19,6 +26,27 @@ function normalizeWorkspacePath(input: string): string {
     }
   }
   return normalized;
+}
+
+function getTempFileInfo(input: string) {
+  const trimmed = input?.trim?.() ?? '';
+  if (!trimmed) return null;
+  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  for (const { prefix, type, urlSegment } of TEMP_FILE_PREFIXES) {
+    if (normalized.startsWith(prefix)) {
+      const relativePath = normalized.slice(prefix.length);
+      if (!relativePath) return null;
+      return { type, relativePath, urlSegment };
+    }
+  }
+  return null;
+}
+
+function encodePathSegments(path: string): string {
+  return path
+    .split('/')
+    .map(segment => encodeURIComponent(segment))
+    .join('/');
 }
 
 interface FileLinkProps {
@@ -37,6 +65,8 @@ export function FileLink({
   mono = false,
 }: FileLinkProps) {
   const { currentWorkspace } = useAuth();
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const tempInfo = getTempFileInfo(path);
   const normalizedPath = normalizeWorkspacePath(path);
 
   if (!normalizedPath || !currentWorkspace?.id) {
@@ -44,6 +74,45 @@ export function FileLink({
       <span className={cn(mono && "font-mono", className)}>
         {children ?? path}
       </span>
+    );
+  }
+
+  if (tempInfo) {
+    const previewUrl = `/api/workspaces/${currentWorkspace.id}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`;
+    const displayName = tempInfo.relativePath.split('/').pop() || tempInfo.relativePath;
+
+    return (
+      <>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex min-w-0 max-w-full items-center gap-1 hover:underline",
+            "text-foreground/80 hover:text-foreground",
+            mono && "font-mono",
+            className
+          )}
+          onClick={(event) => {
+            event.stopPropagation();
+            setPreviewOpen(true);
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.stopPropagation();
+            }
+          }}
+        >
+          {children ?? displayName}
+          {showIcon ? <ExternalLink className="h-3 w-3 opacity-50" /> : null}
+        </button>
+        <FilePreviewPopover
+          open={previewOpen}
+          onOpenChange={setPreviewOpen}
+          filename={displayName}
+          previewUrl={previewUrl}
+        />
+      </>
     );
   }
 
