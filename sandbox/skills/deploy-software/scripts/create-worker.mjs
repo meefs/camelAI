@@ -295,6 +295,12 @@ function copyTemplate(templateName, projectDir) {
   const useJfs = volumeName && metaUrl;
   const destPath = useJfs ? `jfs://${volumeName}${projectDir}/` : `${projectDir}/`;
 
+  if (useJfs) {
+    console.log(`         Using jfs:// protocol (bypassing FUSE)`);
+  } else {
+    console.log(`         Using FUSE mount path`);
+  }
+
   // Set up environment with volume name pointing to meta URL
   const env = { ...process.env };
   if (useJfs) {
@@ -308,7 +314,13 @@ function copyTemplate(templateName, projectDir) {
   execFileSync('juicefs', ['sync', '--threads', '40', '--list-threads', '4', '--perms', '--links', '--dirs', `${templatePath}/`, destPath], { stdio: 'pipe', env });
 }
 
+function formatTime(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
 async function createProject(projectName, options) {
+  const totalStart = Date.now();
   const projectDir = join(process.cwd(), projectName);
 
   if (existsSync(projectDir)) {
@@ -322,8 +334,10 @@ async function createProject(projectName, options) {
 
   // Step 1: Copy React Router + Cloudflare template
   console.log('Step 1/4: Copying React Router + Cloudflare template...');
+  let stepStart = Date.now();
   try {
     copyTemplate('react-router', projectDir);
+    console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
   } catch (error) {
     console.error('Failed to copy template:', error.message);
     process.exit(1);
@@ -331,11 +345,13 @@ async function createProject(projectName, options) {
 
   // Step 2: Fetch shadcn preset configuration from API
   console.log('\nStep 2/4: Fetching shadcn styling configuration...');
+  stepStart = Date.now();
   const presetUrl = buildPresetUrl(options);
   let presetConfig;
 
   try {
     presetConfig = await fetchPresetConfig(presetUrl);
+    console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
   } catch (error) {
     console.error('Failed to fetch shadcn configuration:', error.message);
     process.exit(1);
@@ -343,12 +359,15 @@ async function createProject(projectName, options) {
 
   // Step 3: Generate and write CSS
   console.log('\nStep 3/4: Applying shadcn styling...');
+  stepStart = Date.now();
   const targetCssPath = join(projectDir, 'app', 'app.css');
   const generatedCss = generateCssFromPreset(presetConfig, options);
   writeFileSync(targetCssPath, generatedCss);
+  console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
 
   // Step 4: Configure project for shadcn
   console.log('\nStep 4/4: Configuring project...');
+  stepStart = Date.now();
 
   // Create components.json (dynamic based on user options)
   createComponentsJson(projectDir, options);
@@ -361,9 +380,11 @@ async function createProject(projectName, options) {
     wranglerConfig = wranglerConfig.replace(/"name":\s*"rr7-template"/, `"name": "${projectName}"`);
     writeFileSync(wranglerPath, wranglerConfig);
   }
+  console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
 
+  const totalTime = Date.now() - totalStart;
   console.log(`
-Project created successfully!
+Project created successfully in ${formatTime(totalTime)}!
 
 Next steps:
   cd ${projectName}
