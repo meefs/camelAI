@@ -149,16 +149,15 @@ The sandbox container comes pre-installed with a comprehensive suite of Python d
 - **uv** - Fast Python package manager (pre-installed at `/usr/local/bin/uv`)
 - Install additional packages: `uv pip install --system <package>`
 
-### Core Data Processing
+### Core Data Processing (Pre-installed)
 | Package | Purpose |
 |---------|---------|
 | `pandas` | DataFrames and data manipulation |
 | `numpy` | Numerical computing and arrays |
 | `polars` | Fast DataFrame library (Rust-based) |
 | `duckdb` | In-process SQL analytics database |
-| `scipy` | Scientific computing |
 
-### Data Formats & I/O
+### Data Formats & I/O (Pre-installed)
 | Package | Purpose |
 |---------|---------|
 | `pyarrow` | Columnar data, Parquet/Arrow files |
@@ -167,24 +166,9 @@ The sandbox container comes pre-installed with a comprehensive suite of Python d
 | `python-pptx` | PowerPoint file manipulation |
 | `python-docx` | Word document manipulation |
 | `pdfplumber` | PDF text and table extraction |
-| `camelot-py` | PDF table extraction (with OpenCV) |
 | `pillow` | Image processing |
 
-### Visualization
-| Package | Purpose |
-|---------|---------|
-| `matplotlib` | Static plotting |
-| `seaborn` | Statistical visualization |
-| `plotly` | Interactive charts |
-
-### Statistics & Machine Learning
-| Package | Purpose |
-|---------|---------|
-| `scikit-learn` | Machine learning algorithms |
-| `statsmodels` | Statistical modeling |
-| `xgboost` | Gradient boosting |
-
-### Data Sources & Web
+### Data Sources & Web (Pre-installed)
 | Package | Purpose |
 |---------|---------|
 | `requests` | HTTP client |
@@ -194,14 +178,7 @@ The sandbox container comes pre-installed with a comprehensive suite of Python d
 | `aiohttp` | Async HTTP client/server |
 | `sqlalchemy` | Database ORM and toolkit |
 
-### Geospatial & Network
-| Package | Purpose |
-|---------|---------|
-| `geopandas` | Geospatial data analysis |
-| `shapely` | Geometric operations |
-| `networkx` | Graph/network analysis |
-
-### Utilities
+### Utilities (Pre-installed)
 | Package | Purpose |
 |---------|---------|
 | `tqdm` | Progress bars |
@@ -211,6 +188,24 @@ The sandbox container comes pre-installed with a comprehensive suite of Python d
 | `click` / `typer` | CLI frameworks |
 | `pyyaml` / `toml` | Config file parsing |
 | `jmespath` / `jsonpath-ng` | JSON querying |
+| `networkx` | Graph/network analysis |
+
+### On-Demand Packages
+These packages are NOT pre-installed to reduce image size. Install with `uv pip install --system <package>`:
+
+| Package | Purpose |
+|---------|---------|
+| `scipy` | Scientific computing |
+| `scikit-learn` | Machine learning algorithms |
+| `statsmodels` | Statistical modeling |
+| `xgboost` | Gradient boosting |
+| `matplotlib` | Static plotting |
+| `seaborn` | Statistical visualization (requires matplotlib) |
+| `plotly` | Interactive charts |
+| `geopandas` | Geospatial data analysis |
+| `shapely` | Geometric operations |
+| `opencv-python-headless` | Computer vision |
+| `camelot-py[cv]` | PDF table extraction (requires opencv) |
 
 ### Quick Examples
 

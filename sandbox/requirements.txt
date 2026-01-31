@@ -8,7 +8,7 @@ polars>=1.0.0
 duckdb>=1.1.0
 
 # Scientific Computing
-scipy>=1.14.0
+# scipy>=1.14.0  # ~150MB - commented to reduce image size
 
 # Data Formats & I/O
 pyarrow>=17.0.0
@@ -19,18 +19,18 @@ pdfplumber>=0.11.0
 python-docx>=1.1.0
 pillow>=10.0.0
 # OpenCV headless (no GUI/libGL deps) - must be before camelot to satisfy its cv extra
-opencv-python-headless>=4.10.0
-camelot-py[cv]>=0.11.0
+# opencv-python-headless>=4.10.0  # ~50MB - commented to reduce image size
+# camelot-py[cv]>=0.11.0  # requires opencv - commented to reduce image size
 
 # Visualization
-matplotlib>=3.9.0
-seaborn>=0.13.0
-plotly>=5.24.0
+# matplotlib>=3.9.0  # ~50MB - commented to reduce image size
+# seaborn>=0.13.0  # requires matplotlib - commented to reduce image size
+# plotly>=5.24.0  # ~20MB - commented to reduce image size
 
 # Statistics & Machine Learning
-scikit-learn>=1.5.0
-statsmodels>=0.14.0
-xgboost>=2.1.0
+# scikit-learn>=1.5.0  # ~200MB - commented to reduce image size
+# statsmodels>=0.14.0  # ~100MB - commented to reduce image size
+# xgboost>=2.1.0  # ~150MB - commented to reduce image size
 
 # Data Sources & Web
 requests>=2.32.0
@@ -59,8 +59,8 @@ pytz>=2024.1
 ipython>=8.28.0
 
 # Geospatial (common in data analysis)
-geopandas>=1.0.0
-shapely>=2.0.0
+# geopandas>=1.0.0  # ~100MB + deps - commented to reduce image size
+# shapely>=2.0.0  # ~20MB - commented to reduce image size
 
 # Network Analysis
 networkx>=3.4.0
