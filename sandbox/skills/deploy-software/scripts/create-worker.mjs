@@ -303,7 +303,7 @@ function copyTemplate(templateName, projectDir) {
   // --perms preserves execute bits (needed for esbuild binary)
   // --links preserves symlinks
   // --dirs copies empty directories
-  execFileSync('juicefs', ['sync', '--threads', '40', '--list-threads', '4', '--perms', '--links', '--dirs', `${templatePath}/`, destPath], { stdio: 'pipe', env });
+  execFileSync('juicefs', ['sync', '--threads', '100', '--list-threads', '10', '--perms', '--links', '--dirs', `${templatePath}/`, destPath], { stdio: 'pipe', env });
 }
 
 function formatTime(ms) {
