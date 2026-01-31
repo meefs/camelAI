@@ -16,6 +16,7 @@ export interface BugReportDetailDialogProps {
   appName: string;
   description: string | null;
   timestamp: number;
+  hostname?: string;
 }
 
 function formatBugReportTimestamp(timestamp: number): string {
@@ -39,8 +40,9 @@ export function BugReportDetailDialog({
   appName,
   description,
   timestamp,
+  hostname,
 }: BugReportDetailDialogProps) {
-  const vanityHost = `${appName}.${getVanityDomain()}`;
+  const vanityHost = `${appName}.${getVanityDomain(hostname)}`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

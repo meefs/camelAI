@@ -16,15 +16,17 @@ export interface BugReportCardProps {
   appName: string;
   description: string | null;
   timestamp: number;
+  hostname?: string;
 }
 
 export function BugReportCard({
   appName,
   description,
   timestamp,
+  hostname,
 }: BugReportCardProps) {
   const [open, setOpen] = useState(false);
-  const vanityHost = `${appName}.${getVanityDomain()}`;
+  const vanityHost = `${appName}.${getVanityDomain(hostname)}`;
 
   return (
     <>
@@ -56,6 +58,7 @@ export function BugReportCard({
         appName={appName}
         description={description}
         timestamp={timestamp}
+        hostname={hostname}
       />
     </>
   );

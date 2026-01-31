@@ -2203,6 +2203,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   copiedId={copiedMessageId}
                   showStreamingIndicator={msg.id === lastStreamingMessageId}
                   skillSheets={skillSheetsByToolId}
+                  hostname={hostname}
                 />
               </div>
             );

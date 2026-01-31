@@ -287,6 +287,7 @@ interface MessageBubbleProps {
   /** Whether to show the streaming loading indicator (only true for the last streaming message) */
   showStreamingIndicator?: boolean;
   skillSheets?: Map<string, string>;
+  hostname?: string;
 }
 
 export function MessageBubble({
@@ -295,6 +296,7 @@ export function MessageBubble({
   copiedId,
   showStreamingIndicator = false,
   skillSheets,
+  hostname,
 }: MessageBubbleProps) {
   if (message.isMeta || message.sourceToolUseID) {
     return null;
@@ -361,6 +363,7 @@ export function MessageBubble({
             appName={bugReport.appName}
             description={bugReport.description}
             timestamp={message.created_at}
+            hostname={hostname}
           />
           <div
             className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
