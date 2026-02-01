@@ -1,6 +1,6 @@
 ---
 name: deploy-software
-description: Deploy software to the internet using Cloudflare Workers. Use this skill when the user asks to deploy APIs, web apps, or fullstack applications. Handles Workers, Durable Objects with SQLite storage, and real-time WebSocket connections.
+description: Deploy software to the internet using Cloudflare Workers. Use this skill when the user asks to deploy APIs, web apps, fullstack applications, or AI-powered apps. Handles Workers, Durable Objects with SQLite storage, real-time WebSocket connections, and AI chat agents with the Vercel AI SDK.
 license: Complete terms in LICENSE.txt
 ---
 
@@ -485,6 +485,17 @@ import { itemsRoutes } from "./items-routes.js";
 
 app.route("/api/items", itemsRoutes);
 ```
+
+## AI-Powered Apps
+
+The template includes pre-configured AI chat capabilities using the Vercel AI SDK with OpenRouter. Features are commented out by default—enable them to add AI chat with:
+
+- Automatic conversation history persistence
+- Resumable streaming via WebSockets
+- Tool use and function calling
+- Web search plugin for real-time information
+
+**See [AI-APPS.md](AI-APPS.md) for setup and customization.**
 
 ## Best Practices
 

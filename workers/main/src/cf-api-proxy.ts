@@ -9,8 +9,17 @@ import { waitUntil } from 'cloudflare:workers';
 import { isSignedToken, validateSignedToken } from './signed-tokens.js';
 import { mapCredentialsToEnvVars } from './integration-env.js';
 import { decryptCredentials } from '../../../src/lib/integration-crypto.js';
+import { decryptOpenRouterKey } from './openrouter-keys.js';
 import type { OrgDO } from './auth.js';
 import type { WorkspaceDO } from './workspace.js';
+
+// Secrets managed by Chiridion (will be cleaned up if removed)
+const MANAGED_SECRET_PREFIXES = ['INT_'];
+const MANAGED_SECRET_NAMES = ['OPENROUTER_API_KEY'];
+
+function isManagedSecret(name: string): boolean {
+  return MANAGED_SECRET_NAMES.includes(name) || MANAGED_SECRET_PREFIXES.some(p => name.startsWith(p));
+}
 
 // Re-export for index.ts to use
 export const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
@@ -406,23 +415,37 @@ async function syncDispatchScriptSecrets(
   scriptName: string,
   apiToken: string
 ): Promise<void> {
-  // Get integration env vars directly from WorkspaceDO
+  const secretsToSync: Record<string, string> = {};
+
+  // Get integration env vars from WorkspaceDO
   const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const records = await workspaceStub.getIntegrations();
-  const integrationEnvVars: Record<string, string> = {};
 
   for (const record of records) {
     if (record.enabled !== 1) continue;
     const credentials = await decryptCredentials(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY);
     const config = JSON.parse(record.config) as Record<string, unknown>;
-    Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
+    Object.assign(secretsToSync, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
   }
 
-  const secretEntries = Object.entries(integrationEnvVars);
+  // Get OpenRouter API key from OrgDO
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  const keyRecord = await orgStub.getOpenRouterKeyRecord();
+  if (keyRecord) {
+    try {
+      const openRouterKey = await decryptOpenRouterKey(keyRecord.key_encrypted, env.INTEGRATION_SECRET_KEY);
+      secretsToSync.OPENROUTER_API_KEY = openRouterKey;
+    } catch (e) {
+      console.error('[cf-api-proxy] Failed to decrypt OpenRouter key for script secrets:', e);
+    }
+  }
+
+  const secretEntries = Object.entries(secretsToSync);
 
   if (secretEntries.length === 0) {
+    // No secrets to sync - clean up any managed secrets that exist
     const existing = await listDispatchScriptSecrets(accountId, dispatchNamespace, scriptName, apiToken);
-    const managed = existing.filter(secret => secret.name.startsWith('INT_'));
+    const managed = existing.filter(secret => isManagedSecret(secret.name));
     if (managed.length) {
       await Promise.all(managed.map(secret =>
         deleteDispatchScriptSecret(accountId, dispatchNamespace, scriptName, apiToken, secret.name)
@@ -433,7 +456,7 @@ async function syncDispatchScriptSecrets(
 
   const existingSecrets = await listDispatchScriptSecrets(accountId, dispatchNamespace, scriptName, apiToken);
   const desiredNames = new Set(secretEntries.map(([name]) => name));
-  const stale = existingSecrets.filter(secret => secret.name.startsWith('INT_') && !desiredNames.has(secret.name));
+  const stale = existingSecrets.filter(secret => isManagedSecret(secret.name) && !desiredNames.has(secret.name));
 
   await Promise.all(secretEntries.map(([name, value]) =>
     upsertDispatchScriptSecret(accountId, dispatchNamespace, scriptName, apiToken, name, value)

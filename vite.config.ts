@@ -46,7 +46,7 @@ function suppressUndiciTerminatedErrors(): Plugin {
   };
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [
     suppressUndiciTerminatedErrors(),
     cloudflare({
@@ -63,6 +63,8 @@ export default defineConfig({
   optimizeDeps: {
     include: ['react', 'react-dom', 'react-router'],
     exclude: ['chiridion-wrangler'],
+    // Disable dep discovery during builds to avoid WebSocket error in @cloudflare/vite-plugin
+    ...(command === 'build' && { noDiscovery: true }),
   },
   server: {
     port: 3001,
@@ -73,4 +75,4 @@ export default defineConfig({
       ignored: ['**/packages/**', '**/workers/**', '**/sandbox/**'],
     },
   },
-});
+}));

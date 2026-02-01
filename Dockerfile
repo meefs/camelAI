@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-01-31-v51-remove-litestream
+# Version: 2026-02-01-v57-simplified-daemon
 # Slim container with Node, Bun, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000 4873
@@ -123,15 +123,23 @@ RUN bash -c '\
 # Layer 6: App code (changes frequently) - copied AFTER template install for better caching
 # Changes to ws-server.mjs, entrypoint.sh, etc. won't trigger template rebuild
 COPY --chmod=755 sandbox/entrypoint.sh ./
-COPY sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
+COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/vite-daemon.mjs sandbox/vite-build-client.mjs ./
 COPY sandbox/skills/deploy-software/scripts ./skills/deploy-software/scripts
-COPY sandbox/skills/deploy-software/SKILL.md ./skills/deploy-software/
-COPY sandbox/skills/file-sharing ./skills/file-sharing
-COPY sandbox/skills/frontend-design ./skills/frontend-design
+COPY sandbox/skills/deploy-software/SKILL.md sandbox/skills/deploy-software/AI-APPS.md ./skills/deploy-software/
+
+# Install skills to /etc/claude-code/skills (system-level, no per-container copy needed)
+RUN mkdir -p /etc/claude-code/skills/deploy-software \
+             /etc/claude-code/skills/file-sharing \
+             /etc/claude-code/skills/frontend-design
+COPY sandbox/skills/deploy-software/SKILL.md sandbox/skills/deploy-software/AI-APPS.md /etc/claude-code/skills/deploy-software/
+COPY sandbox/skills/file-sharing/SKILL.md /etc/claude-code/skills/file-sharing/
+COPY sandbox/skills/frontend-design/SKILL.md /etc/claude-code/skills/frontend-design/
+RUN chmod -R 755 /etc/claude-code && chown -R root:root /etc/claude-code
 RUN chmod -R a+rX /app
 
-# Layer 7: create-worker CLI (scaffolds projects from templates)
-RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker
+# Layer 7: CLI tools (scaffolds projects from templates + fast builds)
+RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker \
+  && ln -s /app/vite-build-client.mjs /usr/local/bin/vite-build
 
 # Layer 8: Configure bun/npm to use local Verdaccio registry
 # This ensures all wrangler installs get our chiridion-wrangler

@@ -17,10 +17,11 @@
  *   --help                  Show this help message
  */
 
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import { writeFileSync, existsSync, readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { connect } from 'net';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = join(__dirname, '..', 'templates');
@@ -303,12 +304,40 @@ function copyTemplate(templateName, projectDir) {
   // --perms preserves execute bits (needed for esbuild binary)
   // --links preserves symlinks
   // --dirs copies empty directories
-  execFileSync('juicefs', ['sync', '--threads', '100', '--list-threads', '10', '--perms', '--links', '--dirs', `${templatePath}/`, destPath], { stdio: 'pipe', env });
+  execFileSync('juicefs', ['sync', '--threads', '100', '--list-threads', '10', '--perms', '--links', '--dirs', `${templatePath}/`, destPath], { stdio: 'ignore', env });
 }
 
 function formatTime(ms) {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
+}
+
+/**
+ * Start vite-daemon and warmup in background.
+ * First build will be fast (~2s) because builder is pre-cached.
+ */
+function startAndWarmupDaemon(projectPath) {
+  const child = spawn('yarn', ['node', '/app/vite-daemon.mjs'], {
+    cwd: projectPath,
+    stdio: ['ignore', 'ignore', 'ignore'],
+    detached: true,
+  });
+  child.unref();
+
+  // Wait for socket, then send warmup
+  let attempts = 0;
+  const check = () => {
+    if (existsSync('/tmp/vite-build.sock')) {
+      const client = connect('/tmp/vite-build.sock', () => {
+        client.write(JSON.stringify({ action: 'warmup' }) + '\n');
+        client.end();
+      });
+      client.on('error', () => {});
+    } else if (attempts++ < 50) {
+      setTimeout(check, 100);
+    }
+  };
+  setTimeout(check, 100);
 }
 
 async function createProject(projectName, options) {
@@ -373,6 +402,10 @@ async function createProject(projectName, options) {
     writeFileSync(wranglerPath, wranglerConfig);
   }
   console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
+
+  // Start daemon and warmup in background so first build is fast
+  // This happens while user reads success message (~10s head start)
+  startAndWarmupDaemon(projectDir);
 
   const totalTime = Date.now() - totalStart;
   console.log(`

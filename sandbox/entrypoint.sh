@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-01-31-v37-remove-litestream
+# Version: 2026-02-01-v44-pnp-require-fix
 set -eu
 
 # Trap errors and show what failed
@@ -828,23 +828,16 @@ else
   fi
 fi
 
-# Install skills to claude's config directory
-# Only copy SKILL.md files - templates stay in /app and are accessed via create-worker script
-echo "[entrypoint] Installing skills..." >&2
-SKILLS_START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
-
-su -s /bin/sh claude -c "mkdir -p \"$TARGET_DIR/.claude/skills\"" >/dev/null 2>&1 || true
-# Copy only SKILL.md files (preserving directory structure) - templates don't need to be on JuiceFS
-for skill_dir in /app/skills/*/; do
+# Skills: symlink each system skill individually so user can add their own
+echo "[entrypoint] Setting up skill symlinks..." >&2
+su -s /bin/sh claude -c "mkdir -p '$TARGET_DIR/.claude/skills'" 2>/dev/null || true
+for skill_dir in /etc/claude-code/skills/*/; do
   skill_name="$(basename "$skill_dir")"
-  if [ -f "${skill_dir}SKILL.md" ]; then
-    su -s /bin/sh claude -c "mkdir -p \"$TARGET_DIR/.claude/skills/$skill_name\"" >/dev/null 2>&1 || true
-    su -s /bin/sh claude -c "cp \"${skill_dir}SKILL.md\" \"$TARGET_DIR/.claude/skills/$skill_name/\"" >/dev/null 2>&1 || true
-  fi
+  # Remove existing (file, dir, or symlink) and create fresh symlink
+  su -s /bin/sh claude -c "rm -rf '$TARGET_DIR/.claude/skills/$skill_name'" 2>/dev/null || true
+  su -s /bin/sh claude -c "ln -sf '/etc/claude-code/skills/$skill_name' '$TARGET_DIR/.claude/skills/$skill_name'"
 done
-
-SKILLS_END_TS="$(date +%s%3N 2>/dev/null || date +%s)"
-echo "[entrypoint] Skills installed (ms: $((SKILLS_END_TS - SKILLS_START_TS)))" >&2
+echo "[entrypoint] System skills symlinked to $TARGET_DIR/.claude/skills/" >&2
 
 # Write env vars to a file that claude user can source
 cat > /tmp/ws-env.sh << ENVEOF

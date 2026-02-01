@@ -1,0 +1,27 @@
+diff --git a/dist/index.mjs b/dist/index.mjs
+index b1500021c8feba50ea6ee20acf16a936366b8d8c..a9868529782fdb4ef0dc5df5dd3532b6bf7d3b0b 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -13232,7 +13232,7 @@ function read(jsonPath, { base, specifier }) {
+ 		string = fs.readFileSync(path4.toNamespacedPath(jsonPath), "utf8");
+ 	} catch (error) {
+ 		const exception = error;
+-		if (exception.code !== "ENOENT") throw exception;
++		if (exception.code !== "ENOENT" && exception.code !== "ENOTDIR") throw exception;
+ 	}
+ 	/** @type {PackageConfig} */
+ 	const result = {
+@@ -14146,11 +14146,11 @@ var NodeJsCompat = class {
+ 		const alias = this.#env.alias[source];
+ 		if (alias && !this.externals.has(alias)) return {
+ 			unresolved: alias,
+-			resolved: resolvePathSync(alias, { url: import.meta.url })
++			resolved: fileURLToPath$1(import.meta.resolve(alias))
+ 		};
+ 		if (this.entries.has(source)) return {
+ 			unresolved: source,
+-			resolved: resolvePathSync(source, { url: import.meta.url })
++			resolved: fileURLToPath$1(import.meta.resolve(source))
+ 		};
+ 	}
+ };
