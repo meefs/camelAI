@@ -69,7 +69,8 @@ export default defineConfig(({ command }) => ({
   },
   build: {
     target: 'esnext',
-    sourcemap: true,
+    // Only enable source maps in development to avoid exposing server code in production
+    sourcemap: command !== 'build',
   },
   optimizeDeps: {
     include: ['react', 'react-dom', 'react-dom/client', 'react-router'],
