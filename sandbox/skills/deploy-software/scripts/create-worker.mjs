@@ -417,7 +417,7 @@ Next steps:
   yarn deploy         # Deploy to Cloudflare
 
 Add shadcn components:
-  yarn dlx shadcn@latest add button card input
+  shadcn add button card input
 `);
 }
 

@@ -144,7 +144,7 @@ See `workers/tests/example-do.test.ts` for a complete example.
 ## Adding shadcn/ui Components
 
 ```bash
-npx shadcn@latest add button card input
+shadcn add button card input
 ```
 
 Components install to `app/components/ui/`.
