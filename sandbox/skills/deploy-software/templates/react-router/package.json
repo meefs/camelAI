@@ -4,7 +4,11 @@
 	"type": "module",
 	"packageManager": "yarn@4.6.0",
 	"overrides": {
-		"wrangler": "*"
+		"wrangler": "*",
+		"vite": "$vite",
+		"mimetext": {
+			"@babel/runtime-corejs3": "npm:@babel/runtime@^7.26.0"
+		}
 	},
 	"resolutions": {
 		"wrangler": "4.999.0",
