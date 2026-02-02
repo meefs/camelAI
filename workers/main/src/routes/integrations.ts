@@ -3,13 +3,56 @@
  */
 
 import type { RouteContext } from '../types.js';
-import { createIntegrationOAuthState, validateAndConsumeIntegrationOAuthState } from '../integration-oauth-state.js';
+import { createIntegrationOAuthState, validateAndConsumeIntegrationOAuthState, type IntegrationOAuthState } from '../integration-oauth-state.js';
 import { INTEGRATION_REGISTRY } from '../../../../src/lib/integration-registry.js';
 import { encryptCredentials } from '../../../../src/lib/integration-crypto.js';
 import { getWorkspaceContainer } from '../workspace-container.js';
 import { requireSession } from '../helpers/auth.js';
 import { getWorkspaceStub, getOrgStub } from '../helpers/stubs.js';
 import { redirect, text } from '../helpers/response.js';
+import type { ConnectionSetupResponse } from '../durable-objects.js';
+import type { ChiridionMcp } from '../mcp-handler.js';
+
+// RPC interface for MCP DO callback
+interface ChiridionMcpRpc {
+  receiveConnectionSetupResponse(response: ConnectionSetupResponse): void;
+}
+
+/**
+ * Complete MCP connection setup request after OAuth flow succeeds.
+ * Called when OAuth state contains MCP callback context.
+ */
+async function completeMcpConnectionSetup(
+  env: RouteContext['env'],
+  stateData: IntegrationOAuthState,
+  integrationId: string,
+  integrationType: string,
+  integrationName: string
+): Promise<void> {
+  if (!stateData.mcp_request_id || !stateData.mcp_do_id) {
+    return; // No MCP context
+  }
+
+  try {
+    const mcpDoId = env.MCP_OBJECT.idFromString(stateData.mcp_do_id);
+    const mcpStub = env.MCP_OBJECT.get(mcpDoId) as unknown as ChiridionMcpRpc;
+
+    // Send success response to MCP - credentials are already stored via OAuth
+    // We send empty credentials since they're already encrypted in the integration
+    await mcpStub.receiveConnectionSetupResponse({
+      requestId: stateData.mcp_request_id,
+      cancelled: false,
+      integration: {
+        type: integrationType,
+        name: integrationName,
+        config: {},
+        credentials: { _oauth_completed: true, integration_id: integrationId },
+      },
+    });
+  } catch (err) {
+    console.error('[Integration OAuth] Failed to complete MCP request:', err);
+  }
+}
 
 /**
  * Sanitize redirect URL to prevent open redirect attacks.
@@ -53,12 +96,18 @@ export async function handleSlackOAuthStart({ req, env, url }: RouteContext): Pr
   const redirectTo = sanitizeRedirectPath(url.searchParams.get('redirect') || '/connections');
   const callbackUrl = `${url.origin}/api/integrations/slack/callback`;
 
+  // Check for MCP callback context (from chat connection setup prompt)
+  const mcpRequestId = url.searchParams.get('mcp_request_id');
+  const mcpDoId = url.searchParams.get('mcp_do_id');
+  const mcpContext = mcpRequestId && mcpDoId ? { requestId: mcpRequestId, doId: mcpDoId } : undefined;
+
   const state = await createIntegrationOAuthState(
     env.SESSIONS,
     'slack',
     session.workspace_id,
     session.user_id,
-    redirectTo
+    redirectTo,
+    mcpContext
   );
 
   const authUrl = new URL(slackDef.oauthConfig.authorizationUrl);
@@ -148,9 +197,10 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
 
     const encrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
     const name = tokenData.team?.name || 'Slack';
+    const integrationId = crypto.randomUUID();
 
     await wsStub.createIntegration(
-      crypto.randomUUID(),
+      integrationId,
       'slack',
       name,
       'communication',
@@ -165,6 +215,11 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
         .refreshIntegrationEnvVars(stateData.workspace_id)
         .catch(() => {})
     );
+
+    // Complete MCP request if this OAuth flow was initiated from chat
+    if (stateData.mcp_request_id && stateData.mcp_do_id) {
+      await completeMcpConnectionSetup(env, stateData, integrationId, 'slack', name);
+    }
 
     // Sanitize redirect URL again as defense-in-depth
     const safePath = sanitizeRedirectPath(stateData.redirect_url);
@@ -195,12 +250,18 @@ export async function handleNotionOAuthStart({ req, env, url }: RouteContext): P
   const redirectTo = sanitizeRedirectPath(url.searchParams.get('redirect') || '/connections');
   const callbackUrl = `${url.origin}/api/integrations/notion/callback`;
 
+  // Check for MCP callback context (from chat connection setup prompt)
+  const mcpRequestId = url.searchParams.get('mcp_request_id');
+  const mcpDoId = url.searchParams.get('mcp_do_id');
+  const mcpContext = mcpRequestId && mcpDoId ? { requestId: mcpRequestId, doId: mcpDoId } : undefined;
+
   const state = await createIntegrationOAuthState(
     env.SESSIONS,
     'notion',
     session.workspace_id,
     session.user_id,
-    redirectTo
+    redirectTo,
+    mcpContext
   );
 
   const authUrl = new URL(notionDef.oauthConfig.authorizationUrl);
@@ -313,9 +374,10 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
 
     const encrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
     const name = tokenData.workspace_name || 'Notion';
+    const integrationId = crypto.randomUUID();
 
     await wsStub.createIntegration(
-      crypto.randomUUID(),
+      integrationId,
       'notion',
       name,
       'saas',
@@ -331,6 +393,11 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
         .refreshIntegrationEnvVars(stateData.workspace_id)
         .catch(() => {})
     );
+
+    // Complete MCP request if this OAuth flow was initiated from chat
+    if (stateData.mcp_request_id && stateData.mcp_do_id) {
+      await completeMcpConnectionSetup(env, stateData, integrationId, 'notion', name);
+    }
 
     const safePath = sanitizeRedirectPath(stateData.redirect_url);
     const redirectUrl = new URL(safePath, url.origin);

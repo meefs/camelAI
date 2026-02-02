@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { AlertCircle, Plug } from 'lucide-react';
+import { AlertCircle, ExternalLink, Plug } from 'lucide-react';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 
 export interface ConnectionSetupPromptData {
@@ -31,6 +31,7 @@ export interface ConnectionSetupPromptData {
   suggestedName?: string;
   message?: string;
   dynamicSchema?: DynamicIntegrationSchema;
+  mcpDoId?: string; // MCP DO ID for OAuth callback completion
 }
 
 export interface ConnectionSetupResponse {
@@ -52,6 +53,10 @@ interface ConnectionSetupPromptProps {
 
 const integrationTypes = Object.values(INTEGRATION_REGISTRY);
 
+// OAuth integration types that have worker routes for OAuth flow
+const OAUTH_INTEGRATIONS = ['slack', 'notion'] as const;
+type OAuthIntegrationType = (typeof OAUTH_INTEGRATIONS)[number];
+
 export function ConnectionSetupPrompt({
   data,
   onSubmit,
@@ -68,6 +73,23 @@ export function ConnectionSetupPrompt({
   // Check if this is a dynamic "other" integration with custom fields
   const isDynamic = data.integrationType === 'other' && data.dynamicSchema && data.dynamicSchema.fields.length > 0;
   const dynamicSchema = data.dynamicSchema;
+
+  // Check if this is an OAuth integration with a supported flow
+  const isOAuthWithFlow = typeDef?.authMethod === 'oauth2' &&
+    OAUTH_INTEGRATIONS.includes(data.integrationType as OAuthIntegrationType);
+
+  // Handle OAuth flow redirect
+  const handleOAuthConnect = useCallback(() => {
+    // Build OAuth URL with MCP context for callback completion
+    const params = new URLSearchParams();
+    params.set('redirect', window.location.pathname);
+    if (data.requestId && data.mcpDoId) {
+      params.set('mcp_request_id', data.requestId);
+      params.set('mcp_do_id', data.mcpDoId);
+    }
+    // Redirect to OAuth flow - this will complete the MCP request via callback
+    window.location.href = `/api/integrations/${data.integrationType}/oauth?${params.toString()}`;
+  }, [data.integrationType, data.requestId, data.mcpDoId]);
 
   // Set defaults from config schema on mount
   useEffect(() => {
@@ -93,6 +115,9 @@ export function ConnectionSetupPrompt({
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
+
+      // OAuth flow handles submission via redirect, not form submit
+      if (isOAuthWithFlow) return;
 
       // For dynamic mode, we don't need typeDef
       if (!isDynamic && !typeDef) return;
@@ -163,7 +188,7 @@ export function ConnectionSetupPrompt({
         });
       }
     },
-    [data.requestId, data.integrationType, typeDef, isDynamic, dynamicSchema, name, config, credentials, onSubmit]
+    [data.requestId, data.integrationType, typeDef, isDynamic, dynamicSchema, isOAuthWithFlow, name, config, credentials, onSubmit]
   );
 
   const updateConfig = (field: string, value: unknown) => {
@@ -318,8 +343,8 @@ export function ConnectionSetupPrompt({
                 </div>
               ))}
 
-              {/* Static credential fields (non-dynamic mode) */}
-              {!isDynamic && typeDef && typeDef.credentialSchema.length > 0 && (
+              {/* Static credential fields (non-dynamic mode, non-OAuth with flow) */}
+              {!isDynamic && !isOAuthWithFlow && typeDef && typeDef.credentialSchema.length > 0 && (
                 <>
                   <div className="mt-2 border-t pt-4">
                     <p className="mb-3 text-sm font-medium">Credentials</p>
@@ -342,12 +367,22 @@ export function ConnectionSetupPrompt({
                 </>
               )}
 
-              {/* OAuth notice (non-dynamic mode only) */}
-              {!isDynamic && typeDef?.authMethod === 'oauth2' && (
+              {/* OAuth flow for supported integrations */}
+              {isOAuthWithFlow && (
                 <Alert>
                   <AlertDescription>
-                    This connection uses OAuth 2.0. After saving, you may need to
-                    authorize access separately.
+                    Click the button below to connect your {typeDef?.displayName} account.
+                    You&apos;ll be redirected to authorize access.
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {/* OAuth notice for unsupported OAuth integrations */}
+              {!isDynamic && typeDef?.authMethod === 'oauth2' && !isOAuthWithFlow && (
+                <Alert>
+                  <AlertDescription>
+                    OAuth for {typeDef.displayName} is not yet implemented. Please check back
+                    later or use an API key if available.
                   </AlertDescription>
                 </Alert>
               )}
@@ -358,9 +393,20 @@ export function ConnectionSetupPrompt({
             <Button type="button" variant="outline" onClick={handleCancel}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isSubmitting}>
-              {isSubmitting ? 'Creating...' : 'Create Connection'}
-            </Button>
+            {/* Show OAuth connect button for supported OAuth integrations */}
+            {isOAuthWithFlow ? (
+              <Button type="button" onClick={handleOAuthConnect}>
+                <ExternalLink className="mr-2 size-4" />
+                Connect {typeDef?.displayName}
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                disabled={isSubmitting || (!isDynamic && typeDef?.authMethod === 'oauth2' && !isOAuthWithFlow)}
+              >
+                {isSubmitting ? 'Creating...' : 'Create Connection'}
+              </Button>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>

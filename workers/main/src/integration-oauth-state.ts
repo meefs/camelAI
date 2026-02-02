@@ -9,6 +9,9 @@ export interface IntegrationOAuthState {
   user_id: string;
   redirect_url: string;
   created_at: number;
+  // MCP callback context for completing prompt_connection_setup requests
+  mcp_request_id?: string;
+  mcp_do_id?: string;
 }
 
 const INTEGRATION_OAUTH_STATE_TTL_SECONDS = 5 * 60; // 5 minutes
@@ -26,7 +29,8 @@ export async function createIntegrationOAuthState(
   integrationType: string,
   workspaceId: string,
   userId: string,
-  redirectUrl: string
+  redirectUrl: string,
+  mcpContext?: { requestId: string; doId: string }
 ): Promise<string> {
   const state = crypto.randomUUID();
   const data: IntegrationOAuthState = {
@@ -35,6 +39,8 @@ export async function createIntegrationOAuthState(
     user_id: userId,
     redirect_url: redirectUrl,
     created_at: Date.now(),
+    mcp_request_id: mcpContext?.requestId,
+    mcp_do_id: mcpContext?.doId,
   };
 
   await kv.put(stateKey(state), JSON.stringify(data), {

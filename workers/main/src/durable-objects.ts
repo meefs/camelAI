@@ -252,6 +252,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         suggestedName: body.suggestedName,
         message: body.message,
         dynamicSchema: body.dynamicSchema,
+        mcpDoId, // Include for OAuth flows that need to complete MCP request
       });
 
       return new Response(JSON.stringify({ requestId }), {

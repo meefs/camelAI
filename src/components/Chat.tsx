@@ -1139,6 +1139,7 @@ export default function Chat({
             suggestedName: data.suggestedName as string | undefined,
             message: data.message as string | undefined,
             dynamicSchema: data.dynamicSchema as ConnectionSetupPromptData['dynamicSchema'],
+            mcpDoId: data.mcpDoId as string | undefined,
           });
         }
       } catch (e) {

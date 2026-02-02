@@ -669,6 +669,27 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             });
           }
 
+          // Check if OAuth flow already created the integration
+          // This happens when user completes OAuth flow in browser
+          if (credentials._oauth_completed && credentials.integration_id) {
+            const integrationId = credentials.integration_id as string;
+            const envVarPrefix = `INT_${normalizeEnvVarName(type)}_${normalizeEnvVarName(name)}`;
+            const envVarSuffixes = getEnvVarSuffixesForType(type);
+            return this.textResponse({
+              success: true,
+              integration: {
+                id: integrationId,
+                type,
+                name,
+                category: intDefinition.category,
+                enabled: true,
+                env_var_prefix: envVarPrefix,
+                env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
+              },
+              message: `Integration '${name}' connected successfully via OAuth. Environment variables: ${envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`).join(', ')}`,
+            });
+          }
+
           // For dynamic "other" integrations, store the field definitions in config
           // so env var mapping can use them later
           let finalConfig = config;
