@@ -1,0 +1,24 @@
+diff --git a/node_modules/@react-router/dev/dist/vite.js b/node_modules/@react-router/dev/dist/vite.js
+index b5bf311..575bfc5 100644
+--- a/node_modules/@react-router/dev/dist/vite.js
++++ b/node_modules/@react-router/dev/dist/vite.js
+@@ -3282,8 +3282,7 @@ var reactRouterVitePlugin = () => {
+               }) ? ["react-router-dom"] : []
+             ]
+           },
+-          esbuild: {
+-            jsx: "automatic",
++          oxc: {
+             jsxDev: viteCommand !== "build"
+           },
+           resolve: {
+@@ -5511,8 +5510,7 @@ ${errors.map((x) => ` - ${x}`).join("\n")}
+               "react-router > set-cookie-parser"
+             ]
+           },
+-          esbuild: {
+-            jsx: "automatic",
++          oxc: {
+             jsxDev: viteCommand !== "build"
+           },
+           environments: {
