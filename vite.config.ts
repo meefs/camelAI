@@ -61,7 +61,7 @@ export default defineConfig(({ command }) => ({
     sourcemap: true,
   },
   optimizeDeps: {
-    include: ['react', 'react-dom', 'react-router'],
+    include: ['react', 'react-dom', 'react-dom/client', 'react-router'],
     exclude: ['chiridion-wrangler'],
     // Disable dep discovery during builds to avoid WebSocket error in @cloudflare/vite-plugin
     ...(command === 'build' && { noDiscovery: true }),

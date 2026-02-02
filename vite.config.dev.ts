@@ -21,7 +21,7 @@ export default defineConfig({
     sourcemap: true,
   },
   optimizeDeps: {
-    include: ['react', 'react-dom', 'react-router'],
+    include: ['react', 'react-dom', 'react-dom/client', 'react-router'],
     exclude: ['chiridion-wrangler'],
   },
   server: {
