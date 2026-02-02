@@ -233,3 +233,32 @@
 .dark .shiki span {
   color: var(--shiki-dark) !important;
 }
+
+/* Navigation progress bar animations */
+@keyframes progress-shimmer {
+  0% {
+    transform: translateX(-100%);
+    width: 40%;
+  }
+  100% {
+    transform: translateX(350%);
+    width: 40%;
+  }
+}
+
+@keyframes progress-glow {
+  0%, 100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.animate-progress-shimmer {
+  animation: progress-shimmer 1.2s ease-in-out infinite;
+}
+
+.animate-progress-glow {
+  animation: progress-glow 1.2s ease-in-out infinite;
+}

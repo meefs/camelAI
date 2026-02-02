@@ -9,6 +9,7 @@ import {
 import type { Route } from './+types/root';
 import { Toaster } from '@/components/ui/sonner';
 import { ThemeProvider } from '@/components/theme-provider';
+import { NavigationProgress } from '@/components/ui/navigation-progress';
 
 // Import global styles
 import './styles/globals.css';
@@ -54,6 +55,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           enableSystem
           disableTransitionOnChange
         >
+          <NavigationProgress />
           {children}
           <Toaster />
         </ThemeProvider>
