@@ -144,20 +144,46 @@ function encodePathSegments(path: string): string {
     .join('/');
 }
 
+/**
+ * Strip chiridion system message tags from content.
+ * These tags are used internally to pass context to the AI but shouldn't
+ * be shown verbosely to users.
+ */
+function stripSystemMessageTags(text: string): string {
+  return text.replace(/<chiridion system message>[\s\S]*?<\/chiridion system message>/g, '').trim();
+}
+
+/**
+ * Check if content has any visible text after stripping system messages.
+ * Returns false if the content is entirely system messages.
+ */
+function hasVisibleContent(content: string | ContentBlock[]): boolean {
+  if (typeof content === 'string') {
+    return stripSystemMessageTags(content).length > 0;
+  }
+  return content.some(block => {
+    if (block.type === 'text') {
+      return stripSystemMessageTags(block.text).length > 0;
+    }
+    // Other block types (tool_use, tool_result, thinking) are always visible
+    return true;
+  });
+}
+
 // Convert content to string for copy functionality
 export function contentToString(content: string | ContentBlock[]): string {
-  if (typeof content === 'string') return content;
+  if (typeof content === 'string') return stripSystemMessageTags(content);
   return content
     .map(block => {
-      if (block.type === 'text') return block.text;
+      if (block.type === 'text') return stripSystemMessageTags(block.text);
       if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
       if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
       if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
       return '';
     })
+    .filter(Boolean)
     .join('\n\n');
 }
-
 interface ContentBlockRendererProps {
   content: string | ContentBlock[];
   isStreaming?: boolean;
@@ -167,7 +193,9 @@ interface ContentBlockRendererProps {
 function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
-    return <MarkdownRenderer content={content} isStreaming={isStreaming} />;
+    const displayContent = stripSystemMessageTags(content);
+    if (!displayContent) return null;
+    return <MarkdownRenderer content={displayContent} isStreaming={isStreaming} />;
   }
 
   // Empty content
@@ -191,12 +219,15 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
 
   content.forEach((block, index) => {
     if (block.type === 'text') {
+      const displayText = stripSystemMessageTags(block.text);
+      // Skip empty text blocks after stripping system messages
+      if (!displayText) return;
       items.push({
         kind: 'other',
         key: `text-${index}`,
         node: (
           <div className="max-w-none">
-            <MarkdownRenderer content={block.text} isStreaming={isStreaming} />
+            <MarkdownRenderer content={displayText} isStreaming={isStreaming} />
           </div>
         ),
       });
@@ -299,6 +330,11 @@ export function MessageBubble({
   hostname,
 }: MessageBubbleProps) {
   if (message.isMeta || message.sourceToolUseID) {
+    return null;
+  }
+
+  // Hide messages that are entirely system messages (no visible content after stripping)
+  if (!hasVisibleContent(message.content)) {
     return null;
   }
 
