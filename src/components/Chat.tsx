@@ -9,7 +9,6 @@ import type {
   ContentBlock,
   ToolResultBlock,
   ToolUseBlock,
-  Thread,
   WorkerScriptWithCreator,
   Integration,
 } from '@/types';
@@ -58,7 +57,7 @@ import {
   attachToolResultsToMessages,
   normalizeToolResultMessages,
 } from '@/lib/streaming';
-import { getVanityDomain, getIframeDomain } from '@/lib/app-url';
+import { getAppUrl, getVanityDomain, getIframeDomain } from '@/lib/app-url';
 
 interface ChatProps {
   threadId?: string;
@@ -66,6 +65,8 @@ interface ChatProps {
   initialMessages?: Message[];
   threadTitle?: string | null;
   initialDeployedApp?: string | null;
+  /** Initial app visibility from OrgDO source of truth */
+  initialAppIsPublic?: boolean | null;
   isNewThread?: boolean;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
   hostname?: string;
@@ -319,6 +320,7 @@ export default function Chat({
   initialMessages,
   threadTitle,
   initialDeployedApp,
+  initialAppIsPublic,
   isNewThread = false,
   hostname,
   isLoadingMessages = false,
@@ -327,12 +329,6 @@ export default function Chat({
   const navigate = useNavigate();
   const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
-  const startChatFetcher = useFetcher<{
-    success?: boolean;
-    thread?: Thread;
-    error?: string;
-    requestId?: string;
-  }>();
   const touchFetcher = useFetcher();
   const { user, currentWorkspace, currentOrg, orgs, loading: authLoading } = useAuth();
   const isMobile = useIsMobile();
@@ -451,7 +447,7 @@ export default function Chat({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [deployedApp, setDeployedApp] = useState<string | null>(initialDeployedApp ?? null);
-  const [appIsPublic, setAppIsPublic] = useState(false);
+  const [appIsPublic, setAppIsPublic] = useState(initialAppIsPublic ?? false);
   const [iframeKey, setIframeKey] = useState(0);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
@@ -480,8 +476,6 @@ export default function Chat({
   const lastEventIdRef = useRef(0);
   const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
   const previewConnectionStartedAtRef = useRef<number | null>(null);
-  const pendingChatAppRef = useRef<string | null>(null);
-  const activeChatRequestIdRef = useRef<string | null>(null);
   const fallbackRenderedAtRef = useRef<number>(Date.now());
 
   useEffect(() => {
@@ -1643,33 +1637,6 @@ export default function Chat({
     }
   }, [createThreadFetcher.state, createThreadFetcher.data, navigate]);
 
-  // Handle chat creation result when starting from an app card
-  useEffect(() => {
-    if (startChatFetcher.state !== 'idle') return;
-    const responseRequestId = startChatFetcher.data?.requestId;
-    if (!responseRequestId) {
-      if (activeChatRequestIdRef.current || pendingChatAppRef.current) {
-        activeChatRequestIdRef.current = null;
-        pendingChatAppRef.current = null;
-      }
-      return;
-    }
-
-    if (responseRequestId !== activeChatRequestIdRef.current) {
-      pendingChatAppRef.current = null;
-      return;
-    }
-
-    if (startChatFetcher.data?.success && startChatFetcher.data.thread) {
-      navigate(`/chat/${startChatFetcher.data.thread.id}`);
-    } else if (startChatFetcher.data?.error) {
-      toast.error(startChatFetcher.data.error);
-    }
-
-    activeChatRequestIdRef.current = null;
-    pendingChatAppRef.current = null;
-  }, [startChatFetcher.state, startChatFetcher.data, navigate]);
-
   const handleStartChatForApp = useCallback((app: WorkerScriptWithCreator) => {
     if (!resolvedWorkspaceId) {
       toast.error('No workspace selected');
@@ -1681,28 +1648,31 @@ export default function Chat({
       return;
     }
 
-    if (startChatFetcher.state !== 'idle') return;
-    if (pendingChatAppRef.current === app.script_name) return;
-    pendingChatAppRef.current = app.script_name;
+    if (createThreadFetcher.state !== 'idle' || isCreatingThread) return;
 
-    const requestId = crypto.randomUUID();
-    activeChatRequestIdRef.current = requestId;
-    startChatFetcher.submit(
+    setIsCreatingThread(true);
+
+    // Build the chiridion system message
+    const appUrl = getAppUrl(app.script_name, hostname);
+    const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
+    const systemMessage = `<chiridion system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</chiridion system message>`;
+
+    // Store pending message for the createThreadFetcher effect
+    pendingNewChatRef.current = { finalContent: systemMessage };
+
+    // Create thread with preview settings
+    createThreadFetcher.submit(
       {
-        intent: 'startChatForApp',
-        appName: app.script_name,
-        workspaceId: app.workspace_id,
-        hostname: hostname ?? '',
-        configPath: app.config_path ?? '',
-        isPublic: String(app.is_public),
-        requestId,
+        intent: 'createThread',
+        firstMessage: `Chat about ${app.script_name}`,
+        previewApps: app.script_name,
       },
-      { method: 'post', action: '/apps' }
+      { method: 'post', action: '/chat' }
     );
-  }, [hostname, resolvedWorkspaceId, startChatFetcher]);
+  }, [hostname, resolvedWorkspaceId, createThreadFetcher, isCreatingThread]);
 
   function startNewChat() {
-    if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId || startChatFetcher.state !== 'idle') return;
+    if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId || createThreadFetcher.state !== 'idle') return;
 
     // Don't allow sending while uploads are in progress
     const hasUploadingAttachments = attachments.some(a => a.status === 'uploading');
@@ -2414,7 +2384,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                 attachments={attachments}
                 onFilesSelected={handleFilesSelected}
                 onAttachmentRemove={handleAttachmentRemove}
-                isCreatingThread={isCreatingThread || startChatFetcher.state !== 'idle'}
+                isCreatingThread={isCreatingThread || createThreadFetcher.state !== 'idle'}
               />
             </div>
           </>

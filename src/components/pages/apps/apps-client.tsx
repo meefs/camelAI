@@ -4,15 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFetcher, useSearchParams, useRevalidator, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
-import type { Thread, WorkspaceWithAccess } from '@/types';
-
-import type { WorkerScriptWithCreator } from '@/types';
+import type { WorkspaceWithAccess, WorkerScriptWithCreator } from '@/types';
+import { getAppUrl } from '@/lib/app-url';
 import { PageHeader } from '@/components/page-header';
 import { AppCard } from './AppCard';
 import { AppSettingsDialog } from './AppSettingsDialog';
 import { AppCardSkeleton } from './AppCardSkeleton';
 import { SwitchWorkspaceDialog } from '@/components/history/switch-workspace-dialog';
-import { ContainerLoadingDialog } from '@/components/container-loading-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LayoutGrid } from 'lucide-react';
@@ -43,18 +41,15 @@ export default function AppsClient({
   const [searchParams, setSearchParams] = useSearchParams();
   const revalidator = useRevalidator();
   const chatFetcher = useFetcher<{
-    success?: boolean;
-    thread?: Thread;
+    thread?: { id: string };
     error?: string;
-    requestId?: string;
   }>();
   const filter = (searchParams.get('filter') as 'this-workspace' | 'all-workspaces') || 'this-workspace';
 
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<WorkerScriptWithCreator | null>(null);
   const [referenceTime, setReferenceTime] = useState(initialNow);
-  const pendingChatAppRef = useRef<string | null>(null);
-  const activeChatRequestIdRef = useRef<string | null>(null);
+  const pendingChatAppRef = useRef<WorkerScriptWithCreator | null>(null);
 
   // Switch workspace dialog state
   const [switchDialog, setSwitchDialog] = useState<{
@@ -64,11 +59,6 @@ export default function AppsClient({
     action: 'chat' | 'viewSource' | null;
   }>({ open: false, app: null, workspace: null, action: null });
   const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
-  const [containerDialog, setContainerDialog] = useState<{
-    open: boolean;
-    workspace: WorkspaceWithAccess | null;
-    action: 'chat' | 'viewSource' | null;
-  }>({ open: false, workspace: null, action: null });
   const workspaceMap = useMemo(
     () => new Map((workspaces ?? []).map((workspace) => [workspace.id, workspace])),
     [workspaces]
@@ -84,32 +74,28 @@ export default function AppsClient({
 
   // Handle chat creation result
   useEffect(() => {
-    if (chatFetcher.state !== 'idle') return;
-    const responseRequestId = chatFetcher.data?.requestId;
-    if (!responseRequestId) {
-      if (activeChatRequestIdRef.current || pendingChatAppRef.current) {
-        activeChatRequestIdRef.current = null;
-        pendingChatAppRef.current = null;
-        setContainerDialog({ open: false, workspace: null, action: null });
-      }
-      return;
-    }
+    if (chatFetcher.state !== 'idle' || !chatFetcher.data) return;
 
-    if (responseRequestId !== activeChatRequestIdRef.current) {
+    if (chatFetcher.data.thread && pendingChatAppRef.current) {
+      // Build the chiridion system message
+      const app = pendingChatAppRef.current;
+      const appUrl = getAppUrl(app.script_name, hostname);
+      const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
+      const systemMessage = `<chiridion system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</chiridion system message>`;
+
+      // Store message in sessionStorage for the chat page to pick up
+      sessionStorage.setItem(
+        'pendingMessage:newThread',
+        JSON.stringify({ message: systemMessage, threadId: chatFetcher.data.thread.id })
+      );
+
       pendingChatAppRef.current = null;
-      return;
-    }
-
-    if (chatFetcher.data?.success && chatFetcher.data.thread) {
-      navigate(`/chat/${chatFetcher.data.thread.id}`);
-    } else if (chatFetcher.data?.error) {
+      navigate(`/chat/${chatFetcher.data.thread.id}?newThread=1`);
+    } else if (chatFetcher.data.error) {
       toast.error(chatFetcher.data.error);
-      setContainerDialog({ open: false, workspace: null, action: null });
+      pendingChatAppRef.current = null;
     }
-
-    activeChatRequestIdRef.current = null;
-    pendingChatAppRef.current = null;
-  }, [chatFetcher.state, chatFetcher.data, navigate]);
+  }, [chatFetcher.state, chatFetcher.data, navigate, hostname]);
 
   const loading = authLoading || revalidator.state === 'loading';
   const apps = initialApps;
@@ -152,24 +138,18 @@ export default function AppsClient({
 
     // Prevent double-clicks while fetcher is busy
     if (chatFetcher.state !== 'idle') return;
-    if (pendingChatAppRef.current === app.script_name) return;
-    pendingChatAppRef.current = app.script_name;
+    if (pendingChatAppRef.current?.script_name === app.script_name) return;
+    pendingChatAppRef.current = app;
 
-    const requestId = crypto.randomUUID();
-    activeChatRequestIdRef.current = requestId;
     chatFetcher.submit(
       {
-        intent: 'startChatForApp',
-        appName: app.script_name,
-        workspaceId: app.workspace_id,
-        hostname: hostname ?? '',
-        configPath: app.config_path ?? '',
-        isPublic: String(app.is_public),
-        requestId,
+        intent: 'createThread',
+        firstMessage: `Chat about ${app.script_name}`,
+        previewApps: app.script_name,
       },
-      { method: 'post' }
+      { method: 'post', action: '/chat' }
     );
-  }, [currentWorkspace?.id, chatFetcher, hostname, workspaceMap]);
+  }, [currentWorkspace?.id, chatFetcher, workspaceMap]);
 
   const handleViewSource = useCallback((app: WorkerScriptWithCreator) => {
     if (!app.config_path) {
@@ -215,24 +195,18 @@ export default function AppsClient({
     try {
       await switchWorkspace(targetWorkspace.id);
       setSwitchDialog({ open: false, app: null, workspace: null, action: null });
-      setContainerDialog({ open: true, workspace: targetWorkspace, action: targetAction });
 
       // After switch, perform the original action
       if (targetAction === 'chat') {
         // Re-trigger chat start - workspace is now correct
-        const requestId = crypto.randomUUID();
-        activeChatRequestIdRef.current = requestId;
+        pendingChatAppRef.current = targetApp;
         chatFetcher.submit(
           {
-            intent: 'startChatForApp',
-            appName: targetApp.script_name,
-            workspaceId: targetApp.workspace_id,
-            hostname: hostname ?? '',
-            configPath: targetApp.config_path ?? '',
-            isPublic: String(targetApp.is_public),
-            requestId,
+            intent: 'createThread',
+            firstMessage: `Chat about ${targetApp.script_name}`,
+            previewApps: targetApp.script_name,
           },
-          { method: 'post' }
+          { method: 'post', action: '/chat' }
         );
       } else if (targetAction === 'viewSource' && targetApp.config_path) {
         const filePath = encodeURIComponent(targetApp.config_path);
@@ -244,7 +218,7 @@ export default function AppsClient({
     } finally {
       setSwitchingWorkspace(false);
     }
-  }, [switchDialog, switchWorkspace, chatFetcher, hostname, navigate]);
+  }, [switchDialog, switchWorkspace, chatFetcher, navigate]);
 
   return (
     <>
@@ -355,26 +329,6 @@ export default function AppsClient({
         />
       )}
 
-      {containerDialog.workspace ? (
-        <ContainerLoadingDialog
-          open={containerDialog.open}
-          onOpenChange={(open) => {
-            if (!open) {
-              setContainerDialog({ open: false, workspace: null, action: null });
-            }
-          }}
-          workspace={containerDialog.workspace}
-          title="Starting workspace..."
-          description={
-            containerDialog.action === 'chat'
-              ? "We're spinning up the {workspace} container to start your chat. This can take up to 20 seconds."
-              : containerDialog.action === 'viewSource'
-                ? "We're spinning up the {workspace} container to open the file browser. This can take up to 20 seconds."
-                : "We're spinning up the {workspace} container. This can take up to 20 seconds."
-          }
-          statusLabel="Warming container..."
-        />
-      ) : null}
     </>
   );
 }

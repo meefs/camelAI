@@ -108,12 +108,22 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (intent === 'createThread') {
     try {
       const firstMessage = formData.get('firstMessage') as string | null;
+      const previewAppsRaw = formData.get('previewApps') as string | null;
+
       const thread = await chatDO.createThread(
         context,
         authContext.currentWorkspace.id,
         undefined, // title will be generated asynchronously
         authContext.user?.id
       );
+
+      // Set preview apps if provided (for "chat with this app" flow)
+      if (previewAppsRaw) {
+        const previewApps = previewAppsRaw.split(',').filter(Boolean);
+        if (previewApps.length > 0) {
+          await chatDO.setThreadPreview(context, thread.id, previewApps);
+        }
+      }
 
       // Generate title in background if we have a first message
       if (firstMessage) {
