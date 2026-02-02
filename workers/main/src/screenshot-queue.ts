@@ -16,7 +16,6 @@ export interface ScreenshotEnv {
   BROWSER?: Fetcher;
   R2_BUCKET: R2Bucket;
   APP_KV: KVNamespace;
-  LOCAL_APP_PREVIEW_URL?: string;
   ORG: DurableObjectNamespace<OrgDO>;
 }
 
@@ -33,21 +32,12 @@ const SCREENSHOT_CLIP = {
 };
 
 const PREVIEW_PREFIX = 'app-previews';
-const LOCAL_PREVIEW_URL = 'https://hello-world-test.chiridion.app/';
 const NAVIGATION_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 1500;
 const POST_LOAD_DELAY_MS = 600;
 const MAX_SCREENSHOT_RETRIES = 3;
 
-function getLocalPreviewUrl(env: ScreenshotEnv): string {
-  const override = env.LOCAL_APP_PREVIEW_URL?.trim();
-  return override ? override : LOCAL_PREVIEW_URL;
-}
-
-function buildTargetUrl(job: AppScreenshotJob, env: ScreenshotEnv): string | null {
-  if (job.env_prefix === 'local') {
-    return getLocalPreviewUrl(env);
-  }
+function buildTargetUrl(job: AppScreenshotJob): string {
   const suffix = job.env_prefix ? `apps.${job.env_prefix}.chiridion.ai` : 'apps.chiridion.ai';
   return `https://${job.script_name}.${suffix}`;
 }
@@ -122,10 +112,7 @@ export async function captureScreenshot(
     return { success: false, error: errorMessage };
   }
 
-  const targetUrl = buildTargetUrl(job, env);
-  if (!targetUrl) {
-    return { success: false, error: 'Could not build target URL' };
-  }
+  const targetUrl = buildTargetUrl(job);
 
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
   let page: Page | null = null;

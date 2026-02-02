@@ -451,7 +451,6 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `GITHUB_CLIENT_ID` | GitHub OAuth client ID |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth client secret |
-| `LOCAL_APP_PREVIEW_URL` | Override for local app preview screenshots |
 
 #### JuiceFS Container Variables (set automatically by worker)
 
