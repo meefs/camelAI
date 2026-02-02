@@ -8,7 +8,8 @@
 	},
 	"resolutions": {
 		"wrangler": "4.999.0",
-		"@cloudflare/vite-plugin": "patch:@cloudflare/vite-plugin@npm%3A1.22.1#./.yarn/patches/@cloudflare-vite-plugin-npm-1.22.1-7df410eafa.patch"
+		"@cloudflare/vite-plugin": "patch:@cloudflare/vite-plugin@npm%3A1.22.1#./.yarn/patches/@cloudflare-vite-plugin-npm-1.22.1-7df410eafa.patch",
+		"mimetext/@babel/runtime-corejs3": "npm:@babel/runtime@^7.26.0"
 	},
 	"scripts": {
 		"build": "vite-build",
