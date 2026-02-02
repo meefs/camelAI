@@ -56,6 +56,17 @@ export default defineConfig(({ command }) => ({
     reactRouter(),
     tsconfigPaths({ ignoreConfigErrors: true }),
   ],
+  // Configure SSR environment to use Cloudflare's worker entry as the rollup input
+  // This ensures Durable Object exports are included in the bundle
+  environments: {
+    ssr: {
+      build: {
+        rollupOptions: {
+          input: 'virtual:cloudflare/worker-entry',
+        },
+      },
+    },
+  },
   build: {
     target: 'esnext',
     sourcemap: true,
