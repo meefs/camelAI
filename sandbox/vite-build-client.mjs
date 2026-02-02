@@ -91,9 +91,8 @@ function sendRequest() {
         }
         done = true;
         if (msg.success) {
-          const duration = formatMs(msg.timing?.total || msg.duration);
-          const cached = msg.timing?.cacheHit ? c.dim + ' (cached)' + c.reset : '';
-          console.log(c.green + '✓ Built in ' + duration + cached + c.reset);
+          const cached = msg.cacheHit ? c.dim + ' (cached)' + c.reset : '';
+          console.log(c.green + '✓ Built in ' + formatMs(msg.duration) + cached + c.reset);
           process.exit(0);
         } else {
           log(c.red + 'Failed: ' + msg.error + c.reset);

@@ -32,7 +32,8 @@ console.log('[vite-daemon] Started for: ' + projectPath);
 
 function getConfigHash() {
   const hash = createHash('md5');
-  const files = ['vite.config.ts', 'package.json', 'yarn.lock'];
+  // Include all files that affect the build output
+  const files = ['vite.config.ts', 'wrangler.toml', 'wrangler.jsonc', 'wrangler.json', 'package.json', 'yarn.lock'];
   for (const file of files) {
     const path = resolve(projectPath, file);
     if (existsSync(path)) hash.update(readFileSync(path));
@@ -115,7 +116,7 @@ async function handleRequest(socket, message) {
       const { builder: b, cacheHit } = await getBuilder();
       await b.buildApp();
       const total = Date.now() - start;
-      socket.write(JSON.stringify({ success: true, duration: total, timing: { cacheHit, total } }) + '\n');
+      socket.write(JSON.stringify({ success: true, duration: total, cacheHit }) + '\n');
     }
   } catch (err) {
     console.error('[vite-daemon] Error:', err.message);

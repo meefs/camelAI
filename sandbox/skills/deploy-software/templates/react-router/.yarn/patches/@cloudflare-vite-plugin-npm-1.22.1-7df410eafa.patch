@@ -1,5 +1,5 @@
 diff --git a/dist/index.mjs b/dist/index.mjs
-index b1500021c8feba50ea6ee20acf16a936366b8d8c..a9868529782fdb4ef0dc5df5dd3532b6bf7d3b0b 100644
+index b1500021c8feba50ea6ee20acf16a936366b8d8c..191e8d63c6f33e0974396dd0ac0fed7dc01e6bd6 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
 @@ -13232,7 +13232,7 @@ function read(jsonPath, { base, specifier }) {
@@ -25,3 +25,12 @@ index b1500021c8feba50ea6ee20acf16a936366b8d8c..a9868529782fdb4ef0dc5df5dd3532b6
  		};
  	}
  };
+@@ -26569,7 +26569,7 @@ const outputConfigPlugin = createPlugin("output-config", (ctx) => {
+ 			if (ctx.resolvedPluginConfig.type === "workers") {
+ 				const inputConfig = ctx.getWorkerConfig(this.environment.name);
+ 				if (!inputConfig) return;
+-				const entryChunk = Object.values(bundle).find((chunk) => chunk.type === "chunk" && chunk.isEntry && chunk.name === MAIN_ENTRY_NAME);
++				const entryChunk = Object.values(bundle).find((chunk) => chunk.type === "chunk" && chunk.isEntry);
+ 				assert(entryChunk, `Expected entry chunk with name "${MAIN_ENTRY_NAME}"`);
+ 				const isEntryWorker = this.environment.name === ctx.resolvedPluginConfig.entryWorkerEnvironmentName;
+ 				outputConfig = {
