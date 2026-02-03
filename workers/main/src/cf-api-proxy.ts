@@ -21,6 +21,119 @@ function isManagedSecret(name: string): boolean {
   return MANAGED_SECRET_NAMES.includes(name) || MANAGED_SECRET_PREFIXES.some(p => name.startsWith(p));
 }
 
+// =============================================================================
+// Binding Security Filter
+// =============================================================================
+// Users can only use bindings that are safe and self-contained.
+// They CANNOT access external resources like KV, D1, R2, Queues, etc.
+// For Durable Objects, they can only use DOs defined in their own script.
+
+/** Binding types that are completely forbidden */
+const FORBIDDEN_BINDING_TYPES = new Set([
+  'kv_namespace',           // KV storage
+  'd1',                     // D1 database
+  'r2_bucket',              // R2 storage
+  'queue',                  // Queue producer
+  'service',                // Service bindings to other workers
+  'analytics_engine',       // Analytics Engine
+  'hyperdrive',             // Hyperdrive database connections
+  'vectorize',              // Vectorize vector indexes
+  'browser',                // Browser Rendering API
+  'ai',                     // Workers AI
+  'mtls_certificate',       // mTLS certificates
+  'dispatch_namespace',     // Workers for Platforms dispatch
+  'send_email',             // Email sending
+  'version_metadata',       // Version metadata (internal)
+]);
+
+/** Binding types that are always allowed (safe, self-contained) */
+const ALLOWED_BINDING_TYPES = new Set([
+  'plain_text',             // Plain text env vars
+  'secret_text',            // Secret text env vars (we manage secrets separately)
+  'json',                   // JSON env vars
+  'wasm_module',            // WASM modules (bundled with script)
+  'text_blob',              // Text blobs (bundled)
+  'data_blob',              // Data blobs (bundled)
+  'assets',                 // Static assets (bundled with worker)
+]);
+
+export interface WorkerBinding {
+  type: string;
+  name: string;
+  // For durable_object_namespace bindings
+  class_name?: string;
+  script_name?: string;
+  // For other binding types (not all fields used by all types)
+  namespace_id?: string;
+  database_id?: string;
+  bucket_name?: string;
+  [key: string]: unknown;
+}
+
+interface WorkerMetadata {
+  main_module?: string;
+  bindings?: WorkerBinding[];
+  config_path?: string;
+  [key: string]: unknown;
+}
+
+export interface BindingValidationResult {
+  valid: boolean;
+  forbiddenBindings: Array<{ name: string; type: string; reason: string }>;
+}
+
+/**
+ * Validate bindings in worker metadata.
+ * Returns which bindings are forbidden and why.
+ */
+export function validateBindings(bindings: WorkerBinding[]): BindingValidationResult {
+  const forbiddenBindings: Array<{ name: string; type: string; reason: string }> = [];
+
+  for (const binding of bindings) {
+    const { type, name } = binding;
+
+    // Check completely forbidden types
+    if (FORBIDDEN_BINDING_TYPES.has(type)) {
+      forbiddenBindings.push({
+        name,
+        type,
+        reason: `Binding type "${type}" is not allowed. User workers cannot access external resources.`,
+      });
+      continue;
+    }
+
+    // Check Durable Object bindings - only allow local DOs (no script_name)
+    if (type === 'durable_object_namespace') {
+      if (binding.script_name) {
+        forbiddenBindings.push({
+          name,
+          type,
+          reason: `External Durable Object binding to script "${binding.script_name}" is not allowed. Only Durable Objects defined in your own script are permitted.`,
+        });
+      }
+      // Local DO (no script_name) is allowed
+      continue;
+    }
+
+    // Check if it's an allowed type
+    if (ALLOWED_BINDING_TYPES.has(type)) {
+      continue;
+    }
+
+    // Unknown binding type - block it for safety
+    forbiddenBindings.push({
+      name,
+      type,
+      reason: `Unknown binding type "${type}" is not allowed.`,
+    });
+  }
+
+  return {
+    valid: forbiddenBindings.length === 0,
+    forbiddenBindings,
+  };
+}
+
 // Re-export for index.ts to use
 export const CHIRIDION_DEPLOY_TOKEN_HEADER = 'X-Chiridion-Deploy-Token';
 
@@ -205,6 +318,33 @@ function isUploadRequest(pathname: string, method: string): boolean {
   return (m === 'PUT' && DISPATCH_SCRIPT_UPLOAD.test(pathname)) || (m === 'POST' && ASSETS_UPLOAD.test(pathname));
 }
 
+// Patterns for requests that may contain bindings in JSON body
+const DISPATCH_SCRIPT_SETTINGS = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/settings$/;
+const DISPATCH_SCRIPT_SCRIPT_SETTINGS = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/script-settings$/;
+const DISPATCH_SCRIPT_VERSIONS = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/[^/]+\/versions$/;
+
+/**
+ * Check if this is a request that may contain bindings in JSON body.
+ * These need to be validated separately from multipart uploads.
+ */
+function isBindingsJsonRequest(pathname: string, method: string): boolean {
+  const m = method.toUpperCase();
+  // PATCH to settings/script-settings can modify bindings
+  if (m === 'PATCH') {
+    return DISPATCH_SCRIPT_SETTINGS.test(pathname) || DISPATCH_SCRIPT_SCRIPT_SETTINGS.test(pathname);
+  }
+  // POST to versions can include bindings
+  if (m === 'POST') {
+    return DISPATCH_SCRIPT_VERSIONS.test(pathname);
+  }
+  return false;
+}
+
+interface SettingsRequestBody {
+  bindings?: WorkerBinding[];
+  [key: string]: unknown;
+}
+
 function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
   const boundaryMatch = contentType.match(/boundary=([^;]+)/i);
   const boundary = boundaryMatch?.[1]?.trim().replace(/^"|"$/g, '');
@@ -227,6 +367,7 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
     truncated: boolean;
   }> = [];
   let configPath: string | undefined;
+  let bindings: WorkerBinding[] | undefined;
   const maxConfigLogChars = 20000;
   const maxPartLogChars = 2000;
 
@@ -255,12 +396,15 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
       files.push(filename);
     }
 
-    // Extract config_path from metadata JSON
+    // Extract config_path and bindings from metadata JSON
     if (name === 'metadata' && !filename) {
       try {
-        const metadata = JSON.parse(bodyText) as { config_path?: string };
+        const metadata = JSON.parse(bodyText) as WorkerMetadata;
         if (metadata.config_path) {
           configPath = metadata.config_path;
+        }
+        if (metadata.bindings) {
+          bindings = metadata.bindings;
         }
       } catch {
         // Ignore JSON parse errors
@@ -291,7 +435,7 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
     }
   }
 
-  return { files, wranglerConfigs, formParts, configPath };
+  return { files, wranglerConfigs, formParts, configPath, bindings };
 }
 
 async function callCloudflareApi<T>(
@@ -686,7 +830,7 @@ export async function proxyCloudflareApi(
       ? undefined
       : await request.arrayBuffer();
 
-  // Extract configPath from metadata if present in upload
+  // Extract configPath and validate bindings from metadata if present in upload
   let configPath: string | undefined;
   if (body && isUploadRequest(pathname, method)) {
     const contentType = request.headers.get('Content-Type') ?? '';
@@ -695,6 +839,38 @@ export async function proxyCloudflareApi(
       if (uploadInfo?.configPath) {
         configPath = uploadInfo.configPath;
       }
+
+      // Validate bindings - block forbidden binding types
+      if (uploadInfo?.bindings?.length) {
+        const validationResult = validateBindings(uploadInfo.bindings);
+        if (!validationResult.valid) {
+          const forbiddenList = validationResult.forbiddenBindings
+            .map(b => `${b.name} (${b.type})`)
+            .join(', ');
+          console.warn('[cf-api-proxy] blocked deploy: forbidden bindings', {
+            method,
+            path: pathname,
+            scriptName: originalScriptName,
+            orgId,
+            workspaceId,
+            forbiddenBindings: validationResult.forbiddenBindings,
+          });
+          return cfApiError(
+            10005,
+            `Deploy blocked: Your worker contains forbidden bindings: ${forbiddenList}. ` +
+            `User workers can only use environment variables and Durable Objects defined in the same script. ` +
+            `External resources (KV, D1, R2, Queues, etc.) are not allowed.`,
+            403
+          );
+        }
+        console.log('[cf-api-proxy] bindings validated', {
+          method,
+          path: pathname,
+          bindingCount: uploadInfo.bindings.length,
+          bindingTypes: [...new Set(uploadInfo.bindings.map(b => b.type))],
+        });
+      }
+
       if (uploadInfo?.files.length) {
         console.log('[cf-api-proxy] upload files', {
           method,
@@ -721,6 +897,53 @@ export async function proxyCloudflareApi(
             content: config.content,
           });
         }
+      }
+    }
+  }
+
+  // Validate bindings in JSON body requests (settings PATCH, versions POST)
+  if (body && isBindingsJsonRequest(pathname, method)) {
+    const contentType = request.headers.get('Content-Type') ?? '';
+    if (contentType.toLowerCase().includes('application/json')) {
+      try {
+        const decoder = new TextDecoder('utf-8');
+        const jsonBody = JSON.parse(decoder.decode(body)) as SettingsRequestBody;
+        if (jsonBody.bindings?.length) {
+          const validationResult = validateBindings(jsonBody.bindings);
+          if (!validationResult.valid) {
+            const forbiddenList = validationResult.forbiddenBindings
+              .map(b => `${b.name} (${b.type})`)
+              .join(', ');
+            console.warn('[cf-api-proxy] blocked settings update: forbidden bindings', {
+              method,
+              path: pathname,
+              scriptName: originalScriptName,
+              orgId,
+              workspaceId,
+              forbiddenBindings: validationResult.forbiddenBindings,
+            });
+            return cfApiError(
+              10005,
+              `Settings update blocked: Request contains forbidden bindings: ${forbiddenList}. ` +
+              `User workers can only use environment variables and Durable Objects defined in the same script. ` +
+              `External resources (KV, D1, R2, Queues, etc.) are not allowed.`,
+              403
+            );
+          }
+          console.log('[cf-api-proxy] settings bindings validated', {
+            method,
+            path: pathname,
+            bindingCount: jsonBody.bindings.length,
+            bindingTypes: [...new Set(jsonBody.bindings.map(b => b.type))],
+          });
+        }
+      } catch (e) {
+        // If we can't parse the JSON, let Cloudflare handle the error
+        console.warn('[cf-api-proxy] failed to parse JSON body for binding validation', {
+          method,
+          path: pathname,
+          error: String(e),
+        });
       }
     }
   }
