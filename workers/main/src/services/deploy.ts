@@ -65,6 +65,7 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
   const jobBase: AppScreenshotJob = {
     script_name: scriptName,
     org_id: orgId,
+    org_slug: orgSlug,
     workspace_id: workspaceId,
     deploy_ts: script.updated_at,
     env_prefix: envPrefix,

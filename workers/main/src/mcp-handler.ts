@@ -339,10 +339,14 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           });
         }
 
+        // Get org slug for URL construction (optional - falls back to legacy URL format)
+        const orgSlug = await this.getOrgSlug();
+
         // Capture screenshot and return image directly
         const result = await captureScreenshotRaw(this.env.BROWSER, {
           scriptName: script_name,
           orgId,
+          orgSlug: orgSlug ?? undefined,
           envPrefix,
           isPublic: script.is_public,
           screenshotToken,

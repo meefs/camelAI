@@ -5,6 +5,7 @@ import type { OrgDO } from './auth.js';
 export interface AppScreenshotJob {
   script_name: string;
   org_id: string;
+  org_slug?: string; // Optional for backward compat with queued messages
   workspace_id: string;
   deploy_ts: number;
   env_prefix: string;
@@ -39,6 +40,11 @@ const MAX_SCREENSHOT_RETRIES = 3;
 
 function buildTargetUrl(job: AppScreenshotJob): string {
   const suffix = job.env_prefix ? `apps.${job.env_prefix}.chiridion.ai` : 'apps.chiridion.ai';
+  // Use flat URL format: {script}--{org-slug}.apps.chiridion.ai
+  // Fall back to legacy format if org_slug is missing (for queued messages before this change)
+  if (job.org_slug) {
+    return `https://${job.script_name}--${job.org_slug}.${suffix}`;
+  }
   return `https://${job.script_name}.${suffix}`;
 }
 
@@ -240,6 +246,7 @@ export async function captureScreenshot(
 export interface RawScreenshotParams {
   scriptName: string;
   orgId: string;
+  orgSlug?: string; // Optional - falls back to legacy URL format if missing
   envPrefix: string;
   isPublic: boolean;
   screenshotToken?: string;
@@ -253,10 +260,14 @@ export async function captureScreenshotRaw(
   browser: Fetcher,
   params: RawScreenshotParams
 ): Promise<{ success: true; image: Buffer } | { success: false; error: string }> {
-  const { scriptName, orgId, envPrefix, isPublic, screenshotToken } = params;
+  const { scriptName, orgId, orgSlug, envPrefix, isPublic, screenshotToken } = params;
 
   const suffix = envPrefix ? `apps.${envPrefix}.chiridion.ai` : 'apps.chiridion.ai';
-  const targetUrl = `https://${scriptName}.${suffix}`;
+  // Use flat URL format: {script}--{org-slug}.apps.chiridion.ai
+  // Fall back to legacy format if orgSlug is missing
+  const targetUrl = orgSlug
+    ? `https://${scriptName}--${orgSlug}.${suffix}`
+    : `https://${scriptName}.${suffix}`;
 
   let puppeteerBrowser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
   let page: Page | null = null;
@@ -366,9 +377,22 @@ export async function handleScreenshotQueue(
         continue;
       }
 
+      // Backfill org_slug for messages queued before the URL scheme change
+      if (!job.org_slug) {
+        try {
+          const slug = await orgStub.getSlug();
+          if (slug) {
+            job.org_slug = slug;
+          }
+        } catch {
+          // Continue without org_slug - will use legacy URL format
+        }
+      }
+
       console.log('[app-screenshot] processing job', {
         scriptName: job.script_name,
         orgId: job.org_id,
+        orgSlug: job.org_slug ?? '(legacy)',
         envPrefix: job.env_prefix,
         attempt,
       });
