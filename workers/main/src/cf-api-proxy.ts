@@ -564,6 +564,10 @@ export async function deleteDispatchScript(
   return true;
 }
 
+/**
+ * Sync integration secrets to a single deployed worker.
+ * Called after deploys and when secrets need to be updated.
+ */
 async function syncDispatchScriptSecrets(
   env: CfApiProxyEnv,
   workspaceId: string,
@@ -625,6 +629,70 @@ async function syncDispatchScriptSecrets(
       deleteDispatchScriptSecret(accountId, dispatchNamespace, scriptName, apiToken, secret.name)
     ));
   }
+}
+
+/**
+ * Sync integration secrets to ALL deployed workers in a workspace.
+ * Called when integrations are created/updated/deleted or when OAuth tokens are refreshed.
+ *
+ * This ensures deployed workers always have up-to-date credentials.
+ */
+export async function syncAllWorkspaceWorkerSecrets(
+  env: CfApiProxyEnv,
+  workspaceId: string,
+  orgId: string
+): Promise<{ synced: number; failed: number }> {
+  const accountId = env.CF_ACCOUNT_ID?.trim();
+  const dispatchNamespace = env.CF_DISPATCH_NAMESPACE?.trim();
+  const apiToken = env.CF_API_TOKEN?.trim();
+
+  if (!accountId || !dispatchNamespace || !apiToken) {
+    console.warn('[cf-api-proxy] syncAllWorkspaceWorkerSecrets: missing CF config, skipping');
+    return { synced: 0, failed: 0 };
+  }
+
+  // Get org slug for dispatch script name format
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  const orgSlug = await orgStub.getSlug();
+  if (!orgSlug) {
+    console.warn('[cf-api-proxy] syncAllWorkspaceWorkerSecrets: org has no slug, skipping');
+    return { synced: 0, failed: 0 };
+  }
+
+  // Get all workers deployed from this workspace
+  const workers = await orgStub.listWorkerScriptsByWorkspace(workspaceId);
+  if (workers.length === 0) {
+    return { synced: 0, failed: 0 };
+  }
+
+  console.log(`[cf-api-proxy] syncing secrets to ${workers.length} workers in workspace ${workspaceId}`);
+
+  let synced = 0;
+  let failed = 0;
+
+  // Sync secrets to each worker
+  await Promise.all(workers.map(async (worker) => {
+    // Dispatch script name format: {script-name}--{org-slug}
+    const dispatchScriptName = `${worker.script_name}--${orgSlug}`;
+    try {
+      await syncDispatchScriptSecrets(
+        env,
+        workspaceId,
+        orgId,
+        accountId,
+        dispatchNamespace,
+        dispatchScriptName,
+        apiToken
+      );
+      synced++;
+      console.log(`[cf-api-proxy] synced secrets to worker ${worker.script_name}`);
+    } catch (err) {
+      failed++;
+      console.error(`[cf-api-proxy] failed to sync secrets to worker ${worker.script_name}:`, err);
+    }
+  }));
+
+  return { synced, failed };
 }
 
 export interface ProxyCloudflareApiOptions {

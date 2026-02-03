@@ -12,6 +12,8 @@ export interface IntegrationOAuthState {
   // MCP callback context for completing prompt_connection_setup requests
   mcp_request_id?: string;
   mcp_do_id?: string;
+  // Extra config for providers that need additional state (e.g., subdomain for Zendesk, shop_domain for Shopify)
+  extra_config?: Record<string, unknown>;
 }
 
 const INTEGRATION_OAUTH_STATE_TTL_SECONDS = 5 * 60; // 5 minutes
@@ -30,7 +32,8 @@ export async function createIntegrationOAuthState(
   workspaceId: string,
   userId: string,
   redirectUrl: string,
-  mcpContext?: { requestId: string; doId: string }
+  mcpContext?: { requestId: string; doId: string },
+  extraConfig?: Record<string, unknown>
 ): Promise<string> {
   const state = crypto.randomUUID();
   const data: IntegrationOAuthState = {
@@ -41,6 +44,7 @@ export async function createIntegrationOAuthState(
     created_at: Date.now(),
     mcp_request_id: mcpContext?.requestId,
     mcp_do_id: mcpContext?.doId,
+    extra_config: extraConfig,
   };
 
   await kv.put(stateKey(state), JSON.stringify(data), {

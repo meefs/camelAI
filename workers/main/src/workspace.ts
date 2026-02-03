@@ -3,6 +3,7 @@ import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/a
 import type { Workspace } from '../../../src/types';
 import type { OrgDO } from './auth';
 import { decryptCredentials, encryptCredentials } from '../../../src/lib/integration-crypto';
+import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
 
 // Buffer time before token expiry to trigger refresh (10 minutes)
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
@@ -55,6 +56,15 @@ export interface WorkspaceEnv {
   NOTION_CLIENT_SECRET?: string;
   SLACK_CLIENT_ID?: string;
   SLACK_CLIENT_SECRET?: string;
+  // Cloudflare API config for syncing secrets to deployed workers
+  CF_API_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
+  CF_DISPATCH_NAMESPACE?: string;
+  // KV for APP_KV lookups (needed by syncAllWorkspaceWorkerSecrets)
+  APP_KV?: KVNamespace;
+  EMAIL_TO_USER?: KVNamespace;
+  CHAT_THREAD?: DurableObjectNamespace;
+  TOKEN_SIGNING_SECRET?: string;
 }
 
 /**
@@ -567,13 +577,20 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       if (expiringIntegrations.length > 0) {
         console.log(`[WorkspaceDO] Refreshing ${expiringIntegrations.length} expiring OAuth tokens`);
 
+        let refreshedCount = 0;
         for (const integration of expiringIntegrations) {
           try {
             await this.refreshIntegrationToken(integration);
+            refreshedCount++;
           } catch (err) {
             console.error(`[WorkspaceDO] Failed to refresh token for ${integration.integration_type}:`, err);
             // Continue with other tokens even if one fails
           }
+        }
+
+        // If any tokens were refreshed, sync secrets to all deployed workers
+        if (refreshedCount > 0) {
+          await this.syncSecretsToDeployedWorkers();
         }
       }
 
@@ -582,6 +599,46 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     } catch (err) {
       // Log the error but don't rethrow - fallback alarm is already set
       console.error('[WorkspaceDO] Alarm handler failed, will retry in 1 hour:', err);
+    }
+  }
+
+  /**
+   * Sync integration secrets to all deployed workers in this workspace.
+   * Called after OAuth token refresh to ensure workers have up-to-date credentials.
+   */
+  private async syncSecretsToDeployedWorkers(): Promise<void> {
+    // Get workspace info to find orgId
+    const info = await this.getInfo();
+    if (!info) {
+      console.warn('[WorkspaceDO] Cannot sync secrets: workspace info not found');
+      return;
+    }
+
+    // Check if we have the required Cloudflare API config
+    if (!this.env.CF_API_TOKEN || !this.env.CF_ACCOUNT_ID || !this.env.CF_DISPATCH_NAMESPACE) {
+      console.warn('[WorkspaceDO] Cannot sync secrets: missing CF API config');
+      return;
+    }
+
+    try {
+      // Build the env object needed by syncAllWorkspaceWorkerSecrets
+      const cfEnv: CfApiProxyEnv = {
+        CF_API_TOKEN: this.env.CF_API_TOKEN,
+        CF_ACCOUNT_ID: this.env.CF_ACCOUNT_ID,
+        CF_DISPATCH_NAMESPACE: this.env.CF_DISPATCH_NAMESPACE,
+        INTEGRATION_SECRET_KEY: this.env.INTEGRATION_SECRET_KEY,
+        TOKEN_SIGNING_SECRET: this.env.TOKEN_SIGNING_SECRET ?? '',
+        WORKSPACE: this.env.WORKSPACE,
+        ORG: this.env.ORG,
+        EMAIL_TO_USER: this.env.EMAIL_TO_USER!,
+        APP_KV: this.env.APP_KV!,
+        CHAT_THREAD: this.env.CHAT_THREAD!,
+      };
+
+      const result = await syncAllWorkspaceWorkerSecrets(cfEnv, info.id, info.org_id);
+      console.log(`[WorkspaceDO] Synced secrets to ${result.synced} workers (${result.failed} failed)`);
+    } catch (err) {
+      console.error('[WorkspaceDO] Failed to sync secrets to deployed workers:', err);
     }
   }
 

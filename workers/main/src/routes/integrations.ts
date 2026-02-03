@@ -1,5 +1,6 @@
 /**
- * Integration OAuth routes (Slack, Notion)
+ * Integration OAuth routes
+ * Supports: Slack, Notion
  */
 
 import type { RouteContext } from '../types.js';
@@ -12,6 +13,7 @@ import { getWorkspaceStub, getOrgStub } from '../helpers/stubs.js';
 import { redirect, text } from '../helpers/response.js';
 import type { ConnectionSetupResponse } from '../durable-objects.js';
 import type { ChiridionMcp } from '../mcp-handler.js';
+import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from '../cf-api-proxy.js';
 
 // RPC interface for MCP DO callback
 interface ChiridionMcpRpc {
@@ -210,10 +212,17 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
       stateData.user_id
     );
 
+    // Push secrets to running container
     ctx.waitUntil(
       getWorkspaceContainer(env, stateData.workspace_id)
         .refreshIntegrationEnvVars(stateData.workspace_id)
         .catch(() => {})
+    );
+
+    // Sync secrets to all deployed workers in this workspace
+    ctx.waitUntil(
+      syncAllWorkspaceWorkerSecrets(env as unknown as CfApiProxyEnv, stateData.workspace_id, wsInfo.org_id)
+        .catch((err) => console.error('[slack-oauth] Failed to sync secrets to workers:', err))
     );
 
     // Complete MCP request if this OAuth flow was initiated from chat
@@ -388,10 +397,17 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
       tokenExpiresAt // Pass expiry for alarm scheduling
     );
 
+    // Push secrets to running container
     ctx.waitUntil(
       getWorkspaceContainer(env, stateData.workspace_id)
         .refreshIntegrationEnvVars(stateData.workspace_id)
         .catch(() => {})
+    );
+
+    // Sync secrets to all deployed workers in this workspace
+    ctx.waitUntil(
+      syncAllWorkspaceWorkerSecrets(env as unknown as CfApiProxyEnv, stateData.workspace_id, wsInfo.org_id)
+        .catch((err) => console.error('[notion-oauth] Failed to sync secrets to workers:', err))
     );
 
     // Complete MCP request if this OAuth flow was initiated from chat
@@ -405,6 +421,176 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
     return redirect(redirectUrl.toString());
   } catch (err) {
     console.error('[notion-oauth] OAuth flow failed:', err);
+    return redirect(`${url.origin}/connections?error=oauth_failed`);
+  }
+}
+
+// =============================================================================
+// Salesforce OAuth
+// =============================================================================
+
+export async function handleSalesforceOAuthStart({ req, env, url }: RouteContext): Promise<Response> {
+  const salesforceDef = INTEGRATION_REGISTRY.salesforce;
+  if (!salesforceDef?.oauthConfig || !env.SALESFORCE_CLIENT_ID) {
+    return text('Salesforce OAuth is not configured', 500);
+  }
+
+  const auth = await requireSession(req, env);
+  if ('error' in auth) return redirect(`${url.origin}/login?error=unauthorized`);
+
+  const { session } = auth;
+  if (!session.workspace_id) return redirect(`${url.origin}/connections?error=no_workspace`);
+
+  const redirectTo = sanitizeRedirectPath(url.searchParams.get('redirect') || '/connections');
+  const callbackUrl = `${url.origin}/api/integrations/salesforce/callback`;
+
+  // Check for MCP callback context (from chat connection setup prompt)
+  const mcpRequestId = url.searchParams.get('mcp_request_id');
+  const mcpDoId = url.searchParams.get('mcp_do_id');
+  const mcpContext = mcpRequestId && mcpDoId ? { requestId: mcpRequestId, doId: mcpDoId } : undefined;
+
+  const state = await createIntegrationOAuthState(
+    env.SESSIONS,
+    'salesforce',
+    session.workspace_id,
+    session.user_id,
+    redirectTo,
+    mcpContext
+  );
+
+  const authUrl = new URL(salesforceDef.oauthConfig.authorizationUrl);
+  authUrl.searchParams.set('client_id', env.SALESFORCE_CLIENT_ID);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', salesforceDef.oauthConfig.scopes.join(' '));
+  authUrl.searchParams.set('redirect_uri', callbackUrl);
+  authUrl.searchParams.set('state', state);
+
+  return redirect(authUrl.toString());
+}
+
+export async function handleSalesforceOAuthCallback({ env, url, ctx }: RouteContext): Promise<Response> {
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  const error = url.searchParams.get('error');
+
+  if (error) return redirect(`${url.origin}/connections?error=oauth_denied`);
+  if (!code || !state) return redirect(`${url.origin}/connections?error=oauth_invalid`);
+
+  const stateData = await validateAndConsumeIntegrationOAuthState(env.SESSIONS, state);
+  if (!stateData || stateData.integration_type !== 'salesforce') {
+    return redirect(`${url.origin}/connections?error=oauth_state_invalid`);
+  }
+
+  if (!env.SALESFORCE_CLIENT_ID || !env.SALESFORCE_CLIENT_SECRET) {
+    return redirect(`${url.origin}/connections?error=oauth_config`);
+  }
+
+  try {
+    const callbackUrl = `${url.origin}/api/integrations/salesforce/callback`;
+
+    // Salesforce uses form-encoded POST for token exchange
+    const tokenRes = await fetch('https://login.salesforce.com/services/oauth2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: env.SALESFORCE_CLIENT_ID,
+        client_secret: env.SALESFORCE_CLIENT_SECRET,
+        code,
+        redirect_uri: callbackUrl,
+      }),
+    });
+
+    const tokenData = (await tokenRes.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      instance_url?: string;
+      id?: string;
+      token_type?: string;
+      issued_at?: string;
+      signature?: string;
+      scope?: string;
+      error?: string;
+      error_description?: string;
+    };
+
+    if (!tokenData.access_token) {
+      console.error('[salesforce-oauth] Token exchange failed:', tokenData.error, tokenData.error_description);
+      return redirect(`${url.origin}/connections?error=oauth_token_failed`);
+    }
+
+    // Re-validate workspace access before creating integration
+    const wsStub = getWorkspaceStub(env, stateData.workspace_id);
+    const wsInfo = await wsStub.getInfo();
+    if (!wsInfo || wsInfo.archived) {
+      return redirect(`${url.origin}/connections?error=workspace_not_found`);
+    }
+
+    const orgStub = getOrgStub(env, wsInfo.org_id);
+    if (!(await orgStub.isMember(stateData.user_id))) {
+      return redirect(`${url.origin}/connections?error=access_denied`);
+    }
+
+    const memberAccess = await wsStub.getMemberAccess(stateData.user_id);
+    if ((memberAccess?.access_level ?? 'full') !== 'full') {
+      return redirect(`${url.origin}/connections?error=access_denied`);
+    }
+
+    const credentials = {
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      instance_url: tokenData.instance_url,
+      token_type: tokenData.token_type,
+      user_id: tokenData.id, // Salesforce user ID URL
+      scope: tokenData.scope,
+    };
+
+    const encrypted = await encryptCredentials(credentials, env.INTEGRATION_SECRET_KEY);
+
+    // Extract org name from instance URL (e.g., https://myorg.salesforce.com -> myorg)
+    const instanceHost = tokenData.instance_url ? new URL(tokenData.instance_url).hostname : '';
+    const orgName = instanceHost.split('.')[0] || 'Salesforce';
+    const name = orgName.charAt(0).toUpperCase() + orgName.slice(1);
+    const integrationId = crypto.randomUUID();
+
+    // Store instance_url in config for API calls
+    const config = { instance_url: tokenData.instance_url };
+
+    await wsStub.createIntegration(
+      integrationId,
+      'salesforce',
+      name,
+      'saas',
+      'oauth2',
+      JSON.stringify(config),
+      encrypted,
+      stateData.user_id
+    );
+
+    // Push secrets to running container
+    ctx.waitUntil(
+      getWorkspaceContainer(env, stateData.workspace_id)
+        .refreshIntegrationEnvVars(stateData.workspace_id)
+        .catch(() => {})
+    );
+
+    // Sync secrets to all deployed workers in this workspace
+    ctx.waitUntil(
+      syncAllWorkspaceWorkerSecrets(env as unknown as CfApiProxyEnv, stateData.workspace_id, wsInfo.org_id)
+        .catch((err) => console.error('[salesforce-oauth] Failed to sync secrets to workers:', err))
+    );
+
+    // Complete MCP request if this OAuth flow was initiated from chat
+    if (stateData.mcp_request_id && stateData.mcp_do_id) {
+      await completeMcpConnectionSetup(env, stateData, integrationId, 'salesforce', name);
+    }
+
+    const safePath = sanitizeRedirectPath(stateData.redirect_url);
+    const redirectUrl = new URL(safePath, url.origin);
+    redirectUrl.searchParams.set('success', 'salesforce_connected');
+    return redirect(redirectUrl.toString());
+  } catch (err) {
+    console.error('[salesforce-oauth] OAuth flow failed:', err);
     return redirect(`${url.origin}/connections?error=oauth_failed`);
   }
 }

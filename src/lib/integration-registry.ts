@@ -323,7 +323,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     authMethod: 'api_key',
     configSchema: [],
     credentialSchema: [
-      { name: 'api_key', label: 'Personal Access Token', type: 'password', required: true, placeholder: 'ghp_...' },
+      {
+        name: 'api_key',
+        label: 'Personal Access Token',
+        type: 'password',
+        required: true,
+        placeholder: 'ghp_... or github_pat_...',
+        description: 'Create at github.com/settings/tokens (classic or fine-grained)',
+      },
     ],
   },
 
@@ -335,7 +342,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     authMethod: 'api_key',
     configSchema: [],
     credentialSchema: [
-      { name: 'api_key', label: 'API Key', type: 'password', required: true },
+      {
+        name: 'api_key',
+        label: 'API Key',
+        type: 'password',
+        required: true,
+        placeholder: 'lin_api_...',
+        description: 'Create at linear.app/settings/api',
+      },
     ],
   },
 
@@ -374,12 +388,18 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
         type: 'string',
         required: true,
         placeholder: 'us21',
-        description:
-          'The suffix after the dash in your API key (e.g., key abc123-us21 means data center us21). API base: https://{dc}.api.mailchimp.com/3.0',
+        description: 'The suffix after the dash in your API key (e.g., us21 from key-us21)',
       },
     ],
     credentialSchema: [
-      { name: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: 'abc123def-us21' },
+      {
+        name: 'api_key',
+        label: 'API Key',
+        type: 'password',
+        required: true,
+        placeholder: 'xxxxxxxx-us21',
+        description: 'Create at mailchimp.com/account/api',
+      },
     ],
   },
 
@@ -447,7 +467,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     authMethod: 'api_key',
     configSchema: [],
     credentialSchema: [
-      { name: 'api_key', label: 'Personal Access Token', type: 'password', required: true, placeholder: 'tfp_...' },
+      {
+        name: 'api_key',
+        label: 'Personal Access Token',
+        type: 'password',
+        required: true,
+        placeholder: 'tfp_...',
+        description: 'Create at typeform.com/developers/get-started/personal-access-token',
+      },
     ],
   },
 
@@ -501,7 +528,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     authMethod: 'api_key',
     configSchema: [],
     credentialSchema: [
-      { name: 'api_key', label: 'Personal Access Token', type: 'password', required: true, placeholder: 'pat...' },
+      {
+        name: 'api_key',
+        label: 'Personal Access Token',
+        type: 'password',
+        required: true,
+        placeholder: 'pat...',
+        description: 'Create at airtable.com/create/tokens',
+      },
     ],
   },
 
@@ -513,7 +547,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     authMethod: 'api_key',
     configSchema: [],
     credentialSchema: [
-      { name: 'api_key', label: 'Private App Token', type: 'password', required: true },
+      {
+        name: 'api_key',
+        label: 'Private App Access Token',
+        type: 'password',
+        required: true,
+        placeholder: 'pat-...',
+        description: 'Create a private app at app.hubspot.com/private-apps',
+      },
     ],
   },
 
@@ -568,6 +609,670 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
       { name: 'service_account_json', label: 'Service Account JSON', type: 'password', required: true },
     ],
     // Requires Google auth.
+  },
+
+  neon: {
+    type: 'neon',
+    displayName: 'Neon',
+    description: 'Serverless Postgres with branching',
+    category: 'databases',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'project_id',
+        label: 'Project ID',
+        type: 'string',
+        required: false,
+        placeholder: 'project-abc123',
+        description: 'Found in your Neon project dashboard',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'API Key',
+        type: 'password',
+        required: true,
+        placeholder: 'neon_...',
+        description: 'Create at Account Settings > API Keys',
+      },
+      {
+        name: 'connection_string',
+        label: 'Connection String',
+        type: 'password',
+        required: false,
+        placeholder: 'postgresql://user:pass@ep-xxx.us-east-2.aws.neon.tech/neondb',
+        description: 'Direct database connection string (optional)',
+      },
+    ],
+  },
+
+  snowflake: {
+    type: 'snowflake',
+    displayName: 'Snowflake',
+    description: 'Cloud data warehouse',
+    category: 'databases',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'account',
+        label: 'Account Identifier',
+        type: 'string',
+        required: true,
+        placeholder: 'xy12345.us-east-1',
+        description: 'Your Snowflake account identifier (e.g., xy12345.us-east-1)',
+      },
+      { name: 'warehouse', label: 'Warehouse', type: 'string', required: false, placeholder: 'COMPUTE_WH' },
+      { name: 'database', label: 'Database', type: 'string', required: false },
+      { name: 'schema', label: 'Schema', type: 'string', required: false, default: 'PUBLIC' },
+    ],
+    credentialSchema: [
+      { name: 'username', label: 'Username', type: 'text', required: true },
+      { name: 'password', label: 'Password', type: 'password', required: true },
+    ],
+  },
+
+  clickhouse: {
+    type: 'clickhouse',
+    displayName: 'ClickHouse',
+    description: 'Fast analytics database',
+    category: 'databases',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'host',
+        label: 'Host',
+        type: 'string',
+        required: true,
+        placeholder: 'abc123.clickhouse.cloud',
+        description: 'ClickHouse Cloud host or self-hosted URL',
+      },
+      { name: 'port', label: 'Port', type: 'number', required: false, default: 8443 },
+      { name: 'database', label: 'Database', type: 'string', required: false, default: 'default' },
+    ],
+    credentialSchema: [
+      { name: 'username', label: 'Username', type: 'text', required: true, placeholder: 'default' },
+      { name: 'password', label: 'Password', type: 'password', required: true },
+    ],
+  },
+
+  planetscale: {
+    type: 'planetscale',
+    displayName: 'PlanetScale',
+    description: 'Serverless MySQL platform',
+    category: 'databases',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'organization',
+        label: 'Organization',
+        type: 'string',
+        required: false,
+        placeholder: 'my-org',
+      },
+      {
+        name: 'database',
+        label: 'Database',
+        type: 'string',
+        required: false,
+        placeholder: 'my-database',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Service Token ID',
+        type: 'text',
+        required: true,
+        placeholder: 'pscale_tkn_...',
+        description: 'Create at Organization Settings > Service Tokens',
+      },
+      {
+        name: 'api_secret',
+        label: 'Service Token Secret',
+        type: 'password',
+        required: true,
+      },
+      {
+        name: 'connection_string',
+        label: 'Connection String',
+        type: 'password',
+        required: false,
+        placeholder: 'mysql://user:pass@aws.connect.psdb.cloud/db?sslaccept=strict',
+        description: 'Direct database connection string (optional)',
+      },
+    ],
+  },
+
+  turso: {
+    type: 'turso',
+    displayName: 'Turso',
+    description: 'Edge SQLite database',
+    category: 'databases',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'database_url',
+        label: 'Database URL',
+        type: 'string',
+        required: true,
+        placeholder: 'libsql://db-org.turso.io',
+        description: 'Your Turso database URL',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Auth Token',
+        type: 'password',
+        required: true,
+        description: 'Create with: turso db tokens create <db-name>',
+      },
+    ],
+  },
+
+  mongodb: {
+    type: 'mongodb',
+    displayName: 'MongoDB',
+    description: 'Document database',
+    category: 'databases',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'cluster_url',
+        label: 'Cluster URL',
+        type: 'string',
+        required: false,
+        placeholder: 'cluster0.abc123.mongodb.net',
+        description: 'MongoDB Atlas cluster URL (without protocol)',
+      },
+      { name: 'database', label: 'Database', type: 'string', required: false },
+    ],
+    credentialSchema: [
+      {
+        name: 'connection_string',
+        label: 'Connection String',
+        type: 'password',
+        required: true,
+        placeholder: 'mongodb+srv://user:pass@cluster0.abc123.mongodb.net/mydb',
+        description: 'Full MongoDB connection string',
+      },
+    ],
+  },
+
+  redis: {
+    type: 'redis',
+    displayName: 'Redis',
+    description: 'In-memory data store',
+    category: 'databases',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'host',
+        label: 'Host',
+        type: 'string',
+        required: false,
+        placeholder: 'redis-12345.c1.us-east-1-2.ec2.cloud.redislabs.com',
+      },
+      { name: 'port', label: 'Port', type: 'number', required: false, default: 6379 },
+      { name: 'database', label: 'Database Number', type: 'number', required: false, default: 0 },
+    ],
+    credentialSchema: [
+      {
+        name: 'connection_string',
+        label: 'Connection String',
+        type: 'password',
+        required: true,
+        placeholder: 'redis://user:pass@host:6379/0',
+        description: 'Redis connection URL (redis:// or rediss:// for TLS)',
+      },
+    ],
+  },
+
+  // ============================================
+  // ADDITIONAL SAAS INTEGRATIONS
+  // ============================================
+
+  jira: {
+    type: 'jira',
+    displayName: 'Jira',
+    description: 'Issue tracking and project management',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'domain',
+        label: 'Atlassian Domain',
+        type: 'string',
+        required: true,
+        placeholder: 'your-company.atlassian.net',
+        description: 'Your Atlassian cloud domain',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'email',
+        label: 'Email',
+        type: 'text',
+        required: true,
+        description: 'Email address for your Atlassian account',
+      },
+      {
+        name: 'api_key',
+        label: 'API Token',
+        type: 'password',
+        required: true,
+        description: 'Create at id.atlassian.com/manage-profile/security/api-tokens',
+      },
+    ],
+  },
+
+  asana: {
+    type: 'asana',
+    displayName: 'Asana',
+    description: 'Project and task management',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Personal Access Token',
+        type: 'password',
+        required: true,
+        description: 'Create at app.asana.com/0/my-apps',
+      },
+    ],
+  },
+
+  figma: {
+    type: 'figma',
+    displayName: 'Figma',
+    description: 'Design files and collaboration',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Personal Access Token',
+        type: 'password',
+        required: true,
+        description: 'Create at figma.com/developers/api#access-tokens',
+      },
+    ],
+  },
+
+  intercom: {
+    type: 'intercom',
+    displayName: 'Intercom',
+    description: 'Customer messaging platform',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Access Token',
+        type: 'password',
+        required: true,
+        description: 'Create in Developer Hub > Your App > Authentication',
+      },
+    ],
+  },
+
+  zendesk: {
+    type: 'zendesk',
+    displayName: 'Zendesk',
+    description: 'Customer support platform',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'subdomain',
+        label: 'Subdomain',
+        type: 'string',
+        required: true,
+        placeholder: 'your-company',
+        description: 'Your Zendesk subdomain (from your-company.zendesk.com)',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'email',
+        label: 'Email',
+        type: 'text',
+        required: true,
+        description: 'Email address for your Zendesk account',
+      },
+      {
+        name: 'api_key',
+        label: 'API Token',
+        type: 'password',
+        required: true,
+        description: 'Create at Admin Center > Apps and integrations > Zendesk API',
+      },
+    ],
+  },
+
+  segment: {
+    type: 'segment',
+    displayName: 'Segment',
+    description: 'Customer data platform',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Write Key',
+        type: 'password',
+        required: true,
+        description: 'Source write key from Segment dashboard',
+      },
+    ],
+  },
+
+  amplitude: {
+    type: 'amplitude',
+    displayName: 'Amplitude',
+    description: 'Product analytics platform',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'region',
+        label: 'Region',
+        type: 'select',
+        required: true,
+        default: 'us',
+        options: [
+          { value: 'us', label: 'US (amplitude.com)' },
+          { value: 'eu', label: 'EU (eu.amplitude.com)' },
+        ],
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'API Key',
+        type: 'password',
+        required: true,
+        description: 'Project API key from Settings > Projects',
+      },
+      {
+        name: 'api_secret',
+        label: 'Secret Key',
+        type: 'password',
+        required: true,
+        description: 'Project secret key for server-side API access',
+      },
+    ],
+  },
+
+  // ============================================
+  // ADDITIONAL COMMUNICATION INTEGRATIONS
+  // ============================================
+
+  discord: {
+    type: 'discord',
+    displayName: 'Discord',
+    description: 'Discord bot and webhook integration',
+    category: 'communication',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'application_id',
+        label: 'Application ID',
+        type: 'string',
+        required: false,
+        description: 'Discord application ID (optional, for bot commands)',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Bot Token',
+        type: 'password',
+        required: true,
+        description: 'Bot token from discord.com/developers/applications',
+      },
+    ],
+  },
+
+  teams: {
+    type: 'teams',
+    displayName: 'Microsoft Teams',
+    description: 'Microsoft Teams messaging',
+    category: 'communication',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'tenant_id',
+        label: 'Tenant ID',
+        type: 'string',
+        required: true,
+        description: 'Azure AD tenant ID',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'client_id',
+        label: 'Client ID',
+        type: 'text',
+        required: true,
+        description: 'Azure AD app registration client ID',
+      },
+      {
+        name: 'client_secret',
+        label: 'Client Secret',
+        type: 'password',
+        required: true,
+        description: 'Azure AD app registration client secret',
+      },
+    ],
+  },
+
+  // ============================================
+  // ADDITIONAL CLOUD PROVIDER INTEGRATIONS
+  // ============================================
+
+  gcp: {
+    type: 'gcp',
+    displayName: 'Google Cloud Platform',
+    description: 'Connect to GCP services',
+    category: 'cloud_providers',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'project_id',
+        label: 'Project ID',
+        type: 'string',
+        required: true,
+        placeholder: 'my-project-123',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'service_account_json',
+        label: 'Service Account JSON',
+        type: 'password',
+        required: true,
+        description: 'Full JSON contents of your service account key file',
+      },
+    ],
+  },
+
+  azure: {
+    type: 'azure',
+    displayName: 'Microsoft Azure',
+    description: 'Connect to Azure services',
+    category: 'cloud_providers',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'tenant_id',
+        label: 'Tenant ID',
+        type: 'string',
+        required: true,
+        description: 'Azure AD tenant ID',
+      },
+      {
+        name: 'subscription_id',
+        label: 'Subscription ID',
+        type: 'string',
+        required: false,
+        description: 'Azure subscription ID (optional)',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'client_id',
+        label: 'Client ID',
+        type: 'text',
+        required: true,
+        description: 'Azure AD app registration client ID',
+      },
+      {
+        name: 'client_secret',
+        label: 'Client Secret',
+        type: 'password',
+        required: true,
+        description: 'Azure AD app registration client secret',
+      },
+    ],
+  },
+
+  vercel: {
+    type: 'vercel',
+    displayName: 'Vercel',
+    description: 'Vercel deployment platform',
+    category: 'cloud_providers',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'team_id',
+        label: 'Team ID',
+        type: 'string',
+        required: false,
+        placeholder: 'team_xxx',
+        description: 'Vercel team ID (leave empty for personal account)',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Access Token',
+        type: 'password',
+        required: true,
+        description: 'Create at vercel.com/account/tokens',
+      },
+    ],
+  },
+
+  netlify: {
+    type: 'netlify',
+    displayName: 'Netlify',
+    description: 'Netlify deployment platform',
+    category: 'cloud_providers',
+    authMethod: 'api_key',
+    configSchema: [],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Personal Access Token',
+        type: 'password',
+        required: true,
+        description: 'Create at app.netlify.com/user/applications#personal-access-tokens',
+      },
+    ],
+  },
+
+  cloudflare: {
+    type: 'cloudflare',
+    displayName: 'Cloudflare',
+    description: 'Cloudflare API access',
+    category: 'cloud_providers',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'account_id',
+        label: 'Account ID',
+        type: 'string',
+        required: false,
+        description: 'Cloudflare account ID (found in dashboard URL)',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'API Token',
+        type: 'password',
+        required: true,
+        description: 'Create at dash.cloudflare.com/profile/api-tokens',
+      },
+    ],
+  },
+
+  // ============================================
+  // PAYMENTS / COMMERCE INTEGRATIONS
+  // ============================================
+
+  shopify: {
+    type: 'shopify',
+    displayName: 'Shopify',
+    description: 'E-commerce platform',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'shop_domain',
+        label: 'Shop Domain',
+        type: 'string',
+        required: true,
+        placeholder: 'your-store.myshopify.com',
+        description: 'Your Shopify store domain',
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Admin API Access Token',
+        type: 'password',
+        required: true,
+        description: 'Create a custom app at Settings > Apps and sales channels > Develop apps',
+      },
+    ],
+  },
+
+  square: {
+    type: 'square',
+    displayName: 'Square',
+    description: 'Payments and commerce',
+    category: 'saas',
+    authMethod: 'api_key',
+    configSchema: [
+      {
+        name: 'environment',
+        label: 'Environment',
+        type: 'select',
+        required: true,
+        default: 'production',
+        options: [
+          { value: 'sandbox', label: 'Sandbox' },
+          { value: 'production', label: 'Production' },
+        ],
+      },
+    ],
+    credentialSchema: [
+      {
+        name: 'api_key',
+        label: 'Access Token',
+        type: 'password',
+        required: true,
+        description: 'Create at developer.squareup.com/apps',
+      },
+    ],
   },
 
   // ============================================
