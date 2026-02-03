@@ -58,25 +58,25 @@ RUN PIP_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --break-system-packages 
 
 # Layer 5: Template files (Yarn PnP - global cache on JuiceFS)
 # Templates use Yarn PnP with global cache at ~/.yarn-cache (persisted on JuiceFS)
-COPY --chmod=755 sandbox/skills/deploy-software/templates ./skills/deploy-software/templates
+COPY --chmod=755 sandbox/skills/developing-software/templates ./skills/developing-software/templates
 
 # Layer 6: App code (changes frequently)
 COPY --chmod=755 sandbox/entrypoint.sh ./
 COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
-COPY --chmod=755 sandbox/skills/deploy-software/scripts ./skills/deploy-software/scripts
-COPY --chmod=644 sandbox/skills/deploy-software/SKILL.md sandbox/skills/deploy-software/AI-APPS.md ./skills/deploy-software/
+COPY --chmod=755 sandbox/skills/developing-software/scripts ./skills/developing-software/scripts
+COPY --chmod=644 sandbox/skills/developing-software/SKILL.md sandbox/skills/developing-software/AI-APPS.md ./skills/developing-software/
 
 # Install skills to /etc/claude-code/skills (system-level, no per-container copy needed)
-RUN mkdir -p /etc/claude-code/skills/deploy-software \
+RUN mkdir -p /etc/claude-code/skills/developing-software \
              /etc/claude-code/skills/file-sharing \
              /etc/claude-code/skills/frontend-design
-COPY --chmod=644 sandbox/skills/deploy-software/SKILL.md sandbox/skills/deploy-software/AI-APPS.md /etc/claude-code/skills/deploy-software/
+COPY --chmod=644 sandbox/skills/developing-software/SKILL.md sandbox/skills/developing-software/AI-APPS.md /etc/claude-code/skills/developing-software/
 COPY --chmod=644 sandbox/skills/file-sharing/SKILL.md /etc/claude-code/skills/file-sharing/
 COPY --chmod=644 sandbox/skills/frontend-design/SKILL.md /etc/claude-code/skills/frontend-design/
 RUN chmod -R 755 /etc/claude-code && chown -R root:root /etc/claude-code
 
 # Layer 7: CLI tools (scaffolds projects from templates)
-RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker
+RUN ln -s /app/skills/developing-software/scripts/create-worker.mjs /usr/local/bin/create-worker
 
 WORKDIR /home/claude
 ENTRYPOINT ["/app/entrypoint.sh"]
