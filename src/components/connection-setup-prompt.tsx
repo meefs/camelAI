@@ -21,9 +21,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { AlertCircle, ExternalLink, Plug } from 'lucide-react';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
+import { SnowflakeCredentialsForm } from '@/components/snowflake-credentials-form';
 
 export interface ConnectionSetupPromptData {
   requestId: string;
@@ -242,7 +242,7 @@ export function ConnectionSetupPrompt({
         </DialogHeader>
 
         <form onSubmit={handleSubmit}>
-          <ScrollArea className="max-h-[50vh] pr-4">
+          <div className="max-h-[60vh] overflow-y-auto pr-4">
             <div className="grid gap-4 py-2">
               {error && (
                 <Alert variant="destructive">
@@ -349,7 +349,17 @@ export function ConnectionSetupPrompt({
                   <div className="mt-2 border-t pt-4">
                     <p className="mb-3 text-sm font-medium">Credentials</p>
                   </div>
-                  {typeDef.credentialSchema.map((field) => (
+
+                  {/* Snowflake credentials with key generation */}
+                  {data.integrationType === 'snowflake' && (
+                    <SnowflakeCredentialsForm
+                      credentials={credentials}
+                      onCredentialsChange={updateCredentials}
+                    />
+                  )}
+
+                  {/* Show credential fields for non-Snowflake integrations */}
+                  {data.integrationType !== 'snowflake' && typeDef.credentialSchema.map((field) => (
                     <div key={field.name} className="grid gap-1.5">
                       <Label htmlFor={`cred-${field.name}`}>
                         {field.label}
@@ -387,7 +397,7 @@ export function ConnectionSetupPrompt({
                 </Alert>
               )}
             </div>
-          </ScrollArea>
+          </div>
 
           <DialogFooter className="mt-4">
             <Button type="button" variant="outline" onClick={handleCancel}>

@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -134,7 +135,8 @@ export function EditConnectionDialog({
         </DialogHeader>
 
         <form onSubmit={handleSubmit}>
-          <div className="grid gap-4 py-4">
+          <div className="max-h-[60vh] overflow-y-auto pr-4">
+            <div className="grid gap-4 py-2">
             {error && (
               <Alert variant="destructive">
                 <AlertCircle className="size-4" />
@@ -233,16 +235,30 @@ export function EditConnectionDialog({
                             <span className="ml-1 text-red-400">*</span>
                           )}
                         </Label>
-                        <Input
-                          id={`edit-cred-${field.name}`}
-                          type={field.type === 'password' ? 'password' : 'text'}
-                          value={(credentials[field.name] as string) || ''}
-                          onChange={(e) =>
-                            handleCredentialChange(field.name, e.target.value)
-                          }
-                          placeholder={field.placeholder}
-                          required={shouldUpdateCredentials && field.required}
-                        />
+                        {field.type === 'textarea' ? (
+                          <Textarea
+                            id={`edit-cred-${field.name}`}
+                            value={(credentials[field.name] as string) || ''}
+                            onChange={(e) =>
+                              handleCredentialChange(field.name, e.target.value)
+                            }
+                            placeholder={field.placeholder}
+                            required={shouldUpdateCredentials && field.required}
+                            rows={6}
+                            className="font-mono text-xs"
+                          />
+                        ) : (
+                          <Input
+                            id={`edit-cred-${field.name}`}
+                            type={field.type === 'password' ? 'password' : 'text'}
+                            value={(credentials[field.name] as string) || ''}
+                            onChange={(e) =>
+                              handleCredentialChange(field.name, e.target.value)
+                            }
+                            placeholder={field.placeholder}
+                            required={shouldUpdateCredentials && field.required}
+                          />
+                        )}
                         {field.description && (
                           <p className="text-xs text-muted-foreground">{field.description}</p>
                         )}
@@ -252,9 +268,10 @@ export function EditConnectionDialog({
                 </div>
               </>
             )}
+            </div>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="mt-4">
             <Button
               type="button"
               variant="outline"

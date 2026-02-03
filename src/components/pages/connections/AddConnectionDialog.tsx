@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -23,6 +24,7 @@ import {
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle, ExternalLink } from 'lucide-react';
+import { SnowflakeCredentialsForm } from '@/components/snowflake-credentials-form';
 
 interface AddConnectionDialogProps {
   open: boolean;
@@ -132,7 +134,8 @@ export function AddConnectionDialog({
         </DialogHeader>
 
         <form onSubmit={handleSubmit}>
-          <div className="grid gap-4 py-4">
+          <div className="max-h-[60vh] overflow-y-auto pr-4">
+            <div className="grid gap-4 py-2">
             {error && (
               <Alert variant="destructive">
                 <AlertCircle className="size-4" />
@@ -206,20 +209,42 @@ export function AddConnectionDialog({
                     Credentials
                   </p>
                 </div>
-                {typeDef.credentialSchema.map((field) => (
+
+                {/* Snowflake credentials with key generation */}
+                {connectionType === 'snowflake' && (
+                  <SnowflakeCredentialsForm
+                    credentials={credentials}
+                    onCredentialsChange={updateCredentials}
+                  />
+                )}
+
+                {/* Show credential fields for non-Snowflake integrations */}
+                {connectionType !== 'snowflake' && typeDef.credentialSchema.map((field) => (
                   <div key={field.name} className="grid gap-1.5">
                     <Label htmlFor={`cred-${field.name}`}>
                       {field.label}
                       {field.required && <span className="ml-1 text-red-400">*</span>}
                     </Label>
-                    <Input
-                      id={`cred-${field.name}`}
-                      type={field.type === 'password' ? 'password' : 'text'}
-                      value={(credentials[field.name] as string) || ''}
-                      onChange={(e) => updateCredentials(field.name, e.target.value)}
-                      placeholder={field.placeholder}
-                      required={field.required}
-                    />
+                    {field.type === 'textarea' ? (
+                      <Textarea
+                        id={`cred-${field.name}`}
+                        value={(credentials[field.name] as string) || ''}
+                        onChange={(e) => updateCredentials(field.name, e.target.value)}
+                        placeholder={field.placeholder}
+                        required={field.required}
+                        rows={6}
+                        className="font-mono text-xs"
+                      />
+                    ) : (
+                      <Input
+                        id={`cred-${field.name}`}
+                        type={field.type === 'password' ? 'password' : 'text'}
+                        value={(credentials[field.name] as string) || ''}
+                        onChange={(e) => updateCredentials(field.name, e.target.value)}
+                        placeholder={field.placeholder}
+                        required={field.required}
+                      />
+                    )}
                     {field.description && (
                       <p className="text-xs text-muted-foreground">{field.description}</p>
                     )}
@@ -249,9 +274,10 @@ export function AddConnectionDialog({
                   </AlertDescription>
                 </Alert>
               )}
+            </div>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="mt-4">
             <Button
               type="button"
               variant="outline"
