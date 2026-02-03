@@ -319,6 +319,7 @@ interface MessageBubbleProps {
   showStreamingIndicator?: boolean;
   skillSheets?: Map<string, string>;
   hostname?: string;
+  orgSlug?: string;
 }
 
 export function MessageBubble({
@@ -328,6 +329,7 @@ export function MessageBubble({
   showStreamingIndicator = false,
   skillSheets,
   hostname,
+  orgSlug,
 }: MessageBubbleProps) {
   if (message.isMeta || message.sourceToolUseID) {
     return null;
@@ -400,6 +402,7 @@ export function MessageBubble({
             description={bugReport.description}
             timestamp={message.created_at}
             hostname={hostname}
+            orgSlug={orgSlug}
           />
           <div
             className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"

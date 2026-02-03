@@ -70,6 +70,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const safeOrg = {
     id: org.id,
     name: org.name,
+    slug: org.slug,
     created_by: org.created_by,
     created_at: org.created_at,
     billing_status: org.billing_status,

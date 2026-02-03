@@ -2,42 +2,53 @@
  * Response helper functions
  */
 
-import { SESSION_COOKIE, LEGACY_SESSION_COOKIE, SESSION_HEADER } from '../types.js';
+import {
+  SESSION_COOKIE,
+  LEGACY_SESSION_COOKIE,
+  SESSION_HEADER,
+  SESSION_MAX_AGE,
+  getCookieDomain,
+  parseCookie,
+  getSessionIdFromRequest,
+} from '../cookies.js';
 
-export function getCookie(header: string | null, name: string): string | null {
-  if (!header) return null;
-  for (const part of header.split(';')) {
-    const [k, ...rest] = part.trim().split('=');
-    if (k === name) return rest.join('=') || '';
-  }
-  return null;
+// Re-export for backwards compatibility
+export { parseCookie as getCookie, getSessionIdFromRequest as getSessionId };
+
+/**
+ * Build a Set-Cookie header (simple version for OAuth redirect).
+ * Uses hostname string directly since we don't have the full request in redirect context.
+ */
+function buildSessionCookie(sessionId: string, secure: boolean, hostname?: string): string {
+  const domain = getCookieDomain(hostname);
+  const parts = [
+    `${SESSION_COOKIE}=${sessionId}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${SESSION_MAX_AGE}`,
+  ];
+  if (secure) parts.push('Secure');
+  if (domain) parts.push(`Domain=${domain}`);
+  return parts.join('; ');
 }
 
-export function getSessionId(req: Request): string | null {
-  return (
-    req.headers.get(SESSION_HEADER) ||
-    getCookie(req.headers.get('Cookie'), SESSION_COOKIE) ||
-    getCookie(req.headers.get('Cookie'), LEGACY_SESSION_COOKIE)
-  );
+function buildDeleteCookie(name: string, secure: boolean, hostname?: string): string {
+  const domain = getCookieDomain(hostname);
+  const parts = [`${name}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+  if (secure) parts.push('Secure');
+  if (domain) parts.push(`Domain=${domain}`);
+  return parts.join('; ');
 }
 
-function sessionCookie(id: string, secure: boolean): string {
-  const opts = [`${SESSION_COOKIE}=${id}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=2592000'];
-  if (secure) opts.push('Secure');
-  return opts.join('; ');
-}
-
-function deleteCookie(name: string, secure: boolean): string {
-  const opts = [`${name}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
-  if (secure) opts.push('Secure');
-  return opts.join('; ');
-}
-
-export function redirect(url: string, sessionId?: string, secure = true): Response {
+/**
+ * Create a redirect response, optionally setting session cookie.
+ */
+export function redirect(url: string, sessionId?: string, secure = true, hostname?: string): Response {
   const headers = new Headers({ Location: url });
   if (sessionId) {
-    headers.append('Set-Cookie', sessionCookie(sessionId, secure));
-    headers.append('Set-Cookie', deleteCookie(LEGACY_SESSION_COOKIE, secure));
+    headers.append('Set-Cookie', buildSessionCookie(sessionId, secure, hostname));
+    headers.append('Set-Cookie', buildDeleteCookie(LEGACY_SESSION_COOKIE, secure, hostname));
   }
   return new Response(null, { status: 302, headers });
 }

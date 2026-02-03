@@ -26,6 +26,23 @@ function isSuperuserEmail(email: string | null): boolean {
   return SUPERUSER_EMAILS.has(email.toLowerCase());
 }
 
+/**
+ * Generate a URL-safe slug for an organization.
+ * Format: {normalized-name}-{id-prefix}
+ * e.g., "Acme Corp" with ID "85b12345..." becomes "acme-corp-85b"
+ */
+function generateOrgSlug(name: string, idPrefix: string): string {
+  const base = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 20) || 'org';
+  return `${base}-${idPrefix}`;
+}
+
 
 export interface UserOrg {
   org_id: string;
@@ -889,6 +906,23 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.sql.exec('UPDATE _schema_version SET version = 11');
     }
 
+    if (version < 12) {
+      // V12: Add slug to organization
+      const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
+      if (rows.length > 0) {
+        const info = JSON.parse((rows[0] as { value: string }).value) as Organization;
+        if (!info.slug) {
+          info.slug = generateOrgSlug(info.name, info.id.slice(0, 3));
+          this.sql.exec(
+            'INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)',
+            'data',
+            JSON.stringify(info)
+          );
+        }
+      }
+      this.sql.exec('UPDATE _schema_version SET version = 12');
+    }
+
     this.workerScriptsHasPreviewColumns = this.detectWorkerScriptPreviewColumns();
     if (!this.workerScriptsHasPreviewColumns) {
       console.warn('[OrgDO] worker_scripts missing preview columns - preview updates will be skipped');
@@ -963,10 +997,23 @@ export class OrgDO extends DurableObject<DOEnv> {
       info.archived_by = null;
       changed = true;
     }
+    if (!info.slug) {
+      info.slug = generateOrgSlug(info.name, info.id.slice(0, 3));
+      changed = true;
+    }
     if (changed) {
       await this.setInfo(info);
     }
     return info;
+  }
+
+  /**
+   * Get just the org slug (for contexts where we only need the slug).
+   * Falls back to generating from name if not stored.
+   */
+  async getSlug(): Promise<string | null> {
+    const info = await this.getInfo();
+    return info?.slug ?? null;
   }
 
   async setInfo(info: Organization): Promise<void> {
@@ -979,9 +1026,11 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async createOrg(id: string, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
     const now = Date.now();
+    const slug = generateOrgSlug(name, id.slice(0, 3));
     const info: Organization = {
       id,
       name,
+      slug,
       created_at: now,
       created_by: createdBy,
       billing_status: 'free',
@@ -1316,9 +1365,17 @@ export class OrgDO extends DurableObject<DOEnv> {
     const existing = await this.getWorkerScript(scriptName);
 
     if (existing) {
+      // Check if script belongs to a different workspace - prevent name collisions
+      if (existing.workspace_id !== workspaceId) {
+        throw new Error(
+          `Script name "${scriptName}" is already in use by another workspace in this organization. ` +
+          `Please choose a different name.`
+        );
+      }
+
+      // Same workspace - update the script (redeploy)
       this.sql.exec(
-        'UPDATE worker_scripts SET workspace_id = ?, updated_at = ?, config_path = ? WHERE script_name = ?',
-        workspaceId,
+        'UPDATE worker_scripts SET updated_at = ?, config_path = ? WHERE script_name = ?',
         now,
         configPath ?? null,
         scriptName
@@ -1326,7 +1383,6 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.log('worker_script_updated', createdBy, scriptName, { workspace_id: workspaceId, config_path: configPath });
       return {
         ...existing,
-        workspace_id: workspaceId,
         updated_at: now,
         config_path: configPath ?? existing.config_path,
       };

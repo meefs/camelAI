@@ -714,18 +714,46 @@ export interface WorkerScriptAccess {
   is_public: boolean;
 }
 
-export async function getWorkerAccessInfo(env: AuthEnv, scriptName: string): Promise<WorkerScriptAccess | null> {
-  // Look up from denormalized global index (single KV read, no DO query)
-  const data = await env.APP_KV.get(`script_org:${scriptName}`);
-  if (!data) return null;
+// KV key prefixes
+const SCRIPT_PREFIX = 'script:';
+const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
 
-  const { org_id, is_public } = JSON.parse(data) as { org_id: string; is_public: boolean };
-  return {
-    script_name: scriptName,
-    workspace_id: '', // Not needed for access check, avoids DO lookup
-    org_id,
-    is_public,
-  };
+/**
+ * Get worker access info by dispatch script name (org-slug prefixed).
+ * Tries new format first, falls back to legacy.
+ */
+export async function getWorkerAccessInfo(
+  env: AuthEnv,
+  dispatchScriptName: string,
+  legacyScriptName?: string
+): Promise<WorkerScriptAccess | null> {
+  // Try new format first: script:{org-slug}--{script-name}
+  let data = await env.APP_KV.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
+  if (data) {
+    const { org_id, is_public } = JSON.parse(data) as { org_id: string; is_public: boolean };
+    return {
+      script_name: dispatchScriptName,
+      workspace_id: '', // Not needed for access check, avoids DO lookup
+      org_id,
+      is_public,
+    };
+  }
+
+  // Fall back to legacy format: script_org:{script-name}
+  if (legacyScriptName) {
+    data = await env.APP_KV.get(`${SCRIPT_ORG_PREFIX_LEGACY}${legacyScriptName}`);
+    if (data) {
+      const { org_id, is_public } = JSON.parse(data) as { org_id: string; is_public: boolean };
+      return {
+        script_name: legacyScriptName,
+        workspace_id: '', // Not needed for access check, avoids DO lookup
+        org_id,
+        is_public,
+      };
+    }
+  }
+
+  return null;
 }
 
 export interface WorkerScript {
@@ -767,8 +795,16 @@ export async function deleteWorkerScript(
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const result = await stub.deleteWorkerScript(scriptName, actorId);
   if (result) {
-    // Remove from global script→org index
-    await env.APP_KV.delete(`script_org:${scriptName}`);
+    // Get org slug to build dispatch script name
+    const orgInfo = await stub.getInfo();
+    const orgSlug = orgInfo?.slug;
+    if (orgSlug) {
+      const dispatchScriptName = `${orgSlug}--${scriptName}`;
+      // Remove from new format KV index
+      await env.APP_KV.delete(`${SCRIPT_PREFIX}${dispatchScriptName}`);
+    }
+    // Also remove legacy format for backwards compatibility
+    await env.APP_KV.delete(`${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`);
   }
   return result;
 }
@@ -783,9 +819,20 @@ export async function setWorkerScriptPublic(
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const script = await stub.setWorkerScriptPublic(scriptName, isPublic, actorId);
   if (script) {
-    // Update the denormalized KV index
+    // Get org slug to build dispatch script name
+    const orgInfo = await stub.getInfo();
+    const orgSlug = orgInfo?.slug;
+    if (orgSlug) {
+      const dispatchScriptName = `${orgSlug}--${scriptName}`;
+      // Update the new format KV index
+      await env.APP_KV.put(
+        `${SCRIPT_PREFIX}${dispatchScriptName}`,
+        JSON.stringify({ org_id: orgId, org_slug: orgSlug, is_public: script.is_public })
+      );
+    }
+    // Also update legacy format for backwards compatibility
     await env.APP_KV.put(
-      `script_org:${scriptName}`,
+      `${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`,
       JSON.stringify({ org_id: orgId, is_public: script.is_public })
     );
   }

@@ -28,7 +28,11 @@ const DISPATCH_SCRIPT_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatc
 const DISPATCH_SCRIPT_BASE = /^\/client\/v4\/accounts\/([^/]+)\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)$/;
 const DISPATCH_SCRIPT_ANY = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/([^/]+)(?:\/|$)/;
 const ASSETS_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/;
-const SCRIPT_ORG_PREFIX = 'script_org:';
+
+// Legacy prefix for script ownership (being phased out)
+const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
+// New prefix with org-slug namespacing: script:{org-slug}--{script-name}
+const SCRIPT_PREFIX = 'script:';
 
 export interface CfApiProxyEnv {
   CF_API_TOKEN?: string;
@@ -45,8 +49,12 @@ export interface CfApiProxyEnv {
 }
 
 export interface DeploySideEffectsInfo {
+  /** Original script name (user-facing, e.g., "my-app") */
   scriptName: string;
+  /** Dispatch namespace script name (e.g., "acme-85b--my-app") */
+  dispatchScriptName: string;
   orgId: string;
+  orgSlug: string;
   workspaceId: string;
   hostname: string;
   threadId?: string;
@@ -118,14 +126,16 @@ function extractScriptName(pathname: string): string | null {
 
 /**
  * Check if a script is owned by a different org.
- * Returns null if not owned, the owning org_id if owned by same org, or throws if owned by different org.
+ * With org-slug namespacing, scripts are now org-scoped by name ({org-slug}--{script}).
+ * This function is now only used for legacy compatibility during migration.
+ * Returns null if not owned, the owning org_id if owned by same org.
  */
-async function checkScriptOwnership(
+async function checkScriptOwnershipLegacy(
   kv: KVNamespace,
   scriptName: string,
-  requestingOrgId: string
+  _requestingOrgId: string
 ): Promise<{ owned: boolean; orgId: string | null }> {
-  const data = await kv.get(`${SCRIPT_ORG_PREFIX}${scriptName}`);
+  const data = await kv.get(`${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`);
   if (!data) {
     return { owned: false, orgId: null };
   }
@@ -135,6 +145,22 @@ async function checkScriptOwnership(
   } catch {
     // Legacy format: just org_id string
     return { owned: true, orgId: data };
+  }
+}
+
+/**
+ * Get script access info from the new namespaced KV format.
+ */
+async function getScriptAccessInfo(
+  kv: KVNamespace,
+  dispatchScriptName: string
+): Promise<{ org_id: string; is_public: boolean } | null> {
+  const data = await kv.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
+  if (!data) return null;
+  try {
+    return JSON.parse(data) as { org_id: string; is_public: boolean };
+  } catch {
+    return null;
   }
 }
 
@@ -564,18 +590,43 @@ export async function proxyCloudflareApi(
   }
 
   const orgId = tokenPayload.org_id;
+  const orgSlug = tokenPayload.org_slug;
   const workspaceId = tokenPayload.workspace_id;
   const threadId = tokenPayload.thread_id;
 
+  // Require org_slug for deploy operations
+  if (!orgSlug) {
+    console.warn('[cf-api-proxy] deploy token missing org_slug', {
+      method: request.method,
+      path: url.pathname,
+      orgId,
+    });
+    return cfApiError(10003, 'Authentication error: Deploy token missing org_slug', 401);
+  }
+
   let pathname = url.pathname;
 
+  // Extract original script name before rewriting
+  const originalScriptName = extractScriptName(pathname);
+
   // Rewrite WFP dispatch namespace (and optionally account id) on the fly.
-  // /client/v4/accounts/:account_id/workers/dispatch/namespaces/:dispatch_namespace/...
+  // Also rewrite script name to include org-slug prefix: {org-slug}--{script-name}
+  // /client/v4/accounts/:account_id/workers/dispatch/namespaces/:dispatch_namespace/scripts/:script/...
   const dispatchMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/dispatch\/namespaces\/([^\/]+)\/(.*)$/);
   if (dispatchMatch) {
-    const rest = dispatchMatch[3] ?? '';
+    let rest = dispatchMatch[3] ?? '';
     const rewrittenAccount = accountId ?? dispatchMatch[1]!;
     const rewrittenNs = dispatchNamespace ?? dispatchMatch[2]!;
+
+    // Rewrite script name to include org-slug prefix
+    // rest might be: scripts/{scriptName} or scripts/{scriptName}/settings etc.
+    const scriptPathMatch = rest.match(/^scripts\/([^\/]+)(\/.*)?$/);
+    if (scriptPathMatch && originalScriptName) {
+      const suffix = scriptPathMatch[2] ?? '';
+      const dispatchScriptName = `${orgSlug}--${originalScriptName}`;
+      rest = `scripts/${encodeURIComponent(dispatchScriptName)}${suffix}`;
+    }
+
     pathname = `/client/v4/accounts/${encodeURIComponent(rewrittenAccount)}/workers/dispatch/namespaces/${encodeURIComponent(rewrittenNs)}/${rest}`;
   }
   // Block regular worker script/service endpoints - users must use the globally installed wrangler
@@ -616,25 +667,10 @@ export async function proxyCloudflareApi(
     return cfApiError(10003, 'Forbidden: Request blocked by API proxy allowlist', 403);
   }
 
-  // Enforce script ownership - prevent org A from deploying to a script owned by org B
-  const scriptName = extractScriptName(pathname);
-  if (scriptName) {
-    const ownership = await checkScriptOwnership(env.APP_KV, scriptName, orgId);
-    if (ownership.owned && ownership.orgId !== orgId) {
-      console.warn('[cf-api-proxy] script ownership violation', {
-        method: request.method,
-        path: pathname,
-        scriptName,
-        requestingOrgId: orgId,
-        owningOrgId: ownership.orgId,
-      });
-      return cfApiError(
-        10014,
-        `Script "${scriptName}" is owned by another organization`,
-        403
-      );
-    }
-  }
+  // Script ownership is now enforced by org-slug namespacing in the script name.
+  // Scripts are named {org-slug}--{script-name}, so org A cannot deploy to org B's scripts.
+  // The org-slug in the token is verified, so the script name prefix is trusted.
+  const dispatchScriptName = originalScriptName ? `${orgSlug}--${originalScriptName}` : null;
 
   const upstreamUrl = new URL(`https://api.cloudflare.com${pathname}${url.search}`);
   const headers = new Headers(request.headers);
@@ -689,6 +725,26 @@ export async function proxyCloudflareApi(
     }
   }
 
+  // Pre-deploy check: prevent cross-workspace name collisions
+  // This must happen BEFORE the Cloudflare API call to prevent the deploy
+  if (isUploadRequest(pathname, method) && originalScriptName) {
+    const orgStub = env.ORG.get(env.ORG.idFromName(orgId)) as unknown as OrgDO;
+    const existingScript = await orgStub.getWorkerScript(originalScriptName);
+    if (existingScript && existingScript.workspace_id !== workspaceId) {
+      console.warn('[cf-api-proxy] blocked deploy: script name collision', {
+        scriptName: originalScriptName,
+        existingWorkspaceId: existingScript.workspace_id,
+        attemptedWorkspaceId: workspaceId,
+        orgId,
+      });
+      return cfApiError(
+        10004,
+        `Script name "${originalScriptName}" is already in use by another workspace in this organization. Please choose a different name.`,
+        409
+      );
+    }
+  }
+
   const resp = await fetch(upstreamUrl, { method, headers, body });
   const respBody = await resp.arrayBuffer();
 
@@ -715,23 +771,25 @@ export async function proxyCloudflareApi(
 
   if (method === 'PUT') {
     const scriptMatch = pathname.match(DISPATCH_SCRIPT_BASE);
-    if (scriptMatch) {
+    if (scriptMatch && originalScriptName && dispatchScriptName) {
       const account = decodeURIComponent(scriptMatch[1]!);
       const dispatchNs = decodeURIComponent(scriptMatch[2]!);
-      const scriptName = decodeURIComponent(scriptMatch[3]!);
 
       // Register script ownership and enqueue screenshots
       waitUntil(
         options.onDeploySideEffects({
-          scriptName,
+          scriptName: originalScriptName,
+          dispatchScriptName,
           orgId,
+          orgSlug,
           workspaceId,
           hostname: url.hostname,
           threadId,
           configPath,
         }).catch(err => {
           console.error('[cf-api-proxy] failed to process deploy side effects', {
-            scriptName,
+            scriptName: originalScriptName,
+            dispatchScriptName,
             orgId,
             workspaceId,
             error: String(err),
@@ -739,14 +797,14 @@ export async function proxyCloudflareApi(
         })
       );
 
-      // Sync integration secrets to deployed worker
+      // Sync integration secrets to deployed worker (uses dispatchScriptName for Cloudflare API)
       waitUntil(
-        syncDispatchScriptSecrets(env, workspaceId, orgId, account, dispatchNs, scriptName, upstreamApiToken)
+        syncDispatchScriptSecrets(env, workspaceId, orgId, account, dispatchNs, dispatchScriptName, upstreamApiToken)
           .catch(err => {
             console.error('[cf-api-proxy] failed to sync script secrets', {
               account,
               dispatchNamespace: dispatchNs,
-              scriptName,
+              dispatchScriptName,
               orgId,
               workspaceId,
               error: String(err),
@@ -763,11 +821,16 @@ export async function proxyCloudflareApi(
               let isPublic = false;
               try {
                 const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-                const script = await orgStub.getWorkerScript(scriptName);
+                // Use originalScriptName for OrgDO lookup (stores user-facing name)
+                const script = await orgStub.getWorkerScript(originalScriptName);
                 if (script) {
                   isPublic = script.is_public;
                 } else {
-                  const stored = await env.APP_KV.get(`${SCRIPT_ORG_PREFIX}${scriptName}`);
+                  // Check new KV format first, then legacy
+                  let stored = await env.APP_KV.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
+                  if (!stored) {
+                    stored = await env.APP_KV.get(`${SCRIPT_ORG_PREFIX_LEGACY}${originalScriptName}`);
+                  }
                   if (stored) {
                     try {
                       const parsed = JSON.parse(stored) as { is_public?: boolean };
@@ -787,25 +850,26 @@ export async function proxyCloudflareApi(
               } catch (err) {
                 console.error('[cf-api-proxy] failed to load app visibility', {
                   threadId,
-                  scriptName,
+                  scriptName: originalScriptName,
                   orgId,
                   error: String(err),
                 });
               }
+              // Use originalScriptName for preview (user-facing)
               await threadStub.fetch(new Request('http://internal/preview', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workers: [scriptName], isPublic }),
+                body: JSON.stringify({ workers: [originalScriptName], isPublic }),
               }));
               console.log('[cf-api-proxy] auto-set preview', {
                 threadId,
-                scriptName,
+                scriptName: originalScriptName,
                 orgId,
               });
             } catch (err) {
               console.error('[cf-api-proxy] failed to auto-set preview', {
                 threadId,
-                scriptName,
+                scriptName: originalScriptName,
                 orgId,
                 error: String(err),
               });

@@ -49,8 +49,11 @@ export interface Route {
   websocket?: boolean;
 }
 
-export const SESSION_COOKIE = 'chiridion_session_v2';
-export const LEGACY_SESSION_COOKIE = 'chiridion_session';
-export const SESSION_HEADER = 'X-Chiridion-Session-Id';
+// Re-export cookie constants from cookies.ts (single source of truth)
+export { SESSION_COOKIE, LEGACY_SESSION_COOKIE, SESSION_HEADER } from './cookies.js';
+
 export const THREAD_TOKEN_HEADER = 'X-Chiridion-Thread-Deploy-Token';
-export const SCRIPT_ORG_PREFIX = 'script_org:';
+// New prefix with org-slug namespacing: script:{org-slug}--{script-name}
+export const SCRIPT_PREFIX = 'script:';
+// Legacy prefix for backwards compatibility during migration
+export const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';

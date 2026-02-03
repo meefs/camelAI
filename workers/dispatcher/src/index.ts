@@ -54,18 +54,135 @@ interface Env {
   SKIP_AUTH?: string;
 }
 
+// KV key prefixes
+const SCRIPT_PREFIX = 'script:';
+const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
+
 // Helper functions to replace RPC calls
 
 /**
- * Get worker script access info from KV index
+ * Check if a string looks like an environment prefix.
+ */
+function isEnvPrefix(s: string): boolean {
+  return s.startsWith('dev-') || s === 'staging' || s === 'prod';
+}
+
+/**
+ * Parse worker route from hostname.
+ * Returns script name and org slug for new format, or just script name for legacy.
+ *
+ * New format: {script}.{org-slug}.chiridion.app -> { scriptName, orgSlug, dispatchScriptName }
+ * New format: {script}.{org-slug}.apps.chiridion.ai -> { scriptName, orgSlug, dispatchScriptName }
+ * Legacy format: {script}.chiridion.app -> { scriptName, orgSlug: null, dispatchScriptName: scriptName }
+ */
+function parseWorkerRoute(hostname: string): { scriptName: string; orgSlug: string | null; dispatchScriptName: string } | null {
+  const parts = hostname.split('.');
+
+  // .chiridion.app domain
+  if (hostname.endsWith('.chiridion.app')) {
+    // Legacy: {script}.chiridion.app (3 parts)
+    if (parts.length === 3) {
+      const scriptName = parts[0]!;
+      return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
+    }
+    // 4 parts: either new format {script}.{org-slug}.chiridion.app
+    //          or legacy with env {script}.{env}.chiridion.app
+    if (parts.length === 4) {
+      const scriptName = parts[0]!;
+      const second = parts[1]!;
+      if (isEnvPrefix(second)) {
+        // Legacy with env prefix
+        return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
+      }
+      // New format
+      const orgSlug = second;
+      const dispatchScriptName = `${orgSlug}--${scriptName}`;
+      return { scriptName, orgSlug, dispatchScriptName };
+    }
+    // 5+ parts: new format with env {script}.{org-slug}.{env}.chiridion.app
+    if (parts.length >= 5) {
+      const scriptName = parts[0]!;
+      const orgSlug = parts[1]!;
+      const dispatchScriptName = `${orgSlug}--${scriptName}`;
+      return { scriptName, orgSlug, dispatchScriptName };
+    }
+  }
+
+  // .apps.chiridion.ai domain (same-site for iframes)
+  if (hostname.endsWith('.chiridion.ai') && hostname.includes('.apps.')) {
+    // Legacy: {script}.apps.chiridion.ai (4 parts)
+    if (parts.length === 4 && parts[1] === 'apps') {
+      const scriptName = parts[0]!;
+      return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
+    }
+    // 5 parts: either new format {script}.{org-slug}.apps.chiridion.ai
+    //          or legacy with env {script}.apps.{env}.chiridion.ai
+    if (parts.length === 5) {
+      const scriptName = parts[0]!;
+      const second = parts[1]!;
+      if (second === 'apps') {
+        // Legacy with env prefix: {script}.apps.{env}.chiridion.ai
+        return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
+      }
+      // New format: {script}.{org-slug}.apps.chiridion.ai
+      const orgSlug = second;
+      const dispatchScriptName = `${orgSlug}--${scriptName}`;
+      return { scriptName, orgSlug, dispatchScriptName };
+    }
+    // 6+ parts: new format with env {script}.{org-slug}.apps.{env}.chiridion.ai
+    if (parts.length >= 6) {
+      const scriptName = parts[0]!;
+      const orgSlug = parts[1]!;
+      const dispatchScriptName = `${orgSlug}--${scriptName}`;
+      return { scriptName, orgSlug, dispatchScriptName };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Worker access info from KV, including optional org_slug for new format.
+ */
+interface WorkerAccessInfo {
+  is_public: boolean;
+  org_id: string;
+  org_slug?: string;
+  is_legacy?: boolean;
+}
+
+/**
+ * Get worker script access info from KV index.
+ * Tries new namespaced format first, then falls back to legacy.
+ *
+ * Returns:
+ * - is_legacy: false - Found in new namespaced format, worker is deployed as {org-slug}--{script}
+ * - is_legacy: true, has org_slug - Found in legacy format but was deployed with new system (redirect candidate)
+ * - is_legacy: true, no org_slug - Old worker deployed before org-slug namespacing (serve from legacy dispatch)
  */
 async function getWorkerAccessInfo(
   kv: KVNamespace,
-  scriptName: string
-): Promise<{ is_public: boolean; org_id: string } | null> {
-  const data = await kv.get(`script_org:${scriptName}`);
-  if (!data) return null;
-  return JSON.parse(data) as { org_id: string; is_public: boolean };
+  dispatchScriptName: string,
+  legacyScriptName?: string
+): Promise<WorkerAccessInfo | null> {
+  // Try new format first: script:{org-slug}--{script-name}
+  let data = await kv.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
+  if (data) {
+    const parsed = JSON.parse(data) as { org_id: string; org_slug?: string; is_public: boolean };
+    return { ...parsed, is_legacy: false };
+  }
+
+  // Fall back to legacy format: script_org:{script-name}
+  // Note: New deploys write this with org_slug for redirect support
+  if (legacyScriptName) {
+    data = await kv.get(`${SCRIPT_ORG_PREFIX_LEGACY}${legacyScriptName}`);
+    if (data) {
+      const parsed = JSON.parse(data) as { org_id: string; org_slug?: string; is_public: boolean };
+      return { ...parsed, is_legacy: true };
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -80,6 +197,68 @@ async function isOrgMember(
   return stub.isMember(userId);
 }
 
+/**
+ * Get org slug from OrgDO
+ */
+async function getOrgSlug(
+  orgNamespace: DurableObjectNamespace<OrgDO>,
+  orgId: string
+): Promise<string | null> {
+  try {
+    const stub = orgNamespace.get(orgNamespace.idFromName(orgId)) as DurableObjectStub<OrgDO>;
+    return await stub.getSlug();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the new-format URL for a worker.
+ * Returns the full URL with the org-slug included.
+ */
+function buildNewFormatUrl(url: URL, scriptName: string, orgSlug: string): string {
+  const hostname = url.hostname;
+  const parts = hostname.split('.');
+
+  // For .chiridion.app domains
+  if (hostname.endsWith('.chiridion.app')) {
+    // Legacy: script.chiridion.app -> script.org-slug.chiridion.app
+    // Legacy with env: script.staging.chiridion.app -> script.org-slug.staging.chiridion.app
+    if (parts.length === 3) {
+      // script.chiridion.app -> script.org-slug.chiridion.app
+      const newHostname = `${scriptName}.${orgSlug}.chiridion.app`;
+      return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
+    }
+    // Check if second part is an env prefix (dev-*, staging)
+    if (parts.length === 4 && (parts[1]?.startsWith('dev-') || parts[1] === 'staging')) {
+      // script.staging.chiridion.app -> script.org-slug.staging.chiridion.app
+      const envPrefix = parts[1];
+      const newHostname = `${scriptName}.${orgSlug}.${envPrefix}.chiridion.app`;
+      return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
+    }
+  }
+
+  // For .apps.chiridion.ai domains
+  if (hostname.endsWith('.chiridion.ai') && hostname.includes('.apps.')) {
+    // Legacy: script.apps.chiridion.ai -> script.org-slug.apps.chiridion.ai
+    // Legacy with env: script.apps.staging.chiridion.ai -> script.org-slug.apps.staging.chiridion.ai
+    if (parts.length === 4 && parts[1] === 'apps') {
+      // script.apps.chiridion.ai -> script.org-slug.apps.chiridion.ai
+      const newHostname = `${scriptName}.${orgSlug}.apps.chiridion.ai`;
+      return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
+    }
+    if (parts.length === 5 && parts[1] === 'apps') {
+      // script.apps.staging.chiridion.ai -> script.org-slug.apps.staging.chiridion.ai
+      const envPrefix = parts[2];
+      const newHostname = `${scriptName}.${orgSlug}.apps.${envPrefix}.chiridion.ai`;
+      return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
+    }
+  }
+
+  // Fallback - shouldn't happen but return original
+  return url.toString();
+}
+
 // Cookie settings for dispatcher session
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 const SCREENSHOT_SESSION_MAX_AGE = SCREENSHOT_SESSION_TTL_SECONDS;
@@ -91,16 +270,39 @@ const LEGACY_MAIN_APP_SESSION_COOKIE = 'chiridion_session';
 // Main app URL for auth redirects (determined from request hostname)
 function getMainAppUrl(hostname: string): string {
   // Extract environment from hostname
-  // e.g., worker.dev-miguel.chiridion.app -> dev-miguel.chiridion.ai (main app)
-  // e.g., worker.chiridion.app -> chiridion.ai (main app)
+  // New format: worker.org-slug.chiridion.app -> chiridion.ai (main app)
+  // New format: worker.org-slug.dev-miguel.chiridion.app -> dev-miguel.chiridion.ai (main app)
+  // Legacy: worker.chiridion.app -> chiridion.ai (main app)
+  // Legacy: worker.dev-miguel.chiridion.app -> dev-miguel.chiridion.ai (main app)
   const parts = hostname.split('.');
-  if (parts.length >= 3) {
-    // Remove the first part (subdomain/worker name)
-    // Convert .chiridion.app to .chiridion.ai for main app redirect
-    const remaining = parts.slice(1).join('.');
-    const mainAppHost = remaining.replace('.chiridion.app', '.chiridion.ai').replace(/^chiridion\.app$/, 'chiridion.ai');
-    return `https://${mainAppHost}`;
+
+  // For .chiridion.app domains
+  if (hostname.endsWith('.chiridion.app')) {
+    // Find the environment prefix if any (e.g., dev-miguel, staging)
+    // It's the part before .chiridion.app that looks like an env prefix
+    const envPrefixes = ['dev-miguel', 'dev-illiana', 'staging', 'prod'];
+    for (let i = parts.length - 3; i >= 1; i--) {
+      if (envPrefixes.some(prefix => parts[i] === prefix || parts[i]?.startsWith('dev-'))) {
+        const envPrefix = parts[i];
+        return `https://${envPrefix}.chiridion.ai`;
+      }
+    }
+    return 'https://chiridion.ai';
   }
+
+  // For .chiridion.ai domains (same-site)
+  if (hostname.endsWith('.chiridion.ai')) {
+    // Remove worker and org-slug subdomains
+    const envPrefixes = ['dev-miguel', 'dev-illiana', 'staging', 'prod'];
+    for (let i = parts.length - 3; i >= 1; i--) {
+      if (envPrefixes.some(prefix => parts[i] === prefix || parts[i]?.startsWith('dev-'))) {
+        const envPrefix = parts[i];
+        return `https://${envPrefix}.chiridion.ai`;
+      }
+    }
+    return 'https://chiridion.ai';
+  }
+
   // Fallback to chiridion.ai
   return 'https://chiridion.ai';
 }
@@ -161,21 +363,18 @@ export default {
     const url = new URL(request.url);
     const hostname = url.hostname;
 
-    // Check for subdomain-based routing (e.g., hello-world.chiridion.app)
-    // Skip for apex domain and www
-    const hostParts = hostname.split('.');
-    if (hostParts.length >= 3 || (hostParts.length === 2 && !hostname.includes('workers.dev'))) {
-      const subdomain = hostParts[0];
+    // Parse worker route from hostname
+    const route = parseWorkerRoute(hostname);
+    if (route) {
+      const { scriptName, orgSlug, dispatchScriptName } = route;
 
-      if (subdomain && subdomain !== 'www' && subdomain !== 'chiridion') {
-        // Handle auth callback route
-        if (url.pathname === AUTH_CALLBACK_PATH) {
-          return handleAuthCallback(request, env, subdomain);
-        }
-
-        // Check worker access
-        return handleWorkerRequest(request, env, subdomain);
+      // Handle auth callback route
+      if (url.pathname === AUTH_CALLBACK_PATH) {
+        return handleAuthCallback(request, env, scriptName, orgSlug, dispatchScriptName);
       }
+
+      // Check worker access
+      return handleWorkerRequest(request, env, scriptName, orgSlug, dispatchScriptName);
     }
 
     // Default response for apex domain
@@ -184,10 +383,10 @@ export default {
         {
           message: 'Chiridion Dispatch Worker',
           routes: {
-            vanity: '<worker-name>.chiridion.app',
-            iframe: '<worker-name>.apps.chiridion.ai',
+            vanity: '<worker-name>.<org-slug>.chiridion.app',
+            iframe: '<worker-name>.<org-slug>.apps.chiridion.ai',
           },
-          example: 'hello-world.chiridion.app',
+          example: 'my-app.acme-85b.chiridion.app',
         },
         null,
         2
@@ -202,7 +401,13 @@ export default {
 /**
  * Handle auth callback - validates token and creates session
  */
-async function handleAuthCallback(request: Request, env: Env, scriptName: string): Promise<Response> {
+async function handleAuthCallback(
+  request: Request,
+  env: Env,
+  scriptName: string,
+  _orgSlug: string | null,
+  _dispatchScriptName: string
+): Promise<Response> {
   const url = new URL(request.url);
   const token = url.searchParams.get('token');
   const state = url.searchParams.get('state');
@@ -222,7 +427,7 @@ async function handleAuthCallback(request: Request, env: Env, scriptName: string
     return new Response('State mismatch', { status: 400 });
   }
 
-  // Verify script name matches
+  // Verify script name matches (user-facing name, not dispatch name)
   if (tokenData.script_name !== scriptName) {
     return new Response('Script name mismatch', { status: 400 });
   }
@@ -251,13 +456,19 @@ async function handleAuthCallback(request: Request, env: Env, scriptName: string
 /**
  * Handle worker request - checks access and dispatches or redirects
  */
-async function handleWorkerRequest(request: Request, env: Env, scriptName: string): Promise<Response> {
+async function handleWorkerRequest(
+  request: Request,
+  env: Env,
+  scriptName: string,
+  orgSlug: string | null,
+  dispatchScriptName: string
+): Promise<Response> {
   const url = new URL(request.url);
 
   // Skip all auth checks in local development mode
   if (env.SKIP_AUTH === 'true') {
-    console.log(`[dispatcher] SKIP_AUTH enabled, dispatching directly to: ${scriptName}`);
-    return dispatchToWorker(request, env, scriptName);
+    console.log(`[dispatcher] SKIP_AUTH enabled, dispatching directly to: ${dispatchScriptName}`);
+    return dispatchToWorker(request, env, dispatchScriptName, scriptName);
   }
 
   const cookieHeader = request.headers.get('Cookie');
@@ -271,6 +482,7 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
   const screenshotSessionId = getCookieValue(cookieHeader, SCREENSHOT_SESSION_COOKIE);
   if (screenshotSessionId) {
     const session = await getScreenshotSession(env.SESSIONS, screenshotSessionId);
+    // Screenshot session stores user-facing scriptName
     if (session && session.script_name === scriptName) {
       if (screenshotHeader || hasScreenshotBearer) {
         const forwardHeaders = new Headers(request.headers);
@@ -278,14 +490,15 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
         if (hasScreenshotBearer) {
           forwardHeaders.delete('Authorization');
         }
-        return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, scriptName);
+        return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, dispatchScriptName, scriptName);
       }
-      return dispatchToWorker(request, env, scriptName);
+      return dispatchToWorker(request, env, dispatchScriptName, scriptName);
     }
   }
 
   if (screenshotToken?.startsWith('stkn_')) {
     const tokenData = await validateAndConsumeScreenshotToken(env.APP_KV, screenshotToken);
+    // Token stores user-facing scriptName
     if (!tokenData || tokenData.script_name !== scriptName) {
       return new Response('Invalid screenshot token', { status: 401 });
     }
@@ -301,7 +514,7 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
       forwardHeaders.delete('Authorization');
     }
 
-    const response = await dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, scriptName);
+    const response = await dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, dispatchScriptName, scriptName);
     const headers = new Headers(response.headers);
     headers.append('Set-Cookie', createScreenshotSessionCookie(sessionId));
     return new Response(response.body, {
@@ -314,9 +527,10 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
   }
 
   // Get worker access info from KV index
-  let accessInfo: { is_public: boolean; org_id: string } | null = null;
+  // Try new namespaced format first, then legacy
+  let accessInfo: WorkerAccessInfo | null = null;
   try {
-    accessInfo = await getWorkerAccessInfo(env.APP_KV, scriptName);
+    accessInfo = await getWorkerAccessInfo(env.APP_KV, dispatchScriptName, scriptName);
   } catch (e) {
     // Fail closed on errors - don't bypass auth
     console.error(`[dispatcher] Error getting worker access info: ${e}`);
@@ -327,13 +541,27 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
   // This allows existing deployed workers to continue working even if not yet registered
   // Once all workers are registered, this can be changed to fail closed
   if (!accessInfo) {
-    console.log(`[dispatcher] Worker "${scriptName}" not in registry, dispatching anyway (fail open)`);
-    return dispatchToWorker(request, env, scriptName);
+    console.log(`[dispatcher] Worker "${dispatchScriptName}" not in registry, dispatching anyway (fail open)`);
+    return dispatchToWorker(request, env, dispatchScriptName, scriptName);
+  }
+
+  // Legacy URL redirect: If using old URL format AND the worker was deployed with the
+  // new system (has org_slug in KV), redirect to the new URL format.
+  //
+  // Cases:
+  // 1. orgSlug !== null: Already using new URL format, no redirect needed
+  // 2. is_legacy: false: Found in new KV format (means dispatchScriptName already has org-slug prefix)
+  // 3. is_legacy: true AND has org_slug: Worker was redeployed with new system, redirect to new URL
+  // 4. is_legacy: true AND no org_slug: Old worker, serve from legacy dispatch (no redirect)
+  if (orgSlug === null && accessInfo && accessInfo.org_slug && accessInfo.is_legacy) {
+    const newUrl = buildNewFormatUrl(url, scriptName, accessInfo.org_slug);
+    console.log(`[dispatcher] Legacy URL redirect: ${url.hostname} -> ${new URL(newUrl).hostname}`);
+    return Response.redirect(newUrl, 301);
   }
 
   // If public, dispatch directly
   if (accessInfo.is_public) {
-    return dispatchToWorker(request, env, scriptName);
+    return dispatchToWorker(request, env, dispatchScriptName, scriptName);
   }
 
   // Private worker - check session
@@ -344,37 +572,44 @@ async function handleWorkerRequest(request: Request, env: Env, scriptName: strin
     const session = await getDispatcherSession(env.SESSIONS, dispatcherSessionId);
     if (session && session.org_id === accessInfo.org_id) {
       // Valid session with matching org - dispatch
-      return dispatchToWorker(request, env, scriptName);
+      return dispatchToWorker(request, env, dispatchScriptName, scriptName);
     }
   }
 
   // For same-site requests (*.chiridion.ai), check main app session cookie directly
   // No redirect dance needed - the cookie is already available or the user isn't logged in
   if (isSameSiteRequest(url.hostname)) {
-    const mainSessionId =
-      getCookieValue(cookieHeader, MAIN_APP_SESSION_COOKIE) ||
-      getCookieValue(cookieHeader, LEGACY_MAIN_APP_SESSION_COOKIE);
+    const mainSessionIdV2 = getCookieValue(cookieHeader, MAIN_APP_SESSION_COOKIE);
+    const mainSessionIdLegacy = getCookieValue(cookieHeader, LEGACY_MAIN_APP_SESSION_COOKIE);
+    const mainSessionId = mainSessionIdV2 || mainSessionIdLegacy;
+
+    console.log(`[dispatcher] Same-site auth for ${scriptName}: v2=${mainSessionIdV2 ? 'present' : 'missing'}, legacy=${mainSessionIdLegacy ? 'present' : 'missing'}`);
+
     if (!mainSessionId) {
       // No session cookie - user is not logged in
-      return new Response('Unauthorized', { status: 401 });
+      console.log(`[dispatcher] No session cookie found for ${scriptName}`);
+      return new Response('Unauthorized - no session cookie', { status: 401 });
     }
 
     try {
       const session = await getSessionKV(env.SESSIONS, mainSessionId);
       if (!session) {
         // Invalid/expired session
-        return new Response('Unauthorized', { status: 401 });
+        console.log(`[dispatcher] Session not found in KV for ${scriptName}, sessionId prefix: ${mainSessionId.slice(0, 8)}...`);
+        return new Response('Unauthorized - session not found', { status: 401 });
       }
 
       // Check if user is a member of the org that owns this worker
+      console.log(`[dispatcher] Session found for user ${session.user_id}, checking org membership for org ${accessInfo.org_id}`);
       const memberCheck = await isOrgMember(env.ORG, session.user_id, accessInfo.org_id);
       if (!memberCheck) {
         // User is logged in but not a member of this workspace
-        return new Response('Forbidden', { status: 403 });
+        console.log(`[dispatcher] User ${session.user_id} is not a member of org ${accessInfo.org_id}`);
+        return new Response('Forbidden - not a member of this organization', { status: 403 });
       }
 
       console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${scriptName} via main session`);
-      return dispatchToWorker(request, env, scriptName);
+      return dispatchToWorker(request, env, dispatchScriptName, scriptName);
     } catch (e) {
       console.error(`[dispatcher] Error validating main session: ${e}`);
       return new Response('Service temporarily unavailable', { status: 503 });
@@ -434,13 +669,20 @@ async function injectDebugBridge(response: Response, _hostname: string): Promise
 
 /**
  * Dispatch request to the user worker
+ * @param dispatchScriptName - The script name in the dispatch namespace ({org-slug}--{script})
+ * @param userFacingScriptName - The user-facing script name for error messages
  */
-async function dispatchToWorker(request: Request, env: Env, scriptName: string): Promise<Response> {
+async function dispatchToWorker(
+  request: Request,
+  env: Env,
+  dispatchScriptName: string,
+  userFacingScriptName: string
+): Promise<Response> {
   const url = new URL(request.url);
 
   try {
-    console.log(`[dispatcher] Routing to worker: ${scriptName}`);
-    const userWorker = env.DISPATCHER.get(scriptName);
+    console.log(`[dispatcher] Routing to worker: ${dispatchScriptName}`);
+    const userWorker = env.DISPATCHER.get(dispatchScriptName);
     const response = await userWorker.fetch(request);
 
     // Only inject debug bridge on iframe domain (*.apps.chiridion.ai)
@@ -453,12 +695,12 @@ async function dispatchToWorker(request: Request, env: Env, scriptName: string):
   } catch (e) {
     const error = e as Error;
     if (error.message?.startsWith('Worker not found')) {
-      return new Response(`Worker "${scriptName}" not found`, {
+      return new Response(`Worker "${userFacingScriptName}" not found`, {
         status: 404,
         headers: { 'Content-Type': 'text/plain' },
       });
     }
-    return new Response(`Error dispatching to worker "${scriptName}": ${error.message}`, {
+    return new Response(`Error dispatching to worker "${userFacingScriptName}": ${error.message}`, {
       status: 500,
       headers: { 'Content-Type': 'text/plain' },
     });

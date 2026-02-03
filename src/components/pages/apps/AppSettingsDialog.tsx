@@ -27,6 +27,7 @@ interface AppSettingsDialogProps {
   onOpenChange: (open: boolean) => void;
   app: WorkerScriptWithCreator;
   orgId: string;
+  orgSlug: string;
   isAdmin: boolean;
   hostname?: string;
   onSuccess: () => void;
@@ -63,6 +64,7 @@ export function AppSettingsDialog({
   onOpenChange,
   app,
   orgId,
+  orgSlug,
   isAdmin,
   hostname,
   onSuccess,
@@ -76,7 +78,7 @@ export function AppSettingsDialog({
   const submitting = fetcher.state !== 'idle' && pendingAction === 'save';
   const deleting = fetcher.state !== 'idle' && pendingAction === 'delete';
 
-  const appUrl = getAppUrl(app.script_name, hostname);
+  const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
   const creator = app.creator;
   const creatorLabel = getCreatorLabel(creator, app.created_by);
   const creatorAvatar = creator?.avatar ?? null;

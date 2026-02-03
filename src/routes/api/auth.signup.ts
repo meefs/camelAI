@@ -1,6 +1,6 @@
 import type { Route } from './+types/auth.signup';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { createSessionCookie, deleteLegacySessionCookie } from '@/lib/cookies.server';
+import { createSessionCookieHeader, createDeleteLegacySessionCookieHeader } from '@/lib/cookies.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   getUserByEmail,
@@ -57,10 +57,10 @@ export async function action({ request, context }: Route.ActionArgs) {
       defaultWorkspaceId
     );
 
-    // Create response with session cookie
+    // Create response with session cookie (with domain for subdomain access)
     const headers = new Headers();
-    headers.append('Set-Cookie', createSessionCookie(sessionId));
-    headers.append('Set-Cookie', deleteLegacySessionCookie());
+    headers.append('Set-Cookie', createSessionCookieHeader(sessionId, request));
+    headers.append('Set-Cookie', createDeleteLegacySessionCookieHeader(request));
 
     return Response.json({ success: true }, { headers });
   } catch (error) {

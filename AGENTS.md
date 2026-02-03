@@ -60,7 +60,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
    - `ws-server.mjs` - WebSocket server running Claude SDK inside container
    - `control-plane.mjs` - Exec/filesystem API server for container management
    - `sync.mjs` - R2 tar snapshot download (migration tool)
-   - `skills/` - Agent skills (deploy-software, file-sharing, frontend-design)
+   - `skills/` - Agent skills (developing-software, file-sharing, frontend-design)
 
 ## Key Files
 
@@ -113,7 +113,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 | `sandbox/ws-server.mjs` | WebSocket server with Claude SDK |
 | `sandbox/control-plane.mjs` | Container exec/filesystem API |
 | `sandbox/requirements.txt` | Python data analysis packages |
-| `sandbox/skills/deploy-software/SKILL.md` | Deployment skill documentation |
+| `sandbox/skills/developing-software/SKILL.md` | Software development skill documentation |
 
 ## Configuration Files
 

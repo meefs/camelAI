@@ -27,23 +27,16 @@
 	 * 4. Add migration (increment tag, add new_sqlite_classes for SQLite DOs)
 	 * 5. Run `wrangler types` to update Env types
 	 */
-	"durable_objects": {
-		"bindings": [
-			{
-				"name": "EXAMPLE_DO",
-				"class_name": "ExampleDO"
-			}
-			// Uncomment to enable AI Chat agent:
-			// { "name": "Chat", "class_name": "Chat" }
-		]
-	},
-	"migrations": [
-		{
-			"tag": "v1",
-			"new_sqlite_classes": ["ExampleDO"]
-			// Add "Chat" here when enabling the Chat agent
-		}
-	]
+	// Uncomment to enable Durable Objects:
+	// "durable_objects": {
+	// 	"bindings": [
+	// 		{ "name": "EXAMPLE_DO", "class_name": "ExampleDO" }
+	// 		// { "name": "Chat", "class_name": "Chat" }
+	// 	]
+	// },
+	// "migrations": [
+	// 	{ "tag": "v1", "new_sqlite_classes": ["ExampleDO"] }
+	// ]
 
 	/**
 	 * Smart Placement

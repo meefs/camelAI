@@ -28,6 +28,7 @@ function toSafeOrg(org: Organization): Organization {
   return {
     id: org.id,
     name: org.name,
+    slug: org.slug,
     created_at: org.created_at,
     created_by: org.created_by,
     billing_status: org.billing_status,
@@ -155,6 +156,7 @@ describe('toSafeOrg', () => {
     const input: Organization = {
       id: 'org-123',
       name: 'Test Org',
+      slug: 'test-org-org',
       created_at: 1234567890,
       created_by: 'user-123',
       billing_status: 'free',
@@ -168,6 +170,7 @@ describe('toSafeOrg', () => {
     expect(result).toEqual({
       id: 'org-123',
       name: 'Test Org',
+      slug: 'test-org-org',
       created_at: 1234567890,
       created_by: 'user-123',
       billing_status: 'free',
@@ -181,6 +184,7 @@ describe('toSafeOrg', () => {
     const input = Object.create(null) as Organization;
     input.id = 'org-123';
     input.name = 'Test Org';
+    input.slug = 'test-org-org';
     input.created_at = 1234567890;
     input.created_by = 'user-123';
     input.billing_status = 'free';
@@ -197,6 +201,7 @@ describe('toSafeOrg', () => {
     const input = {
       id: 'org-123',
       name: 'Test Org',
+      slug: 'test-org-org',
       created_at: 1234567890,
       created_by: 'user-123',
       billing_status: 'free',
@@ -209,7 +214,7 @@ describe('toSafeOrg', () => {
     const result = toSafeOrg(input);
 
     expect(result).not.toHaveProperty('internal_secret');
-    expect(Object.keys(result)).toEqual(['id', 'name', 'created_at', 'created_by', 'billing_status', 'archived', 'archived_at', 'archived_by']);
+    expect(Object.keys(result)).toEqual(['id', 'name', 'slug', 'created_at', 'created_by', 'billing_status', 'archived', 'archived_at', 'archived_by']);
   });
 });
 

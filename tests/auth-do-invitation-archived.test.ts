@@ -45,6 +45,7 @@ describe('auth-do invitations', () => {
     const archivedOrg: Organization = {
       id: 'org-archived',
       name: 'Archived Org',
+      slug: 'archived-org-org',
       created_at: Date.now(),
       created_by: 'user-1',
       billing_status: 'free',
@@ -66,6 +67,7 @@ describe('auth-do invitations', () => {
     const archivedOrg: Organization = {
       id: 'org-archived',
       name: 'Archived Org',
+      slug: 'archived-org-org',
       created_at: Date.now(),
       created_by: 'user-1',
       billing_status: 'free',

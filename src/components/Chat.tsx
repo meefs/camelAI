@@ -70,6 +70,8 @@ interface ChatProps {
   isNewThread?: boolean;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
   hostname?: string;
+  /** Org slug for namespaced app URLs */
+  orgSlug?: string;
   /** True when messages are still loading (deferred data) */
   isLoadingMessages?: boolean;
   welcomeData?: {
@@ -323,6 +325,7 @@ export default function Chat({
   initialAppIsPublic,
   isNewThread = false,
   hostname,
+  orgSlug,
   isLoadingMessages = false,
   welcomeData,
 }: ChatProps) {
@@ -1653,7 +1656,7 @@ export default function Chat({
     setIsCreatingThread(true);
 
     // Build the chiridion system message
-    const appUrl = getAppUrl(app.script_name, hostname);
+    const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
     const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
     const systemMessage = `<chiridion system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</chiridion system message>`;
 
@@ -1669,7 +1672,7 @@ export default function Chat({
       },
       { method: 'post', action: '/chat' }
     );
-  }, [hostname, resolvedWorkspaceId, createThreadFetcher, isCreatingThread]);
+  }, [hostname, orgSlug, resolvedWorkspaceId, createThreadFetcher, isCreatingThread]);
 
   function startNewChat() {
     if (!welcomeInput.trim() || isCreatingThread || !resolvedWorkspaceId || createThreadFetcher.state !== 'idle') return;
@@ -1858,7 +1861,9 @@ export default function Chat({
       }
 
       // Create bug report bundle (without large data, using file references)
-      const vanityHost = `${deployedApp}.${getVanityDomain(hostname)}`;
+      const vanityHost = orgSlug
+        ? `${deployedApp}.${orgSlug}.${getVanityDomain(hostname)}`
+        : `${deployedApp}.${getVanityDomain(hostname)}`;
       const vanityUrl = `https://${vanityHost}`;
       const debugDataClean = debugData ? {
         ...debugData,
@@ -2043,11 +2048,18 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     if (!deployedApp) {
       return { iframeHost: '', vanityHost: '' };
     }
+    if (orgSlug) {
+      return {
+        iframeHost: `${deployedApp}.${orgSlug}.${getIframeDomain(hostname)}`,
+        vanityHost: `${deployedApp}.${orgSlug}.${getVanityDomain(hostname)}`,
+      };
+    }
+    // Legacy format without org slug
     return {
       iframeHost: `${deployedApp}.${getIframeDomain(hostname)}`,
       vanityHost: `${deployedApp}.${getVanityDomain(hostname)}`,
     };
-  }, [deployedApp, hostname]);
+  }, [deployedApp, hostname, orgSlug]);
   const previewUrl = previewDomains.iframeHost ? `https://${previewDomains.iframeHost}` : '';
   const previewVanityUrl = previewDomains.vanityHost ? `https://${previewDomains.vanityHost}` : '';
   const showMobilePreview = Boolean(deployedApp) && mobileView === 'preview';
@@ -2175,6 +2187,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   showStreamingIndicator={msg.id === lastStreamingMessageId}
                   skillSheets={skillSheetsByToolId}
                   hostname={hostname}
+                  orgSlug={orgSlug}
                 />
               </div>
             );

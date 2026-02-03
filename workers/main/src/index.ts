@@ -29,6 +29,7 @@ import {
 } from './routes/integrations.js';
 import { handleThreadWebSocket, handleChatWebSocket } from './routes/websocket.js';
 import { handleClaudeProxy, handleCountTokens } from './routes/claude-proxy.js';
+import { handleWorkerAuth } from './routes/worker-auth.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
@@ -65,6 +66,9 @@ const routes: Route[] = [
   // User OAuth
   { method: 'GET', path: /^\/api\/auth\/(google|github)$/, handler: handleOAuthStart },
   { method: 'GET', path: /^\/api\/auth\/(google|github)\/callback$/, handler: handleOAuthCallback },
+
+  // Worker auth (cross-domain auth for private workers)
+  { method: 'GET', path: /^\/auth\/worker$/, handler: handleWorkerAuth },
 
   // Integration OAuth
   { method: 'GET', path: /^\/api\/integrations\/slack\/oauth$/, handler: handleSlackOAuthStart },

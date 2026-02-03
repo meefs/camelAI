@@ -1,6 +1,6 @@
-# React Router v7 + Cloudflare Workers Template
+# Chiridion Starter Template
 
-Full-stack React app with SSR, Durable Objects, and SQLite.
+Full-stack React app with SSR, Durable Objects, and SQLite. Built on React Router 7 and Cloudflare Workers.
 
 ## Quick Start
 

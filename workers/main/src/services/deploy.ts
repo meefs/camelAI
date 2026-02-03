@@ -2,7 +2,7 @@
  * Deploy side effects service
  */
 
-import { SCRIPT_ORG_PREFIX, type Env } from '../types.js';
+import { type Env } from '../types.js';
 import type { DeploySideEffectsInfo } from '../cf-api-proxy.js';
 import type { AppScreenshotJob } from '../screenshot-queue.js';
 import { resolveEnvPrefix } from '../cf-api-proxy.js';
@@ -10,11 +10,16 @@ import { captureScreenshot } from '../screenshot-queue.js';
 import { createScreenshotToken } from '../worker-auth.js';
 import { getOrgStub } from '../helpers/stubs.js';
 
+// KV key prefix for script access info (namespaced by org-slug)
+const SCRIPT_PREFIX = 'script:';
+// Legacy KV key prefix (for backwards compatibility and legacy URL redirect)
+const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
+
 export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsInfo): Promise<void> {
-  const { scriptName, orgId, workspaceId, hostname, threadId, configPath } = info;
+  const { scriptName, dispatchScriptName, orgId, orgSlug, workspaceId, hostname, threadId, configPath } = info;
   const orgStub = getOrgStub(env, orgId);
 
-  // Register ownership
+  // Register ownership (stores user-facing scriptName in OrgDO)
   let createdBy = 'system:deploy';
   if (threadId) {
     try {
@@ -26,9 +31,23 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
   }
 
   const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy, configPath);
+
+  // Store in KV with namespaced key: script:{org-slug}--{script-name}
+  // This allows the dispatcher to look up access info by dispatchScriptName
   await env.APP_KV.put(
-    `${SCRIPT_ORG_PREFIX}${scriptName}`,
-    JSON.stringify({ org_id: orgId, is_public: script.is_public })
+    `${SCRIPT_PREFIX}${dispatchScriptName}`,
+    JSON.stringify({ org_id: orgId, org_slug: orgSlug, is_public: script.is_public })
+  );
+
+  // Also write legacy format for legacy URL redirect support.
+  // When someone uses a legacy URL (script.chiridion.app), the dispatcher can
+  // look this up and redirect to the new URL format (script.org-slug.chiridion.app).
+  // Note: If multiple orgs deploy workers with the same name, this entry gets overwritten.
+  // That's acceptable since this is only for redirect purposes - the primary lookup
+  // uses the namespaced format which is unique per org.
+  await env.APP_KV.put(
+    `${SCRIPT_ORG_PREFIX_LEGACY}${scriptName}`,
+    JSON.stringify({ org_id: orgId, org_slug: orgSlug, is_public: script.is_public })
   );
 
   // Update preview status

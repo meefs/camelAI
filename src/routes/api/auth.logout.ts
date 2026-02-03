@@ -1,6 +1,6 @@
 import type { Route } from './+types/auth.logout';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getSessionId, deleteLegacySessionCookie, deleteSessionCookie } from '@/lib/cookies.server';
+import { getSessionId, createDeleteSessionCookieHeader, createDeleteLegacySessionCookieHeader } from '@/lib/cookies.server';
 import { destroySession as destroySessionKV } from '../../../workers/main/src/session-kv';
 
 interface AuthEnv {
@@ -20,16 +20,16 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
 
     const headers = new Headers();
-    headers.append('Set-Cookie', deleteSessionCookie());
-    headers.append('Set-Cookie', deleteLegacySessionCookie());
+    headers.append('Set-Cookie', createDeleteSessionCookieHeader(request));
+    headers.append('Set-Cookie', createDeleteLegacySessionCookieHeader(request));
 
     return Response.json({ success: true }, { headers });
   } catch (error) {
     console.error('Logout error:', error);
     // Still clear the cookie even if session destruction fails
     const headers = new Headers();
-    headers.append('Set-Cookie', deleteSessionCookie());
-    headers.append('Set-Cookie', deleteLegacySessionCookie());
+    headers.append('Set-Cookie', createDeleteSessionCookieHeader(request));
+    headers.append('Set-Cookie', createDeleteLegacySessionCookieHeader(request));
     return Response.json({ success: true }, { headers });
   }
 }

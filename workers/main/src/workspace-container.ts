@@ -148,10 +148,12 @@ async function createDeployToken(
   secret: string,
   workspaceId: string,
   orgId: string,
+  orgSlug: string,
   userId: string
 ): Promise<string> {
   return createSignedToken(secret, {
     org_id: orgId,
+    org_slug: orgSlug,
     user_id: userId,
     scopes: ['deploy'],
     exp: Date.now() + TOKEN_TTL_MS,
@@ -293,7 +295,9 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     }
 
     // Wrangler config (for deploys from container)
-    if (this.env.CF_ACCOUNT_ID) envVars.CLOUDFLARE_ACCOUNT_ID = this.env.CF_ACCOUNT_ID;
+    // Use placeholder account ID - the proxy rewrites it to the real account ID
+    // This avoids exposing our actual Cloudflare account ID to containers
+    envVars.CLOUDFLARE_ACCOUNT_ID = 'chiridion';
     if (this.env.CF_DISPATCH_NAMESPACE) envVars.CF_DISPATCH_NAMESPACE = this.env.CF_DISPATCH_NAMESPACE;
     envVars.WRANGLER_SEND_METRICS = 'false';
     envVars.CI = '1';
@@ -303,11 +307,12 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
       throw new Error('TOKEN_SIGNING_SECRET is required for sandbox token signing');
     }
 
-    // Get org info for user_id (needed for all signed tokens)
+    // Get org info for user_id and org_slug (needed for all signed tokens)
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
     const orgInfo = await orgStub.getInfo();
     const userId = orgInfo?.created_by || 'system';
     const orgName = orgInfo?.name || orgId;
+    const orgSlug = orgInfo?.slug || `org-${orgId.slice(0, 3)}`;
 
     // Claude API Proxy config - create signed token for LLM access
     if (!this.env.WORKER_BASE_URL) {
@@ -369,9 +374,9 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
       envVars.WORKER_BASE_URL = this.env.WORKER_BASE_URL;
       envVars.CLOUDFLARE_API_BASE_URL = `${this.env.WORKER_BASE_URL}/client/v4`;
 
-      const deployToken = await createDeployToken(this.env.TOKEN_SIGNING_SECRET, workspaceId, orgId, userId);
+      const deployToken = await createDeployToken(this.env.TOKEN_SIGNING_SECRET, workspaceId, orgId, orgSlug, userId);
       envVars.CLOUDFLARE_API_TOKEN = deployToken;
-      console.log('[WorkspaceContainer] Created signed deploy token for workspace', { workspaceId, orgId });
+      console.log('[WorkspaceContainer] Created signed deploy token for workspace', { workspaceId, orgId, orgSlug });
     }
 
     // Token expires in 24 hours

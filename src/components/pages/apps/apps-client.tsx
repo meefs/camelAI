@@ -18,6 +18,7 @@ import { LayoutGrid } from 'lucide-react';
 interface AppsClientProps {
   initialApps: WorkerScriptWithCreator[];
   orgId: string;
+  orgSlug: string;
   hostname?: string;
   initialNow: number;
 }
@@ -25,6 +26,7 @@ interface AppsClientProps {
 export default function AppsClient({
   initialApps,
   orgId,
+  orgSlug,
   hostname,
   initialNow,
 }: AppsClientProps) {
@@ -79,7 +81,7 @@ export default function AppsClient({
     if (chatFetcher.data.thread && pendingChatAppRef.current) {
       // Build the chiridion system message
       const app = pendingChatAppRef.current;
-      const appUrl = getAppUrl(app.script_name, hostname);
+      const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
       const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
       const systemMessage = `<chiridion system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</chiridion system message>`;
 
@@ -285,6 +287,7 @@ export default function AppsClient({
                       )}
                       isAdmin={isAdmin}
                       hostname={hostname}
+                      orgSlug={orgSlug}
                       now={referenceTime}
                       onOpenSettings={handleOpenSettings}
                       onStartChat={handleStartChat}
@@ -304,6 +307,7 @@ export default function AppsClient({
           onOpenChange={handleSettingsDialogOpenChange}
           app={selectedApp}
           orgId={orgId}
+          orgSlug={orgSlug}
           isAdmin={isAdmin}
           hostname={hostname}
           onSuccess={handleSettingsSuccess}

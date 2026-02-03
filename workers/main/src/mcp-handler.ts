@@ -19,6 +19,7 @@ import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { isSignedToken, validateSignedToken } from './signed-tokens';
+import { getEnvPrefix } from './cf-api-proxy';
 
 export interface McpEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
@@ -61,6 +62,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
   // Auth context extracted from request headers (set per-connection)
   private orgId: string | null = null;
+  private orgSlug: string | null = null;
   private userId: string | null = null;
   private workspaceId: string | null = null;
   private threadId: string | null = null;
@@ -167,6 +169,50 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     });
   }
 
+  /**
+   * Get the vanity domain for deployed apps based on current environment.
+   * E.g., "chiridion.app" for production, "staging.chiridion.app" for staging
+   */
+  private getVanityDomain(): string {
+    const baseUrl = this.env.WORKER_BASE_URL;
+    if (baseUrl) {
+      try {
+        const envPrefix = getEnvPrefix(new URL(baseUrl).hostname);
+        return envPrefix ? `${envPrefix}.chiridion.app` : 'chiridion.app';
+      } catch {
+        return 'chiridion.app';
+      }
+    }
+    return 'chiridion.app';
+  }
+
+  /**
+   * Get the org slug, fetching from OrgDO if not cached.
+   */
+  private async getOrgSlug(): Promise<string | null> {
+    if (this.orgSlug) return this.orgSlug;
+    if (!this.orgId) return null;
+    try {
+      const orgStub = this.getOrgStub();
+      this.orgSlug = await orgStub.getSlug();
+      return this.orgSlug;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get the full URL for a deployed app.
+   */
+  private async getAppUrl(scriptName: string): Promise<string> {
+    const orgSlug = await this.getOrgSlug();
+    if (orgSlug) {
+      return `https://${scriptName}.${orgSlug}.${this.getVanityDomain()}`;
+    }
+    // Fallback to legacy format if no org slug
+    return `https://${scriptName}.${this.getVanityDomain()}`;
+  }
+
   async init() {
     // ==========================================
     // Deployment Management Tools
@@ -175,7 +221,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     // List deployed apps/workers
     this.server.tool(
       'list_apps',
-      'List deployed apps/workers for the current workspace. Returns script names, visibility status, and creation info.',
+      'List deployed apps/workers for the current workspace. Returns script names, URLs, visibility status, and creation info.',
       {},
       async () => {
         const { workspaceId } = this.requireAuth();
@@ -186,14 +232,15 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         const orgStub = this.getOrgStub();
         const scripts: WorkerScript[] = await orgStub.listWorkerScriptsByWorkspace(workspaceId);
 
-        const apps = scripts.map((s: WorkerScript) => ({
+        const apps = await Promise.all(scripts.map(async (s: WorkerScript) => ({
           name: s.script_name,
+          url: await this.getAppUrl(s.script_name),
           is_public: s.is_public,
           created_by: s.created_by,
           created_at: new Date(s.created_at).toISOString(),
           updated_at: new Date(s.updated_at).toISOString(),
           preview_status: s.preview_status,
-        }));
+        })));
 
         return this.textResponse({ count: apps.length, apps });
       }
@@ -233,43 +280,11 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           success: true,
           app: {
             name: result.script_name,
+            url: await this.getAppUrl(result.script_name),
             is_public: result.is_public,
             updated_at: new Date(result.updated_at).toISOString(),
           },
           message: `App '${script_name}' is now ${is_public ? 'public' : 'private'}`,
-        });
-      }
-    );
-
-    // Check if an app name is available
-    this.server.tool(
-      'check_app_name_available',
-      'Check if a worker/app script name is available or already taken. Script names must be globally unique.',
-      {
-        script_name: z.string().describe('The script name to check availability for'),
-      },
-      async ({ script_name }) => {
-        // Use KV lookup for fast check (no auth context needed for availability check)
-        const data = await this.env.APP_KV.get(`script_org:${script_name}`);
-
-        if (data) {
-          const { org_id } = JSON.parse(data) as { org_id: string; is_public: boolean };
-          const isOwnOrg = org_id === this.orgId;
-
-          return this.textResponse({
-            available: false,
-            script_name,
-            owned_by_current_org: isOwnOrg,
-            message: isOwnOrg
-              ? `Script name '${script_name}' is already used by your organization`
-              : `Script name '${script_name}' is already taken by another organization`,
-          });
-        }
-
-        return this.textResponse({
-          available: true,
-          script_name,
-          message: `Script name '${script_name}' is available`,
         });
       }
     );

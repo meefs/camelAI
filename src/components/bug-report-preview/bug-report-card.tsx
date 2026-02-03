@@ -17,6 +17,7 @@ export interface BugReportCardProps {
   description: string | null;
   timestamp: number;
   hostname?: string;
+  orgSlug?: string;
 }
 
 export function BugReportCard({
@@ -24,9 +25,12 @@ export function BugReportCard({
   description,
   timestamp,
   hostname,
+  orgSlug,
 }: BugReportCardProps) {
   const [open, setOpen] = useState(false);
-  const vanityHost = `${appName}.${getVanityDomain(hostname)}`;
+  const vanityHost = orgSlug
+    ? `${appName}.${orgSlug}.${getVanityDomain(hostname)}`
+    : `${appName}.${getVanityDomain(hostname)}`;
 
   return (
     <>
@@ -59,6 +63,7 @@ export function BugReportCard({
         description={description}
         timestamp={timestamp}
         hostname={hostname}
+        orgSlug={orgSlug}
       />
     </>
   );

@@ -101,6 +101,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadTitle: thread?.title ?? null,
     isNewThread,
     hostname,
+    orgSlug: authContext.currentOrg.slug,
   };
 }
 
@@ -113,6 +114,7 @@ function ChatWithData({
   threadTitle,
   isNewThread,
   hostname,
+  orgSlug,
 }: {
   chatDataPromise: Promise<ChatData>;
   threadId: string;
@@ -120,6 +122,7 @@ function ChatWithData({
   threadTitle: string | null;
   isNewThread: boolean;
   hostname: string | undefined;
+  orgSlug: string;
 }) {
   const chatData = use(chatDataPromise);
 
@@ -133,6 +136,7 @@ function ChatWithData({
       initialAppIsPublic={chatData?.initialAppIsPublic ?? null}
       isNewThread={isNewThread}
       hostname={hostname}
+      orgSlug={orgSlug}
     />
   );
 }
@@ -145,6 +149,7 @@ export default function ChatPage() {
     threadTitle,
     isNewThread,
     hostname,
+    orgSlug,
   } = useLoaderData<typeof loader>();
 
   if (!workspaceId) {
@@ -160,6 +165,7 @@ export default function ChatPage() {
         threadTitle={threadTitle}
         isNewThread={isNewThread}
         hostname={hostname}
+        orgSlug={orgSlug}
       />
     </Suspense>
   );

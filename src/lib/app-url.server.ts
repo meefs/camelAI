@@ -33,15 +33,15 @@ export async function getVanityDomain(contextOrRequest?: AppLoadContext | Reques
 /**
  * Get the full vanity URL for a deployed app (server-side).
  */
-export async function getAppUrl(scriptName: string, request?: Request): Promise<string> {
+export async function getAppUrl(scriptName: string, request?: Request, orgSlug?: string): Promise<string> {
   const hostname = request ? getHostnameFromRequest(request) : 'chiridion.ai';
-  return getAppUrlBase(scriptName, hostname);
+  return getAppUrlBase(scriptName, hostname, orgSlug);
 }
 
 /**
  * Get the full iframe URL for a deployed app (server-side).
  */
-export async function getAppIframeUrl(scriptName: string, request?: Request): Promise<string> {
+export async function getAppIframeUrl(scriptName: string, request?: Request, orgSlug?: string): Promise<string> {
   const hostname = request ? getHostnameFromRequest(request) : 'chiridion.ai';
-  return getAppIframeUrlBase(scriptName, hostname);
+  return getAppIframeUrlBase(scriptName, hostname, orgSlug);
 }

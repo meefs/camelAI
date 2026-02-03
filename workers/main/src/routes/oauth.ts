@@ -71,7 +71,7 @@ export async function handleOAuthCallback({ env, url, match }: RouteContext): Pr
       last_accessed: Date.now(),
     });
 
-    return redirect(stateData.redirect_url || '/', sessionId, secure);
+    return redirect(stateData.redirect_url || '/', sessionId, secure, url.hostname);
   } catch (err) {
     if (err instanceof Error && err.message === 'oauth_race_condition') {
       return redirect(`${url.origin}/login?error=oauth_race_condition`);

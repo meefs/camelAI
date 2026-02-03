@@ -592,9 +592,9 @@ When deploying software to the internet or for the user to access:
 3. **Use Durable Objects with SQLite** - For persistence, use SQLite-backed Durable Objects (not KV)
 4. **Use \`wrangler deploy --dispatch-namespace chiridion\`** - Deploy with the global wrangler binary
 
-The infrastructure is already configured for Worker deployments. For simple or lightweight apps, create a worker project manually without a framework. For larger, more sophisticated fullstack apps, read the deploy-software skill and use the \`create-worker\` template which includes React Router 7 in framework mode—comparable to Next.js but optimized for our stack.
+The infrastructure is already configured for Worker deployments. **For any web app with a UI, use \`create-worker\` to scaffold from the Chiridion starter template**—it's fast to create, has React Router 7 + shadcn/ui pre-configured, and handles both simple and complex apps. Only skip the template for pure API workers with no frontend.
 
-**Important:** Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies—they take too long. The \`create-worker\` template has everything pre-configured.
+**Important:** Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies—they take too long. The Chiridion starter template has everything pre-configured.
 `;
 
 // Handle AskUserQuestion via canUseTool callback

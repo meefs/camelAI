@@ -31,6 +31,7 @@ interface AppCardProps {
   showWorkspaceBadge?: boolean;
   isAdmin: boolean;
   hostname?: string;
+  orgSlug?: string;
   now?: number;
   onOpenSettings: (app: WorkerScriptWithCreator) => void;
   onStartChat: (app: WorkerScriptWithCreator) => void;
@@ -79,6 +80,7 @@ export function AppCard({
   showWorkspaceBadge,
   isAdmin,
   hostname,
+  orgSlug,
   now,
   onOpenSettings,
   onStartChat,
@@ -89,7 +91,7 @@ export function AppCard({
   const [previewFailed, setPreviewFailed] = useState(false);
   const [previewLoaded, setPreviewLoaded] = useState(false);
   const previewRef = useRef<HTMLImageElement | null>(null);
-  const appUrl = getAppUrl(app.script_name, hostname);
+  const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
   const displayUrl = appUrl.replace(/^https?:\/\//, '');
   const creator = creatorOverride ?? app.creator;
   const creatorLabel = getCreatorLabel(creator, app.created_by);
