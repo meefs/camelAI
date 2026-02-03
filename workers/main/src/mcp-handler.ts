@@ -11,7 +11,7 @@ import { z } from 'zod';
 import type { ApiTokenData } from './api-tokens';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
-import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField } from './durable-objects';
+import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse } from './durable-objects';
 import type { WorkspaceContainer, WorkspaceContainerEnv } from './workspace-container';
 import { getWorkspaceContainer } from './workspace-container';
 import type { Integration } from '../../../src/types';
@@ -54,6 +54,13 @@ interface PendingConnectionSetup {
   timeoutId: ReturnType<typeof setTimeout>;
 }
 
+// Pending bug report capture request with resolver
+interface PendingBugReportCapture {
+  resolve: (response: BugReportCaptureResponse) => void;
+  reject: (error: Error) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
+
 /**
  * MCP Agent implementation with deployment management tools
  */
@@ -72,6 +79,8 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
   // Pending connection setup promises (requestId -> resolver)
   private pendingConnectionSetups: Map<string, PendingConnectionSetup> = new Map();
+  // Pending bug report capture promises (requestId -> resolver)
+  private pendingBugReports: Map<string, PendingBugReportCapture> = new Map();
 
   /**
    * Override fetch to extract auth context from headers before processing
@@ -156,6 +165,32 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
   }
 
   /**
+   * RPC method called by ChatThreadDO when a bug report capture response is received.
+   * Also cleans up persisted storage for hibernation recovery.
+   */
+  receiveBugReportCaptureResponse(response: BugReportCaptureResponse): void {
+    // Clean up persisted storage (for hibernation recovery) - sync KV is faster
+    this.ctx.storage.kv.delete(`pending_bug_report:${response.requestId}`);
+
+    // Resolve in-memory promise if it exists (DO didn't hibernate)
+    const pending = this.pendingBugReports.get(response.requestId);
+    if (pending) {
+      clearTimeout(pending.timeoutId);
+      this.pendingBugReports.delete(response.requestId);
+      pending.resolve(response);
+    }
+    // If not in Map, the tool call already timed out - nothing more to do
+  }
+
+  /**
+   * Persist a pending bug report capture to storage (for hibernation recovery).
+   * Uses sync KV for better performance.
+   */
+  private persistPendingBugReport(requestId: string): void {
+    this.ctx.storage.kv.put(`pending_bug_report:${requestId}`, Date.now().toString());
+  }
+
+  /**
    * Register a pending connection setup and return a promise that resolves when user responds.
    * Call persistPendingConnectionSetup() first to ensure storage is written.
    */
@@ -169,6 +204,23 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
       }, timeoutMs);
 
       this.pendingConnectionSetups.set(requestId, { resolve, reject, timeoutId });
+    });
+  }
+
+  /**
+   * Wait for a bug report capture response from the user (via ChatThreadDO callback).
+   * Call persistPendingBugReport() first to ensure storage is written.
+   */
+  private waitForBugReportCapture(requestId: string, timeoutMs: number): Promise<BugReportCaptureResponse> {
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.pendingBugReports.delete(requestId);
+        // Clean up storage on timeout - sync KV
+        this.ctx.storage.kv.delete(`pending_bug_report:${requestId}`);
+        reject(new Error('Bug report capture timed out'));
+      }, timeoutMs);
+
+      this.pendingBugReports.set(requestId, { resolve, reject, timeoutId });
     });
   }
 
@@ -857,6 +909,121 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             error: errorMessage,
             message: isTimeout
               ? 'Connection setup timed out. The user did not complete the setup in time.'
+              : undefined,
+          });
+        }
+      }
+    );
+
+    // Capture a bug report from the currently deployed app
+    this.server.tool(
+      'capture_bug_report',
+      'Capture a bug report from the currently deployed app preview. This tool triggers the bug capture UI in the user\'s browser, which captures a screenshot, DOM snapshot, console logs, network requests, and session recording. Use this when you need to debug an issue with a deployed app or want to see the current state of the preview. The user will see a dialog allowing them to add a description before the capture is completed.',
+      {
+        message: z
+          .string()
+          .optional()
+          .describe('Optional message to show the user explaining why you need to capture a bug report (e.g., "I\'d like to capture the current state to debug the login issue")'),
+      },
+      async ({ message }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ error: 'No workspace context available' });
+        }
+
+        // Thread ID comes from the signed token (can't be spoofed)
+        const threadId = this.threadId;
+        if (!threadId) {
+          return this.textResponse({
+            success: false,
+            error: 'No thread context available. This tool requires a per-thread MCP token.',
+          });
+        }
+
+        const requestId = crypto.randomUUID();
+        const timeoutMs = 2 * 60 * 1000; // 2 minutes (screenshot capture can take time)
+
+        try {
+          // Get the MCP DO's own ID so ChatThreadDO can call back
+          const mcpDoId = this.ctx.id.toString();
+
+          // Persist to storage first (for hibernation recovery) - sync KV
+          this.persistPendingBugReport(requestId);
+
+          // Register the pending request BEFORE sending to ChatThreadDO
+          const responsePromise = this.waitForBugReportCapture(requestId, timeoutMs);
+
+          // Send prompt to ChatThreadDO with callback info
+          const chatThreadStub = this.getChatThreadStub(threadId);
+          const promptResponse = await chatThreadStub.fetch(
+            new Request('http://internal/bug-report/prompt', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                requestId,
+                message,
+                createdAt: Date.now(),
+                mcpDoId,
+              } as BugReportCaptureRequest & { mcpDoId: string }),
+            })
+          );
+
+          if (!promptResponse.ok) {
+            // Clean up pending request (both in-memory and storage)
+            const pending = this.pendingBugReports.get(requestId);
+            if (pending) {
+              clearTimeout(pending.timeoutId);
+              this.pendingBugReports.delete(requestId);
+            }
+            this.ctx.storage.kv.delete(`pending_bug_report:${requestId}`);
+            return this.textResponse({
+              success: false,
+              error: 'Failed to send bug report prompt to user',
+            });
+          }
+
+          // Wait for user response (via RPC callback from ChatThreadDO)
+          const userResponse = await responsePromise;
+
+          if (userResponse.cancelled) {
+            return this.textResponse({
+              success: false,
+              cancelled: true,
+              message: 'User cancelled the bug report capture',
+            });
+          }
+
+          if (!userResponse.bugReport) {
+            return this.textResponse({
+              success: false,
+              error: 'Invalid response from user - missing bug report data',
+            });
+          }
+
+          const { reportPath, screenshotPath, sessionRecordingPath, appName, appUrl, userDescription } = userResponse.bugReport;
+
+          return this.textResponse({
+            success: true,
+            bug_report: {
+              report_path: reportPath,
+              screenshot_path: screenshotPath,
+              session_recording_path: sessionRecordingPath,
+              app_name: appName,
+              app_url: appUrl,
+              user_description: userDescription,
+            },
+            message: `Bug report captured successfully for app "${appName}". The report is available at: ${reportPath}`,
+          });
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : 'Failed to capture bug report';
+          const isTimeout = errorMessage.includes('timed out');
+
+          return this.textResponse({
+            success: false,
+            timeout: isTimeout,
+            error: errorMessage,
+            message: isTimeout
+              ? 'Bug report capture timed out. The user did not complete the capture in time.'
               : undefined,
           });
         }

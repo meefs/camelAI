@@ -64,6 +64,24 @@ wrangler tail
 
 > **Note:** `wrangler dev` is not available. Deployments are fast - just deploy and iterate in the cloud.
 
+## Post-Deployment Verification
+
+After deploying a worker, use MCP tools to verify the deployment and get the live URL:
+
+1. **Get the deployed app URL** - Use the `list_apps` MCP tool to retrieve the URL of deployed workers
+2. **Take a screenshot** - Use the `take_app_screenshot` MCP tool to capture the deployed app and verify it looks correct
+
+```bash
+# Example workflow after yarn deploy
+# 1. List apps to get the URL
+#    → Use MCP tool: list_apps
+
+# 2. Take a screenshot to verify the UI
+#    → Use MCP tool: take_app_screenshot with the script name
+```
+
+This ensures the deployment succeeded and the app renders correctly before sharing the URL with the user.
+
 ## Durable Objects with SQLite Storage
 
 SQLite-backed Durable Objects are the recommended persistence layer. Each Durable Object instance has its own private SQLite database with up to 10GB of storage.

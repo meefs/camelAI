@@ -48,6 +48,27 @@ export interface ConnectionSetupResponse {
   };
 }
 
+// Bug report capture request
+export interface BugReportCaptureRequest {
+  requestId: string;
+  message?: string; // Optional message to show user explaining why capture is needed
+  createdAt: number;
+}
+
+// Bug report capture response from user
+export interface BugReportCaptureResponse {
+  requestId: string;
+  cancelled: boolean;
+  bugReport?: {
+    reportPath: string; // R2 path to the bug report JSON
+    screenshotPath?: string; // R2 path to the screenshot
+    sessionRecordingPath?: string; // R2 path to the session recording
+    appName: string;
+    appUrl: string;
+    userDescription?: string;
+  };
+}
+
 export interface Thread {
   id: string;
   title: string;
@@ -67,6 +88,7 @@ export interface Message {
 // Forward declaration for MCP DO RPC methods - used for callback from ChatThreadDO
 interface ChiridionMcpRpc {
   receiveConnectionSetupResponse(response: ConnectionSetupResponse): void;
+  receiveBugReportCaptureResponse(response: BugReportCaptureResponse): void;
 }
 
 export interface ChatEnv {
@@ -101,6 +123,12 @@ interface PendingConnectionSetupInfo {
   createdAt: number;
 }
 
+// Pending bug report capture with MCP callback info
+interface PendingBugReportInfo {
+  mcpDoId: string;
+  createdAt: number;
+}
+
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private previewWorkers: string[] = [];
   private previewVersion: number = 0;
@@ -108,6 +136,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   // Pending connection setup requests (requestId -> MCP DO callback info)
   // This is also persisted to storage to survive hibernation
   private pendingConnectionSetups: Map<string, PendingConnectionSetupInfo> = new Map();
+  // Pending bug report captures (requestId -> MCP DO callback info)
+  private pendingBugReports: Map<string, PendingBugReportInfo> = new Map();
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -163,6 +193,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         // Only restore if not expired (30 minutes)
         if (Date.now() - info.createdAt < 30 * 60 * 1000) {
           this.pendingConnectionSetups.set(requestId, info);
+        } else {
+          // Clean up expired entries
+          ctx.storage.kv.delete(key);
+        }
+      }
+
+      // Restore pending bug reports from storage (sync KV)
+      const bugReportEntries = ctx.storage.kv.list({ prefix: 'pending_bug_report:' });
+      for (const [key, value] of bugReportEntries) {
+        const info = value as PendingBugReportInfo;
+        const requestId = key.replace('pending_bug_report:', '');
+        // Only restore if not expired (5 minutes - bug reports should be quick)
+        if (Date.now() - info.createdAt < 5 * 60 * 1000) {
+          this.pendingBugReports.set(requestId, info);
         } else {
           // Clean up expired entries
           ctx.storage.kv.delete(key);
@@ -260,6 +304,39 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
     }
 
+    // HTTP API for bug report capture prompts (called by MCP server)
+    if (url.pathname === '/bug-report/prompt' && request.method === 'POST') {
+      const body = await request.json() as BugReportCaptureRequest & { mcpDoId?: string };
+      const requestId = body.requestId || crypto.randomUUID();
+      const mcpDoId = body.mcpDoId;
+
+      if (!mcpDoId) {
+        return new Response(JSON.stringify({ error: 'Missing MCP DO ID for callback' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Store pending request with MCP callback info (both in-memory and durable storage)
+      const pendingInfo: PendingBugReportInfo = {
+        mcpDoId,
+        createdAt: Date.now(),
+      };
+      this.pendingBugReports.set(requestId, pendingInfo);
+      this.ctx.storage.kv.put(`pending_bug_report:${requestId}`, pendingInfo);
+
+      // Broadcast prompt to all connected clients
+      this.broadcast({
+        type: 'bug_report_prompt',
+        requestId,
+        message: body.message,
+      });
+
+      return new Response(JSON.stringify({ requestId }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     return new Response('Not found', { status: 404 });
   }
 
@@ -286,6 +363,26 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
             await mcpStub.receiveConnectionSetupResponse(response);
           } catch (err) {
             console.error('[ChatThreadDO] Failed to call MCP DO callback:', err);
+          }
+        }
+      }
+
+      if (data.type === 'bug_report_response') {
+        const response = data as unknown as BugReportCaptureResponse;
+        const pendingInfo = this.pendingBugReports.get(response.requestId);
+
+        if (response.requestId && pendingInfo) {
+          // Clean up pending request (both in-memory and durable storage)
+          this.pendingBugReports.delete(response.requestId);
+          this.ctx.storage.kv.delete(`pending_bug_report:${response.requestId}`);
+
+          // Call back to MCP DO via RPC
+          try {
+            const mcpDoId = this.env.MCP_OBJECT.idFromString(pendingInfo.mcpDoId);
+            const mcpStub = this.env.MCP_OBJECT.get(mcpDoId) as unknown as ChiridionMcpRpc;
+            await mcpStub.receiveBugReportCaptureResponse(response);
+          } catch (err) {
+            console.error('[ChatThreadDO] Failed to call MCP DO callback for bug report:', err);
           }
         }
       }

@@ -355,6 +355,8 @@ export default function Chat({
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const [bugReportStatus, setBugReportStatus] = useState<BugReportStatus>('idle');
   const [bugReportError, setBugReportError] = useState<string | null>(null);
+  // MCP-triggered bug report capture
+  const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const normalizedMessages = useMemo(
     () => normalizeToolResultMessages(messages),
@@ -1138,6 +1140,14 @@ export default function Chat({
             dynamicSchema: data.dynamicSchema as ConnectionSetupPromptData['dynamicSchema'],
             mcpDoId: data.mcpDoId as string | undefined,
           });
+        } else if (data.type === 'bug_report_prompt' && data.requestId) {
+          // MCP server is prompting user to capture a bug report - auto-capture without dialog
+          const mcpRequest = {
+            requestId: data.requestId as string,
+            message: data.message as string | undefined,
+          };
+          // Store the request and trigger auto-capture
+          setMcpBugReportPrompt(mcpRequest);
         }
       } catch (e) {
         console.error('Preview WebSocket message parse error:', e);
@@ -1750,12 +1760,35 @@ export default function Chat({
     setConnectionSetupPrompt(null);
   }, []);
 
+  // Handle bug report dialog open/close - sends cancellation if MCP-triggered
+  const handleBugReportOpenChange = useCallback((open: boolean) => {
+    if (!open && mcpBugReportPrompt) {
+      // User closed the dialog while MCP capture was pending - send cancellation
+      if (previewWsRef.current?.readyState === WebSocket.OPEN) {
+        previewWsRef.current.send(JSON.stringify({
+          type: 'bug_report_response',
+          requestId: mcpBugReportPrompt.requestId,
+          cancelled: true,
+        }));
+      }
+      setMcpBugReportPrompt(null);
+    }
+    setBugReportOpen(open);
+  }, [mcpBugReportPrompt]);
+
   // Bug report submission
   const submitBugReport = useCallback(async (report: { description: string }) => {
     if (!deployedApp || !resolvedWorkspaceId || !threadId) return;
 
-    setBugReportStatus('capturing');
-    setBugReportError(null);
+    // Check if this is an MCP-triggered capture
+    const isMcpTriggered = !!mcpBugReportPrompt;
+    const mcpRequestId = mcpBugReportPrompt?.requestId;
+
+    // Only update UI status for manual (non-MCP) captures
+    if (!isMcpTriggered) {
+      setBugReportStatus('capturing');
+      setBugReportError(null);
+    }
 
     // Generate unique request ID
     const requestId = `bug_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -1807,7 +1840,9 @@ export default function Chat({
     const debugData = await debugDataPromise;
 
     // Upload to R2
-    setBugReportStatus('uploading');
+    if (!isMcpTriggered) {
+      setBugReportStatus('uploading');
+    }
     try {
       const reportId = `bug-report-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
       let screenshotPath: string | null = null;
@@ -1906,65 +1941,107 @@ export default function Chat({
 
       const uploadData = await uploadResponse.json() as { path: string };
 
-      // Send message to agent
-      setBugReportStatus('sending');
+      if (!isMcpTriggered) {
+        setBugReportStatus('sending');
+      }
 
-      const description = report.description.trim();
-      const agentMessage = description
-        ? `I found a bug in the deployed app "${deployedApp}".
+      // If this is an MCP-triggered capture, send response via preview WebSocket
+      if (isMcpTriggered && mcpRequestId && previewWsRef.current?.readyState === WebSocket.OPEN) {
+        previewWsRef.current.send(JSON.stringify({
+          type: 'bug_report_response',
+          requestId: mcpRequestId,
+          cancelled: false,
+          bugReport: {
+            reportPath: uploadData.path,
+            screenshotPath,
+            sessionRecordingPath,
+            appName: deployedApp,
+            appUrl: vanityUrl,
+            userDescription: report.description.trim() || undefined,
+          },
+        }));
+
+        // Clear the MCP prompt (no dialog to close)
+        setMcpBugReportPrompt(null);
+      } else {
+        // Manual bug report - send message to agent
+        const description = report.description.trim();
+        const agentMessage = description
+          ? `I found a bug in the deployed app "${deployedApp}".
 
 **Description:** ${description}
 
 I've captured a debug report with the DOM snapshot and console logs. Please investigate and fix this bug.
 
 (bug report: ${uploadData.path})`
-        : `I found a bug in the deployed app "${deployedApp}".
+          : `I found a bug in the deployed app "${deployedApp}".
 
 I've captured a debug report with the DOM snapshot and console logs. Please investigate and fix this bug.
 
 (bug report: ${uploadData.path})`;
 
-      const userMsg: Message = {
-        id: `local_${Date.now()}`,
-        thread_id: threadId,
-        role: 'user',
-        content: agentMessage,
-        created_at: Date.now(),
-      };
-      forceScrollOnNextUpdate.current = true;
-      setMessages(prev => [...prev, userMsg]);
-
-      // Send via WebSocket if connected
-      if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
-        wsRef.current.send(JSON.stringify({
-          type: 'message',
+        const userMsg: Message = {
+          id: `local_${Date.now()}`,
+          thread_id: threadId,
+          role: 'user',
           content: agentMessage,
-          sessionId: sessionIdRef.current,
-          threadId,
-        }));
-        setLoading(true);
-      } else {
-        // Queue the message
-        setPendingMessages(prev => [...prev, userMsg]);
-        setLoading(true);
+          created_at: Date.now(),
+        };
+        forceScrollOnNextUpdate.current = true;
+        setMessages(prev => [...prev, userMsg]);
 
-        // Trigger reconnect if needed
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-          connectWebSocketRef.current?.(threadId, true);
+        // Send via WebSocket if connected
+        if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
+          wsRef.current.send(JSON.stringify({
+            type: 'message',
+            content: agentMessage,
+            sessionId: sessionIdRef.current,
+            threadId,
+          }));
+          setLoading(true);
+        } else {
+          // Queue the message
+          setPendingMessages(prev => [...prev, userMsg]);
+          setLoading(true);
+
+          // Trigger reconnect if needed
+          if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+            connectWebSocketRef.current?.(threadId, true);
+          }
         }
-      }
 
-      setBugReportStatus('done');
-      setTimeout(() => {
-        setBugReportOpen(false);
-        setBugReportStatus('idle');
-      }, 1000);
+        setBugReportStatus('done');
+        setTimeout(() => {
+          setBugReportOpen(false);
+          setBugReportStatus('idle');
+        }, 1000);
+      }
     } catch (e) {
       console.error('Bug report submission failed:', e);
-      setBugReportStatus('error');
-      setBugReportError(e instanceof Error ? e.message : 'Failed to submit bug report');
+
+      // If MCP-triggered, send cancellation response
+      if (isMcpTriggered && mcpRequestId && previewWsRef.current?.readyState === WebSocket.OPEN) {
+        previewWsRef.current.send(JSON.stringify({
+          type: 'bug_report_response',
+          requestId: mcpRequestId,
+          cancelled: true,
+        }));
+        setMcpBugReportPrompt(null);
+      } else {
+        // Only update UI status for manual captures
+        setBugReportStatus('error');
+        setBugReportError(e instanceof Error ? e.message : 'Failed to submit bug report');
+      }
     }
-  }, [deployedApp, resolvedWorkspaceId, threadId, hostname, ready, setLoading, setPendingMessages, setMessages]);
+  }, [deployedApp, resolvedWorkspaceId, threadId, hostname, ready, setLoading, setPendingMessages, setMessages, mcpBugReportPrompt]);
+
+  // Auto-capture when MCP triggers bug report (no dialog needed)
+  useEffect(() => {
+    if (mcpBugReportPrompt && deployedApp && resolvedWorkspaceId && threadId) {
+      // Trigger the capture automatically without showing dialog
+      submitBugReport({ description: '' });
+    }
+  }, [mcpBugReportPrompt, deployedApp, resolvedWorkspaceId, threadId, submitBugReport]);
 
   function sendMessage() {
     if (!input.trim() || !shouldShowChat || !resolvedWorkspaceId || !threadId) {
@@ -2413,10 +2490,10 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         />
       )}
 
-      {/* Bug Report Dialog */}
+      {/* Bug Report Dialog (for manual user-initiated reports) */}
       <BugReportDialog
         open={bugReportOpen}
-        onOpenChange={setBugReportOpen}
+        onOpenChange={handleBugReportOpenChange}
         onSubmit={submitBugReport}
         status={bugReportStatus}
         error={bugReportError}

@@ -23,6 +23,8 @@ interface BugReportDialogProps {
   onSubmit: (report: { description: string }) => void;
   status: BugReportStatus;
   error?: string | null;
+  /** Message from MCP agent explaining why the capture is needed */
+  mcpMessage?: string;
 }
 
 const statusMessages: Record<BugReportStatus, string> = {
@@ -40,6 +42,7 @@ export function BugReportDialog({
   onSubmit,
   status,
   error,
+  mcpMessage,
 }: BugReportDialogProps) {
   const [description, setDescription] = useState('');
   const descriptionRef = useRef(description);
@@ -102,10 +105,17 @@ export function BugReportDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Bug className="h-5 w-5" />
-            Report a Bug
+            {mcpMessage ? 'Capture Bug Report' : 'Report a Bug'}
           </DialogTitle>
           <DialogDescription>
-            Tell us what went wrong - what you expected vs what actually happened, steps to reproduce, or anything else that might help.
+            {mcpMessage ? (
+              <>
+                <span className="block mb-2 text-foreground/80">{mcpMessage}</span>
+                <span>Optionally add a description of what you see, then click Capture to send the debug data to the agent.</span>
+              </>
+            ) : (
+              'Tell us what went wrong - what you expected vs what actually happened, steps to reproduce, or anything else that might help.'
+            )}
           </DialogDescription>
         </DialogHeader>
 
@@ -181,10 +191,10 @@ export function BugReportDialog({
             {isLoading ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Submitting...
+                {mcpMessage ? 'Capturing...' : 'Submitting...'}
               </>
             ) : (
-              'Submit Bug Report'
+              mcpMessage ? 'Capture' : 'Submit Bug Report'
             )}
           </Button>
         </DialogFooter>
