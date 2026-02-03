@@ -5,7 +5,7 @@ import { WebSocketServer } from 'ws';
 import os from 'os';
 
 // Version for verifying container has latest code
-const VERSION = '2026-01-29-claude-api-proxy';
+const VERSION = '2026-02-03-ws-ping-keepalive';
 
 // Sleep helper (replaces sleep)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -486,6 +486,9 @@ process.on('unhandledRejection', (error) => {
 
 let totalConnections = 0;
 let serverStartTime = Date.now();
+
+// WebSocket ping/pong keep-alive interval (30 seconds)
+const PING_INTERVAL_MS = 30000;
 
 const STATUS_LOG_INTERVAL = 5 * 60 * 1000;
 setInterval(() => {
@@ -1288,6 +1291,12 @@ wss.on('connection', (ws, req) => {
   totalConnections++;
   log('[ws-server]', 'ws_open', { totalConnections });
 
+  // Track connection liveness for ping/pong
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
   // Store connection metadata on the socket
   ws.data = {
     threadDeployToken: req.headers['x-chiridion-thread-deploy-token'] || null,
@@ -1410,4 +1419,21 @@ wss.on('connection', (ws, req) => {
 
 httpServer.listen(PORT, () => {
   log('[ws-server]', 'Server listening', { port: PORT });
+});
+
+// Ping all connected clients periodically to detect dead connections
+const pingInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (!ws.isAlive) {
+      log('[ws-server]', 'ws_ping_timeout', { threadId: ws.data?.threadId });
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, PING_INTERVAL_MS);
+
+// Clean up ping interval on server close
+wss.on('close', () => {
+  clearInterval(pingInterval);
 });
