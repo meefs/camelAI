@@ -496,66 +496,71 @@ The template includes pre-configured AI chat capabilities using the Vercel AI SD
 
 **See [AI-APPS.md](AI-APPS.md) for setup and customization.**
 
-## Git Version Control
+## Project Snapshots with JuiceFS
 
-Use git to track changes and commit frequently. This makes it easy to revert mistakes and roll back to working states.
+Use JuiceFS clone for instant project snapshots. This is faster than git and captures the complete project state including node_modules and build artifacts.
 
-### Initialize Git
+### Create Snapshots
 
-After creating a project with `create-worker`, initialize git:
-
-```bash
-cd my-app
-git init
-git add .
-git commit -m "Initial commit from create-worker"
-```
-
-### Commit Often
-
-Commit after each meaningful change:
+Snapshots are instant (copy-on-write) and take no additional disk space until files diverge:
 
 ```bash
-# After adding a new feature
-git add .
-git commit -m "Add user authentication"
+# Create snapshots directory (once)
+mkdir -p /home/claude/.snapshots
 
-# After fixing a bug
-git add .
-git commit -m "Fix login redirect loop"
+# Snapshot before making risky changes
+juicefs clone /home/claude/my-app /home/claude/.snapshots/my-app-v1-working
 
-# After adding components
-git add .
-git commit -m "Add dashboard UI with shadcn cards"
+# Snapshot after a feature works
+juicefs clone /home/claude/my-app /home/claude/.snapshots/my-app-v2-added-auth
 ```
 
-### Revert and Rollback
+### Rollback
 
-When something breaks, git makes recovery simple:
+When something breaks, restore instantly:
 
 ```bash
-# Undo uncommitted changes to a file
-git checkout -- app/routes/broken-page.tsx
-
-# Undo all uncommitted changes
-git checkout -- .
-
-# Revert to the previous commit (keeps history)
-git revert HEAD
-
-# View recent commits to find a good state
-git log --oneline -10
-
-# Reset to a specific commit (discards commits after it)
-git reset --hard <commit-hash>
+# Remove broken state and restore from snapshot
+rm -rf /home/claude/my-app
+juicefs clone /home/claude/.snapshots/my-app-v1-working /home/claude/my-app
 ```
 
-### Recommended Workflow
+### Naming Convention
 
-1. **Commit before major changes** - Create a checkpoint before refactoring or adding complex features
-2. **Commit after each working feature** - Don't bundle unrelated changes
-3. **Write descriptive commit messages** - Future you will thank present you
-4. **Commit before deploying** - Always have a clean state to roll back to
+Use descriptive names with version numbers:
+
+```
+.snapshots/
+  my-app-v1-initial/
+  my-app-v2-added-auth/
+  my-app-v3-fixed-login/
+```
+
+### When to Snapshot
+
+1. **After `create-worker`** - Capture the clean initial state
+2. **Before risky changes** - Refactoring, dependency updates, major features
+3. **After successful deploy** - Known working state to roll back to
+4. **Before experimenting** - Try ideas without fear
+
+### Cleanup
+
+Remove old snapshots when no longer needed:
+
+```bash
+rm -rf /home/claude/.snapshots/my-app-v1-initial
+```
+
+### Why JuiceFS Instead of Git
+
+| Aspect | JuiceFS Clone | Git |
+|--------|---------------|-----|
+| Speed | Instant (copy-on-write) | Slow (hashing, indexing) |
+| Scope | Complete project state | Only tracked files |
+| node_modules | Included | Excluded (.gitignore) |
+| Build artifacts | Included | Excluded |
+| Complexity | Single command | Stage, commit, manage index |
+| Rollback | Instant clone | Reset, checkout, potential conflicts |
 
 ## Best Practices
 
