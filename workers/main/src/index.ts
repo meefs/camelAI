@@ -26,6 +26,8 @@ import {
   handleSlackOAuthCallback,
   handleNotionOAuthStart,
   handleNotionOAuthCallback,
+  handleSalesforceOAuthStart,
+  handleSalesforceOAuthCallback,
 } from './routes/integrations.js';
 import { handleThreadWebSocket, handleChatWebSocket } from './routes/websocket.js';
 import { handleClaudeProxy, handleCountTokens } from './routes/claude-proxy.js';
@@ -75,6 +77,8 @@ const routes: Route[] = [
   { method: 'GET', path: /^\/api\/integrations\/slack\/callback$/, handler: handleSlackOAuthCallback },
   { method: 'GET', path: /^\/api\/integrations\/notion\/oauth$/, handler: handleNotionOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/notion\/callback$/, handler: handleNotionOAuthCallback },
+  { method: 'GET', path: /^\/api\/integrations\/salesforce\/oauth$/, handler: handleSalesforceOAuthStart },
+  { method: 'GET', path: /^\/api\/integrations\/salesforce\/callback$/, handler: handleSalesforceOAuthCallback },
 
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/thread\/([^/]+)$/, handler: handleThreadWebSocket, websocket: true },

@@ -25,6 +25,8 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, CfApiProxyEn
   SLACK_CLIENT_SECRET?: string;
   NOTION_CLIENT_ID?: string;
   NOTION_CLIENT_SECRET?: string;
+  SALESFORCE_CLIENT_ID?: string;
+  SALESFORCE_CLIENT_SECRET?: string;
   INTEGRATION_SECRET_KEY: string;
   // Claude API Proxy (CF AI Gateway)
   CF_GATEWAY_NAME?: string;
