@@ -29,7 +29,7 @@ export function BugReportCard({
 }: BugReportCardProps) {
   const [open, setOpen] = useState(false);
   const vanityHost = orgSlug
-    ? `${appName}.${orgSlug}.${getVanityDomain(hostname)}`
+    ? `${appName}--${orgSlug}.${getVanityDomain(hostname)}`
     : `${appName}.${getVanityDomain(hostname)}`;
 
   return (

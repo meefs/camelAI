@@ -45,7 +45,7 @@ export function BugReportDetailDialog({
   orgSlug,
 }: BugReportDetailDialogProps) {
   const vanityHost = orgSlug
-    ? `${appName}.${orgSlug}.${getVanityDomain(hostname)}`
+    ? `${appName}--${orgSlug}.${getVanityDomain(hostname)}`
     : `${appName}.${getVanityDomain(hostname)}`;
 
   return (

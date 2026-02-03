@@ -623,7 +623,7 @@ export async function proxyCloudflareApi(
     const scriptPathMatch = rest.match(/^scripts\/([^\/]+)(\/.*)?$/);
     if (scriptPathMatch && originalScriptName) {
       const suffix = scriptPathMatch[2] ?? '';
-      const dispatchScriptName = `${orgSlug}--${originalScriptName}`;
+      const dispatchScriptName = `${originalScriptName}--${orgSlug}`;
       rest = `scripts/${encodeURIComponent(dispatchScriptName)}${suffix}`;
     }
 
@@ -668,9 +668,9 @@ export async function proxyCloudflareApi(
   }
 
   // Script ownership is now enforced by org-slug namespacing in the script name.
-  // Scripts are named {org-slug}--{script-name}, so org A cannot deploy to org B's scripts.
+  // Scripts are named {script-name}--{org-slug}, so org A cannot deploy to org B's scripts.
   // The org-slug in the token is verified, so the script name prefix is trusted.
-  const dispatchScriptName = originalScriptName ? `${orgSlug}--${originalScriptName}` : null;
+  const dispatchScriptName = originalScriptName ? `${originalScriptName}--${orgSlug}` : null;
 
   const upstreamUrl = new URL(`https://api.cloudflare.com${pathname}${url.search}`);
   const headers = new Headers(request.headers);

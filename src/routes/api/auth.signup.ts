@@ -46,7 +46,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     const { userId } = await createUser(authEnv, email, password, name ?? null);
 
     // Create org for new user (which also creates default workspace)
-    const orgName = name ? `${name}'s Organization` : `${email.split('@')[0]}'s Organization`;
+    const orgName = name || email.split('@')[0];
     const { org, defaultWorkspaceId } = await createOrg(authEnv, orgName, userId);
 
     // Create session with the default workspace

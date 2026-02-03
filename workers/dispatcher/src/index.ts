@@ -71,71 +71,61 @@ function isEnvPrefix(s: string): boolean {
  * Parse worker route from hostname.
  * Returns script name and org slug for new format, or just script name for legacy.
  *
- * New format: {script}.{org-slug}.chiridion.app -> { scriptName, orgSlug, dispatchScriptName }
- * New format: {script}.{org-slug}.apps.chiridion.ai -> { scriptName, orgSlug, dispatchScriptName }
+ * New flat format: {script}--{org-slug}.chiridion.app -> { scriptName, orgSlug, dispatchScriptName }
+ * New flat format: {script}--{org-slug}.apps.chiridion.ai -> { scriptName, orgSlug, dispatchScriptName }
  * Legacy format: {script}.chiridion.app -> { scriptName, orgSlug: null, dispatchScriptName: scriptName }
+ *
+ * The new format uses a flat structure with double-hyphen separator to avoid
+ * nested subdomain issues with DNS wildcards and SSL certificates.
+ * Dispatch namespace uses: {script}--{org-slug}
  */
 function parseWorkerRoute(hostname: string): { scriptName: string; orgSlug: string | null; dispatchScriptName: string } | null {
   const parts = hostname.split('.');
 
   // .chiridion.app domain
   if (hostname.endsWith('.chiridion.app')) {
-    // Legacy: {script}.chiridion.app (3 parts)
-    if (parts.length === 3) {
-      const scriptName = parts[0]!;
-      return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
-    }
-    // 4 parts: either new format {script}.{org-slug}.chiridion.app
-    //          or legacy with env {script}.{env}.chiridion.app
-    if (parts.length === 4) {
-      const scriptName = parts[0]!;
-      const second = parts[1]!;
-      if (isEnvPrefix(second)) {
-        // Legacy with env prefix
-        return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
-      }
-      // New format
-      const orgSlug = second;
-      const dispatchScriptName = `${orgSlug}--${scriptName}`;
+    // Need at least 3 parts: {something}.chiridion.app
+    if (parts.length < 3) return null;
+
+    const firstPart = parts[0]!;
+
+    // Check if first part contains org-slug separator (new flat format)
+    // Format: {script}--{org-slug}
+    if (firstPart.includes('--')) {
+      const separatorIndex = firstPart.indexOf('--');
+      const scriptName = firstPart.slice(0, separatorIndex);
+      const orgSlug = firstPart.slice(separatorIndex + 2);
+      if (!orgSlug || !scriptName) return null;
+      const dispatchScriptName = `${scriptName}--${orgSlug}`;
       return { scriptName, orgSlug, dispatchScriptName };
     }
-    // 5+ parts: new format with env {script}.{org-slug}.{env}.chiridion.app
-    if (parts.length >= 5) {
-      const scriptName = parts[0]!;
-      const orgSlug = parts[1]!;
-      const dispatchScriptName = `${orgSlug}--${scriptName}`;
-      return { scriptName, orgSlug, dispatchScriptName };
-    }
+
+    // Legacy format: {script}.chiridion.app or {script}.{env}.chiridion.app
+    const scriptName = firstPart;
+    return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
   }
 
   // .apps.chiridion.ai domain (same-site for iframes)
   if (hostname.endsWith('.chiridion.ai') && hostname.includes('.apps.')) {
-    // Legacy: {script}.apps.chiridion.ai (4 parts)
-    if (parts.length === 4 && parts[1] === 'apps') {
-      const scriptName = parts[0]!;
-      return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
-    }
-    // 5 parts: either new format {script}.{org-slug}.apps.chiridion.ai
-    //          or legacy with env {script}.apps.{env}.chiridion.ai
-    if (parts.length === 5) {
-      const scriptName = parts[0]!;
-      const second = parts[1]!;
-      if (second === 'apps') {
-        // Legacy with env prefix: {script}.apps.{env}.chiridion.ai
-        return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
-      }
-      // New format: {script}.{org-slug}.apps.chiridion.ai
-      const orgSlug = second;
-      const dispatchScriptName = `${orgSlug}--${scriptName}`;
+    // Need at least 4 parts: {something}.apps.chiridion.ai
+    if (parts.length < 4) return null;
+
+    const firstPart = parts[0]!;
+
+    // Check if first part contains org-slug separator (new flat format)
+    // Format: {script}--{org-slug}
+    if (firstPart.includes('--')) {
+      const separatorIndex = firstPart.indexOf('--');
+      const scriptName = firstPart.slice(0, separatorIndex);
+      const orgSlug = firstPart.slice(separatorIndex + 2);
+      if (!orgSlug || !scriptName) return null;
+      const dispatchScriptName = `${scriptName}--${orgSlug}`;
       return { scriptName, orgSlug, dispatchScriptName };
     }
-    // 6+ parts: new format with env {script}.{org-slug}.apps.{env}.chiridion.ai
-    if (parts.length >= 6) {
-      const scriptName = parts[0]!;
-      const orgSlug = parts[1]!;
-      const dispatchScriptName = `${orgSlug}--${scriptName}`;
-      return { scriptName, orgSlug, dispatchScriptName };
-    }
+
+    // Legacy format: {script}.apps.chiridion.ai or {script}.apps.{env}.chiridion.ai
+    const scriptName = firstPart;
+    return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
   }
 
   return null;
@@ -214,7 +204,7 @@ async function getOrgSlug(
 
 /**
  * Build the new-format URL for a worker.
- * Returns the full URL with the org-slug included.
+ * Uses flat format: {script}--{org-slug}.domain to avoid nested subdomain issues.
  */
 function buildNewFormatUrl(url: URL, scriptName: string, orgSlug: string): string {
   const hostname = url.hostname;
@@ -222,35 +212,30 @@ function buildNewFormatUrl(url: URL, scriptName: string, orgSlug: string): strin
 
   // For .chiridion.app domains
   if (hostname.endsWith('.chiridion.app')) {
-    // Legacy: script.chiridion.app -> script.org-slug.chiridion.app
-    // Legacy with env: script.staging.chiridion.app -> script.org-slug.staging.chiridion.app
+    // Legacy: script.chiridion.app -> script--org-slug.chiridion.app
     if (parts.length === 3) {
-      // script.chiridion.app -> script.org-slug.chiridion.app
-      const newHostname = `${scriptName}.${orgSlug}.chiridion.app`;
+      const newHostname = `${scriptName}--${orgSlug}.chiridion.app`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
-    // Check if second part is an env prefix (dev-*, staging)
+    // Legacy with env: script.staging.chiridion.app -> script--org-slug.staging.chiridion.app
     if (parts.length === 4 && (parts[1]?.startsWith('dev-') || parts[1] === 'staging')) {
-      // script.staging.chiridion.app -> script.org-slug.staging.chiridion.app
       const envPrefix = parts[1];
-      const newHostname = `${scriptName}.${orgSlug}.${envPrefix}.chiridion.app`;
+      const newHostname = `${scriptName}--${orgSlug}.${envPrefix}.chiridion.app`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
   }
 
   // For .apps.chiridion.ai domains
   if (hostname.endsWith('.chiridion.ai') && hostname.includes('.apps.')) {
-    // Legacy: script.apps.chiridion.ai -> script.org-slug.apps.chiridion.ai
-    // Legacy with env: script.apps.staging.chiridion.ai -> script.org-slug.apps.staging.chiridion.ai
+    // Legacy: script.apps.chiridion.ai -> script--org-slug.apps.chiridion.ai
     if (parts.length === 4 && parts[1] === 'apps') {
-      // script.apps.chiridion.ai -> script.org-slug.apps.chiridion.ai
-      const newHostname = `${scriptName}.${orgSlug}.apps.chiridion.ai`;
+      const newHostname = `${scriptName}--${orgSlug}.apps.chiridion.ai`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
+    // Legacy with env: script.apps.staging.chiridion.ai -> script--org-slug.apps.staging.chiridion.ai
     if (parts.length === 5 && parts[1] === 'apps') {
-      // script.apps.staging.chiridion.ai -> script.org-slug.apps.staging.chiridion.ai
       const envPrefix = parts[2];
-      const newHostname = `${scriptName}.${orgSlug}.apps.${envPrefix}.chiridion.ai`;
+      const newHostname = `${scriptName}--${orgSlug}.apps.${envPrefix}.chiridion.ai`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
   }
@@ -383,10 +368,10 @@ export default {
         {
           message: 'Chiridion Dispatch Worker',
           routes: {
-            vanity: '<worker-name>.<org-slug>.chiridion.app',
-            iframe: '<worker-name>.<org-slug>.apps.chiridion.ai',
+            vanity: '<worker-name>--<org-slug>.chiridion.app',
+            iframe: '<worker-name>--<org-slug>.apps.chiridion.ai',
           },
-          example: 'my-app.acme-85b.chiridion.app',
+          example: 'my-app--acme-85b.chiridion.app',
         },
         null,
         2

@@ -1862,7 +1862,7 @@ export default function Chat({
 
       // Create bug report bundle (without large data, using file references)
       const vanityHost = orgSlug
-        ? `${deployedApp}.${orgSlug}.${getVanityDomain(hostname)}`
+        ? `${deployedApp}--${orgSlug}.${getVanityDomain(hostname)}`
         : `${deployedApp}.${getVanityDomain(hostname)}`;
       const vanityUrl = `https://${vanityHost}`;
       const debugDataClean = debugData ? {
@@ -2050,8 +2050,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     }
     if (orgSlug) {
       return {
-        iframeHost: `${deployedApp}.${orgSlug}.${getIframeDomain(hostname)}`,
-        vanityHost: `${deployedApp}.${orgSlug}.${getVanityDomain(hostname)}`,
+        iframeHost: `${deployedApp}--${orgSlug}.${getIframeDomain(hostname)}`,
+        vanityHost: `${deployedApp}--${orgSlug}.${getVanityDomain(hostname)}`,
       };
     }
     // Legacy format without org slug

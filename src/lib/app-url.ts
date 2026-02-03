@@ -5,11 +5,11 @@
  * detected from the hostname. This ensures workers deploy to and are accessible
  * from environment-specific domains.
  *
- * New URL format (with org slug):
- * Production: {scriptName}.{orgSlug}.chiridion.app, {scriptName}.{orgSlug}.apps.chiridion.ai
- * Staging: {scriptName}.{orgSlug}.staging.chiridion.app, {scriptName}.{orgSlug}.apps.staging.chiridion.ai
- * Dev: {scriptName}.{orgSlug}.dev-{name}.chiridion.app, {scriptName}.{orgSlug}.apps.dev-{name}.chiridion.ai
- * Local: {scriptName}.{orgSlug}.local.chiridion.app, {scriptName}.{orgSlug}.apps.local.chiridion.ai
+ * New flat URL format (with org slug, uses -- separator to avoid nested subdomain issues):
+ * Production: {scriptName}--{orgSlug}.chiridion.app, {scriptName}--{orgSlug}.apps.chiridion.ai
+ * Staging: {scriptName}--{orgSlug}.staging.chiridion.app, {scriptName}--{orgSlug}.apps.staging.chiridion.ai
+ * Dev: {scriptName}--{orgSlug}.dev-{name}.chiridion.app, {scriptName}--{orgSlug}.apps.dev-{name}.chiridion.ai
+ * Local: {scriptName}--{orgSlug}.local.chiridion.app, {scriptName}--{orgSlug}.apps.local.chiridion.ai
  *
  * Legacy URL format (backwards compatibility, no org slug):
  * Production: {scriptName}.chiridion.app, {scriptName}.apps.chiridion.ai
@@ -78,13 +78,14 @@ export function getIframeDomain(hostname?: string): string {
 
 /**
  * Get the full vanity URL for a deployed app with org slug.
- * e.g., "https://my-app.acme-85b.chiridion.app" for production
- * e.g., "https://my-app.acme-85b.staging.chiridion.app" for staging
+ * Uses flat format with -- separator to avoid nested subdomain issues.
+ * e.g., "https://my-app--acme-85b.chiridion.app" for production
+ * e.g., "https://my-app--acme-85b.staging.chiridion.app" for staging
  */
 export function getAppUrl(scriptName: string, hostname?: string, orgSlug?: string): string {
   const domain = getVanityDomain(hostname);
   if (orgSlug) {
-    return `https://${scriptName}.${orgSlug}.${domain}`;
+    return `https://${scriptName}--${orgSlug}.${domain}`;
   }
   // Legacy format without org slug
   return `https://${scriptName}.${domain}`;
@@ -92,13 +93,14 @@ export function getAppUrl(scriptName: string, hostname?: string, orgSlug?: strin
 
 /**
  * Get the full iframe URL for a deployed app (used for same-site embedding).
- * e.g., "https://my-app.acme-85b.apps.chiridion.ai" for production
- * e.g., "https://my-app.acme-85b.apps.staging.chiridion.ai" for staging
+ * Uses flat format with -- separator to avoid nested subdomain issues.
+ * e.g., "https://my-app--acme-85b.apps.chiridion.ai" for production
+ * e.g., "https://my-app--acme-85b.apps.staging.chiridion.ai" for staging
  */
 export function getAppIframeUrl(scriptName: string, hostname?: string, orgSlug?: string): string {
   const domain = getIframeDomain(hostname);
   if (orgSlug) {
-    return `https://${scriptName}.${orgSlug}.${domain}`;
+    return `https://${scriptName}--${orgSlug}.${domain}`;
   }
   // Legacy format without org slug
   return `https://${scriptName}.${domain}`;

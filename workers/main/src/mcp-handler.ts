@@ -206,11 +206,12 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
   /**
    * Get the full URL for a deployed app.
+   * Uses flat format: {script}--{org-slug}.domain to avoid nested subdomain issues.
    */
   private async getAppUrl(scriptName: string): Promise<string> {
     const orgSlug = await this.getOrgSlug();
     if (orgSlug) {
-      return `https://${scriptName}.${orgSlug}.${this.getVanityDomain()}`;
+      return `https://${scriptName}--${orgSlug}.${this.getVanityDomain()}`;
     }
     // Fallback to legacy format if no org slug
     return `https://${scriptName}.${this.getVanityDomain()}`;

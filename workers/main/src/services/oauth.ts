@@ -72,7 +72,7 @@ export async function ensureDefaultOrgWorkspace(
     const orgId = crypto.randomUUID();
     const { defaultWorkspaceId } = await getOrgStub(env, orgId).createOrg(
       orgId,
-      `${displayName}'s Workspace`,
+      displayName,
       userId
     );
     await userStub.addOrg(orgId, 'owner', defaultWorkspaceId);
