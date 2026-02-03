@@ -496,6 +496,67 @@ The template includes pre-configured AI chat capabilities using the Vercel AI SD
 
 **See [AI-APPS.md](AI-APPS.md) for setup and customization.**
 
+## Git Version Control
+
+Use git to track changes and commit frequently. This makes it easy to revert mistakes and roll back to working states.
+
+### Initialize Git
+
+After creating a project with `create-worker`, initialize git:
+
+```bash
+cd my-app
+git init
+git add .
+git commit -m "Initial commit from create-worker"
+```
+
+### Commit Often
+
+Commit after each meaningful change:
+
+```bash
+# After adding a new feature
+git add .
+git commit -m "Add user authentication"
+
+# After fixing a bug
+git add .
+git commit -m "Fix login redirect loop"
+
+# After adding components
+git add .
+git commit -m "Add dashboard UI with shadcn cards"
+```
+
+### Revert and Rollback
+
+When something breaks, git makes recovery simple:
+
+```bash
+# Undo uncommitted changes to a file
+git checkout -- app/routes/broken-page.tsx
+
+# Undo all uncommitted changes
+git checkout -- .
+
+# Revert to the previous commit (keeps history)
+git revert HEAD
+
+# View recent commits to find a good state
+git log --oneline -10
+
+# Reset to a specific commit (discards commits after it)
+git reset --hard <commit-hash>
+```
+
+### Recommended Workflow
+
+1. **Commit before major changes** - Create a checkpoint before refactoring or adding complex features
+2. **Commit after each working feature** - Don't bundle unrelated changes
+3. **Write descriptive commit messages** - Future you will thank present you
+4. **Commit before deploying** - Always have a clean state to roll back to
+
 ## Best Practices
 
 1. **One DO class per domain concept** - e.g., `UserDO`, `RoomDO`, `SessionDO`
