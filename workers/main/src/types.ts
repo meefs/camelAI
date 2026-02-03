@@ -25,6 +25,33 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, CfApiProxyEn
   SLACK_CLIENT_SECRET?: string;
   NOTION_CLIENT_ID?: string;
   NOTION_CLIENT_SECRET?: string;
+  // Additional OAuth providers
+  LINEAR_CLIENT_ID?: string;
+  LINEAR_CLIENT_SECRET?: string;
+  AIRTABLE_CLIENT_ID?: string;
+  AIRTABLE_CLIENT_SECRET?: string;
+  HUBSPOT_CLIENT_ID?: string;
+  HUBSPOT_CLIENT_SECRET?: string;
+  TYPEFORM_CLIENT_ID?: string;
+  TYPEFORM_CLIENT_SECRET?: string;
+  MAILCHIMP_CLIENT_ID?: string;
+  MAILCHIMP_CLIENT_SECRET?: string;
+  JIRA_CLIENT_ID?: string;
+  JIRA_CLIENT_SECRET?: string;
+  ASANA_CLIENT_ID?: string;
+  ASANA_CLIENT_SECRET?: string;
+  FIGMA_CLIENT_ID?: string;
+  FIGMA_CLIENT_SECRET?: string;
+  INTERCOM_CLIENT_ID?: string;
+  INTERCOM_CLIENT_SECRET?: string;
+  ZENDESK_CLIENT_ID?: string;
+  ZENDESK_CLIENT_SECRET?: string;
+  DISCORD_CLIENT_ID?: string;
+  DISCORD_CLIENT_SECRET?: string;
+  SHOPIFY_CLIENT_ID?: string;
+  SHOPIFY_CLIENT_SECRET?: string;
+  SQUARE_CLIENT_ID?: string;
+  SQUARE_CLIENT_SECRET?: string;
   INTEGRATION_SECRET_KEY: string;
   // Claude API Proxy (CF AI Gateway)
   CF_GATEWAY_NAME?: string;

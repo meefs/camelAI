@@ -320,11 +320,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'GitHub',
     description: 'Access GitHub repositories and APIs',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [],
-    credentialSchema: [
-      { name: 'api_key', label: 'Personal Access Token', type: 'password', required: true, placeholder: 'ghp_...' },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://github.com/login/oauth/authorize',
+      tokenUrl: 'https://github.com/login/oauth/access_token',
+      scopes: ['repo', 'read:user', 'user:email', 'read:org'],
+    },
   },
 
   linear: {
@@ -332,11 +335,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Linear',
     description: 'Project management and issue tracking',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [],
-    credentialSchema: [
-      { name: 'api_key', label: 'API Key', type: 'password', required: true },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://linear.app/oauth/authorize',
+      tokenUrl: 'https://api.linear.app/oauth/token',
+      scopes: ['read', 'write', 'issues:create', 'comments:create'],
+    },
   },
 
   sentry: {
@@ -366,21 +372,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Mailchimp',
     description: 'Email marketing with Mailchimp',
     category: 'saas',
-    authMethod: 'api_key',
-    configSchema: [
-      {
-        name: 'data_center',
-        label: 'Data Center',
-        type: 'string',
-        required: true,
-        placeholder: 'us21',
-        description:
-          'The suffix after the dash in your API key (e.g., key abc123-us21 means data center us21). API base: https://{dc}.api.mailchimp.com/3.0',
-      },
-    ],
-    credentialSchema: [
-      { name: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: 'abc123def-us21' },
-    ],
+    authMethod: 'oauth2',
+    configSchema: [],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://login.mailchimp.com/oauth2/authorize',
+      tokenUrl: 'https://login.mailchimp.com/oauth2/token',
+      scopes: [], // Mailchimp doesn't use scopes - access is determined by account permissions
+    },
   },
 
   posthog: {
@@ -444,11 +443,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Typeform',
     description: 'Forms and surveys with Typeform',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [],
-    credentialSchema: [
-      { name: 'api_key', label: 'Personal Access Token', type: 'password', required: true, placeholder: 'tfp_...' },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://api.typeform.com/oauth/authorize',
+      tokenUrl: 'https://api.typeform.com/oauth/token',
+      scopes: ['accounts:read', 'forms:read', 'forms:write', 'responses:read', 'responses:write', 'webhooks:read', 'webhooks:write'],
+    },
   },
 
   sendgrid: {
@@ -498,11 +500,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Airtable',
     description: 'Access Airtable bases and records',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [],
-    credentialSchema: [
-      { name: 'api_key', label: 'Personal Access Token', type: 'password', required: true, placeholder: 'pat...' },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://airtable.com/oauth2/v1/authorize',
+      tokenUrl: 'https://airtable.com/oauth2/v1/token',
+      scopes: ['data.records:read', 'data.records:write', 'schema.bases:read', 'schema.bases:write'],
+    },
   },
 
   hubspot: {
@@ -510,11 +515,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'HubSpot',
     description: 'CRM and marketing automation',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [],
-    credentialSchema: [
-      { name: 'api_key', label: 'Private App Token', type: 'password', required: true },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://app.hubspot.com/oauth/authorize',
+      tokenUrl: 'https://api.hubapi.com/oauth/v1/token',
+      scopes: ['crm.objects.contacts.read', 'crm.objects.contacts.write', 'crm.objects.companies.read', 'crm.objects.companies.write', 'crm.objects.deals.read', 'crm.objects.deals.write'],
+    },
   },
 
   // ============================================
@@ -797,33 +805,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Jira',
     description: 'Issue tracking and project management',
     category: 'saas',
-    authMethod: 'api_key',
-    configSchema: [
-      {
-        name: 'domain',
-        label: 'Jira Domain',
-        type: 'string',
-        required: true,
-        placeholder: 'your-company.atlassian.net',
-        description: 'Your Atlassian domain',
-      },
-    ],
-    credentialSchema: [
-      {
-        name: 'email',
-        label: 'Email',
-        type: 'text',
-        required: true,
-        description: 'Email associated with your Atlassian account',
-      },
-      {
-        name: 'api_key',
-        label: 'API Token',
-        type: 'password',
-        required: true,
-        description: 'Create at id.atlassian.com/manage-profile/security/api-tokens',
-      },
-    ],
+    authMethod: 'oauth2',
+    configSchema: [],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://auth.atlassian.com/authorize',
+      tokenUrl: 'https://auth.atlassian.com/oauth/token',
+      scopes: ['read:jira-user', 'read:jira-work', 'write:jira-work', 'offline_access'],
+    },
   },
 
   asana: {
@@ -831,17 +820,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Asana',
     description: 'Project and task management',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [],
-    credentialSchema: [
-      {
-        name: 'api_key',
-        label: 'Personal Access Token',
-        type: 'password',
-        required: true,
-        description: 'Create at app.asana.com/0/my-apps',
-      },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://app.asana.com/-/oauth_authorize',
+      tokenUrl: 'https://app.asana.com/-/oauth_token',
+      scopes: ['default'], // Asana uses 'default' scope for full access
+    },
   },
 
   figma: {
@@ -849,17 +835,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Figma',
     description: 'Design files and collaboration',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [],
-    credentialSchema: [
-      {
-        name: 'api_key',
-        label: 'Personal Access Token',
-        type: 'password',
-        required: true,
-        description: 'Create at figma.com/developers/api#access-tokens',
-      },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://www.figma.com/oauth',
+      tokenUrl: 'https://api.figma.com/v1/oauth/token',
+      scopes: ['files:read', 'file_variables:read', 'file_variables:write', 'file_comments:write'],
+    },
   },
 
   intercom: {
@@ -867,17 +850,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Intercom',
     description: 'Customer messaging platform',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [],
-    credentialSchema: [
-      {
-        name: 'api_key',
-        label: 'Access Token',
-        type: 'password',
-        required: true,
-        description: 'Create in Developer Hub > Your App > Authentication',
-      },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://app.intercom.com/oauth',
+      tokenUrl: 'https://api.intercom.io/auth/eagle/token',
+      scopes: [], // Intercom scopes are configured in the app settings
+    },
   },
 
   zendesk: {
@@ -885,7 +865,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Zendesk',
     description: 'Customer support platform',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [
       {
         name: 'subdomain',
@@ -896,22 +876,12 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
         description: 'Your Zendesk subdomain (from your-company.zendesk.com)',
       },
     ],
-    credentialSchema: [
-      {
-        name: 'email',
-        label: 'Email',
-        type: 'text',
-        required: true,
-        description: 'Email for the Zendesk account',
-      },
-      {
-        name: 'api_key',
-        label: 'API Token',
-        type: 'password',
-        required: true,
-        description: 'Create at Admin > Channels > API',
-      },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://{subdomain}.zendesk.com/oauth/authorizations/new',
+      tokenUrl: 'https://{subdomain}.zendesk.com/oauth/tokens',
+      scopes: ['read', 'write', 'tickets:read', 'tickets:write', 'users:read', 'users:write'],
+    },
   },
 
   segment: {
@@ -978,25 +948,14 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Discord',
     description: 'Discord bot and webhook integration',
     category: 'communication',
-    authMethod: 'api_key',
-    configSchema: [
-      {
-        name: 'application_id',
-        label: 'Application ID',
-        type: 'string',
-        required: false,
-        description: 'Discord application ID (for bot interactions)',
-      },
-    ],
-    credentialSchema: [
-      {
-        name: 'api_key',
-        label: 'Bot Token',
-        type: 'password',
-        required: true,
-        description: 'Bot token from Discord Developer Portal',
-      },
-    ],
+    authMethod: 'oauth2',
+    configSchema: [],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://discord.com/oauth2/authorize',
+      tokenUrl: 'https://discord.com/api/oauth2/token',
+      scopes: ['identify', 'email', 'guilds', 'guilds.members.read', 'bot', 'messages.read'],
+    },
   },
 
   teams: {
@@ -1182,7 +1141,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Shopify',
     description: 'E-commerce platform',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [
       {
         name: 'shop_domain',
@@ -1193,15 +1152,12 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
         description: 'Your Shopify store domain',
       },
     ],
-    credentialSchema: [
-      {
-        name: 'api_key',
-        label: 'Admin API Access Token',
-        type: 'password',
-        required: true,
-        description: 'Create a custom app in Shopify Admin > Settings > Apps',
-      },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://{shop_domain}/admin/oauth/authorize',
+      tokenUrl: 'https://{shop_domain}/admin/oauth/access_token',
+      scopes: ['read_products', 'write_products', 'read_orders', 'write_orders', 'read_customers', 'write_customers'],
+    },
   },
 
   square: {
@@ -1209,7 +1165,7 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     displayName: 'Square',
     description: 'Payments and commerce',
     category: 'saas',
-    authMethod: 'api_key',
+    authMethod: 'oauth2',
     configSchema: [
       {
         name: 'environment',
@@ -1223,15 +1179,12 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
         ],
       },
     ],
-    credentialSchema: [
-      {
-        name: 'api_key',
-        label: 'Access Token',
-        type: 'password',
-        required: true,
-        description: 'Create at developer.squareup.com/apps',
-      },
-    ],
+    credentialSchema: [],
+    oauthConfig: {
+      authorizationUrl: 'https://connect.squareup.com/oauth2/authorize',
+      tokenUrl: 'https://connect.squareup.com/oauth2/token',
+      scopes: ['MERCHANT_PROFILE_READ', 'PAYMENTS_READ', 'PAYMENTS_WRITE', 'ORDERS_READ', 'ORDERS_WRITE', 'CUSTOMERS_READ', 'CUSTOMERS_WRITE', 'ITEMS_READ', 'ITEMS_WRITE'],
+    },
   },
 
   // ============================================
