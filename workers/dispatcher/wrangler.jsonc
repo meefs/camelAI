@@ -33,7 +33,13 @@
 		"prod": {
 			"name": "chiridion-dispatcher",
 			"routes": [
+				// New format: script.org-slug.apps.chiridion.ai
+				{ "pattern": "*.*.apps.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				// Legacy format: script.apps.chiridion.ai
 				{ "pattern": "*.apps.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				// New format: script.org-slug.chiridion.app
+				{ "pattern": "*.*.chiridion.app/*", "zone_name": "chiridion.app" },
+				// Legacy format: script.chiridion.app
 				{ "pattern": "*.chiridion.app/*", "zone_name": "chiridion.app" }
 			],
 			"dispatch_namespaces": [
@@ -61,7 +67,13 @@
 		"staging": {
 			"name": "chiridion-dispatcher-staging",
 			"routes": [
+				// New format: script.org-slug.apps.staging.chiridion.ai
+				{ "pattern": "*.*.apps.staging.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				// Legacy format: script.apps.staging.chiridion.ai
 				{ "pattern": "*.apps.staging.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				// New format: script.org-slug.staging.chiridion.app
+				{ "pattern": "*.*.staging.chiridion.app/*", "zone_name": "chiridion.app" },
+				// Legacy format: script.staging.chiridion.app
 				{ "pattern": "*.staging.chiridion.app/*", "zone_name": "chiridion.app" }
 			],
 			"dispatch_namespaces": [
@@ -89,7 +101,13 @@
 		"dev-miguel": {
 			"name": "chiridion-dispatcher-dev-miguel",
 			"routes": [
+				// New format: script.org-slug.apps.dev-miguel.chiridion.ai
+				{ "pattern": "*.*.apps.dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				// Legacy format: script.apps.dev-miguel.chiridion.ai
 				{ "pattern": "*.apps.dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				// New format: script.org-slug.dev-miguel.chiridion.app
+				{ "pattern": "*.*.dev-miguel.chiridion.app/*", "zone_name": "chiridion.app" },
+				// Legacy format: script.dev-miguel.chiridion.app
 				{ "pattern": "*.dev-miguel.chiridion.app/*", "zone_name": "chiridion.app" }
 			],
 			"dispatch_namespaces": [
@@ -117,7 +135,13 @@
 		"dev-illiana": {
 			"name": "chiridion-dispatcher-dev-illiana",
 			"routes": [
+				// New format: script.org-slug.apps.dev-illiana.chiridion.ai
+				{ "pattern": "*.*.apps.dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				// Legacy format: script.apps.dev-illiana.chiridion.ai
 				{ "pattern": "*.apps.dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				// New format: script.org-slug.dev-illiana.chiridion.app
+				{ "pattern": "*.*.dev-illiana.chiridion.app/*", "zone_name": "chiridion.app" },
+				// Legacy format: script.dev-illiana.chiridion.app
 				{ "pattern": "*.dev-illiana.chiridion.app/*", "zone_name": "chiridion.app" }
 			],
 			"dispatch_namespaces": [
@@ -145,7 +169,13 @@
 		"local": {
 			"name": "chiridion-dispatcher-local",
 			"routes": [
+				// New format: script.org-slug.apps.local.chiridion.ai
+				{ "pattern": "*.*.apps.local.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				// Legacy format: script.apps.local.chiridion.ai
 				{ "pattern": "*.apps.local.chiridion.ai/*", "zone_name": "chiridion.ai" },
+				// New format: script.org-slug.local.chiridion.app
+				{ "pattern": "*.*.local.chiridion.app/*", "zone_name": "chiridion.app" },
+				// Legacy format: script.local.chiridion.app
 				{ "pattern": "*.local.chiridion.app/*", "zone_name": "chiridion.app" }
 			],
 			"vars": {
