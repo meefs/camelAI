@@ -835,8 +835,8 @@ echo "[entrypoint] System skills symlinked to $TARGET_DIR/.claude/skills/" >&2
 # Golden template has yarn install done, so clone gets everything ready-to-use
 echo "[entrypoint] Setting up golden template..." >&2
 (
-  TEMPLATE_NAME="react-router"
-  SOURCE_TEMPLATE="/app/skills/deploy-software/templates/${TEMPLATE_NAME}"
+  TEMPLATE_NAME="chiridion-starter"
+  SOURCE_TEMPLATE="/app/skills/developing-software/templates/${TEMPLATE_NAME}"
   GOLDEN_DIR="${TARGET_DIR}/.chiridion/templates"
   GOLDEN_TEMPLATE="${GOLDEN_DIR}/${TEMPLATE_NAME}"
   HASH_FILE="${GOLDEN_DIR}/.${TEMPLATE_NAME}.hash"

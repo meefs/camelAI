@@ -1,5 +1,5 @@
 # Ignore template node_modules - we use Yarn PnP instead
-sandbox/skills/deploy-software/templates/*/node_modules
+sandbox/skills/developing-software/templates/*/node_modules
 
 # Ignore local development artifacts
 node_modules

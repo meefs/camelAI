@@ -223,7 +223,7 @@ function generateCssFromPreset(preset, options) {
     .join('\n');
 
   // Read template and replace placeholders
-  const templatePath = join(TEMPLATES_DIR, 'react-router', 'app', 'app.css.template');
+  const templatePath = join(TEMPLATES_DIR, 'chiridion-starter', 'app', 'app.css.template');
   const template = readFileSync(templatePath, 'utf-8');
 
   return template
@@ -310,7 +310,7 @@ async function createProject(projectName, options) {
   console.log('Step 1/4: Cloning React Router + Cloudflare template...');
   let stepStart = Date.now();
   try {
-    copyTemplate('react-router', projectDir);
+    copyTemplate('chiridion-starter', projectDir);
     console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
   } catch (error) {
     console.error('Failed to clone template:', error.message);
