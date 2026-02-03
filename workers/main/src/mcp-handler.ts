@@ -19,7 +19,7 @@ import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { isSignedToken, validateSignedToken } from './signed-tokens';
-import { getEnvPrefix, resolveEnvPrefix } from './cf-api-proxy';
+import { getEnvPrefix, resolveEnvPrefix, syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
 import { captureScreenshotRaw } from './screenshot-queue';
 import { createScreenshotToken } from './worker-auth';
 
@@ -588,6 +588,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             .refreshIntegrationEnvVars(workspaceId)
             .catch(() => {});
 
+          // Sync secrets to all deployed workers in this workspace (fire-and-forget)
+          syncAllWorkspaceWorkerSecrets(this.env as unknown as CfApiProxyEnv, workspaceId, orgId)
+            .catch((err) => console.error('[MCP] Failed to sync secrets to workers:', err));
+
           const envVarPrefix = `INT_${normalizeEnvVarName(integration_type)}_${normalizeEnvVarName(name)}`;
           const envVarSuffixes = getEnvVarSuffixesForType(integration_type);
           return this.textResponse({
@@ -654,7 +658,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           .describe('Optional: Custom credential fields for "other" integrations. Max 10 fields.'),
       },
       async ({ integration_type, suggested_name, message, display_name, description, instructions, fields }) => {
-        const { userId, workspaceId } = this.requireAuth();
+        const { orgId, userId, workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ error: 'No workspace context available' });
         }
@@ -821,6 +825,10 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           getWorkspaceContainer(this.env, workspaceId)
             .refreshIntegrationEnvVars(workspaceId)
             .catch(() => {});
+
+          // Sync secrets to all deployed workers in this workspace (fire-and-forget)
+          syncAllWorkspaceWorkerSecrets(this.env as unknown as CfApiProxyEnv, workspaceId, orgId)
+            .catch((err) => console.error('[MCP] Failed to sync secrets to workers:', err));
 
           // For dynamic "other" integrations, generate env var suffixes from field names
           const dynamicFields = type === 'other' && dynamicSchema?.fields ? dynamicSchema.fields : undefined;

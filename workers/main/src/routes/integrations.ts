@@ -12,6 +12,7 @@ import { getWorkspaceStub, getOrgStub } from '../helpers/stubs.js';
 import { redirect, text } from '../helpers/response.js';
 import type { ConnectionSetupResponse } from '../durable-objects.js';
 import type { ChiridionMcp } from '../mcp-handler.js';
+import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from '../cf-api-proxy.js';
 
 // RPC interface for MCP DO callback
 interface ChiridionMcpRpc {
@@ -210,10 +211,17 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
       stateData.user_id
     );
 
+    // Push secrets to running container
     ctx.waitUntil(
       getWorkspaceContainer(env, stateData.workspace_id)
         .refreshIntegrationEnvVars(stateData.workspace_id)
         .catch(() => {})
+    );
+
+    // Sync secrets to all deployed workers in this workspace
+    ctx.waitUntil(
+      syncAllWorkspaceWorkerSecrets(env as unknown as CfApiProxyEnv, stateData.workspace_id, wsInfo.org_id)
+        .catch((err) => console.error('[slack-oauth] Failed to sync secrets to workers:', err))
     );
 
     // Complete MCP request if this OAuth flow was initiated from chat
@@ -388,10 +396,17 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
       tokenExpiresAt // Pass expiry for alarm scheduling
     );
 
+    // Push secrets to running container
     ctx.waitUntil(
       getWorkspaceContainer(env, stateData.workspace_id)
         .refreshIntegrationEnvVars(stateData.workspace_id)
         .catch(() => {})
+    );
+
+    // Sync secrets to all deployed workers in this workspace
+    ctx.waitUntil(
+      syncAllWorkspaceWorkerSecrets(env as unknown as CfApiProxyEnv, stateData.workspace_id, wsInfo.org_id)
+        .catch((err) => console.error('[notion-oauth] Failed to sync secrets to workers:', err))
     );
 
     // Complete MCP request if this OAuth flow was initiated from chat
