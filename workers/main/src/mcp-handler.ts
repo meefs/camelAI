@@ -20,7 +20,7 @@ import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { isSignedToken, validateSignedToken } from './signed-tokens';
 import { getEnvPrefix, resolveEnvPrefix } from './cf-api-proxy';
-import { captureScreenshot, type AppScreenshotJob, type ScreenshotEnv } from './screenshot-queue';
+import { captureScreenshotRaw } from './screenshot-queue';
 import { createScreenshotToken } from './worker-auth';
 
 export interface McpEnv extends WorkspaceContainerEnv {
@@ -28,7 +28,6 @@ export interface McpEnv extends WorkspaceContainerEnv {
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
   APP_KV: KVNamespace;
   BROWSER?: Fetcher;
-  R2_BUCKET: R2Bucket;
 }
 
 type AuthContext = {
@@ -296,7 +295,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     // Take a screenshot of a deployed app
     this.server.tool(
       'take_app_screenshot',
-      'Take a fresh screenshot of a deployed app. This captures the current state of the app and updates its preview image. Useful after making changes to verify the app looks correct.',
+      'Take a screenshot of a deployed app and return the image. Useful for verifying the app looks correct after making changes.',
       {
         script_name: z.string().describe('The name of the app/worker script to screenshot'),
       },
@@ -330,24 +329,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           ? getEnvPrefix(new URL(this.env.WORKER_BASE_URL).hostname)
           : '';
 
-        // Set preview status to pending
-        await orgStub.updateWorkerScriptPreview(script_name, {
-          status: 'pending',
-          preview_key: null,
-          preview_error: null,
-          deploy_ts: script.updated_at,
-        });
-
-        // Build screenshot job
-        const job: AppScreenshotJob = {
-          script_name,
-          org_id: orgId,
-          workspace_id: workspaceId,
-          deploy_ts: script.updated_at,
-          env_prefix: envPrefix,
-          is_public: script.is_public,
-        };
-
         // Create screenshot token for private apps
         let screenshotToken: string | undefined;
         if (!script.is_public && envPrefix !== 'local') {
@@ -357,25 +338,27 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           });
         }
 
-        // Capture screenshot directly (synchronous, no queue)
-        const screenshotEnv: ScreenshotEnv = {
-          BROWSER: this.env.BROWSER,
-          R2_BUCKET: this.env.R2_BUCKET,
-          APP_KV: this.env.APP_KV,
-          ORG: this.env.ORG,
-        };
-
-        const result = await captureScreenshot(screenshotEnv, job, screenshotToken);
+        // Capture screenshot and return image directly
+        const result = await captureScreenshotRaw(this.env.BROWSER, {
+          scriptName: script_name,
+          orgId,
+          envPrefix,
+          isPublic: script.is_public,
+          screenshotToken,
+        });
 
         if (result.success) {
-          return this.textResponse({
-            success: true,
-            app: {
-              name: script_name,
-              url: await this.getAppUrl(script_name),
-            },
-            message: `Screenshot captured successfully for '${script_name}'`,
-          });
+          // Return image as base64 in MCP image content format
+          const base64Image = result.image.toString('base64');
+          return {
+            content: [
+              {
+                type: 'image' as const,
+                data: base64Image,
+                mimeType: 'image/jpeg',
+              },
+            ],
+          };
         } else {
           return this.textResponse({
             success: false,

@@ -237,6 +237,97 @@ export async function captureScreenshot(
   }
 }
 
+export interface RawScreenshotParams {
+  scriptName: string;
+  orgId: string;
+  envPrefix: string;
+  isPublic: boolean;
+  screenshotToken?: string;
+}
+
+/**
+ * Capture a screenshot and return the raw image buffer without storing to R2.
+ * Used by MCP tool to return image directly to the caller.
+ */
+export async function captureScreenshotRaw(
+  browser: Fetcher,
+  params: RawScreenshotParams
+): Promise<{ success: true; image: Buffer } | { success: false; error: string }> {
+  const { scriptName, orgId, envPrefix, isPublic, screenshotToken } = params;
+
+  const suffix = envPrefix ? `apps.${envPrefix}.chiridion.ai` : 'apps.chiridion.ai';
+  const targetUrl = `https://${scriptName}.${suffix}`;
+
+  let puppeteerBrowser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+  let page: Page | null = null;
+
+  try {
+    puppeteerBrowser = await puppeteer.launch(browser);
+    page = await puppeteerBrowser.newPage();
+    await page.setViewport(VIEWPORT);
+
+    if (screenshotToken && envPrefix !== 'local') {
+      await page.setExtraHTTPHeaders({
+        'x-chiridion-screenshot-token': screenshotToken,
+      });
+    }
+
+    const { response, waitUntil } = await navigateWithFallback(page, targetUrl, {
+      scriptName,
+      orgId,
+    });
+
+    console.log('[app-screenshot-raw] navigation complete', {
+      scriptName,
+      orgId,
+      status: response?.status() ?? null,
+      waitUntil,
+    });
+
+    if (response && !response.ok()) {
+      const statusText = typeof response.statusText === 'function' ? response.statusText() : '';
+      throw new Error(
+        `Navigation failed with status ${response.status()}${statusText ? ` ${statusText}` : ''} for ${targetUrl}`
+      );
+    }
+
+    await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
+    await waitForReadySignal(page);
+    await page.waitForTimeout(POST_LOAD_DELAY_MS);
+    await page.evaluate(() => window.scrollTo(0, 0));
+
+    const image = (await page.screenshot({
+      type: 'jpeg',
+      quality: 80,
+      clip: SCREENSHOT_CLIP,
+    })) as Buffer;
+
+    console.log('[app-screenshot-raw] captured', {
+      scriptName,
+      orgId,
+      targetUrl,
+    });
+
+    return { success: true, image };
+  } catch (err) {
+    const errorMessage = truncateError(err);
+    console.error('[app-screenshot-raw] capture failed', {
+      scriptName,
+      orgId,
+      error: errorMessage,
+    });
+
+    return { success: false, error: errorMessage };
+  } finally {
+    if (page) {
+      await page.close();
+    }
+    if (puppeteerBrowser) {
+      await puppeteerBrowser.close();
+    }
+  }
+}
+
 export async function handleScreenshotQueue(
   batch: MessageBatch<AppScreenshotJob>,
   env: ScreenshotEnv

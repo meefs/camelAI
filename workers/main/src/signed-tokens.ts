@@ -12,7 +12,7 @@ export interface SignedTokenPayload {
   /** Organization ID */
   org_id: string;
   /** Organization slug for namespaced deployments */
-  org_slug?: string;
+  org_slug: string;
   /** User ID */
   user_id: string;
   /** Permission scopes (e.g., ['proxy'], ['mcp']) */

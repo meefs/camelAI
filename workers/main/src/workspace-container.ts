@@ -321,6 +321,7 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
 
     const claudeApiToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
       org_id: orgId,
+      org_slug: orgSlug,
       user_id: userId,
       scopes: ['claude_api'],
       exp: Date.now() + TOKEN_TTL_MS,
