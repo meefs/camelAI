@@ -3,6 +3,7 @@ import { appendFile, mkdir, access, stat, readFile, writeFile, unlink } from 'fs
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import os from 'os';
+import { loadRecentMemory, MEMORY_DIR } from './memory-logger.mjs';
 
 // Version for verifying container has latest code
 const VERSION = '2026-02-03-ws-ping-keepalive';
@@ -540,6 +541,57 @@ async function sessionFileExists(sessionId) {
   return exists;
 }
 
+// Episodic memory subagent - handles both logging and searching
+const MEMORY_AGENT = {
+  description: `Episodic memory manager. IMPORTANT: Always RESUME this subagent using its previous agent ID if one exists - do not start fresh each time. This preserves context about what has already been logged/searched.
+
+Use for TWO purposes:
+
+1. LOGGING (run in background): After completing significant tasks, invoke with run_in_background=true to record what was done. Use proactively after implementing features, fixing bugs, deploying, or completing multi-step tasks.
+
+2. SEARCHING (run in foreground): When you need to find past work - "when did we deploy X?", "what was that bug?", "have we worked on this before?" - invoke normally to search memories.`,
+  prompt: `You are an episodic memory manager for a coding workspace. You handle both LOGGING new memories and SEARCHING past memories.
+
+## Memory Location
+${MEMORY_DIR}/YYYY-MM-DD.md (one file per day, timestamped entries)
+
+## MODE 1: LOGGING (when asked to record/log something)
+
+Write a brief entry (2-4 sentences) summarizing what was accomplished:
+- What the user wanted
+- Key actions taken (files, tools, decisions)
+- The outcome
+
+**Entry format:**
+\`\`\`
+## HH:MM - [Brief Title]
+[2-4 sentence factual summary]
+\`\`\`
+
+Append to today's file. Create it if needed. Be concise and factual.
+
+## MODE 2: SEARCHING (when asked to find/recall something)
+
+1. Use Grep to search keywords across memory files: ${MEMORY_DIR}/*.md
+2. Use Glob to list available files
+3. Read specific files for full context
+
+Return a clear summary of what you found:
+- Group by date if spanning multiple days
+- Quote specific entries when relevant
+- Say clearly if nothing found
+
+## Tools Available
+- Read: read memory files
+- Write: append new entries
+- Grep: search across files
+- Glob: list files
+- Bash: date commands if needed`,
+  tools: ['Read', 'Write', 'Grep', 'Glob', 'Bash'],
+  model: 'haiku',
+  maxTurns: 5,
+};
+
 const SYSTEM_PROMPT_APPEND = `
 ## About This Environment
 
@@ -598,6 +650,29 @@ When deploying software to the internet or for the user to access:
 The infrastructure is already configured for Worker deployments. **For any web app with a UI, use \`create-worker\` to scaffold from the Chiridion starter template**—it's fast to create, has React Router 7 + shadcn/ui pre-configured, and handles both simple and complex apps. Only skip the template for pure API workers with no frontend.
 
 **Important:** Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies—they take too long. The Chiridion starter template has everything pre-configured.
+
+## Episodic Memory
+
+You have a **memory** subagent for maintaining context across sessions. It handles both logging and searching.
+
+**IMPORTANT:** Always **resume** the memory subagent using its previous agent ID rather than starting fresh. This preserves the subagent's context about what has already been logged or searched in this session. Track the agent ID after first invocation and use the \`resume\` parameter on subsequent calls.
+
+### Logging (background)
+After completing significant work, invoke with \`run_in_background: true\`:
+- After implementing features or fixing bugs
+- After deploying applications
+- After completing multi-step tasks
+- After important decisions or investigations
+
+### Searching (foreground)
+When you need to find past work, invoke normally:
+- "When did we deploy X?"
+- "What was that bug we fixed?"
+- "Have we worked on this before?"
+
+### Storage
+Memory files: \`~/.chiridion/memory/YYYY-MM-DD.md\`
+Recent memory is automatically loaded at session start.
 `;
 
 // Handle AskUserQuestion via canUseTool callback
@@ -712,6 +787,13 @@ function getQueryOptions(session, fileExists) {
     return handleCanUseTool(session, toolName, input, opts);
   };
 
+  // Stop hook to remind Claude about memory logging
+  const stopHook = async (input, toolUseID, opts) => {
+    return {
+      systemMessage: 'Before finishing: Did you log anything significant to memory? If you accomplished notable work (feature, fix, deployment, investigation) and haven\'t logged it yet, invoke the memory subagent in the background now.',
+    };
+  };
+
   const options = {
     model: 'opus',
     fallbackModel: 'sonnet',
@@ -735,10 +817,18 @@ function getQueryOptions(session, fileExists) {
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',
-      append: SYSTEM_PROMPT_APPEND.trim(),
+      append: SYSTEM_PROMPT_APPEND.trim() + (session.memoryContext ? `\n\n## Recent Session Memory\n\nHere's what happened in recent sessions:\n\n${session.memoryContext}` : ''),
     },
     settingSources: ['project', 'user'],
     env: envVars,
+    // Custom subagents
+    agents: {
+      'memory': MEMORY_AGENT,
+    },
+    // Hooks
+    hooks: {
+      Stop: [{ hooks: [stopHook] }],
+    },
   };
 
   if (session.threadId) {
@@ -762,6 +852,9 @@ function getQueryOptions(session, fileExists) {
       allowUnsandboxedCommands: options.allowUnsandboxedCommands,
       mcpServers: Object.keys(mcpServers || {}),
       envKeys: Object.keys(envVars || {}).length,
+      agents: Object.keys(options.agents || {}),
+      hasMemoryContext: Boolean(session.memoryContext),
+      hooks: Object.keys(options.hooks || {}),
     });
   }
 
@@ -922,6 +1015,18 @@ async function initSession(session) {
       if (DEBUG_STARTUP) {
         await runStartupDiagnostics();
       }
+
+      // Load recent memory context for the session
+      try {
+        const memoryContext = await loadRecentMemory(3);
+        if (memoryContext) {
+          session.memoryContext = memoryContext;
+          log('[ws-server]', 'memory_loaded', { threadId: session.threadId, length: memoryContext.length });
+        }
+      } catch (memErr) {
+        logError('[ws-server]', 'memory_load_failed', { error: memErr?.message || String(memErr) });
+      }
+
       const fileExists = await sessionFileExists(session.threadId);
       const options = getQueryOptions(session, fileExists);
       const messageStream = createMessageStream(session);
