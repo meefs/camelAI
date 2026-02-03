@@ -1,9 +1,9 @@
 FROM node:22-slim
 
-# Version: 2026-02-01-v57-simplified-daemon
-# Slim container with Node, Bun, Python for Claude SDK sandbox
+# Version: 2026-02-02-v66-yarn-pnp-juicefs-cache
+# Slim container with Node, Yarn PnP, Python for Claude SDK sandbox
 
-EXPOSE 8080 9000 4873
+EXPOSE 8080 9000
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Layer 1: Create claude user (separate from node user)
@@ -15,7 +15,7 @@ RUN touch /etc/profile.d/chiridion-integrations.sh \
   && chown claude:claude /etc/profile.d/chiridion-integrations.sh \
   && chmod 644 /etc/profile.d/chiridion-integrations.sh
 
-# Layer 2: System deps + Bun + Verdaccio + JuiceFS
+# Layer 2: System deps + JuiceFS
 # Note: fuse3 replaces fuse (they conflict). libfuse2 provides compat for older tools.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -33,7 +33,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sqlite3 \
     strace \
   && rm -rf /var/lib/apt/lists/* \
-  && npm install -g bun shadcn verdaccio pm2 \
+  && corepack enable \
+  && corepack prepare yarn@stable --activate \
+  && npm install -g shadcn wrangler \
   && curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR=/usr/local/bin sh \
   && curl -L -o /usr/local/bin/goofys https://github.com/kahing/goofys/releases/download/v0.24.0/goofys \
   && chmod +x /usr/local/bin/goofys \
@@ -42,114 +44,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && dpkg -i /tmp/litestream.deb \
   && rm /tmp/litestream.deb
 
-# Layer 3: Chiridion Wrangler + Verdaccio local registry
-# Pre-publish chiridion-wrangler as "wrangler" so all npm/bun installs get our version
-WORKDIR /chiridion-wrangler
-COPY packages/chiridion-wrangler/package.json ./
-COPY packages/chiridion-wrangler/bin ./bin
-COPY packages/chiridion-wrangler/verdaccio ./verdaccio
-RUN mkdir -p wrangler-dist
-COPY packages/chiridion-wrangler/wrangler-dist/cli.js ./wrangler-dist/
-
-# Set up Verdaccio storage and config
-RUN mkdir -p /verdaccio/storage /verdaccio/plugins \
-  && cp verdaccio/config.yaml /verdaccio/config.yaml \
-  && touch /verdaccio/htpasswd
-
-# Install wrangler deps and publish to local registry
-RUN npm install --omit=dev \
-  && chmod +x bin/wrangler.js verdaccio/publish-wrangler.sh \
-  && ln -s /chiridion-wrangler/bin/wrangler.js /usr/local/bin/wrangler
-
-# Start verdaccio temporarily, publish our wrangler package, then stop it
-RUN bash -c '\
-  verdaccio --config /verdaccio/config.yaml & \
-  sleep 2 && \
-  ./verdaccio/publish-wrangler.sh && \
-  pkill -f verdaccio || true \
-'
-
-# Layer 4: Sandbox dependencies - cached unless package.json changes
+# Layer 3: Sandbox dependencies - cached unless package.json changes
 WORKDIR /app
 COPY sandbox/package.json ./
 RUN npm install
 
-# Layer 4.5: Python data analysis packages - cached unless requirements.txt changes
+# Layer 4: Python data analysis packages - cached unless requirements.txt changes
 # Install with uv for speed, using system Python (--system flag)
 # These are pre-installed so users have immediate access to data analysis tools
 COPY sandbox/requirements.txt ./
 # Debian marks /usr as externally managed (PEP 668); allow system installs for baked-in tools.
 RUN PIP_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --break-system-packages -r requirements.txt
 
-# Layer 5: Template files + Yarn PnP setup (cached unless template files change)
-# Copy ONLY template files first, before frequently-changing sandbox code
-# This ensures template yarn install is cached when only ws-server.mjs changes
-# Remove npm's yarn classic and install Yarn Berry via corepack
-RUN npm uninstall -g yarn 2>/dev/null || true \
-  && rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg 2>/dev/null || true \
-  && corepack enable \
-  && corepack prepare yarn@stable --activate
-COPY sandbox/skills/deploy-software/templates ./skills/deploy-software/templates
+# Layer 5: Template files (Yarn PnP - global cache on JuiceFS)
+# Templates use Yarn PnP with global cache at ~/.yarn-cache (persisted on JuiceFS)
+COPY --chmod=755 sandbox/skills/deploy-software/templates ./skills/deploy-software/templates
 
-# Pre-install template dependencies with Yarn PnP (minimal files for fast JuiceFS copy)
-# Yarn PnP stores deps as ~400 zip files instead of ~8000 files in node_modules
-# YARN_IGNORE_PATH=1 prevents Yarn from detecting parent /app/package.json
-# Install template deps in a temp location first (avoids /app workspace detection)
-# Then copy PnP files back to template
-RUN bash -c '\
-  verdaccio --config /verdaccio/config.yaml & \
-  sleep 2 && \
-  mkdir -p /tmp/template-build && \
-  cp -r /app/skills/deploy-software/templates/react-router/* /tmp/template-build/ && \
-  cp -r /app/skills/deploy-software/templates/react-router/.* /tmp/template-build/ 2>/dev/null || true && \
-  cd /tmp/template-build && \
-  echo "Downloading Yarn Berry release..." && \
-  mkdir -p .yarn/releases && \
-  curl -fsSL -o .yarn/releases/yarn-4.6.0.cjs https://repo.yarnpkg.com/4.6.0/packages/yarnpkg-cli/bin/yarn.js && \
-  echo "Installing in isolated /tmp/template-build..." && \
-  yarn install 2>&1 && \
-  echo "=== Yarn install complete ===" && \
-  echo "=== PnP files created ===" && \
-  ls -la .pnp.* 2>/dev/null || echo "No PnP files" && \
-  echo "=== Copying PnP files and generated types back ===" && \
-  cp -r .pnp.* /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
-  cp -r .yarn /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
-  cp yarn.lock /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
-  cp worker-configuration.d.ts /app/skills/deploy-software/templates/react-router/ 2>/dev/null || true && \
-  rm -rf /tmp/template-build && \
-  kill $(pgrep -f verdaccio) 2>/dev/null || true \
-'
-
-# Layer 6: App code (changes frequently) - copied AFTER template install for better caching
-# Changes to ws-server.mjs, entrypoint.sh, etc. won't trigger template rebuild
+# Layer 6: App code (changes frequently)
 COPY --chmod=755 sandbox/entrypoint.sh ./
-COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/vite-daemon.mjs sandbox/vite-build-client.mjs ./
-COPY sandbox/skills/deploy-software/scripts ./skills/deploy-software/scripts
-COPY sandbox/skills/deploy-software/SKILL.md sandbox/skills/deploy-software/AI-APPS.md ./skills/deploy-software/
+COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
+COPY --chmod=755 sandbox/skills/deploy-software/scripts ./skills/deploy-software/scripts
+COPY --chmod=644 sandbox/skills/deploy-software/SKILL.md sandbox/skills/deploy-software/AI-APPS.md ./skills/deploy-software/
 
 # Install skills to /etc/claude-code/skills (system-level, no per-container copy needed)
 RUN mkdir -p /etc/claude-code/skills/deploy-software \
              /etc/claude-code/skills/file-sharing \
              /etc/claude-code/skills/frontend-design
-COPY sandbox/skills/deploy-software/SKILL.md sandbox/skills/deploy-software/AI-APPS.md /etc/claude-code/skills/deploy-software/
-COPY sandbox/skills/file-sharing/SKILL.md /etc/claude-code/skills/file-sharing/
-COPY sandbox/skills/frontend-design/SKILL.md /etc/claude-code/skills/frontend-design/
+COPY --chmod=644 sandbox/skills/deploy-software/SKILL.md sandbox/skills/deploy-software/AI-APPS.md /etc/claude-code/skills/deploy-software/
+COPY --chmod=644 sandbox/skills/file-sharing/SKILL.md /etc/claude-code/skills/file-sharing/
+COPY --chmod=644 sandbox/skills/frontend-design/SKILL.md /etc/claude-code/skills/frontend-design/
 RUN chmod -R 755 /etc/claude-code && chown -R root:root /etc/claude-code
-RUN chmod -R a+rX /app
 
-# Layer 7: CLI tools (scaffolds projects from templates + fast builds)
-RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker \
-  && ln -s /app/vite-build-client.mjs /usr/local/bin/vite-build
-
-# Layer 8: Configure bun/npm to use local Verdaccio registry
-# This ensures all wrangler installs get our chiridion-wrangler
-# Must configure for both root (build time) and claude user (runtime)
-RUN echo 'registry = "http://localhost:4873"' > /root/.bunfig.toml \
-  && cp /root/.bunfig.toml /home/claude/.bunfig.toml \
-  && chown claude:claude /home/claude/.bunfig.toml \
-  && npm config set registry http://localhost:4873 \
-  && echo 'registry=http://localhost:4873' > /home/claude/.npmrc \
-  && chown claude:claude /home/claude/.npmrc
+# Layer 7: CLI tools (scaffolds projects from templates)
+RUN ln -s /app/skills/deploy-software/scripts/create-worker.mjs /usr/local/bin/create-worker
 
 WORKDIR /home/claude
 ENTRYPOINT ["/app/entrypoint.sh"]

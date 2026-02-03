@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-02-01-v44-pnp-require-fix
+# Version: 2026-02-02-v53-sqlite-only
 set -eu
 
 # Trap errors and show what failed
@@ -26,7 +26,7 @@ JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-5s}"
 JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-1024}"
 JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-2048}"  # 2GB max cache
 
-# Track PIDs for cleanup (Verdaccio managed by pm2)
+# Track PIDs for cleanup
 WS_PID=""
 CONTROL_PID=""
 BACKUP_PID=""
@@ -449,6 +449,7 @@ mount_juicefs() {
   # Use virtual-hosted style URL for R2: https://bucket.account.r2.cloudflarestorage.com
   JFS_BUCKET_URL="https://${R2_BUCKET_NAME}.${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
   JFS_META_FILE="${JUICEFS_META_DIR}/${ORG_SAFE}-${WS_SAFE}.db"
+
   JFS_META_URL="sqlite3://${JFS_META_FILE}"
 
   echo "[entrypoint] JuiceFS config:" >&2
@@ -464,8 +465,6 @@ mount_juicefs() {
   chown -R claude:claude "$JUICEFS_META_DIR" 2>/dev/null || true
   chmod -R u+rw "$JUICEFS_META_DIR" 2>/dev/null || true
 
-  echo "[entrypoint] Restoring JuiceFS metadata (if present)..." >&2
-  META_START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
   NEEDS_MIGRATION=""
 
   # Export R2_PREFIX for backup config (defaults to org/workspace path)
@@ -476,6 +475,9 @@ mount_juicefs() {
   if [ -z "${AWS_SESSION_TOKEN:-}" ]; then
     unset AWS_SESSION_TOKEN
   fi
+
+  echo "[entrypoint] Restoring JuiceFS metadata (if present)..." >&2
+  META_START_TS="$(date +%s%3N 2>/dev/null || date +%s)"
 
   # Restore SQLite metadata from R2 backup
   restore_metadata_from_r2 || true
@@ -499,6 +501,7 @@ mount_juicefs() {
     rm -f "$JFS_META_FILE"
   fi
 
+  # Format new volume if no metadata file exists
   if [ ! -f "$JFS_META_FILE" ]; then
     echo "[entrypoint] Formatting new JuiceFS volume..." >&2
     FORMAT_LOG="/tmp/juicefs-format.log"
@@ -614,6 +617,7 @@ mount_juicefs() {
   # Run mount in daemon mode
   # NOTE: NEVER use allow_other option with JuiceFS - it breaks file ownership.
   # Use user_id/group_id options instead to control mount permissions.
+  #
   echo "[entrypoint] Starting JuiceFS mount (daemon mode)..." >&2
   MOUNT_CMD="juicefs mount \"$JFS_META_URL\" \"$TARGET_DIR\" \
     --backup-meta 0 \
@@ -622,10 +626,7 @@ mount_juicefs() {
     --upload-delay \"$JUICEFS_UPLOAD_DELAY\" \
     --buffer-size \"$JUICEFS_BUFFER_SIZE\" \
     --prefix-internal \
-    --io-retries 3 \
-    --get-timeout 5 \
     -o user_id=$CLAUDE_UID,group_id=$CLAUDE_GID \
-    --writeback \
     --no-syslog \
     -v \
     -d"
@@ -713,7 +714,7 @@ mount_juicefs() {
 # to ensure data is properly flushed and backed up.
 #
 # Shutdown order:
-# 1. Stop application processes (ws-server, control-plane, Verdaccio)
+# 1. Stop application processes (ws-server, control-plane)
 # 2. Stop periodic backup loop
 # 3. Unmount JuiceFS (flushes writeback cache to R2, updates SQLite metadata)
 # 4. Final backup of metadata to R2
@@ -740,10 +741,6 @@ cleanup() {
     kill "$CONTROL_PID" 2>/dev/null || true
     wait "$CONTROL_PID" 2>/dev/null || true
   fi
-
-  # Stop Verdaccio via pm2
-  echo "[entrypoint] Stopping Verdaccio (pm2)..." >&2
-  pm2 stop verdaccio 2>/dev/null || true
 
   # Step 2: Unmount JuiceFS (flushes writeback cache to R2, updates SQLite metadata)
   if grep -q " $TARGET_DIR " /proc/mounts 2>/dev/null; then
@@ -778,11 +775,6 @@ SHUTDOWN_REASON="unknown"
 trap cleanup EXIT
 trap 'SHUTDOWN_REASON="SIGTERM"; echo "[entrypoint] Received SIGTERM (from CF runtime)" >&2; exit 0' TERM
 trap 'SHUTDOWN_REASON="SIGINT"; echo "[entrypoint] Received SIGINT" >&2; exit 0' INT
-
-# Start Verdaccio npm registry via pm2 (async - don't wait, it'll be ready by the time it's needed)
-# This runs in parallel with JuiceFS mount and other startup tasks
-echo "[entrypoint] Starting Verdaccio npm registry (async)..." >&2
-pm2 start verdaccio --name verdaccio -- --config /verdaccio/config.yaml >/dev/null 2>&1
 
 # Mount JuiceFS (includes migration from tar if needed) - skip if DISABLE_JUICEFS=1
 if [ "${DISABLE_JUICEFS:-}" = "1" ]; then
@@ -839,6 +831,42 @@ for skill_dir in /etc/claude-code/skills/*/; do
 done
 echo "[entrypoint] System skills symlinked to $TARGET_DIR/.claude/skills/" >&2
 
+# Create golden template in background (for instant project creation via juicefs clone)
+# Golden template has yarn install done, so clone gets everything ready-to-use
+echo "[entrypoint] Setting up golden template..." >&2
+(
+  TEMPLATE_NAME="react-router"
+  SOURCE_TEMPLATE="/app/skills/deploy-software/templates/${TEMPLATE_NAME}"
+  GOLDEN_DIR="${TARGET_DIR}/.chiridion/templates"
+  GOLDEN_TEMPLATE="${GOLDEN_DIR}/${TEMPLATE_NAME}"
+  HASH_FILE="${GOLDEN_DIR}/.${TEMPLATE_NAME}.hash"
+  LOCK_FILE="${GOLDEN_DIR}/.${TEMPLATE_NAME}.lock"
+
+  # Compute hash of source template
+  SOURCE_HASH="$(sha256sum "${SOURCE_TEMPLATE}/package.json" 2>/dev/null | cut -d' ' -f1)"
+
+  # Check if golden template is up to date
+  if [ -f "$HASH_FILE" ] && [ -f "${GOLDEN_TEMPLATE}/.pnp.cjs" ]; then
+    EXISTING_HASH="$(cat "$HASH_FILE" 2>/dev/null)"
+    if [ "$SOURCE_HASH" = "$EXISTING_HASH" ]; then
+      echo "[golden-template] Up to date" >&2
+      exit 0
+    fi
+  fi
+
+  # Create golden template as claude user
+  su -s /bin/sh claude -c "
+    mkdir -p '$GOLDEN_DIR'
+    echo \$\$ > '$LOCK_FILE'
+    rm -rf '$GOLDEN_TEMPLATE'
+    mkdir -p '$GOLDEN_TEMPLATE'
+    cp -r '${SOURCE_TEMPLATE}/.' '$GOLDEN_TEMPLATE/'
+    cd '$GOLDEN_TEMPLATE' && yarn install >/dev/null 2>&1
+    echo '$SOURCE_HASH' > '$HASH_FILE'
+    rm -f '$LOCK_FILE'
+  " && echo "[golden-template] Ready" >&2 || echo "[golden-template] Failed" >&2
+) &
+
 # Write env vars to a file that claude user can source
 cat > /tmp/ws-env.sh << ENVEOF
 export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'
@@ -860,6 +888,8 @@ export CLOUDFLARE_API_BASE_URL='${CLOUDFLARE_API_BASE_URL:-}'
 export CF_DISPATCH_NAMESPACE='${CF_DISPATCH_NAMESPACE:-}'
 export WORKER_BASE_URL='${WORKER_BASE_URL:-}'
 export MCP_SERVER_URL='${MCP_SERVER_URL:-}'
+export YARN_GLOBAL_FOLDER='${TARGET_DIR}/.yarn-cache'
+export YARN_ENABLE_GLOBAL_CACHE='true'
 ENVEOF
 chmod 644 /tmp/ws-env.sh
 

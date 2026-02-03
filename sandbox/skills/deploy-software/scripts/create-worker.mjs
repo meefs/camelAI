@@ -2,6 +2,9 @@
 /**
  * create-worker - Scaffold Cloudflare Worker projects with React Router v7 and shadcn/ui
  *
+ * Uses JuiceFS clone for instant project creation via copy-on-write.
+ * Golden template has yarn install done, so cloned projects are ready to use.
+ *
  * Usage:
  *   create-worker <project-name> [options]
  *
@@ -9,7 +12,6 @@
  *   --style <style>         UI style (vega, nova, maia, lyra, mira) [default: mira]
  *   --theme <color>         Theme color [default: neutral]
  *   --base-color <color>    Base gray color (neutral, zinc, gray, stone) [default: neutral]
- *   --icons <library>       Icon library [default: lucide]
  *   --font <font>           Font family [default: inter]
  *   --radius <size>         Border radius [default: default]
  *   --menu-color <type>     Menu color style [default: default]
@@ -17,21 +19,22 @@
  *   --help                  Show this help message
  */
 
-import { execFileSync, spawn } from 'child_process';
-import { writeFileSync, existsSync, readFileSync, readdirSync } from 'fs';
+import { execFileSync, spawnSync } from 'child_process';
+import { writeFileSync, existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { connect } from 'net';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = join(__dirname, '..', 'templates');
+
+// Golden template location on JuiceFS (has yarn install done)
+const GOLDEN_TEMPLATES_DIR = join(process.env.HOME || '/home/claude', '.chiridion', 'templates');
 
 // Valid option values
 const OPTIONS = {
   style: ['vega', 'nova', 'maia', 'lyra', 'mira'],
   baseColor: ['neutral', 'zinc', 'gray', 'stone'],
   theme: ['neutral', 'amber', 'blue', 'cyan', 'emerald', 'fuchsia', 'green', 'indigo', 'lime', 'orange', 'pink', 'purple', 'red', 'rose', 'sky', 'teal', 'violet', 'yellow', 'zinc', 'gray', 'stone'],
-  iconLibrary: ['lucide', 'tabler', 'hugeicons', 'phosphor', 'remixicon'],
   font: ['inter', 'noto-sans', 'nunito-sans', 'figtree'],
   radius: ['default', 'none', 'small', 'medium', 'large'],
   menuColor: ['default', 'inverted'],
@@ -42,7 +45,6 @@ const DEFAULTS = {
   style: 'mira',
   baseColor: 'neutral',
   theme: 'neutral',
-  iconLibrary: 'lucide',
   font: 'inter',
   radius: 'default',
   menuColor: 'default',
@@ -75,9 +77,6 @@ Options:
                           Values: ${OPTIONS.baseColor.join(', ')}
                           Note: When theme is a gray (zinc/gray/stone), base-color must match
 
-  --icons <library>       Icon library [default: ${DEFAULTS.iconLibrary}]
-                          Values: ${OPTIONS.iconLibrary.join(', ')}
-
   --font <font>           Font family [default: ${DEFAULTS.font}]
                           Values: ${OPTIONS.font.join(', ')}
 
@@ -96,7 +95,7 @@ Examples:
   create-worker my-app
   create-worker my-app --style nova --theme blue
   create-worker my-app --theme zinc --base-color zinc
-  create-worker my-app --icons tabler --font figtree --radius large
+  create-worker my-app --font figtree --radius large
 `);
 }
 
@@ -117,8 +116,6 @@ function parseArgs(args) {
       result.options.theme = args[++i];
     } else if (arg === '--base-color' && args[i + 1]) {
       result.options.baseColor = args[++i];
-    } else if (arg === '--icons' && args[i + 1]) {
-      result.options.iconLibrary = args[++i];
     } else if (arg === '--font' && args[i + 1]) {
       result.options.font = args[++i];
     } else if (arg === '--radius' && args[i + 1]) {
@@ -159,7 +156,7 @@ function buildPresetUrl(options) {
     style: options.style,
     baseColor: options.baseColor,
     theme: options.theme,
-    iconLibrary: options.iconLibrary,
+    iconLibrary: 'lucide',
     font: options.font,
     radius: options.radius,
     menuColor: options.menuColor,
@@ -182,7 +179,7 @@ function createComponentsJson(projectDir, options) {
       "cssVariables": true,
       "prefix": ""
     },
-    "iconLibrary": options.iconLibrary,
+    "iconLibrary": "lucide",
     "aliases": {
       "components": "~/components",
       "utils": "~/lib/utils",
@@ -225,119 +222,75 @@ function generateCssFromPreset(preset, options) {
     .map(key => `    --color-${key}: var(--${key});`)
     .join('\n');
 
-  // Generate radius mappings
-  const radiusVars = `    --radius-sm: calc(var(--radius) - 4px);
-    --radius-md: calc(var(--radius) - 2px);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) + 4px);
-    --radius-2xl: calc(var(--radius) + 8px);
-    --radius-3xl: calc(var(--radius) + 12px);
-    --radius-4xl: calc(var(--radius) + 16px);`;
+  // Read template and replace placeholders
+  const templatePath = join(TEMPLATES_DIR, 'react-router', 'app', 'app.css.template');
+  const template = readFileSync(templatePath, 'utf-8');
 
-  return `@import "tailwindcss";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
-@import "${fontConfig.package}";
-
-@custom-variant dark (&:is(.dark *));
-
-:root {
-${lightVars}
+  return template
+    .replace('{{FONT_IMPORT}}', fontConfig.package)
+    .replace('{{FONT_FAMILY}}', fontConfig.fontFamily)
+    .replace('{{LIGHT_VARS}}', lightVars)
+    .replace('{{DARK_VARS}}', darkVars)
+    .replace('{{THEME_COLORS}}', themeColors);
 }
 
-.dark {
-${darkVars}
-}
+/**
+ * Wait for golden template to be ready.
+ * Returns path to golden template, or null if not available.
+ */
+function waitForGoldenTemplate(templateName) {
+  const goldenTemplate = join(GOLDEN_TEMPLATES_DIR, templateName);
+  const lockFile = join(GOLDEN_TEMPLATES_DIR, `.${templateName}.lock`);
+  const pnpFile = join(goldenTemplate, '.pnp.cjs');
 
-@theme inline {
-    --font-sans: ${fontConfig.fontFamily};
-${themeColors}
-${radiusVars}
-}
-
-@layer base {
-  * {
-    @apply border-border outline-ring/50;
+  // Wait for lock file to be removed (max 2 minutes)
+  let waited = false;
+  for (let i = 0; i < 120 && existsSync(lockFile); i++) {
+    if (!waited) {
+      console.log(`         Waiting for golden template...`);
+      waited = true;
     }
-  body {
-    @apply font-sans bg-background text-foreground;
-    }
-  html {
-    @apply font-sans;
-    }
-}
-`;
+    spawnSync('sleep', ['1']);
+  }
+
+  return existsSync(pnpFile) ? goldenTemplate : null;
 }
 
+/**
+ * Clone template using JuiceFS copy-on-write (instant)
+ */
 function copyTemplate(templateName, projectDir) {
-  const templatePath = join(TEMPLATES_DIR, templateName);
-  if (!existsSync(templatePath)) {
-    throw new Error(`Template '${templateName}' not found at ${templatePath}`);
+  const start = Date.now();
+  const goldenTemplate = waitForGoldenTemplate(templateName);
+  const waitTime = Date.now() - start;
+
+  if (!goldenTemplate) {
+    throw new Error('Golden template not ready. Please try again in a moment.');
   }
 
-  // Get JuiceFS volume name from config
-  const homeDir = process.env.HOME || '/home/claude';
-  const jfsConfigPath = join(homeDir, '.jfs.config');
-  const jfsConfig = JSON.parse(readFileSync(jfsConfigPath, 'utf-8'));
-  const volumeName = jfsConfig.Format.Name;
-
-  // Find the meta DB file in /var/lib/juicefs/
-  const metaDir = '/var/lib/juicefs';
-  const dbFiles = readdirSync(metaDir).filter(f => f.endsWith('.db'));
-  if (dbFiles.length === 0) {
-    throw new Error('No JuiceFS metadata DB found in /var/lib/juicefs/');
+  if (waitTime > 100) {
+    console.log(`         (waited ${waitTime}ms for golden template)`);
   }
-  const metaUrl = `sqlite3://${metaDir}/${dbFiles[0]}`;
 
-  // jfs:// paths are relative to the JuiceFS root (mounted at $HOME)
-  // So /home/claude/project becomes jfs://volume/project
-  const relativePath = projectDir.startsWith(homeDir) ? projectDir.slice(homeDir.length) : projectDir;
-  const destPath = `jfs://${volumeName}${relativePath}/`;
+  console.log(`         Cloning template (JuiceFS copy-on-write)...`);
 
-  console.log(`         Using jfs:// protocol (bypassing FUSE)`);
+  const cloneStart = Date.now();
+  const result = spawnSync('juicefs', ['clone', goldenTemplate, projectDir], {
+    stdio: 'pipe',
+  });
+  const cloneTime = Date.now() - cloneStart;
 
-  // Set up environment with volume name pointing to meta URL
-  const env = { ...process.env };
-  env[volumeName] = metaUrl;
+  console.log(`         Clone took ${cloneTime}ms`);
 
-  // Use juicefs sync for fast copying on JuiceFS filesystem
-  // --perms preserves execute bits (needed for esbuild binary)
-  // --links preserves symlinks
-  // --dirs copies empty directories
-  execFileSync('juicefs', ['sync', '--threads', '100', '--list-threads', '10', '--perms', '--links', '--dirs', `${templatePath}/`, destPath], { stdio: 'ignore', env });
+  if (result.status !== 0) {
+    const stderr = result.stderr?.toString() || '';
+    throw new Error(`JuiceFS clone failed: ${stderr}`);
+  }
 }
 
 function formatTime(ms) {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
-}
-
-/**
- * Start vite-daemon and warmup in background.
- * First build will be fast (~2s) because builder is pre-cached.
- */
-function startAndWarmupDaemon(projectPath) {
-  const child = spawn('yarn', ['node', '/app/vite-daemon.mjs'], {
-    cwd: projectPath,
-    stdio: ['ignore', 'ignore', 'ignore'],
-    detached: true,
-  });
-  child.unref();
-
-  // Wait for socket, then send warmup
-  let attempts = 0;
-  const check = () => {
-    if (existsSync('/tmp/vite-build.sock')) {
-      const client = connect('/tmp/vite-build.sock', () => {
-        client.write(JSON.stringify({ action: 'warmup' }) + '\n');
-        client.end();
-      });
-      client.on('error', () => {});
-    } else if (attempts++ < 50) {
-      setTimeout(check, 100);
-    }
-  };
-  setTimeout(check, 100);
 }
 
 async function createProject(projectName, options) {
@@ -350,17 +303,17 @@ async function createProject(projectName, options) {
   }
 
   console.log(`Creating Cloudflare Worker project: ${projectName}`);
-  console.log(`Style: ${options.style}, Theme: ${options.theme}, Icons: ${options.iconLibrary}`);
+  console.log(`Style: ${options.style}, Theme: ${options.theme}, Font: ${options.font}`);
   console.log('');
 
-  // Step 1: Copy React Router + Cloudflare template
-  console.log('Step 1/4: Copying React Router + Cloudflare template...');
+  // Step 1: Clone React Router + Cloudflare template (instant via JuiceFS copy-on-write)
+  console.log('Step 1/4: Cloning React Router + Cloudflare template...');
   let stepStart = Date.now();
   try {
     copyTemplate('react-router', projectDir);
     console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
   } catch (error) {
-    console.error('Failed to copy template:', error.message);
+    console.error('Failed to clone template:', error.message);
     process.exit(1);
   }
 
@@ -403,20 +356,16 @@ async function createProject(projectName, options) {
   }
   console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
 
-  // Start daemon and warmup in background so first build is fast
-  // This happens while user reads success message (~10s head start)
-  startAndWarmupDaemon(projectDir);
-
   const totalTime = Date.now() - totalStart;
   console.log(`
 Project created successfully in ${formatTime(totalTime)}!
 
 Next steps:
   cd ${projectName}
-  yarn dev            # Start development server
-  yarn deploy         # Deploy to Cloudflare
+  yarn dev         # Start development server
+  yarn deploy      # Deploy to Cloudflare
 
-Add shadcn components:
+Add shadcn components (globally installed - do NOT use npx):
   shadcn add button card input
 `);
 }

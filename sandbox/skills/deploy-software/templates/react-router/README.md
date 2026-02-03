@@ -5,10 +5,10 @@ Full-stack React app with SSR, Durable Objects, and SQLite.
 ## Quick Start
 
 ```bash
-npm run dev      # Start dev server
-npm run test     # Run tests
-npm run build    # Build for production
-npm run deploy   # Deploy to Cloudflare
+yarn dev      # Start dev server
+yarn test     # Run tests
+yarn build    # Build for production
+yarn deploy   # Deploy to Cloudflare
 ```
 
 ## Project Structure
@@ -92,7 +92,7 @@ export function HydrateFallback() {
 ## Testing
 
 ```bash
-npm run test     # Run tests with vitest
+yarn test     # Run tests with vitest
 ```
 
 ### Testing Durable Objects
@@ -142,6 +142,8 @@ See `workers/tests/example-do.test.ts` for a complete example.
 5. Run `wrangler types` to update `Env` types
 
 ## Adding shadcn/ui Components
+
+The shadcn CLI is globally installed. Use `shadcn add`, NOT `npx shadcn`:
 
 ```bash
 shadcn add button card input

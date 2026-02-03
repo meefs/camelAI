@@ -26,7 +26,6 @@ export default [
 			".react-router/**",
 			"**/.wrangler/**",
 			"public/monaco/**",
-			"packages/chiridion-wrangler/**",
 			"**/*.d.ts",
 		],
 	},

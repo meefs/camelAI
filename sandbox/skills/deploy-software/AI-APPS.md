@@ -69,9 +69,7 @@ The component is pre-installed at `app/components/markdown-renderer.tsx`.
 
 The AI SDK dependencies require the `nodejs_compat` compatibility flag, which is already configured in the template's `wrangler.jsonc`.
 
-The template includes a yarn patch for `@cloudflare/vite-plugin` that fixes a [Yarn PnP compatibility issue](https://github.com/cloudflare/workers-sdk/issues/10079). The patch replaces the bundled `mlly` module resolution (which doesn't support Yarn PnP) with native `import.meta.resolve`. This ensures `compatibility_flags` are correctly passed through during builds.
-
-**Do NOT use** the `config` callback or `configPath` options in the cloudflare vite plugin—they cause build failures with Yarn PnP.
+The template's `vite.config.ts` configures the SSR environment to use Cloudflare's worker entry as the rollup input, ensuring Durable Object exports are correctly included in the bundle.
 
 ## Markdown Rendering
 

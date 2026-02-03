@@ -15,7 +15,7 @@ This skill guides deployment of production software to Cloudflare's edge network
 3. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
 4. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
 5. **Use React + Vite for fullstack web apps** - With React Router and Tailwind CSS pre-configured
-6. **Use shadcn/ui for frontend components** - The CLI is globally installed, use `shadcn add <component>`
+6. **Use shadcn/ui for frontend components** - The CLI is globally installed, use `shadcn add <component>` (NOT `npx shadcn`)
 7. **Avoid large package installations** - Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies that take a long time to install. The `create-worker` template has everything pre-configured.
 
 ## Creating New Projects
@@ -33,7 +33,7 @@ create-worker my-app --style nova --theme blue
 create-worker my-app --auth
 
 # Full customization example
-create-worker my-app --style lyra --theme emerald --icons tabler --font figtree --radius large
+create-worker my-app --style lyra --theme emerald --font figtree --radius large
 
 # See all options
 create-worker --help
@@ -46,7 +46,6 @@ create-worker --help
 | `--style` | vega, nova, maia, lyra, mira | mira | UI style preset |
 | `--theme` | neutral, amber, blue, cyan, emerald, fuchsia, green, indigo, lime, orange, pink, purple, red, rose, sky, teal, violet, yellow, zinc, gray, stone | neutral | Theme color |
 | `--base-color` | neutral, zinc, gray, stone | neutral | Base gray color (must match theme if theme is zinc/gray/stone) |
-| `--icons` | lucide, tabler, hugeicons, phosphor, remixicon | lucide | Icon library |
 | `--font` | inter, noto-sans, nunito-sans, figtree | inter | Font family |
 | `--radius` | default, none, small, medium, large | default | Border radius |
 | `--menu-color` | default, inverted | default | Menu color style |
@@ -390,9 +389,9 @@ create-worker my-app --auth
 
 cd my-app
 
-# Dependencies come preinstalled - do not run yarn install
+# Dependencies are pre-cached - do not run yarn install
 
-# Add shadcn/ui components (already configured)
+# Add shadcn/ui components (globally installed - do NOT use npx)
 shadcn add button card form input
 
 # Local development

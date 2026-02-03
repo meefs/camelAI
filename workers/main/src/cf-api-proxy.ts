@@ -104,18 +104,6 @@ export function resolveEnvPrefix(baseUrl: string | undefined, hostname: string):
 }
 
 /**
- * Build the vanity domain for a deployed script based on environment.
- * E.g., "my-app" in staging -> "https://my-app.staging.chiridion.app"
- */
-function buildDeployUrl(scriptName: string, envPrefix: string): string {
-  if (envPrefix) {
-    return `https://${scriptName}.${envPrefix}.chiridion.app`;
-  }
-  // Prod has no prefix
-  return `https://${scriptName}.chiridion.app`;
-}
-
-/**
  * Extract script name from a dispatch namespace API path.
  */
 function extractScriptName(pathname: string): string | null {
@@ -603,7 +591,7 @@ export async function proxyCloudflareApi(
       });
       return cfApiError(
         10000,
-        'Direct worker deployments are not supported. Please use the globally installed wrangler binary (just run "wrangler deploy" without npx or local installation).',
+        'Direct worker deployments are not supported. Use `wrangler deploy --dispatch-namespace chiridion` instead.',
         403
       );
     }
@@ -824,27 +812,6 @@ export async function proxyCloudflareApi(
             }
           })()
         );
-      }
-
-      // Inject URLs into the response for successful deploys
-      // This allows wrangler to display the app URLs after deploy
-      try {
-        const respJson = JSON.parse(new TextDecoder().decode(respBody)) as {
-          success?: boolean;
-          result?: { urls?: string[] };
-        };
-        if (respJson.success && respJson.result) {
-          const envPrefix = resolveEnvPrefix(env.WORKER_BASE_URL, url.hostname);
-          respJson.result.urls = [
-            buildDeployUrl(scriptName, envPrefix),
-          ];
-          const modifiedBody = JSON.stringify(respJson);
-          const modifiedHeaders = new Headers(resp.headers);
-          modifiedHeaders.set('Content-Length', String(new TextEncoder().encode(modifiedBody).length));
-          return new Response(modifiedBody, { status: resp.status, headers: modifiedHeaders });
-        }
-      } catch {
-        // If JSON parsing fails, return original response
       }
     }
   }

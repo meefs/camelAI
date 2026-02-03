@@ -1,0 +1,36 @@
+# Ignore template node_modules - we use Yarn PnP instead
+sandbox/skills/deploy-software/templates/*/node_modules
+
+# Ignore local development artifacts
+node_modules
+.wrangler
+.react-router
+build
+dist
+
+# Ignore git and IDE files
+.git
+.gitignore
+.vscode
+.idea
+*.swp
+*.swo
+
+# Ignore test files
+tests
+e2e
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+
+# Ignore documentation (except skills)
+*.md
+!sandbox/skills/**/*.md
+
+# Ignore source maps and build artifacts
+*.map
+*.tsbuildinfo
+
+# Ignore env files
+.env*
+.dev.vars*

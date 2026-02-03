@@ -22,7 +22,6 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: ['react', 'react-dom', 'react-dom/client', 'react-router'],
-    exclude: ['chiridion-wrangler'],
   },
   server: {
     port: 3001,

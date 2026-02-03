@@ -2,8 +2,15 @@
 .env
 /node_modules/
 *.tsbuildinfo
-bun.lock
 package-lock.json
+
+# Yarn
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
 
 # React Router
 /.react-router/

@@ -8,6 +8,8 @@ This skill guides creation of distinctive, production-grade frontend interfaces 
 
 The shadcn CLI is globally installed. Run `shadcn add <component>` to install components from the shadcn/ui registry.
 
+**IMPORTANT:** Use `shadcn add`, NOT `npx shadcn`. The CLI is already installed globally.
+
 The user provides frontend requirements: a component, page, application, or interface to build. They may include context about the purpose, audience, or technical constraints.
 
 ## Design Thinking
