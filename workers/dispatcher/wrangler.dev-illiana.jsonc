@@ -5,13 +5,8 @@
 	"compatibility_date": "2024-12-01",
 	"compatibility_flags": ["nodejs_compat"],
 	"routes": [
-		// New format: script.org-slug.apps.dev-illiana.chiridion.ai
-		{ "pattern": "*.*.apps.dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" },
-		// Legacy format: script.apps.dev-illiana.chiridion.ai
+		// Matches both legacy and new format
 		{ "pattern": "*.apps.dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" },
-		// New format: script.org-slug.dev-illiana.chiridion.app
-		{ "pattern": "*.*.dev-illiana.chiridion.app/*", "zone_name": "chiridion.app" },
-		// Legacy format: script.dev-illiana.chiridion.app
 		{ "pattern": "*.dev-illiana.chiridion.app/*", "zone_name": "chiridion.app" }
 	],
 	"dispatch_namespaces": [
