@@ -19,12 +19,16 @@ import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { isSignedToken, validateSignedToken } from './signed-tokens';
-import { getEnvPrefix } from './cf-api-proxy';
+import { getEnvPrefix, resolveEnvPrefix } from './cf-api-proxy';
+import { captureScreenshot, type AppScreenshotJob, type ScreenshotEnv } from './screenshot-queue';
+import { createScreenshotToken } from './worker-auth';
 
 export interface McpEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
   APP_KV: KVNamespace;
+  BROWSER?: Fetcher;
+  R2_BUCKET: R2Bucket;
 }
 
 type AuthContext = {
@@ -286,6 +290,98 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           },
           message: `App '${script_name}' is now ${is_public ? 'public' : 'private'}`,
         });
+      }
+    );
+
+    // Take a screenshot of a deployed app
+    this.server.tool(
+      'take_app_screenshot',
+      'Take a fresh screenshot of a deployed app. This captures the current state of the app and updates its preview image. Useful after making changes to verify the app looks correct.',
+      {
+        script_name: z.string().describe('The name of the app/worker script to screenshot'),
+      },
+      async ({ script_name }) => {
+        const { orgId, workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ error: 'No workspace context available' });
+        }
+
+        const orgStub = this.getOrgStub();
+
+        // Verify script exists and belongs to current workspace
+        const script: WorkerScript | null = await orgStub.getWorkerScript(script_name);
+        if (!script) {
+          return this.textResponse({ success: false, error: `App '${script_name}' not found` });
+        }
+        if (script.workspace_id !== workspaceId) {
+          return this.textResponse({ success: false, error: `App '${script_name}' belongs to a different workspace` });
+        }
+
+        // Check for BROWSER binding
+        if (!this.env.BROWSER) {
+          return this.textResponse({
+            success: false,
+            error: 'Screenshot capture is not available (missing browser binding)',
+          });
+        }
+
+        // Get env prefix for building screenshot URL
+        const envPrefix = this.env.WORKER_BASE_URL
+          ? getEnvPrefix(new URL(this.env.WORKER_BASE_URL).hostname)
+          : '';
+
+        // Set preview status to pending
+        await orgStub.updateWorkerScriptPreview(script_name, {
+          status: 'pending',
+          preview_key: null,
+          preview_error: null,
+          deploy_ts: script.updated_at,
+        });
+
+        // Build screenshot job
+        const job: AppScreenshotJob = {
+          script_name,
+          org_id: orgId,
+          workspace_id: workspaceId,
+          deploy_ts: script.updated_at,
+          env_prefix: envPrefix,
+          is_public: script.is_public,
+        };
+
+        // Create screenshot token for private apps
+        let screenshotToken: string | undefined;
+        if (!script.is_public && envPrefix !== 'local') {
+          screenshotToken = await createScreenshotToken(this.env.APP_KV, {
+            script_name,
+            org_id: orgId,
+          });
+        }
+
+        // Capture screenshot directly (synchronous, no queue)
+        const screenshotEnv: ScreenshotEnv = {
+          BROWSER: this.env.BROWSER,
+          R2_BUCKET: this.env.R2_BUCKET,
+          APP_KV: this.env.APP_KV,
+          ORG: this.env.ORG,
+        };
+
+        const result = await captureScreenshot(screenshotEnv, job, screenshotToken);
+
+        if (result.success) {
+          return this.textResponse({
+            success: true,
+            app: {
+              name: script_name,
+              url: await this.getAppUrl(script_name),
+            },
+            message: `Screenshot captured successfully for '${script_name}'`,
+          });
+        } else {
+          return this.textResponse({
+            success: false,
+            error: result.error || 'Failed to capture screenshot',
+          });
+        }
       }
     );
 

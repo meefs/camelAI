@@ -56,6 +56,10 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
     }
   }
 
+  // Get org slug for deploy tokens
+  const orgInfo = await orgStub.getInfo();
+  const orgSlug = orgInfo?.slug || `org-${orgId.slice(0, 3)}`;
+
   // Build request with user info headers
   const headers = new Headers(req.headers);
   headers.delete('X-Chiridion-User-Name');
@@ -68,6 +72,7 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
       THREAD_TOKEN_HEADER,
       await createSignedToken(env.TOKEN_SIGNING_SECRET, {
         org_id: orgId,
+        org_slug: orgSlug,
         user_id: userId,
         scopes: ['deploy'],
         exp: Date.now() + 24 * 60 * 60 * 1000,
@@ -80,6 +85,7 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
       'X-Chiridion-MCP-Token',
       await createSignedToken(env.TOKEN_SIGNING_SECRET, {
         org_id: orgId,
+        org_slug: orgSlug,
         user_id: userId,
         scopes: ['mcp'],
         exp: Date.now() + 24 * 60 * 60 * 1000,
