@@ -585,10 +585,7 @@ Return a clear summary of what you found.
 When memory files don't have enough detail, use the session-search CLI to search through ALL past Claude session messages:
 
 \`\`\`bash
-# First, update the index (only needed once per session)
-session-search index --quiet
-
-# Search for specific terms
+# Search for specific terms (index is auto-updated every 60s)
 session-search search "your query" --limit 10
 
 # Show stats
@@ -598,7 +595,7 @@ session-search stats
 session-search list --limit 10
 \`\`\`
 
-The session-search tool indexes all JSONL session files in ~/.claude/projects/ and provides full-text search across all messages.
+The session-search tool indexes all JSONL session files in ~/.claude/projects/ and provides full-text search across all messages. The index is automatically updated every 60 seconds in the background.
 
 ## Summary
 - Quick recall: search memory files first (MODE 2)

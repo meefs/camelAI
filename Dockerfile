@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-02-03-v69-session-search-cli
+# Version: 2026-02-03-v70-periodic-session-indexer
 # Slim container with Node, Yarn PnP, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000

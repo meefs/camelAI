@@ -30,6 +30,7 @@ JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-2048}"  # 2GB max cache
 WS_PID=""
 CONTROL_PID=""
 BACKUP_PID=""
+INDEXER_PID=""
 MOUNT_SUCCEEDED=""
 
 # Check if R2 is configured
@@ -735,6 +736,11 @@ cleanup() {
     kill "$BACKUP_PID" 2>/dev/null || true
   fi
 
+  # Kill session indexer loop if running
+  if [ -n "${INDEXER_PID:-}" ] && kill -0 "$INDEXER_PID" 2>/dev/null; then
+    kill "$INDEXER_PID" 2>/dev/null || true
+  fi
+
   # Kill control-plane if running
   if [ -n "${CONTROL_PID:-}" ] && kill -0 "$CONTROL_PID" 2>/dev/null; then
     echo "[entrypoint] Stopping control-plane (PID: $CONTROL_PID)..." >&2
@@ -903,6 +909,20 @@ if ! kill -0 "$CONTROL_PID" 2>/dev/null; then
   echo "[entrypoint] ERROR: Control-plane failed to start!" >&2
   exit 1
 fi
+
+# Start session indexer loop (indexes Claude session files every 60s for memory search)
+echo "[entrypoint] Starting session indexer loop..." >&2
+(
+  # Wait a bit for initial sessions to be created
+  sleep 30
+  while true; do
+    # Run index quietly, ignore errors
+    cd /app && node /app/session-search/cli.mjs index --quiet 2>/dev/null || true
+    sleep 60
+  done
+) &
+INDEXER_PID=$!
+echo "[entrypoint] Session indexer PID: $INDEXER_PID" >&2
 
 # Start ws-server as claude user (runs on port 8080)
 # Uses Claude Agent SDK for streaming conversations
