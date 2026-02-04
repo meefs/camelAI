@@ -8,7 +8,7 @@ polars>=1.0.0
 duckdb>=1.1.0
 
 # Scientific Computing
-# scipy>=1.14.0  # ~150MB - commented to reduce image size
+# (scipy moved to Scientific Computing & Machine Learning section below)
 
 # Data Formats & I/O
 pyarrow>=17.0.0
@@ -23,14 +23,15 @@ pillow>=10.0.0
 # camelot-py[cv]>=0.11.0  # requires opencv - commented to reduce image size
 
 # Visualization
-# matplotlib>=3.9.0  # ~50MB - commented to reduce image size
-# seaborn>=0.13.0  # requires matplotlib - commented to reduce image size
-# plotly>=5.24.0  # ~20MB - commented to reduce image size
+matplotlib>=3.9.0
+seaborn>=0.13.0
+plotly>=5.24.0
 
-# Statistics & Machine Learning
-# scikit-learn>=1.5.0  # ~200MB - commented to reduce image size
-# statsmodels>=0.14.0  # ~100MB - commented to reduce image size
-# xgboost>=2.1.0  # ~150MB - commented to reduce image size
+# Scientific Computing & Machine Learning
+scipy>=1.14.0
+scikit-learn>=1.5.0
+# statsmodels>=0.14.0  # ~100MB - on-demand install
+# xgboost>=2.1.0  # ~150MB - on-demand install
 
 # Data Sources & Web
 requests>=2.32.0
@@ -41,6 +42,13 @@ aiohttp>=3.10.0
 
 # Database Connectivity
 sqlalchemy>=2.0.0
+psycopg[binary]>=3.2.0
+pymysql>=1.1.0
+
+# Google Cloud (BigQuery)
+google-cloud-bigquery>=3.25.0
+google-auth>=2.35.0
+db-dtypes>=1.3.0
 
 # JSON & Data Wrangling
 jmespath>=1.0.0

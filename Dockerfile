@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-02-02-v66-yarn-pnp-juicefs-cache
+# Version: 2026-02-03-v68-data-analysis-skill
 # Slim container with Node, Yarn PnP, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -42,7 +42,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && curl -fsSL https://d.juicefs.com/install | sh - \
   && curl -fsSL -o /tmp/litestream.deb https://github.com/benbjohnson/litestream/releases/download/v0.5.2/litestream-0.5.2-linux-x86_64.deb \
   && dpkg -i /tmp/litestream.deb \
-  && rm /tmp/litestream.deb
+  && rm /tmp/litestream.deb \
+  && curl -fsSL https://github.com/xo/usql/releases/download/v0.19.14/usql_static-0.19.14-linux-amd64.tar.bz2 | tar -xj -C /usr/local/bin usql_static \
+  && mv /usr/local/bin/usql_static /usr/local/bin/usql
 
 # Layer 3: Sandbox dependencies - cached unless package.json changes
 WORKDIR /app
@@ -62,17 +64,17 @@ COPY --chmod=755 sandbox/skills/developing-software/templates ./skills/developin
 
 # Layer 6: App code (changes frequently)
 COPY --chmod=755 sandbox/entrypoint.sh ./
-COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs ./
+COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/memory-logger.mjs ./
 COPY --chmod=755 sandbox/skills/developing-software/scripts ./skills/developing-software/scripts
 COPY --chmod=644 sandbox/skills/developing-software/SKILL.md sandbox/skills/developing-software/AI-APPS.md ./skills/developing-software/
 
 # Install skills to /etc/claude-code/skills (system-level, no per-container copy needed)
 RUN mkdir -p /etc/claude-code/skills/developing-software \
              /etc/claude-code/skills/file-sharing \
-             /etc/claude-code/skills/frontend-design
+             /etc/claude-code/skills/data-analysis
 COPY --chmod=644 sandbox/skills/developing-software/SKILL.md sandbox/skills/developing-software/AI-APPS.md /etc/claude-code/skills/developing-software/
 COPY --chmod=644 sandbox/skills/file-sharing/SKILL.md /etc/claude-code/skills/file-sharing/
-COPY --chmod=644 sandbox/skills/frontend-design/SKILL.md /etc/claude-code/skills/frontend-design/
+COPY --chmod=644 sandbox/skills/data-analysis/SKILL.md /etc/claude-code/skills/data-analysis/
 RUN chmod -R 755 /etc/claude-code && chown -R root:root /etc/claude-code
 
 # Layer 7: CLI tools (scaffolds projects from templates)
