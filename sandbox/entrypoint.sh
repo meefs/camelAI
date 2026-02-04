@@ -916,8 +916,8 @@ echo "[entrypoint] Starting session indexer loop..." >&2
   # Wait a bit for initial sessions to be created
   sleep 30
   while true; do
-    # Run index quietly, ignore errors
-    cd /app && node /app/session-search/cli.mjs index --quiet 2>/dev/null || true
+    # Run index quietly using bash+jq script (no Node.js needed)
+    /app/session-search.sh index --quiet 2>/dev/null || true
     sleep 60
   done
 ) &
