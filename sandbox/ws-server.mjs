@@ -6,7 +6,7 @@ import os from 'os';
 import { loadUserProfile, MEMORY_DIR, PROFILE_PATH } from './memory-logger.mjs';
 
 // Version for verifying container has latest code
-const VERSION = '2026-02-03-ws-ping-keepalive';
+const VERSION = '2026-02-03-ripgrep';
 
 // Sleep helper (replaces sleep)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -713,6 +713,18 @@ Examples:
 ## Node.js Package Management
 
 **Always use \`yarn\`** for Node.js package management. Do not use \`npm\` or \`bun\` - use \`yarn\` exclusively for installing dependencies, running scripts, and managing packages.
+
+## Code Search with ripgrep
+
+This environment has **\`rg\`** (ripgrep) installed - a fast recursive search tool. Use it for searching code:
+
+- **Basic search:** \`rg "pattern" path/\`
+- **File type filter:** \`rg "pattern" --type js\` or \`rg "pattern" -g "*.tsx"\`
+- **Case insensitive:** \`rg -i "pattern"\`
+- **Show context:** \`rg -C 3 "pattern"\` (3 lines before/after)
+- **List files only:** \`rg -l "pattern"\`
+
+ripgrep is significantly faster than grep and respects .gitignore by default.
 
 ## Python Environment
 

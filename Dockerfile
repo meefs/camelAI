@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-02-03-v71-bash-session-search
+# Version: 2026-02-03-v75-add-ripgrep
 # Slim container with Node, Yarn PnP, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -21,10 +21,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     tar \
+    bzip2 \
     zstd \
     unzip \
     git \
     jq \
+    ripgrep \
     python3 \
     python3-pip \
     fuse3 \
@@ -65,7 +67,7 @@ COPY --chmod=755 sandbox/skills/developing-software/templates ./skills/developin
 # Layer 6: App code (changes frequently)
 COPY --chmod=755 sandbox/entrypoint.sh ./
 COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/memory-logger.mjs ./
-COPY --chmod=755 sandbox/session-search.sh ./
+COPY --chmod=755 sandbox/session-search ./session-search
 COPY --chmod=755 sandbox/skills/developing-software/scripts ./skills/developing-software/scripts
 COPY --chmod=644 sandbox/skills/developing-software/SKILL.md sandbox/skills/developing-software/AI-APPS.md ./skills/developing-software/
 
@@ -80,7 +82,7 @@ RUN chmod -R 755 /etc/claude-code && chown -R root:root /etc/claude-code
 
 # Layer 7: CLI tools (scaffolds projects from templates)
 RUN ln -s /app/skills/developing-software/scripts/create-worker.mjs /usr/local/bin/create-worker \
-  && ln -s /app/session-search.sh /usr/local/bin/session-search
+  && ln -s /app/session-search/src/cli.mjs /usr/local/bin/session-search
 
 WORKDIR /home/claude
 ENTRYPOINT ["/app/entrypoint.sh"]
