@@ -6,7 +6,7 @@ import os from 'os';
 import { loadUserProfile, MEMORY_DIR, PROFILE_PATH } from './memory-logger.mjs';
 
 // Version for verifying container has latest code
-const VERSION = '2026-02-03-ripgrep';
+const VERSION = '2026-02-03-ws-ping-keepalive';
 
 // Sleep helper (replaces sleep)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -549,10 +549,10 @@ Use for THREE purposes:
 
 1. LOGGING (run in background): After completing significant tasks, invoke with run_in_background=true to record what was done. Use proactively after implementing features, fixing bugs, deploying, or completing multi-step tasks.
 
-2. SEARCHING MEMORIES (run in foreground): When you need to find past work - "when did we deploy X?", "what was that bug?", "have we worked on this before?" - invoke normally to search memory files.
+2. SEARCHING (run in foreground): When you need to find past work - "when did we deploy X?", "what was that bug?", "have we worked on this before?" - search BOTH memory files AND session history to get complete results.
 
-3. DEEP SESSION SEARCH (run in foreground): When memory files don't have what you need, use session-search CLI to search through ALL past Claude session messages. Good for finding specific code, discussions, or decisions.`,
-  prompt: `You are an episodic memory manager for a coding workspace. You handle LOGGING memories, SEARCHING memories, and DEEP SESSION SEARCH.
+3. CONTEXT RETRIEVAL (run in foreground): Use session-search show with --around to get full context around a specific message or timestamp.`,
+  prompt: `You are an episodic memory manager for a coding workspace. You handle LOGGING memories and SEARCHING history.
 
 ## Memory Location
 ${MEMORY_DIR}/YYYY-MM-DD.md (one file per day, timestamped entries)
@@ -572,42 +572,47 @@ Write a brief entry (2-4 sentences) summarizing what was accomplished:
 
 Append to today's file. Create it if needed. Be concise and factual.
 
-## MODE 2: SEARCHING MEMORIES (when asked to find/recall something)
+## MODE 2: SEARCHING (when asked to find/recall something)
 
-1. Use Grep to search keywords across memory files: ${MEMORY_DIR}/*.md
-2. Use Glob to list available files
-3. Read specific files for full context
+Search BOTH sources to get complete results:
 
-Return a clear summary of what you found.
-
-## MODE 3: DEEP SESSION SEARCH (for detailed history)
-
-When memory files don't have enough detail, use the session-search CLI to search through ALL past Claude session messages:
-
+**Memory files** (curated summaries):
 \`\`\`bash
-# Search for specific terms (index is auto-updated every 60s)
-session-search search "your query" --limit 10
+grep -r "keyword" ${MEMORY_DIR}/
+\`\`\`
 
-# Show stats
-session-search stats
+**Session history** (full conversation logs):
+\`\`\`bash
+# Search for specific terms (index auto-updates every 60s)
+session-search search "your query" --limit 20
 
-# List recent sessions
+# Filter by date range
+session-search search "query" --after "2026-01-15" --before "2026-01-20"
+
+# Filter by session (supports partial IDs like "68369296")
+session-search search "query" --session 68369296
+
+# View context around a search result
+session-search show <session-id> --around "<timestamp>" --context 5
+
+# Show recent sessions
 session-search list --limit 10
 \`\`\`
 
-The session-search tool indexes all JSONL session files in ~/.claude/projects/ and provides full-text search across all messages. The index is automatically updated every 60 seconds in the background.
+Search results show message numbers (e.g., #47) for easy reference.
 
-## Summary
-- Quick recall: search memory files first (MODE 2)
-- Detailed history: use session-search CLI (MODE 3)
-- Always be concise in results
+## Tips
+- Memory files have curated summaries, session-search has raw conversation history
+- Always try both - memory logs may not exist for all work
+- Partial session IDs work (first 8 chars of UUID)
+- Use --around with a timestamp to see surrounding context
 
 ## Tools Available
 - Read: read memory files
 - Write: append new entries
 - Grep: search across files
 - Glob: list files
-- Bash: run session-search CLI and date commands`,
+- Bash: run session-search CLI and other commands`,
   tools: ['Read', 'Write', 'Grep', 'Glob', 'Bash'],
   model: 'haiku',
   maxTurns: 8,
@@ -713,18 +718,6 @@ Examples:
 ## Node.js Package Management
 
 **Always use \`yarn\`** for Node.js package management. Do not use \`npm\` or \`bun\` - use \`yarn\` exclusively for installing dependencies, running scripts, and managing packages.
-
-## Code Search with ripgrep
-
-This environment has **\`rg\`** (ripgrep) installed - a fast recursive search tool. Use it for searching code:
-
-- **Basic search:** \`rg "pattern" path/\`
-- **File type filter:** \`rg "pattern" --type js\` or \`rg "pattern" -g "*.tsx"\`
-- **Case insensitive:** \`rg -i "pattern"\`
-- **Show context:** \`rg -C 3 "pattern"\` (3 lines before/after)
-- **List files only:** \`rg -l "pattern"\`
-
-ripgrep is significantly faster than grep and respects .gitignore by default.
 
 ## Python Environment
 

@@ -6,26 +6,85 @@
 
 import { program } from 'commander';
 import { readdirSync, statSync, existsSync, createReadStream } from 'fs';
-import { createInterface } from 'readline';
 import { join, basename, dirname } from 'path';
 import { homedir } from 'os';
+import { Transform } from 'stream';
 import {
   initDB,
   searchMessages,
   listSessions,
   getSessionMessages,
+  getMessagesAround,
   getStats,
   closeDB,
   upsertSession,
   insertMessage,
   updateSessionIndexPos,
   getSessionIndexPos,
+  resolveSessionId,
 } from './db.mjs';
 
 // Initialize DB on startup
 initDB();
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
+const MAX_LINE_BYTES = 200_000; // Skip lines >200KB (base64 images are 7MB+, real messages <150KB)
+
+// Quick regex check for message types we care about (avoids full JSON.parse for progress/result events)
+const INDEXABLE_TYPE_RE = /"type":"(?:user|assistant|system|summary)"/;
+
+/**
+ * Transform stream that emits lines, skipping those over maxBytes.
+ * Unlike readline, this discards oversized lines without buffering them fully.
+ */
+class LineSplitter extends Transform {
+  constructor(maxBytes) {
+    super({ readableObjectMode: true });
+    this.maxBytes = maxBytes;
+    this.buffer = '';
+    this.skipping = false;
+  }
+
+  _transform(chunk, encoding, callback) {
+    const str = chunk.toString();
+    let start = 0;
+
+    for (let i = 0; i < str.length; i++) {
+      if (str[i] === '\n') {
+        if (!this.skipping) {
+          const segment = str.slice(start, i);
+          const line = this.buffer + segment;
+          this.buffer = '';
+          if (line.trim()) this.push(line);
+        } else {
+          this.skipping = false;
+          this.buffer = '';
+        }
+        start = i + 1;
+      } else if (!this.skipping && this.buffer.length + (i - start) > this.maxBytes) {
+        this.skipping = true;
+        this.buffer = '';
+      }
+    }
+
+    if (!this.skipping && start < str.length) {
+      this.buffer += str.slice(start);
+      if (this.buffer.length > this.maxBytes) {
+        this.skipping = true;
+        this.buffer = '';
+      }
+    }
+
+    callback();
+  }
+
+  _flush(callback) {
+    if (!this.skipping && this.buffer.trim()) {
+      this.push(this.buffer);
+    }
+    callback();
+  }
+}
 
 /**
  * Index a single session file
@@ -48,18 +107,20 @@ async function indexSessionFile(filePath) {
   const sessionsEnsured = new Set();
 
   return new Promise((resolve) => {
-    const stream = createReadStream(filePath, { start: lastPos, encoding: 'utf-8' });
-    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    const stream = createReadStream(filePath, { start: lastPos });
+    const lineSplitter = new LineSplitter(MAX_LINE_BYTES);
 
-    rl.on('line', (line) => {
-      if (!line.trim()) return;
+    lineSplitter.on('data', (line) => {
+      // Quick regex check before expensive JSON.parse - skip progress/result events
+      if (!INDEXABLE_TYPE_RE.test(line)) return;
+
       try {
         const entry = JSON.parse(line);
         if (!metadata.cwd && entry.cwd) {
           metadata.cwd = entry.cwd;
           metadata.gitBranch = entry.gitBranch;
         }
-        if (['user', 'assistant', 'system', 'summary'].includes(entry.type) && entry.uuid) {
+        if (entry.uuid) {
           const entrySessionId = entry.sessionId || sessionId;
           if (!sessionsEnsured.has(entrySessionId)) {
             upsertSession(projectPath, entrySessionId, { cwd: entry.cwd, gitBranch: entry.gitBranch });
@@ -73,11 +134,13 @@ async function indexSessionFile(filePath) {
       }
     });
 
-    rl.on('close', () => {
+    lineSplitter.on('end', () => {
       upsertSession(projectPath, sessionId, { ...metadata, filePath, fileSize });
       updateSessionIndexPos(sessionId, fileSize);
       resolve({ sessionId, linesIndexed, fileSize });
     });
+
+    stream.pipe(lineSplitter);
   });
 }
 
@@ -180,10 +243,12 @@ program
   .command('search <query>')
   .alias('s')
   .description('Full-text search across all sessions')
-  .option('-s, --session <id>', 'Search within a specific session')
+  .option('-s, --session <id>', 'Search within a specific session (supports partial ID)')
   .option('-t, --type <type>', 'Filter by message type (user, assistant)')
   .option('-r, --role <role>', 'Filter by role (user, assistant)')
   .option('-l, --limit <n>', 'Max results', '20')
+  .option('--before <date>', 'Only messages before date (ISO format)')
+  .option('--after <date>', 'Only messages after date (ISO format)')
   .option('--full', 'Show full content instead of snippets')
   .action((query, options) => {
     const results = searchMessages(query, {
@@ -191,6 +256,8 @@ program
       type: options.type,
       role: options.role,
       limit: parseInt(options.limit),
+      before: options.before,
+      after: options.after,
     });
 
     if (results.length === 0) {
@@ -204,8 +271,9 @@ program
       const time = formatTime(r.timestamp);
       const role = (r.role || r.type || '').toUpperCase().padEnd(10);
       const session = r.session_id.slice(0, 8);
+      const msgNum = r.msg_num ? `, #${r.msg_num}` : '';
 
-      console.log(`[${time}] ${role} (session: ${session}...)`);
+      console.log(`[${time}] ${role} (session: ${session}...${msgNum})`);
 
       if (options.full) {
         console.log(r.content);
@@ -221,17 +289,38 @@ program
 // Show session messages
 program
   .command('show <session-id>')
-  .description('Show messages from a specific session')
+  .description('Show messages from a specific session (supports partial ID)')
   .option('-l, --limit <n>', 'Max messages', '50')
   .option('-o, --offset <n>', 'Offset for pagination', '0')
   .option('-t, --type <type>', 'Filter by type')
+  .option('--around <timestamp>', 'Show messages around a timestamp (ISO or locale format)')
+  .option('-C, --context <n>', 'Context lines for --around', '5')
   .option('--full', 'Show full content')
-  .action((sessionId, options) => {
-    const messages = getSessionMessages(sessionId, {
-      limit: parseInt(options.limit),
-      offset: parseInt(options.offset),
-      type: options.type,
-    });
+  .action((sessionIdInput, options) => {
+    // Resolve partial session ID
+    const sessionId = resolveSessionId(sessionIdInput);
+    if (!sessionId) {
+      console.log(`Session not found: "${sessionIdInput}". Use 'session-search list' to see available sessions.`);
+      return;
+    }
+
+    let messages;
+    if (options.around) {
+      // Try to parse the timestamp
+      let ts = options.around;
+      // If it looks like a locale date string, try to convert it
+      const parsed = new Date(ts);
+      if (!isNaN(parsed)) {
+        ts = parsed.toISOString();
+      }
+      messages = getMessagesAround(sessionId, ts, parseInt(options.context));
+    } else {
+      messages = getSessionMessages(sessionId, {
+        limit: parseInt(options.limit),
+        offset: parseInt(options.offset),
+        type: options.type,
+      });
+    }
 
     if (messages.length === 0) {
       console.log('No messages found for this session.');
@@ -243,8 +332,9 @@ program
     for (const m of messages) {
       const time = formatTime(m.timestamp);
       const role = (m.role || m.type || '').toUpperCase();
+      const num = m.msg_num ? `#${m.msg_num} ` : '';
 
-      console.log(`--- ${time} [${role}] ---`);
+      console.log(`--- ${num}${time} [${role}] ---`);
       if (options.full) {
         console.log(m.content);
       } else {

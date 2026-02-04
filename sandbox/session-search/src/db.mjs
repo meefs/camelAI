@@ -13,6 +13,12 @@ const DB_PATH = join(DB_DIR, 'sessions.db');
 
 let db = null;
 
+// Strip ANSI escape codes from text (handles both real escapes and literal \x1b strings)
+const ANSI_RE = /(?:\x1b|\u001b|\\x1b|\\u001b|\\033)\[[0-9;]*m/g;
+function stripAnsi(text) {
+  return text ? text.replace(ANSI_RE, '') : text;
+}
+
 /**
  * Initialize the database with schema
  */
@@ -136,18 +142,18 @@ export function upsertSession(projectPath, sessionId, metadata = {}) {
 export function insertMessage(message) {
   const db = initDB();
 
-  // Extract content from message
+  // Extract content from message, stripping ANSI codes
   let content = '';
   if (typeof message.message?.content === 'string') {
-    content = message.message.content;
+    content = stripAnsi(message.message.content);
   } else if (Array.isArray(message.message?.content)) {
     // Handle content blocks (text, thinking, tool_use, etc.)
     content = message.message.content
       .map(block => {
-        if (block.type === 'text') return block.text;
-        if (block.type === 'thinking') return block.thinking;
-        if (block.type === 'tool_use') return `[Tool: ${block.name}] ${JSON.stringify(block.input || {}).slice(0, 500)}`;
-        if (block.type === 'tool_result') return `[Tool Result] ${typeof block.content === 'string' ? block.content.slice(0, 500) : ''}`;
+        if (block.type === 'text') return stripAnsi(block.text);
+        if (block.type === 'thinking') return stripAnsi(block.thinking);
+        if (block.type === 'tool_use') return `[Tool: ${block.name}] ${stripAnsi(JSON.stringify(block.input || {}).slice(0, 500))}`;
+        if (block.type === 'tool_result') return `[Tool Result] ${typeof block.content === 'string' ? stripAnsi(block.content.slice(0, 500)) : ''}`;
         return '';
       })
       .filter(Boolean)
@@ -195,15 +201,44 @@ export function getSessionIndexPos(sessionId) {
 }
 
 /**
+ * Resolve a partial session ID to full session ID
+ * Supports prefix matching (e.g., "68369296" matches "68369296-8fb0-4b32-...")
+ */
+export function resolveSessionId(partialId) {
+  const db = initDB();
+
+  // Try exact match first
+  const exact = db.prepare('SELECT session_id FROM sessions WHERE session_id = ?').get(partialId);
+  if (exact) return exact.session_id;
+
+  // Try prefix match
+  const prefix = db.prepare('SELECT session_id FROM sessions WHERE session_id LIKE ? LIMIT 2').all(`${partialId}%`);
+  if (prefix.length === 1) return prefix[0].session_id;
+  if (prefix.length > 1) return null; // Ambiguous
+
+  return null; // Not found
+}
+
+/**
  * Full-text search across all sessions
  */
 export function searchMessages(query, options = {}) {
   const db = initDB();
-  const { sessionId, limit = 50, type, role } = options;
+  let { sessionId, limit = 50, type, role, before, after } = options;
+
+  // Resolve partial session ID
+  if (sessionId) {
+    const resolved = resolveSessionId(sessionId);
+    if (!resolved) {
+      return []; // Session not found
+    }
+    sessionId = resolved;
+  }
 
   let sql = `
     SELECT m.*, s.project_path, s.cwd, s.git_branch,
-           snippet(messages_fts, 0, '>>>', '<<<', '...', 64) as snippet
+           snippet(messages_fts, 0, '>>>', '<<<', '...', 64) as snippet,
+           (SELECT COUNT(*) FROM messages m2 WHERE m2.session_id = m.session_id AND m2.timestamp <= m.timestamp) as msg_num
     FROM messages_fts
     JOIN messages m ON messages_fts.rowid = m.id
     JOIN sessions s ON m.session_id = s.session_id
@@ -215,6 +250,16 @@ export function searchMessages(query, options = {}) {
   if (sessionId) {
     sql += ' AND m.session_id = ?';
     params.push(sessionId);
+  }
+
+  if (before) {
+    sql += ' AND m.timestamp < ?';
+    params.push(before);
+  }
+
+  if (after) {
+    sql += ' AND m.timestamp > ?';
+    params.push(after);
   }
 
   if (type) {
@@ -263,22 +308,83 @@ export function listSessions(options = {}) {
 /**
  * Get messages from a specific session
  */
-export function getSessionMessages(sessionId, options = {}) {
+export function getSessionMessages(sessionIdInput, options = {}) {
   const db = initDB();
   const { limit = 100, offset = 0, type } = options;
 
-  let sql = 'SELECT * FROM messages WHERE session_id = ?';
+  // Resolve partial session ID
+  const sessionId = resolveSessionId(sessionIdInput);
+  if (!sessionId) {
+    return []; // Session not found
+  }
+
+  // Include message number (row_number within session)
+  let sql = `
+    SELECT m.*,
+           (SELECT COUNT(*) FROM messages m2 WHERE m2.session_id = m.session_id AND m2.timestamp <= m.timestamp) as msg_num
+    FROM messages m
+    WHERE m.session_id = ?
+  `;
   const params = [sessionId];
 
   if (type) {
-    sql += ' AND type = ?';
+    sql += ' AND m.type = ?';
     params.push(type);
   }
 
-  sql += ' ORDER BY timestamp ASC LIMIT ? OFFSET ?';
+  sql += ' ORDER BY m.timestamp ASC LIMIT ? OFFSET ?';
   params.push(limit, offset);
 
   return db.prepare(sql).all(...params);
+}
+
+/**
+ * Get messages around a specific timestamp in a session
+ */
+export function getMessagesAround(sessionIdInput, timestamp, context = 5) {
+  const db = initDB();
+
+  const sessionId = resolveSessionId(sessionIdInput);
+  if (!sessionId) return [];
+
+  // Get messages before
+  const before = db.prepare(`
+    SELECT *, (SELECT COUNT(*) FROM messages m2 WHERE m2.session_id = ? AND m2.timestamp <= m.timestamp) as msg_num
+    FROM messages m
+    WHERE session_id = ? AND timestamp < ?
+    ORDER BY timestamp DESC
+    LIMIT ?
+  `).all(sessionId, sessionId, timestamp, context).reverse();
+
+  // Get the target message
+  const target = db.prepare(`
+    SELECT *, (SELECT COUNT(*) FROM messages m2 WHERE m2.session_id = ? AND m2.timestamp <= m.timestamp) as msg_num
+    FROM messages m
+    WHERE session_id = ? AND timestamp = ?
+  `).all(sessionId, sessionId, timestamp);
+
+  // Get messages after
+  const after = db.prepare(`
+    SELECT *, (SELECT COUNT(*) FROM messages m2 WHERE m2.session_id = ? AND m2.timestamp <= m.timestamp) as msg_num
+    FROM messages m
+    WHERE session_id = ? AND timestamp > ?
+    ORDER BY timestamp ASC
+    LIMIT ?
+  `).all(sessionId, sessionId, timestamp, context);
+
+  return [...before, ...target, ...after];
+}
+
+/**
+ * Get message number within its session
+ */
+export function getMessageNumber(sessionId, uuid) {
+  const db = initDB();
+  const row = db.prepare(`
+    SELECT COUNT(*) as num FROM messages
+    WHERE session_id = ? AND timestamp <= (SELECT timestamp FROM messages WHERE uuid = ?)
+  `).get(sessionId, uuid);
+  return row?.num || 0;
 }
 
 /**

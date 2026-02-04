@@ -1,6 +1,9 @@
 # Ignore template node_modules - we use Yarn PnP instead
 sandbox/skills/developing-software/templates/*/node_modules
 
+# Ignore session-search node_modules (native modules must be compiled in container)
+sandbox/session-search/node_modules
+
 # Ignore local development artifacts
 node_modules
 .wrangler
