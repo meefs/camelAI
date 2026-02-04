@@ -1,8 +1,10 @@
 import { useState, type FormEvent, useEffect } from "react";
+import { useLoaderData } from "react-router";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import type { UIMessage } from "@ai-sdk/react";
 import { MarkdownRenderer } from "~/components/markdown-renderer";
+import type { Route } from "./+types/chat";
 
 /**
  * Chat route using Cloudflare Agents SDK.
@@ -22,8 +24,28 @@ import { MarkdownRenderer } from "~/components/markdown-renderer";
  * - On each new message, ALL previous messages are passed to the AI model
  * - This happens automatically via `convertToModelMessages(this.messages)` in chat.ts
  * - The SDK handles persistence, so conversations survive page refreshes
+ *
+ * Session management:
+ * - Each unique `name` in useAgent creates a separate chat instance
+ * - Generate session IDs server-side in loaders (not in components!)
+ * - Client-side ID generation causes re-render issues
  */
+
+/**
+ * Loader runs on the server - generate session ID here.
+ * IMPORTANT: useAgent uses `name` (not `id`) to identify chat instances.
+ */
+export async function loader({ request }: Route.LoaderArgs) {
+  // Generate a unique session ID for this chat
+  // In a real app, you might use user ID, conversation ID from URL params, etc.
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get("session") || crypto.randomUUID();
+
+  return { sessionId };
+}
+
 export default function ChatPage() {
+  const { sessionId } = useLoaderData<typeof loader>();
   const [mounted, setMounted] = useState(false);
 
   // Only render the chat client-side (WebSocket needs browser)
@@ -44,14 +66,17 @@ export default function ChatPage() {
     );
   }
 
-  return <ChatClient />;
+  return <ChatClient sessionId={sessionId} />;
 }
 
-function ChatClient() {
+function ChatClient({ sessionId }: { sessionId: string }) {
   const [input, setInput] = useState("");
 
+  // IMPORTANT: useAgent uses `name` (not `id`) to identify the chat instance
+  // Each unique name creates a separate conversation with its own history
   const agent = useAgent({
     agent: "Chat",
+    name: sessionId,
   });
 
   const { messages, sendMessage, status, error, clearHistory } = useAgentChat({

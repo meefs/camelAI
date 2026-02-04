@@ -36,7 +36,9 @@ function getOpenRouter(apiKey: string) {
  *
  * ## Usage from React
  * ```tsx
- * const agent = useAgent({ agent: "Chat" });
+ * // IMPORTANT: useAgent uses `name` (not `id`) to identify instances
+ * // Generate sessionId server-side in your loader to avoid re-render issues
+ * const agent = useAgent({ agent: "Chat", name: sessionId });
  * const { messages, sendMessage } = useAgentChat({ agent });
  * ```
  */
