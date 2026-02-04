@@ -1,16 +1,19 @@
 /**
- * Episodic Memory - Utility Functions
+ * Episodic Memory & User Profile - Utility Functions
  *
- * The actual memory logging is done by the memory-logger subagent (defined in ws-server.mjs).
- * This module provides utilities for loading memory context at session start.
+ * Memory: Daily logs of what happened (logged by memory subagent)
+ * Profile: Persistent user profile - preferences, quirks, inside jokes (logged by profile-writer subagent)
  *
- * Memory is stored in ~/.chiridion/memory/YYYY-MM-DD.md
+ * Storage:
+ * - Memory: ~/.chiridion/memory/YYYY-MM-DD.md
+ * - Profile: ~/.chiridion/profile.md
  */
 
 import { mkdir, readFile, readdir } from 'fs/promises';
 
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 export const MEMORY_DIR = `${SYNC_DIR}/.chiridion/memory`;
+export const PROFILE_PATH = `${SYNC_DIR}/.chiridion/profile.md`;
 
 // Ensure memory directory exists
 let memoryDirPromise = null;
@@ -88,4 +91,29 @@ export async function getMemoryContext(daysBack = 3, maxLength = 3000) {
   }
 
   return memory;
+}
+
+/**
+ * Load user profile
+ *
+ * Returns the full profile content or null if no profile exists.
+ * The profile is always included in the system prompt.
+ *
+ * @returns {Promise<string|null>} Profile content or null
+ */
+export async function loadUserProfile() {
+  try {
+    const content = await readFile(PROFILE_PATH, 'utf-8');
+    if (content.trim()) {
+      console.log('[profile] Loaded user profile', { length: content.length });
+      return content;
+    }
+    return null;
+  } catch (error) {
+    // File doesn't exist yet - that's fine
+    if (error.code !== 'ENOENT') {
+      console.error('[profile] Failed to load profile:', error?.message || String(error));
+    }
+    return null;
+  }
 }

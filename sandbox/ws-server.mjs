@@ -3,7 +3,7 @@ import { appendFile, mkdir, access, stat, readFile, writeFile, unlink } from 'fs
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import os from 'os';
-import { loadRecentMemory, MEMORY_DIR } from './memory-logger.mjs';
+import { loadUserProfile, MEMORY_DIR, PROFILE_PATH } from './memory-logger.mjs';
 
 // Version for verifying container has latest code
 const VERSION = '2026-02-03-ws-ping-keepalive';
@@ -592,6 +592,68 @@ Return a clear summary of what you found:
   maxTurns: 5,
 };
 
+// User profile writer subagent - updates the persistent user profile
+const PROFILE_WRITER_AGENT = {
+  description: `User profile writer. Use this subagent IN THE BACKGROUND (run_in_background=true) when you learn something new about the user that's worth remembering long-term. This includes:
+- Personality traits and communication style
+- Technical preferences (languages, frameworks, tools)
+- Work habits and patterns
+- Inside jokes or recurring references
+- Personal details they've shared
+- Pet peeves or things they love
+
+IMPORTANT: Always RESUME this subagent using its previous agent ID. The profile is always visible in the system prompt, so no reader is needed.`,
+  prompt: `You are a user profile manager. Your job is to maintain a profile of the user based on interactions.
+
+## Profile Location
+${PROFILE_PATH}
+
+## What to Track
+- **Character**: Personality, communication style, sense of humor
+- **Preferences**: Technical preferences, coding style, tool choices
+- **Context**: Their role, projects they work on, team context
+- **Quirks**: Unique habits, pet peeves, things they love
+- **Inside Jokes**: Recurring references, shared humor, callbacks
+
+## How to Update
+1. First, READ the current profile to see what exists
+2. Then WRITE the updated profile, preserving existing content and adding/updating sections
+
+## Profile Format
+Use clear markdown sections:
+\`\`\`markdown
+# User Profile
+
+## Character
+[Personality traits, communication style]
+
+## Technical Preferences
+[Languages, frameworks, tools, coding style]
+
+## Work Context
+[Role, projects, team]
+
+## Quirks & Preferences
+[Habits, pet peeves, likes/dislikes]
+
+## Inside Jokes & References
+[Shared humor, callbacks, recurring themes]
+
+## Notes
+[Anything else worth remembering]
+\`\`\`
+
+## Guidelines
+- Be concise but capture personality
+- Update existing sections, don't duplicate
+- Remove outdated info when updating
+- Keep the tone warm and personal
+- This is about KNOWING the user, not logging tasks`,
+  tools: ['Read', 'Write'],
+  model: 'haiku',
+  maxTurns: 3,
+};
+
 const SYSTEM_PROMPT_APPEND = `
 ## About This Environment
 
@@ -626,6 +688,10 @@ Examples:
 - Image preview: \`![Analysis Chart](/api/workspaces/${process.env.WORKSPACE_ID}/outputs/charts/analysis.png)\`
 - Download link: \`[Download CSV](/api/workspaces/${process.env.WORKSPACE_ID}/outputs/data.csv)\`
 - Download link: \`[Get Full Report](/api/workspaces/${process.env.WORKSPACE_ID}/outputs/report.pdf)\`
+
+## Node.js Package Management
+
+**Always use \`yarn\`** for Node.js package management. Do not use \`npm\` or \`bun\` - use \`yarn\` exclusively for installing dependencies, running scripts, and managing packages.
 
 ## Python Environment
 
@@ -672,7 +738,30 @@ When you need to find past work, invoke normally:
 
 ### Storage
 Memory files: \`~/.chiridion/memory/YYYY-MM-DD.md\`
-Recent memory is automatically loaded at session start.
+Use the memory subagent to search when you need past context.
+
+## User Profile
+
+You have a **profile-writer** subagent for maintaining a persistent profile about the user. The profile is always loaded into your system prompt, so you can see it - no reader needed.
+
+**IMPORTANT:** Always **resume** the profile-writer subagent using its previous agent ID.
+
+### When to Update (background)
+Invoke with \`run_in_background: true\` when you learn something new about the user:
+- Personality traits or communication style
+- Technical preferences (languages, tools, coding style)
+- Work context (role, team, projects)
+- Quirks, pet peeves, things they love
+- Inside jokes or recurring references
+
+### What NOT to Log
+- Transient task details (use memory for that)
+- Sensitive personal information
+- Temporary preferences
+
+### Storage
+Profile: \`~/.chiridion/profile.md\`
+The full profile is always in your system prompt under "User Profile".
 `;
 
 // Handle AskUserQuestion via canUseTool callback
@@ -817,13 +906,15 @@ function getQueryOptions(session, fileExists) {
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',
-      append: SYSTEM_PROMPT_APPEND.trim() + (session.memoryContext ? `\n\n## Recent Session Memory\n\nHere's what happened in recent sessions:\n\n${session.memoryContext}` : ''),
+      append: SYSTEM_PROMPT_APPEND.trim() +
+        (session.userProfile ? `\n\n## User Profile\n\nHere's what you know about this user:\n\n${session.userProfile}` : ''),
     },
     settingSources: ['project', 'user'],
     env: envVars,
     // Custom subagents
     agents: {
       'memory': MEMORY_AGENT,
+      'profile-writer': PROFILE_WRITER_AGENT,
     },
     // Hooks
     hooks: {
@@ -853,7 +944,7 @@ function getQueryOptions(session, fileExists) {
       mcpServers: Object.keys(mcpServers || {}),
       envKeys: Object.keys(envVars || {}).length,
       agents: Object.keys(options.agents || {}),
-      hasMemoryContext: Boolean(session.memoryContext),
+      hasUserProfile: Boolean(session.userProfile),
       hooks: Object.keys(options.hooks || {}),
     });
   }
@@ -1016,15 +1107,15 @@ async function initSession(session) {
         await runStartupDiagnostics();
       }
 
-      // Load recent memory context for the session
+      // Load user profile
       try {
-        const memoryContext = await loadRecentMemory(3);
-        if (memoryContext) {
-          session.memoryContext = memoryContext;
-          log('[ws-server]', 'memory_loaded', { threadId: session.threadId, length: memoryContext.length });
+        const userProfile = await loadUserProfile();
+        if (userProfile) {
+          session.userProfile = userProfile;
+          log('[ws-server]', 'profile_loaded', { threadId: session.threadId, length: userProfile.length });
         }
-      } catch (memErr) {
-        logError('[ws-server]', 'memory_load_failed', { error: memErr?.message || String(memErr) });
+      } catch (profileErr) {
+        logError('[ws-server]', 'profile_load_failed', { error: profileErr?.message || String(profileErr) });
       }
 
       const fileExists = await sessionFileExists(session.threadId);
