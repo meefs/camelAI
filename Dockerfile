@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-02-03-v68-data-analysis-skill
+# Version: 2026-02-03-v69-session-search-cli
 # Slim container with Node, Yarn PnP, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -65,6 +65,7 @@ COPY --chmod=755 sandbox/skills/developing-software/templates ./skills/developin
 # Layer 6: App code (changes frequently)
 COPY --chmod=755 sandbox/entrypoint.sh ./
 COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/memory-logger.mjs ./
+COPY --chmod=755 sandbox/session-search/src ./session-search/
 COPY --chmod=755 sandbox/skills/developing-software/scripts ./skills/developing-software/scripts
 COPY --chmod=644 sandbox/skills/developing-software/SKILL.md sandbox/skills/developing-software/AI-APPS.md ./skills/developing-software/
 
@@ -78,7 +79,8 @@ COPY --chmod=644 sandbox/skills/data-analysis/SKILL.md /etc/claude-code/skills/d
 RUN chmod -R 755 /etc/claude-code && chown -R root:root /etc/claude-code
 
 # Layer 7: CLI tools (scaffolds projects from templates)
-RUN ln -s /app/skills/developing-software/scripts/create-worker.mjs /usr/local/bin/create-worker
+RUN ln -s /app/skills/developing-software/scripts/create-worker.mjs /usr/local/bin/create-worker \
+  && ln -s /app/session-search/cli.mjs /usr/local/bin/session-search
 
 WORKDIR /home/claude
 ENTRYPOINT ["/app/entrypoint.sh"]

@@ -5,6 +5,10 @@
  */
 
 import { program } from 'commander';
+import { readdirSync, statSync, existsSync, createReadStream } from 'fs';
+import { createInterface } from 'readline';
+import { join, basename, dirname } from 'path';
+import { homedir } from 'os';
 import {
   initDB,
   searchMessages,
@@ -12,10 +16,109 @@ import {
   getSessionMessages,
   getStats,
   closeDB,
+  upsertSession,
+  insertMessage,
+  updateSessionIndexPos,
+  getSessionIndexPos,
 } from './db.mjs';
 
 // Initialize DB on startup
 initDB();
+
+const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
+
+/**
+ * Index a single session file
+ */
+async function indexSessionFile(filePath) {
+  if (!existsSync(filePath)) return null;
+
+  const sessionId = basename(filePath, '.jsonl');
+  const projectPath = basename(dirname(filePath));
+  const stats = statSync(filePath);
+  const fileSize = stats.size;
+  const lastPos = getSessionIndexPos(sessionId);
+
+  if (lastPos >= fileSize) {
+    return { sessionId, skipped: true };
+  }
+
+  let linesIndexed = 0;
+  let metadata = {};
+  const sessionsEnsured = new Set();
+
+  return new Promise((resolve) => {
+    const stream = createReadStream(filePath, { start: lastPos, encoding: 'utf-8' });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+
+    rl.on('line', (line) => {
+      if (!line.trim()) return;
+      try {
+        const entry = JSON.parse(line);
+        if (!metadata.cwd && entry.cwd) {
+          metadata.cwd = entry.cwd;
+          metadata.gitBranch = entry.gitBranch;
+        }
+        if (['user', 'assistant', 'system', 'summary'].includes(entry.type) && entry.uuid) {
+          const entrySessionId = entry.sessionId || sessionId;
+          if (!sessionsEnsured.has(entrySessionId)) {
+            upsertSession(projectPath, entrySessionId, { cwd: entry.cwd, gitBranch: entry.gitBranch });
+            sessionsEnsured.add(entrySessionId);
+          }
+          insertMessage(entry);
+          linesIndexed++;
+        }
+      } catch (err) {
+        // Skip invalid JSON
+      }
+    });
+
+    rl.on('close', () => {
+      upsertSession(projectPath, sessionId, { ...metadata, filePath, fileSize });
+      updateSessionIndexPos(sessionId, fileSize);
+      resolve({ sessionId, linesIndexed, fileSize });
+    });
+  });
+}
+
+/**
+ * Index all session files in a project directory
+ */
+async function indexProject(projectDir) {
+  const files = readdirSync(projectDir);
+  let totalIndexed = 0;
+
+  for (const file of files) {
+    const filePath = join(projectDir, file);
+    try {
+      const stats = statSync(filePath);
+      if (stats.isFile() && file.endsWith('.jsonl')) {
+        const result = await indexSessionFile(filePath);
+        if (result && !result.skipped) totalIndexed += result.linesIndexed;
+      } else if (stats.isDirectory()) {
+        const subFiles = readdirSync(filePath);
+        for (const subFile of subFiles) {
+          if (subFile.endsWith('.jsonl')) {
+            const result = await indexSessionFile(join(filePath, subFile));
+            if (result && !result.skipped) totalIndexed += result.linesIndexed;
+          }
+          if (subFile === 'subagents') {
+            const agentFiles = readdirSync(join(filePath, subFile));
+            for (const agentFile of agentFiles) {
+              if (agentFile.endsWith('.jsonl')) {
+                const result = await indexSessionFile(join(filePath, subFile, agentFile));
+                if (result && !result.skipped) totalIndexed += result.linesIndexed;
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // Skip unreadable files
+    }
+  }
+  return totalIndexed;
+}
 
 /**
  * Format timestamp for display
@@ -172,8 +275,50 @@ program
     console.log();
   });
 
+// Index sessions (one-time)
+program
+  .command('index')
+  .description('Index all session files (run before searching)')
+  .option('-q, --quiet', 'Suppress progress output')
+  .action(async (options) => {
+    if (!existsSync(CLAUDE_PROJECTS_DIR)) {
+      console.log('No Claude projects directory found at', CLAUDE_PROJECTS_DIR);
+      return;
+    }
+
+    const startTime = Date.now();
+    if (!options.quiet) console.log('Indexing sessions from', CLAUDE_PROJECTS_DIR);
+
+    let totalIndexed = 0;
+    const projects = readdirSync(CLAUDE_PROJECTS_DIR);
+
+    for (const project of projects) {
+      if (project.startsWith('.')) continue;
+      const projectDir = join(CLAUDE_PROJECTS_DIR, project);
+      try {
+        const stats = statSync(projectDir);
+        if (stats.isDirectory()) {
+          const count = await indexProject(projectDir);
+          totalIndexed += count;
+          if (!options.quiet && count > 0) {
+            console.log(`  ${project}: ${count} messages`);
+          }
+        }
+      } catch (err) {
+        // Skip non-directories
+      }
+    }
+
+    const elapsed = Date.now() - startTime;
+    if (!options.quiet) {
+      console.log(`\nIndexed ${totalIndexed} new messages in ${elapsed}ms`);
+      const stats = getStats();
+      console.log(`Total: ${stats.totalMessages} messages across ${stats.totalSessions} sessions`);
+    }
+  });
+
 // Parse and execute
-program.parse();
+program.parseAsync();
 
 // Cleanup on exit
 process.on('exit', () => {

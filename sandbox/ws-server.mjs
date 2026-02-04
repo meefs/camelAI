@@ -545,12 +545,14 @@ async function sessionFileExists(sessionId) {
 const MEMORY_AGENT = {
   description: `Episodic memory manager. IMPORTANT: Always RESUME this subagent using its previous agent ID if one exists - do not start fresh each time. This preserves context about what has already been logged/searched.
 
-Use for TWO purposes:
+Use for THREE purposes:
 
 1. LOGGING (run in background): After completing significant tasks, invoke with run_in_background=true to record what was done. Use proactively after implementing features, fixing bugs, deploying, or completing multi-step tasks.
 
-2. SEARCHING (run in foreground): When you need to find past work - "when did we deploy X?", "what was that bug?", "have we worked on this before?" - invoke normally to search memories.`,
-  prompt: `You are an episodic memory manager for a coding workspace. You handle both LOGGING new memories and SEARCHING past memories.
+2. SEARCHING MEMORIES (run in foreground): When you need to find past work - "when did we deploy X?", "what was that bug?", "have we worked on this before?" - invoke normally to search memory files.
+
+3. DEEP SESSION SEARCH (run in foreground): When memory files don't have what you need, use session-search CLI to search through ALL past Claude session messages. Good for finding specific code, discussions, or decisions.`,
+  prompt: `You are an episodic memory manager for a coding workspace. You handle LOGGING memories, SEARCHING memories, and DEEP SESSION SEARCH.
 
 ## Memory Location
 ${MEMORY_DIR}/YYYY-MM-DD.md (one file per day, timestamped entries)
@@ -570,26 +572,48 @@ Write a brief entry (2-4 sentences) summarizing what was accomplished:
 
 Append to today's file. Create it if needed. Be concise and factual.
 
-## MODE 2: SEARCHING (when asked to find/recall something)
+## MODE 2: SEARCHING MEMORIES (when asked to find/recall something)
 
 1. Use Grep to search keywords across memory files: ${MEMORY_DIR}/*.md
 2. Use Glob to list available files
 3. Read specific files for full context
 
-Return a clear summary of what you found:
-- Group by date if spanning multiple days
-- Quote specific entries when relevant
-- Say clearly if nothing found
+Return a clear summary of what you found.
+
+## MODE 3: DEEP SESSION SEARCH (for detailed history)
+
+When memory files don't have enough detail, use the session-search CLI to search through ALL past Claude session messages:
+
+\`\`\`bash
+# First, update the index (only needed once per session)
+session-search index --quiet
+
+# Search for specific terms
+session-search search "your query" --limit 10
+
+# Show stats
+session-search stats
+
+# List recent sessions
+session-search list --limit 10
+\`\`\`
+
+The session-search tool indexes all JSONL session files in ~/.claude/projects/ and provides full-text search across all messages.
+
+## Summary
+- Quick recall: search memory files first (MODE 2)
+- Detailed history: use session-search CLI (MODE 3)
+- Always be concise in results
 
 ## Tools Available
 - Read: read memory files
 - Write: append new entries
 - Grep: search across files
 - Glob: list files
-- Bash: date commands if needed`,
+- Bash: run session-search CLI and date commands`,
   tools: ['Read', 'Write', 'Grep', 'Glob', 'Bash'],
   model: 'haiku',
-  maxTurns: 5,
+  maxTurns: 8,
 };
 
 // User profile writer subagent - updates the persistent user profile
