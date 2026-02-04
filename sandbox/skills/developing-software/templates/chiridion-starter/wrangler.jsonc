@@ -8,10 +8,6 @@
 	"compatibility_date": "2025-04-04",
 	"compatibility_flags": ["nodejs_compat"],
 	"main": "./workers/app.ts",
-	// Uncomment when enabling Chat agent (set actual key in .dev.vars for local dev)
-	// "vars": {
-	// 	"OPENROUTER_API_KEY": ""
-	// },
 	"observability": {
 		"enabled": true
 	},

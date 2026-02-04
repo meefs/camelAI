@@ -301,6 +301,7 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
     if (this.env.CF_DISPATCH_NAMESPACE) envVars.CF_DISPATCH_NAMESPACE = this.env.CF_DISPATCH_NAMESPACE;
     envVars.WRANGLER_SEND_METRICS = 'false';
     envVars.CI = '1';
+    envVars.CLOUDFLARE_INCLUDE_PROCESS_ENV = 'true';
 
     // Validate required config
     if (!this.env.TOKEN_SIGNING_SECRET) {

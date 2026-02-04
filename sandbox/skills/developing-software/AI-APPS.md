@@ -63,7 +63,7 @@ The component is pre-installed at `app/components/markdown-renderer.tsx`.
    route("chat", "routes/chat.tsx"),
    ```
 
-4. **Set the API key** - The `OPENROUTER_API_KEY` secret is automatically configured when you deploy.
+4. **API key** - No setup needed! `OPENROUTER_API_KEY` is automatically available in deployed workers via `env.OPENROUTER_API_KEY` and in your bash environment via `$OPENROUTER_API_KEY` for ad hoc scripts.
 
 ## nodejs_compat Flag
 
@@ -257,6 +257,65 @@ app.post("/api/stream", async (c) => {
 |----------|----------|
 | **Agents SDK** (Chat DO) | Chat apps, persistent conversations, real-time streaming |
 | **Hono endpoints** | Stateless APIs, one-shot completions, webhooks |
+
+## Common Pitfalls
+
+Watch out for these frequent issues when building AI chat apps:
+
+### 1. `useAgent` uses `name`, not `id`
+
+The `useAgent` hook identifies chat instances by `name`, not `id`:
+
+```tsx
+// CORRECT - use 'name' for the unique identifier
+const agent = useAgent({ agent: "Chat", name: sessionId });
+
+// WRONG - 'id' is not a valid parameter
+const agent = useAgent({ agent: "Chat", id: sessionId });  // Won't work!
+```
+
+### 2. Session IDs should be generated server-side
+
+Generate session IDs in loaders to avoid React re-render issues:
+
+```tsx
+// CORRECT - generate in loader
+export async function loader() {
+  return { sessionId: crypto.randomUUID() };
+}
+
+export default function ChatPage() {
+  const { sessionId } = useLoaderData<typeof loader>();
+  const agent = useAgent({ agent: "Chat", name: sessionId });
+}
+
+// WRONG - generates new ID on every render
+export default function ChatPage() {
+  const sessionId = crypto.randomUUID();  // Re-renders create new sessions!
+  const agent = useAgent({ agent: "Chat", name: sessionId });
+}
+```
+
+### 3. AI code is commented out by default
+
+The template has Chat DO code pre-configured but commented out. To enable AI chat:
+1. Uncomment the `Chat` binding and migration in `wrangler.jsonc`
+2. Uncomment the `Chat` export and agent routing in `workers/app.ts`
+3. Add the chat route to `app/routes.ts`
+
+Look for comments like `// Uncomment for AI chat` in the template files.
+
+### 4. Missing MarkdownRenderer for AI output
+
+AI responses are markdown-formatted. Always use `MarkdownRenderer`:
+
+```tsx
+// CORRECT
+<MarkdownRenderer content={message.content} isStreaming={isStreaming} />
+
+// WRONG - code blocks, lists, etc. won't render
+<p>{message.content}</p>
+```
 
 ## Best Practices
 

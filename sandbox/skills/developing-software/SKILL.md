@@ -505,14 +505,19 @@ app.route("/api/items", itemsRoutes);
 
 ## AI-Powered Apps
 
-The template includes pre-configured AI chat capabilities using the Vercel AI SDK with OpenRouter. Features are commented out by default—enable them to add AI chat with:
+The template includes pre-configured AI chat capabilities using the Vercel AI SDK with OpenRouter. **The code is commented out by default**—just uncomment to enable:
 
+1. In `wrangler.jsonc`: Uncomment the `Chat` DO binding and migration
+2. In `workers/app.ts`: Uncomment the `Chat` export and `routeAgentRequest` call
+3. In `app/routes.ts`: Add the chat route
+
+Features include:
 - Automatic conversation history persistence
 - Resumable streaming via WebSockets
 - Tool use and function calling
 - Web search plugin for real-time information
 
-**See [AI-APPS.md](AI-APPS.md) for setup and customization.**
+**See [AI-APPS.md](AI-APPS.md) for setup, customization, and common pitfalls.**
 
 ## Project Snapshots with JuiceFS
 

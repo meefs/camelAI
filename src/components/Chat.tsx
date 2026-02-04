@@ -1667,7 +1667,9 @@ export default function Chat({
 
     // Build the chiridion system message
     const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
-    const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
+    const sourceInfo = app.config_path
+      ? ` The app's wrangler config is at "${app.config_path}".`
+      : ` The project location is unknown - search for it in the home folder. The project may have a different name than the app, and look for either wrangler.toml or wrangler.jsonc files.`;
     const systemMessage = `<chiridion system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</chiridion system message>`;
 
     // Store pending message for the createThreadFetcher effect
