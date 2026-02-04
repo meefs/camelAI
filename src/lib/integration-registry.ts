@@ -38,7 +38,7 @@ export interface ConfigField {
 export interface CredentialField {
   name: string;
   label: string;
-  type: 'password' | 'text';
+  type: 'password' | 'text' | 'textarea';
   required: boolean;
   placeholder?: string;
   description?: string;
@@ -668,7 +668,21 @@ export const INTEGRATION_REGISTRY: Record<string, IntegrationDefinition> = {
     ],
     credentialSchema: [
       { name: 'username', label: 'Username', type: 'text', required: true },
-      { name: 'password', label: 'Password', type: 'password', required: true },
+      {
+        name: 'private_key',
+        label: 'Private Key (PEM)',
+        type: 'textarea',
+        required: true,
+        placeholder: '-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----',
+        description: 'RSA private key in PEM format for key pair authentication',
+      },
+      {
+        name: 'private_key_passphrase',
+        label: 'Private Key Passphrase',
+        type: 'password',
+        required: false,
+        description: 'Passphrase if your private key is encrypted (optional)',
+      },
     ],
   },
 

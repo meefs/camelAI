@@ -102,7 +102,7 @@ function CodeBlockPre({ children }: { children?: React.ReactNode }) {
       </button>
       {highlightedCode ? (
         <div
-          className="shiki-wrapper overflow-x-auto rounded-lg text-sm [&_pre]:!bg-muted/50 [&_pre]:p-4 [&_pre]:pt-8"
+          className="shiki-wrapper overflow-x-auto rounded-lg text-sm [&_pre]:!bg-muted/50 [&_pre]:p-4 [&_pre]:pt-8 [&_pre]:min-w-max"
           dangerouslySetInnerHTML={{ __html: highlightedCode }}
         />
       ) : (
