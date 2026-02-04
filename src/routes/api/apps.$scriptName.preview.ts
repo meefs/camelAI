@@ -39,7 +39,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const accessInfo = await getWorkerAccessInfo(env, normalized);
+    // Pass script name as both dispatch name and legacy name to enable fallback lookup
+    const accessInfo = await getWorkerAccessInfo(env, normalized, normalized);
     if (!accessInfo) {
       return Response.json({ error: 'App not found' }, { status: 404 });
     }

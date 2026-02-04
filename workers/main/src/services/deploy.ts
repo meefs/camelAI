@@ -6,7 +6,6 @@ import { type Env } from '../types.js';
 import type { DeploySideEffectsInfo } from '../cf-api-proxy.js';
 import type { AppScreenshotJob } from '../screenshot-queue.js';
 import { resolveEnvPrefix } from '../cf-api-proxy.js';
-import { captureScreenshot } from '../screenshot-queue.js';
 import { createScreenshotToken } from '../worker-auth.js';
 import { getOrgStub } from '../helpers/stubs.js';
 
@@ -62,6 +61,8 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
   if (previewResult.stale) return;
 
   // Queue screenshot
+  if (!env.APP_SCREENSHOT_QUEUE) return;
+
   const jobBase: AppScreenshotJob = {
     script_name: scriptName,
     org_id: orgId,
@@ -71,13 +72,6 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
     env_prefix: envPrefix,
     is_public: script.is_public,
   };
-
-  if (envPrefix === 'local') {
-    await captureScreenshot(env, jobBase);
-    return;
-  }
-
-  if (!env.APP_SCREENSHOT_QUEUE) return;
 
   const screenshotToken = script.is_public
     ? undefined
