@@ -1,5 +1,15 @@
 import type { ContentBlock, ToolResultBlock } from '@/types';
 
+/**
+ * Strips ANSI escape codes from a string.
+ * Handles color codes, cursor movement, and other terminal control sequences.
+ */
+export function stripAnsi(str: string): string {
+  // Match ANSI escape sequences: CSI (Control Sequence Introducer) and OSC (Operating System Command)
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)/g, '');
+}
+
 function isContentBlock(value: unknown): value is ContentBlock {
   if (!value || typeof value !== 'object' || !('type' in value)) return false;
   const type = (value as { type?: string }).type;

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { FileLink } from '../file-link';
+import { stripAnsi } from '../tool-utils';
 
 interface CopyButtonProps {
   value: string;
@@ -151,14 +152,17 @@ interface OutputBlockProps {
 export function OutputBlock({ value, label, copyValue, className }: OutputBlockProps) {
   if (!value) return null;
 
+  const displayValue = stripAnsi(value);
+  const cleanCopyValue = copyValue ? stripAnsi(copyValue) : undefined;
+
   return (
     <div className={cn("mt-2", className)}>
-      {(label || copyValue) && (
+      {(label || cleanCopyValue) && (
         <div className="flex items-center justify-between text-[0.7rem] text-muted-foreground/60 mb-1 group/output">
           <span>{label}</span>
-          {copyValue ? (
+          {cleanCopyValue ? (
             <CopyButton
-              value={copyValue}
+              value={cleanCopyValue}
               label="Copy output"
               hoverClassName="group-hover/details:opacity-100"
             />
@@ -166,7 +170,7 @@ export function OutputBlock({ value, label, copyValue, className }: OutputBlockP
         </div>
       )}
       <div className="mt-2 font-mono text-xs bg-muted/30 rounded p-2 max-h-32 overflow-auto">
-        <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground/80">{value}</pre>
+        <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground/80">{displayValue}</pre>
       </div>
     </div>
   );
