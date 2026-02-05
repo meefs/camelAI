@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-02-04-v76-fix-home-env
+# Version: 2026-02-05-v77-early-ws-server
 set -eu
 
 # Trap errors and show what failed
@@ -796,8 +796,65 @@ else
   # Start periodic metadata backup to R2 (every 1 minute, skips if no changes)
   start_periodic_backup
 
-  # Mount R2 paths via goofys for file sharing with user
-  if has_r2_config; then
+  fi
+
+# Skills: symlink each system skill individually so user can add their own
+# Must complete before ws-server since Claude agent reads skills at startup
+echo "[entrypoint] Setting up skill symlinks..." >&2
+su -s /bin/sh claude -c "mkdir -p '$TARGET_DIR/.claude/skills'" 2>/dev/null || true
+for skill_dir in /etc/claude-code/skills/*/; do
+  skill_name="$(basename "$skill_dir")"
+  # Remove existing (file, dir, or symlink) and create fresh symlink
+  su -s /bin/sh claude -c "rm -rf '$TARGET_DIR/.claude/skills/$skill_name'" 2>/dev/null || true
+  su -s /bin/sh claude -c "ln -sf '/etc/claude-code/skills/$skill_name' '$TARGET_DIR/.claude/skills/$skill_name'"
+done
+echo "[entrypoint] System skills symlinked to $TARGET_DIR/.claude/skills/" >&2
+
+# Write env vars to a file that claude user can source (needed before ws-server)
+cat > /tmp/ws-env.sh << ENVEOF
+export HOME='${TARGET_DIR}'
+export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'
+export ANTHROPIC_BASE_URL='${ANTHROPIC_BASE_URL:-}'
+export ORG_ID='${ORG_ID:-}'
+export WORKSPACE_ID='${WORKSPACE_ID:-}'
+export R2_BUCKET_NAME='${R2_BUCKET_NAME:-}'
+export R2_ACCOUNT_ID='${R2_ACCOUNT_ID:-}'
+export R2_MOUNT_DIR='${R2_MOUNT_DIR:-}'
+export R2_PREFIX='${R2_PREFIX:-}'
+export JUICEFS_META_DIR='${JUICEFS_META_DIR:-}'
+export JUICEFS_CACHE_DIR='${JUICEFS_CACHE_DIR:-}'
+export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID:-}'
+export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY:-}'
+export AWS_SESSION_TOKEN='${AWS_SESSION_TOKEN:-}'
+export CLOUDFLARE_ACCOUNT_ID='${CLOUDFLARE_ACCOUNT_ID:-}'
+export CLOUDFLARE_API_TOKEN='${CLOUDFLARE_API_TOKEN:-}'
+export CLOUDFLARE_API_BASE_URL='${CLOUDFLARE_API_BASE_URL:-}'
+export CF_DISPATCH_NAMESPACE='${CF_DISPATCH_NAMESPACE:-}'
+export WORKER_BASE_URL='${WORKER_BASE_URL:-}'
+export MCP_SERVER_URL='${MCP_SERVER_URL:-}'
+ENVEOF
+chmod 644 /tmp/ws-env.sh
+
+# Start ws-server EARLY - this is the critical path for WebSocket availability
+# Uses Claude Agent SDK for streaming conversations
+# Run in foreground (no exec) so the shell stays alive for the trap
+echo "[entrypoint] Starting ws-server (SDK) as claude user on port 8080..." >&2
+su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && node /app/ws-server.mjs" &
+WS_PID=$!
+echo "[entrypoint] ws-server PID: $WS_PID" >&2
+
+# Everything below runs in parallel while ws-server is starting
+# These are non-blocking for WebSocket availability
+
+# Start control-plane server as claude user (runs on port 9000)
+echo "[entrypoint] Starting control-plane server on port 9000..." >&2
+su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && node /app/control-plane.mjs" &
+CONTROL_PID=$!
+echo "[entrypoint] Control-plane PID: $CONTROL_PID" >&2
+
+# Mount R2 paths via goofys for file sharing with user (background)
+if has_r2_config; then
+  (
     echo "[entrypoint] Mounting R2 file sharing directories..." >&2
     R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
     R2_BASE="$(ensure_trailing_slash "${R2_PREFIX:-${ORG_ID}/${WORKSPACE_ID}/}")"
@@ -820,19 +877,8 @@ else
     else
       echo "[entrypoint] WARNING: Failed to mount /mnt/user-outputs" >&2
     fi
-  fi
+  ) &
 fi
-
-# Skills: symlink each system skill individually so user can add their own
-echo "[entrypoint] Setting up skill symlinks..." >&2
-su -s /bin/sh claude -c "mkdir -p '$TARGET_DIR/.claude/skills'" 2>/dev/null || true
-for skill_dir in /etc/claude-code/skills/*/; do
-  skill_name="$(basename "$skill_dir")"
-  # Remove existing (file, dir, or symlink) and create fresh symlink
-  su -s /bin/sh claude -c "rm -rf '$TARGET_DIR/.claude/skills/$skill_name'" 2>/dev/null || true
-  su -s /bin/sh claude -c "ln -sf '/etc/claude-code/skills/$skill_name' '$TARGET_DIR/.claude/skills/$skill_name'"
-done
-echo "[entrypoint] System skills symlinked to $TARGET_DIR/.claude/skills/" >&2
 
 # Create golden template in background (for instant project creation via juicefs clone)
 # Golden template has yarn install done, so clone gets everything ready-to-use
@@ -876,44 +922,6 @@ echo "[entrypoint] Setting up golden template..." >&2
   fi
 ) &
 
-# Write env vars to a file that claude user can source
-cat > /tmp/ws-env.sh << ENVEOF
-export HOME='${TARGET_DIR}'
-export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'
-export ANTHROPIC_BASE_URL='${ANTHROPIC_BASE_URL:-}'
-export ORG_ID='${ORG_ID:-}'
-export WORKSPACE_ID='${WORKSPACE_ID:-}'
-export R2_BUCKET_NAME='${R2_BUCKET_NAME:-}'
-export R2_ACCOUNT_ID='${R2_ACCOUNT_ID:-}'
-export R2_MOUNT_DIR='${R2_MOUNT_DIR:-}'
-export R2_PREFIX='${R2_PREFIX:-}'
-export JUICEFS_META_DIR='${JUICEFS_META_DIR:-}'
-export JUICEFS_CACHE_DIR='${JUICEFS_CACHE_DIR:-}'
-export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID:-}'
-export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY:-}'
-export AWS_SESSION_TOKEN='${AWS_SESSION_TOKEN:-}'
-export CLOUDFLARE_ACCOUNT_ID='${CLOUDFLARE_ACCOUNT_ID:-}'
-export CLOUDFLARE_API_TOKEN='${CLOUDFLARE_API_TOKEN:-}'
-export CLOUDFLARE_API_BASE_URL='${CLOUDFLARE_API_BASE_URL:-}'
-export CF_DISPATCH_NAMESPACE='${CF_DISPATCH_NAMESPACE:-}'
-export WORKER_BASE_URL='${WORKER_BASE_URL:-}'
-export MCP_SERVER_URL='${MCP_SERVER_URL:-}'
-ENVEOF
-chmod 644 /tmp/ws-env.sh
-
-# Start control-plane server as claude user (runs on port 9000)
-echo "[entrypoint] Starting control-plane server on port 9000..." >&2
-su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && node /app/control-plane.mjs" &
-CONTROL_PID=$!
-echo "[entrypoint] Control-plane PID: $CONTROL_PID" >&2
-
-# Wait for control-plane to be ready
-sleep 0.5
-if ! kill -0 "$CONTROL_PID" 2>/dev/null; then
-  echo "[entrypoint] ERROR: Control-plane failed to start!" >&2
-  exit 1
-fi
-
 # Start session indexer loop (indexes Claude session files every 60s for memory search)
 echo "[entrypoint] Starting session indexer loop..." >&2
 (
@@ -927,15 +935,6 @@ echo "[entrypoint] Starting session indexer loop..." >&2
 ) &
 INDEXER_PID=$!
 echo "[entrypoint] Session indexer PID: $INDEXER_PID" >&2
-
-# Start ws-server as claude user (runs on port 8080)
-# Uses Claude Agent SDK for streaming conversations
-# Run in foreground (no exec) so the shell stays alive for the trap
-# Using Node.js instead of Bun for stability
-echo "[entrypoint] Starting ws-server (SDK) as claude user on port 8080..." >&2
-su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && node /app/ws-server.mjs" &
-WS_PID=$!
-echo "[entrypoint] ws-server PID: $WS_PID" >&2
 
 END_TS="$(date +%s%3N 2>/dev/null || date +%s)"
 echo "[entrypoint] Initialization complete (ms: $((END_TS - START_TS)))" >&2
