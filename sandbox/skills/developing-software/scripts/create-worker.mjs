@@ -356,6 +356,21 @@ async function createProject(projectName, options) {
   }
   console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
 
+  // Step 5: Pre-warm build daemon (background)
+  console.log('\nStep 5/5: Pre-warming build daemon...');
+  try {
+    const { spawn } = await import('child_process');
+    const warmup = spawn('yarn', ['node', '/app/vite-build.mjs', '--warmup'], {
+      cwd: projectDir,
+      stdio: 'inherit',
+      detached: true,
+    });
+    warmup.unref();
+    console.log(`         Started in background (first build will be faster)`);
+  } catch (err) {
+    console.log(`         Skipped: ${err.message}`);
+  }
+
   const totalTime = Date.now() - totalStart;
   console.log(`
 Project created successfully in ${formatTime(totalTime)}!

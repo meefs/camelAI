@@ -1,143 +1,133 @@
 #!/usr/bin/env node
 /**
- * Vite Build Daemon (per-project)
+ * Vite Build Daemon
  *
- * Run with: yarn node /app/vite-daemon.mjs
- * Caches Vite builder in memory for fast subsequent builds (~2s vs ~19s cold).
+ * Keeps one Vite builder warm in memory. Starts on first build, stays alive.
+ *
+ * Start:    yarn node /app/vite-daemon.mjs [project-path]
+ * Build:    yarn node /app/vite-build.mjs
+ * Warmup:   yarn node /app/vite-build.mjs --warmup
  */
 
 import { createServer } from 'net';
 import { resolve } from 'path';
-import { unlinkSync, existsSync, readFileSync, writeFileSync } from 'fs';
-import { createHash } from 'crypto';
+import { unlinkSync, existsSync, writeFileSync } from 'fs';
 import { createRequire } from 'module';
 
-const SOCKET_PATH = '/tmp/vite-build.sock';
-const STATE_PATH = '/tmp/vite-build.state';
-const projectPath = process.cwd();
+const SOCKET = '/tmp/vite-build.sock';
+const STATE = '/tmp/vite-build.state';
+const BUILD_TIMEOUT = 180_000; // 3 minutes max
 
-// Use createRequire to resolve vite from the PROJECT's dependencies (works with PnP)
+const projectPath = process.argv[2] || process.cwd();
+
+// Load vite from project's node_modules (uses CJS require for Yarn PnP compatibility)
 const require = createRequire(resolve(projectPath, 'package.json'));
 const { createBuilder } = require('vite');
 
 let builder = null;
-let configHash = null;
+let building = false;
 
-// Mutable socket for shared logger
-let currentSocket = null;
-
-// Write state so clients know which project we're serving
-writeFileSync(STATE_PATH, JSON.stringify({ projectPath, pid: process.pid }));
-console.log('[vite-daemon] Started for: ' + projectPath);
-
-function getConfigHash() {
-  const hash = createHash('md5');
-  // Include all files that affect the build output
-  const files = ['vite.config.ts', 'wrangler.toml', 'wrangler.jsonc', 'wrangler.json', 'package.json', 'yarn.lock'];
-  for (const file of files) {
-    const path = resolve(projectPath, file);
-    if (existsSync(path)) hash.update(readFileSync(path));
-  }
-  return hash.digest('hex').slice(0, 12);
+// Write state file so clients know what project we're serving
+function writeState() {
+  writeFileSync(STATE, JSON.stringify({ projectPath, pid: process.pid }));
 }
 
-async function getBuilder() {
-  const newHash = getConfigHash();
-
-  if (configHash === newHash && builder) {
-    return { builder, cacheHit: true };
-  }
-
-  if (builder) {
-    console.log('[vite-daemon] Config changed, rebuilding...');
-    await builder.close?.().catch(() => {});
-  }
-
-  console.log('[vite-daemon] Loading builder...');
+// Initialize builder
+async function init() {
   const start = Date.now();
+  console.log(`[daemon] Initializing for ${projectPath}`);
 
   builder = await createBuilder({
     configFile: resolve(projectPath, 'vite.config.ts'),
     root: projectPath,
     logLevel: 'info',
-    customLogger: sharedLogger,
   });
 
-  configHash = newHash;
-  console.log('[vite-daemon] Ready in ' + (Date.now() - start) + 'ms');
-  return { builder, cacheHit: false };
+  console.log(`[daemon] Ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+  writeState();
 }
 
-// Shared logger that writes to currentSocket (set per-request)
-const sharedLogger = {
-  info: msg => sendLog('info', msg),
-  warn: msg => sendLog('warn', msg),
-  error: msg => sendLog('error', msg),
-  warnOnce: msg => sendLog('warn', msg),
-  clearScreen: () => {},
-  hasWarned: false,
-  hasErrorLogged: () => false,
-};
+// Run build with timeout
+async function build() {
+  if (!builder) throw new Error('Builder not initialized');
+  if (building) throw new Error('Build already in progress');
 
-function sendLog(level, msg) {
-  if (currentSocket) {
-    try { currentSocket.write(JSON.stringify({ type: 'log', level, message: msg }) + '\n'); } catch {}
+  building = true;
+  const start = Date.now();
+
+  try {
+    await Promise.race([
+      builder.buildApp(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Build timed out after 3 minutes')), BUILD_TIMEOUT)
+      ),
+    ]);
+    return { ok: true, duration: Date.now() - start };
+  } finally {
+    building = false;
   }
 }
 
 // Clean up old socket
-if (existsSync(SOCKET_PATH)) unlinkSync(SOCKET_PATH);
+if (existsSync(SOCKET)) unlinkSync(SOCKET);
 
-const server = createServer(socket => {
-  let data = '';
-  socket.on('data', chunk => {
-    data += chunk;
-    const lines = data.split('\n');
-    data = lines.pop();
-    lines.filter(l => l.trim()).forEach(line => handleRequest(socket, line));
-  });
+const server = createServer(async (socket) => {
+  socket.setTimeout(BUILD_TIMEOUT + 10_000);
+  socket.on('timeout', () => socket.destroy());
   socket.on('error', () => {});
+
+  // Read request (newline-delimited)
+  let data = '';
+  let processed = false;
+
+  socket.on('data', async (chunk) => {
+    data += chunk;
+    if (processed || !data.includes('\n')) return;
+    processed = true;
+    const line = data.split('\n')[0];
+
+    try {
+      const req = JSON.parse(line || '{}');
+
+      const sendResponse = (result) => {
+        socket.write(JSON.stringify(result) + '\n', () => socket.end());
+      };
+
+      if (req.action === 'warmup') {
+        sendResponse({ ok: true, projectPath });
+      } else if (req.action === 'status') {
+        sendResponse({ ok: true, projectPath, building, pid: process.pid });
+      } else {
+        // Default: build
+        const result = await build();
+        sendResponse(result);
+      }
+    } catch (err) {
+      try {
+        socket.write(JSON.stringify({ ok: false, error: err.message }) + '\n');
+        socket.end();
+      } catch {}
+    }
+  });
 });
 
-async function handleRequest(socket, message) {
-  currentSocket = socket;
-
-  try {
-    const { action } = JSON.parse(message);
-
-    if (action === 'ping') {
-      socket.write(JSON.stringify({ success: true, projectPath }) + '\n');
-    } else if (action === 'warmup') {
-      const start = Date.now();
-      await getBuilder();
-      socket.write(JSON.stringify({ success: true, action: 'warmup', duration: Date.now() - start }) + '\n');
-    } else {
-      const start = Date.now();
-      const { builder: b, cacheHit } = await getBuilder();
-      await b.buildApp();
-      const total = Date.now() - start;
-      socket.write(JSON.stringify({ success: true, duration: total, cacheHit }) + '\n');
-    }
-  } catch (err) {
-    console.error('[vite-daemon] Error:', err.message);
-    socket.write(JSON.stringify({ success: false, error: err.message }) + '\n');
-  } finally {
-    currentSocket = null;
-  }
-  socket.end();
-}
-
-server.listen(SOCKET_PATH, () => console.log('[vite-daemon] Listening'));
-server.on('error', err => { console.error('[vite-daemon] Server error:', err.message); process.exit(1); });
-
-async function shutdown() {
-  console.log('[vite-daemon] Shutting down...');
-  await builder?.close?.().catch(() => {});
-  server.close(() => {
-    try { unlinkSync(SOCKET_PATH); unlinkSync(STATE_PATH); } catch {}
-    process.exit(0);
-  });
+// Graceful shutdown
+function shutdown() {
+  console.log('[daemon] Shutting down...');
+  server.close();
+  try { unlinkSync(SOCKET); unlinkSync(STATE); } catch {}
+  process.exit(0);
 }
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+
+// Initialize first, then start listening
+init()
+  .then(() => {
+    server.listen(SOCKET, () => console.log(`[daemon] Listening on ${SOCKET}`));
+  })
+  .catch(err => {
+    console.error('[daemon] Init failed:', err);
+    process.exit(1);
+  });

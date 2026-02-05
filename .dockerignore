@@ -1,5 +1,9 @@
-# Ignore template node_modules - we use Yarn PnP instead
+# Ignore template install artifacts - yarn install runs at container startup
 sandbox/skills/developing-software/templates/*/node_modules
+sandbox/skills/developing-software/templates/*/.yarn/cache
+sandbox/skills/developing-software/templates/*/.yarn/unplugged
+sandbox/skills/developing-software/templates/*/.pnp.cjs
+sandbox/skills/developing-software/templates/*/.pnp.loader.mjs
 
 # Ignore session-search node_modules (native modules must be compiled in container)
 sandbox/session-search/node_modules

@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-02-02-v53-sqlite-only
+# Version: 2026-02-04-v74-juicefs-rmr
 set -eu
 
 # Trap errors and show what failed
@@ -616,9 +616,6 @@ mount_juicefs() {
   JUICEFS_STDERR_LOG="/tmp/juicefs-mount-stderr.log"
 
   # Run mount in daemon mode
-  # NOTE: NEVER use allow_other option with JuiceFS - it breaks file ownership.
-  # Use user_id/group_id options instead to control mount permissions.
-  #
   echo "[entrypoint] Starting JuiceFS mount (daemon mode)..." >&2
   MOUNT_CMD="juicefs mount \"$JFS_META_URL\" \"$TARGET_DIR\" \
     --backup-meta 0 \
@@ -839,38 +836,35 @@ echo "[entrypoint] System skills symlinked to $TARGET_DIR/.claude/skills/" >&2
 
 # Create golden template in background (for instant project creation via juicefs clone)
 # Golden template has yarn install done, so clone gets everything ready-to-use
+# NOTE: All file operations must run as claude user since JuiceFS mount is user_id=1001
 echo "[entrypoint] Setting up golden template..." >&2
 (
   TEMPLATE_NAME="chiridion-starter"
   SOURCE_TEMPLATE="/app/skills/developing-software/templates/${TEMPLATE_NAME}"
   GOLDEN_DIR="${TARGET_DIR}/.chiridion/templates"
   GOLDEN_TEMPLATE="${GOLDEN_DIR}/${TEMPLATE_NAME}"
-  HASH_FILE="${GOLDEN_DIR}/.${TEMPLATE_NAME}.hash"
-  LOCK_FILE="${GOLDEN_DIR}/.${TEMPLATE_NAME}.lock"
 
-  # Compute hash of source template
-  SOURCE_HASH="$(sha256sum "${SOURCE_TEMPLATE}/package.json" 2>/dev/null | cut -d' ' -f1)"
-
-  # Check if golden template is up to date
-  if [ -f "$HASH_FILE" ] && [ -f "${GOLDEN_TEMPLATE}/.pnp.cjs" ]; then
-    EXISTING_HASH="$(cat "$HASH_FILE" 2>/dev/null)"
-    if [ "$SOURCE_HASH" = "$EXISTING_HASH" ]; then
-      echo "[golden-template] Up to date" >&2
-      exit 0
-    fi
+  # Check source exists (can do as root since it's local fs)
+  if [ ! -d "$SOURCE_TEMPLATE" ]; then
+    echo "[golden-template] ERROR: Source template missing: ${SOURCE_TEMPLATE}" >&2
+    exit 1
   fi
 
-  # Create golden template as claude user
-  su -s /bin/sh claude -c "
+  echo "[golden-template] Source: ${SOURCE_TEMPLATE} ($(find "${SOURCE_TEMPLATE}" -type f | wc -l) files)" >&2
+  echo "[golden-template] Dest: ${GOLDEN_TEMPLATE}" >&2
+
+  # Sync and install as claude user
+  if su -s /bin/sh claude -c "
+    set -e
     mkdir -p '$GOLDEN_DIR'
-    echo \$\$ > '$LOCK_FILE'
-    rm -rf '$GOLDEN_TEMPLATE'
-    mkdir -p '$GOLDEN_TEMPLATE'
-    cp -r '${SOURCE_TEMPLATE}/.' '$GOLDEN_TEMPLATE/'
-    cd '$GOLDEN_TEMPLATE' && yarn install >/dev/null 2>&1
-    echo '$SOURCE_HASH' > '$HASH_FILE'
-    rm -f '$LOCK_FILE'
-  " && echo "[golden-template] Ready" >&2 || echo "[golden-template] Failed" >&2
+    juicefs sync '${SOURCE_TEMPLATE}/' '$GOLDEN_TEMPLATE/' --update
+    cd '$GOLDEN_TEMPLATE'
+    yarn install
+  " 2>&1; then
+    echo "[golden-template] Ready" >&2
+  else
+    echo "[golden-template] Failed (non-critical)" >&2
+  fi
 ) &
 
 # Write env vars to a file that claude user can source

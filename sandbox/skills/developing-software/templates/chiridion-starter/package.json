@@ -11,7 +11,7 @@
 		"@babel/runtime-corejs3": "npm:@babel/runtime@^7.26.0"
 	},
 	"scripts": {
-		"build": "react-router build",
+		"build": "[ -f /app/vite-build.mjs ] && node /app/vite-build.mjs || react-router build",
 		"cf-typegen": "wrangler types",
 		"deploy": "yarn build && wrangler deploy --dispatch-namespace chiridion",
 		"dev": "react-router dev",
@@ -21,7 +21,7 @@
 	},
 	"dependencies": {
 		"@ai-sdk/react": "^3.0.0",
-		"@cloudflare/ai-chat": "^0.0.4",
+		"@cloudflare/ai-chat": "^0.0.6",
 		"@fontsource-variable/figtree": "^5.2.5",
 		"@fontsource-variable/inter": "^5.2.5",
 		"@fontsource-variable/noto-sans": "^5.2.5",
@@ -52,10 +52,11 @@
 		"@types/node": "^22",
 		"@types/react": "^19.1.13",
 		"@types/react-dom": "^19.1.9",
+		"@vitest/runner": "^3.2.0",
+		"@vitest/snapshot": "^3.2.0",
 		"tailwindcss": "^4.1.13",
 		"typescript": "^5.9.2",
 		"vite": "8.0.0-beta.11",
-		"vite-tsconfig-paths": "^5.1.4",
 		"vitest": "^3.2.0"
 	}
 }
