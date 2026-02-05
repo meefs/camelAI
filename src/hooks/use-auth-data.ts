@@ -11,7 +11,7 @@ import type { AuthState } from '@/types';
  * after mutations (logout, switch-workspace, etc.)
  */
 export function useAuthData(): AuthState {
-  const data = useRouteLoaderData('_app') as { authState: AuthState } | undefined;
+  const data = useRouteLoaderData('routes/_app') as { authState: AuthState } | undefined;
   if (!data?.authState) {
     throw new Error('useAuthData must be used within a route under _app layout');
   }
@@ -23,6 +23,6 @@ export function useAuthData(): AuthState {
  * outside the _app layout (e.g., in auth pages).
  */
 export function useOptionalAuthData(): AuthState | null {
-  const data = useRouteLoaderData('_app') as { authState: AuthState } | undefined;
+  const data = useRouteLoaderData('routes/_app') as { authState: AuthState } | undefined;
   return data?.authState ?? null;
 }

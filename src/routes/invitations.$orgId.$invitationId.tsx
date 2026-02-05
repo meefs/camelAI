@@ -50,7 +50,7 @@ function buildLoginHref(orgId?: string, invitationId?: string) {
 export default function InvitationPage() {
   const params = useParams();
   const navigate = useNavigate();
-  const inviteData = useRouteLoaderData('_invite') as { user: User | null } | undefined;
+  const inviteData = useRouteLoaderData('routes/_invite') as { user: User | null } | undefined;
   const user = inviteData?.user ?? null;
   const orgId = params.orgId;
   const invitationId = params.invitationId;
