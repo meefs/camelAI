@@ -54,7 +54,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return { error: 'Org ID is required' };
     }
     const stub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-    stub.updateThread(threadId, title.trim(), 'system-admin');
+    await stub.updateThread(threadId, title.trim(), 'system-admin');
     return { success: true };
   }
 
@@ -206,7 +206,7 @@ export default function AdminThreadDetailPage() {
                 <CardDescription>Update thread title</CardDescription>
               </CardHeader>
               <CardContent>
-                <ThreadEditForm thread={thread} />
+                <ThreadEditForm thread={thread} orgId={org_id} />
               </CardContent>
             </Card>
 

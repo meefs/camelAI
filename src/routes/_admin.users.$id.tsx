@@ -62,10 +62,11 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     const name = formData.get('name') as string;
     const avatarColor = formData.get('avatarColor') as string;
     const avatarContent = formData.get('avatarContent') as string;
-    // Note: is_superuser is determined by email domain, not manually set
+    const isSuperuser = formData.get('isSuperuser');
     await adminUpdateUser(authEnv, userId, {
       name: name?.trim() || null,
       avatar: avatarColor && avatarContent ? { color: avatarColor, content: avatarContent } : undefined,
+      is_superuser: isSuperuser === 'true',
     });
     return { success: true };
   }

@@ -400,6 +400,7 @@ export class UserDO extends DurableObject<DOEnv> {
   async updateProfile(updates: {
     name?: string | null;
     avatar?: { color?: string; content?: string };
+    is_superuser?: boolean;
   }): Promise<User | null> {
     const profile = await this.getProfile();
     if (!profile) return null;
@@ -422,6 +423,11 @@ export class UserDO extends DurableObject<DOEnv> {
         throw new Error('Invalid avatar content');
       }
       profile.avatar.content = trimmed;
+      changed = true;
+    }
+
+    if (updates.is_superuser !== undefined && updates.is_superuser !== profile.is_superuser) {
+      profile.is_superuser = updates.is_superuser;
       changed = true;
     }
 
