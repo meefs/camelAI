@@ -928,8 +928,8 @@ echo "[entrypoint] Starting session indexer loop..." >&2
   # Wait a bit for initial sessions to be created
   sleep 30
   while true; do
-    # Run index quietly using Node.js CLI (uses readline streaming, ~16s for 100k messages)
-    node /app/session-search/src/cli.mjs index --quiet 2>/dev/null || true
+    # Run index as claude user so os.homedir() resolves to /home/claude (not /root)
+    su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && node /app/session-search/src/cli.mjs index --quiet" 2>/dev/null || true
     sleep 60
   done
 ) &
