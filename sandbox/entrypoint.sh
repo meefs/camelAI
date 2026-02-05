@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-02-04-v74-juicefs-rmr
+# Version: 2026-02-04-v75-warmup-logging
 set -eu
 
 # Trap errors and show what failed
@@ -854,6 +854,8 @@ echo "[entrypoint] Setting up golden template..." >&2
   echo "[golden-template] Dest: ${GOLDEN_TEMPLATE}" >&2
 
   # Sync and install as claude user
+  echo "[golden-template] Starting sync and install..." >&2
+  SYNC_START="$(date +%s)"
   if su -s /bin/sh claude -c "
     set -e
     mkdir -p '$GOLDEN_DIR'
@@ -861,9 +863,16 @@ echo "[entrypoint] Setting up golden template..." >&2
     cd '$GOLDEN_TEMPLATE'
     yarn install
   " 2>&1; then
-    echo "[golden-template] Ready" >&2
+    SYNC_END="$(date +%s)"
+    echo "[golden-template] Ready (took $((SYNC_END - SYNC_START))s)" >&2
+    # Warm JuiceFS cache in background - since clone shares blocks, this warms cache for all cloned projects
+    echo "[golden-template] Starting cache warmup (100 threads)..." >&2
+    (juicefs warmup "$GOLDEN_TEMPLATE" -c 100 2>&1 | while read -r line; do echo "[warmup] $line" >&2; done) &
+    WARMUP_PID=$!
+    echo "[golden-template] Cache warmup started (PID: $WARMUP_PID)" >&2
   else
-    echo "[golden-template] Failed (non-critical)" >&2
+    SYNC_END="$(date +%s)"
+    echo "[golden-template] Failed after $((SYNC_END - SYNC_START))s (non-critical)" >&2
   fi
 ) &
 
