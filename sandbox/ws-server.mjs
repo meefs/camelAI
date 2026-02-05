@@ -330,9 +330,11 @@ async function writeTrace(threadId, entry) {
   if (!TRACE_EVENTS) return;
   const safeThread = sanitizeFileSegment(threadId);
   const tracePath = `${TRACE_DIR}/${safeThread}.ndjson`;
-  const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
   let writePhase = 'thread';
+  let lineBytes = null;
   try {
+    const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
+    lineBytes = Buffer.byteLength(line, 'utf8');
     await ensureTraceDir();
     await appendFile(tracePath, line);
     writePhase = 'all';
@@ -349,7 +351,7 @@ async function writeTrace(threadId, entry) {
       writePhase,
       threadId: threadId || null,
       entryType: entry?.type || null,
-      lineBytes: Buffer.byteLength(line, 'utf8'),
+      lineBytes,
       tracePath,
       traceAllPath: TRACE_ALL_FILE,
       cwd: process.cwd(),
