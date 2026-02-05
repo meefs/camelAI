@@ -449,11 +449,12 @@ async function handleWorkerRequest(
   dispatchScriptName: string
 ): Promise<Response> {
   const url = new URL(request.url);
+  const legacyDispatchScriptName = orgSlug ? scriptName : undefined;
 
   // Skip all auth checks in local development mode
   if (env.SKIP_AUTH === 'true') {
     console.log(`[dispatcher] SKIP_AUTH enabled, dispatching directly to: ${dispatchScriptName}`);
-    return dispatchToWorker(request, env, dispatchScriptName, scriptName);
+    return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
   }
 
   const cookieHeader = request.headers.get('Cookie');
@@ -475,9 +476,9 @@ async function handleWorkerRequest(
         if (hasScreenshotBearer) {
           forwardHeaders.delete('Authorization');
         }
-        return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, dispatchScriptName, scriptName);
+        return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, dispatchScriptName, scriptName, legacyDispatchScriptName);
       }
-      return dispatchToWorker(request, env, dispatchScriptName, scriptName);
+      return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
     }
   }
 
@@ -499,7 +500,13 @@ async function handleWorkerRequest(
       forwardHeaders.delete('Authorization');
     }
 
-    const response = await dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, dispatchScriptName, scriptName);
+    const response = await dispatchToWorker(
+      new Request(request, { headers: forwardHeaders }),
+      env,
+      dispatchScriptName,
+      scriptName,
+      legacyDispatchScriptName
+    );
     const headers = new Headers(response.headers);
     headers.append('Set-Cookie', createScreenshotSessionCookie(sessionId));
     return new Response(response.body, {
@@ -527,7 +534,7 @@ async function handleWorkerRequest(
   // Once all workers are registered, this can be changed to fail closed
   if (!accessInfo) {
     console.log(`[dispatcher] Worker "${dispatchScriptName}" not in registry, dispatching anyway (fail open)`);
-    return dispatchToWorker(request, env, dispatchScriptName, scriptName);
+    return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
   }
 
   // Legacy URL redirect: If using old URL format AND the worker was deployed with the
@@ -546,7 +553,7 @@ async function handleWorkerRequest(
 
   // If public, dispatch directly
   if (accessInfo.is_public) {
-    return dispatchToWorker(request, env, dispatchScriptName, scriptName);
+    return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
   }
 
   // Private worker - check session
@@ -557,7 +564,7 @@ async function handleWorkerRequest(
     const session = await getDispatcherSession(env.SESSIONS, dispatcherSessionId);
     if (session && session.org_id === accessInfo.org_id) {
       // Valid session with matching org - dispatch
-      return dispatchToWorker(request, env, dispatchScriptName, scriptName);
+      return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
     }
   }
 
@@ -594,7 +601,7 @@ async function handleWorkerRequest(
       }
 
       console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${scriptName} via main session`);
-      return dispatchToWorker(request, env, dispatchScriptName, scriptName);
+      return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
     } catch (e) {
       console.error(`[dispatcher] Error validating main session: ${e}`);
       return new Response('Service temporarily unavailable', { status: 503 });
@@ -656,19 +663,34 @@ async function injectDebugBridge(response: Response, _hostname: string): Promise
  * Dispatch request to the user worker
  * @param dispatchScriptName - The script name in the dispatch namespace ({org-slug}--{script})
  * @param userFacingScriptName - The user-facing script name for error messages
+ * @param fallbackDispatchScriptName - Optional legacy script name fallback ({script})
  */
 async function dispatchToWorker(
   request: Request,
   env: Env,
   dispatchScriptName: string,
-  userFacingScriptName: string
+  userFacingScriptName: string,
+  fallbackDispatchScriptName?: string
 ): Promise<Response> {
   const url = new URL(request.url);
 
   try {
     console.log(`[dispatcher] Routing to worker: ${dispatchScriptName}`);
     const userWorker = env.DISPATCHER.get(dispatchScriptName);
-    const response = await userWorker.fetch(request);
+    let response: Response;
+
+    try {
+      response = await userWorker.fetch(request);
+    } catch (e) {
+      const error = e as Error;
+      if (error.message?.startsWith('Worker not found') && fallbackDispatchScriptName && fallbackDispatchScriptName !== dispatchScriptName) {
+        console.log(`[dispatcher] Primary worker not found, retrying legacy worker: ${fallbackDispatchScriptName}`);
+        const legacyWorker = env.DISPATCHER.get(fallbackDispatchScriptName);
+        response = await legacyWorker.fetch(request);
+      } else {
+        throw e;
+      }
+    }
 
     // Only inject debug bridge on iframe domain (*.apps.chiridion.ai)
     // This is where the preview iframe loads from
