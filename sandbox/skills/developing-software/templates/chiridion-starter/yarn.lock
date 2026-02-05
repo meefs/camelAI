@@ -457,7 +457,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@cloudflare/vitest-pool-workers@npm:^0.12.0":
+"@cloudflare/vitest-pool-workers@npm:0.12.9":
   version: 0.12.9
   resolution: "@cloudflare/vitest-pool-workers@npm:0.12.9"
   dependencies:
@@ -470,6 +470,22 @@ __metadata:
     "@vitest/snapshot": 2.0.x - 3.2.x
     vitest: 2.0.x - 3.2.x
   checksum: 10c0/b3133531aabb1e0f6149fb8db55bbbb23a4dc05be4eeec0ee2d44738026611ff0a9b619d5d8022048bf99b75d97476c97774066b68652e20673b9bb099a752bc
+  languageName: node
+  linkType: hard
+
+"@cloudflare/vitest-pool-workers@patch:@cloudflare/vitest-pool-workers@npm%3A0.12.9#./.yarn/patches/@cloudflare-vitest-pool-workers-npm-0.12.9-b95aa175b4.patch::locator=rr7-template%40workspace%3A.":
+  version: 0.12.9
+  resolution: "@cloudflare/vitest-pool-workers@patch:@cloudflare/vitest-pool-workers@npm%3A0.12.9#./.yarn/patches/@cloudflare-vitest-pool-workers-npm-0.12.9-b95aa175b4.patch::version=0.12.9&hash=74bc17&locator=rr7-template%40workspace%3A."
+  dependencies:
+    cjs-module-lexer: "npm:^1.2.3"
+    esbuild: "npm:0.27.0"
+    miniflare: "npm:4.20260131.0"
+    wrangler: "npm:4.62.0"
+  peerDependencies:
+    "@vitest/runner": 2.0.x - 3.2.x
+    "@vitest/snapshot": 2.0.x - 3.2.x
+    vitest: 2.0.x - 3.2.x
+  checksum: 10c0/f79df24e28619ddd702abea72624202336c19d131727a231fca5ae1c01f48c3249f83464559cfddeed4678e21748ba83152b8dd5f3e885328abb7bca2eae9097
   languageName: node
   linkType: hard
 

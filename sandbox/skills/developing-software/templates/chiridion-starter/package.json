@@ -6,6 +6,7 @@
 	"packageManager": "yarn@4.9.2",
 	"resolutions": {
 		"@cloudflare/vite-plugin": "patch:@cloudflare/vite-plugin@npm%3A1.22.1#./.yarn/patches/@cloudflare-vite-plugin-npm-1.22.1-7df410eafa.patch",
+		"@cloudflare/vitest-pool-workers": "patch:@cloudflare/vitest-pool-workers@npm%3A0.12.9#./.yarn/patches/@cloudflare-vitest-pool-workers-npm-0.12.9-b95aa175b4.patch",
 		"vite": "8.0.0-beta.11",
 		"esbuild": "0.27.0",
 		"@babel/runtime-corejs3": "npm:@babel/runtime@^7.26.0"
