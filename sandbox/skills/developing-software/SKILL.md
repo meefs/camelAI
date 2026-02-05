@@ -521,21 +521,31 @@ Features include:
 
 ## Project Snapshots with JuiceFS
 
-Use JuiceFS clone for instant project snapshots. This is faster than git and captures the complete project state including node_modules and build artifacts.
+JuiceFS clone creates instant project snapshots. This is faster than git and captures the complete project state including node_modules and build artifacts.
 
-### Create Snapshots
+### Automatic Build Snapshots
 
-Snapshots are instant (copy-on-write) and take no additional disk space until files diverge:
+**Every successful `yarn build` automatically creates a snapshot.** These are stored outside the project at:
+
+```
+~/.chiridion/snapshots/{projectName}/
+  2026-02-04T15-30-00-000Z/
+  2026-02-04T15-31-00-000Z/
+  ...
+```
+
+The last 50 snapshots are kept automatically. Use `--no-snapshot` to skip: `yarn build --no-snapshot`
+
+### Manual Snapshots
+
+For named checkpoints (more memorable than timestamps):
 
 ```bash
-# Create snapshots directory (once)
-mkdir -p /home/claude/.snapshots
-
-# Snapshot before making risky changes
-juicefs clone /home/claude/my-app /home/claude/.snapshots/my-app-v1-working
+# Snapshot before risky changes
+juicefs clone ~/my-app ~/.chiridion/snapshots/my-app/before-refactor
 
 # Snapshot after a feature works
-juicefs clone /home/claude/my-app /home/claude/.snapshots/my-app-v2-added-auth
+juicefs clone ~/my-app ~/.chiridion/snapshots/my-app/auth-working
 ```
 
 ### Rollback
@@ -543,36 +553,25 @@ juicefs clone /home/claude/my-app /home/claude/.snapshots/my-app-v2-added-auth
 When something breaks, restore instantly:
 
 ```bash
-# Remove broken state and restore from snapshot
-rm -rf /home/claude/my-app
-juicefs clone /home/claude/.snapshots/my-app-v1-working /home/claude/my-app
+# List available snapshots
+ls ~/.chiridion/snapshots/my-app/
+
+# Restore from a timestamped build snapshot
+rm -rf ~/my-app
+juicefs clone ~/.chiridion/snapshots/my-app/2026-02-04T15-30-00-000Z ~/my-app
+
+# Or from a named snapshot
+rm -rf ~/my-app
+juicefs clone ~/.chiridion/snapshots/my-app/auth-working ~/my-app
 ```
 
-### Naming Convention
+### When to Create Manual Snapshots
 
-Use descriptive names with version numbers:
+Since builds auto-snapshot, manual snapshots are mainly useful for:
 
-```
-.snapshots/
-  my-app-v1-initial/
-  my-app-v2-added-auth/
-  my-app-v3-fixed-login/
-```
-
-### When to Snapshot
-
-1. **After `create-worker`** - Capture the clean initial state
-2. **Before risky changes** - Refactoring, dependency updates, major features
-3. **After successful deploy** - Known working state to roll back to
-4. **Before experimenting** - Try ideas without fear
-
-### Cleanup
-
-Remove old snapshots when no longer needed:
-
-```bash
-rm -rf /home/claude/.snapshots/my-app-v1-initial
-```
+1. **Before risky non-build changes** - Config changes, dependency updates
+2. **Named milestones** - "auth-working", "before-refactor" are easier to find than timestamps
+3. **Before experimenting** - Try ideas without fear
 
 ### Why JuiceFS Instead of Git
 

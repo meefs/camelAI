@@ -135,8 +135,9 @@ function fallbackBuild() {
 function createSnapshot() {
   if (noSnapshot) return;
 
+  const homeDir = process.env.HOME || '/home/claude';
   const projectName = basename(projectPath);
-  const snapshotDir = resolve(projectPath, '.chiridion', 'snapshots', projectName);
+  const snapshotDir = resolve(homeDir, '.chiridion', 'snapshots', projectName);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const snapshotPath = resolve(snapshotDir, timestamp);
 
