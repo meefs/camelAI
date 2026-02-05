@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-02-04-v75-warmup-logging
+# Version: 2026-02-04-v76-fix-home-env
 set -eu
 
 # Trap errors and show what failed
@@ -878,6 +878,7 @@ echo "[entrypoint] Setting up golden template..." >&2
 
 # Write env vars to a file that claude user can source
 cat > /tmp/ws-env.sh << ENVEOF
+export HOME='${TARGET_DIR}'
 export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'
 export ANTHROPIC_BASE_URL='${ANTHROPIC_BASE_URL:-}'
 export ORG_ID='${ORG_ID:-}'
