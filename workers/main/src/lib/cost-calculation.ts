@@ -32,6 +32,14 @@ export interface ModelPricing {
 // Pricing in cents per 1M tokens
 // Source: https://docs.anthropic.com/en/docs/about-claude/pricing
 const MODEL_PRICING: Record<string, ModelPricing> = {
+  // Claude Opus 4.6
+  'claude-opus-4-6': {
+    input_per_million: 500,           // $5/MTok
+    output_per_million: 2500,         // $25/MTok
+    cache_write_5m_per_million: 625,  // $6.25/MTok
+    cache_write_1h_per_million: 1000, // $10/MTok
+    cache_read_per_million: 50,       // $0.50/MTok
+  },
   // Claude Opus 4.5
   'claude-opus-4-5-20251101': {
     input_per_million: 500,           // $5/MTok
@@ -144,6 +152,9 @@ export function getModelPricing(model: string): ModelPricing {
   // Try to match by model family (e.g., "claude-sonnet-4-5" matches any sonnet 4.5)
   const modelLower = model.toLowerCase();
 
+  if (modelLower.includes('opus-4-6') || modelLower.includes('opus-4.6')) {
+    return MODEL_PRICING['claude-opus-4-6'];
+  }
   if (modelLower.includes('opus-4-5') || modelLower.includes('opus-4.5')) {
     return MODEL_PRICING['claude-opus-4-5-20251101'];
   }
