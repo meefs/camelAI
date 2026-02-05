@@ -95,6 +95,16 @@ export function PromptInput({
   const showStopButton = isAssistantRunning && !value.trim() && onStop;
   const effectivePlaceholder = animatedPlaceholder ?? placeholder;
 
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    if (!onFilesSelected || disabled) return;
+
+    const files = Array.from(e.clipboardData.files);
+    if (files.length > 0) {
+      e.preventDefault();
+      onFilesSelected(files);
+    }
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -246,6 +256,7 @@ export function PromptInput({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder={effectivePlaceholder}
             disabled={disabled || isActiveRecording}
             autoFocus={autoFocus}
