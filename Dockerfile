@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-02-03-v75-no-ripgrep
+# Version: 2026-02-03-v76-imagemagick
 # Slim container with Node, Yarn PnP, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfuse3-3 \
     sqlite3 \
     strace \
+    imagemagick \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable \
   && corepack prepare yarn@stable --activate \

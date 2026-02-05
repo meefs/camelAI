@@ -1247,13 +1247,6 @@ function startEventLoop(session) {
 
         lastEventType = `${eventType}:${eventSubType || 'none'}`;
 
-        log('[ws-server]', 'sdk_event', {
-          threadId: session.threadId,
-          eventType,
-          eventSubType,
-          systemSubType: eventType === 'system' ? event?.subtype || event?.message?.subtype || event?.message?.type : null,
-        });
-
         // Send event to client via WebSocket (or buffer if detached)
         bufferEvent(session, { type: 'sdk_event', event });
         trackTaskToolUse(session, event);
