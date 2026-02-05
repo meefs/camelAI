@@ -7,7 +7,7 @@
 #   8080 - ws-server (Claude SDK) - runs as claude user
 #   9000 - control-plane (exec/fs) - runs as claude user
 #
-# Version: 2026-02-05-v77-early-ws-server
+# Version: 2026-02-05-v78-fix-warmup-flag
 set -eu
 
 # Trap errors and show what failed
@@ -913,7 +913,7 @@ echo "[entrypoint] Setting up golden template..." >&2
     echo "[golden-template] Ready (took $((SYNC_END - SYNC_START))s)" >&2
     # Warm JuiceFS cache in background - since clone shares blocks, this warms cache for all cloned projects
     echo "[golden-template] Starting cache warmup (100 threads)..." >&2
-    (juicefs warmup "$GOLDEN_TEMPLATE" -c 100 2>&1 | while read -r line; do echo "[warmup] $line" >&2; done) &
+    (juicefs warmup "$GOLDEN_TEMPLATE" -p 100 2>&1 | while read -r line; do echo "[warmup] $line" >&2; done) &
     WARMUP_PID=$!
     echo "[golden-template] Cache warmup started (PID: $WARMUP_PID)" >&2
   else
