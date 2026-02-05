@@ -143,7 +143,7 @@ See `workers/tests/example-do.test.ts` for a complete example.
      { "tag": "v2", "new_sqlite_classes": ["MyDO"] }
    ]
    ```
-5. Run `wrangler types` to update `Env` types
+5. `postinstall` runs `wrangler types` automatically; re-run `yarn cf-typegen` after binding changes to update `Env` types
 
 ## Adding shadcn/ui Components
 
