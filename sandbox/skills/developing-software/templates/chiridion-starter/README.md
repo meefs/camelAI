@@ -2,6 +2,10 @@
 
 Full-stack React app with SSR, Durable Objects, and SQLite. Built on React Router 7 and Cloudflare Workers.
 
+## Architecture Default
+
+Use React Router 7 in framework mode (successor to Remix): data reads in route `loader()`, mutations in `action()`, and forms/fetchers for server-driven updates. Prefer this over SPA-style client fetching patterns by default.
+
 ## Quick Start
 
 ```bash

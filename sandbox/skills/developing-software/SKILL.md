@@ -14,7 +14,7 @@ This skill guides deployment of production software to Cloudflare's edge network
 2. **Use `create-worker` to scaffold projects** - Do not use `wrangler init` or `npm create cloudflare`
 3. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
 4. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
-5. **Use React + Vite for fullstack web apps** - With React Router and Tailwind CSS pre-configured
+5. **Use React Router 7 framework mode for fullstack web apps** - It is the successor to Remix; default to route `loader()`/`action()` patterns, not SPA-style client data fetching
 6. **Use shadcn/ui for frontend components** - The CLI is globally installed, use `shadcn add <component>` (NOT `npx shadcn`)
 7. **Avoid large package installations** - Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies that take a long time to install. The `create-worker` template has everything pre-configured.
 
@@ -425,8 +425,8 @@ The template includes:
 - Tailwind CSS v4
 - shadcn/ui pre-configured
 - TypeScript
-- Hono for type-safe API routing
-- Worker with example API route at `/api/hello`
+- Cloudflare Worker entry in `workers/app.ts`
+- Server data/mutation patterns via route `loader()` and `action()`
 
 ### Wrangler Configuration for React + Vite
 
@@ -435,11 +435,11 @@ The template creates this `wrangler.jsonc`:
 ```jsonc
 {
   "name": "my-app",
-  "main": "workers/src/index.ts",
+  "main": "./workers/app.ts",
   "compatibility_date": "2024-12-01",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
-    "directory": "dist",
+    "directory": "./public/",
     "binding": "ASSETS"
   }
 }
@@ -447,60 +447,50 @@ The template creates this `wrangler.jsonc`:
 
 ### Adding API Routes
 
-API routes are defined in `workers/src/index.ts` using [Hono](https://hono.dev):
+For JSON API endpoints, add a React Router route under `app/routes/` and wire it in `app/routes.ts`.
+Use route `loader()` for GET handlers and `action()` for POST/PUT/DELETE handlers.
 
 ```typescript
-import { Hono } from "hono";
+// app/routes/api.items.ts
+import type { Route } from "./+types/api.items";
+import { data } from "react-router";
 
-interface Env {
-  ASSETS: Fetcher;
+export async function loader({ context }: Route.LoaderArgs) {
+  const id = context.cloudflare.env.EXAMPLE_DO.idFromName("global");
+  const stub = context.cloudflare.env.EXAMPLE_DO.get(id);
+  const items = await stub.listItems();
+
+  return data({ items });
 }
 
-const app = new Hono<{ Bindings: Env }>();
+export async function action({ request, context }: Route.ActionArgs) {
+  const payload = await request.json();
 
-app.get("/api/items", (c) => {
-  return c.json({ items: [] });
-});
+  const id = context.cloudflare.env.EXAMPLE_DO.idFromName("global");
+  const stub = context.cloudflare.env.EXAMPLE_DO.get(id);
 
-app.post("/api/items", async (c) => {
-  const body = await c.req.json();
-  // Handle create item...
-  return c.json({ success: true });
-});
+  await stub.createItem(payload);
+  return data({ ok: true }, { status: 201 });
+}
 
-// 404 for unmatched API routes
-app.all("/api/*", (c) => {
-  return c.json({ error: "Not found" }, 404);
-});
+// app/routes.ts
+import { route, type RouteConfig } from "@react-router/dev/routes";
 
-// Serve static assets for all other routes
-app.all("*", async (c) => {
-  return c.env.ASSETS.fetch(c.req.raw);
-});
-
-export default app;
+export default [
+  route("api/items", "routes/api.items.ts"),
+] satisfies RouteConfig;
 ```
 
-### Organizing Routes with Hono
+### Organizing API Routes
 
-For larger apps, organize routes into separate files:
+For larger APIs, split endpoints by resource:
 
 ```typescript
-// workers/src/items-routes.ts
-import { Hono } from "hono";
-
-export const itemsRoutes = new Hono();
-
-itemsRoutes.get("/", (c) => c.json({ items: [] }));
-itemsRoutes.post("/", async (c) => {
-  const body = await c.req.json();
-  return c.json({ success: true });
-});
-
-// workers/src/index.ts
-import { itemsRoutes } from "./items-routes.js";
-
-app.route("/api/items", itemsRoutes);
+// app/routes.ts
+export default [
+  route("api/items", "routes/api.items.ts"),
+  route("api/items/:id", "routes/api.items.$id.ts"),
+] satisfies RouteConfig;
 ```
 
 ## AI-Powered Apps

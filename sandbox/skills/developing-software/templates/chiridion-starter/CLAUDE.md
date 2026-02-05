@@ -12,6 +12,7 @@ This is a **React Router 7** fullstack application (the successor to Remix) with
 - **Loaders run on the server** - Fetch data in `loader()` functions, which run before rendering
 - **Actions handle mutations** - Form submissions and data changes go through `action()` functions
 - **Components are for UI** - Keep React components focused on rendering, not business logic
+- **Default to framework mode patterns** - Prefer `<Form>`/`useFetcher` + revalidation and avoid SPA-style `useEffect` data loading unless explicitly required
 
 ```typescript
 // Example route with loader (server) and component (client)

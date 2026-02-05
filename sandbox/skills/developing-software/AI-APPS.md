@@ -218,37 +218,40 @@ const { object } = await generateObject({
 
 ## Stateless API Endpoints
 
-For simple one-shot completions without persistence, use Hono directly instead of the Agents SDK:
+For simple one-shot completions without persistence, use a React Router API route with an `action()`:
 
 ```typescript
-// workers/app.ts
+// app/routes/api.complete.ts
+import type { Route } from "./+types/api.complete";
+import { data } from "react-router";
 import { generateText, streamText } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 
-app.post("/api/complete", async (c) => {
-  const { prompt } = await c.req.json();
-  const openrouter = createOpenRouter({ apiKey: c.env.OPENROUTER_API_KEY });
+export async function action({ request, context }: Route.ActionArgs) {
+  const { prompt, stream } = await request.json();
+  const openrouter = createOpenRouter({
+    apiKey: context.cloudflare.env.OPENROUTER_API_KEY,
+  });
+
+  if (stream) {
+    const result = streamText({
+      model: openrouter("openrouter/auto"),
+      prompt,
+    });
+
+    return result.toTextStreamResponse();
+  }
 
   const { text } = await generateText({
     model: openrouter("openrouter/auto"),
     prompt,
   });
 
-  return c.json({ response: text });
-});
+  return data({ response: text });
+}
 
-// Streaming endpoint
-app.post("/api/stream", async (c) => {
-  const { prompt } = await c.req.json();
-  const openrouter = createOpenRouter({ apiKey: c.env.OPENROUTER_API_KEY });
-
-  const result = streamText({
-    model: openrouter("openrouter/auto"),
-    prompt,
-  });
-
-  return result.toTextStreamResponse();
-});
+// app/routes.ts
+// route("api/complete", "routes/api.complete.ts")
 ```
 
 ## When to Use Each Approach
@@ -256,7 +259,7 @@ app.post("/api/stream", async (c) => {
 | Approach | Use When |
 |----------|----------|
 | **Agents SDK** (Chat DO) | Chat apps, persistent conversations, real-time streaming |
-| **Hono endpoints** | Stateless APIs, one-shot completions, webhooks |
+| **React Router API routes** | Stateless APIs, one-shot completions, webhooks |
 
 ## Common Pitfalls
 

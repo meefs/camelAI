@@ -38,8 +38,10 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 
 1. **Frontend** (`src/`)
    - React Router 7 with React 19 SSR
+   - React Router 7 **framework mode** conventions by default (successor to Remix)
    - Imperative route configuration in `src/routes.ts`
    - Loaders/actions for data fetching and mutations
+   - Prefer server-driven data flow (`loader`, `action`, `<Form>`, `useFetcher`) over SPA-style client fetching in `useEffect`
    - WebSocket client for real-time streaming
    - Tailwind CSS v4 + shadcn/ui components
    - Cloudflare Workers SSR via `@cloudflare/vite-plugin`
