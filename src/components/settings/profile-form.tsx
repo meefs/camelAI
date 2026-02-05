@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Form, useActionData, useNavigation } from "react-router"
+import { Form, useActionData, useNavigation, useRevalidator } from "react-router"
 import { useForm, getFormProps, getInputProps, type SubmissionResult } from "@conform-to/react"
 import { parseWithZod } from "@conform-to/zod/v4"
 import { toast } from "sonner"
@@ -10,7 +10,6 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { useAuth } from "@/contexts/AuthContext"
 import { AvatarPicker } from "@/components/settings/avatar-picker"
 import { getContrastTextColor } from "@/lib/avatar"
 import { profileFormSchema } from "@/lib/schemas"
@@ -21,7 +20,7 @@ interface ProfileFormProps {
 }
 
 export function ProfileForm({ user }: ProfileFormProps) {
-  const { refreshAuth } = useAuth()
+  const revalidator = useRevalidator()
   const actionData = useActionData<{ result?: SubmissionResult<string[]>; success?: boolean }>()
   const navigation = useNavigation()
   const [avatarOpen, setAvatarOpen] = useState(false)
@@ -49,9 +48,9 @@ export function ProfileForm({ user }: ProfileFormProps) {
   useEffect(() => {
     if (actionData?.success && navigation.state === "idle") {
       toast.success("Profile updated")
-      refreshAuth()
+      revalidator.revalidate()
     }
-  }, [actionData?.success, navigation.state, refreshAuth])
+  }, [actionData?.success, navigation.state, revalidator])
 
   const nameErrors = fields.name.errors
 

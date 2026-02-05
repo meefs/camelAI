@@ -3,7 +3,7 @@
 import { ExternalLink } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuthData } from '@/hooks/use-auth-data';
 import { cn } from '@/lib/utils';
 import { FilePreviewPopover } from '@/components/chat-file-preview';
 
@@ -64,7 +64,7 @@ export function FileLink({
   className,
   mono = false,
 }: FileLinkProps) {
-  const { currentWorkspace } = useAuth();
+  const { currentWorkspace } = useAuthData();
   const [previewOpen, setPreviewOpen] = useState(false);
   const tempInfo = getTempFileInfo(path);
   const normalizedPath = normalizeWorkspacePath(path);

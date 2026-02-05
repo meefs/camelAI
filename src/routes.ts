@@ -12,7 +12,7 @@ export default [
     route('signup', 'routes/_auth.signup.tsx'),
   ]),
 
-  // Public invitation page (needs AuthProvider for auth state)
+  // Public invitation page (loader fetches optional auth state)
   layout('routes/_invite.tsx', [
     route(
       'invitations/:orgId/:invitationId',
@@ -96,15 +96,11 @@ export default [
   ]),
 
   // Auth API routes
-  route('api/auth/state', 'routes/api/auth.state.ts'),
   route('api/auth/login', 'routes/api/auth.login.ts'),
   route('api/auth/signup', 'routes/api/auth.signup.ts'),
   route('api/auth/logout', 'routes/api/auth.logout.ts'),
   route('api/auth/switch-org', 'routes/api/auth.switch-org.ts'),
   route('api/auth/switch-workspace', 'routes/api/auth.switch-workspace.ts'),
-
-  // Workspace API routes
-  route('api/workspace/warmup', 'routes/api/workspace.warmup.ts'),
 
   // Workspace filesystem API routes
   route('api/workspaces/:id/fs/list', 'routes/api/workspaces.$id.fs.list.ts'),

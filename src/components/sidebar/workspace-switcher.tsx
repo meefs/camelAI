@@ -17,38 +17,16 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { Skeleton } from "@/components/ui/skeleton"
-import { useAuth } from "@/contexts/AuthContext"
+import { useAuthData } from "@/hooks/use-auth-data"
+import { useSwitchWorkspace } from "@/hooks/use-auth-actions"
 import { getContrastTextColor } from "@/lib/avatar"
-
-function WorkspaceSwitcherSkeleton() {
-  return (
-    <SidebarMenu>
-      <SidebarMenuItem>
-        <SidebarMenuButton size="lg" asChild>
-          <div aria-hidden="true" className="flex items-center gap-2">
-            <Skeleton className="h-8 w-8 rounded-full" />
-            <div className="flex-1 space-y-1 group-data-[collapsible=icon]:hidden">
-              <Skeleton className="h-4 w-28" />
-              <Skeleton className="h-3 w-16" />
-            </div>
-            <Skeleton className="h-4 w-4 rounded group-data-[collapsible=icon]:hidden" />
-          </div>
-        </SidebarMenuButton>
-      </SidebarMenuItem>
-    </SidebarMenu>
-  )
-}
 
 export function WorkspaceSwitcher() {
   const { isMobile } = useSidebar()
-  const { currentOrg, currentWorkspace, allWorkspaces, orgs, switchWorkspace, loading } = useAuth()
+  const { currentOrg, currentWorkspace, allWorkspaces, orgs } = useAuthData()
+  const { switchWorkspace } = useSwitchWorkspace()
   const workspaceList = allWorkspaces ?? []
   const orgNameById = new Map(orgs.map((org) => [org.org_id, org.org_name]))
-
-  if (loading && !currentWorkspace) {
-    return <WorkspaceSwitcherSkeleton />
-  }
 
   if (!currentOrg) {
     return null

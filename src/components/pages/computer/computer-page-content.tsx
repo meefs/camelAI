@@ -39,7 +39,7 @@ import {
   X,
 } from 'lucide-react';
 
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuthData } from '@/hooks/use-auth-data';
 import { cn } from '@/lib/utils';
 import type { WorkspaceFileRead, WorkspaceListResponse } from '@/types';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -295,7 +295,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { resolvedTheme } = useTheme();
-  const { user, currentWorkspace, loading: authLoading } = useAuth();
+  const { user, currentWorkspace } = useAuthData();
 
   const apiBase = useMemo(() => `/api/workspaces/${workspaceId}/fs`, [workspaceId]);
   const storageKey = useMemo(() => `workspace:${workspaceId}:ide-state`, [workspaceId]);
@@ -398,17 +398,12 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
     }, 2000);
   }, []);
 
+  // Redirect if viewing a different workspace than current
   useEffect(() => {
-    if (!authLoading && !user) {
-      navigate('/login');
-    }
-  }, [authLoading, user, navigate]);
-
-  useEffect(() => {
-    if (!authLoading && currentWorkspace?.id && currentWorkspace.id !== workspaceId) {
+    if (currentWorkspace?.id && currentWorkspace.id !== workspaceId) {
       navigate(`/computer/${currentWorkspace.id}`);
     }
-  }, [authLoading, currentWorkspace?.id, workspaceId, navigate]);
+  }, [currentWorkspace?.id, workspaceId, navigate]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -693,13 +688,13 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   );
 
   useEffect(() => {
-    if (!authLoading && user) {
+    if (user) {
       loadDirectory(ROOT_PATH);
     }
-  }, [authLoading, user, loadDirectory]);
+  }, [user, loadDirectory]);
 
   useEffect(() => {
-    if (authLoading || !user) return;
+    if (!user) return;
     if (!searchTerm.trim()) return;
     if (searchIndexLoaded || searchLoading) return;
     setSearchLoading(true);
@@ -707,7 +702,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       setSearchLoading(false);
       setSearchIndexLoaded(true);
     });
-  }, [authLoading, loadDirectory, searchIndexLoaded, searchLoading, searchTerm, user]);
+  }, [loadDirectory, searchIndexLoaded, searchLoading, searchTerm, user]);
 
 
   const updateTab = useCallback((path: string, updater: (tab: OpenTab) => OpenTab) => {

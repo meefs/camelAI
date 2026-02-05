@@ -1,8 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useNavigate, Link } from 'react-router';
-import { useAuth } from '@/contexts/AuthContext';
+import { useState, useEffect } from 'react';
+import { useNavigate, Link, useFetcher } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -28,43 +27,47 @@ type SignupFormProps = {
 
 export function SignupForm({ redirectTo }: SignupFormProps) {
   const navigate = useNavigate();
-  const { signup } = useAuth();
+  const fetcher = useFetcher();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const [validationError, setValidationError] = useState('');
+
+  const submitting = fetcher.state !== 'idle';
+  const serverError = fetcher.data?.error as string | undefined;
+  const error = validationError || serverError;
 
   const loginHref =
     redirectTo === '/'
       ? '/login'
       : `/login?redirect=${encodeURIComponent(redirectTo)}`;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // Navigate on successful signup
+  useEffect(() => {
+    if (fetcher.state === 'idle' && fetcher.data && !fetcher.data.error) {
+      navigate(redirectTo);
+    }
+  }, [fetcher.state, fetcher.data, navigate, redirectTo]);
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setValidationError('');
 
     if (password !== confirmPassword) {
-      setError('Passwords do not match');
+      setValidationError('Passwords do not match');
       return;
     }
 
     if (password.length < 8) {
-      setError('Password must be at least 8 characters');
+      setValidationError('Password must be at least 8 characters');
       return;
     }
 
-    setSubmitting(true);
-
-    try {
-      await signup(email, password, name || undefined);
-      navigate(redirectTo);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Signup failed');
-    } finally {
-      setSubmitting(false);
-    }
+    fetcher.submit(
+      JSON.stringify({ email, password, name: name || undefined }),
+      { method: 'post', action: '/api/auth/signup', encType: 'application/json' }
+    );
   };
 
   return (

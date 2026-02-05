@@ -26,7 +26,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { useAuth } from "@/contexts/AuthContext"
+import { useSwitchOrg } from "@/hooks/use-auth-actions"
 import { createOrgFormSchema } from "@/lib/schemas"
 
 interface CreateOrgDialogProps {
@@ -41,7 +41,7 @@ export function CreateOrgDialog({
   switchToNewOrg = true,
 }: CreateOrgDialogProps) {
   const isMobile = useIsMobile()
-  const { refreshAuth, switchOrg } = useAuth()
+  const { switchOrg } = useSwitchOrg()
   const fetcher = useFetcher<{ result?: SubmissionResult<string[]>; success?: boolean; error?: string; orgId?: string }>()
   const saving = fetcher.state !== "idle"
   const processedOrgIdRef = useRef<string | null>(null)
@@ -77,17 +77,16 @@ export function CreateOrgDialog({
 
         toast.success("Organization created")
         onOpenChange(false)
-        // Switch to new org if requested
+        // Switch to new org if requested - React Router will auto-revalidate
         if (switchToNewOrg) {
-          switchOrg(fetcher.data.orgId).catch(() => refreshAuth())
-        } else {
-          refreshAuth()
+          switchOrg(fetcher.data.orgId)
         }
+        // React Router will auto-revalidate after the fetcher action
       } else if (fetcher.data.error) {
         toast.error(fetcher.data.error)
       }
     }
-  }, [fetcher.state, fetcher.data, onOpenChange, switchToNewOrg, switchOrg, refreshAuth])
+  }, [fetcher.state, fetcher.data, onOpenChange, switchToNewOrg, switchOrg])
 
   const formContent = (
     <fetcher.Form method="post" {...getFormProps(form)} className="space-y-4">

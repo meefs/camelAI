@@ -12,7 +12,7 @@ import type {
   WorkerScriptWithCreator,
   Integration,
 } from '@/types';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuthData } from '@/hooks/use-auth-data';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Tooltip,
@@ -333,7 +333,7 @@ export default function Chat({
   const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
   const touchFetcher = useFetcher();
-  const { user, currentWorkspace, currentOrg, orgs, loading: authLoading } = useAuth();
+  const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
   // Anchor to last message for existing threads with messages (not new threads)
   const shouldAnchorToLastMessage = !isNewThread && initialMessages && initialMessages.length > 0;
@@ -566,13 +566,6 @@ export default function Chat({
       console.warn('Failed to persist session state:', e);
     }
   }, [sessionStorageKey]);
-
-  // Redirect to login if not authenticated
-  useEffect(() => {
-    if (!authLoading && !user) {
-      navigate('/login');
-    }
-  }, [authLoading, user, navigate]);
 
   useEffect(() => {
     if (!threadId) {
@@ -2158,7 +2151,6 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             scriptName={deployedApp}
             isPublic={appIsPublic}
             isAdmin={Boolean(isAdmin)}
-            disabled={authLoading}
             onStatusChange={setAppIsPublic}
           />
           <Tooltip>

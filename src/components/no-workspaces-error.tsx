@@ -4,10 +4,10 @@ import { Link } from 'react-router';
 import { CircleAlert, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertTitle } from '@/components/ui/alert';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuthData } from '@/hooks/use-auth-data';
 
 export function NoWorkspacesError() {
-  const { currentOrg, orgs } = useAuth();
+  const { currentOrg, orgs } = useAuthData();
 
   if (!currentOrg) {
     return null;

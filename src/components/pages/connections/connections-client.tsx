@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useFetcher, useRevalidator, useSearchParams } from 'react-router';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuthData } from '@/hooks/use-auth-data';
 
 // Note: Auth is handled by the (app) layout - no need to check here
 import type { Integration } from '@/types';
@@ -66,7 +66,7 @@ export default function ConnectionsClient({
   categories,
   orgId,
 }: ConnectionsClientProps) {
-  const { currentOrg, orgs, loading: authLoading } = useAuth();
+  const { currentOrg, orgs } = useAuthData();
   const revalidator = useRevalidator();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -213,7 +213,7 @@ export default function ConnectionsClient({
     return typeDef?.displayName || connection.integration_type;
   }, [connectionTypes]);
 
-  const isLoading = authLoading || loading;
+  const isLoading = loading;
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
 

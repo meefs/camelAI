@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Form, useActionData, useNavigation } from "react-router"
+import { Form, useActionData, useNavigation, useRevalidator } from "react-router"
 import { useForm, getFormProps, getInputProps, getTextareaProps, type SubmissionResult } from "@conform-to/react"
 import { parseWithZod } from "@conform-to/zod/v4"
 import { toast } from "sonner"
@@ -12,7 +12,6 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { AvatarPicker } from "@/components/settings/avatar-picker"
-import { useAuth } from "@/contexts/AuthContext"
 import { getContrastTextColor } from "@/lib/avatar"
 import { workspaceFormSchema } from "@/lib/schemas"
 import type { Workspace } from "@/types"
@@ -26,7 +25,7 @@ export function WorkspaceGeneralForm({
   workspace,
   canEdit,
 }: WorkspaceGeneralFormProps) {
-  const { refreshAuth } = useAuth()
+  const revalidator = useRevalidator()
   const actionData = useActionData<{ result?: SubmissionResult<string[]>; success?: boolean }>()
   const navigation = useNavigation()
   const [avatarOpen, setAvatarOpen] = useState(false)
@@ -55,9 +54,9 @@ export function WorkspaceGeneralForm({
   useEffect(() => {
     if (actionData?.success && navigation.state === "idle") {
       toast.success("Workspace updated")
-      refreshAuth()
+      revalidator.revalidate()
     }
-  }, [actionData?.success, navigation.state, refreshAuth])
+  }, [actionData?.success, navigation.state, revalidator])
 
   const nameErrors = fields.name.errors
   const descriptionErrors = fields.description.errors

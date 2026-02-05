@@ -2,20 +2,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { FileLink } from '@/components/tool-call/file-link';
 
-const mockUseAuth = vi.fn();
+const mockUseAuthData = vi.fn();
 
-vi.mock('@/contexts/AuthContext', () => ({
-  useAuth: () => mockUseAuth(),
+vi.mock('@/hooks/use-auth-data', () => ({
+  useAuthData: () => mockUseAuthData(),
 }));
 
 describe('FileLink', () => {
   beforeEach(() => {
-    mockUseAuth.mockReset();
+    mockUseAuthData.mockReset();
   });
 
   describe('URL generation regression test', () => {
     it('uses workspaceId, not orgId, in the href', () => {
-      mockUseAuth.mockReturnValue({
+      mockUseAuthData.mockReturnValue({
         currentOrg: { id: 'org-123', name: 'Test Org' },
         currentWorkspace: { id: 'ws-456', name: 'Test Workspace' },
       });
@@ -31,7 +31,7 @@ describe('FileLink', () => {
     });
 
     it('falls back to plain text when no workspace is set', () => {
-      mockUseAuth.mockReturnValue({
+      mockUseAuthData.mockReturnValue({
         currentOrg: { id: 'org-123', name: 'Test Org' },
         currentWorkspace: null,
       });
@@ -45,7 +45,7 @@ describe('FileLink', () => {
 
   describe('path normalization', () => {
     it('strips /home/claude prefix from paths', () => {
-      mockUseAuth.mockReturnValue({
+      mockUseAuthData.mockReturnValue({
         currentWorkspace: { id: 'ws-456' },
       });
 
@@ -60,7 +60,7 @@ describe('FileLink', () => {
     });
 
     it('strips /workspace prefix from paths', () => {
-      mockUseAuth.mockReturnValue({
+      mockUseAuthData.mockReturnValue({
         currentWorkspace: { id: 'ws-456' },
       });
 
@@ -73,7 +73,7 @@ describe('FileLink', () => {
 
   describe('link behavior', () => {
     it('opens in new tab with security attributes', () => {
-      mockUseAuth.mockReturnValue({
+      mockUseAuthData.mockReturnValue({
         currentWorkspace: { id: 'ws-456' },
       });
 
@@ -85,7 +85,7 @@ describe('FileLink', () => {
     });
 
     it('encodes special characters in file paths', () => {
-      mockUseAuth.mockReturnValue({
+      mockUseAuthData.mockReturnValue({
         currentWorkspace: { id: 'ws-456' },
       });
 

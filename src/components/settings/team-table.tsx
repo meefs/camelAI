@@ -6,7 +6,7 @@ import {
   MoreHorizontal,
   Plus,
 } from "lucide-react"
-import { useNavigate, useFetcher } from 'react-router';
+import { useFetcher } from 'react-router';
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -38,7 +38,7 @@ import {
   CardHeader,
 } from "@/components/ui/card"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
-import { useAuth } from "@/contexts/AuthContext"
+import { useLogout } from "@/hooks/use-auth-actions"
 import { InviteMemberDialog } from "@/components/settings/invite-member-dialog"
 import { WorkspaceAccessTags } from "@/components/settings/workspace-access-tags"
 import { getContrastTextColor } from "@/lib/avatar"
@@ -87,8 +87,7 @@ export function TeamTable({
   invitations,
   workspaces,
 }: TeamTableProps) {
-  const navigate = useNavigate()
-  const { logout } = useAuth()
+  const { logout } = useLogout()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [inviteOpen, setInviteOpen] = useState(false)
   const [editingWorkspaceAccess, setEditingWorkspaceAccess] = useState(false)
@@ -108,7 +107,8 @@ export function TeamTable({
         } else if (action === "removeMember") {
           toast.success("Member removed")
         } else if (action === "leaveOrg") {
-          logout().then(() => navigate("/login"))
+          // useLogout hook handles navigation to /login automatically
+          logout()
         }
         lastActionRef.current = null
       } else if (fetcher.data.error) {
@@ -116,7 +116,7 @@ export function TeamTable({
         lastActionRef.current = null
       }
     }
-  }, [fetcher.state, fetcher.data, logout, navigate])
+  }, [fetcher.state, fetcher.data, logout])
 
   // Use loader data directly - revalidation handles refresh
   const rows = useMemo<TeamTableRow[]>(() => {

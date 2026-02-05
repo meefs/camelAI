@@ -4,7 +4,7 @@ import type { ReactNode } from "react"
 import { useEffect, useRef } from "react"
 import { useRevalidator } from 'react-router';
 
-import { useAuth } from "@/contexts/AuthContext"
+import { useAuthData } from "@/hooks/use-auth-data"
 
 interface SettingsRefreshWrapperProps {
   children: ReactNode
@@ -12,7 +12,7 @@ interface SettingsRefreshWrapperProps {
 
 export function SettingsRefreshWrapper({ children }: SettingsRefreshWrapperProps) {
   const revalidator = useRevalidator()
-  const { currentOrg, currentWorkspace } = useAuth()
+  const { currentOrg, currentWorkspace } = useAuthData()
   const prevOrgRef = useRef<string | undefined>(currentOrg?.id)
   const prevWorkspaceRef = useRef<string | undefined>(currentWorkspace?.id)
 

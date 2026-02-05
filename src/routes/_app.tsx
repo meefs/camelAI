@@ -1,10 +1,12 @@
 import { Outlet, useLoaderData } from 'react-router';
+import { waitUntil } from 'cloudflare:workers';
 import type { Route } from './+types/_app';
 import { requireAuthContext } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import { parseCookies } from '@/lib/cookies.server';
 import { AppSidebar } from '@/components/sidebar/app-sidebar';
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
-import { AuthProvider } from '@/contexts/AuthContext';
+import { getWorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 import type { AuthState } from '@/types';
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state';
@@ -19,6 +21,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   let defaultSidebarOpen = true;
   if (sidebarValue === 'false') {
     defaultSidebarOpen = false;
+  }
+
+  // Trigger container warmup in background (fire-and-forget)
+  if (authContext.currentWorkspace) {
+    const env = getEnv(context);
+    const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, authContext.currentWorkspace.id);
+    waitUntil(
+      container
+        .startForWorkspace(authContext.currentWorkspace.id, authContext.currentOrg.id)
+        .catch((err) => console.error('[warmup] Container start failed:', err))
+    );
   }
 
   // Convert auth context to AuthState for the provider
@@ -40,16 +53,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function AppLayout() {
-  const { authState, defaultSidebarOpen } = useLoaderData<typeof loader>();
+  const { defaultSidebarOpen } = useLoaderData<typeof loader>();
 
   return (
-    <AuthProvider initialState={authState}>
-      <SidebarProvider defaultOpen={defaultSidebarOpen}>
-        <AppSidebar />
-        <SidebarInset className="h-svh overflow-hidden flex flex-col">
-          <Outlet />
-        </SidebarInset>
-      </SidebarProvider>
-    </AuthProvider>
+    <SidebarProvider defaultOpen={defaultSidebarOpen}>
+      <AppSidebar />
+      <SidebarInset className="h-svh overflow-hidden flex flex-col">
+        <Outlet />
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

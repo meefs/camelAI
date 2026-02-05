@@ -1,8 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useNavigate, Link } from 'react-router';
-import { useAuth } from '@/contexts/AuthContext';
+import { useState, useEffect } from 'react';
+import { useNavigate, Link, useFetcher } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -28,30 +27,32 @@ type LoginFormProps = {
 
 export function LoginForm({ redirectTo }: LoginFormProps) {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const fetcher = useFetcher();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+
+  const submitting = fetcher.state !== 'idle';
+  const error = fetcher.data?.error as string | undefined;
 
   const signupHref =
     redirectTo === '/'
       ? '/signup'
       : `/signup?redirect=${encodeURIComponent(redirectTo)}`;
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setSubmitting(true);
-
-    try {
-      await login(email, password);
+  // Navigate on successful login
+  useEffect(() => {
+    if (fetcher.state === 'idle' && fetcher.data && !fetcher.data.error) {
       navigate(redirectTo);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
-    } finally {
-      setSubmitting(false);
     }
+  }, [fetcher.state, fetcher.data, navigate, redirectTo]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    fetcher.submit(JSON.stringify({ email, password }), {
+      method: 'post',
+      action: '/api/auth/login',
+      encType: 'application/json',
+    });
   };
 
   return (

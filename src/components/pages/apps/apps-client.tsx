@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFetcher, useSearchParams, useRevalidator, useNavigate } from 'react-router';
 import { toast } from 'sonner';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuthData } from '@/hooks/use-auth-data';
+import { useSwitchWorkspace } from '@/hooks/use-auth-actions';
 import type { WorkspaceWithAccess, WorkerScriptWithCreator } from '@/types';
 import { getAppUrl } from '@/lib/app-url';
 import { PageHeader } from '@/components/page-header';
@@ -35,9 +36,8 @@ export default function AppsClient({
     currentWorkspace,
     orgs,
     workspaces,
-    loading: authLoading,
-    switchWorkspace,
-  } = useAuth();
+  } = useAuthData();
+  const { switchWorkspace } = useSwitchWorkspace();
 
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -99,7 +99,7 @@ export default function AppsClient({
     }
   }, [chatFetcher.state, chatFetcher.data, navigate, hostname]);
 
-  const loading = authLoading || revalidator.state === 'loading';
+  const loading = revalidator.state === 'loading';
   const apps = initialApps;
 
   const handleOpenSettings = (app: WorkerScriptWithCreator) => {

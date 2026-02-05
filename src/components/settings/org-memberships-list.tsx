@@ -28,7 +28,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { useAuth } from "@/contexts/AuthContext"
+import { useAuthData } from "@/hooks/use-auth-data"
+import { useSwitchOrg } from "@/hooks/use-auth-actions"
 import { CreateOrgDialog } from "@/components/settings/create-org-dialog"
 import type { BillingStatus, OrgRole } from "@/types"
 
@@ -55,36 +56,31 @@ export function OrgMembershipsList({
   orgs,
   currentUserId,
 }: OrgMembershipsListProps) {
-  const { currentOrg, switchOrg, refreshAuth } = useAuth()
+  const { currentOrg } = useAuthData()
+  const { switchOrg } = useSwitchOrg()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [createOpen, setCreateOpen] = useState(false)
   const [leaveTargetId, setLeaveTargetId] = useState<string | null>(null)
   const pendingLeaveRef = useRef<string | null>(null)
 
   // Handle fetcher response for leave
+  // React Router auto-revalidates loaders after fetcher actions complete
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data) {
       if (fetcher.data.success && pendingLeaveRef.current) {
         pendingLeaveRef.current = null
         setLeaveTargetId(null)
         toast.success("Left organization")
-        refreshAuth()
       } else if (fetcher.data.error) {
         pendingLeaveRef.current = null
         toast.error(fetcher.data.error)
       }
     }
-  }, [fetcher.state, fetcher.data, refreshAuth])
+  }, [fetcher.state, fetcher.data])
 
-  const handleSwitchOrg = async (orgId: string) => {
-    try {
-      await switchOrg(orgId)
-      toast.success("Switched organization")
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to switch organization"
-      )
-    }
+  const handleSwitchOrg = (orgId: string) => {
+    switchOrg(orgId)
+    toast.success("Switched organization")
   }
 
   const handleLeaveOrg = (orgId: string) => {

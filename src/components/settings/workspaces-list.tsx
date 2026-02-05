@@ -31,7 +31,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { CreateWorkspaceDialog } from "@/components/settings/create-workspace-dialog"
-import { useAuth } from "@/contexts/AuthContext"
+import { useSwitchWorkspace } from "@/hooks/use-auth-actions"
 import { getContrastTextColor } from "@/lib/avatar"
 
 type ComputeTier = "standard" | "pro" | "enterprise"
@@ -72,7 +72,7 @@ export function WorkspacesList({
   canManage,
   currentWorkspaceId,
 }: WorkspacesListProps) {
-  const { refreshAuth, switchWorkspace } = useAuth()
+  const { switchWorkspace } = useSwitchWorkspace()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
   const [createOpen, setCreateOpen] = useState(false)
   const [archiveTarget, setArchiveTarget] = useState<WorkspaceSummary | null>(null)
@@ -90,27 +90,20 @@ export function WorkspacesList({
         if (archivedId === currentWorkspaceId) {
           const fallback = workspaces.find((ws) => ws.id !== archivedId)
           if (fallback) {
-            switchWorkspace(fallback.id).catch(() => refreshAuth())
-          } else {
-            refreshAuth()
+            switchWorkspace(fallback.id)
           }
+          // React Router will auto-revalidate after the fetcher action
         }
       } else if (fetcher.data.error) {
         pendingArchiveRef.current = null
         toast.error(fetcher.data.error)
       }
     }
-  }, [fetcher.state, fetcher.data, currentWorkspaceId, workspaces, switchWorkspace, refreshAuth])
+  }, [fetcher.state, fetcher.data, currentWorkspaceId, workspaces, switchWorkspace])
 
-  const handleSwitch = async (workspaceId: string) => {
-    try {
-      await switchWorkspace(workspaceId)
-      toast.success("Switched workspace")
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to switch workspace"
-      )
-    }
+  const handleSwitch = (workspaceId: string) => {
+    switchWorkspace(workspaceId)
+    toast.success("Switching workspace...")
   }
 
   const handleArchive = (workspaceId: string) => {

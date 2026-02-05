@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect } from "react"
-import { Form, useActionData, useNavigation } from "react-router"
+import { Form, useActionData, useNavigation, useRevalidator } from "react-router"
 import { useForm, getFormProps, getInputProps, type SubmissionResult } from "@conform-to/react"
 import { parseWithZod } from "@conform-to/zod/v4"
 import { toast } from "sonner"
@@ -9,7 +9,6 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { useAuth } from "@/contexts/AuthContext"
 import { orgNameFormSchema } from "@/lib/schemas"
 import type { Organization } from "@/types"
 
@@ -19,7 +18,7 @@ interface OrgGeneralFormProps {
 }
 
 export function OrgGeneralForm({ org, canEdit }: OrgGeneralFormProps) {
-  const { refreshAuth } = useAuth()
+  const revalidator = useRevalidator()
   const actionData = useActionData<{ result?: SubmissionResult<string[]>; success?: boolean }>()
   const navigation = useNavigation()
   const saving = navigation.state === "submitting"
@@ -40,9 +39,9 @@ export function OrgGeneralForm({ org, canEdit }: OrgGeneralFormProps) {
   useEffect(() => {
     if (actionData?.success && navigation.state === "idle") {
       toast.success("Organization updated")
-      refreshAuth()
+      revalidator.revalidate()
     }
-  }, [actionData?.success, navigation.state, refreshAuth])
+  }, [actionData?.success, navigation.state, revalidator])
 
   const nameErrors = fields.name.errors
 

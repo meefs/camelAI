@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams, useNavigate } from 'react-router';
+import { Link, useParams, useNavigate, useRouteLoaderData } from 'react-router';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -13,8 +13,7 @@ import {
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { LogoIcon } from '@/components/ui/logo';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useAuth } from '@/contexts/AuthContext';
-import type { OrgRole } from '@/types';
+import type { OrgRole, User } from '@/types';
 import { Loader2 } from 'lucide-react';
 
 export function meta() {
@@ -51,7 +50,8 @@ function buildLoginHref(orgId?: string, invitationId?: string) {
 export default function InvitationPage() {
   const params = useParams();
   const navigate = useNavigate();
-  const { user, loading: authLoading } = useAuth();
+  const inviteData = useRouteLoaderData('_invite') as { user: User | null } | undefined;
+  const user = inviteData?.user ?? null;
   const orgId = params.orgId;
   const invitationId = params.invitationId;
 
@@ -115,11 +115,11 @@ export default function InvitationPage() {
   }, [orgId, invitationId]);
 
   useEffect(() => {
-    if (status !== 'ready' || !invitation || authLoading || !user) return;
+    if (status !== 'ready' || !invitation || !user) return;
     if (user.email.toLowerCase() !== invitation.email.toLowerCase()) {
       setStatus('error');
     }
-  }, [status, invitation, authLoading, user]);
+  }, [status, invitation, user]);
 
   useEffect(() => {
     if (status !== 'success') return;
@@ -263,12 +263,7 @@ export default function InvitationPage() {
                 </div>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
-                {authLoading ? (
-                  <>
-                    <Skeleton className="h-10 w-full" />
-                    <Skeleton className="h-10 w-full" />
-                  </>
-                ) : user ? (
+                {user ? (
                   <>
                     <Button
                       onClick={handleAccept}

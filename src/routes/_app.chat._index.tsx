@@ -9,7 +9,7 @@ import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { Integration, WorkerScriptWithCreator } from '@/types';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuthData } from '@/hooks/use-auth-data';
 
 export function meta() {
   return [
@@ -157,7 +157,7 @@ export default function NewChatPage() {
     connections,
     renderedAt,
   } = useLoaderData<typeof loader>();
-  const { currentWorkspace } = useAuth();
+  const { currentWorkspace } = useAuthData();
   const revalidator = useRevalidator();
   const prevWorkspaceRef = useRef(currentWorkspace?.id);
 

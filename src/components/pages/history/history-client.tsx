@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams, useRevalidator, useFetcher } from 'react-router';
 import type { Thread, WorkspaceWithAccess } from '@/types';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuthData } from '@/hooks/use-auth-data';
+import { useSwitchWorkspace } from '@/hooks/use-auth-actions';
 import { PageHeader } from '@/components/page-header';
 import { ChatsToolbar } from '@/components/history/chats-toolbar';
 import { ChatsList } from '@/components/history/chats-list';
@@ -35,9 +36,8 @@ export default function HistoryClient({
     currentOrg,
     currentWorkspace,
     workspaces,
-    switchWorkspace,
-    loading: authLoading,
-  } = useAuth();
+  } = useAuthData();
+  const { switchWorkspace } = useSwitchWorkspace();
 
   const filter = (searchParams.get('filter') as 'this-workspace' | 'all-workspaces') || 'this-workspace';
   const threads = initialThreads;
@@ -254,7 +254,7 @@ export default function HistoryClient({
           {/* Scrollable List */}
           <ChatsList
             threads={filteredThreads}
-            loading={authLoading || loading}
+            loading={loading}
             isSelecting={isSelecting}
             selectedIds={selectedIds}
             onToggleSelect={handleToggleSelect}

@@ -1,6 +1,6 @@
 "use client"
 
-import { Link, useNavigate } from "react-router"
+import { Link } from "react-router"
 import { ChevronsUpDown, LogOut, Settings } from "lucide-react"
 
 import {
@@ -21,8 +21,8 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { Skeleton } from "@/components/ui/skeleton"
-import { useAuth } from "@/contexts/AuthContext"
+import { useAuthData } from "@/hooks/use-auth-data"
+import { useLogout } from "@/hooks/use-auth-actions"
 import { getContrastTextColor } from "@/lib/avatar"
 
 function getInitials(name: string | null, email: string): string {
@@ -36,38 +36,10 @@ function getInitials(name: string | null, email: string): string {
   return email.slice(0, 2).toUpperCase()
 }
 
-function NavUserSkeleton() {
-  return (
-    <SidebarMenu>
-      <SidebarMenuItem>
-        <SidebarMenuButton size="lg" asChild>
-          <div aria-hidden="true" className="flex items-center gap-2">
-            <Skeleton className="h-8 w-8 rounded-full" />
-            <div className="flex-1 space-y-1 group-data-[collapsible=icon]:hidden">
-              <Skeleton className="h-4 w-24" />
-              <Skeleton className="h-3 w-32" />
-            </div>
-            <Skeleton className="h-4 w-4 rounded group-data-[collapsible=icon]:hidden" />
-          </div>
-        </SidebarMenuButton>
-      </SidebarMenuItem>
-    </SidebarMenu>
-  )
-}
-
 export function NavUser() {
-  const navigate = useNavigate()
   const { isMobile } = useSidebar()
-  const { user, logout, loading } = useAuth()
-
-  const handleLogout = async () => {
-    await logout()
-    navigate('/login')
-  }
-
-  if (loading && !user) {
-    return <NavUserSkeleton />
-  }
+  const { user } = useAuthData()
+  const { logout } = useLogout()
 
   if (!user) {
     return null
@@ -132,7 +104,7 @@ export function NavUser() {
                 Settings
               </Link>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleLogout}>
+            <DropdownMenuItem onClick={logout}>
               <LogOut />
               Log out
             </DropdownMenuItem>

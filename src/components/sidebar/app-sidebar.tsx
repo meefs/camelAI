@@ -3,7 +3,7 @@
 import { AppWindowMac, Cable, Home, LayoutGrid, MessagesSquare } from "lucide-react"
 import { Link, useLocation } from "react-router"
 
-import { useAuth } from "@/contexts/AuthContext"
+import { useAuthData } from "@/hooks/use-auth-data"
 import { NavUser } from "@/components/sidebar/nav-user"
 import { WorkspaceSwitcher } from "@/components/sidebar/workspace-switcher"
 import {
@@ -22,7 +22,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
 
 export function AppSidebar(props: AppSidebarProps) {
   const { pathname } = useLocation()
-  const { currentWorkspace } = useAuth()
+  const { currentWorkspace } = useAuthData()
   const isHome = pathname === "/"
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"

@@ -207,11 +207,11 @@ JuiceFS provides a FUSE-based distributed filesystem with SQLite metadata and R2
 4. Data is stored in R2 at `{bucket}/chiridion-{org}-{workspace}/`
 5. Background metadata upload loop runs every 60s
 
-### Async Workspace Warmup
-To reduce perceived latency from JuiceFS mount:
-1. `useAutoWarmup(workspaceId)` hook fires on workspace change
-2. Calls `POST /api/workspace/warmup` (fire-and-forget)
-3. Backend checks container state - returns `warm` or starts in background
+### Workspace Container Warmup
+To reduce perceived latency from JuiceFS mount, container warmup happens server-side:
+1. `_app.tsx` loader triggers `container.startForWorkspace()` via `waitUntil`
+2. Container starts in background while page renders
+3. By the time user opens chat, container is often already warm
 
 ### Threads
 - Each thread belongs to a workspace
@@ -242,7 +242,6 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 ### Auth Routes
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/api/auth/state` | GET | Get current auth state |
 | `/api/auth/login` | POST | Login with email/password |
 | `/api/auth/signup` | POST | Create new account |
 | `/api/auth/logout` | POST | Clear session |
@@ -264,7 +263,6 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 ### Workspace Routes
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/api/workspace/warmup` | POST | Pre-warm workspace container |
 | `/api/workspaces/:id/fs/list` | GET | List directory contents |
 | `/api/workspaces/:id/fs/read` | GET | Read file contents |
 | `/api/workspaces/:id/fs/write` | POST | Write text file |

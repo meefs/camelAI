@@ -12,7 +12,7 @@ import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ThinkingBlock, ToolCall } from '@/components/tool-call';
 import { LoadingDots } from '@/components/loading-dots';
 import type { ReactNode } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
 import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
 
@@ -340,7 +340,7 @@ export function MessageBubble({
     return null;
   }
 
-  const { currentWorkspace } = useAuth();
+  const { currentWorkspace } = useAuthData();
   const isCopied = copiedId === message.id;
   const isStreaming = message.isStreaming ?? false;
   const hasContent = typeof message.content === 'string'

@@ -1,7 +1,6 @@
 import { Outlet, redirect } from 'react-router';
 import type { Route } from './+types/_auth';
 import { getSession } from '@/lib/auth.server';
-import { AuthProvider } from '@/contexts/AuthContext';
 
 /**
  * Auth layout for public routes (login, signup).
@@ -20,12 +19,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function AuthLayout() {
-  // Provide minimal AuthProvider for login/signup pages (no initial auth state)
-  return (
-    <AuthProvider>
-      <Outlet />
-    </AuthProvider>
-  );
+  return <Outlet />;
 }
 
 /**
