@@ -11,7 +11,7 @@
 		"@babel/runtime-corejs3": "npm:@babel/runtime@^7.26.0"
 	},
 	"scripts": {
-		"build": "[ -f /app/vite-build.mjs ] && node /app/vite-build.mjs || react-router build",
+		"build": "node /app/vite-build.mjs",
 		"cf-typegen": "wrangler types",
 		"deploy": "yarn build && wrangler deploy --dispatch-namespace chiridion",
 		"dev": "react-router dev",

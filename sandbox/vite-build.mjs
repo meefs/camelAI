@@ -2,25 +2,28 @@
 /**
  * Vite Build Client
  *
- * Usage: yarn node /app/vite-build.mjs [--warmup]
+ * Usage: yarn node /app/vite-build.mjs [--warmup] [--no-snapshot]
  *
  * - Starts daemon if not running (or wrong project)
  * - Only one daemon at a time
  * - Falls back to regular build if daemon fails
+ * - Creates instant JuiceFS snapshot after successful build
  */
 
 import { connect } from 'net';
-import { resolve } from 'path';
+import { resolve, basename } from 'path';
 import { spawn, execSync } from 'child_process';
-import { existsSync, readFileSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync, mkdirSync, readdirSync, statSync, rmSync } from 'fs';
 
 const SOCKET = '/tmp/vite-build.sock';
 const STATE = '/tmp/vite-build.state';
 const DAEMON_TIMEOUT = 30_000; // 30s to start daemon
 const BUILD_TIMEOUT = 200_000; // 3+ minutes for build
+const MAX_SNAPSHOTS = 50; // Keep last N snapshots (CoW = metadata only, very cheap)
 
 const projectPath = resolve(process.cwd());
 const warmupOnly = process.argv.includes('--warmup');
+const noSnapshot = process.argv.includes('--no-snapshot');
 
 // Check if daemon is running for our project
 function getDaemonState() {
@@ -128,6 +131,56 @@ function fallbackBuild() {
   }
 }
 
+// Create instant JuiceFS snapshot of the project
+function createSnapshot() {
+  if (noSnapshot) return;
+
+  const projectName = basename(projectPath);
+  const snapshotDir = resolve(projectPath, '.chiridion', 'snapshots', projectName);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const snapshotPath = resolve(snapshotDir, timestamp);
+
+  try {
+    // Ensure snapshot directory exists
+    mkdirSync(snapshotDir, { recursive: true });
+
+    // Create instant copy-on-write snapshot using juicefs clone
+    console.log(`[build] Creating snapshot...`);
+    execSync(`juicefs clone "${projectPath}" "${snapshotPath}"`, {
+      stdio: 'pipe',
+      timeout: 10_000, // 10s timeout (should be instant)
+    });
+    console.log(`[build] ✓ Snapshot: ${timestamp}`);
+
+    // Clean up old snapshots (keep only MAX_SNAPSHOTS)
+    cleanupOldSnapshots(snapshotDir);
+  } catch (err) {
+    // Snapshot failure is non-fatal
+    console.log(`[build] Snapshot failed: ${err.message}`);
+  }
+}
+
+// Remove old snapshots, keeping only the most recent MAX_SNAPSHOTS
+function cleanupOldSnapshots(snapshotDir) {
+  try {
+    const entries = readdirSync(snapshotDir)
+      .map(name => ({
+        name,
+        path: resolve(snapshotDir, name),
+        mtime: statSync(resolve(snapshotDir, name)).mtime.getTime(),
+      }))
+      .sort((a, b) => b.mtime - a.mtime); // newest first
+
+    // Remove oldest snapshots beyond limit
+    for (const entry of entries.slice(MAX_SNAPSHOTS)) {
+      rmSync(entry.path, { recursive: true, force: true });
+      console.log(`[build] Removed old snapshot: ${entry.name}`);
+    }
+  } catch {
+    // Cleanup failure is non-fatal
+  }
+}
+
 async function main() {
   const state = getDaemonState();
 
@@ -144,7 +197,10 @@ async function main() {
     const started = await startDaemon();
     if (!started) {
       console.log('[build] Daemon failed to start');
-      if (!warmupOnly) fallbackBuild();
+      if (!warmupOnly) {
+        fallbackBuild();
+        createSnapshot();
+      }
       return;
     }
   }
@@ -158,14 +214,21 @@ async function main() {
         console.log(`[build] Daemon warm for ${result.projectPath}`);
       } else {
         console.log(`[build] ✓ Built in ${(result.duration / 1000).toFixed(1)}s`);
+        createSnapshot();
       }
     } else {
       console.log(`[build] Daemon error: ${result.error}`);
-      if (!warmupOnly) fallbackBuild();
+      if (!warmupOnly) {
+        fallbackBuild();
+        createSnapshot();
+      }
     }
   } catch (err) {
     console.log(`[build] Error: ${err.message}`);
-    if (!warmupOnly) fallbackBuild();
+    if (!warmupOnly) {
+      fallbackBuild();
+      createSnapshot();
+    }
   }
 }
 
