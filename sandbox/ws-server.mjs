@@ -293,17 +293,75 @@ async function runStartupDiagnostics() {
   return startupDiagnosticsPromise;
 }
 
+function serializeError(error) {
+  if (!error || typeof error !== 'object') {
+    return { message: String(error) };
+  }
+  return {
+    name: error.name || null,
+    message: error.message || String(error),
+    code: error.code || null,
+    errno: error.errno ?? null,
+    syscall: error.syscall || null,
+    path: error.path || null,
+    stack: error.stack || null,
+  };
+}
+
+async function inspectPath(path) {
+  try {
+    const info = await stat(path);
+    return {
+      exists: true,
+      isFile: info.isFile(),
+      isDirectory: info.isDirectory(),
+      size: info.size,
+      mode: info.mode,
+    };
+  } catch (error) {
+    return {
+      exists: false,
+      error: serializeError(error),
+    };
+  }
+}
+
 async function writeTrace(threadId, entry) {
   if (!TRACE_EVENTS) return;
+  const safeThread = sanitizeFileSegment(threadId);
+  const tracePath = `${TRACE_DIR}/${safeThread}.ndjson`;
+  const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
+  let writePhase = 'thread';
   try {
     await ensureTraceDir();
-    const safeThread = sanitizeFileSegment(threadId);
-    const tracePath = `${TRACE_DIR}/${safeThread}.ndjson`;
-    const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
     await appendFile(tracePath, line);
+    writePhase = 'all';
     await appendFile(TRACE_ALL_FILE, line);
   } catch (error) {
-    logError('[ws-server]', 'Trace write failed:', error?.message || String(error));
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    const gid = typeof process.getgid === 'function' ? process.getgid() : null;
+    const [traceDirState, traceFileState, traceAllState] = await Promise.all([
+      inspectPath(TRACE_DIR),
+      inspectPath(tracePath),
+      inspectPath(TRACE_ALL_FILE),
+    ]);
+    logError('[ws-server]', 'trace_write_failed', {
+      writePhase,
+      threadId: threadId || null,
+      entryType: entry?.type || null,
+      lineBytes: Buffer.byteLength(line, 'utf8'),
+      tracePath,
+      traceAllPath: TRACE_ALL_FILE,
+      cwd: process.cwd(),
+      home: typeof os.homedir === 'function' ? os.homedir() : process.env.HOME || null,
+      user: process.env.USER || null,
+      uid,
+      gid,
+      error: serializeError(error),
+      traceDirState,
+      traceFileState,
+      traceAllState,
+    });
   }
 }
 
