@@ -358,8 +358,8 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 |----------|-------------|
 | `JUICEFS_META_DIR` | Directory for JuiceFS SQLite metadata (default: `/var/lib/juicefs`) |
 | `JUICEFS_CACHE_DIR` | Directory for JuiceFS FUSE cache (default: `/tmp/juicefs-cache`) |
-| `JUICEFS_UPLOAD_DELAY` | Delay before uploading dirty data to R2 (default: `60s`) |
-| `JUICEFS_BUFFER_SIZE` | Read/write buffer size in MB (default: `1024`) |
+| `JUICEFS_UPLOAD_DELAY` | Delay before uploading dirty data to R2 (default: `5s`) |
+| `JUICEFS_BUFFER_SIZE` | Read/write buffer size in MB (default: `2048`) |
 | `JUICEFS_CACHE_SIZE` | Max local cache size in MB (default: `4096` = 4GB, container has 8GB disk) |
 | `DISABLE_JUICEFS` | Set to `1` to skip JuiceFS mount |
 

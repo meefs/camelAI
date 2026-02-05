@@ -23,8 +23,8 @@ TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
 JUICEFS_META_DIR="${JUICEFS_META_DIR:-/var/lib/juicefs}"
 JUICEFS_CACHE_DIR="${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}"
 JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-5s}"
-JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-1024}"
-JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-2048}"  # 2GB max cache
+JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-2048}"
+JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-4096}"  # 4GB max cache
 
 # Track PIDs for cleanup
 WS_PID=""
@@ -889,6 +889,8 @@ echo "[entrypoint] Setting up golden template..." >&2
   SOURCE_TEMPLATE="/app/skills/developing-software/templates/${TEMPLATE_NAME}"
   GOLDEN_DIR="${TARGET_DIR}/.chiridion/templates"
   GOLDEN_TEMPLATE="${GOLDEN_DIR}/${TEMPLATE_NAME}"
+  LOCK_FILE="${GOLDEN_DIR}/.${TEMPLATE_NAME}.lock"
+  READY_FILE="${GOLDEN_TEMPLATE}/.chiridion-ready"
 
   # Check source exists (can do as root since it's local fs)
   if [ ! -d "$SOURCE_TEMPLATE" ]; then
@@ -899,16 +901,28 @@ echo "[entrypoint] Setting up golden template..." >&2
   echo "[golden-template] Source: ${SOURCE_TEMPLATE} ($(find "${SOURCE_TEMPLATE}" -type f | wc -l) files)" >&2
   echo "[golden-template] Dest: ${GOLDEN_TEMPLATE}" >&2
 
+  # Create lock and clear stale readiness marker before mutating template.
+  if ! su -s /bin/sh claude -c "
+    set -e
+    mkdir -p '$GOLDEN_DIR'
+    touch '$LOCK_FILE'
+    rm -f '$READY_FILE'
+  " 2>&1; then
+    echo "[golden-template] Failed to set lock file (non-critical)" >&2
+    exit 1
+  fi
+
   # Sync, warm cache, and install as claude user
   echo "[golden-template] Starting sync, warmup, and install..." >&2
   SYNC_START="$(date +%s)"
   if su -s /bin/sh claude -c "
     set -e
-    mkdir -p '$GOLDEN_DIR'
     juicefs sync '${SOURCE_TEMPLATE}/' '$GOLDEN_TEMPLATE/' --update
-    juicefs warmup '$GOLDEN_TEMPLATE' -p 100
+    # Warmup is best-effort; install/readiness should proceed even if warmup has partial failures.
+    juicefs warmup '$GOLDEN_TEMPLATE' -p 100 || echo '[golden-template] WARNING: warmup failed, continuing with install' >&2
     cd '$GOLDEN_TEMPLATE'
     yarn install
+    touch '$READY_FILE'
   " 2>&1; then
     SYNC_END="$(date +%s)"
     echo "[golden-template] Ready (took $((SYNC_END - SYNC_START))s)" >&2
@@ -916,6 +930,9 @@ echo "[entrypoint] Setting up golden template..." >&2
     SYNC_END="$(date +%s)"
     echo "[golden-template] Failed after $((SYNC_END - SYNC_START))s (non-critical)" >&2
   fi
+
+  # Always remove lock so create-worker can proceed or fail-fast on readiness.
+  su -s /bin/sh claude -c "rm -f '$LOCK_FILE'" 2>/dev/null || true
 ) &
 
 # Start session indexer loop (indexes Claude session files every 60s for memory search)
