@@ -899,23 +899,19 @@ echo "[entrypoint] Setting up golden template..." >&2
   echo "[golden-template] Source: ${SOURCE_TEMPLATE} ($(find "${SOURCE_TEMPLATE}" -type f | wc -l) files)" >&2
   echo "[golden-template] Dest: ${GOLDEN_TEMPLATE}" >&2
 
-  # Sync and install as claude user
-  echo "[golden-template] Starting sync and install..." >&2
+  # Sync, warm cache, and install as claude user
+  echo "[golden-template] Starting sync, warmup, and install..." >&2
   SYNC_START="$(date +%s)"
   if su -s /bin/sh claude -c "
     set -e
     mkdir -p '$GOLDEN_DIR'
     juicefs sync '${SOURCE_TEMPLATE}/' '$GOLDEN_TEMPLATE/' --update
+    juicefs warmup '$GOLDEN_TEMPLATE' -p 100
     cd '$GOLDEN_TEMPLATE'
     yarn install
   " 2>&1; then
     SYNC_END="$(date +%s)"
     echo "[golden-template] Ready (took $((SYNC_END - SYNC_START))s)" >&2
-    # Warm JuiceFS cache in background - since clone shares blocks, this warms cache for all cloned projects
-    echo "[golden-template] Starting cache warmup (100 threads)..." >&2
-    (su -s /bin/sh claude -c "juicefs warmup '$GOLDEN_TEMPLATE' -p 100" 2>&1 | while read -r line; do echo "[warmup] $line" >&2; done) &
-    WARMUP_PID=$!
-    echo "[golden-template] Cache warmup started (PID: $WARMUP_PID)" >&2
   else
     SYNC_END="$(date +%s)"
     echo "[golden-template] Failed after $((SYNC_END - SYNC_START))s (non-critical)" >&2
