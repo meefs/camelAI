@@ -7,6 +7,10 @@ import type { User } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
 import { getUserOrgs, listUserWorkspaces, listUserWorkspacesAcrossOrgs, isOrgAdmin, getWorkspaceAccess } from './auth-do';
 
+// Request-scoped cache for auth context to avoid duplicate DO RPC calls
+// when multiple loaders call requireAuthContext() in the same request
+const authContextCache = new WeakMap<Request, Promise<AuthContext | null>>();
+
 // Re-export AuthEnv and getAuthEnv for routes that need them
 export { getAuthEnv, type AuthEnv } from './auth-helpers';
 
@@ -106,9 +110,30 @@ export async function requireUserContext(
 }
 
 /**
- * Get full auth context including org, workspace, and memberships
+ * Get full auth context including org, workspace, and memberships.
+ * Uses request-scoped caching to avoid duplicate DO RPC calls when
+ * multiple loaders call this in the same request.
  */
 export async function getAuthContext(
+  request: Request,
+  context: AppLoadContext
+): Promise<AuthContext | null> {
+  // Check cache first - returns the same promise if already in flight
+  const cached = authContextCache.get(request);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  // Create and cache the promise immediately to dedupe concurrent calls
+  const promise = getAuthContextUncached(request, context);
+  authContextCache.set(request, promise);
+  return promise;
+}
+
+/**
+ * Internal uncached implementation of getAuthContext
+ */
+async function getAuthContextUncached(
   request: Request,
   context: AppLoadContext
 ): Promise<AuthContext | null> {

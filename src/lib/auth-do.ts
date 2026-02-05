@@ -230,22 +230,24 @@ export async function getUserOrgs(env: AuthEnv, userId: string): Promise<OrgMemb
   const userStub = env.USER.get(env.USER.idFromName(userId));
   const userOrgs = await userStub.getOrgs();
 
-  const memberships: OrgMembership[] = [];
-  for (const uo of userOrgs) {
-    const orgStub = env.ORG.get(env.ORG.idFromName(uo.org_id));
-    const orgInfo = await orgStub.getInfo();
-    if (orgInfo && !orgInfo.archived) {
-      memberships.push({
-        org_id: uo.org_id,
-        org_name: orgInfo.name,
-        role: uo.role,
-        joined_at: uo.joined_at,
-        last_workspace_id: uo.last_workspace_id ?? null,
-      });
-    }
-  }
+  // Fetch all org info in parallel instead of sequential loop
+  const orgInfos = await Promise.all(
+    userOrgs.map(async (uo) => {
+      const orgStub = env.ORG.get(env.ORG.idFromName(uo.org_id));
+      const orgInfo = await orgStub.getInfo();
+      return { uo, orgInfo };
+    })
+  );
 
-  return memberships;
+  return orgInfos
+    .filter(({ orgInfo }) => orgInfo && !orgInfo.archived)
+    .map(({ uo, orgInfo }) => ({
+      org_id: uo.org_id,
+      org_name: orgInfo!.name,
+      role: uo.role,
+      joined_at: uo.joined_at,
+      last_workspace_id: uo.last_workspace_id ?? null,
+    }));
 }
 
 // Admin functions that operate on single DOs (real implementations)
@@ -343,19 +345,23 @@ export async function createOrg(env: AuthEnv, name: string, createdBy: string): 
 export async function getOrgMembers(env: AuthEnv, orgId: string): Promise<Array<{ user: User; role: OrgRole; joined_at: number }>> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const members = await stub.getMembers();
-  const results: Array<{ user: User; role: OrgRole; joined_at: number }> = [];
-  for (const member of members) {
-    const userStub = env.USER.get(env.USER.idFromName(member.user_id));
-    const profile = await userStub.getProfile();
-    if (profile) {
-      results.push({
-        user: profile,
-        role: member.role,
-        joined_at: member.joined_at,
-      });
-    }
-  }
-  return results;
+
+  // Fetch all user profiles in parallel instead of sequential loop
+  const profileResults = await Promise.all(
+    members.map(async (member) => {
+      const userStub = env.USER.get(env.USER.idFromName(member.user_id));
+      const profile = await userStub.getProfile();
+      return { member, profile };
+    })
+  );
+
+  return profileResults
+    .filter(({ profile }) => profile !== null)
+    .map(({ member, profile }) => ({
+      user: profile!,
+      role: member.role,
+      joined_at: member.joined_at,
+    }));
 }
 
 export async function isOrgMember(env: AuthEnv, userId: string, orgId: string): Promise<boolean> {
@@ -400,16 +406,17 @@ export async function transferOrgOwnership(env: AuthEnv, orgId: string, newOwner
 export async function listOrgWorkspaces(env: AuthEnv, orgId: string): Promise<Workspace[]> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const workspaceIds = await stub.getWorkspaces();
-  const results: Workspace[] = [];
-  for (const ws of workspaceIds) {
-    if (ws.archived) continue;
-    const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-    const info = await wsStub.getInfo();
-    if (info && !info.archived) {
-      results.push(info);
-    }
-  }
-  return results;
+
+  // Filter out archived first, then fetch info in parallel
+  const activeWorkspaces = workspaceIds.filter((ws) => !ws.archived);
+  const infos = await Promise.all(
+    activeWorkspaces.map(async (ws) => {
+      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+      return wsStub.getInfo();
+    })
+  );
+
+  return infos.filter((info) => info !== null && !info.archived) as Workspace[];
 }
 
 export async function listUserWorkspaces(env: AuthEnv, userId: string, orgId: string): Promise<WorkspaceWithAccess[]> {
@@ -417,16 +424,20 @@ export async function listUserWorkspaces(env: AuthEnv, userId: string, orgId: st
   if (!isMember) return [];
 
   const workspaces = await listOrgWorkspaces(env, orgId);
-  const results: WorkspaceWithAccess[] = [];
-  for (const workspace of workspaces) {
-    const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspace.id));
-    const memberAccess = await wsStub.getMemberAccess(userId);
-    const accessLevel = memberAccess?.access_level ?? 'full';
-    if (accessLevel !== 'none') {
-      results.push({ ...workspace, access_level: accessLevel });
-    }
-  }
-  return results;
+
+  // Fetch all member access levels in parallel instead of sequential loop
+  const accessResults = await Promise.all(
+    workspaces.map(async (workspace) => {
+      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspace.id));
+      const memberAccess = await wsStub.getMemberAccess(userId);
+      const accessLevel = memberAccess?.access_level ?? 'full';
+      return { workspace, accessLevel };
+    })
+  );
+
+  return accessResults
+    .filter(({ accessLevel }) => accessLevel !== 'none')
+    .map(({ workspace, accessLevel }) => ({ ...workspace, access_level: accessLevel }));
 }
 
 export async function listUserWorkspacesAcrossOrgs(
