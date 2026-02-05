@@ -254,13 +254,13 @@ export async function getUserOrgs(env: AuthEnv, userId: string): Promise<OrgMemb
 export async function adminUpdateUser(
   env: AuthEnv,
   userId: string,
-  updates: { name?: string | null; avatar?: { color: string; content: string } }
+  updates: { name?: string | null; avatar?: { color: string; content: string }; is_superuser?: boolean }
 ): Promise<User | null> {
   const stub = env.USER.get(env.USER.idFromName(userId));
-  // Note: is_superuser is determined by email domain, not manually set
   const profile = await stub.updateProfile({
     name: updates.name,
     avatar: updates.avatar,
+    is_superuser: updates.is_superuser,
   });
   if (!profile) return null;
   return profile;

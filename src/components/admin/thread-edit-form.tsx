@@ -17,9 +17,10 @@ interface Thread {
 
 interface ThreadEditFormProps {
   thread: Thread;
+  orgId: string;
 }
 
-export function ThreadEditForm({ thread }: ThreadEditFormProps) {
+export function ThreadEditForm({ thread, orgId }: ThreadEditFormProps) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [title, setTitle] = useState(thread.title);
   const saving = fetcher.state !== 'idle';
@@ -38,7 +39,7 @@ export function ThreadEditForm({ thread }: ThreadEditFormProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     fetcher.submit(
-      { intent: 'updateThread', title: title.trim() },
+      { intent: 'updateThread', title: title.trim(), orgId },
       { method: 'POST' }
     );
   };
