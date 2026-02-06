@@ -124,6 +124,14 @@ async function claimExactSlug(
   }
 }
 
+async function getSlugOwner(
+  slugNamespace: DurableObjectNamespace<OrgSlugDO>,
+  slug: string
+): Promise<string | null> {
+  const slugStub = slugNamespace.get(slugNamespace.idFromName(slug));
+  return slugStub.getOwner();
+}
+
 async function releaseExactSlug(
   slugNamespace: DurableObjectNamespace<OrgSlugDO>,
   orgId: string,
@@ -1199,6 +1207,70 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
   }
 
+  private async collectUserIdsForSlugCheck(): Promise<string[]> {
+    const userIds = new Set<string>();
+    let cursor: string | undefined;
+
+    while (true) {
+      const listed = await this.env.EMAIL_TO_USER.list({ cursor });
+      const emailKeys = listed.keys
+        .map((entry) => entry.name)
+        .filter((key) => key.startsWith('email:') || (key.includes('@') && !key.includes(':')));
+
+      if (emailKeys.length > 0) {
+        const values = await Promise.all(emailKeys.map((key) => this.env.EMAIL_TO_USER.get(key)));
+        for (const value of values) {
+          if (typeof value === 'string' && value.length > 0 && !value.startsWith('{')) {
+            userIds.add(value);
+          }
+        }
+      }
+
+      if (listed.list_complete || !listed.cursor) {
+        break;
+      }
+      cursor = listed.cursor;
+    }
+
+    return Array.from(userIds);
+  }
+
+  private async findOrgIdByStoredSlug(targetSlug: string, currentOrgId: string): Promise<string | null> {
+    const userIds = await this.collectUserIdsForSlugCheck();
+    if (userIds.length === 0) {
+      return null;
+    }
+
+    const orgIds = new Set<string>();
+    for (const userId of userIds) {
+      try {
+        const userStub = this.env.USER.get(this.env.USER.idFromName(userId)) as unknown as UserDO;
+        const userOrgs = await userStub.getOrgs();
+        for (const org of userOrgs) {
+          if (org.org_id !== currentOrgId) {
+            orgIds.add(org.org_id);
+          }
+        }
+      } catch {
+        // Ignore invalid/missing user records from stale KV mappings.
+      }
+    }
+
+    for (const orgId of orgIds) {
+      try {
+        const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId)) as unknown as OrgDO;
+        const slug = await orgStub.getStoredSlug();
+        if (slug === targetSlug) {
+          return orgId;
+        }
+      } catch {
+        // Ignore orgs that cannot be read; they should not block unrelated slug updates.
+      }
+    }
+
+    return null;
+  }
+
   // Org info methods
   async getInfo(): Promise<Organization | null> {
     const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
@@ -1239,6 +1311,25 @@ export class OrgDO extends DurableObject<DOEnv> {
   async getSlug(): Promise<string | null> {
     const info = await this.getInfo();
     return info?.slug ?? null;
+  }
+
+  /**
+   * Read the currently persisted slug without claiming/repairing registry state.
+   * Used by slug-collision checks in updateSlug.
+   */
+  async getStoredSlug(): Promise<string | null> {
+    const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
+    if (rows.length === 0) return null;
+
+    const info = JSON.parse((rows[0] as { value: string }).value) as Organization;
+    if (typeof info.slug === 'string' && info.slug.trim().length > 0) {
+      return normalizeOrgSlug(info.slug);
+    }
+
+    if (!info.name || !info.id) {
+      return null;
+    }
+    return normalizeOrgSlug(generateOrgSlug(info.name, info.id.slice(0, 3)));
   }
 
   async setInfo(info: Organization): Promise<void> {
@@ -1341,6 +1432,17 @@ export class OrgDO extends DurableObject<DOEnv> {
     ).toArray();
     if (priorSlugChange.length > 0) {
       throw new Error('slug_already_finalized');
+    }
+
+    const claimedOwner = await getSlugOwner(this.env.ORG_SLUG, normalizedSlug);
+    if (claimedOwner && claimedOwner !== info.id) {
+      throw new Error('slug_taken');
+    }
+    if (!claimedOwner) {
+      const conflictingOrgId = await this.findOrgIdByStoredSlug(normalizedSlug, info.id);
+      if (conflictingOrgId) {
+        throw new Error('slug_taken');
+      }
     }
 
     await claimExactSlug(this.env.ORG_SLUG, info.id, normalizedSlug);

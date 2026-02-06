@@ -128,6 +128,42 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(orgs[0].role).toBe('owner');
       expect(orgs[0].last_workspace_id).toBeTypeOf('string');
     });
+
+    it('prevents claiming a slug already used by an org whose registry claim is missing', async () => {
+      const ownerEmail = testEmail();
+      const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
+      const { org: existingOrg } = await createOrg(testEnv, 'Existing Slug Org', ownerId);
+
+      const existingOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(existingOrg.id));
+      const existingInfo = await existingOrgStub.getInfo();
+      if (!existingInfo?.slug) {
+        throw new Error('Expected existing org slug to be set');
+      }
+
+      // Simulate an older org that has a persisted slug but no ORG_SLUG claim yet.
+      const slugStub = testEnv.ORG_SLUG.get(testEnv.ORG_SLUG.idFromName(existingInfo.slug));
+      await slugStub.release(existingOrg.id);
+
+      const otherOwnerEmail = testEmail();
+      const { userId: otherOwnerId } = await createUser(
+        testEnv,
+        otherOwnerEmail,
+        'password123',
+        'Other Owner'
+      );
+      const { org: targetOrg } = await createOrg(testEnv, 'Target Org', otherOwnerId);
+      const targetOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(targetOrg.id));
+
+      let slugError: unknown = null;
+      try {
+        await targetOrgStub.updateSlug(existingInfo.slug, otherOwnerId);
+      } catch (error) {
+        slugError = error;
+      }
+
+      const message = slugError instanceof Error ? slugError.message : String(slugError);
+      expect(message).toContain('slug_taken');
+    });
   });
 
   describe('Organization ownership invariants', () => {
