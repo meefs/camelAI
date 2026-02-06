@@ -139,9 +139,9 @@ export default function TeamPage() {
       <TeamTable
         currentUserId={currentUserId}
         canManageMembers={canManageMembers}
-        members={members as never[]}
-        invitations={invitations as never[]}
-        workspaces={workspaces as never[]}
+        members={members}
+        invitations={invitations}
+        workspaces={workspaces}
       />
     </div>
   );

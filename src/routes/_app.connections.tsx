@@ -2,7 +2,7 @@ import { waitUntil } from 'cloudflare:workers';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
-import { isOrgMember, getWorkspaceAccess } from '@/lib/auth-do';
+import { isOrgAdmin } from '@/lib/auth-do';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { INTEGRATION_REGISTRY, getIntegrationDefinition } from '@/lib/integration-registry';
 import { encryptCredentials } from '@/lib/integration-crypto';
@@ -204,10 +204,10 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: 'Target workspace must belong to the same organization' };
     }
 
-    // Verify user has actual workspace access (not just org membership)
-    const accessLevel = await getWorkspaceAccess(authEnv, targetWorkspaceId, authContext.user.id);
-    if (accessLevel === 'none') {
-      return { error: 'You do not have access to the target workspace' };
+    // Only org admins can duplicate connections across workspaces
+    const adminStatus = await isOrgAdmin(authEnv, authContext.user.id, authContext.currentOrg.id);
+    if (!adminStatus) {
+      return { error: 'Only organization admins can duplicate connections' };
     }
 
     try {
@@ -217,11 +217,20 @@ export async function action({ request, context }: Route.ActionArgs) {
         return { error: 'Integration not found' };
       }
 
+      // Deduplicate name: append " (copy)" if the name already exists on target
+      let copyName = sourceRecord.name;
+      const nameExists = await (targetStub as unknown as WorkspaceDO).integrationNameExists(
+        sourceRecord.integration_type, copyName
+      );
+      if (nameExists) {
+        copyName = `${copyName} (copy)`;
+      }
+
       // Copy to target workspace with new ID
       await targetStub.createIntegration(
         crypto.randomUUID(),
         sourceRecord.integration_type,
-        sourceRecord.name,
+        copyName,
         sourceRecord.category,
         sourceRecord.auth_method,
         sourceRecord.config,

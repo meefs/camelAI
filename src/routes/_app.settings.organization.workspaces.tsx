@@ -15,7 +15,8 @@ export function meta() {
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
-  const authContext = await requireOrgAdmin(request, context, (await requireAuthContext(request, context)).currentOrg.id);
+  const authContext = await requireAuthContext(request, context);
+  await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const formData = await request.formData();
   const intent = formData.get('intent');
   const env = getEnv(context);

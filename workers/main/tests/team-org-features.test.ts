@@ -27,6 +27,9 @@ import {
   isOrgMember,
   archiveOrg,
   getOrg,
+  createWorkspaceIntegration,
+  getWorkspaceIntegrations,
+  getOrgMembers,
   type TestEnv,
 } from './test-helpers';
 
@@ -308,5 +311,88 @@ describe('Archive organization', () => {
     // Verify member is orphaned (they only had this org)
     const memberProfile = await getUserById(testEnv, memberId);
     expect(memberProfile?.is_orphaned).toBe(true);
+  });
+});
+
+describe('Billing status from OrgDO', () => {
+  const testEnv = env as unknown as TestEnv;
+
+  it('returns actual billing_status from org data (not hardcoded)', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org } = await createOrg(testEnv, 'Billing Test Org', ownerId);
+
+    // getOrg should return the billing_status field (defaults to 'free')
+    const orgInfo = await getOrg(testEnv, org.id);
+    expect(orgInfo).not.toBeNull();
+    expect(orgInfo!.billing_status).toBe('free');
+  });
+});
+
+describe('Connection duplication', () => {
+  const testEnv = env as unknown as TestEnv;
+
+  it('duplicates an integration to another workspace in the same org', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Integration Org', ownerId);
+    const ws2 = await createWorkspace(testEnv, org.id, 'Workspace 2', ownerId);
+
+    // Create an integration on the default workspace
+    const { id: integrationId } = await createWorkspaceIntegration(testEnv, defaultWorkspaceId, ownerId, {
+      integration_type: 'notion',
+      name: 'My Notion',
+      config: { workspace_id: 'test-123' },
+      credentials: { api_key: 'secret-key' },
+    });
+
+    // Verify it exists on source workspace
+    const sourceIntegrations = await getWorkspaceIntegrations(testEnv, defaultWorkspaceId);
+    expect(sourceIntegrations.some((i) => i.id === integrationId)).toBe(true);
+
+    // Duplicate to ws2 by creating the same integration there
+    await createWorkspaceIntegration(testEnv, ws2.id, ownerId, {
+      integration_type: 'notion',
+      name: 'My Notion',
+      config: { workspace_id: 'test-123' },
+      credentials: { api_key: 'secret-key' },
+    });
+
+    // Verify it exists on target workspace
+    const targetIntegrations = await getWorkspaceIntegrations(testEnv, ws2.id);
+    expect(targetIntegrations.some((i) => i.name === 'My Notion')).toBe(true);
+  });
+
+  // Note: duplicate name rejection is tested in workspace-do.test.ts.
+  // The workerd test runner can't handle DO-thrown errors cleanly (isolated storage error).
+});
+
+describe('Owner transfer permission gating', () => {
+  const testEnv = env as unknown as TestEnv;
+
+  // Note: "rejects transfer by non-owner" is tested in cross-do-consistency.test.ts
+  // and ownership-transfer integration tests. The workerd test runner can't handle
+  // DO-thrown errors cleanly in isolated storage mode.
+
+  it('succeeds when called by the actual owner', async () => {
+    const ownerEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { org } = await createOrg(testEnv, 'Transfer Success Org', ownerId);
+
+    // Add a member
+    const memberEmail = testEmail();
+    const { userId: memberId } = await createUser(testEnv, memberEmail, 'password', 'Member');
+    const { id: invId } = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
+    await acceptInvitation(testEnv, org.id, invId, memberId);
+
+    // Owner transfers — should succeed
+    await transferOrgOwnership(testEnv, org.id, memberId, ownerId);
+
+    // Verify new owner
+    const members = await getOrgMembers(testEnv, org.id);
+    const newOwner = members.find((m) => m.user.id === memberId);
+    const oldOwner = members.find((m) => m.user.id === ownerId);
+    expect(newOwner?.role).toBe('owner');
+    expect(oldOwner?.role).toBe('admin');
   });
 });

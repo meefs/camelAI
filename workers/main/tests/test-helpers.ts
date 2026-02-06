@@ -26,6 +26,7 @@ import {
   archiveOrg as prodArchiveOrg,
   checkUserOrphaned as prodCheckUserOrphaned,
   listOrgWorkspaces as prodListOrgWorkspaces,
+  transferOrgOwnership as prodTransferOrgOwnership,
 } from '../../../src/lib/auth-do';
 
 export interface TestEnv {
@@ -171,11 +172,11 @@ export async function createOrg(
 export async function getOrg(
   env: TestEnv,
   orgId: string
-): Promise<{ id: string; name: string; created_by: string; archived?: boolean } | null> {
+): Promise<{ id: string; name: string; created_by: string; archived?: boolean; billing_status?: string } | null> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const info = await orgStub.getInfo();
   if (!info) return null;
-  return { id: info.id, name: info.name, created_by: info.created_by, archived: info.archived };
+  return { id: info.id, name: info.name, created_by: info.created_by, archived: info.archived, billing_status: info.billing_status };
 }
 
 export async function updateOrgName(
@@ -283,21 +284,17 @@ export async function tryUpdateOrgMemberRole(
   return { ok: true };
 }
 
+/**
+ * Delegates to production auth-do.ts transferOrgOwnership.
+ * TestEnv is structurally compatible with AuthEnv.
+ */
 export async function transferOrgOwnership(
   env: TestEnv,
   orgId: string,
   newOwnerId: string,
   actorId: string
 ): Promise<void> {
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  await orgStub.transferOwnership(actorId, newOwnerId);
-
-  // Update roles in user DOs
-  const actorUserStub = env.USER.get(env.USER.idFromName(actorId));
-  await actorUserStub.updateOrgRole(orgId, 'admin');
-
-  const newOwnerUserStub = env.USER.get(env.USER.idFromName(newOwnerId));
-  await newOwnerUserStub.updateOrgRole(orgId, 'owner');
+  return prodTransferOrgOwnership(env as unknown as AuthEnv, orgId, newOwnerId, actorId);
 }
 
 /**

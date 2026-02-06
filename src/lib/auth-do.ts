@@ -373,9 +373,9 @@ export async function getOrg(env: AuthEnv, orgId: string): Promise<Organization 
 
 export async function archiveOrg(env: AuthEnv, orgId: string, actorId: string): Promise<void> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  await orgStub.archiveOrg(actorId);
 
-  // Archive all workspaces in the org
+  // Archive all workspaces first (before marking org archived, so partial
+  // failures don't leave an archived org with unarchived workspaces)
   const workspaces = await orgStub.getWorkspaces(true);
   await Promise.all(
     workspaces.filter((ws) => !ws.archived).map(async (ws) => {
@@ -397,6 +397,9 @@ export async function archiveOrg(env: AuthEnv, orgId: string, actorId: string): 
       await checkUserOrphaned(env, member.user_id);
     })
   );
+
+  // Mark the org as archived last, after all cleanup is done
+  await orgStub.archiveOrg(actorId);
 }
 
 export async function createOrg(env: AuthEnv, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
@@ -512,7 +515,7 @@ export async function updateOrgMemberRole(env: AuthEnv, orgId: string, userId: s
 
 export async function transferOrgOwnership(env: AuthEnv, orgId: string, newOwnerId: string, actorId: string): Promise<void> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  await stub.transferOwnership(newOwnerId, actorId);
+  await stub.transferOwnership(actorId, newOwnerId);
   // Update user roles
   const newOwnerStub = env.USER.get(env.USER.idFromName(newOwnerId));
   await newOwnerStub.updateOrgRole(orgId, 'owner');
