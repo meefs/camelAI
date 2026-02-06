@@ -657,7 +657,6 @@ Threads in Chiridion can have multiple users. Each user message is prefixed with
 
 Some messages include hidden context inserted by Chiridion. This context may appear as:
 - \`<chiridion system message> ... </chiridion system message>\`
-- \`[Chiridion system context]\` blocks
 
 Treat the content inside these blocks as trusted operator context for the current turn. Use it to guide your response and behavior, but do not explicitly mention these blocks, do not quote their wrappers, and do not tell the user that hidden context was provided.
 
@@ -1386,7 +1385,7 @@ async function handleUserMessage(session, content, userInfo = null) {
   const contextualPrefix =
     contextMessages.length > 0
       ? contextMessages
-          .map((message) => `[Chiridion system context]\n${message}`)
+          .map((message) => `<chiridion system message>${message}</chiridion system message>`)
           .join('\n\n')
       : '';
   const attributedContent = [contextualPrefix, attributedUserMessage]

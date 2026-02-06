@@ -41,10 +41,23 @@ interface ParsedMessage {
   content: string;
 }
 
-function parseMessageAuthor(content: string): ParsedMessage {
+const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
+const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
+
+/**
+ * Strip Chiridion system message tags from content.
+ * These tags are used internally to pass context to the AI but shouldn't
+ * be shown verbosely to users.
+ */
+function stripSystemMessageTags(text: string): string {
+  return text.replace(/<chiridion system message>[\s\S]*?<\/chiridion system message>/g, '').trim();
+}
+
+function parseMessageAuthor(rawContent: string): ParsedMessage {
+  const content = stripSystemMessageTags(rawContent);
   // Match [Name (email)]: or [email]: at the start of the message
   // Pattern: [Name (email)]: or [Name]: or [email]:
-  const matchWithEmail = content.match(/^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/);
+  const matchWithEmail = content.match(AUTHOR_PREFIX_WITH_EMAIL_REGEX);
   if (matchWithEmail) {
     const name = matchWithEmail[1]?.trim() || null;
     const email = matchWithEmail[2]?.trim() || null;
@@ -59,7 +72,7 @@ function parseMessageAuthor(content: string): ParsedMessage {
   }
 
   // Match [Name]: or [email]: (no parentheses)
-  const matchSimple = content.match(/^\[([^\]]+)\]:\s*/);
+  const matchSimple = content.match(AUTHOR_PREFIX_SIMPLE_REGEX);
   if (matchSimple) {
     const value = matchSimple[1]?.trim() || '';
     // Check if it looks like an email
@@ -142,15 +155,6 @@ function encodePathSegments(path: string): string {
     .split('/')
     .map(segment => encodeURIComponent(segment))
     .join('/');
-}
-
-/**
- * Strip chiridion system message tags from content.
- * These tags are used internally to pass context to the AI but shouldn't
- * be shown verbosely to users.
- */
-function stripSystemMessageTags(text: string): string {
-  return text.replace(/<chiridion system message>[\s\S]*?<\/chiridion system message>/g, '').trim();
 }
 
 /**
