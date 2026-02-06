@@ -2,6 +2,7 @@ import type { AppLoadContext } from 'react-router';
 import type { UserDO, OrgDO } from '../../workers/main/src/auth';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
 import type { ChatThreadDO } from '../../workers/main/src/durable-objects';
+import type { OrgSlugDO } from '../../workers/main/src/org-slug-registry';
 
 /**
  * Cloudflare environment bindings available in React Router loaders/actions.
@@ -13,6 +14,7 @@ export interface CloudflareEnv {
   SANDBOX: DurableObjectNamespace;
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
+  ORG_SLUG: DurableObjectNamespace<OrgSlugDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   MCP_OBJECT: DurableObjectNamespace;
 

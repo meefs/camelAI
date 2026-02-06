@@ -38,6 +38,7 @@ export { ChiridionMcp } from './mcp-handler.js';
 export { WorkspaceContainer as ThreadSandbox } from './workspace-container.js';
 export { ChatThreadDO } from './durable-objects.js';
 export { UserDO, OrgDO } from './auth.js';
+export { OrgSlugDO } from './org-slug-registry.js';
 export { WorkspaceDO } from './workspace.js';
 
 // Extend React Router's AppLoadContext

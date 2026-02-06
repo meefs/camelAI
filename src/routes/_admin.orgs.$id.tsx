@@ -143,6 +143,15 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return { success: true };
   }
 
+  if (intent === 'hardDeleteOrg') {
+    try {
+      const result = await adminDO.hardDeleteAdminOrg(context, orgId, 'system-admin');
+      return { success: true, warnings: result.warnings };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Failed to permanently delete organization' };
+    }
+  }
+
   if (intent === 'updateOrg') {
     const name = formData.get('name') as string;
     if (!name?.trim()) {
@@ -478,6 +487,7 @@ export default function AdminOrgDetailPage() {
               orgName={org.name}
               archived={org.archived}
               members={memberOptions}
+              workspaceCount={workspaces.length}
             />
           </div>
         </div>

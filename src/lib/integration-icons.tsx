@@ -1,68 +1,53 @@
-'use client';
-
-import type { ReactNode } from 'react';
-import { useTheme } from 'next-themes';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Settings } from 'lucide-react';
+import { logoRegistry } from '@/lib/integration-logo-registry';
 import { cn } from '@/lib/utils';
 
-/**
- * Registry of integration logos.
- *
- * - 'single': one SVG works for both light and dark themes
- * - 'themed': has _light.svg and _dark.svg variants
- */
-const logoRegistry: Record<string, 'single' | 'themed'> = {
-  // Themed (light/dark variants)
-  anthropic: 'themed',
-  aws: 'themed',
-  clickhouse: 'themed',
-  github: 'themed',
-  mongodb: 'themed', // Has _light and _dark variants
-  mysql: 'themed',
-  openai: 'themed',
-  openrouter: 'themed', // NOTE: dark variant may look off — might swap to light icon in white
-  typeform: 'themed',
-  x: 'themed',
-  // Single (works for both themes)
-  airtable: 'single',
-  amplitude: 'single',
-  asana: 'single',
-  azure: 'single',
-  bigquery: 'single',
-  cloudflare: 'single',
-  databricks: 'single',
-  discord: 'single',
-  figma: 'single',
-  gcp: 'single',
-  hubspot: 'single',
-  intercom: 'single',
-  jira: 'single',
-  linear: 'single',
-  mailchimp: 'single',
-  mixpanel: 'single',
-  neon: 'single',
-  netlify: 'single',
-  notion: 'single',
-  planetscale: 'single',
-  posthog: 'single',
-  postgres: 'single',
-  redis: 'single',
-  salesforce: 'single',
-  segment: 'single',
-  sendgrid: 'single',
-  sentry: 'single',
-  shopify: 'single',
-  slack: 'single',
-  snowflake: 'single',
-  square: 'single',
-  stripe: 'single',
-  supabase: 'single',
-  teams: 'single',
-  turso: 'single',
-  twilio: 'single',
-  vercel: 'single',
-  zendesk: 'single',
-};
+function detectDarkMode(): boolean {
+  if (typeof document === 'undefined') return false;
+
+  const root = document.documentElement;
+  if (root.classList.contains('dark')) return true;
+  if (root.classList.contains('light')) return false;
+
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+
+  return false;
+}
+
+function useDarkMode(): boolean {
+  const [isDark, setIsDark] = useState(() => detectDarkMode());
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+
+    const update = () => setIsDark(detectDarkMode());
+    update();
+
+    const observer = new MutationObserver(update);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+
+    let cleanupMedia: (() => void) | undefined;
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+      const media = window.matchMedia('(prefers-color-scheme: dark)');
+      const listener = () => update();
+      media.addEventListener('change', listener);
+      cleanupMedia = () => media.removeEventListener('change', listener);
+    }
+
+    return () => {
+      observer.disconnect();
+      cleanupMedia?.();
+    };
+  }, []);
+
+  return isDark;
+}
 
 interface IntegrationIconProps {
   type: string;
@@ -83,7 +68,7 @@ export function IntegrationIcon({
   className,
   size = 20,
 }: IntegrationIconProps): ReactNode {
-  const { resolvedTheme } = useTheme();
+  const isDark = useDarkMode();
 
   const variant = logoRegistry[type];
 
@@ -91,8 +76,6 @@ export function IntegrationIcon({
     // No logo registered - show fallback
     return <Settings className={cn('size-5', className)} />;
   }
-
-  const isDark = resolvedTheme === 'dark';
 
   // Build the image path
   const src =

@@ -6,6 +6,7 @@ import type { Integration } from '@/types';
 import type { CloudflareEnv } from './cloudflare.server';
 import { UserDO, OrgDO } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
+import { OrgSlugDO } from '../../workers/main/src/org-slug-registry';
 
 // Re-export types that are only defined in worker modules
 export type { OrgThread } from '../../workers/main/src/auth';
@@ -20,6 +21,7 @@ export type { ApiTokenData } from '../../workers/main/src/api-tokens';
 export interface AuthEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
+  ORG_SLUG: DurableObjectNamespace<OrgSlugDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   SESSIONS: KVNamespace;
   EMAIL_TO_USER: KVNamespace;
@@ -33,6 +35,7 @@ export function getAuthEnv(env: CloudflareEnv): AuthEnv {
   return {
     USER: env.USER as AuthEnv['USER'],
     ORG: env.ORG as AuthEnv['ORG'],
+    ORG_SLUG: env.ORG_SLUG as AuthEnv['ORG_SLUG'],
     WORKSPACE: env.WORKSPACE as AuthEnv['WORKSPACE'],
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,

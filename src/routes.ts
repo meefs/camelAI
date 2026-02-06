@@ -20,6 +20,18 @@ export default [
     ),
   ]),
 
+  // Protected onboarding routes (no app sidebar)
+  route('onboarding', 'routes/_onboarding.tsx', [
+    index('routes/_onboarding.welcome.tsx'),
+    route('org-slug', 'routes/_onboarding.org-slug.tsx'),
+    route('ai-familiarity', 'routes/_onboarding.q1.tsx'),
+    route('iteration-style', 'routes/_onboarding.q2.tsx'),
+    route('stakes', 'routes/_onboarding.q3.tsx'),
+    route('design-style', 'routes/_onboarding.q4.tsx'),
+    route('starter-project', 'routes/_onboarding.q5.tsx'),
+    route('data-interests', 'routes/_onboarding.q6.tsx'),
+  ]),
+
   // Protected app routes
   layout('routes/_app.tsx', [
     index('routes/_app._index.tsx'),
@@ -101,6 +113,7 @@ export default [
   route('api/auth/logout', 'routes/api/auth.logout.ts'),
   route('api/auth/switch-org', 'routes/api/auth.switch-org.ts'),
   route('api/auth/switch-workspace', 'routes/api/auth.switch-workspace.ts'),
+  route('api/onboarding', 'routes/api/onboarding.ts'),
 
   // Workspace filesystem API routes
   route('api/workspaces/:id/fs/list', 'routes/api/workspaces.$id.fs.list.ts'),
@@ -127,6 +140,8 @@ export default [
 
   // Organization & invitation API routes
   route('api/orgs/:id/invite', 'routes/api/orgs.$id.invite.ts'),
+  route('api/orgs/:id/check-slug', 'routes/api/orgs.$id.check-slug.ts'),
+  route('api/orgs/:id/update-slug', 'routes/api/orgs.$id.update-slug.ts'),
   route('api/invitations/:orgId/:invitationId', 'routes/api/invitations.$orgId.$invitationId.ts'),
 
   // API resource routes (to be created)

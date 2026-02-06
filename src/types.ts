@@ -203,12 +203,53 @@ export interface AuditLogEntry {
   created_at: number;
 }
 
+export type OnboardingAiFamiliarity =
+  | 'extensive'
+  | 'occasional'
+  | 'a_little'
+  | 'new';
+export type OnboardingIterationStyle = 'show_quick' | 'ask_first' | 'depends';
+export type OnboardingStakes =
+  | 'trying_out'
+  | 'for_myself'
+  | 'for_team'
+  | 'for_public'
+  | 'for_money';
+export type OnboardingDesignStyle =
+  | 'colorful'
+  | 'sleek'
+  | 'minimal'
+  | 'warm'
+  | 'bold'
+  | 'per_project';
+export type OnboardingStarterProject =
+  | 'data_analytics'
+  | 'personal_site'
+  | 'business_tool'
+  | 'team_productivity'
+  | 'something_fun';
+export type OnboardingFileType = 'csv' | 'excel' | 'sqlite' | 'json';
+
+export interface OnboardingPreferences {
+  ai_familiarity: OnboardingAiFamiliarity | null;
+  iteration_style: OnboardingIterationStyle | null;
+  stakes: OnboardingStakes | null;
+  design_style: OnboardingDesignStyle | null;
+  starter_project: OnboardingStarterProject | null;
+  data_interests: {
+    files: OnboardingFileType[];
+    integrations: string[];
+  };
+  completed_at: number | null;
+}
+
 // Auth context types for frontend
 export interface AuthState {
   user: User | null;
   currentOrg: Organization | null;
   currentWorkspace?: WorkspaceWithAccess | null;
   orgs: OrgMembership[];
+  onboarding?: OnboardingPreferences | null;
   /** Workspaces in the current org only (for settings/management) */
   workspaces?: WorkspaceWithAccess[];
   /** All workspaces across all orgs (for workspace switcher) */

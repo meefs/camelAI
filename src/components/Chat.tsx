@@ -331,7 +331,11 @@ export default function Chat({
 }: ChatProps) {
   const navigate = useNavigate();
   const revalidator = useRevalidator();
-  const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
+  const createThreadFetcher = useFetcher<{
+    thread?: { id: string };
+    onboardingSystemMessage?: string | null;
+    error?: string;
+  }>();
   const touchFetcher = useFetcher();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
@@ -371,6 +375,7 @@ export default function Chat({
   const messagesRef = useRef(messages);
   const streamingMessageIdRef = useRef(streamingMessageId);
   const pendingMessagesRef = useRef(pendingMessages);
+  const pendingOnboardingContextMarkRef = useRef(false);
 
   // Wrapper setters that update both state and ref
   const setMessages = useCallback((updater: Message[] | ((prev: Message[]) => Message[])) => {
@@ -489,6 +494,7 @@ export default function Chat({
     setCurrentTodos([]);
     setPendingQuestion(null);
     setAppIsPublic(false);
+    pendingOnboardingContextMarkRef.current = false;
   }, [threadId]);
 
   useEffect(() => {
@@ -534,6 +540,18 @@ export default function Chat({
   // Use static key for pending messages - threadId in payload ensures correct matching
   // This avoids issues when workspace changes between welcome screen and chat page
   const pendingMessageKey = 'pendingMessage:newThread';
+  const onboardingAutoStartChatKey = 'chiridion:onboarding:auto-start-chat';
+  const markOnboardingContextInjected = useCallback(() => {
+    const formData = new FormData();
+    formData.set('intent', 'markOnboardingContextInjected');
+    void fetch('/chat', { method: 'POST', body: formData }).then((response) => {
+      if (!response.ok) {
+        console.error('Failed to mark onboarding context as injected:', response.status);
+      }
+    }).catch((error) => {
+      console.error('Failed to mark onboarding context as injected:', error);
+    });
+  }, []);
   const sessionStorageKey = useCallback((id: string) => {
     const workspaceKey = resolvedWorkspaceId ?? 'unknown';
     return `ws_session_${workspaceKey}_${id}`;
@@ -633,11 +651,16 @@ export default function Chat({
     const pendingPayload = sessionStorage.getItem(pendingMessageKey);
     if (pendingPayload) {
       try {
-        const parsed = JSON.parse(pendingPayload) as { message?: string; threadId?: string };
+        const parsed = JSON.parse(pendingPayload) as {
+          message?: string;
+          threadId?: string;
+          markOnboardingContextOnSend?: boolean;
+        };
         // Only verify threadId - workspace may have changed between welcome screen and chat page
         // The thread was created in the correct workspace by the server action
         if (parsed.threadId === id && typeof parsed.message === 'string') {
           shouldFetchMessages = false;
+          pendingOnboardingContextMarkRef.current = parsed.markOnboardingContextOnSend === true;
           sessionStorage.removeItem(pendingMessageKey);
           // Add to state (both messages and pending queue)
           const optimisticUserMsg: Message = {
@@ -747,6 +770,11 @@ export default function Chat({
               sessionId: sessionIdRef.current,
               threadId: id,
             }));
+          }
+
+          if (pendingOnboardingContextMarkRef.current) {
+            pendingOnboardingContextMarkRef.current = false;
+            markOnboardingContextInjected();
           }
         }
       } else if (data.type === 'session' && typeof data.sessionId === 'string') {
@@ -964,7 +992,7 @@ export default function Chat({
       }
     };
 
-  }, [fetchMessages, persistSessionState, resolvedWorkspaceId, isNewThread, setMessages, setPendingMessages, setStreamingMessageId]);
+  }, [fetchMessages, persistSessionState, resolvedWorkspaceId, isNewThread, setMessages, setPendingMessages, setStreamingMessageId, markOnboardingContextInjected]);
 
   // Keep the ref updated with the latest function
   connectWebSocketRef.current = connectWebSocket;
@@ -1629,9 +1657,27 @@ export default function Chat({
       if (data.thread && pendingNewChatRef.current) {
         // Thread created successfully - store message and navigate
         const { finalContent } = pendingNewChatRef.current;
-        sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: finalContent, threadId: data.thread.id }));
+        const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
+        const messageWithContext = onboardingSystemMessage
+          ? finalContent.trim().length > 0
+            ? `<chiridion system message>${onboardingSystemMessage}</chiridion system message>\n\n${finalContent}`
+            : `<chiridion system message>${onboardingSystemMessage}</chiridion system message>`
+          : finalContent;
+
+        if (messageWithContext.trim().length > 0) {
+          sessionStorage.setItem(
+            pendingMessageKey,
+            JSON.stringify({
+              message: messageWithContext,
+              threadId: data.thread.id,
+              markOnboardingContextOnSend: Boolean(onboardingSystemMessage),
+            })
+          );
+          navigate(`/chat/${data.thread.id}?newThread=1`);
+        } else {
+          navigate(`/chat/${data.thread.id}`);
+        }
         pendingNewChatRef.current = null;
-        navigate(`/chat/${data.thread.id}?newThread=1`);
       } else if (data.error) {
         // Thread creation failed
         sessionStorage.removeItem(pendingMessageKey);
@@ -1642,6 +1688,29 @@ export default function Chat({
       }
     }
   }, [createThreadFetcher.state, createThreadFetcher.data, navigate]);
+
+  useEffect(() => {
+    if (shouldShowChat) return;
+    if (!resolvedWorkspaceId) return;
+    if (createThreadFetcher.state !== 'idle' || isCreatingThread) return;
+
+    const shouldAutoStart = sessionStorage.getItem(onboardingAutoStartChatKey) === '1';
+    if (!shouldAutoStart) return;
+
+    sessionStorage.removeItem(onboardingAutoStartChatKey);
+    setIsCreatingThread(true);
+    pendingNewChatRef.current = { finalContent: '' };
+    createThreadFetcher.submit(
+      { intent: 'createThread' },
+      { method: 'post', action: '/chat' }
+    );
+  }, [
+    shouldShowChat,
+    resolvedWorkspaceId,
+    createThreadFetcher,
+    isCreatingThread,
+    onboardingAutoStartChatKey,
+  ]);
 
   const handleStartChatForApp = useCallback((app: WorkerScriptWithCreator) => {
     if (!resolvedWorkspaceId) {
