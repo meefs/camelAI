@@ -209,6 +209,12 @@ export interface UserOrg {
   last_workspace_id: string | null;
 }
 
+export interface UserAuthBootstrap {
+  profile: User | null;
+  onboarding: OnboardingPreferences | null;
+  orgs: UserOrg[];
+}
+
 export type OAuthProvider = 'google' | 'github';
 
 export interface UserOAuthProvider {
@@ -497,6 +503,15 @@ export class UserDO extends DurableObject<DOEnv> {
       await this.setProfile(profile);
     }
     return profile;
+  }
+
+  async getAuthBootstrap(): Promise<UserAuthBootstrap> {
+    const [profile, onboarding, orgs] = await Promise.all([
+      this.getProfile(),
+      this.getOnboarding(),
+      this.getOrgs(),
+    ]);
+    return { profile, onboarding, orgs };
   }
 
   async setProfile(profile: User): Promise<void> {
