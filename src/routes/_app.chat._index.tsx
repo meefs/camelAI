@@ -198,10 +198,6 @@ export async function action({ request, context }: Route.ActionArgs) {
         );
       }
 
-      if (onboardingSystemMessage) {
-        await userStub.markOnboardingContextInjected();
-      }
-
       if (onboardingProfileMarkdown) {
         waitUntil(
           writeOnboardingProfile(
@@ -219,6 +215,31 @@ export async function action({ request, context }: Route.ActionArgs) {
     } catch (error) {
       console.error('Failed to create thread:', error);
       return Response.json({ error: 'Failed to create thread' }, { status: 500 });
+    }
+  }
+
+  if (intent === 'markOnboardingContextInjected') {
+    try {
+      const onboarding = authContext.onboarding;
+      if (!onboarding?.completed_at) {
+        return Response.json({ success: true });
+      }
+
+      const userStub = authEnv.USER.get(
+        authEnv.USER.idFromName(authContext.user.id)
+      );
+      const contextInjectedAt = await userStub.getOnboardingContextInjectedAt();
+      if (!contextInjectedAt) {
+        await userStub.markOnboardingContextInjected();
+      }
+
+      return Response.json({ success: true });
+    } catch (error) {
+      console.error('Failed to mark onboarding context as injected:', error);
+      return Response.json(
+        { error: 'Failed to mark onboarding context as injected' },
+        { status: 500 }
+      );
     }
   }
 
