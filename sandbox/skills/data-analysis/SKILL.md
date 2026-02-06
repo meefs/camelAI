@@ -1,6 +1,6 @@
 ---
 name: data-analysis
-description: Analyze data using Python and SQL tools. Use this skill when the user asks to process CSVs, query databases, create visualizations, or perform data analysis.
+description: Analyze data using pre-installed Python and SQL tools. Use this skill when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create visualizations, or perform data analysis. Handles pandas, polars, DuckDB for data processing, matplotlib/seaborn/plotly for visualization, scikit-learn for ML, and database connectivity via SQLAlchemy, usql, and the google-cloud-bigquery client with OAuth access tokens. For live dashboards or data apps, read the developing-software skill.
 license: Complete terms in LICENSE.txt
 ---
 
@@ -27,8 +27,8 @@ usql sqlite:./data.db
 # SQL Server
 usql sqlserver://user:pass@host/instance/dbname
 
-# BigQuery (with credentials)
-usql bigquery://project/dataset
+# BigQuery — use Python client with access token instead (see BigQuery section below)
+# usql bigquery:// is NOT recommended; use the google-cloud-bigquery Python client
 ```
 
 Common commands inside usql:
@@ -124,6 +124,7 @@ predictions = model.predict(X_test)
 | `psycopg` | PostgreSQL driver |
 | `pymysql` | MySQL driver |
 | `google-cloud-bigquery` | BigQuery client |
+| `google-auth` | Google authentication (used for BigQuery tokens) |
 
 ```python
 from sqlalchemy import create_engine
@@ -136,12 +137,34 @@ df = pd.read_sql("SELECT * FROM users", engine)
 # MySQL
 engine = create_engine("mysql+pymysql://user:pass@host/db")
 df = pd.read_sql("SELECT * FROM orders", engine)
+```
 
-# BigQuery
+#### BigQuery
+
+**Important:** BigQuery connections in Chiridion use **OAuth access tokens**, not service account JSON files directly. The platform automatically generates short-lived access tokens from the user's service account JSON key and exposes them as environment variables. Always use this token-based approach.
+
+When a BigQuery integration named e.g. "Production" is connected, these env vars are available:
+- `INT_BIGQUERY_PRODUCTION_ACCESS_TOKEN` — short-lived OAuth token (auto-refreshed by the platform)
+- `INT_BIGQUERY_PRODUCTION_PROJECT_ID` — the GCP project ID
+
+```python
+import os
 from google.cloud import bigquery
-client = bigquery.Client.from_service_account_json("/path/to/key.json")
+from google.oauth2.credentials import Credentials
+
+# Get the access token and project from environment variables.
+# Replace PRODUCTION with the actual integration name (uppercased, non-alphanumeric → underscores).
+access_token = os.environ["INT_BIGQUERY_PRODUCTION_ACCESS_TOKEN"]
+project_id = os.environ["INT_BIGQUERY_PRODUCTION_PROJECT_ID"]
+
+# Create client using the OAuth access token — do NOT use from_service_account_json()
+credentials = Credentials(token=access_token)
+client = bigquery.Client(project=project_id, credentials=credentials)
+
 df = client.query("SELECT * FROM dataset.table").to_dataframe()
 ```
+
+**Do NOT** use `bigquery.Client.from_service_account_json()` or try to read a service account JSON file. The raw service account key is never available in the container — only the derived access token is exposed.
 
 ### File Formats (Pre-installed)
 
@@ -170,6 +193,18 @@ with pdfplumber.open("report.pdf") as pdf:
     for page in pdf.pages:
         tables = page.extract_tables()
 ```
+
+## Live Dashboards & Data Apps
+
+When the user wants a **live dashboard**, **data app**, or any interactive web UI built on top of their database or data sources, use the `developing-software` skill. That skill covers deploying fullstack Cloudflare Workers apps with React, Vite, and shadcn/ui — which is the right approach for persistent, shareable dashboards.
+
+**Read the `developing-software` skill** before building any dashboard or data-driven web app. It documents:
+- `create-worker` for scaffolding React + Vite projects
+- Durable Objects with SQLite for server-side state
+- shadcn/ui components for charts, tables, and UI
+- Deployment via `yarn deploy`
+
+Database connection credentials are available as environment variables in deployed workers (same `INT_*` env vars documented above), so dashboards can query databases directly at runtime.
 
 ## On-Demand Packages
 
