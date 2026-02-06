@@ -144,7 +144,7 @@ const ASSETS_UPLOAD = /^\/client\/v4\/accounts\/[^/]+\/workers\/assets\/upload$/
 
 // Legacy prefix for script ownership (being phased out)
 const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
-// New prefix with org-slug namespacing: script:{org-slug}--{script-name}
+// New prefix with org-slug namespacing: script:{script-name}--{org-slug}
 const SCRIPT_PREFIX = 'script:';
 
 export interface CfApiProxyEnv {
@@ -164,7 +164,7 @@ export interface CfApiProxyEnv {
 export interface DeploySideEffectsInfo {
   /** Original script name (user-facing, e.g., "my-app") */
   scriptName: string;
-  /** Dispatch namespace script name (e.g., "acme-85b--my-app") */
+  /** Dispatch namespace script name (e.g., "my-app--acme-85b") */
   dispatchScriptName: string;
   orgId: string;
   orgSlug: string;
@@ -822,7 +822,7 @@ export async function proxyCloudflareApi(
   const originalScriptName = extractScriptName(pathname);
 
   // Rewrite WFP dispatch namespace (and optionally account id) on the fly.
-  // Also rewrite script name to include org-slug prefix: {org-slug}--{script-name}
+  // Also rewrite script name to include org-slug suffix: {script-name}--{org-slug}
   // /client/v4/accounts/:account_id/workers/dispatch/namespaces/:dispatch_namespace/scripts/:script/...
   const dispatchMatch = pathname.match(/^\/client\/v4\/accounts\/([^\/]+)\/workers\/dispatch\/namespaces\/([^\/]+)\/(.*)$/);
   if (dispatchMatch) {
@@ -830,7 +830,7 @@ export async function proxyCloudflareApi(
     const rewrittenAccount = accountId ?? dispatchMatch[1]!;
     const rewrittenNs = dispatchNamespace ?? dispatchMatch[2]!;
 
-    // Rewrite script name to include org-slug prefix
+    // Rewrite script name to include org-slug suffix
     // rest might be: scripts/{scriptName} or scripts/{scriptName}/settings etc.
     const scriptPathMatch = rest.match(/^scripts\/([^\/]+)(\/.*)?$/);
     if (scriptPathMatch && originalScriptName) {

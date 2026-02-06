@@ -6,7 +6,9 @@
 	"compatibility_flags": ["nodejs_compat"],
 	// Local dev defaults - skip auth and use local namespace
 	"vars": {
-		"SKIP_AUTH": "true"
+		"SKIP_AUTH": "true",
+		// Temporary migration mode. "legacy-open" fails closed except for legacy hostnames.
+		"DISPATCHER_MISSING_REGISTRY_MODE": "legacy-open"
 	},
 	"dispatch_namespaces": [
 		{

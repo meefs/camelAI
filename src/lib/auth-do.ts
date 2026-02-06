@@ -730,7 +730,7 @@ const SCRIPT_PREFIX = 'script:';
 const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
 
 /**
- * Get worker access info by dispatch script name (org-slug prefixed).
+ * Get worker access info by dispatch script name.
  * Tries new format first, falls back to legacy.
  */
 export async function getWorkerAccessInfo(
@@ -738,7 +738,7 @@ export async function getWorkerAccessInfo(
   dispatchScriptName: string,
   legacyScriptName?: string
 ): Promise<WorkerScriptAccess | null> {
-  // Try new format first: script:{org-slug}--{script-name}
+  // Try new format first: script:{script-name}--{org-slug}
   let data = await env.APP_KV.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
   if (data) {
     const { org_id, is_public } = JSON.parse(data) as { org_id: string; is_public: boolean };
@@ -810,7 +810,7 @@ export async function deleteWorkerScript(
     const orgInfo = await stub.getInfo();
     const orgSlug = orgInfo?.slug;
     if (orgSlug) {
-      const dispatchScriptName = `${orgSlug}--${scriptName}`;
+      const dispatchScriptName = `${scriptName}--${orgSlug}`;
       // Remove from new format KV index
       await env.APP_KV.delete(`${SCRIPT_PREFIX}${dispatchScriptName}`);
     }
@@ -834,7 +834,7 @@ export async function setWorkerScriptPublic(
     const orgInfo = await stub.getInfo();
     const orgSlug = orgInfo?.slug;
     if (orgSlug) {
-      const dispatchScriptName = `${orgSlug}--${scriptName}`;
+      const dispatchScriptName = `${scriptName}--${orgSlug}`;
       // Update the new format KV index
       await env.APP_KV.put(
         `${SCRIPT_PREFIX}${dispatchScriptName}`,
@@ -849,4 +849,3 @@ export async function setWorkerScriptPublic(
   }
   return script;
 }
-

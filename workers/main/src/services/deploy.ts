@@ -31,7 +31,7 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
 
   const script = await orgStub.registerWorkerScript(scriptName, workspaceId, createdBy, configPath);
 
-  // Store in KV with namespaced key: script:{org-slug}--{script-name}
+  // Store in KV with namespaced key: script:{script-name}--{org-slug}
   // This allows the dispatcher to look up access info by dispatchScriptName
   await env.APP_KV.put(
     `${SCRIPT_PREFIX}${dispatchScriptName}`,
@@ -40,7 +40,7 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
 
   // Also write legacy format for legacy URL redirect support.
   // When someone uses a legacy URL (script.chiridion.app), the dispatcher can
-  // look this up and redirect to the new URL format (script.org-slug.chiridion.app).
+  // look this up and redirect to the new URL format (script--org-slug.chiridion.app).
   // Note: If multiple orgs deploy workers with the same name, this entry gets overwritten.
   // That's acceptable since this is only for redirect purposes - the primary lookup
   // uses the namespaced format which is unique per org.

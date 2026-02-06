@@ -38,6 +38,12 @@ import {
 } from '../../main/src/worker-auth';
 // @ts-expect-error - text import
 import DEBUG_BRIDGE_SCRIPT from './debug-bridge.txt';
+import {
+  getWorkerAccessInfo,
+  resolveMissingRegistryMode,
+  shouldFailOpenForMissingRegistry,
+  type WorkerAccessInfo,
+} from './access-control';
 import { getSession as getSessionKV, type SessionData } from '../../main/src/session-kv';
 import type { OrgDO } from '../../main/src/auth';
 
@@ -52,11 +58,9 @@ interface Env {
   ORG: DurableObjectNamespace<OrgDO>;
   // Set to "true" to skip all auth checks (local development only)
   SKIP_AUTH?: string;
+  // Policy for workers missing KV access metadata ("open" during migration, "closed" for strict enforcement)
+  DISPATCHER_MISSING_REGISTRY_MODE?: string;
 }
-
-// KV key prefixes
-const SCRIPT_PREFIX = 'script:';
-const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
 
 // Helper functions to replace RPC calls
 
@@ -126,50 +130,6 @@ function parseWorkerRoute(hostname: string): { scriptName: string; orgSlug: stri
     // Legacy format: {script}.apps.chiridion.ai or {script}.apps.{env}.chiridion.ai
     const scriptName = firstPart;
     return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
-  }
-
-  return null;
-}
-
-/**
- * Worker access info from KV, including optional org_slug for new format.
- */
-interface WorkerAccessInfo {
-  is_public: boolean;
-  org_id: string;
-  org_slug?: string;
-  is_legacy?: boolean;
-}
-
-/**
- * Get worker script access info from KV index.
- * Tries new namespaced format first, then falls back to legacy.
- *
- * Returns:
- * - is_legacy: false - Found in new namespaced format, worker is deployed as {org-slug}--{script}
- * - is_legacy: true, has org_slug - Found in legacy format but was deployed with new system (redirect candidate)
- * - is_legacy: true, no org_slug - Old worker deployed before org-slug namespacing (serve from legacy dispatch)
- */
-async function getWorkerAccessInfo(
-  kv: KVNamespace,
-  dispatchScriptName: string,
-  legacyScriptName?: string
-): Promise<WorkerAccessInfo | null> {
-  // Try new format first: script:{org-slug}--{script-name}
-  let data = await kv.get(`${SCRIPT_PREFIX}${dispatchScriptName}`);
-  if (data) {
-    const parsed = JSON.parse(data) as { org_id: string; org_slug?: string; is_public: boolean };
-    return { ...parsed, is_legacy: false };
-  }
-
-  // Fall back to legacy format: script_org:{script-name}
-  // Note: New deploys write this with org_slug for redirect support
-  if (legacyScriptName) {
-    data = await kv.get(`${SCRIPT_ORG_PREFIX_LEGACY}${legacyScriptName}`);
-    if (data) {
-      const parsed = JSON.parse(data) as { org_id: string; org_slug?: string; is_public: boolean };
-      return { ...parsed, is_legacy: true };
-    }
   }
 
   return null;
@@ -522,19 +482,22 @@ async function handleWorkerRequest(
   // Try new namespaced format first, then legacy
   let accessInfo: WorkerAccessInfo | null = null;
   try {
-    accessInfo = await getWorkerAccessInfo(env.APP_KV, dispatchScriptName, scriptName);
+    accessInfo = await getWorkerAccessInfo(env.APP_KV, dispatchScriptName, scriptName, orgSlug);
   } catch (e) {
     // Fail closed on errors - don't bypass auth
     console.error(`[dispatcher] Error getting worker access info: ${e}`);
     return new Response('Service temporarily unavailable', { status: 503 });
   }
 
-  // Fail open: if worker not in registry, dispatch anyway
-  // This allows existing deployed workers to continue working even if not yet registered
-  // Once all workers are registered, this can be changed to fail closed
+  const missingRegistryMode = resolveMissingRegistryMode(env.DISPATCHER_MISSING_REGISTRY_MODE);
+
   if (!accessInfo) {
-    console.log(`[dispatcher] Worker "${dispatchScriptName}" not in registry, dispatching anyway (fail open)`);
-    return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
+    if (shouldFailOpenForMissingRegistry(missingRegistryMode, orgSlug)) {
+      console.warn(`[dispatcher] Worker "${dispatchScriptName}" not in registry, dispatching anyway (fail open)`); // TEMP migration mode
+      return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
+    }
+    console.warn(`[dispatcher] Worker "${dispatchScriptName}" not in registry, denying access (fail closed)`);
+    return new Response('App not found', { status: 404 });
   }
 
   // Legacy URL redirect: If using old URL format AND the worker was deployed with the

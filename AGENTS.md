@@ -357,6 +357,7 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `GITHUB_CLIENT_ID` | GitHub OAuth client ID |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth client secret |
+| `DISPATCHER_MISSING_REGISTRY_MODE` | Dispatcher behavior when worker KV metadata is missing: `open` (fail-open), `legacy-open` (fail-open only for legacy hostnames), or `closed` (strict fail-closed) |
 
 #### JuiceFS Container Variables (set automatically by worker)
 
