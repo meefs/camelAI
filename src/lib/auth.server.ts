@@ -6,7 +6,7 @@ import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
 import type { OnboardingPreferences } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
-import { getUserOrgs, listUserWorkspaces, listUserWorkspacesAcrossOrgs, isOrgAdmin, getWorkspaceAccess } from './auth-do';
+import { getUserOrgs, listUserWorkspacesAcrossOrgs, isOrgAdmin, getWorkspaceAccess } from './auth-do';
 
 // Request-scoped cache for auth context to avoid duplicate DO RPC calls
 // when multiple loaders call requireAuthContext() in the same request
@@ -145,22 +145,21 @@ async function getAuthContextUncached(
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   const userStub = authEnv.USER.get(authEnv.USER.idFromName(userContext.user.id));
-  const onboarding = await userStub.getOnboarding();
-
-  // Get current org info directly from DO
-  const orgInfo = await authEnv.ORG.get(authEnv.ORG.idFromName(userContext.session.org_id)).getInfo();
+  const currentOrgStub = authEnv.ORG.get(
+    authEnv.ORG.idFromName(userContext.session.org_id)
+  );
+  const currentOrgInfoPromise = currentOrgStub.getInfo();
+  const [onboarding, orgInfo, orgs] = await Promise.all([
+    userStub.getOnboarding(),
+    // Get current org info directly from DO
+    currentOrgInfoPromise,
+    // Get user's org memberships
+    getUserOrgs(authEnv, userContext.session.user_id, {
+      preloadedOrgInfoById: new Map([[userContext.session.org_id, currentOrgInfoPromise]]),
+    }),
+  ]);
   if (!orgInfo) return null;
   const currentOrg: Organization = orgInfo;
-
-  // Get user's org memberships
-  const orgs = await getUserOrgs(authEnv, userContext.session.user_id);
-
-  // Get workspaces for current org (for settings/management)
-  const workspaces = await listUserWorkspaces(
-    authEnv,
-    userContext.session.user_id,
-    currentOrg.id
-  );
 
   // Get all workspaces across all orgs (for workspace switcher)
   const allWorkspaces = await listUserWorkspacesAcrossOrgs(
@@ -168,6 +167,10 @@ async function getAuthContextUncached(
     userContext.session.user_id,
     orgs
   );
+
+  // Workspaces in the current org only (for settings/management).
+  // Derive from allWorkspaces to avoid duplicate current-org RPC traversal.
+  const workspaces = allWorkspaces.filter((ws) => ws.org_id === currentOrg.id);
 
   // Select current workspace - must be from current org to maintain consistency
   // If no workspaces in current org, currentWorkspace will be null and UI shows NoWorkspacesError
