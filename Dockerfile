@@ -60,8 +60,8 @@ COPY sandbox/requirements.txt ./
 # Debian marks /usr as externally managed (PEP 668); allow system installs for baked-in tools.
 RUN PIP_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --break-system-packages -r requirements.txt
 
-# Layer 5: Template files (Yarn PnP - global cache on JuiceFS)
-# Templates use Yarn PnP with global cache at ~/.yarn-cache (persisted on JuiceFS)
+# Layer 5: Template files (Yarn PnP with project-local .yarn/cache on JuiceFS)
+# Templates use Yarn PnP with local cache in each template directory (.yarn/cache)
 COPY --chmod=755 sandbox/skills/developing-software/templates ./skills/developing-software/templates
 
 # Layer 6: App code (changes frequently)

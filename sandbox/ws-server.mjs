@@ -31,9 +31,6 @@ function logError(prefix, message, data) {
 // Configuration from environment
 const PORT = 8080;
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
-const TRACE_EVENTS = process.env.CHIRIDION_TRACE_EVENTS !== '0';
-const TRACE_DIR = `${SYNC_DIR}/.chiridion/trace`;
-const TRACE_ALL_FILE = `${TRACE_DIR}/_all.ndjson`;
 const TASK_RESULTS_DIR = `${SYNC_DIR}/.chiridion/task-results`;
 const TODOS_DIR = `${SYNC_DIR}/.chiridion/todos`;
 const CLAUDE_DEBUG_DIR = `${SYNC_DIR}/.claude/debug`;
@@ -89,24 +86,9 @@ async function writeIntegrationEnvFile(envVars) {
 // Session state - keyed by threadId
 const sessions = new Map();
 const MAX_EVENT_BUFFER = 500;
-let traceDirPromise = null;
 let taskResultsDirPromise = null;
 let todosDirPromise = null;
 let startupDiagnosticsPromise = null;
-
-
-function sanitizeFileSegment(value) {
-  return String(value || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
-}
-
-function ensureTraceDir() {
-  if (!traceDirPromise) {
-    traceDirPromise = mkdir(TRACE_DIR, { recursive: true }).catch((err) => {
-      logError('[ws-server]', 'Failed to create trace dir:', err?.message || String(err));
-    });
-  }
-  return traceDirPromise;
-}
 
 function ensureTaskResultsDir() {
   if (!taskResultsDirPromise) {
@@ -202,16 +184,6 @@ async function probeFilesystem() {
   await probePath('claude_dir', `${SYNC_DIR}/.claude`);
   await probePath('claude_projects_dir', `${SYNC_DIR}/.claude/projects`);
   await probePath('chiridion_dir', `${SYNC_DIR}/.chiridion`);
-
-  try {
-    await ensureTraceDir();
-    const probePathFile = `${TRACE_DIR}/startup-probe.ndjson`;
-    const line = `${JSON.stringify({ at: new Date().toISOString(), ok: true })}\n`;
-    await appendFile(probePathFile, line);
-    log('[ws-server]', 'fs_probe_write_ok', { path: probePathFile });
-  } catch (error) {
-    logError('[ws-server]', 'fs_probe_write_failed', { path: TRACE_DIR, error: error?.message || String(error) });
-  }
 }
 
 async function tailFile(path, maxBytes = 12000) {
@@ -273,7 +245,6 @@ async function runStartupDiagnostics() {
       uid,
       gid,
       syncDir: SYNC_DIR,
-      traceDir: TRACE_DIR,
       taskResultsDir: TASK_RESULTS_DIR,
       anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || null,
       anthropicKeyLen: (process.env.ANTHROPIC_API_KEY || '').length,
@@ -291,80 +262,6 @@ async function runStartupDiagnostics() {
     }
   })();
   return startupDiagnosticsPromise;
-}
-
-function serializeError(error) {
-  if (!error || typeof error !== 'object') {
-    return { message: String(error) };
-  }
-  return {
-    name: error.name || null,
-    message: error.message || String(error),
-    code: error.code || null,
-    errno: error.errno ?? null,
-    syscall: error.syscall || null,
-    path: error.path || null,
-    stack: error.stack || null,
-  };
-}
-
-async function inspectPath(path) {
-  try {
-    const info = await stat(path);
-    return {
-      exists: true,
-      isFile: info.isFile(),
-      isDirectory: info.isDirectory(),
-      size: info.size,
-      mode: info.mode,
-    };
-  } catch (error) {
-    return {
-      exists: false,
-      error: serializeError(error),
-    };
-  }
-}
-
-async function writeTrace(threadId, entry) {
-  if (!TRACE_EVENTS) return;
-  const safeThread = sanitizeFileSegment(threadId);
-  const tracePath = `${TRACE_DIR}/${safeThread}.ndjson`;
-  let writePhase = 'thread';
-  let lineBytes = null;
-  try {
-    const line = `${JSON.stringify({ at: new Date().toISOString(), threadId, ...entry })}\n`;
-    lineBytes = Buffer.byteLength(line, 'utf8');
-    await ensureTraceDir();
-    await appendFile(tracePath, line);
-    writePhase = 'all';
-    await appendFile(TRACE_ALL_FILE, line);
-  } catch (error) {
-    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
-    const gid = typeof process.getgid === 'function' ? process.getgid() : null;
-    const [traceDirState, traceFileState, traceAllState] = await Promise.all([
-      inspectPath(TRACE_DIR),
-      inspectPath(tracePath),
-      inspectPath(TRACE_ALL_FILE),
-    ]);
-    logError('[ws-server]', 'trace_write_failed', {
-      writePhase,
-      threadId: threadId || null,
-      entryType: entry?.type || null,
-      lineBytes,
-      tracePath,
-      traceAllPath: TRACE_ALL_FILE,
-      cwd: process.cwd(),
-      home: typeof os.homedir === 'function' ? os.homedir() : process.env.HOME || null,
-      user: process.env.USER || null,
-      uid,
-      gid,
-      error: serializeError(error),
-      traceDirState,
-      traceFileState,
-      traceAllState,
-    });
-  }
 }
 
 function extractParentToolUseId(event) {
@@ -1124,7 +1021,6 @@ function bufferEvent(session, payload) {
   const eventId = session.nextEventId++;
   const envelope = { ...payload, eventId, sessionId: session.threadId };
   session.eventBuffer.push(envelope);
-  void writeTrace(session.threadId, { direction: 'ws_out', payload: envelope });
   if (session.eventBuffer.length > MAX_EVENT_BUFFER) {
     session.eventBuffer.shift();
   }
@@ -1156,7 +1052,7 @@ function replayBufferedEvents(session, ws, lastEventId) {
     }
   }
   if (replayed > 0) {
-    void writeTrace(session.threadId, { direction: 'ws_out_replay', count: replayed, fromEventId: fromId });
+    log('[ws-server]', 'replayed_buffered_events', { threadId: session.threadId, replayed, fromEventId: fromId });
   }
 }
 
@@ -1351,7 +1247,6 @@ function startEventLoop(session) {
       exitReason = 'error';
       logError('[ws-server]', 'Query error:', summarizeError(e));
       bufferEvent(session, { type: 'error', error: String(e) });
-      void writeTrace(session.threadId, { direction: 'error', error: String(e) });
       logForPersistence({ type: 'error', error: String(e) });
     } finally {
       session.activeQuery = null;
@@ -1513,6 +1408,7 @@ async function handleUserMessage(session, content, userInfo = null) {
     author: userInfo,
     hiddenContextCount: contextMessages.length,
   });
+  
   log('[ws-server]', 'handleUserMessage', {
     threadId: session.threadId,
     hiddenContextCount: contextMessages.length,
@@ -1676,7 +1572,6 @@ wss.on('connection', (ws, req) => {
         };
 
         const session = getOrCreateSession(threadId, threadDeployToken, mcpToken, userInfo);
-        void writeTrace(session.threadId, { direction: 'ws_in', type: 'init', payload: { threadId, lastEventId: data.lastEventId, hasDeployToken: !!threadDeployToken, hasMcpToken: !!mcpToken, userName: userInfo.userName } });
         log('[ws-server]', 'init', {
           threadId,
           lastEventId: data.lastEventId,
@@ -1708,7 +1603,6 @@ wss.on('connection', (ws, req) => {
         const threadId = ws.data?.threadId;
         if (threadId && sessions.has(threadId)) {
           const session = sessions.get(threadId);
-          void writeTrace(session.threadId, { direction: 'ws_in', type: 'stop' });
           log('[ws-server]', 'stop', { threadId });
           session.lastStopRequestedAt = Date.now();
           // Resolve any pending questions with empty answers so SDK can unwind

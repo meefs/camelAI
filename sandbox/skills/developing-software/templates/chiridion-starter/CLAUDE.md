@@ -55,6 +55,17 @@ yarn test     # Run Vitest tests
 shadcn add    # Add UI components (globally installed)
 ```
 
+## Preinstalled Data Libraries
+
+These are already included in the starter template and ready to import:
+
+- `recharts` - Chart components for dashboards/visualizations
+- `@tanstack/react-table` - Headless data table engine (sorting/filtering/pagination)
+- `date-fns` - Date parsing/formatting/utilities
+- `papaparse` - CSV parsing/export utilities
+- `lodash-es` - General data manipulation helpers
+- `react-is` - React element/type runtime checks (often used by UI tooling)
+
 ## Enabling Features
 
 ### Durable Objects (for persistence)

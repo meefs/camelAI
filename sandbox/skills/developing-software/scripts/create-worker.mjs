@@ -241,6 +241,7 @@ function generateCssFromPreset(preset, options) {
 function waitForGoldenTemplate(templateName) {
   const goldenTemplate = join(GOLDEN_TEMPLATES_DIR, templateName);
   const lockFile = join(GOLDEN_TEMPLATES_DIR, `.${templateName}.lock`);
+  const readyFile = join(goldenTemplate, '.chiridion-ready');
   const pnpFile = join(goldenTemplate, '.pnp.cjs');
 
   // Wait for lock file to be removed (max 2 minutes)
@@ -253,7 +254,12 @@ function waitForGoldenTemplate(templateName) {
     spawnSync('sleep', ['1']);
   }
 
-  return existsSync(pnpFile) ? goldenTemplate : null;
+  if (existsSync(lockFile)) {
+    console.log(`         Golden template lock did not clear after 120s`);
+    return null;
+  }
+
+  return existsSync(readyFile) && existsSync(pnpFile) ? goldenTemplate : null;
 }
 
 /**

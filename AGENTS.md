@@ -213,6 +213,12 @@ The floating todo list state persists across reconnections:
 2. On WebSocket init, the server reads the persisted file and sends `todo_state` to the client
 3. On turn completion (`result` event), the persisted file is cleared
 
+### Integration Token Refresh
+- OAuth integrations with expiring tokens (for example Notion) store `token_expires_at` and are refreshed by `WorkspaceDO` alarms.
+- BigQuery integrations now follow the same token lifecycle pattern: the encrypted `service_account_json` is used server-side to mint short-lived Google access tokens.
+- Runtime environments receive `INT_BIGQUERY_*_ACCESS_TOKEN` instead of raw service account JSON whenever a token is available.
+- After token refresh, updated credentials are pushed to both the running workspace container and all deployed workspace workers.
+
 ### Workspace Persistence (JuiceFS)
 JuiceFS provides a FUSE-based distributed filesystem with SQLite metadata and R2 data storage:
 
@@ -378,8 +384,8 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 |----------|-------------|
 | `JUICEFS_META_DIR` | Directory for JuiceFS SQLite metadata (default: `/var/lib/juicefs`) |
 | `JUICEFS_CACHE_DIR` | Directory for JuiceFS FUSE cache (default: `/tmp/juicefs-cache`) |
-| `JUICEFS_UPLOAD_DELAY` | Delay before uploading dirty data to R2 (default: `60s`) |
-| `JUICEFS_BUFFER_SIZE` | Read/write buffer size in MB (default: `1024`) |
+| `JUICEFS_UPLOAD_DELAY` | Delay before uploading dirty data to R2 (default: `5s`) |
+| `JUICEFS_BUFFER_SIZE` | Read/write buffer size in MB (default: `2048`) |
 | `JUICEFS_CACHE_SIZE` | Max local cache size in MB (default: `4096` = 4GB, container has 8GB disk) |
 | `DISABLE_JUICEFS` | Set to `1` to skip JuiceFS mount |
 

@@ -39,7 +39,7 @@ describe('useAuthData', () => {
     const { result } = renderHook(() => useAuthData());
 
     expect(result.current).toEqual(mockAuthState);
-    expect(mockUseRouteLoaderData).toHaveBeenCalledWith('_app');
+    expect(mockUseRouteLoaderData).toHaveBeenCalledWith('routes/_app');
   });
 
   it('should throw error when used outside _app layout', async () => {

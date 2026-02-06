@@ -13,6 +13,15 @@ import {
 
 describe('getModelPricing', () => {
   describe('exact model match', () => {
+    it('should return correct pricing for claude-opus-4-6', () => {
+      const pricing = getModelPricing('claude-opus-4-6');
+      expect(pricing.input_per_million).toBe(500);
+      expect(pricing.output_per_million).toBe(2500);
+      expect(pricing.cache_write_5m_per_million).toBe(625);
+      expect(pricing.cache_write_1h_per_million).toBe(1000);
+      expect(pricing.cache_read_per_million).toBe(50);
+    });
+
     it('should return correct pricing for claude-opus-4-5-20251101', () => {
       const pricing = getModelPricing('claude-opus-4-5-20251101');
       expect(pricing.input_per_million).toBe(500);
@@ -48,6 +57,11 @@ describe('getModelPricing', () => {
   });
 
   describe('model family matching', () => {
+    it('should match opus-4-6 variants', () => {
+      const pricing = getModelPricing('claude-opus-4-6-some-other-date');
+      expect(pricing.input_per_million).toBe(500);
+    });
+
     it('should match opus-4-5 variants', () => {
       const pricing = getModelPricing('claude-opus-4-5-some-other-date');
       expect(pricing.input_per_million).toBe(500);

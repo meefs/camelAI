@@ -79,7 +79,7 @@ export function getEnvVarSuffixesForType(integrationType: string, dynamicFields?
     case 'redis':
       return ['URL'];
     case 'bigquery':
-      return ['CREDENTIALS_JSON', 'PROJECT_ID'];
+      return ['ACCESS_TOKEN', 'PROJECT_ID'];
     case 'other':
       return ['API_KEY', 'API_SECRET', 'CLIENT_ID', 'CLIENT_SECRET', 'BASE_URL'];
     default:
@@ -301,10 +301,8 @@ export function mapCredentialsToEnvVars(
     }
 
     case 'bigquery':
-      // BigQuery uses service account JSON
-      if (str(credentials.service_account_json)) {
-        set('CREDENTIALS_JSON', str(credentials.service_account_json)!);
-      }
+      // BigQuery uses short-lived access tokens minted from service account JSON.
+      if (str(credentials.access_token)) set('ACCESS_TOKEN', str(credentials.access_token)!);
       if (str(config.project_id)) set('PROJECT_ID', str(config.project_id)!);
       break;
 

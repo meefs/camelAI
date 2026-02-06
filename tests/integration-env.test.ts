@@ -78,6 +78,10 @@ describe('getEnvVarSuffixesForType', () => {
     expect(getEnvVarSuffixesForType('github')).toEqual(['TOKEN']);
   });
 
+  it('returns correct suffixes for bigquery', () => {
+    expect(getEnvVarSuffixesForType('bigquery')).toEqual(['ACCESS_TOKEN', 'PROJECT_ID']);
+  });
+
   it('returns API_KEY for unknown types', () => {
     expect(getEnvVarSuffixesForType('some_unknown_type')).toEqual(['API_KEY']);
   });
@@ -223,6 +227,31 @@ describe('mapCredentialsToEnvVars', () => {
       INT_SLACK_TEAM_SLACK_BOT_TOKEN: 'xoxb-123',
       INT_SLACK_TEAM_SLACK_TEAM_ID: 'T123',
       INT_SLACK_TEAM_SLACK_TEAM_NAME: 'My Team',
+    });
+  });
+
+  it('handles bigquery with minted access token', () => {
+    const env = mapCredentialsToEnvVars(
+      'Warehouse',
+      'bigquery',
+      { access_token: 'ya29.token' },
+      { project_id: 'my-project' }
+    );
+    expect(env).toEqual({
+      INT_BIGQUERY_WAREHOUSE_ACCESS_TOKEN: 'ya29.token',
+      INT_BIGQUERY_WAREHOUSE_PROJECT_ID: 'my-project',
+    });
+  });
+
+  it('does not expose raw bigquery service account json when token is missing', () => {
+    const env = mapCredentialsToEnvVars(
+      'Warehouse',
+      'bigquery',
+      { service_account_json: '{"type":"service_account"}' },
+      { project_id: 'my-project' }
+    );
+    expect(env).toEqual({
+      INT_BIGQUERY_WAREHOUSE_PROJECT_ID: 'my-project',
     });
   });
 

@@ -23,14 +23,15 @@ TARGET_DIR="${R2_MOUNT_DIR:-/home/claude}"
 JUICEFS_META_DIR="${JUICEFS_META_DIR:-/var/lib/juicefs}"
 JUICEFS_CACHE_DIR="${JUICEFS_CACHE_DIR:-/tmp/juicefs-cache}"
 JUICEFS_UPLOAD_DELAY="${JUICEFS_UPLOAD_DELAY:-5s}"
-JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-1024}"
-JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-2048}"  # 2GB max cache
+JUICEFS_BUFFER_SIZE="${JUICEFS_BUFFER_SIZE:-2048}"
+JUICEFS_CACHE_SIZE="${JUICEFS_CACHE_SIZE:-4096}"  # 4GB max cache
 
 # Track PIDs for cleanup
 WS_PID=""
 CONTROL_PID=""
 BACKUP_PID=""
 INDEXER_PID=""
+CLAUDE_WARMUP_PID=""
 MOUNT_SUCCEEDED=""
 
 # Check if R2 is configured
@@ -738,6 +739,12 @@ cleanup() {
     kill "$INDEXER_PID" 2>/dev/null || true
   fi
 
+  # Kill background .claude warmup if still running
+  if [ -n "${CLAUDE_WARMUP_PID:-}" ] && kill -0 "$CLAUDE_WARMUP_PID" 2>/dev/null; then
+    kill "$CLAUDE_WARMUP_PID" 2>/dev/null || true
+    wait "$CLAUDE_WARMUP_PID" 2>/dev/null || true
+  fi
+
   # Kill control-plane if running
   if [ -n "${CONTROL_PID:-}" ] && kill -0 "$CONTROL_PID" 2>/dev/null; then
     echo "[entrypoint] Stopping control-plane (PID: $CONTROL_PID)..." >&2
@@ -809,6 +816,16 @@ for skill_dir in /etc/claude-code/skills/*/; do
   su -s /bin/sh claude -c "ln -sf '/etc/claude-code/skills/$skill_name' '$TARGET_DIR/.claude/skills/$skill_name'"
 done
 echo "[entrypoint] System skills symlinked to $TARGET_DIR/.claude/skills/" >&2
+
+# Warm ~/.claude path in the background with JuiceFS defaults (no -p override).
+# This is best-effort and should not delay startup.
+echo "[entrypoint] Starting background warmup for /home/claude/.claude..." >&2
+(
+  su -s /bin/sh claude -c "juicefs warmup '/home/claude/.claude'" 2>&1 || \
+    echo "[entrypoint] WARNING: Background warmup for /home/claude/.claude failed (non-critical)" >&2
+) &
+CLAUDE_WARMUP_PID=$!
+echo "[entrypoint] .claude warmup PID: $CLAUDE_WARMUP_PID" >&2
 
 # Write env vars to a file that claude user can source (needed before ws-server)
 cat > /tmp/ws-env.sh << ENVEOF
@@ -889,6 +906,8 @@ echo "[entrypoint] Setting up golden template..." >&2
   SOURCE_TEMPLATE="/app/skills/developing-software/templates/${TEMPLATE_NAME}"
   GOLDEN_DIR="${TARGET_DIR}/.chiridion/templates"
   GOLDEN_TEMPLATE="${GOLDEN_DIR}/${TEMPLATE_NAME}"
+  LOCK_FILE="${GOLDEN_DIR}/.${TEMPLATE_NAME}.lock"
+  READY_FILE="${GOLDEN_TEMPLATE}/.chiridion-ready"
 
   # Check source exists (can do as root since it's local fs)
   if [ ! -d "$SOURCE_TEMPLATE" ]; then
@@ -899,27 +918,38 @@ echo "[entrypoint] Setting up golden template..." >&2
   echo "[golden-template] Source: ${SOURCE_TEMPLATE} ($(find "${SOURCE_TEMPLATE}" -type f | wc -l) files)" >&2
   echo "[golden-template] Dest: ${GOLDEN_TEMPLATE}" >&2
 
-  # Sync and install as claude user
-  echo "[golden-template] Starting sync and install..." >&2
+  # Create lock and clear stale readiness marker before mutating template.
+  if ! su -s /bin/sh claude -c "
+    set -e
+    mkdir -p '$GOLDEN_DIR'
+    touch '$LOCK_FILE'
+    rm -f '$READY_FILE'
+  " 2>&1; then
+    echo "[golden-template] Failed to set lock file (non-critical)" >&2
+    exit 1
+  fi
+
+  # Sync, warm cache, and install as claude user
+  echo "[golden-template] Starting sync, warmup, and install..." >&2
   SYNC_START="$(date +%s)"
   if su -s /bin/sh claude -c "
     set -e
-    mkdir -p '$GOLDEN_DIR'
     juicefs sync '${SOURCE_TEMPLATE}/' '$GOLDEN_TEMPLATE/' --update
+    # Warmup is best-effort; install/readiness should proceed even if warmup has partial failures.
+    juicefs warmup '$GOLDEN_TEMPLATE' -p 100 || echo '[golden-template] WARNING: warmup failed, continuing with install' >&2
     cd '$GOLDEN_TEMPLATE'
     yarn install
+    touch '$READY_FILE'
   " 2>&1; then
     SYNC_END="$(date +%s)"
     echo "[golden-template] Ready (took $((SYNC_END - SYNC_START))s)" >&2
-    # Warm JuiceFS cache in background - since clone shares blocks, this warms cache for all cloned projects
-    echo "[golden-template] Starting cache warmup (100 threads)..." >&2
-    (juicefs warmup "$GOLDEN_TEMPLATE" -p 100 2>&1 | while read -r line; do echo "[warmup] $line" >&2; done) &
-    WARMUP_PID=$!
-    echo "[golden-template] Cache warmup started (PID: $WARMUP_PID)" >&2
   else
     SYNC_END="$(date +%s)"
     echo "[golden-template] Failed after $((SYNC_END - SYNC_START))s (non-critical)" >&2
   fi
+
+  # Always remove lock so create-worker can proceed or fail-fast on readiness.
+  su -s /bin/sh claude -c "rm -f '$LOCK_FILE'" 2>/dev/null || true
 ) &
 
 # Start session indexer loop (indexes Claude session files every 60s for memory search)
