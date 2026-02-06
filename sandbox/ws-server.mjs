@@ -1400,15 +1400,6 @@ async function handleUserMessage(session, content, userInfo = null) {
 
   session.lastUserMessage = attributedContent;
 
-  void writeTrace(session.threadId, {
-    direction: 'ws_in',
-    type: 'message',
-    content: attributedContent,
-    rawContent,
-    author: userInfo,
-    hiddenContextCount: contextMessages.length,
-  });
-  
   log('[ws-server]', 'handleUserMessage', {
     threadId: session.threadId,
     hiddenContextCount: contextMessages.length,
