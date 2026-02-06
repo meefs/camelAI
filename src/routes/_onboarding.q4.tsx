@@ -1,10 +1,15 @@
-import { useOutletContext } from 'react-router';
+import { useNavigate, useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.q4';
 import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
 import { DesignStyleCard } from '@/components/onboarding/design-style-card';
 import { DESIGN_STYLE_PREVIEWS } from '@/components/onboarding/design-style-previews';
 import { useDelayedAdvance } from '@/components/onboarding/use-delayed-advance';
-import { DESIGN_STYLE_OPTIONS } from '@/lib/onboarding';
+import {
+  DESIGN_STYLE_OPTIONS,
+  STEP_PATHS,
+  getNextStep,
+  getPreviousStep,
+} from '@/lib/onboarding';
 import { cn } from '@/lib/utils';
 import type { OnboardingDesignStyle } from '@/types';
 import type { OnboardingRouteContext } from './_onboarding';
@@ -31,7 +36,14 @@ export const links: Route.LinksFunction = () => [
 
 export default function OnboardingQ4Route() {
   const context = useOutletContext<OnboardingRouteContext>();
-  const { isAdvancing, scheduleAdvance } = useDelayedAdvance(() => context.goNext('q4'));
+  const navigate = useNavigate();
+  const querySuffix = context.teamMode ? '?team=1' : '';
+  const previousStep = getPreviousStep('q4', context.sequence);
+  const nextStep = getNextStep('q4', context.sequence);
+  const { isAdvancing, scheduleAdvance } = useDelayedAdvance(() => {
+    if (!nextStep) return;
+    navigate(`${STEP_PATHS[nextStep]}${querySuffix}`);
+  });
   const visualStyles = DESIGN_STYLE_OPTIONS.filter(
     (style) => style.value !== 'per_project'
   );
@@ -50,12 +62,14 @@ export default function OnboardingQ4Route() {
       contentClassName="max-w-5xl"
       onBack={() => {
         if (isAdvancing) return;
-        context.goBack('q4');
+        if (!previousStep) return;
+        navigate(`${STEP_PATHS[previousStep]}${querySuffix}`);
       }}
       onSkip={() => {
         if (isAdvancing) return;
         context.updateAnswers({ design_style: null });
-        context.goNext('q4');
+        if (!nextStep) return;
+        navigate(`${STEP_PATHS[nextStep]}${querySuffix}`);
       }}
     >
       <div className="space-y-6">

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useOutletContext } from 'react-router';
+import { useNavigate, useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.q6';
 import { DataInterestGrid } from '@/components/onboarding/data-interest-grid';
 import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
@@ -7,6 +7,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   DEFAULT_INTEGRATION_INTERESTS,
+  STEP_PATHS,
+  getPreviousStep,
 } from '@/lib/onboarding';
 import type { OnboardingFileType } from '@/types';
 import type { OnboardingRouteContext } from './_onboarding';
@@ -27,10 +29,13 @@ function toggleInList<T extends string>(list: T[], item: T): T[] {
 
 export default function OnboardingQ6Route() {
   const context = useOutletContext<OnboardingRouteContext>();
+  const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const selectedFiles = context.answers.data_interests.files;
   const selectedIntegrations = context.answers.data_interests.integrations;
+  const querySuffix = context.teamMode ? '?team=1' : '';
+  const previousStep = getPreviousStep('q6', context.sequence);
   const integrationOptions = useMemo(
     () => DEFAULT_INTEGRATION_INTERESTS,
     []
@@ -59,7 +64,10 @@ export default function OnboardingQ6Route() {
       currentStep={Math.max(1, context.currentStepIndex + 1)}
       totalSteps={context.totalSteps}
       transitionDirection={context.transitionDirection}
-      onBack={() => context.goBack('q6')}
+      onBack={() => {
+        if (!previousStep) return;
+        navigate(`${STEP_PATHS[previousStep]}${querySuffix}`);
+      }}
       onSkip={() => {
         void finish({
           data_interests: {

@@ -19,8 +19,7 @@ import {
   type OnboardingTransitionDirection,
   STEP_PATHS,
   getOnboardingProgressStorageKey,
-  getNextStep,
-  getPreviousStep,
+  getNearestValidStep,
   getStepIndex,
   getStepSequence,
   hasCompletedOnboarding,
@@ -52,9 +51,6 @@ export interface OnboardingRouteContext extends OnboardingLoaderData {
   sequence: OnboardingStepId[];
   currentStepIndex: number;
   totalSteps: number;
-  goBack: (step?: OnboardingStepId) => void;
-  goNext: (step?: OnboardingStepId) => void;
-  goToStep: (step: OnboardingStepId) => void;
   skipToChat: () => void;
   saveOnboarding: (overrides?: Partial<OnboardingPreferences>) => Promise<OnboardingPreferences>;
   completeOnboarding: (overrides?: Partial<OnboardingPreferences>) => Promise<void>;
@@ -192,35 +188,6 @@ export default function OnboardingLayout() {
   );
   const currentStepIndex = getStepIndex(currentStep, sequence);
   const totalSteps = sequence.length;
-
-  const goToStep = useCallback(
-    (step: OnboardingStepId) => {
-      navigate(`${STEP_PATHS[step]}${querySuffix}`);
-    },
-    [navigate, querySuffix]
-  );
-
-  const goNext = useCallback(
-    (step?: OnboardingStepId) => {
-      const source = step ?? currentStep;
-      const next = getNextStep(source, sequence);
-      if (next) {
-        goToStep(next);
-      }
-    },
-    [currentStep, goToStep, sequence]
-  );
-
-  const goBack = useCallback(
-    (step?: OnboardingStepId) => {
-      const source = step ?? currentStep;
-      const previous = getPreviousStep(source, sequence);
-      if (previous) {
-        goToStep(previous);
-      }
-    },
-    [currentStep, goToStep, sequence]
-  );
 
   const clearStoredProgress = useCallback(() => {
     localStorage.removeItem(progressStorageKey);
@@ -382,20 +349,10 @@ export default function OnboardingLayout() {
   useEffect(() => {
     if (loaderData.teamWelcomeOnly) return;
     if (currentStepIndex < 0 && sequence.length > 0) {
-      let fallbackStep = sequence[0];
-      if (
-        answers.ai_familiarity === 'extensive' &&
-        (currentStep === 'q2' || currentStep === 'q3')
-      ) {
-        fallbackStep = 'q4';
-      }
-      if (answers.ai_familiarity === 'extensive' && currentStep === 'q5') {
-        fallbackStep = 'q6';
-      }
+      const fallbackStep = getNearestValidStep(currentStep, sequence) ?? sequence[0];
       navigate(`${STEP_PATHS[fallbackStep]}${querySuffix}`, { replace: true });
     }
   }, [
-    answers.ai_familiarity,
     currentStep,
     currentStepIndex,
     loaderData.teamWelcomeOnly,
@@ -454,9 +411,6 @@ export default function OnboardingLayout() {
     sequence,
     currentStepIndex,
     totalSteps,
-    goBack,
-    goNext,
-    goToStep,
     skipToChat,
     saveOnboarding,
     completeOnboarding,

@@ -8,6 +8,11 @@ export function useDelayedAdvance(
 ) {
   const [isAdvancing, setIsAdvancing] = useState(false);
   const timeoutRef = useRef<number | null>(null);
+  const onAdvanceRef = useRef(onAdvance);
+
+  useEffect(() => {
+    onAdvanceRef.current = onAdvance;
+  }, [onAdvance]);
 
   const scheduleAdvance = useCallback(() => {
     if (isAdvancing || timeoutRef.current !== null) return;
@@ -15,9 +20,9 @@ export function useDelayedAdvance(
     timeoutRef.current = window.setTimeout(() => {
       timeoutRef.current = null;
       setIsAdvancing(false);
-      onAdvance();
+      onAdvanceRef.current();
     }, delayMs);
-  }, [delayMs, isAdvancing, onAdvance]);
+  }, [delayMs, isAdvancing]);
 
   useEffect(() => {
     return () => {

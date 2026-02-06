@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useLoaderData, useOutletContext } from 'react-router';
+import { useLoaderData, useNavigate, useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.org-slug';
 import { getAuthEnv, requireSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
@@ -9,6 +9,7 @@ import {
   type SlugAvailabilityState,
 } from '@/components/onboarding/slug-input';
 import { Button } from '@/components/ui/button';
+import { STEP_PATHS, getNextStep, getPreviousStep } from '@/lib/onboarding';
 import type { OnboardingRouteContext } from './_onboarding';
 
 interface OrgSlugLoaderData {
@@ -39,9 +40,13 @@ export function meta(_: Route.MetaArgs) {
 
 export default function OnboardingOrgSlugRoute() {
   const context = useOutletContext<OnboardingRouteContext>();
+  const navigate = useNavigate();
   const { currentSlug } = useLoaderData<typeof loader>() as OrgSlugLoaderData;
   const [slug, setSlug] = useState(context.pendingOrgSlug ?? currentSlug);
   const [status, setStatus] = useState<SlugAvailabilityState>('available');
+  const querySuffix = context.teamMode ? '?team=1' : '';
+  const previousStep = getPreviousStep('orgSlug', context.sequence);
+  const nextStep = getNextStep('orgSlug', context.sequence);
 
   const canContinue = status === 'available';
 
@@ -50,10 +55,14 @@ export default function OnboardingOrgSlugRoute() {
       currentStep={Math.max(1, context.currentStepIndex + 1)}
       totalSteps={context.totalSteps}
       transitionDirection={context.transitionDirection}
-      onBack={() => context.goBack('orgSlug')}
+      onBack={() => {
+        if (!previousStep) return;
+        navigate(`${STEP_PATHS[previousStep]}${querySuffix}`);
+      }}
       onSkip={() => {
         context.setPendingOrgSlug(currentSlug);
-        context.goNext('orgSlug');
+        if (!nextStep) return;
+        navigate(`${STEP_PATHS[nextStep]}${querySuffix}`);
       }}
     >
       <div className="space-y-6">
@@ -85,7 +94,8 @@ export default function OnboardingOrgSlugRoute() {
           onClick={() => {
             if (!canContinue) return;
             context.setPendingOrgSlug(slug.trim().toLowerCase());
-            context.goNext('orgSlug');
+            if (!nextStep) return;
+            navigate(`${STEP_PATHS[nextStep]}${querySuffix}`);
           }}
         >
           Continue

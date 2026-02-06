@@ -1,10 +1,11 @@
 import { Suspense, use, useState } from 'react';
-import { useLoaderData, useOutletContext } from 'react-router';
+import { useLoaderData, useNavigate, useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.welcome';
 import { getAuthEnv, requireSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
 import { Button } from '@/components/ui/button';
+import { STEP_PATHS } from '@/lib/onboarding';
 import type { OnboardingRouteContext } from './_onboarding';
 
 interface TeamContext {
@@ -126,11 +127,13 @@ function TeamHeading({ orgNamePromise }: { orgNamePromise: Promise<string> }) {
 
 export default function OnboardingWelcomeRoute() {
   const context = useOutletContext<OnboardingRouteContext>();
+  const navigate = useNavigate();
   const { orgNamePromise, showOrgSlugStepPromise, teamContextPromise } =
     useLoaderData<typeof loader>() as WelcomeLoaderData;
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const isTeamWelcome = context.teamMode;
+  const querySuffix = context.teamMode ? '?team=1' : '';
 
   return (
     <OnboardingLayout
@@ -201,7 +204,8 @@ export default function OnboardingWelcomeRoute() {
               void showOrgSlugStepPromise
                 .then((showOrgSlugStep) => {
                   context.setShowOrgSlugStep(showOrgSlugStep);
-                  context.goToStep(showOrgSlugStep ? 'orgSlug' : 'q1');
+                  const step = showOrgSlugStep ? 'orgSlug' : 'q1';
+                  navigate(`${STEP_PATHS[step]}${querySuffix}`);
                 })
                 .catch(() => {
                   setStartError('Failed to check onboarding steps. Please try again.');
