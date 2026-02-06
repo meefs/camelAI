@@ -2,7 +2,7 @@ import { waitUntil } from 'cloudflare:workers';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
-import { isOrgMember } from '@/lib/auth-do';
+import { isOrgMember, getWorkspaceAccess } from '@/lib/auth-do';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { INTEGRATION_REGISTRY, getIntegrationDefinition } from '@/lib/integration-registry';
 import { encryptCredentials } from '@/lib/integration-crypto';
@@ -204,9 +204,9 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: 'Target workspace must belong to the same organization' };
     }
 
-    // Verify user has access to target workspace
-    const isMember = await isOrgMember(authEnv, authContext.user.id, targetInfo.org_id);
-    if (!isMember) {
+    // Verify user has actual workspace access (not just org membership)
+    const accessLevel = await getWorkspaceAccess(authEnv, targetWorkspaceId, authContext.user.id);
+    if (accessLevel === 'none') {
       return { error: 'You do not have access to the target workspace' };
     }
 

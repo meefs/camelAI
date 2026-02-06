@@ -66,6 +66,11 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!newOwnerId) {
       return { error: 'New owner ID is required' };
     }
+    // Only the current owner can transfer ownership (not just any admin)
+    const currentUserOrg = authContext.orgs.find((o) => o.org_id === orgId);
+    if (currentUserOrg?.role !== 'owner') {
+      return { error: 'Only the organization owner can transfer ownership' };
+    }
     await transferOrgOwnership(authEnv, orgId, newOwnerId, actorId);
     return { success: true };
   }
