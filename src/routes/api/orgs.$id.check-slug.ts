@@ -69,9 +69,22 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   );
   const owner = await slugStub.getOwner();
 
-  if (!owner || owner === orgId) {
+  if (owner && owner !== orgId) {
+    return Response.json({ available: false, reason: 'taken' }, { status: 200 });
+  }
+
+  if (owner === orgId) {
     return Response.json({ available: true });
   }
 
-  return Response.json({ available: false, reason: 'taken' }, { status: 200 });
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+  const conflictingOrgId = await orgStub.findConflictingOrgIdByStoredSlug(
+    normalizedSlug,
+    orgId
+  );
+  if (conflictingOrgId) {
+    return Response.json({ available: false, reason: 'taken' }, { status: 200 });
+  }
+
+  return Response.json({ available: true });
 }

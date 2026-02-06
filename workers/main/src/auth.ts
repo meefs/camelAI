@@ -99,9 +99,15 @@ function buildSlugCandidates(name: string, orgId: string): string[] {
 async function claimSlugWithCandidates(
   slugNamespace: DurableObjectNamespace<OrgSlugDO>,
   orgId: string,
-  candidates: string[]
+  candidates: string[],
+  options?: {
+    isCandidateBlocked?: (candidate: string) => Promise<boolean>;
+  }
 ): Promise<string> {
   for (const candidate of candidates) {
+    if (options?.isCandidateBlocked && (await options.isCandidateBlocked(candidate))) {
+      continue;
+    }
     const slugStub = slugNamespace.get(slugNamespace.idFromName(candidate));
     const result = await slugStub.claim(orgId);
     if (result.ok) {
@@ -1235,7 +1241,15 @@ export class OrgDO extends DurableObject<DOEnv> {
     return Array.from(userIds);
   }
 
-  private async findOrgIdByStoredSlug(targetSlug: string, currentOrgId: string): Promise<string | null> {
+  async findConflictingOrgIdByStoredSlug(
+    targetSlug: string,
+    excludingOrgId: string | null = null
+  ): Promise<string | null> {
+    const normalizedTargetSlug = normalizeOrgSlug(targetSlug);
+    if (!normalizedTargetSlug) {
+      return null;
+    }
+
     const userIds = await this.collectUserIdsForSlugCheck();
     if (userIds.length === 0) {
       return null;
@@ -1247,7 +1261,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         const userStub = this.env.USER.get(this.env.USER.idFromName(userId)) as unknown as UserDO;
         const userOrgs = await userStub.getOrgs();
         for (const org of userOrgs) {
-          if (org.org_id !== currentOrgId) {
+          if (!excludingOrgId || org.org_id !== excludingOrgId) {
             orgIds.add(org.org_id);
           }
         }
@@ -1260,7 +1274,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       try {
         const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId)) as unknown as OrgDO;
         const slug = await orgStub.getStoredSlug();
-        if (slug === targetSlug) {
+        if (slug === normalizedTargetSlug) {
           return orgId;
         }
       } catch {
@@ -1315,7 +1329,7 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   /**
    * Read the currently persisted slug without claiming/repairing registry state.
-   * Used by slug-collision checks in updateSlug.
+   * Used by slug-collision checks in createOrg/updateSlug/check-slug.
    */
   async getStoredSlug(): Promise<string | null> {
     const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
@@ -1345,7 +1359,13 @@ export class OrgDO extends DurableObject<DOEnv> {
     const slug = await claimSlugWithCandidates(
       this.env.ORG_SLUG,
       id,
-      buildSlugCandidates(name, id)
+      buildSlugCandidates(name, id),
+      {
+        isCandidateBlocked: async (candidate) => {
+          const conflictingOrgId = await this.findConflictingOrgIdByStoredSlug(candidate, id);
+          return Boolean(conflictingOrgId);
+        },
+      }
     );
     const info: Organization = {
       id,
@@ -1439,7 +1459,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       throw new Error('slug_taken');
     }
     if (!claimedOwner) {
-      const conflictingOrgId = await this.findOrgIdByStoredSlug(normalizedSlug, info.id);
+      const conflictingOrgId = await this.findConflictingOrgIdByStoredSlug(normalizedSlug, info.id);
       if (conflictingOrgId) {
         throw new Error('slug_taken');
       }

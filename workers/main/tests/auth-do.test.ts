@@ -164,6 +164,48 @@ describe('Auth flow (full-stack with DOs)', () => {
       const message = slugError instanceof Error ? slugError.message : String(slugError);
       expect(message).toContain('slug_taken');
     });
+
+    it('createOrg skips legacy persisted slugs that are missing registry claims', async () => {
+      const ownerEmail = testEmail();
+      const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Legacy Owner');
+      const { org: legacyOrg } = await createOrg(testEnv, 'Collision Test', ownerId);
+
+      const legacyOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(legacyOrg.id));
+      const legacyInfo = await legacyOrgStub.getInfo();
+      if (!legacyInfo?.slug) {
+        throw new Error('Expected legacy org slug to be set');
+      }
+
+      const previousSlug = legacyInfo.slug;
+      const legacySlug = 'collision-test-abc';
+      await legacyOrgStub.setInfo({
+        ...legacyInfo,
+        slug: legacySlug,
+      });
+
+      // Simulate legacy state: persisted slug exists, but ORG_SLUG has no claim.
+      const previousSlugStub = testEnv.ORG_SLUG.get(testEnv.ORG_SLUG.idFromName(previousSlug));
+      await previousSlugStub.release(legacyOrg.id);
+      const legacySlugStub = testEnv.ORG_SLUG.get(testEnv.ORG_SLUG.idFromName(legacySlug));
+      await legacySlugStub.release(legacyOrg.id);
+
+      const otherOwnerEmail = testEmail();
+      const { userId: otherOwnerId } = await createUser(
+        testEnv,
+        otherOwnerEmail,
+        'password123',
+        'Other Owner'
+      );
+
+      const newOrgId = `abc${Math.random().toString(36).slice(2, 10)}`;
+      const newOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(newOrgId));
+      const created = await newOrgStub.createOrg(newOrgId, 'Collision Test', otherOwnerId);
+
+      expect(created.org.slug).not.toBe(legacySlug);
+
+      const refreshedLegacyInfo = await legacyOrgStub.getInfo();
+      expect(refreshedLegacyInfo?.slug).toBe(legacySlug);
+    });
   });
 
   describe('Organization ownership invariants', () => {
