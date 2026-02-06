@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import { useOutletContext } from 'react-router';
+import { useLoaderData, useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.org-slug';
+import { getAuthEnv, requireSession } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
 import {
   SlugInput,
@@ -8,6 +10,25 @@ import {
 } from '@/components/onboarding/slug-input';
 import { Button } from '@/components/ui/button';
 import type { OnboardingRouteContext } from './_onboarding';
+
+interface OrgSlugLoaderData {
+  currentSlug: string;
+}
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const sessionContext = await requireSession(request, context);
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+
+  const orgStub = authEnv.ORG.get(
+    authEnv.ORG.idFromName(sessionContext.session.org_id)
+  );
+  const orgInfo = await orgStub.getInfo();
+
+  return {
+    currentSlug: orgInfo?.slug ?? '',
+  } satisfies OrgSlugLoaderData;
+}
 
 export function meta(_: Route.MetaArgs) {
   return [
@@ -18,9 +39,8 @@ export function meta(_: Route.MetaArgs) {
 
 export default function OnboardingOrgSlugRoute() {
   const context = useOutletContext<OnboardingRouteContext>();
-  const [slug, setSlug] = useState(
-    context.pendingOrgSlug ?? context.currentOrg.slug
-  );
+  const { currentSlug } = useLoaderData<typeof loader>() as OrgSlugLoaderData;
+  const [slug, setSlug] = useState(context.pendingOrgSlug ?? currentSlug);
   const [status, setStatus] = useState<SlugAvailabilityState>('available');
 
   const canContinue = status === 'available';
@@ -32,7 +52,7 @@ export default function OnboardingOrgSlugRoute() {
       transitionDirection={context.transitionDirection}
       onBack={() => context.goBack('orgSlug')}
       onSkip={() => {
-        context.setPendingOrgSlug(context.currentOrg.slug);
+        context.setPendingOrgSlug(currentSlug);
         context.goNext('orgSlug');
       }}
     >
@@ -48,8 +68,8 @@ export default function OnboardingOrgSlugRoute() {
         </div>
 
         <SlugInput
-          orgId={context.currentOrg.id}
-          currentSlug={context.pendingOrgSlug ?? context.currentOrg.slug}
+          orgId={context.orgId}
+          currentSlug={context.pendingOrgSlug ?? currentSlug}
           value={slug}
           vanityDomain={context.vanityDomain}
           onChange={(next) => {

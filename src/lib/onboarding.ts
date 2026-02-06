@@ -37,6 +37,7 @@ export interface OnboardingProgressState {
   answers: Partial<OnboardingPreferences>;
   startedAt: number;
   pendingOrgSlug?: string | null;
+  showOrgSlugStep?: boolean;
 }
 
 export interface OnboardingOption<TValue extends string> {

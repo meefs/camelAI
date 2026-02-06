@@ -1,9 +1,91 @@
-import { Suspense, use } from 'react';
-import { useOutletContext } from 'react-router';
+import { Suspense, use, useState } from 'react';
+import { useLoaderData, useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.welcome';
+import { getAuthEnv, requireSession } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
 import { Button } from '@/components/ui/button';
-import type { OnboardingRouteContext, TeamContext } from './_onboarding';
+import type { OnboardingRouteContext } from './_onboarding';
+
+interface TeamContext {
+  memberCount: number;
+  appCount: number;
+  integrations: string[];
+}
+
+interface WelcomeLoaderData {
+  orgNamePromise: Promise<string>;
+  showOrgSlugStepPromise: Promise<boolean>;
+  teamContextPromise: Promise<TeamContext>;
+}
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const sessionContext = await requireSession(request, context);
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const url = new URL(request.url);
+  const teamMode = url.searchParams.get('team') === '1';
+  const orgId = sessionContext.session.org_id;
+  const workspaceId = sessionContext.session.workspace_id;
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+  const userStub = authEnv.USER.get(
+    authEnv.USER.idFromName(sessionContext.session.user_id)
+  );
+
+  const showOrgSlugStepPromise: Promise<boolean> = Promise.all([
+    userStub.getOrgRole(orgId),
+    orgStub.getMemberCount(),
+    orgStub.listWorkerScripts(),
+  ]).then(([role, memberCount, workerScripts]) => {
+    return role === 'owner' && memberCount === 1 && workerScripts.length === 0;
+  });
+
+  if (!teamMode) {
+    return {
+      orgNamePromise: Promise.resolve('Chiridion'),
+      showOrgSlugStepPromise,
+      teamContextPromise: Promise.resolve({
+        memberCount: 0,
+        appCount: 0,
+        integrations: [],
+      }),
+    } satisfies WelcomeLoaderData;
+  }
+  const memberCountPromise = orgStub.getMemberCount().catch(() => 0);
+  const workerScriptsPromise = orgStub
+    .listWorkerScripts()
+    .catch(() => [] as Array<unknown>);
+
+  const orgNamePromise: Promise<string> = orgStub
+    .getInfo()
+    .then((info) => info?.name ?? 'your team')
+    .catch(() => 'your team');
+
+  const teamContextPromise: Promise<TeamContext> = Promise.all([
+    memberCountPromise,
+    workerScriptsPromise,
+    workspaceId
+      ? authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId))
+          .getIntegrations()
+          .then((rows: Array<{ enabled: number; name: string }>) =>
+            rows
+              .filter((row: { enabled: number }) => row.enabled === 1)
+              .map((row: { name: string }) => row.name)
+          )
+          .catch(() => [] as string[])
+      : Promise.resolve([] as string[]),
+  ]).then(([memberCount, workerScripts, integrations]) => ({
+    memberCount,
+    appCount: workerScripts.length,
+    integrations: integrations.slice(0, 4),
+  }));
+
+  return {
+    orgNamePromise,
+    showOrgSlugStepPromise,
+    teamContextPromise,
+  } satisfies WelcomeLoaderData;
+}
 
 export function meta(_: Route.MetaArgs) {
   return [
@@ -37,9 +119,18 @@ function TeamSummary({ teamContextPromise }: { teamContextPromise: Promise<TeamC
   );
 }
 
+function TeamHeading({ orgNamePromise }: { orgNamePromise: Promise<string> }) {
+  const orgName = use(orgNamePromise);
+  return <>{`Welcome to ${orgName}`}</>;
+}
+
 export default function OnboardingWelcomeRoute() {
   const context = useOutletContext<OnboardingRouteContext>();
-  const isTeamWelcome = context.teamVariant;
+  const { orgNamePromise, showOrgSlugStepPromise, teamContextPromise } =
+    useLoaderData<typeof loader>() as WelcomeLoaderData;
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const isTeamWelcome = context.teamMode;
 
   return (
     <OnboardingLayout
@@ -52,9 +143,13 @@ export default function OnboardingWelcomeRoute() {
       <div className="space-y-6 text-center">
         <div className="space-y-3">
           <h1 className="text-3xl font-semibold tracking-tight">
-            {isTeamWelcome
-              ? `Welcome to ${context.currentOrg.name}`
-              : 'Welcome to Chiridion'}
+            {isTeamWelcome ? (
+              <Suspense fallback={<>Welcome to your team</>}>
+                <TeamHeading orgNamePromise={orgNamePromise} />
+              </Suspense>
+            ) : (
+              'Welcome to Chiridion'
+            )}
           </h1>
           {!isTeamWelcome ? (
             <>
@@ -77,7 +172,7 @@ export default function OnboardingWelcomeRoute() {
                   </div>
                 }
               >
-                <TeamSummary teamContextPromise={context.teamContextPromise} />
+                <TeamSummary teamContextPromise={teamContextPromise} />
               </Suspense>
               <p className="text-muted-foreground">
                 Let&apos;s learn a bit about you so Claude can help.
@@ -86,19 +181,37 @@ export default function OnboardingWelcomeRoute() {
           )}
         </div>
 
+        {startError ? (
+          <p className="text-sm text-destructive">{startError}</p>
+        ) : null}
+
         <div className="pt-2">
           <Button
             type="button"
             size="lg"
+            disabled={starting}
             onClick={() => {
               if (context.teamWelcomeOnly) {
                 context.skipToChat();
                 return;
               }
-              context.goNext('welcome');
+
+              setStarting(true);
+              setStartError(null);
+              void showOrgSlugStepPromise
+                .then((showOrgSlugStep) => {
+                  context.setShowOrgSlugStep(showOrgSlugStep);
+                  context.goToStep(showOrgSlugStep ? 'orgSlug' : 'q1');
+                })
+                .catch(() => {
+                  setStartError('Failed to check onboarding steps. Please try again.');
+                })
+                .finally(() => {
+                  setStarting(false);
+                });
             }}
           >
-            Get Started
+            {starting ? 'Loading...' : 'Get Started'}
           </Button>
         </div>
       </div>
