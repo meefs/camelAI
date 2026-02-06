@@ -37,6 +37,7 @@ const NAVIGATION_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 1500;
 const POST_LOAD_DELAY_MS = 600;
 const MAX_SCREENSHOT_RETRIES = 3;
+const RAW_CAPTURE_TIMEOUT_MS = 10_000;
 
 function buildTargetUrl(job: AppScreenshotJob): string {
   const suffix = job.env_prefix ? `apps.${job.env_prefix}.chiridion.ai` : 'apps.chiridion.ai';
@@ -60,6 +61,23 @@ function truncateError(err: unknown, maxLength = 500): string {
   const message = err instanceof Error ? err.message : String(err);
   if (message.length <= maxLength) return message;
   return `${message.slice(0, maxLength)}...`;
+}
+
+async function withTimeout<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([operation(), timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 }
 
 async function navigateWithFallback(page: Page, targetUrl: string, logContext: Record<string, unknown>) {
@@ -250,6 +268,7 @@ export interface RawScreenshotParams {
   envPrefix: string;
   isPublic: boolean;
   screenshotToken?: string;
+  timeoutMs?: number;
 }
 
 /**
@@ -260,7 +279,8 @@ export async function captureScreenshotRaw(
   browser: Fetcher,
   params: RawScreenshotParams
 ): Promise<{ success: true; image: Buffer } | { success: false; error: string }> {
-  const { scriptName, orgId, orgSlug, envPrefix, isPublic, screenshotToken } = params;
+  const { scriptName, orgId, orgSlug, envPrefix, isPublic, screenshotToken, timeoutMs } = params;
+  const effectiveTimeoutMs = timeoutMs ?? RAW_CAPTURE_TIMEOUT_MS;
 
   const suffix = envPrefix ? `apps.${envPrefix}.chiridion.ai` : 'apps.chiridion.ai';
   // Use flat URL format: {script}--{org-slug}.apps.chiridion.ai
@@ -273,45 +293,51 @@ export async function captureScreenshotRaw(
   let page: Page | null = null;
 
   try {
-    puppeteerBrowser = await puppeteer.launch(browser);
-    page = await puppeteerBrowser.newPage();
-    await page.setViewport(VIEWPORT);
+    const image = await withTimeout(
+      async () => {
+        puppeteerBrowser = await puppeteer.launch(browser);
+        page = await puppeteerBrowser.newPage();
+        await page.setViewport(VIEWPORT);
 
-    if (screenshotToken && envPrefix !== 'local') {
-      await page.setExtraHTTPHeaders({
-        'x-chiridion-screenshot-token': screenshotToken,
-      });
-    }
+        if (screenshotToken && envPrefix !== 'local') {
+          await page.setExtraHTTPHeaders({
+            'x-chiridion-screenshot-token': screenshotToken,
+          });
+        }
 
-    const { response, waitUntil } = await navigateWithFallback(page, targetUrl, {
-      scriptName,
-      orgId,
-    });
+        const { response, waitUntil } = await navigateWithFallback(page, targetUrl, {
+          scriptName,
+          orgId,
+        });
 
-    console.log('[app-screenshot-raw] navigation complete', {
-      scriptName,
-      orgId,
-      status: response?.status() ?? null,
-      waitUntil,
-    });
+        console.log('[app-screenshot-raw] navigation complete', {
+          scriptName,
+          orgId,
+          status: response?.status() ?? null,
+          waitUntil,
+        });
 
-    if (response && !response.ok()) {
-      const statusText = typeof response.statusText === 'function' ? response.statusText() : '';
-      throw new Error(
-        `Navigation failed with status ${response.status()}${statusText ? ` ${statusText}` : ''} for ${targetUrl}`
-      );
-    }
+        if (response && !response.ok()) {
+          const statusText = typeof response.statusText === 'function' ? response.statusText() : '';
+          throw new Error(
+            `Navigation failed with status ${response.status()}${statusText ? ` ${statusText}` : ''} for ${targetUrl}`
+          );
+        }
 
-    await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
-    await waitForReadySignal(page);
-    await page.waitForTimeout(POST_LOAD_DELAY_MS);
-    await page.evaluate(() => window.scrollTo(0, 0));
+        await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
+        await waitForReadySignal(page);
+        await page.waitForTimeout(POST_LOAD_DELAY_MS);
+        await page.evaluate(() => window.scrollTo(0, 0));
 
-    const image = (await page.screenshot({
-      type: 'jpeg',
-      quality: 80,
-      clip: SCREENSHOT_CLIP,
-    })) as Buffer;
+        return (await page.screenshot({
+          type: 'jpeg',
+          quality: 80,
+          clip: SCREENSHOT_CLIP,
+        })) as Buffer;
+      },
+      effectiveTimeoutMs,
+      `Screenshot capture timed out after ${Math.ceil(effectiveTimeoutMs / 1000)}s`
+    );
 
     console.log('[app-screenshot-raw] captured', {
       scriptName,
