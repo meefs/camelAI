@@ -28,9 +28,11 @@ import {
   type SessionData,
   type ApiTokenData,
 } from './auth-helpers';
+import type { UserOrg } from '../../workers/main/src/auth';
 
 interface GetUserOrgsOptions {
   preloadedOrgInfoById?: Map<string, Promise<Organization | null> | Organization | null>;
+  preloadedUserOrgs?: UserOrg[];
 }
 
 function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
@@ -278,8 +280,9 @@ export async function getUserOrgs(
   userId: string,
   options?: GetUserOrgsOptions
 ): Promise<OrgMembership[]> {
-  const userStub = env.USER.get(env.USER.idFromName(userId));
-  const userOrgs = await userStub.getOrgs();
+  const userOrgs =
+    options?.preloadedUserOrgs ??
+    (await env.USER.get(env.USER.idFromName(userId)).getOrgs());
   const preloadedOrgInfoById = options?.preloadedOrgInfoById;
 
   // Fetch all org info in parallel instead of sequential loop

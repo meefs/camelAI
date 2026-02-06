@@ -1,8 +1,9 @@
+import { Suspense, use } from 'react';
 import { useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.welcome';
 import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
 import { Button } from '@/components/ui/button';
-import type { OnboardingRouteContext } from './_onboarding';
+import type { OnboardingRouteContext, TeamContext } from './_onboarding';
 
 export function meta(_: Route.MetaArgs) {
   return [
@@ -11,20 +12,29 @@ export function meta(_: Route.MetaArgs) {
   ];
 }
 
-function formatTeamSummary(context: OnboardingRouteContext): string {
+function formatTeamSummary(teamContext: TeamContext): string {
   const parts: string[] = [];
 
-  if (context.teamContext.appCount > 0) {
-    parts.push(`${context.teamContext.appCount} apps deployed`);
+  if (teamContext.appCount > 0) {
+    parts.push(`${teamContext.appCount} apps deployed`);
   }
-  if (context.teamContext.integrations.length > 0) {
-    parts.push(`Connected to ${context.teamContext.integrations.join(', ')}`);
+  if (teamContext.integrations.length > 0) {
+    parts.push(`Connected to ${teamContext.integrations.join(', ')}`);
   }
   if (parts.length === 0) {
-    parts.push(`${context.teamContext.memberCount} team members`);
+    parts.push(`${teamContext.memberCount} team members`);
   }
 
   return parts.join('  •  ');
+}
+
+function TeamSummary({ teamContextPromise }: { teamContextPromise: Promise<TeamContext> }) {
+  const teamContext = use(teamContextPromise);
+  return (
+    <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
+      {formatTeamSummary(teamContext)}
+    </div>
+  );
 }
 
 export default function OnboardingWelcomeRoute() {
@@ -60,9 +70,15 @@ export default function OnboardingWelcomeRoute() {
               <p className="text-muted-foreground">
                 You&apos;re joining a team that&apos;s already building.
               </p>
-              <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
-                {formatTeamSummary(context)}
-              </div>
+              <Suspense
+                fallback={
+                  <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                    Loading team activity...
+                  </div>
+                }
+              >
+                <TeamSummary teamContextPromise={context.teamContextPromise} />
+              </Suspense>
               <p className="text-muted-foreground">
                 Let&apos;s learn a bit about you so Claude can help.
               </p>

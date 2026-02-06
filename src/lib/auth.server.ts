@@ -139,27 +139,39 @@ async function getAuthContextUncached(
   request: Request,
   context: AppLoadContext
 ): Promise<AuthContext | null> {
-  const userContext = await getUserContext(request, context);
-  if (!userContext) return null;
+  const sessionContext = await getSession(request, context);
+  if (!sessionContext) return null;
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const userStub = authEnv.USER.get(authEnv.USER.idFromName(userContext.user.id));
+  const userStub = authEnv.USER.get(
+    authEnv.USER.idFromName(sessionContext.session.user_id)
+  );
   const currentOrgStub = authEnv.ORG.get(
-    authEnv.ORG.idFromName(userContext.session.org_id)
+    authEnv.ORG.idFromName(sessionContext.session.org_id)
   );
   const currentOrgInfoPromise = currentOrgStub.getInfo();
-  const [onboarding, orgInfo, orgs] = await Promise.all([
-    userStub.getOnboarding(),
+  const [authBootstrap, orgInfo] = await Promise.all([
+    userStub.getAuthBootstrap(),
     // Get current org info directly from DO
     currentOrgInfoPromise,
-    // Get user's org memberships
-    getUserOrgs(authEnv, userContext.session.user_id, {
-      preloadedOrgInfoById: new Map([[userContext.session.org_id, currentOrgInfoPromise]]),
-    }),
   ]);
+  const profile = authBootstrap.profile;
+  if (!profile) return null;
   if (!orgInfo) return null;
   const currentOrg: Organization = orgInfo;
+  const onboarding = authBootstrap.onboarding;
+  const orgs = await getUserOrgs(authEnv, sessionContext.session.user_id, {
+    preloadedUserOrgs: authBootstrap.orgs,
+    preloadedOrgInfoById: new Map([
+      [sessionContext.session.org_id, currentOrgInfoPromise],
+    ]),
+  });
+
+  const userContext: UserContext = {
+    ...sessionContext,
+    user: profile,
+  };
 
   // Get all workspaces across all orgs (for workspace switcher)
   const allWorkspaces = await listUserWorkspacesAcrossOrgs(
@@ -174,7 +186,7 @@ async function getAuthContextUncached(
 
   // Select current workspace - must be from current org to maintain consistency
   // If no workspaces in current org, currentWorkspace will be null and UI shows NoWorkspacesError
-  const sessionWorkspaceId = userContext.session.workspace_id;
+  const sessionWorkspaceId = sessionContext.session.workspace_id;
   const sessionWorkspaceStillValid = sessionWorkspaceId
     ? workspaces.some((ws) => ws.id === sessionWorkspaceId)
     : false;
@@ -187,8 +199,8 @@ async function getAuthContextUncached(
   const newWorkspaceId = currentWorkspace?.id ?? null;
   if (newWorkspaceId !== sessionWorkspaceId) {
     // Update session in background - don't block the response
-    void updateSession(env.SESSIONS, userContext.sessionId, {
-      ...userContext.session,
+    void updateSession(env.SESSIONS, sessionContext.sessionId, {
+      ...sessionContext.session,
       workspace_id: newWorkspaceId,
       last_accessed: Date.now(),
     });

@@ -22,6 +22,12 @@ import {
 } from '@/lib/onboarding';
 import type { OnboardingPreferences } from '@/types';
 
+export interface TeamContext {
+  memberCount: number;
+  appCount: number;
+  integrations: string[];
+}
+
 interface OnboardingLoaderData {
   userId: string;
   onboarding: OnboardingPreferences | null;
@@ -33,11 +39,7 @@ interface OnboardingLoaderData {
   showOrgSlugStep: boolean;
   teamVariant: boolean;
   teamWelcomeOnly: boolean;
-  teamContext: {
-    memberCount: number;
-    appCount: number;
-    integrations: string[];
-  };
+  teamContextPromise: Promise<TeamContext>;
   vanityDomain: string;
   teamMode: boolean;
 }
@@ -113,26 +115,35 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     (org) => org.org_id === authContext.currentOrg.id
   );
 
-  const [memberCount, workerScripts, integrations] = await Promise.all([
+  const [memberCount, workerScripts] = await Promise.all([
     orgStub.getMemberCount(),
     orgStub.listWorkerScripts(),
-    authContext.currentWorkspace
-      ? authEnv.WORKSPACE.get(
-          authEnv.WORKSPACE.idFromName(authContext.currentWorkspace.id)
-        )
-          .getIntegrations()
-          .then((rows: Array<{ enabled: number; name: string }>) =>
-            rows
-              .filter((row: { enabled: number }) => row.enabled === 1)
-              .map((row: { name: string }) => row.name)
-          )
-      : Promise.resolve([] as string[]),
   ]);
+  const appCount = workerScripts.length;
+  const teamContextPromise: Promise<TeamContext> = !teamMode
+    ? Promise.resolve({ memberCount, appCount, integrations: [] })
+    : (authContext.currentWorkspace
+        ? authEnv.WORKSPACE.get(
+            authEnv.WORKSPACE.idFromName(authContext.currentWorkspace.id)
+          )
+            .getIntegrations()
+            .then((rows: Array<{ enabled: number; name: string }>) =>
+              rows
+                .filter((row: { enabled: number }) => row.enabled === 1)
+                .map((row: { name: string }) => row.name)
+            )
+            .catch(() => [] as string[])
+        : Promise.resolve([] as string[])
+      ).then((integrations) => ({
+        memberCount,
+        appCount,
+        integrations: integrations.slice(0, 4),
+      }));
 
   const showOrgSlugStep =
     membership?.role === 'owner' &&
     memberCount === 1 &&
-    workerScripts.length === 0;
+    appCount === 0;
 
   const teamVariant = teamMode;
 
@@ -147,11 +158,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     showOrgSlugStep,
     teamVariant,
     teamWelcomeOnly: onboardingComplete && teamMode,
-    teamContext: {
-      memberCount,
-      appCount: workerScripts.length,
-      integrations: integrations.slice(0, 4),
-    },
+    teamContextPromise,
     vanityDomain: getVanityDomain(request.headers.get('host')?.split(':')[0]),
     teamMode,
   } satisfies OnboardingLoaderData;
