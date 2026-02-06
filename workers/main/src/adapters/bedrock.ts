@@ -17,7 +17,7 @@ const MODEL_MAP: Record<string, string> = {
   'claude-haiku-4-5-20251001': 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
   'claude-opus-4-5-20251101': 'global.anthropic.claude-opus-4-5-20251101-v1:0',
   // Claude 4.6 models
-  'claude-opus-4-6': 'global.anthropic.claude-opus-4-6-v1:0',
+  'claude-opus-4-6': 'global.anthropic.claude-opus-4-6-v1',
   // Claude 4 models
   'claude-sonnet-4-20250514': 'global.anthropic.claude-sonnet-4-20250514-v1:0',
   'claude-opus-4-20250514': 'global.anthropic.claude-opus-4-20250514-v1:0',
