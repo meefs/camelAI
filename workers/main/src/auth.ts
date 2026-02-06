@@ -1329,7 +1329,7 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   /**
    * Read the currently persisted slug without claiming/repairing registry state.
-   * Used by slug-collision checks in createOrg/updateSlug/check-slug.
+   * Used by slug-collision checks in createOrg/updateSlug.
    */
   async getStoredSlug(): Promise<string | null> {
     const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();

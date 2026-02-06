@@ -77,14 +77,5 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return Response.json({ available: true });
   }
 
-  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  const conflictingOrgId = await orgStub.findConflictingOrgIdByStoredSlug(
-    normalizedSlug,
-    orgId
-  );
-  if (conflictingOrgId) {
-    return Response.json({ available: false, reason: 'taken' }, { status: 200 });
-  }
-
   return Response.json({ available: true });
 }
