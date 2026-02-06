@@ -1,8 +1,8 @@
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.team';
-import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
+import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { createInvitation, removeOrgMember, updateOrgMemberRole, transferOrgOwnership, setWorkspaceAccess, getOrgMembers, getOrgInvitations } from '@/lib/auth-do';
+import { createInvitation, removeOrgMember, updateOrgMemberRole, transferOrgOwnership, setWorkspaceAccess, getOrgMembersWithWorkspaceAccess, getOrgInvitations, listOrgWorkspaces } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { TeamTable } from '@/components/settings/team-table';
@@ -24,6 +24,23 @@ export async function action({ request, context }: Route.ActionArgs) {
   const orgId = authContext.currentOrg!.id;
   const actorId = authContext.user!.id;
 
+  // Members can only leave (remove themselves) — all other actions require admin
+  if (intent === 'removeOrgMember') {
+    const userId = formData.get('userId') as string;
+    if (!userId) {
+      return { error: 'User ID is required' };
+    }
+    // Non-admins can only remove themselves (leave org)
+    if (userId !== actorId) {
+      await requireOrgAdmin(request, context, orgId);
+    }
+    await removeOrgMember(authEnv, orgId, userId, actorId);
+    return { success: true };
+  }
+
+  // All remaining actions require admin/owner
+  await requireOrgAdmin(request, context, orgId);
+
   if (intent === 'createInvitation') {
     const email = formData.get('email') as string;
     const role = formData.get('role') as OrgRole;
@@ -31,15 +48,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: 'Valid email is required' };
     }
     await createInvitation(authEnv, orgId, email.toLowerCase().trim(), role || 'member', actorId);
-    return { success: true };
-  }
-
-  if (intent === 'removeOrgMember') {
-    const userId = formData.get('userId') as string;
-    if (!userId) {
-      return { error: 'User ID is required' };
-    }
-    await removeOrgMember(authEnv, orgId, userId, actorId);
     return { success: true };
   }
 
@@ -91,27 +99,30 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
-  const [members, invitations] = await Promise.all([
-    getOrgMembers(authEnv, authContext.currentOrg.id),
+  const [members, invitations, workspaces] = await Promise.all([
+    getOrgMembersWithWorkspaceAccess(authEnv, authContext.currentOrg.id),
     getOrgInvitations(authEnv, authContext.currentOrg.id),
+    listOrgWorkspaces(authEnv, authContext.currentOrg.id),
   ]);
+
+  // Determine current user's role in this org
+  const currentMember = members.find((m) => m.user.id === authContext.user.id);
+  const currentUserRole = currentMember?.role ?? 'member';
+  const canManageMembers = currentUserRole === 'owner' || currentUserRole === 'admin';
 
   return {
     org: authContext.currentOrg,
     members,
     invitations,
+    workspaces,
     currentUserId: authContext.user.id,
+    canManageMembers,
   };
 }
 
 export default function TeamPage() {
-  const { org, members, invitations, currentUserId } =
+  const { org, members, invitations, workspaces, currentUserId, canManageMembers } =
     useLoaderData<typeof loader>();
-
-  // TODO: Get workspaces from loader
-  const workspaces: never[] = [];
-  // Admins and owners can manage members
-  const canManageMembers = true; // TODO: Calculate based on user's role
 
   return (
     <div className="space-y-6">
@@ -125,7 +136,7 @@ export default function TeamPage() {
         canManageMembers={canManageMembers}
         members={members as never[]}
         invitations={invitations as never[]}
-        workspaces={workspaces}
+        workspaces={workspaces as never[]}
       />
     </div>
   );

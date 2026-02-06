@@ -48,12 +48,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
-  // Fetch member and workspace counts for each org in parallel
+  // Fetch member counts, workspace counts, and billing status for each org in parallel
   const orgSummaries = await Promise.all(
     authContext.orgs.map(async (org) => {
-      const [members, workspaces] = await Promise.all([
+      const [members, workspaces, orgInfo] = await Promise.all([
         authDO.getOrgMembers(authEnv, org.org_id),
         authDO.listOrgWorkspaces(authEnv, org.org_id),
+        authDO.getOrg(authEnv, org.org_id),
       ]);
 
       return {
@@ -61,7 +62,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         org_name: org.org_name,
         role: org.role,
         joined_at: org.joined_at,
-        billing_status: 'free' as const, // TODO: Get from org data
+        billing_status: orgInfo?.billing_status ?? 'free',
         member_count: members.length,
         workspace_count: workspaces.length,
       };

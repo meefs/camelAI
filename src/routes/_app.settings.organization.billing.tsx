@@ -1,6 +1,7 @@
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.billing';
 import { requireAuthContext } from '@/lib/auth.server';
+import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 
@@ -29,7 +30,15 @@ export default function BillingPage() {
         description="Manage your subscription and payment methods."
       />
       <Separator />
-      <div className="text-sm text-muted-foreground">Billing settings will be available soon.</div>
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-medium">Current plan</span>
+          <Badge variant={org.billing_status === 'paying' ? 'default' : 'secondary'}>
+            {org.billing_status === 'paying' ? 'Pro' : 'Free'}
+          </Badge>
+        </div>
+        <p className="text-sm text-muted-foreground">Billing settings will be available soon.</p>
+      </div>
     </div>
   );
 }

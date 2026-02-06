@@ -1,8 +1,8 @@
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.workspaces';
-import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
+import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { createWorkspace } from '@/lib/auth-do';
+import { createWorkspace, archiveWorkspace } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { WorkspacesList } from '@/components/settings/workspaces-list';
@@ -15,7 +15,7 @@ export function meta() {
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
-  const authContext = await requireAuthContext(request, context);
+  const authContext = await requireOrgAdmin(request, context, (await requireAuthContext(request, context)).currentOrg.id);
   const formData = await request.formData();
   const intent = formData.get('intent');
   const env = getEnv(context);
@@ -38,8 +38,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!workspaceId) {
       return { error: 'Workspace ID is required' };
     }
-    const stub = authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId));
-    await stub.archive(actorId);
+    await archiveWorkspace(authEnv, workspaceId, actorId);
     return { success: true };
   }
 
@@ -49,19 +48,22 @@ export async function action({ request, context }: Route.ActionArgs) {
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
 
+  // Determine current user's role for permission gating
+  const currentUserOrg = authContext.orgs.find((o) => o.org_id === authContext.currentOrg.id);
+  const currentUserRole = currentUserOrg?.role ?? 'member';
+  const canManage = currentUserRole === 'owner' || currentUserRole === 'admin';
+
   return {
     org: authContext.currentOrg,
     workspaces: authContext.workspaces,
     currentWorkspaceId: authContext.currentWorkspace?.id,
+    canManage,
   };
 }
 
 export default function WorkspacesPage() {
-  const { org, workspaces, currentWorkspaceId } =
+  const { org, workspaces, currentWorkspaceId, canManage } =
     useLoaderData<typeof loader>();
-
-  // TODO: Calculate based on user's role
-  const canManage = true;
 
   return (
     <div className="space-y-6">

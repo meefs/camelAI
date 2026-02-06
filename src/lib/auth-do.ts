@@ -328,6 +328,34 @@ export async function getOrg(env: AuthEnv, orgId: string): Promise<Organization 
 }
 
 
+export async function archiveOrg(env: AuthEnv, orgId: string, actorId: string): Promise<void> {
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  await orgStub.archiveOrg(actorId);
+
+  // Archive all workspaces in the org
+  const workspaces = await orgStub.getWorkspaces(true);
+  await Promise.all(
+    workspaces.filter((ws) => !ws.archived).map(async (ws) => {
+      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+      await wsStub.archive(actorId);
+    })
+  );
+
+  // Remove non-owner members from OrgDO (owner stays for audit trail).
+  // Remove org from ALL users' UserDO (including owner) so they can't access it.
+  const members = await orgStub.getMembers();
+  await Promise.all(
+    members.map(async (member) => {
+      if (member.role !== 'owner') {
+        await orgStub.removeMember(member.user_id, actorId);
+      }
+      const userStub = env.USER.get(env.USER.idFromName(member.user_id));
+      await userStub.removeOrg(orgId);
+      await checkUserOrphaned(env, member.user_id);
+    })
+  );
+}
+
 export async function createOrg(env: AuthEnv, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
   const orgId = crypto.randomUUID();
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
@@ -364,6 +392,39 @@ export async function getOrgMembers(env: AuthEnv, orgId: string): Promise<Array<
     }));
 }
 
+export async function getOrgMembersWithWorkspaceAccess(
+  env: AuthEnv,
+  orgId: string
+): Promise<Array<{ user: User; role: OrgRole; joined_at: number; workspaceAccess: Record<string, WorkspaceAccessLevel> }>> {
+  const [members, workspaces] = await Promise.all([
+    getOrgMembers(env, orgId),
+    listOrgWorkspaces(env, orgId),
+  ]);
+
+  // Fetch all workspace member access in parallel
+  const workspaceMembers = await Promise.all(
+    workspaces.map(async (ws) => {
+      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+      const memberAccess = await wsStub.listMembers();
+      return { workspaceId: ws.id, memberAccess };
+    })
+  );
+
+  // Build access map per user
+  return members.map((member) => {
+    const workspaceAccess: Record<string, WorkspaceAccessLevel> = {};
+    for (const ws of workspaceMembers) {
+      const access = ws.memberAccess.find((ma) => ma.user_id === member.user.id);
+      // Default to 'full' if no explicit record (org members get full access by default)
+      workspaceAccess[ws.workspaceId] = access?.access_level ?? 'full';
+    }
+    return {
+      ...member,
+      workspaceAccess,
+    };
+  });
+}
+
 export async function isOrgMember(env: AuthEnv, userId: string, orgId: string): Promise<boolean> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const info = await stub.getInfo();
@@ -381,10 +442,24 @@ export async function isOrgAdmin(env: AuthEnv, userId: string, orgId: string): P
 
 export async function removeOrgMember(env: AuthEnv, orgId: string, userId: string, actorId: string): Promise<void> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
+
+  // Revoke workspace access for all workspaces in the org
+  const workspaces = await stub.getWorkspaces();
+  await Promise.all(
+    workspaces.filter((ws) => !ws.archived).map(async (ws) => {
+      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+      await wsStub.setMemberAccess(userId, 'none', actorId);
+    })
+  );
+
   await stub.removeMember(userId, actorId);
-  // Also remove from user's org list
+
+  // Remove from user's org list
   const userStub = env.USER.get(env.USER.idFromName(userId));
   await userStub.removeOrg(orgId);
+
+  // Proactively check if user is now orphaned
+  await checkUserOrphaned(env, userId);
 }
 
 export async function updateOrgMemberRole(env: AuthEnv, orgId: string, userId: string, role: OrgRole, actorId: string): Promise<void> {
@@ -403,19 +478,20 @@ export async function transferOrgOwnership(env: AuthEnv, orgId: string, newOwner
 }
 
 
-export async function listOrgWorkspaces(env: AuthEnv, orgId: string): Promise<Workspace[]> {
+export async function listOrgWorkspaces(env: AuthEnv, orgId: string, includeArchived = false): Promise<Workspace[]> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  const workspaceIds = await stub.getWorkspaces();
+  const workspaceIds = await stub.getWorkspaces(includeArchived);
 
-  // Filter out archived first, then fetch info in parallel
-  const activeWorkspaces = workspaceIds.filter((ws) => !ws.archived);
   const infos = await Promise.all(
-    activeWorkspaces.map(async (ws) => {
+    workspaceIds.map(async (ws) => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
       return wsStub.getInfo();
     })
   );
 
+  if (includeArchived) {
+    return infos.filter((info) => info !== null) as Workspace[];
+  }
   return infos.filter((info) => info !== null && !info.archived) as Workspace[];
 }
 
@@ -471,7 +547,53 @@ export async function createWorkspace(
   const workspaceId = crypto.randomUUID();
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await stub.createWorkspace(workspaceId, orgId, name, createdBy, description ?? null);
+
+  // Register workspace with org
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  await orgStub.addWorkspace(workspaceId, name, info.created_at, createdBy);
+
+  // Grant full access to all existing org members
+  const members = await orgStub.getMembers();
+  await Promise.all(
+    members.map(async (member) => {
+      await stub.setMemberAccess(member.user_id, 'full', createdBy);
+    })
+  );
+
   return info;
+}
+
+export async function archiveWorkspace(
+  env: AuthEnv,
+  workspaceId: string,
+  actorId: string
+): Promise<void> {
+  const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  const info = await wsStub.getInfo();
+  if (!info) return;
+
+  // Archive in WorkspaceDO
+  await wsStub.archive(actorId);
+
+  // Update org's workspace list
+  const orgStub = env.ORG.get(env.ORG.idFromName(info.org_id));
+  await orgStub.archiveWorkspace(workspaceId);
+
+  // Clear last_workspace_id for users who had this as their active workspace
+  const members = await orgStub.getMembers();
+  await Promise.all(
+    members.map(async (member) => {
+      const userStub = env.USER.get(env.USER.idFromName(member.user_id));
+      const orgs = await userStub.getOrgs();
+      const orgEntry = orgs.find((o) => o.org_id === info.org_id);
+      if (orgEntry?.last_workspace_id === workspaceId) {
+        // Reassign to another active workspace (or null if none remain)
+        const remainingWorkspaces = await listOrgWorkspaces(env, info.org_id);
+        const newWorkspaceId = remainingWorkspaces[0]?.id ?? null;
+        await userStub.setOrgLastWorkspace(info.org_id, newWorkspaceId);
+      }
+    })
+  );
 }
 
 export async function updateWorkspace(
@@ -683,6 +805,15 @@ export async function acceptInvitation(env: AuthEnv, orgId: string, invitationId
 
   const workspaces = await listOrgWorkspaces(env, orgId);
   const lastWorkspaceId = workspaces[0]?.id ?? null;
+
+  // Grant default workspace access to all non-archived workspaces
+  await Promise.all(
+    workspaces.map(async (ws) => {
+      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+      await wsStub.setMemberAccess(userId, 'full', userId);
+    })
+  );
+
   const userStub = env.USER.get(env.USER.idFromName(userId));
   await userStub.addOrg(orgId, invitation.role, lastWorkspaceId);
   await userStub.setOrphaned(false);

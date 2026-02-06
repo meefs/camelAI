@@ -98,9 +98,25 @@ export function InviteMemberDialog({
             <SelectValue placeholder="Select role" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="admin">Admin</SelectItem>
-            <SelectItem value="member">Member</SelectItem>
-            <SelectItem value="viewer">Viewer</SelectItem>
+            <SelectItem value="admin">
+              <div>
+                <div>Admin</div>
+                <div className="text-xs text-muted-foreground font-normal">Full access to everything. Can manage team members, workspaces, and all settings.</div>
+              </div>
+            </SelectItem>
+            <SelectItem value="member">
+              <div>
+                <div>Member</div>
+                <div className="text-xs text-muted-foreground font-normal">Can access assigned workspaces — chat, apps, computer, and connections. Cannot manage the team or org settings.</div>
+              </div>
+            </SelectItem>
+            {/* TODO: Viewer role (deferred): Members with viewer access can view any apps that are
+                private to the workspace, including apps that are not published publicly. This is
+                designed for enterprise use cases where a company wants to share internal apps within
+                the org without making them public. Viewers can view apps but cannot: create apps,
+                use chat, access the computer tab, manage team settings, or perform any write
+                operations. They are read-only consumers of workspace output. */}
+            {/* <SelectItem value="viewer">Viewer</SelectItem> */}
           </SelectContent>
         </Select>
         {fields.role.errors && fields.role.errors.length > 0 && (

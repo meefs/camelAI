@@ -1586,8 +1586,12 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec('UPDATE workspaces SET archived = 1 WHERE id = ?', workspaceId);
   }
 
-  async getWorkspaces(): Promise<Array<{ id: string; name: string; created_at: number; archived: number }>> {
-    return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces ORDER BY created_at ASC')
+  async getWorkspaces(includeArchived = false): Promise<Array<{ id: string; name: string; created_at: number; archived: number }>> {
+    if (includeArchived) {
+      return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces ORDER BY created_at ASC')
+        .toArray() as unknown as Array<{ id: string; name: string; created_at: number; archived: number }>;
+    }
+    return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces WHERE archived = 0 ORDER BY created_at ASC')
       .toArray() as unknown as Array<{ id: string; name: string; created_at: number; archived: number }>;
   }
 

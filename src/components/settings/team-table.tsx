@@ -38,6 +38,11 @@ import {
   CardHeader,
 } from "@/components/ui/card"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { useLogout } from "@/hooks/use-auth-actions"
 import { InviteMemberDialog } from "@/components/settings/invite-member-dialog"
 import { WorkspaceAccessTags } from "@/components/settings/workspace-access-tags"
@@ -92,6 +97,7 @@ export function TeamTable({
   const [inviteOpen, setInviteOpen] = useState(false)
   const [editingWorkspaceAccess, setEditingWorkspaceAccess] = useState(false)
   const [pendingRemoveMemberId, setPendingRemoveMemberId] = useState<string | null>(null)
+  const [pendingTransferUserId, setPendingTransferUserId] = useState<string | null>(null)
   const [leaveOrgOpen, setLeaveOrgOpen] = useState(false)
   const lastActionRef = useRef<string | null>(null)
 
@@ -106,6 +112,8 @@ export function TeamTable({
           toast.success("Role updated")
         } else if (action === "removeMember") {
           toast.success("Member removed")
+        } else if (action === "transferOwnership") {
+          toast.success("Ownership transferred")
         } else if (action === "leaveOrg") {
           // useLogout hook handles navigation to /login automatically
           logout()
@@ -162,6 +170,14 @@ export function TeamTable({
     )
   }
 
+  const handleTransferOwnership = (newOwnerId: string) => {
+    lastActionRef.current = "transferOwnership"
+    fetcher.submit(
+      { intent: "transferOrgOwnership", newOwnerId },
+      { method: "POST" }
+    )
+  }
+
   const handleLeaveOrg = () => {
     lastActionRef.current = "leaveOrg"
     fetcher.submit(
@@ -181,8 +197,22 @@ export function TeamTable({
     )
   }
 
+  const roleDescriptions: Record<OrgRole, string> = {
+    owner: "Full access to everything. Only the owner can transfer ownership. One per org.",
+    admin: "Full access to everything. Can manage team members, workspaces, and all settings.",
+    member: "Can access assigned workspaces — chat, apps, computer, and connections. Cannot manage the team or org settings.",
+    viewer: "Read-only access to workspace apps.",
+  }
+
   const renderRoleBadge = (role: OrgRole) => (
-    <Badge variant={role === "owner" ? "default" : "outline"}>{role}</Badge>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant={role === "owner" ? "default" : "outline"} className="cursor-default">{role}</Badge>
+      </TooltipTrigger>
+      <TooltipContent>
+        <p className="max-w-[250px]">{roleDescriptions[role]}</p>
+      </TooltipContent>
+    </Tooltip>
   )
 
   return (
@@ -262,9 +292,20 @@ export function TeamTable({
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="admin">Admin</SelectItem>
-                            <SelectItem value="member">Member</SelectItem>
-                            <SelectItem value="viewer">Viewer</SelectItem>
+                            <SelectItem value="admin">
+                              <div>
+                                <div>Admin</div>
+                                <div className="text-xs text-muted-foreground font-normal">Full access. Can manage team, workspaces, and settings.</div>
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="member">
+                              <div>
+                                <div>Member</div>
+                                <div className="text-xs text-muted-foreground font-normal">Can access assigned workspaces. Cannot manage team or settings.</div>
+                              </div>
+                            </SelectItem>
+                            {/* TODO: Viewer role (deferred) — see types.ts for details */}
+                            {/* <SelectItem value="viewer">Viewer</SelectItem> */}
                           </SelectContent>
                         </Select>
                       ) : (
@@ -306,6 +347,14 @@ export function TeamTable({
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="min-w-[180px]">
+                            {isOwner ? (
+                              <DropdownMenuItem
+                                onClick={() => setPendingTransferUserId(member.user.id)}
+                                className="whitespace-nowrap"
+                              >
+                                Transfer ownership
+                              </DropdownMenuItem>
+                            ) : null}
                             <DropdownMenuItem
                               onClick={() => setPendingRemoveMemberId(member.user.id)}
                               className="whitespace-nowrap"
@@ -438,9 +487,20 @@ export function TeamTable({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="admin">Admin</SelectItem>
-                          <SelectItem value="member">Member</SelectItem>
-                          <SelectItem value="viewer">Viewer</SelectItem>
+                          <SelectItem value="admin">
+                            <div>
+                              <div>Admin</div>
+                              <div className="text-xs text-muted-foreground font-normal">Full access. Can manage team, workspaces, and settings.</div>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="member">
+                            <div>
+                              <div>Member</div>
+                              <div className="text-xs text-muted-foreground font-normal">Can access assigned workspaces. Cannot manage team or settings.</div>
+                            </div>
+                          </SelectItem>
+                          {/* TODO: Viewer role (deferred) — see types.ts for details */}
+                          {/* <SelectItem value="viewer">Viewer</SelectItem> */}
                         </SelectContent>
                       </Select>
                     ) : (
@@ -473,12 +533,22 @@ export function TeamTable({
                     />
                   </div>
                 {canManageMembers && member.role !== "owner" && !isSelf ? (
-                  <Button
-                    variant="outline"
-                    onClick={() => setPendingRemoveMemberId(member.user.id)}
-                  >
-                    Remove from organization
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    {isOwner ? (
+                      <Button
+                        variant="outline"
+                        onClick={() => setPendingTransferUserId(member.user.id)}
+                      >
+                        Transfer ownership
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="outline"
+                      onClick={() => setPendingRemoveMemberId(member.user.id)}
+                    >
+                      Remove from organization
+                    </Button>
+                  </div>
                 ) : null}
                 {isSelf && !isOwner ? (
                   <Button variant="ghost" onClick={() => setLeaveOrgOpen(true)}>
@@ -549,6 +619,21 @@ export function TeamTable({
         onConfirm={() => {
           if (pendingRemoveMemberId) {
             void handleRemoveMember(pendingRemoveMemberId)
+          }
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(pendingTransferUserId)}
+        onOpenChange={(open) => {
+          if (!open) setPendingTransferUserId(null)
+        }}
+        title="Transfer ownership?"
+        description={`This will make ${members.find((m) => m.user.id === pendingTransferUserId)?.user.name || members.find((m) => m.user.id === pendingTransferUserId)?.user.email || 'this member'} the new owner. You will be demoted to admin.`}
+        confirmLabel="Transfer ownership"
+        variant="destructive"
+        onConfirm={() => {
+          if (pendingTransferUserId) {
+            void handleTransferOwnership(pendingTransferUserId)
           }
         }}
       />
