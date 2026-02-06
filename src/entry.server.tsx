@@ -1,5 +1,5 @@
-import type { AppLoadContext, EntryContext } from 'react-router';
-import { ServerRouter } from 'react-router';
+import type { AppLoadContext, EntryContext, HandleErrorFunction } from 'react-router';
+import { isRouteErrorResponse, ServerRouter } from 'react-router';
 import { renderToReadableStream } from 'react-dom/server';
 import { isbot } from 'isbot';
 
@@ -8,6 +8,7 @@ import { isbot } from 'isbot';
 export const streamTimeout = 60_000;
 
 type RouterErrorMap = Record<string, unknown>;
+const loggedErrors = new WeakSet<Error>();
 
 function getRouterErrors(routerContext: EntryContext): RouterErrorMap | null {
   const maybeErrors = (routerContext as EntryContext & { errors?: unknown }).errors;
@@ -15,11 +16,31 @@ function getRouterErrors(routerContext: EntryContext): RouterErrorMap | null {
   return maybeErrors as RouterErrorMap;
 }
 
+function unwrapRouteError(err: unknown): unknown {
+  if (isRouteErrorResponse(err)) {
+    const maybeInternal = err as typeof err & { error?: unknown };
+    if (maybeInternal.error) {
+      return maybeInternal.error;
+    }
+  }
+  return err;
+}
+
 function normalizeError(err: unknown): {
   name: string;
   message: string;
   stack?: string;
 } {
+  const unwrapped = unwrapRouteError(err);
+
+  if (unwrapped instanceof Error) {
+    return {
+      name: unwrapped.name,
+      message: unwrapped.message,
+      stack: unwrapped.stack,
+    };
+  }
+
   if (err instanceof Error) {
     return {
       name: err.name,
@@ -44,6 +65,26 @@ function normalizeError(err: unknown): {
     message,
   };
 }
+
+export const handleError: HandleErrorFunction = (error, { request, params }) => {
+  if (request.signal.aborted) return;
+
+  const unwrapped = unwrapRouteError(error);
+  if (unwrapped instanceof Error) {
+    if (loggedErrors.has(unwrapped)) return;
+    loggedErrors.add(unwrapped);
+  }
+
+  const details = normalizeError(unwrapped);
+  console.error('[SSR handleError]', {
+    url: request.url,
+    method: request.method,
+    params,
+    name: details.name,
+    message: details.message,
+    stack: details.stack,
+  });
+};
 
 function logRouteErrors(request: Request, routerContext: EntryContext): void {
   const errors = getRouterErrors(routerContext);
@@ -80,7 +121,13 @@ export default async function handleRequest(
       signal: request.signal,
       onError(error: unknown) {
         // Log streaming render errors from inside the shell
-        console.error(error);
+        const details = normalizeError(error);
+        console.error('[SSR stream error]', {
+          url: request.url,
+          name: details.name,
+          message: details.message,
+          stack: details.stack,
+        });
         responseStatusCode = 500;
       },
     }
