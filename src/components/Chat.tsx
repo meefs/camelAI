@@ -538,6 +538,7 @@ export default function Chat({
   // Use static key for pending messages - threadId in payload ensures correct matching
   // This avoids issues when workspace changes between welcome screen and chat page
   const pendingMessageKey = 'pendingMessage:newThread';
+  const onboardingAutoStartChatKey = 'chiridion:onboarding:auto-start-chat';
   const sessionStorageKey = useCallback((id: string) => {
     const workspaceKey = resolvedWorkspaceId ?? 'unknown';
     return `ws_session_${workspaceKey}_${id}`;
@@ -1635,11 +1636,21 @@ export default function Chat({
         const { finalContent } = pendingNewChatRef.current;
         const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
         const messageWithContext = onboardingSystemMessage
-          ? `<chiridion system message>${onboardingSystemMessage}</chiridion system message>\n\n${finalContent}`
+          ? finalContent.trim().length > 0
+            ? `<chiridion system message>${onboardingSystemMessage}</chiridion system message>\n\n${finalContent}`
+            : `<chiridion system message>${onboardingSystemMessage}</chiridion system message>`
           : finalContent;
-        sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: messageWithContext, threadId: data.thread.id }));
+
+        if (messageWithContext.trim().length > 0) {
+          sessionStorage.setItem(
+            pendingMessageKey,
+            JSON.stringify({ message: messageWithContext, threadId: data.thread.id })
+          );
+          navigate(`/chat/${data.thread.id}?newThread=1`);
+        } else {
+          navigate(`/chat/${data.thread.id}`);
+        }
         pendingNewChatRef.current = null;
-        navigate(`/chat/${data.thread.id}?newThread=1`);
       } else if (data.error) {
         // Thread creation failed
         sessionStorage.removeItem(pendingMessageKey);
@@ -1650,6 +1661,29 @@ export default function Chat({
       }
     }
   }, [createThreadFetcher.state, createThreadFetcher.data, navigate]);
+
+  useEffect(() => {
+    if (shouldShowChat) return;
+    if (!resolvedWorkspaceId) return;
+    if (createThreadFetcher.state !== 'idle' || isCreatingThread) return;
+
+    const shouldAutoStart = sessionStorage.getItem(onboardingAutoStartChatKey) === '1';
+    if (!shouldAutoStart) return;
+
+    sessionStorage.removeItem(onboardingAutoStartChatKey);
+    setIsCreatingThread(true);
+    pendingNewChatRef.current = { finalContent: '' };
+    createThreadFetcher.submit(
+      { intent: 'createThread' },
+      { method: 'post', action: '/chat' }
+    );
+  }, [
+    shouldShowChat,
+    resolvedWorkspaceId,
+    createThreadFetcher,
+    isCreatingThread,
+    onboardingAutoStartChatKey,
+  ]);
 
   const handleStartChatForApp = useCallback((app: WorkerScriptWithCreator) => {
     if (!resolvedWorkspaceId) {

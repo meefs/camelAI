@@ -42,7 +42,7 @@ interface OnboardingLoaderData {
   teamMode: boolean;
 }
 
-const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
+const ONBOARDING_AUTO_START_CHAT_KEY = 'chiridion:onboarding:auto-start-chat';
 
 export interface OnboardingRouteContext extends OnboardingLoaderData {
   answers: OnboardingPreferences;
@@ -285,38 +285,11 @@ export default function OnboardingLayout() {
       const completed = mergeAnswers(withOverrides, { completed_at: Date.now() });
       await saveOnboarding(completed);
       clearStoredProgress();
-
       try {
-        const formData = new FormData();
-        formData.set('intent', 'createThread');
-        const createThreadResponse = await fetch('/chat', {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (createThreadResponse.ok) {
-          const data = (await createThreadResponse.json()) as {
-            thread?: { id?: string };
-            onboardingSystemMessage?: string | null;
-          };
-          const threadId = data.thread?.id;
-          if (threadId) {
-            const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
-            if (onboardingSystemMessage) {
-              const hiddenOnboardingMessage = `<chiridion system message>${onboardingSystemMessage}</chiridion system message>`;
-              sessionStorage.setItem(
-                PENDING_NEW_THREAD_MESSAGE_KEY,
-                JSON.stringify({ message: hiddenOnboardingMessage, threadId })
-              );
-            }
-            navigate(`/chat/${threadId}?newThread=1`);
-            return;
-          }
-        }
+        sessionStorage.setItem(ONBOARDING_AUTO_START_CHAT_KEY, '1');
       } catch (error) {
-        console.error('Failed to auto-start chat after onboarding:', error);
+        console.error('Failed to persist onboarding auto-start flag:', error);
       }
-
       navigate('/chat');
     },
     [
