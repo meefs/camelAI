@@ -82,6 +82,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 | `src/routes/_onboarding.tsx` | Protected onboarding layout and branching logic |
 | `src/routes/_auth.tsx` | Public auth layout (login/signup) |
 | `src/routes/_admin.tsx` | Admin-only layout (superuser check) |
+| `src/routes/_admin.orgs.$id.tsx` | Admin org detail view (members, workspaces, archive, permanent test-reset delete) |
 | `src/routes/_app.chat.$id.tsx` | Chat page with streaming |
 | `src/routes/_app.apps.tsx` | Apps listing with workspace filter |
 | `src/routes/_app.computer.tsx` | File browser for workspace |

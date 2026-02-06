@@ -299,6 +299,31 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return info;
   }
 
+  /**
+   * Permanently delete all workspace-scoped data from this Durable Object.
+   * Used by superuser org reset tooling for test account cleanup.
+   */
+  async hardDeleteWorkspace(actorId: string): Promise<void> {
+    const info = await this.getInfo();
+
+    // Stop any pending token refresh alarms before clearing tables.
+    await this.ctx.storage.deleteAlarm();
+
+    this.sql.exec('DELETE FROM workspace_info WHERE key = ?', 'data');
+    this.sql.exec('DELETE FROM members');
+    this.sql.exec('DELETE FROM integrations');
+    this.sql.exec('DELETE FROM audit_log');
+
+    if (info) {
+      // Write a best-effort trail to worker logs before data is gone.
+      console.log('[WorkspaceDO] hard deleted workspace', {
+        workspaceId: info.id,
+        orgId: info.org_id,
+        actorId,
+      });
+    }
+  }
+
   async getMemberAccess(userId: string): Promise<WorkspaceMember | null> {
     const rows = this.sql.exec(
       'SELECT user_id, access_level, granted_by, granted_at FROM members WHERE user_id = ?',

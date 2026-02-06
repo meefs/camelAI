@@ -59,7 +59,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (intent === 'restartOwnOnboarding') {
     const authEnv = getAuthEnv(getEnv(context));
     await resetOnboardingForUser(authEnv, authContext.user.id);
-    throw redirect('/onboarding');
+    throw redirect('/onboarding?reset=1');
   }
 
   return Response.json({ error: 'Unknown intent' }, { status: 400 });

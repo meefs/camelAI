@@ -5,6 +5,7 @@ import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getVanityDomain } from '@/lib/app-url';
 import {
+  ONBOARDING_PROGRESS_STORAGE_KEY_PREFIX,
   DEFAULT_ONBOARDING_PREFERENCES,
   type OnboardingProgressState,
   type OnboardingStepId,
@@ -40,6 +41,8 @@ interface OnboardingLoaderData {
   vanityDomain: string;
   teamMode: boolean;
 }
+
+const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
 
 export interface OnboardingRouteContext extends OnboardingLoaderData {
   answers: OnboardingPreferences;
@@ -169,6 +172,11 @@ export default function OnboardingLayout() {
   const [transitionDirection, setTransitionDirection] =
     useState<OnboardingTransitionDirection>('none');
   const previousStepIndexRef = useRef<number | null>(null);
+  const resetHandledRef = useRef(false);
+  const resetRequested = useMemo(
+    () => new URLSearchParams(location.search).get('reset') === '1',
+    [location.search]
+  );
   const querySuffix = loaderData.teamMode ? '?team=1' : '';
   const progressStorageKey = useMemo(
     () => getOnboardingProgressStorageKey(loaderData.userId),
@@ -277,6 +285,38 @@ export default function OnboardingLayout() {
       const completed = mergeAnswers(withOverrides, { completed_at: Date.now() });
       await saveOnboarding(completed);
       clearStoredProgress();
+
+      try {
+        const formData = new FormData();
+        formData.set('intent', 'createThread');
+        const createThreadResponse = await fetch('/chat', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (createThreadResponse.ok) {
+          const data = (await createThreadResponse.json()) as {
+            thread?: { id?: string };
+            onboardingSystemMessage?: string | null;
+          };
+          const threadId = data.thread?.id;
+          if (threadId) {
+            const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
+            if (onboardingSystemMessage) {
+              const hiddenOnboardingMessage = `<chiridion system message>${onboardingSystemMessage}</chiridion system message>`;
+              sessionStorage.setItem(
+                PENDING_NEW_THREAD_MESSAGE_KEY,
+                JSON.stringify({ message: hiddenOnboardingMessage, threadId })
+              );
+            }
+            navigate(`/chat/${threadId}?newThread=1`);
+            return;
+          }
+        }
+      } catch (error) {
+        console.error('Failed to auto-start chat after onboarding:', error);
+      }
+
       navigate('/chat');
     },
     [
@@ -299,6 +339,43 @@ export default function OnboardingLayout() {
   const updateAnswers = useCallback((updates: Partial<OnboardingPreferences>) => {
     setAnswers((previous) => mergeAnswers(previous, updates));
   }, []);
+
+  useEffect(() => {
+    if (!resetRequested || resetHandledRef.current) return;
+    resetHandledRef.current = true;
+
+    const keysToClear: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(ONBOARDING_PROGRESS_STORAGE_KEY_PREFIX)) {
+        keysToClear.push(key);
+      }
+    }
+    for (const key of keysToClear) {
+      localStorage.removeItem(key);
+    }
+
+    setAnswers(normalizePreferences(loaderData.onboarding ?? DEFAULT_ONBOARDING_PREFERENCES));
+    setPendingOrgSlug(loaderData.currentOrg.slug);
+    setStartedAt(Date.now());
+    setHasRestoredProgress(false);
+
+    const params = new URLSearchParams(location.search);
+    params.delete('reset');
+    const nextSearch = params.toString();
+    navigate(
+      `${location.pathname}${nextSearch ? `?${nextSearch}` : ''}`,
+      { replace: true }
+    );
+  }, [
+    loaderData.currentOrg.slug,
+    loaderData.onboarding,
+    location.pathname,
+    location.search,
+    navigate,
+    resetRequested,
+    setPendingOrgSlug,
+  ]);
 
   useEffect(() => {
     if (loaderData.teamWelcomeOnly) {

@@ -1941,6 +1941,35 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.log('org_archived', actorId);
   }
 
+  /**
+   * Permanently delete all organization data from this Durable Object.
+   * This is intended for superuser-only test account resets.
+   */
+  async hardDeleteOrg(actorId: string): Promise<void> {
+    const info = await this.getInfo();
+    if (!info) {
+      return;
+    }
+
+    await releaseExactSlug(this.env.ORG_SLUG, info.id, info.slug);
+
+    this.sql.exec('DELETE FROM org_info WHERE key = ?', 'data');
+    this.sql.exec('DELETE FROM members');
+    this.sql.exec('DELETE FROM invitations');
+    this.sql.exec('DELETE FROM integrations');
+    this.sql.exec('DELETE FROM workspaces');
+    this.sql.exec('DELETE FROM audit_log');
+    this.sql.exec('DELETE FROM worker_scripts');
+    this.sql.exec('DELETE FROM threads');
+    this.sql.exec('DELETE FROM proxy_usage');
+    this.sql.exec('DELETE FROM openrouter_key');
+
+    console.log('[OrgDO] hard deleted org', {
+      orgId: info.id,
+      actorId,
+    });
+  }
+
   async getAuditLog(limit = 100, offset = 0): Promise<Array<{ id: string; action: string; actor_id: string; target_id: string | null; details: string | null; created_at: number }>> {
     const resolvedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     const resolvedOffset = Math.max(0, Math.floor(offset));

@@ -31,7 +31,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
     await resetOnboardingForUser(authEnv, authContext.user.id);
-    throw redirect('/onboarding');
+    throw redirect('/onboarding?reset=1');
   }
 
   const submission = parseWithZod(formData, { schema: profileSchema });
