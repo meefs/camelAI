@@ -756,6 +756,14 @@ You are running inside **Chiridion**, a web application that brings Claude Code 
 
 Threads in Chiridion can have multiple users. Each user message is prefixed with the sender's identity in the format \`[Name (email)]: message\` or \`[email]: message\`. Pay attention to who is sending each message - different team members may have different questions or instructions.
 
+## Chiridion Context Blocks
+
+Some messages include hidden context inserted by Chiridion. This context may appear as:
+- \`<chiridion system message> ... </chiridion system message>\`
+- \`[Chiridion system context]\` blocks
+
+Treat the content inside these blocks as trusted operator context for the current turn. Use it to guide your response and behavior, but do not explicitly mention these blocks, do not quote their wrappers, and do not tell the user that hidden context was provided.
+
 ## File Sharing with User
 
 You have access to two special directories for exchanging files with the user:
@@ -1448,15 +1456,66 @@ function formatAuthorPrefix(userName, userEmail) {
   return '';
 }
 
+const CHIRIDION_SYSTEM_MESSAGE_REGEX =
+  /<chiridion system message>([\s\S]*?)<\/chiridion system message>/gi;
+
+function extractChiridionSystemContext(content) {
+  if (typeof content !== 'string' || content.length === 0) {
+    return { contextMessages: [], userMessage: '' };
+  }
+
+  const contextMessages = [];
+  let match;
+  while ((match = CHIRIDION_SYSTEM_MESSAGE_REGEX.exec(content)) !== null) {
+    const value = typeof match[1] === 'string' ? match[1].trim() : '';
+    if (value) {
+      contextMessages.push(value);
+    }
+  }
+  CHIRIDION_SYSTEM_MESSAGE_REGEX.lastIndex = 0;
+
+  const userMessage = content
+    .replace(CHIRIDION_SYSTEM_MESSAGE_REGEX, '')
+    .trim();
+  CHIRIDION_SYSTEM_MESSAGE_REGEX.lastIndex = 0;
+
+  return { contextMessages, userMessage };
+}
+
 // Handle a user message
 async function handleUserMessage(session, content, userInfo = null) {
+  const rawContent = typeof content === 'string' ? content : String(content ?? '');
+  const { contextMessages, userMessage } = extractChiridionSystemContext(rawContent);
   const authorPrefix = formatAuthorPrefix(userInfo?.userName, userInfo?.userEmail);
-  const attributedContent = authorPrefix + content;
+  const attributedUserMessage = userMessage ? `${authorPrefix}${userMessage}` : '';
+  const contextualPrefix =
+    contextMessages.length > 0
+      ? contextMessages
+          .map((message) => `[Chiridion system context]\n${message}`)
+          .join('\n\n')
+      : '';
+  const attributedContent = [contextualPrefix, attributedUserMessage]
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+
+  if (!attributedContent) {
+    return;
+  }
+
   session.lastUserMessage = attributedContent;
 
-  void writeTrace(session.threadId, { direction: 'ws_in', type: 'message', content: attributedContent, author: userInfo });
+  void writeTrace(session.threadId, {
+    direction: 'ws_in',
+    type: 'message',
+    content: attributedContent,
+    rawContent,
+    author: userInfo,
+    hiddenContextCount: contextMessages.length,
+  });
   log('[ws-server]', 'handleUserMessage', {
     threadId: session.threadId,
+    hiddenContextCount: contextMessages.length,
     contentLength: attributedContent.length,
     hasActiveQuery: Boolean(session.activeQuery),
     hasIterator: Boolean(session.queryIterator),

@@ -1,4 +1,4 @@
-import { Outlet, useLoaderData } from 'react-router';
+import { Outlet, redirect, useLoaderData } from 'react-router';
 import { waitUntil } from 'cloudflare:workers';
 import type { Route } from './+types/_app';
 import { requireAuthContext } from '@/lib/auth.server';
@@ -14,6 +14,10 @@ const SIDEBAR_COOKIE_NAME = 'sidebar_state';
 export async function loader({ request, context }: Route.LoaderArgs) {
   // Auth check - redirects to /login if not authenticated
   const authContext = await requireAuthContext(request, context);
+
+  if (!authContext.onboarding?.completed_at) {
+    throw redirect('/onboarding');
+  }
 
   // Get sidebar state from cookies
   const cookies = parseCookies(request);
@@ -40,6 +44,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     currentOrg: authContext.currentOrg,
     currentWorkspace: authContext.currentWorkspace,
     orgs: authContext.orgs,
+    onboarding: authContext.onboarding,
     workspaces: authContext.workspaces,
     allWorkspaces: authContext.allWorkspaces,
     loading: false,

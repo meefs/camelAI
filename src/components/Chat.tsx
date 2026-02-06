@@ -331,7 +331,11 @@ export default function Chat({
 }: ChatProps) {
   const navigate = useNavigate();
   const revalidator = useRevalidator();
-  const createThreadFetcher = useFetcher<{ thread?: { id: string }; error?: string }>();
+  const createThreadFetcher = useFetcher<{
+    thread?: { id: string };
+    onboardingSystemMessage?: string | null;
+    error?: string;
+  }>();
   const touchFetcher = useFetcher();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
@@ -1629,7 +1633,11 @@ export default function Chat({
       if (data.thread && pendingNewChatRef.current) {
         // Thread created successfully - store message and navigate
         const { finalContent } = pendingNewChatRef.current;
-        sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: finalContent, threadId: data.thread.id }));
+        const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
+        const messageWithContext = onboardingSystemMessage
+          ? `<chiridion system message>${onboardingSystemMessage}</chiridion system message>\n\n${finalContent}`
+          : finalContent;
+        sessionStorage.setItem(pendingMessageKey, JSON.stringify({ message: messageWithContext, threadId: data.thread.id }));
         pendingNewChatRef.current = null;
         navigate(`/chat/${data.thread.id}?newThread=1`);
       } else if (data.error) {

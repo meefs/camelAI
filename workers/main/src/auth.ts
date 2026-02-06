@@ -1,8 +1,16 @@
 import { DurableObject } from 'cloudflare:workers';
 import { hashPassword, verifyPassword } from './password';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
-import type { OrgRole, BillingStatus, User, Organization, Workspace } from '../../../src/types';
+import type {
+  OrgRole,
+  BillingStatus,
+  User,
+  Organization,
+  Workspace,
+  OnboardingPreferences,
+} from '../../../src/types';
 import { WorkspaceDO } from './workspace';
+import { OrgSlugDO } from './org-slug-registry';
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from '../../../src/types';
@@ -11,6 +19,7 @@ export type { OrgRole, BillingStatus } from '../../../src/types';
 export interface DOEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
+  ORG_SLUG: DurableObjectNamespace<OrgSlugDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace; // Also used for spend tracking with prefix "spend:"
@@ -20,10 +29,24 @@ const SUPERUSER_EMAILS = new Set([
   'admin@example.com',
   '1033072+Vercantez@users.noreply.github.com',
 ]);
+const USER_ONBOARDING_KEY = 'onboarding';
+const USER_ONBOARDING_CONTEXT_INJECTED_AT_KEY = 'onboarding_context_injected_at';
 
 function isSuperuserEmail(email: string | null): boolean {
   if (!email) return false;
   return SUPERUSER_EMAILS.has(email.toLowerCase());
+}
+
+const ORG_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,22}[a-z0-9]$/;
+
+function normalizeOrgSlugBase(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 /**
@@ -32,15 +55,136 @@ function isSuperuserEmail(email: string | null): boolean {
  * e.g., "Acme Corp" with ID "85b12345..." becomes "acme-corp-85b"
  */
 function generateOrgSlug(name: string, idPrefix: string): string {
-  const base = name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 20) || 'org';
-  return `${base}-${idPrefix}`;
+  const normalizedPrefix = idPrefix.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'org';
+  const maxBaseLength = Math.max(1, 24 - normalizedPrefix.length - 1);
+  const base = normalizeOrgSlugBase(name).slice(0, maxBaseLength) || 'org';
+  return `${base}-${normalizedPrefix}`;
+}
+
+function normalizeOrgSlug(slug: string): string {
+  return slug.trim().toLowerCase();
+}
+
+function isValidOrgSlug(slug: string): boolean {
+  return ORG_SLUG_PATTERN.test(slug);
+}
+
+function ensureValidOrgSlug(slug: string): void {
+  if (!isValidOrgSlug(slug)) {
+    throw new Error('invalid_slug_format');
+  }
+}
+
+function buildSlugCandidates(name: string, orgId: string): string[] {
+  const lengths = [3, 4, 5, 6, 7, 8];
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+
+  for (const length of lengths) {
+    const suffix = orgId.slice(0, length);
+    if (!suffix) continue;
+    const candidate = generateOrgSlug(name, suffix);
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    candidates.push(candidate);
+  }
+
+  if (candidates.length === 0) {
+    candidates.push(generateOrgSlug(name, crypto.randomUUID().slice(0, 6)));
+  }
+
+  return candidates;
+}
+
+async function claimSlugWithCandidates(
+  slugNamespace: DurableObjectNamespace<OrgSlugDO>,
+  orgId: string,
+  candidates: string[]
+): Promise<string> {
+  for (const candidate of candidates) {
+    const slugStub = slugNamespace.get(slugNamespace.idFromName(candidate));
+    const result = await slugStub.claim(orgId);
+    if (result.ok) {
+      return candidate;
+    }
+  }
+
+  throw new Error('slug_claim_failed');
+}
+
+async function claimExactSlug(
+  slugNamespace: DurableObjectNamespace<OrgSlugDO>,
+  orgId: string,
+  slug: string
+): Promise<void> {
+  const slugStub = slugNamespace.get(slugNamespace.idFromName(slug));
+  const result = await slugStub.claim(orgId);
+  if (!result.ok) {
+    throw new Error('slug_taken');
+  }
+}
+
+async function releaseExactSlug(
+  slugNamespace: DurableObjectNamespace<OrgSlugDO>,
+  orgId: string,
+  slug: string
+): Promise<void> {
+  const slugStub = slugNamespace.get(slugNamespace.idFromName(slug));
+  await slugStub.release(orgId);
+}
+
+function toOnboardingPreferences(raw: unknown): OnboardingPreferences | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+
+  const value = raw as OnboardingPreferences;
+  if (!value.data_interests || typeof value.data_interests !== 'object') {
+    return null;
+  }
+
+  return {
+    ai_familiarity: value.ai_familiarity ?? null,
+    iteration_style: value.iteration_style ?? null,
+    stakes: value.stakes ?? null,
+    design_style: value.design_style ?? null,
+    starter_project: value.starter_project ?? null,
+    data_interests: {
+      files: Array.isArray(value.data_interests.files)
+        ? value.data_interests.files
+        : [],
+      integrations: Array.isArray(value.data_interests.integrations)
+        ? value.data_interests.integrations
+        : [],
+    },
+    completed_at: value.completed_at ?? null,
+  };
+}
+
+function getDefaultOnboardingPreferences(): OnboardingPreferences {
+  return {
+    ai_familiarity: null,
+    iteration_style: null,
+    stakes: null,
+    design_style: null,
+    starter_project: null,
+    data_interests: {
+      files: [],
+      integrations: [],
+    },
+    completed_at: null,
+  };
+}
+
+function sanitizeOnboardingPreferences(input: OnboardingPreferences): OnboardingPreferences {
+  const next = toOnboardingPreferences(input) ?? getDefaultOnboardingPreferences();
+  return {
+    ...next,
+    data_interests: {
+      files: Array.from(new Set(next.data_interests.files)),
+      integrations: Array.from(new Set(next.data_interests.integrations)),
+    },
+  };
 }
 
 
@@ -303,6 +447,12 @@ export class UserDO extends DurableObject<DOEnv> {
       `);
       this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (6)');
     }
+
+    if (version < 7) {
+      // V7: Reserve profile keys for onboarding state.
+      // Uses existing key-value table, so no schema changes needed.
+      this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (7)');
+    }
   }
 
   // Profile methods
@@ -436,6 +586,66 @@ export class UserDO extends DurableObject<DOEnv> {
     }
 
     return profile;
+  }
+
+  async getOnboarding(): Promise<OnboardingPreferences | null> {
+    const rows = this.sql.exec(
+      'SELECT value FROM profile WHERE key = ?',
+      USER_ONBOARDING_KEY
+    ).toArray() as Array<{ value: string }>;
+    if (rows.length === 0) {
+      return null;
+    }
+
+    try {
+      return toOnboardingPreferences(JSON.parse(rows[0].value));
+    } catch {
+      return null;
+    }
+  }
+
+  async updateOnboarding(input: OnboardingPreferences): Promise<OnboardingPreferences> {
+    const next = sanitizeOnboardingPreferences(input);
+    this.sql.exec(
+      'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
+      USER_ONBOARDING_KEY,
+      JSON.stringify(next)
+    );
+    return next;
+  }
+
+  async resetOnboarding(): Promise<OnboardingPreferences> {
+    const next = getDefaultOnboardingPreferences();
+    this.sql.exec(
+      'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
+      USER_ONBOARDING_KEY,
+      JSON.stringify(next)
+    );
+    this.sql.exec(
+      'DELETE FROM profile WHERE key = ?',
+      USER_ONBOARDING_CONTEXT_INJECTED_AT_KEY
+    );
+    return next;
+  }
+
+  async getOnboardingContextInjectedAt(): Promise<number | null> {
+    const rows = this.sql.exec(
+      'SELECT value FROM profile WHERE key = ?',
+      USER_ONBOARDING_CONTEXT_INJECTED_AT_KEY
+    ).toArray() as Array<{ value: string }>;
+    if (rows.length === 0) {
+      return null;
+    }
+    const parsed = Number(rows[0].value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  async markOnboardingContextInjected(at = Date.now()): Promise<void> {
+    this.sql.exec(
+      'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
+      USER_ONBOARDING_CONTEXT_INJECTED_AT_KEY,
+      String(at)
+    );
   }
 
   // Org membership methods
@@ -981,6 +1191,14 @@ export class OrgDO extends DurableObject<DOEnv> {
     };
   }
 
+  private async ensureSlugClaimed(orgId: string, slug: string): Promise<void> {
+    const slugStub = this.env.ORG_SLUG.get(this.env.ORG_SLUG.idFromName(slug));
+    const result = await slugStub.claim(orgId);
+    if (!result.ok && result.owner !== orgId) {
+      throw new Error('slug_claim_conflict');
+    }
+  }
+
   // Org info methods
   async getInfo(): Promise<Organization | null> {
     const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
@@ -1010,6 +1228,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (changed) {
       await this.setInfo(info);
     }
+    await this.ensureSlugClaimed(info.id, info.slug);
     return info;
   }
 
@@ -1032,7 +1251,11 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async createOrg(id: string, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
     const now = Date.now();
-    const slug = generateOrgSlug(name, id.slice(0, 3));
+    const slug = await claimSlugWithCandidates(
+      this.env.ORG_SLUG,
+      id,
+      buildSlugCandidates(name, id)
+    );
     const info: Organization = {
       id,
       name,
@@ -1044,26 +1267,32 @@ export class OrgDO extends DurableObject<DOEnv> {
       archived_at: null,
       archived_by: null,
     };
-    await this.setInfo(info);
 
-    // Add creator as owner
-    await this.addMember(createdBy, 'owner', createdBy);
-    this.log('org_created', createdBy, id, { name });
+    try {
+      await this.setInfo(info);
 
-    // Create default workspace (WorkspaceDO.createWorkspace registers with org automatically)
-    const workspaceId = crypto.randomUUID();
-    const workspaceStub = this.env.WORKSPACE.get(
-      this.env.WORKSPACE.idFromName(workspaceId)
-    ) as unknown as WorkspaceDO;
-    await workspaceStub.createWorkspace(
-      workspaceId,
-      id,
-      'Default Workspace',
-      createdBy,
-      null
-    );
+      // Add creator as owner
+      await this.addMember(createdBy, 'owner', createdBy);
+      this.log('org_created', createdBy, id, { name });
 
-    return { org: info, defaultWorkspaceId: workspaceId };
+      // Create default workspace (WorkspaceDO.createWorkspace registers with org automatically)
+      const workspaceId = crypto.randomUUID();
+      const workspaceStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(workspaceId)
+      ) as unknown as WorkspaceDO;
+      await workspaceStub.createWorkspace(
+        workspaceId,
+        id,
+        'Default Workspace',
+        createdBy,
+        null
+      );
+
+      return { org: info, defaultWorkspaceId: workspaceId };
+    } catch (error) {
+      await releaseExactSlug(this.env.ORG_SLUG, id, slug);
+      throw error;
+    }
   }
 
   async updateName(name: string, actorId: string): Promise<void> {
@@ -1076,6 +1305,61 @@ export class OrgDO extends DurableObject<DOEnv> {
         this.log('org_updated', actorId, info.id, { previous_name: previousName, name });
       }
     }
+  }
+
+  async updateSlug(newSlugInput: string, actorId: string): Promise<Organization> {
+    const info = await this.getInfo();
+    if (!info) {
+      throw new Error('org_not_found');
+    }
+
+    const normalizedSlug = normalizeOrgSlug(newSlugInput);
+    ensureValidOrgSlug(normalizedSlug);
+
+    const isOwner = await this.isOwner(actorId);
+    if (!isOwner) {
+      throw new Error('not_owner');
+    }
+
+    if (normalizedSlug === info.slug) {
+      return info;
+    }
+
+    const memberCount = await this.getMemberCount();
+    if (memberCount !== 1) {
+      throw new Error('slug_already_finalized');
+    }
+
+    const scripts = await this.listWorkerScripts();
+    if (scripts.length > 0) {
+      throw new Error('slug_already_finalized');
+    }
+
+    const priorSlugChange = this.sql.exec<{ action: string }>(
+      'SELECT action FROM audit_log WHERE action = ? LIMIT 1',
+      'slug_changed'
+    ).toArray();
+    if (priorSlugChange.length > 0) {
+      throw new Error('slug_already_finalized');
+    }
+
+    await claimExactSlug(this.env.ORG_SLUG, info.id, normalizedSlug);
+
+    const previousSlug = info.slug;
+    try {
+      info.slug = normalizedSlug;
+      await this.setInfo(info);
+      this.log('slug_changed', actorId, info.id, {
+        previous_slug: previousSlug,
+        new_slug: normalizedSlug,
+      });
+    } catch (error) {
+      await releaseExactSlug(this.env.ORG_SLUG, info.id, normalizedSlug);
+      throw error;
+    }
+
+    await releaseExactSlug(this.env.ORG_SLUG, info.id, previousSlug);
+    return info;
   }
 
   // Member methods

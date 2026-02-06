@@ -1,7 +1,10 @@
 import type { Route } from './+types/_admin._index';
-import { requireSuperuser } from '@/lib/auth.server';
+import { getAuthEnv, requireSuperuser } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do.server';
+import { resetOnboardingForUser } from '@/lib/auth-do';
 import { AdminDashboard } from '@/components/admin/admin-dashboard';
+import { redirect } from 'react-router';
 
 export function meta() {
   return [
@@ -46,6 +49,20 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     threadCount: threads.length,
     appCount,
   };
+}
+
+export async function action({ request, context }: Route.ActionArgs) {
+  const authContext = await requireSuperuser(request, context);
+  const formData = await request.formData();
+  const intent = formData.get('intent');
+
+  if (intent === 'restartOwnOnboarding') {
+    const authEnv = getAuthEnv(getEnv(context));
+    await resetOnboardingForUser(authEnv, authContext.user.id);
+    throw redirect('/onboarding');
+  }
+
+  return Response.json({ error: 'Unknown intent' }, { status: 400 });
 }
 
 export default function AdminIndexPage({ loaderData }: Route.ComponentProps) {
