@@ -30,25 +30,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   // Trigger container warmup in background (fire-and-forget)
   if (authContext.currentWorkspace) {
     const env = getEnv(context);
-    const sandbox = (env as { SANDBOX?: { get?: unknown } }).SANDBOX;
-
-    if (!sandbox || typeof sandbox.get !== 'function') {
-      // Avoid hard-failing route loaders if the container DO binding is missing.
-      console.error('[warmup] SANDBOX binding missing, skipping container warmup', {
-        url: request.url,
-        hasSandbox: !!sandbox,
-      });
-    } else {
-      const container = getWorkspaceContainer(
-        env as unknown as WorkspaceContainerEnv,
-        authContext.currentWorkspace.id
-      );
-      waitUntil(
-        container
-          .startForWorkspace(authContext.currentWorkspace.id, authContext.currentOrg.id)
-          .catch((err) => console.error('[warmup] Container start failed:', err))
-      );
-    }
+    const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, authContext.currentWorkspace.id);
+    waitUntil(
+      container
+        .startForWorkspace(authContext.currentWorkspace.id, authContext.currentOrg.id)
+        .catch((err) => console.error('[warmup] Container start failed:', err))
+    );
   }
 
   // Convert auth context to AuthState for the provider
