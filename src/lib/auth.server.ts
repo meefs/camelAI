@@ -4,6 +4,7 @@ import { getSessionIdFromRequest } from './cookies.server';
 import { getSession as getSessionKV, updateSession } from '../../workers/main/src/session-kv';
 import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
+import type { OnboardingPreferences } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
 import { getUserOrgs, listUserWorkspaces, listUserWorkspacesAcrossOrgs, isOrgAdmin, getWorkspaceAccess } from './auth-do';
 
@@ -29,6 +30,7 @@ export interface AuthContext extends UserContext {
   currentOrg: Organization;
   currentWorkspace: WorkspaceWithAccess | null;
   orgs: OrgMembership[];
+  onboarding: OnboardingPreferences | null;
   /** Workspaces in the current org only (for settings/management) */
   workspaces: WorkspaceWithAccess[];
   /** All workspaces across all orgs (for workspace switcher) */
@@ -142,6 +144,8 @@ async function getAuthContextUncached(
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
+  const userStub = authEnv.USER.get(authEnv.USER.idFromName(userContext.user.id));
+  const onboarding = await userStub.getOnboarding();
 
   // Get current org info directly from DO
   const orgInfo = await authEnv.ORG.get(authEnv.ORG.idFromName(userContext.session.org_id)).getInfo();
@@ -192,6 +196,7 @@ async function getAuthContextUncached(
     currentOrg,
     currentWorkspace,
     orgs,
+    onboarding,
     workspaces,
     allWorkspaces,
   };

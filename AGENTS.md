@@ -49,7 +49,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 2. **Workers** (`workers/`)
    - `main/` - Main Chiridion app worker
      - React Router SSR handler
-     - Durable Objects for state: `UserDO`, `OrgDO`, `WorkspaceDO`, `ChatThreadDO`
+     - Durable Objects for state: `UserDO`, `OrgDO`, `OrgSlugDO`, `WorkspaceDO`, `ChatThreadDO`
      - `ThreadSandbox` - Container lifecycle management
      - WebSocket routing (one container per workspace)
      - OAuth flow handling
@@ -79,8 +79,10 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 | File | Purpose |
 |------|---------|
 | `src/routes/_app.tsx` | Protected app layout with auth check |
+| `src/routes/_onboarding.tsx` | Protected onboarding layout and branching logic |
 | `src/routes/_auth.tsx` | Public auth layout (login/signup) |
 | `src/routes/_admin.tsx` | Admin-only layout (superuser check) |
+| `src/routes/_admin.orgs.$id.tsx` | Admin org detail view (members, workspaces, archive, permanent test-reset delete) |
 | `src/routes/_app.chat.$id.tsx` | Chat page with streaming |
 | `src/routes/_app.apps.tsx` | Apps listing with workspace filter |
 | `src/routes/_app.computer.tsx` | File browser for workspace |
@@ -101,6 +103,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 |------|---------|
 | `workers/main/src/index.ts` | Worker entry: WebSocket, OAuth, MCP, SSR |
 | `workers/main/src/auth.ts` | `UserDO`, `OrgDO` implementations |
+| `workers/main/src/org-slug-registry.ts` | `OrgSlugDO` slug ownership registry |
 | `workers/main/src/workspace.ts` | `WorkspaceDO` implementation |
 | `workers/main/src/workspace-container.ts` | `ThreadSandbox` container lifecycle |
 | `workers/main/src/durable-objects.ts` | `ChatThreadDO` for thread state |
@@ -186,6 +189,16 @@ export async function action({ request, context }: Route.ActionArgs) {
 4. Email → userId mapping stored in KV (`EMAIL_TO_USER`)
 5. Route loaders call `requireAuthContext()` which validates session and loads user/org/workspace data
 
+### Onboarding Flow
+1. Incomplete users are redirected to `/onboarding` before accessing app routes under `_app`.
+2. Onboarding answers are stored in localStorage (`chiridion:onboarding:progress`) during the flow.
+3. Final answers are persisted to `UserDO` via `POST /api/onboarding` with `completed_at`.
+4. Org slug step is conditional (`owner + one member + zero deployed scripts`) and uses:
+   - `POST /api/orgs/:id/check-slug` for debounced availability checks
+   - `POST /api/orgs/:id/update-slug` for one-time slug updates
+5. Slug uniqueness is enforced by `OrgSlugDO` (`claim/getOwner/release`), not KV.
+6. On first post-onboarding thread creation, chat action injects invisible onboarding context and writes `~/.chiridion/profile.md`.
+
 ### Message Sending
 1. User types message in `Chat.tsx`
 2. WebSocket connects to `/ws/{workspace}` - Worker routes to container
@@ -261,6 +274,13 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 |-------|--------|---------|
 | `/api/orgs/:id/invite` | POST | Create an invitation for an organization |
 | `/api/orgs/:id/invite` | DELETE | Cancel or decline an invitation |
+| `/api/orgs/:id/check-slug` | POST | Validate org slug format and availability |
+| `/api/orgs/:id/update-slug` | POST | One-time org slug update during onboarding |
+
+### Onboarding Routes
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/onboarding` | POST | Save onboarding preferences to `UserDO` |
 
 ### Invitation Routes
 | Route | Method | Purpose |
@@ -500,6 +520,8 @@ chiridion-app/
 │   ├── types.ts               # Shared types
 │   ├── routes/
 │   │   ├── _app.tsx           # Protected layout
+│   │   ├── _onboarding.tsx    # Onboarding layout and flow guards
+│   │   ├── _onboarding.*.tsx  # Onboarding screens (welcome, slug, q1-q6)
 │   │   ├── _auth.tsx          # Auth layout
 │   │   ├── _admin.tsx         # Admin layout
 │   │   ├── _app.chat.$id.tsx  # Chat page
@@ -516,6 +538,7 @@ chiridion-app/
 │   ├── components/
 │   │   ├── ui/                # shadcn/ui components
 │   │   ├── Chat.tsx           # Chat with WebSocket
+│   │   ├── onboarding/        # Onboarding UI components
 │   │   ├── bug-report-preview/ # Bug report card + detail dialog
 │   │   ├── sidebar/           # Navigation
 │   │   ├── settings/          # Settings components
@@ -532,6 +555,7 @@ chiridion-app/
 │   ├── main/src/
 │   │   ├── index.ts           # Worker entry
 │   │   ├── auth.ts            # UserDO, OrgDO
+│   │   ├── org-slug-registry.ts # OrgSlugDO uniqueness registry
 │   │   ├── workspace.ts       # WorkspaceDO
 │   │   ├── workspace-container.ts # ThreadSandbox
 │   │   ├── durable-objects.ts # ChatThreadDO
@@ -560,6 +584,7 @@ chiridion-app/
 - User profile, password hash, OAuth providers
 - Organization memberships and roles
 - Workspace access permissions
+- Onboarding preferences + first-chat personalization marker
 
 ### OrgDO (per organization)
 - Organization info, members, invitations
@@ -568,6 +593,11 @@ chiridion-app/
 - Integration credentials (org-level)
 - API tokens
 - OpenRouter API key (encrypted, per-org)
+- One-time onboarding slug update guard (`owner + one-member + zero-apps`)
+
+### OrgSlugDO (per slug)
+- Atomic slug ownership (`claim`, `getOwner`, `release`)
+- Prevents concurrent slug collisions during org creation/onboarding
 
 ### WorkspaceDO (per workspace)
 - Workspace metadata, members, access levels

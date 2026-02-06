@@ -125,7 +125,7 @@ export default function InvitationPage() {
     if (status !== 'success') return;
     const timeout = setTimeout(() => {
       // Hard redirect to force full page reload and auth context refresh
-      window.location.href = '/';
+      window.location.href = '/onboarding?team=1';
     }, 1000);
     return () => clearTimeout(timeout);
   }, [status]);

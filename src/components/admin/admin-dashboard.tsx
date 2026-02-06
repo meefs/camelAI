@@ -1,6 +1,6 @@
 'use client';
 
-import { Link } from 'react-router';
+import { Form, Link } from 'react-router';
 import { useMemo, useState } from 'react';
 import { Building2, FolderKanban, MessageSquare, Plug, Rocket, UserX, Users } from 'lucide-react';
 import type { AdminOverview } from '@/types';
@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 import { getContrastTextColor } from '@/lib/avatar';
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -50,11 +51,19 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
 
       <div className="flex-1 min-h-0 overflow-auto">
         <div className="max-w-6xl mx-auto w-full px-4 md:px-6 py-6">
-          <div className="mb-6">
-            <h1 className="text-lg font-semibold tracking-tight">QAML Backdoor</h1>
-            <p className="text-sm text-muted-foreground">
-              Superuser-only admin surface for Chiridion.
-            </p>
+          <div className="mb-6 flex items-start justify-between gap-3">
+            <div>
+              <h1 className="text-lg font-semibold tracking-tight">QAML Backdoor</h1>
+              <p className="text-sm text-muted-foreground">
+                Superuser-only admin surface for Chiridion.
+              </p>
+            </div>
+            <Form method="post">
+              <input type="hidden" name="intent" value="restartOwnOnboarding" />
+              <Button type="submit" variant="outline" size="sm">
+                Test Onboarding
+              </Button>
+            </Form>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">

@@ -11,6 +11,10 @@ import type {
   Integration,
 } from '@/types';
 import {
+  DEFAULT_ONBOARDING_PREFERENCES,
+  normalizePreferences,
+} from '@/lib/onboarding';
+import {
   getSession as getSessionKV,
   destroySession as destroySessionKV,
   createNewSession as createNewSessionKV,
@@ -24,6 +28,45 @@ import {
   type SessionData,
   type ApiTokenData,
 } from './auth-helpers';
+
+function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
+  return (
+    error instanceof TypeError &&
+    error.message.includes(`does not implement "${methodName}"`)
+  );
+}
+
+/**
+ * Reset onboarding for a user, with a compatibility fallback for workers that
+ * haven't reloaded the newer `resetOnboarding` RPC method yet.
+ */
+export async function resetOnboardingForUser(
+  env: AuthEnv,
+  userId: string
+): Promise<void> {
+  const stub = env.USER.get(env.USER.idFromName(userId));
+
+  try {
+    await stub.resetOnboarding();
+    return;
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, 'resetOnboarding')) {
+      throw error;
+    }
+  }
+
+  const defaults = normalizePreferences(DEFAULT_ONBOARDING_PREFERENCES);
+  await stub.updateOnboarding(defaults);
+
+  // `0` is intentionally falsy, so onboarding context injection will run again.
+  try {
+    await stub.markOnboardingContextInjected(0);
+  } catch (error) {
+    if (!isMissingRpcMethodError(error, 'markOnboardingContextInjected')) {
+      throw error;
+    }
+  }
+}
 
 // Session functions
 export async function getSession(env: AuthEnv, sessionId: string): Promise<SessionData | null> {
