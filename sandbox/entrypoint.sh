@@ -31,6 +31,7 @@ WS_PID=""
 CONTROL_PID=""
 BACKUP_PID=""
 INDEXER_PID=""
+CLAUDE_WARMUP_PID=""
 MOUNT_SUCCEEDED=""
 
 # Check if R2 is configured
@@ -738,6 +739,12 @@ cleanup() {
     kill "$INDEXER_PID" 2>/dev/null || true
   fi
 
+  # Kill background .claude warmup if still running
+  if [ -n "${CLAUDE_WARMUP_PID:-}" ] && kill -0 "$CLAUDE_WARMUP_PID" 2>/dev/null; then
+    kill "$CLAUDE_WARMUP_PID" 2>/dev/null || true
+    wait "$CLAUDE_WARMUP_PID" 2>/dev/null || true
+  fi
+
   # Kill control-plane if running
   if [ -n "${CONTROL_PID:-}" ] && kill -0 "$CONTROL_PID" 2>/dev/null; then
     echo "[entrypoint] Stopping control-plane (PID: $CONTROL_PID)..." >&2
@@ -809,6 +816,16 @@ for skill_dir in /etc/claude-code/skills/*/; do
   su -s /bin/sh claude -c "ln -sf '/etc/claude-code/skills/$skill_name' '$TARGET_DIR/.claude/skills/$skill_name'"
 done
 echo "[entrypoint] System skills symlinked to $TARGET_DIR/.claude/skills/" >&2
+
+# Warm ~/.claude path in the background with JuiceFS defaults (no -p override).
+# This is best-effort and should not delay startup.
+echo "[entrypoint] Starting background warmup for /home/claude/.claude..." >&2
+(
+  su -s /bin/sh claude -c "juicefs warmup '/home/claude/.claude'" 2>&1 || \
+    echo "[entrypoint] WARNING: Background warmup for /home/claude/.claude failed (non-critical)" >&2
+) &
+CLAUDE_WARMUP_PID=$!
+echo "[entrypoint] .claude warmup PID: $CLAUDE_WARMUP_PID" >&2
 
 # Write env vars to a file that claude user can source (needed before ws-server)
 cat > /tmp/ws-env.sh << ENVEOF
