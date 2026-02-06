@@ -328,6 +328,44 @@ describe('OAuth Token Refresh', () => {
       expect(alarmTime!).toBeGreaterThan(now);
       expect(alarmTime!).toBeLessThanOrEqual(now + TOKEN_REFRESH_FALLBACK_MS + 1000);
     });
+
+    it('syncs container and deployed workers after a successful token refresh pass', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Sync Target Owner');
+      const { org } = await createOrg(testEnv, 'Sync Target Org', userId);
+      const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+      const workspace = workspaces[0];
+      expect(workspace).toBeDefined();
+
+      const tokenExpiresAt = Date.now() + 5 * 60 * 1000; // within batch window
+      await createOAuthIntegration(workspace.id, userId, 'notion', tokenExpiresAt, {
+        access_token: 'soon-token',
+        refresh_token: 'soon-refresh',
+        expires_at: tokenExpiresAt,
+      });
+
+      const id = testEnv.WORKSPACE.idFromName(workspace.id);
+      const stub = testEnv.WORKSPACE.get(id);
+
+      await runInDurableObject(stub, async (instance) => {
+        const target = instance as unknown as {
+          alarm: () => Promise<void>;
+          refreshIntegrationToken: (integration: WorkspaceIntegrationRecord) => Promise<void>;
+          syncIntegrationEnvVarsToContainer: () => Promise<void>;
+          syncSecretsToDeployedWorkers: () => Promise<void>;
+        };
+
+        const refreshSpy = vi.spyOn(target, 'refreshIntegrationToken').mockResolvedValue(undefined);
+        const syncContainerSpy = vi.spyOn(target, 'syncIntegrationEnvVarsToContainer').mockResolvedValue(undefined);
+        const syncWorkersSpy = vi.spyOn(target, 'syncSecretsToDeployedWorkers').mockResolvedValue(undefined);
+
+        await target.alarm();
+
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+        expect(syncContainerSpy).toHaveBeenCalledTimes(1);
+        expect(syncWorkersSpy).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   describe('Token expiry storage', () => {

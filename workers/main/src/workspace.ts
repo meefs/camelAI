@@ -4,6 +4,12 @@ import type { Workspace } from '../../../src/types';
 import type { OrgDO } from './auth';
 import { decryptCredentials, encryptCredentials } from '../../../src/lib/integration-crypto';
 import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
+import { mintBigQueryAccessTokenFromServiceAccount } from './google-service-account';
+import {
+  getWorkspaceContainer,
+  type WorkspaceContainer,
+  type WorkspaceContainerEnv,
+} from './workspace-container';
 
 // Buffer time before token expiry to trigger refresh (10 minutes)
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
@@ -11,7 +17,7 @@ const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
 const TOKEN_BATCH_WINDOW_MS = 15 * 60 * 1000;
 // Fallback alarm delay if the alarm handler fails catastrophically (1 hour)
 const TOKEN_REFRESH_FALLBACK_MS = 60 * 60 * 1000;
-
+const BIGQUERY_INTEGRATION_TYPE = 'bigquery';
 
 export type WorkspaceAccessLevel = 'full' | 'read_only' | 'none';
 
@@ -50,6 +56,7 @@ export interface WorkspaceAuditLogEntry {
 export interface WorkspaceEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   ORG: DurableObjectNamespace<OrgDO>;
+  SANDBOX?: DurableObjectNamespace<WorkspaceContainer>;
   INTEGRATION_SECRET_KEY: string;
   // OAuth credentials for token refresh
   NOTION_CLIENT_ID?: string;
@@ -393,6 +400,31 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return rows.length > 0;
   }
 
+  /**
+   * BigQuery integrations are configured with service account JSON, but runtime
+   * should receive short-lived access tokens instead of raw private key JSON.
+   */
+  private async hydrateBigQueryCredentials(
+    credentialsEncrypted: string
+  ): Promise<{ credentialsEncrypted: string; tokenExpiresAt: number }> {
+    const credentials = await decryptCredentials(credentialsEncrypted, this.env.INTEGRATION_SECRET_KEY);
+    const serviceAccountJson = credentials.service_account_json;
+    if (typeof serviceAccountJson !== 'string' || serviceAccountJson.trim().length === 0) {
+      throw new Error('BigQuery integration requires service_account_json');
+    }
+
+    const token = await mintBigQueryAccessTokenFromServiceAccount(serviceAccountJson);
+    const hydratedCredentials: Record<string, unknown> = {
+      ...credentials,
+      access_token: token.accessToken,
+      token_type: token.tokenType,
+      expires_at: token.expiresAt,
+    };
+
+    const encrypted = await encryptCredentials(hydratedCredentials, this.env.INTEGRATION_SECRET_KEY);
+    return { credentialsEncrypted: encrypted, tokenExpiresAt: token.expiresAt };
+  }
+
   async createIntegration(
     id: string,
     integrationType: string,
@@ -409,6 +441,15 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       throw new Error(`An integration named "${name}" already exists for type "${integrationType}". Please choose a different name.`);
     }
 
+    let resolvedCredentialsEncrypted = credentialsEncrypted;
+    let resolvedTokenExpiresAt = tokenExpiresAt ?? null;
+
+    if (integrationType === BIGQUERY_INTEGRATION_TYPE) {
+      const hydrated = await this.hydrateBigQueryCredentials(credentialsEncrypted);
+      resolvedCredentialsEncrypted = hydrated.credentialsEncrypted;
+      resolvedTokenExpiresAt = hydrated.tokenExpiresAt;
+    }
+
     const now = Date.now();
     this.sql.exec(
       `INSERT INTO integrations
@@ -420,16 +461,16 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       category,
       authMethod,
       config,
-      credentialsEncrypted,
+      resolvedCredentialsEncrypted,
       createdBy,
       now,
       now,
-      tokenExpiresAt ?? null
+      resolvedTokenExpiresAt
     );
     this.log('integration_created', createdBy, id, { integration_type: integrationType, name });
 
-    // Schedule token refresh alarm if this is an OAuth integration with expiry
-    if (tokenExpiresAt) {
+    // Schedule token refresh alarm when this integration has token expiry.
+    if (resolvedTokenExpiresAt) {
       await this.scheduleNextTokenRefresh();
     }
   }
@@ -445,12 +486,22 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     },
     actorId: string
   ): Promise<void> {
+    const existing = await this.getIntegration(id);
+
     // If renaming, check for duplicate name within the same integration type
     if (updates.name !== undefined) {
-      const existing = await this.getIntegration(id);
       if (existing && await this.integrationNameExists(existing.integration_type, updates.name, id)) {
         throw new Error(`An integration named "${updates.name}" already exists for type "${existing.integration_type}". Please choose a different name.`);
       }
+    }
+
+    if (
+      updates.credentialsEncrypted !== undefined &&
+      existing?.integration_type === BIGQUERY_INTEGRATION_TYPE
+    ) {
+      const hydrated = await this.hydrateBigQueryCredentials(updates.credentialsEncrypted);
+      updates.credentialsEncrypted = hydrated.credentialsEncrypted;
+      updates.tokenExpiresAt = hydrated.tokenExpiresAt;
     }
 
     const now = Date.now();
@@ -505,7 +556,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   }
 
   // =============================================================================
-  // OAuth Token Refresh
+  // Integration Token Refresh
   // =============================================================================
 
   /**
@@ -513,19 +564,20 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
    * Uses single-alarm pattern: finds earliest expiring token and sets alarm for it.
    */
   private async scheduleNextTokenRefresh(): Promise<void> {
-    // Find the earliest expiring OAuth token
+    // Find the earliest expiring managed token
     const rows = this.sql.exec(
       `SELECT MIN(token_expires_at) as token_expires_at
        FROM integrations
        WHERE token_expires_at IS NOT NULL
          AND deleted_at IS NULL
          AND enabled = 1
-         AND auth_method = 'oauth2'`
+         AND (auth_method = 'oauth2' OR integration_type = ?)`,
+      BIGQUERY_INTEGRATION_TYPE
     ).toArray() as { token_expires_at: number | null }[];
 
     const nextExpiry = rows[0]?.token_expires_at;
     if (!nextExpiry) {
-      // No OAuth tokens with expiry, clear any existing alarm
+      // No managed tokens with expiry, clear any existing alarm
       await this.ctx.storage.deleteAlarm();
       return;
     }
@@ -543,7 +595,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   }
 
   /**
-   * Durable Object alarm handler - refreshes expiring OAuth tokens
+   * Durable Object alarm handler - refreshes expiring managed tokens
    *
    * Uses a "dead man's switch" pattern: immediately schedules a fallback alarm
    * before doing any work. If everything succeeds, the fallback is overwritten
@@ -569,13 +621,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
            AND token_expires_at <= ?
            AND deleted_at IS NULL
            AND enabled = 1
-           AND auth_method = 'oauth2'
+           AND (auth_method = 'oauth2' OR integration_type = ?)
          ORDER BY token_expires_at ASC`,
-        batchCutoff
+        batchCutoff,
+        BIGQUERY_INTEGRATION_TYPE
       ).toArray() as unknown as WorkspaceIntegrationRecord[];
 
       if (expiringIntegrations.length > 0) {
-        console.log(`[WorkspaceDO] Refreshing ${expiringIntegrations.length} expiring OAuth tokens`);
+        console.log(`[WorkspaceDO] Refreshing ${expiringIntegrations.length} expiring integration tokens`);
 
         let refreshedCount = 0;
         for (const integration of expiringIntegrations) {
@@ -588,8 +641,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
           }
         }
 
-        // If any tokens were refreshed, sync secrets to all deployed workers
+        // If any tokens were refreshed, sync credentials to both runtime targets:
+        // 1) running workspace container env vars
+        // 2) deployed Cloudflare workers in this workspace
         if (refreshedCount > 0) {
+          await this.syncIntegrationEnvVarsToContainer();
           await this.syncSecretsToDeployedWorkers();
         }
       }
@@ -604,7 +660,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
   /**
    * Sync integration secrets to all deployed workers in this workspace.
-   * Called after OAuth token refresh to ensure workers have up-to-date credentials.
+   * Called after token refresh to ensure workers have up-to-date credentials.
    */
   private async syncSecretsToDeployedWorkers(): Promise<void> {
     // Get workspace info to find orgId
@@ -643,7 +699,37 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   }
 
   /**
-   * Refresh OAuth token for a specific integration
+   * Push refreshed integration env vars to the running workspace container.
+   * This keeps active chat sessions in sync with newly rotated tokens.
+   */
+  private async syncIntegrationEnvVarsToContainer(): Promise<void> {
+    if (!this.env.SANDBOX) {
+      console.warn('[WorkspaceDO] Cannot sync container env vars: SANDBOX binding missing');
+      return;
+    }
+
+    const info = await this.getInfo();
+    if (!info) {
+      console.warn('[WorkspaceDO] Cannot sync container env vars: workspace info not found');
+      return;
+    }
+
+    try {
+      const container = getWorkspaceContainer(
+        this.env as unknown as WorkspaceContainerEnv,
+        info.id
+      );
+      const success = await container.refreshIntegrationEnvVars(info.id);
+      if (!success) {
+        console.warn('[WorkspaceDO] Container env refresh skipped or failed', { workspaceId: info.id });
+      }
+    } catch (err) {
+      console.error('[WorkspaceDO] Failed to refresh container integration env vars:', err);
+    }
+  }
+
+  /**
+   * Refresh managed token for a specific integration
    */
   private async refreshIntegrationToken(integration: WorkspaceIntegrationRecord): Promise<void> {
     const credentials = await decryptCredentials(
@@ -651,19 +737,37 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       this.env.INTEGRATION_SECRET_KEY
     );
 
-    const refreshToken = credentials.refresh_token as string | undefined;
-    if (!refreshToken) {
-      console.warn(`[WorkspaceDO] No refresh token for integration ${integration.id}`);
-      return;
-    }
-
     let newCredentials: Record<string, unknown>;
     let newExpiresAt: number;
 
     switch (integration.integration_type) {
-      case 'notion':
+      case 'notion': {
+        const refreshToken = credentials.refresh_token as string | undefined;
+        if (!refreshToken) {
+          console.warn(`[WorkspaceDO] No refresh token for Notion integration ${integration.id}`);
+          return;
+        }
         ({ credentials: newCredentials, expiresAt: newExpiresAt } = await this.refreshNotionToken(refreshToken));
         break;
+      }
+
+      case BIGQUERY_INTEGRATION_TYPE: {
+        const serviceAccountJson = credentials.service_account_json;
+        if (typeof serviceAccountJson !== 'string' || serviceAccountJson.trim().length === 0) {
+          console.warn(`[WorkspaceDO] Missing service_account_json for BigQuery integration ${integration.id}`);
+          return;
+        }
+
+        const token = await mintBigQueryAccessTokenFromServiceAccount(serviceAccountJson);
+        newCredentials = {
+          ...credentials,
+          access_token: token.accessToken,
+          token_type: token.tokenType,
+          expires_at: token.expiresAt,
+        };
+        newExpiresAt = token.expiresAt;
+        break;
+      }
 
       // Add other OAuth providers here as needed
       // case 'slack':
@@ -671,7 +775,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       //   break;
 
       default:
-        console.warn(`[WorkspaceDO] Unknown OAuth provider for refresh: ${integration.integration_type}`);
+        console.warn(`[WorkspaceDO] Unknown integration type for token refresh: ${integration.integration_type}`);
         return;
     }
 
