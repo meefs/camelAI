@@ -29,6 +29,10 @@ import {
   type ApiTokenData,
 } from './auth-helpers';
 
+interface GetUserOrgsOptions {
+  preloadedOrgInfoById?: Map<string, Promise<Organization | null> | Organization | null>;
+}
+
 function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
   return (
     error instanceof TypeError &&
@@ -269,15 +273,22 @@ export async function linkOAuthProvider(
   await stub.linkOAuthProvider(provider, providerId);
 }
 
-export async function getUserOrgs(env: AuthEnv, userId: string): Promise<OrgMembership[]> {
+export async function getUserOrgs(
+  env: AuthEnv,
+  userId: string,
+  options?: GetUserOrgsOptions
+): Promise<OrgMembership[]> {
   const userStub = env.USER.get(env.USER.idFromName(userId));
   const userOrgs = await userStub.getOrgs();
+  const preloadedOrgInfoById = options?.preloadedOrgInfoById;
 
   // Fetch all org info in parallel instead of sequential loop
   const orgInfos = await Promise.all(
     userOrgs.map(async (uo) => {
-      const orgStub = env.ORG.get(env.ORG.idFromName(uo.org_id));
-      const orgInfo = await orgStub.getInfo();
+      const preloadedOrgInfo = preloadedOrgInfoById?.get(uo.org_id);
+      const orgInfo = preloadedOrgInfo
+        ? await preloadedOrgInfo
+        : await env.ORG.get(env.ORG.idFromName(uo.org_id)).getInfo();
       return { uo, orgInfo };
     })
   );
