@@ -304,17 +304,11 @@ export function TeamTable({
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="admin">
-                              <div>
-                                <div>Admin</div>
-                                <div className="text-xs text-muted-foreground font-normal">Full access. Can manage team, workspaces, and settings.</div>
-                              </div>
+                            <SelectItem value="admin" description="Full access. Can manage team, workspaces, and settings.">
+                              Admin
                             </SelectItem>
-                            <SelectItem value="member">
-                              <div>
-                                <div>Member</div>
-                                <div className="text-xs text-muted-foreground font-normal">Can access assigned workspaces. Cannot manage team or settings.</div>
-                              </div>
+                            <SelectItem value="member" description="Can access assigned workspaces. Cannot manage team or settings.">
+                              Member
                             </SelectItem>
                             {/* TODO: Viewer role (deferred) — see types.ts for details */}
                             {/* <SelectItem value="viewer">Viewer</SelectItem> */}
@@ -510,17 +504,11 @@ export function TeamTable({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="admin">
-                            <div>
-                              <div>Admin</div>
-                              <div className="text-xs text-muted-foreground font-normal">Full access. Can manage team, workspaces, and settings.</div>
-                            </div>
+                          <SelectItem value="admin" description="Full access. Can manage team, workspaces, and settings.">
+                            Admin
                           </SelectItem>
-                          <SelectItem value="member">
-                            <div>
-                              <div>Member</div>
-                              <div className="text-xs text-muted-foreground font-normal">Can access assigned workspaces. Cannot manage team or settings.</div>
-                            </div>
+                          <SelectItem value="member" description="Can access assigned workspaces. Cannot manage team or settings.">
+                            Member
                           </SelectItem>
                           {/* TODO: Viewer role (deferred) — see types.ts for details */}
                           {/* <SelectItem value="viewer">Viewer</SelectItem> */}
