@@ -695,10 +695,6 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 - Config: `vitest.config.ts` with jsdom
 - Auth helpers, Chat rendering, content parsing, stream playback
 
-### Integration Tests (`tests/integration/`)
-- Config: `vitest.integration.config.ts`
-- Page accessibility, auth gating, API route auth requirements
-
 ### Workers Tests (`workers/main/tests/`)
 - Config: `vitest.workers.config.ts`
 - Full auth flow through RPC → Durable Objects
