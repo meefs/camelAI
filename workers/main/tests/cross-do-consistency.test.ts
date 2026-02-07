@@ -18,6 +18,7 @@ import {
   updateOrgMemberRole,
   checkUserOrphaned,
   handleOrphanedUserLogin,
+  adminTransferOrgOwnership,
   transferOrgOwnership,
   archiveOrg,
   createWorkspace,
@@ -182,6 +183,30 @@ describe('cross-DO consistency', () => {
     const oldOwnerOrgs = await getUserOrgs(testEnv, ownerId);
     expect(newOwnerOrgs.find((entry) => entry.org_id === org.id)?.role).toBe('owner');
     expect(oldOwnerOrgs.find((entry) => entry.org_id === org.id)?.role).toBe('admin');
+  });
+
+  it('adminTransferOwnership no-ops when target is already the owner', async () => {
+    const ownerEmail = testEmail();
+    const memberEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
+    const { userId: memberId } = await createUser(testEnv, memberEmail, 'password123', 'Member');
+    const { org } = await createOrg(testEnv, 'Admin Transfer Org', ownerId);
+
+    const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
+    await acceptInvitation(testEnv, org.id, invitation.id, memberId);
+
+    await adminTransferOrgOwnership(testEnv, org.id, ownerId, 'system-admin');
+
+    const members = await getOrgMembers(testEnv, org.id);
+    const ownerMember = members.find((entry) => entry.user.id === ownerId);
+    const otherMember = members.find((entry) => entry.user.id === memberId);
+    expect(ownerMember?.role).toBe('owner');
+    expect(otherMember?.role).toBe('member');
+
+    const ownerOrgs = await getUserOrgs(testEnv, ownerId);
+    const memberOrgs = await getUserOrgs(testEnv, memberId);
+    expect(ownerOrgs.find((entry) => entry.org_id === org.id)?.role).toBe('owner');
+    expect(memberOrgs.find((entry) => entry.org_id === org.id)?.role).toBe('member');
   });
 
   it('archiveOrg archives workspaces and removes memberships', async () => {

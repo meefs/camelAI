@@ -6,7 +6,7 @@ import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
 import type { OnboardingPreferences } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
-import { getUserOrgs, listUserWorkspacesAcrossOrgs, isOrgAdmin, getWorkspaceAccess } from './auth-do';
+import { getUserOrgs, listUserWorkspacesAcrossOrgs, listOrgWorkspaces, isOrgAdmin, getWorkspaceAccess } from './auth-do';
 
 // Request-scoped cache for auth context to avoid duplicate DO RPC calls
 // when multiple loaders call requireAuthContext() in the same request
@@ -35,6 +35,8 @@ export interface AuthContext extends UserContext {
   workspaces: WorkspaceWithAccess[];
   /** All workspaces across all orgs (for workspace switcher) */
   allWorkspaces: WorkspaceWithAccess[];
+  /** Total workspaces in org (includes ones user may not have access to) */
+  orgWorkspaceCount: number;
 }
 
 /**
@@ -184,6 +186,13 @@ async function getAuthContextUncached(
   // Derive from allWorkspaces to avoid duplicate current-org RPC traversal.
   const workspaces = allWorkspaces.filter((ws) => ws.org_id === currentOrg.id);
 
+  // Check if org has workspaces the user can't access (only when user has none)
+  let orgWorkspaceCount = workspaces.length;
+  if (workspaces.length === 0) {
+    const allOrgWorkspaces = await listOrgWorkspaces(authEnv, currentOrg.id);
+    orgWorkspaceCount = allOrgWorkspaces.length;
+  }
+
   // Select current workspace - must be from current org to maintain consistency
   // If no workspaces in current org, currentWorkspace will be null and UI shows NoWorkspacesError
   const sessionWorkspaceId = sessionContext.session.workspace_id;
@@ -214,6 +223,7 @@ async function getAuthContextUncached(
     onboarding,
     workspaces,
     allWorkspaces,
+    orgWorkspaceCount,
   };
 }
 
@@ -251,6 +261,11 @@ export async function requireSuperuser(
   return authContext;
 }
 
+// TODO: Viewer role (deferred): When viewer role enforcement is added, route guards
+// should deny viewers access to chat, computer, connections, and any write operations.
+// Viewers should only be able to view workspace apps (including private/unpublished ones).
+// See the OrgRole type in types.ts for the full planned behavior.
+
 /**
  * Require org admin access
  */
@@ -279,7 +294,7 @@ export async function requireWorkspaceAccess(
   request: Request,
   context: AppLoadContext,
   workspaceId: string,
-  requiredLevel: 'full' | 'read_only' = 'read_only'
+  requiredLevel: 'full' | 'any' = 'any'
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);

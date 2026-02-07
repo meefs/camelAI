@@ -1,8 +1,8 @@
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.workspaces';
-import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
+import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { createWorkspace } from '@/lib/auth-do';
+import { createWorkspace, archiveWorkspace, listOrgWorkspaces } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { WorkspacesList } from '@/components/settings/workspaces-list';
@@ -16,6 +16,7 @@ export function meta() {
 
 export async function action({ request, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
+  await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const formData = await request.formData();
   const intent = formData.get('intent');
   const env = getEnv(context);
@@ -38,8 +39,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!workspaceId) {
       return { error: 'Workspace ID is required' };
     }
-    const stub = authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId));
-    await stub.archive(actorId);
+    await archiveWorkspace(authEnv, workspaceId, actorId);
     return { success: true };
   }
 
@@ -48,20 +48,77 @@ export async function action({ request, context }: Route.ActionArgs) {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+
+  // Determine current user's role for permission gating
+  const currentUserOrg = authContext.orgs.find((o) => o.org_id === authContext.currentOrg.id);
+  const currentUserRole = currentUserOrg?.role ?? 'member';
+  const canManage = currentUserRole === 'owner' || currentUserRole === 'admin';
+
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id));
+
+  // Fetch org members count and app counts in parallel
+  const [orgMembers, scripts] = await Promise.all([
+    orgStub.getMembers(),
+    orgStub.listWorkerScripts(),
+  ]);
+  const orgMemberCount = orgMembers.length;
+
+  // Aggregate app counts by workspace
+  const appCountMap = new Map<string, number>();
+  for (const script of scripts) {
+    appCountMap.set(script.workspace_id, (appCountMap.get(script.workspace_id) ?? 0) + 1);
+  }
+
+  // For each workspace, get members with explicit 'none' access to subtract from org total.
+  // Only count 'none' entries for users still in the org (stale entries may exist from removed users).
+  const orgMemberIds = new Set(orgMembers.map((m: { user_id: string }) => m.user_id));
+  const workspaces = authContext.workspaces ?? [];
+  const memberCounts = await Promise.all(
+    workspaces.map(async (ws) => {
+      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+      const explicitMembers = await wsStub.listMembers();
+      const noneCount = explicitMembers.filter(
+        (m: { user_id: string; access_level: string }) => m.access_level === 'none' && orgMemberIds.has(m.user_id)
+      ).length;
+      return { id: ws.id, memberCount: orgMemberCount - noneCount };
+    })
+  );
+  const memberCountMap = new Map(memberCounts.map((m) => [m.id, m.memberCount]));
+
+  // Build WorkspaceSummary objects
+  const workspaceSummaries = workspaces.map((ws) => ({
+    id: ws.id,
+    org_id: ws.org_id,
+    name: ws.name,
+    description: ws.description,
+    created_at: ws.created_at,
+    avatar: ws.avatar,
+    member_count: memberCountMap.get(ws.id) ?? orgMemberCount,
+    published_apps: appCountMap.get(ws.id) ?? 0,
+    compute_tier: ws.compute_tier ?? 'standard',
+  }));
+
+  // When user has no accessible workspaces, check if the org actually has workspaces
+  let orgWorkspaceCount = workspaceSummaries.length;
+  if (workspaceSummaries.length === 0) {
+    const allOrgWorkspaces = await listOrgWorkspaces(authEnv, authContext.currentOrg.id);
+    orgWorkspaceCount = allOrgWorkspaces.length;
+  }
 
   return {
     org: authContext.currentOrg,
-    workspaces: authContext.workspaces,
+    workspaces: workspaceSummaries,
     currentWorkspaceId: authContext.currentWorkspace?.id,
+    canManage,
+    orgWorkspaceCount,
   };
 }
 
 export default function WorkspacesPage() {
-  const { org, workspaces, currentWorkspaceId } =
+  const { org, workspaces, currentWorkspaceId, canManage, orgWorkspaceCount } =
     useLoaderData<typeof loader>();
-
-  // TODO: Calculate based on user's role
-  const canManage = true;
 
   return (
     <div className="space-y-6">
@@ -71,9 +128,10 @@ export default function WorkspacesPage() {
       />
       <Separator />
       <WorkspacesList
-        workspaces={workspaces as never[]}
+        workspaces={workspaces}
         canManage={canManage}
         currentWorkspaceId={currentWorkspaceId ?? null}
+        orgWorkspaceCount={orgWorkspaceCount}
       />
     </div>
   );

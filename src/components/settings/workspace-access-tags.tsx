@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo } from "react"
-import { Pencil, PencilOff, X } from "lucide-react"
+import { X } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -11,9 +11,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { getContrastTextColor } from "@/lib/avatar"
-import { cn } from "@/lib/utils"
 import type { Workspace, WorkspaceAccessLevel } from "@/types"
 
 interface WorkspaceAccessTagsProps {
@@ -48,11 +46,6 @@ export function WorkspaceAccessTags({
     return { memberWorkspaces: memberVisible, hiddenWorkspaces: hidden }
   }, [accessByWorkspace, workspaces])
 
-  const handleToggle = (workspaceId: string, current: WorkspaceAccessLevel) => {
-    const next = current === "full" ? "read_only" : "full"
-    onAccessChange?.(workspaceId, next)
-  }
-
   const handleRemove = (workspaceId: string) => {
     onAccessChange?.(workspaceId, "none")
   }
@@ -65,50 +58,21 @@ export function WorkspaceAccessTags({
 
   return (
     <div className="flex flex-wrap gap-1.5">
-      {memberWorkspaces.map(({ workspace, access }) => (
+      {memberWorkspaces.map(({ workspace }) => (
         <div
           key={workspace.id}
-          className={cn(
-            "group relative inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs",
-            access === "full"
-              ? "bg-secondary text-secondary-foreground"
-              : "bg-secondary/50 text-muted-foreground border border-dashed"
-          )}
+          className="group relative inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs bg-secondary text-secondary-foreground"
         >
           <span className="truncate max-w-[140px]">{workspace.name}</span>
           {showControls ? (
-            <div className="flex items-center gap-0.5 ml-1">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => handleToggle(workspace.id, access)}
-                    className="p-0.5 hover:bg-background rounded"
-                  >
-                    {access === "full" ? (
-                      <Pencil className="h-3 w-3" />
-                    ) : (
-                      <PencilOff className="h-3 w-3" />
-                    )}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {access === "full" ? "Make read-only" : "Grant full access"}
-                </TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => handleRemove(workspace.id)}
-                    className="p-0.5 hover:bg-background rounded"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>Remove access</TooltipContent>
-              </Tooltip>
-            </div>
+            <button
+              type="button"
+              onClick={() => handleRemove(workspace.id)}
+              className="p-0.5 hover:bg-background rounded"
+              title="Remove access"
+            >
+              <X className="h-3 w-3" />
+            </button>
           ) : null}
         </div>
       ))}

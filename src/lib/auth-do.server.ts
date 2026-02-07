@@ -749,6 +749,7 @@ export async function adminGetWorkspaceDetail(
       created_by: t.created_by,
       created_at: t.created_at,
       updated_at: t.updated_at,
+      user_message_count: t.user_message_count ?? 0,
     }));
 
   return {

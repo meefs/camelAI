@@ -2,15 +2,33 @@
  * Test helpers for direct DO calls
  *
  * These helpers replace the DoRpcService for tests, using direct DO namespace bindings.
+ *
+ * IMPORTANT: For business logic functions (acceptInvitation, createWorkspace, removeOrgMember,
+ * archiveWorkspace, archiveOrg), we delegate to the production code in auth-do.ts.
+ * TestEnv is structurally compatible with AuthEnv, so we can cast between them.
+ * Only test-only utilities (creating users with known passwords, session management)
+ * remain as shadow logic here.
  */
 
 import type { UserDO, OrgDO, OrgRole, User } from '../src/auth';
 import type { WorkspaceDO, Workspace, WorkspaceAccessLevel as WorkspaceAccessLevelDO } from '../src/workspace';
+import type { AuthEnv } from '../../../src/lib/auth-helpers';
 import type { OrgSlugDO } from '../src/org-slug-registry';
 import { hashPassword, verifyPassword } from '../src/password';
 import { getSession, updateSession, destroySession, type SessionData } from '../src/session-kv';
 import { encryptCredentials, decryptCredentials } from '../../../src/lib/integration-crypto';
 import { mapCredentialsToEnvVars } from '../src/integration-env';
+// Production business logic - delegated to instead of reimplemented
+import {
+  acceptInvitation as prodAcceptInvitation,
+  adminTransferOrgOwnership as prodAdminTransferOrgOwnership,
+  createWorkspace as prodCreateWorkspace,
+  removeOrgMember as prodRemoveOrgMember,
+  archiveOrg as prodArchiveOrg,
+  checkUserOrphaned as prodCheckUserOrphaned,
+  listOrgWorkspaces as prodListOrgWorkspaces,
+  transferOrgOwnership as prodTransferOrgOwnership,
+} from '../../../src/lib/auth-do';
 
 export interface TestEnv {
   USER: DurableObjectNamespace<UserDO>;
@@ -101,22 +119,12 @@ export async function getUserOrgs(
   return result;
 }
 
+/**
+ * Delegates to production auth-do.ts checkUserOrphaned.
+ * TestEnv is structurally compatible with AuthEnv.
+ */
 export async function checkUserOrphaned(env: TestEnv, userId: string): Promise<void> {
-  const userStub = env.USER.get(env.USER.idFromName(userId));
-  const orgs = await userStub.getOrgs();
-
-  // Check if user has any non-archived orgs
-  let hasOrg = false;
-  for (const org of orgs) {
-    const orgStub = env.ORG.get(env.ORG.idFromName(org.org_id));
-    const info = await orgStub.getInfo();
-    if (info && !info.archived) {
-      hasOrg = true;
-      break;
-    }
-  }
-
-  await userStub.setOrphaned(!hasOrg);
+  await prodCheckUserOrphaned(env as unknown as AuthEnv, userId);
 }
 
 export async function handleOrphanedUserLogin(
@@ -165,11 +173,11 @@ export async function createOrg(
 export async function getOrg(
   env: TestEnv,
   orgId: string
-): Promise<{ id: string; name: string; created_by: string; archived?: boolean } | null> {
+): Promise<{ id: string; name: string; created_by: string; archived?: boolean; billing_status?: string } | null> {
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const info = await orgStub.getInfo();
   if (!info) return null;
-  return { id: info.id, name: info.name, created_by: info.created_by, archived: info.archived };
+  return { id: info.id, name: info.name, created_by: info.created_by, archived: info.archived, billing_status: info.billing_status };
 }
 
 export async function updateOrgName(
@@ -213,30 +221,17 @@ export async function getOrgMembers(
   return result;
 }
 
+/**
+ * Delegates to production auth-do.ts removeOrgMember.
+ * TestEnv is structurally compatible with AuthEnv.
+ */
 export async function removeOrgMember(
   env: TestEnv,
   orgId: string,
   userId: string,
   actorId: string
 ): Promise<void> {
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-
-  // Revoke workspace access for all workspaces in the org
-  const workspaces = await orgStub.getWorkspaces();
-  for (const ws of workspaces) {
-    if (ws.archived) continue;
-    const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-    await workspaceStub.setMemberAccess(userId, 'none', actorId);
-  }
-
-  await orgStub.removeMember(userId, actorId);
-
-  // Remove org from user's orgs
-  const userStub = env.USER.get(env.USER.idFromName(userId));
-  await userStub.removeOrg(orgId);
-
-  // Check if user is now orphaned
-  await checkUserOrphaned(env, userId);
+  return prodRemoveOrgMember(env as unknown as AuthEnv, orgId, userId, actorId);
 }
 
 export async function tryRemoveOrgMember(
@@ -290,62 +285,42 @@ export async function tryUpdateOrgMemberRole(
   return { ok: true };
 }
 
+/**
+ * Delegates to production auth-do.ts transferOrgOwnership.
+ * TestEnv is structurally compatible with AuthEnv.
+ */
 export async function transferOrgOwnership(
   env: TestEnv,
   orgId: string,
   newOwnerId: string,
   actorId: string
 ): Promise<void> {
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  await orgStub.transferOwnership(actorId, newOwnerId);
-
-  // Update roles in user DOs
-  const actorUserStub = env.USER.get(env.USER.idFromName(actorId));
-  await actorUserStub.updateOrgRole(orgId, 'admin');
-
-  const newOwnerUserStub = env.USER.get(env.USER.idFromName(newOwnerId));
-  await newOwnerUserStub.updateOrgRole(orgId, 'owner');
+  return prodTransferOrgOwnership(env as unknown as AuthEnv, orgId, newOwnerId, actorId);
 }
 
+/**
+ * Delegates to production auth-do.ts adminTransferOrgOwnership.
+ * TestEnv is structurally compatible with AuthEnv.
+ */
+export async function adminTransferOrgOwnership(
+  env: TestEnv,
+  orgId: string,
+  newOwnerId: string,
+  actorId: string
+): Promise<void> {
+  return prodAdminTransferOrgOwnership(env as unknown as AuthEnv, orgId, newOwnerId, actorId);
+}
+
+/**
+ * Delegates to production auth-do.ts archiveOrg.
+ * TestEnv is structurally compatible with AuthEnv.
+ */
 export async function archiveOrg(
   env: TestEnv,
   orgId: string,
   actorId: string
 ): Promise<void> {
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-
-  // Archive all workspaces (update both WorkspaceDO and OrgDO)
-  const workspaces = await orgStub.getWorkspaces();
-  for (const ws of workspaces) {
-    if (ws.archived) continue;
-    const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-    await workspaceStub.archive(actorId);
-    await orgStub.archiveWorkspace(ws.id);
-  }
-
-  // Get members before archiving
-  const members = await orgStub.getMembers();
-
-  // Remove non-owner members from the org (owner stays for audit)
-  for (const member of members) {
-    if (member.role !== 'owner') {
-      try {
-        await orgStub.removeMember(member.user_id, actorId);
-      } catch {
-        // Ignore if can't remove (e.g., owner)
-      }
-    }
-  }
-
-  // Archive the org
-  await orgStub.archiveOrg(actorId);
-
-  // Remove org from all members' user profiles
-  for (const member of members) {
-    const userStub = env.USER.get(env.USER.idFromName(member.user_id));
-    await userStub.removeOrg(orgId);
-    await checkUserOrphaned(env, member.user_id);
-  }
+  return prodArchiveOrg(env as unknown as AuthEnv, orgId, actorId);
 }
 
 export async function getOrgAuditLog(
@@ -403,34 +378,17 @@ export async function getInvitation(
   };
 }
 
+/**
+ * Delegates to production auth-do.ts acceptInvitation.
+ * TestEnv is structurally compatible with AuthEnv.
+ */
 export async function acceptInvitation(
   env: TestEnv,
   orgId: string,
   invitationId: string,
   userId: string
 ): Promise<boolean> {
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  const invitation = await orgStub.getInvitation(invitationId);
-  if (!invitation) return false;
-
-  const accepted = await orgStub.acceptInvitation(invitationId, userId);
-  if (!accepted) return false;
-
-  // Grant default workspace access
-  const workspaces = await orgStub.getWorkspaces();
-  for (const ws of workspaces) {
-    if (ws.archived) continue;
-    const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-    await workspaceStub.setMemberAccess(userId, 'full', userId);
-  }
-
-  // Add org to user's orgs
-  const userStub = env.USER.get(env.USER.idFromName(userId));
-  const defaultWorkspaceId = workspaces.find((ws) => !ws.archived)?.id || null;
-  await userStub.addOrg(orgId, invitation.role, defaultWorkspaceId);
-  await userStub.setOrphaned(false);
-
-  return true;
+  return prodAcceptInvitation(env as unknown as AuthEnv, orgId, invitationId, userId);
 }
 
 export async function deleteInvitation(
@@ -444,6 +402,10 @@ export async function deleteInvitation(
 
 // ============ Workspace Operations ============
 
+/**
+ * Delegates to production auth-do.ts createWorkspace.
+ * TestEnv is structurally compatible with AuthEnv.
+ */
 export async function createWorkspace(
   env: TestEnv,
   orgId: string,
@@ -451,21 +413,8 @@ export async function createWorkspace(
   createdBy: string,
   description?: string
 ): Promise<{ id: string; org_id: string; name: string }> {
-  const workspaceId = generateId();
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  await workspaceStub.createWorkspace(workspaceId, orgId, name, createdBy, description);
-
-  // Register workspace with org
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  await orgStub.addWorkspace(workspaceId, name, Date.now(), createdBy);
-
-  // Grant access to all org members
-  const members = await orgStub.getMembers();
-  for (const member of members) {
-    await workspaceStub.setMemberAccess(member.user_id, 'full', createdBy);
-  }
-
-  return { id: workspaceId, org_id: orgId, name };
+  const ws = await prodCreateWorkspace(env as unknown as AuthEnv, orgId, name, createdBy, description ?? null);
+  return { id: ws.id, org_id: ws.org_id, name: ws.name };
 }
 
 export async function getWorkspace(
@@ -488,15 +437,16 @@ export async function updateWorkspace(
   return workspaceStub.updateWorkspace(updates, actorId);
 }
 
+/**
+ * Delegates to production auth-do.ts listOrgWorkspaces.
+ * TestEnv is structurally compatible with AuthEnv.
+ */
 export async function listOrgWorkspaces(
   env: TestEnv,
   orgId: string
 ): Promise<Array<{ id: string; name: string }>> {
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  const workspaces = await orgStub.getWorkspaces();
-  return workspaces
-    .filter((ws) => !ws.archived)
-    .map((ws) => ({ id: ws.id, name: ws.name }));
+  const workspaces = await prodListOrgWorkspaces(env as unknown as AuthEnv, orgId);
+  return workspaces.map((ws) => ({ id: ws.id, name: ws.name }));
 }
 
 export async function listUserWorkspaces(
@@ -553,34 +503,17 @@ export async function listUserWorkspacesAcrossOrgs(
   return result;
 }
 
+/**
+ * Delegates to production auth-do.ts archiveWorkspace.
+ * Uses the same import path; TestEnv is structurally compatible with AuthEnv.
+ */
 export async function archiveWorkspace(
   env: TestEnv,
   workspaceId: string,
   actorId: string
 ): Promise<void> {
-  const workspaceStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await workspaceStub.getInfo();
-  if (!info) return;
-
-  await workspaceStub.archive(actorId);
-
-  // Update org's workspace list
-  const orgStub = env.ORG.get(env.ORG.idFromName(info.org_id));
-  await orgStub.archiveWorkspace(workspaceId);
-
-  // Clear last_workspace_id for users who had this as their last workspace
-  const members = await orgStub.getMembers();
-  for (const member of members) {
-    const userStub = env.USER.get(env.USER.idFromName(member.user_id));
-    const orgs = await userStub.getOrgs();
-    const orgEntry = orgs.find((o) => o.org_id === info.org_id);
-    if (orgEntry?.last_workspace_id === workspaceId) {
-      // Find another workspace
-      const otherWorkspaces = await listUserWorkspaces(env, member.user_id, info.org_id);
-      const newWorkspaceId = otherWorkspaces[0]?.id || null;
-      await userStub.setOrgLastWorkspace(info.org_id, newWorkspaceId);
-    }
-  }
+  const { archiveWorkspace: prodArchiveWorkspace } = await import('../../../src/lib/auth-do');
+  return prodArchiveWorkspace(env as unknown as AuthEnv, workspaceId, actorId);
 }
 
 export async function tryArchiveWorkspace(

@@ -5,6 +5,7 @@ export interface Thread {
   created_by: string;
   created_at: number;
   updated_at: number;
+  user_message_count: number;
   creator?: User;
 }
 
@@ -109,8 +110,14 @@ export interface WorkspaceOperationResult {
 }
 
 // Auth types
+// TODO: Viewer role (deferred): Members with viewer access can view any apps that are
+// private to the workspace, including apps that are not published publicly. This is
+// designed for enterprise use cases where a company wants to share internal apps within
+// the org without making them public. Viewers can view apps but cannot: create apps,
+// use chat, access the computer tab, manage team settings, or perform any write
+// operations. They are read-only consumers of workspace output.
 export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer';
-export type WorkspaceAccessLevel = 'full' | 'read_only' | 'none';
+export type WorkspaceAccessLevel = 'full' | 'none';
 export type BillingStatus = 'free' | 'paying';
 
 export interface Avatar {
@@ -254,6 +261,8 @@ export interface AuthState {
   workspaces?: WorkspaceWithAccess[];
   /** All workspaces across all orgs (for workspace switcher) */
   allWorkspaces?: WorkspaceWithAccess[];
+  /** Total workspaces in org (includes ones user may not have access to) */
+  orgWorkspaceCount?: number;
   loading: boolean;
   error: string | null;
 }

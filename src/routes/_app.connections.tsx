@@ -1,7 +1,8 @@
 import { waitUntil } from 'cloudflare:workers';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
-import { requireAuthContext } from '@/lib/auth.server';
+import { requireAuthContext, getAuthEnv, requireWorkspaceAccess } from '@/lib/auth.server';
+import { isOrgAdmin } from '@/lib/auth-do';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { INTEGRATION_REGISTRY, getIntegrationDefinition } from '@/lib/integration-registry';
 import { encryptCredentials } from '@/lib/integration-crypto';
@@ -59,6 +60,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (!workspaceId) {
     return { error: 'No workspace selected' };
   }
+  await requireWorkspaceAccess(request, context, workspaceId, 'full');
 
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const formData = await request.formData();
@@ -187,6 +189,69 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
   }
 
+  if (intent === 'duplicateIntegration') {
+    const integrationId = formData.get('integrationId') as string;
+    const targetWorkspaceId = formData.get('targetWorkspaceId') as string;
+
+    if (!integrationId || !targetWorkspaceId) {
+      return { error: 'Integration ID and target workspace are required' };
+    }
+
+    // Verify target workspace belongs to the same org
+    const authEnv = getAuthEnv(env);
+    const targetStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(targetWorkspaceId));
+    const targetInfo = await targetStub.getInfo();
+    if (!targetInfo || targetInfo.org_id !== authContext.currentOrg.id) {
+      return { error: 'Target workspace must belong to the same organization' };
+    }
+
+    // Only org admins can duplicate connections across workspaces
+    const adminStatus = await isOrgAdmin(authEnv, authContext.user.id, authContext.currentOrg.id);
+    if (!adminStatus) {
+      return { error: 'Only organization admins can duplicate connections' };
+    }
+
+    try {
+      // Get the source integration record (including encrypted credentials)
+      const sourceRecord = await stub.getIntegration(integrationId);
+      if (!sourceRecord) {
+        return { error: 'Integration not found' };
+      }
+
+      // Deduplicate name: append " (copy)" if the name already exists on target
+      let copyName = sourceRecord.name;
+      const nameExists = await (targetStub as unknown as WorkspaceDO).integrationNameExists(
+        sourceRecord.integration_type, copyName
+      );
+      if (nameExists) {
+        copyName = `${copyName} (copy)`;
+      }
+
+      // Copy to target workspace with new ID
+      await targetStub.createIntegration(
+        crypto.randomUUID(),
+        sourceRecord.integration_type,
+        copyName,
+        sourceRecord.category,
+        sourceRecord.auth_method,
+        sourceRecord.config,
+        sourceRecord.credentials_encrypted,
+        authContext.user.id,
+        sourceRecord.token_expires_at ?? null
+      );
+
+      // Push updated env vars to target workspace container
+      waitUntil(
+        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, targetWorkspaceId)
+          .refreshIntegrationEnvVars(targetWorkspaceId)
+          .catch(() => {})
+      );
+      return { success: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Failed to duplicate integration' };
+    }
+  }
+
   return { error: 'Unknown action' };
 }
 
@@ -209,17 +274,23 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     connections = records.map(recordToIntegration);
   }
 
+  // Get other workspaces in the org for duplication targets
+  const otherWorkspaces = (authContext.workspaces ?? [])
+    .filter((ws) => ws.id !== workspaceId)
+    .map((ws) => ({ id: ws.id, name: ws.name }));
+
   return {
     connections,
     integrations,
     categories,
     orgId: authContext.currentOrg.id,
     workspaceId: workspaceId ?? null,
+    otherWorkspaces,
   };
 }
 
 export default function ConnectionsPage() {
-  const { connections, integrations, categories, orgId, workspaceId } =
+  const { connections, integrations, categories, orgId, workspaceId, otherWorkspaces } =
     useLoaderData<typeof loader>();
 
   if (!workspaceId) {
@@ -232,6 +303,7 @@ export default function ConnectionsPage() {
       connectionTypes={integrations}
       categories={categories}
       orgId={orgId}
+      otherWorkspaces={otherWorkspaces}
     />
   );
 }

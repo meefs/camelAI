@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react"
 import { useFetcher } from "react-router"
 import { toast } from "sonner"
-import { CircleAlert, Folder, MoreHorizontal, Plus } from "lucide-react"
+import { Link } from "react-router"
+import { CircleAlert, Folder, MoreHorizontal, Plus, ShieldAlert } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -55,6 +56,7 @@ interface WorkspacesListProps {
   workspaces: WorkspaceSummary[]
   canManage: boolean
   currentWorkspaceId: string | null
+  orgWorkspaceCount?: number
 }
 
 function formatDate(value: number) {
@@ -71,6 +73,7 @@ export function WorkspacesList({
   workspaces,
   canManage,
   currentWorkspaceId,
+  orgWorkspaceCount,
 }: WorkspacesListProps) {
   const { switchWorkspace } = useSwitchWorkspace()
   const fetcher = useFetcher<{ success?: boolean; error?: string }>()
@@ -114,11 +117,13 @@ export function WorkspacesList({
     )
   }
 
-  // Empty state when no workspaces exist
+  // Empty state when no workspaces are accessible
+  const isAccessDenied = workspaces.length === 0 && (orgWorkspaceCount ?? 0) > 0
   if (workspaces.length === 0) {
+    const Icon = isAccessDenied ? ShieldAlert : CircleAlert
     return (
       <div className="space-y-6">
-        {canManage && (
+        {canManage && !isAccessDenied && (
           <div className="flex justify-end">
             <Button onClick={() => setCreateOpen(true)}>
               <Plus className="mr-2 size-4" />
@@ -129,21 +134,34 @@ export function WorkspacesList({
 
         <div className="flex flex-col items-center justify-center py-12 text-center">
           <div className="rounded-full bg-destructive/10 p-4 mb-4">
-            <CircleAlert className="h-8 w-8 text-destructive" />
+            <Icon className="h-8 w-8 text-destructive" />
           </div>
-          <h3 className="text-lg font-medium text-foreground mb-1">No workspaces</h3>
+          <h3 className="text-lg font-medium text-foreground mb-1">
+            {isAccessDenied ? "Workspace Access Denied" : "No workspaces"}
+          </h3>
           <p className="text-sm text-muted-foreground max-w-sm mb-6">
-            A workspace is required to use Chiridion. Without a workspace, you cannot create chats, set up connections, or deploy apps.
+            {isAccessDenied
+              ? canManage
+                ? "There are workspaces in this organization, but you are not assigned to any of them. Assign yourself access in the Team tab."
+                : "You don't have access to any workspaces in this organization. Ask an organization admin to grant you workspace access."
+              : "A workspace is required to use Chiridion. Without a workspace, you cannot create chats, set up connections, or deploy apps."}
           </p>
 
-          {canManage && (
-            <div className="flex justify-end">
+          <div className="flex flex-col items-center gap-3">
+            {canManage && isAccessDenied && (
+              <Button asChild>
+                <Link to="/settings/organization/team">
+                  Assign yourself access
+                </Link>
+              </Button>
+            )}
+            {canManage && !isAccessDenied && (
               <Button onClick={() => setCreateOpen(true)}>
                 <Plus className="mr-2 size-4" />
                 Create workspace
               </Button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         <CreateWorkspaceDialog

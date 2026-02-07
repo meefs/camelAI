@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { useFetcher } from "react-router"
 import { useForm, getFormProps, getInputProps, getSelectProps, type SubmissionResult } from "@conform-to/react"
 import { parseWithZod } from "@conform-to/zod/v4"
@@ -48,6 +48,13 @@ export function InviteMemberDialog({
   const fetcher = useFetcher<{ result?: SubmissionResult<string[]>; success?: boolean; error?: string }>()
   const saving = fetcher.state !== "idle"
 
+  const [selectedRole, setSelectedRole] = useState<string>("member")
+
+  const roleDescriptions: Record<string, string> = {
+    admin: "Full access to everything. Can manage team members, workspaces, and all settings.",
+    member: "Can access assigned workspaces — chat, apps, computer, and connections. Cannot manage the team or org settings.",
+  }
+
   const [form, fields] = useForm({
     lastResult: fetcher.data?.result,
     onValidate({ formData }) {
@@ -93,6 +100,7 @@ export function InviteMemberDialog({
         <Select
           name={fields.role.name}
           defaultValue={fields.role.initialValue}
+          onValueChange={setSelectedRole}
         >
           <SelectTrigger>
             <SelectValue placeholder="Select role" />
@@ -100,9 +108,12 @@ export function InviteMemberDialog({
           <SelectContent>
             <SelectItem value="admin">Admin</SelectItem>
             <SelectItem value="member">Member</SelectItem>
-            <SelectItem value="viewer">Viewer</SelectItem>
+            {/* TODO: Viewer role (deferred) */}
           </SelectContent>
         </Select>
+        {roleDescriptions[selectedRole] ? (
+          <p className="text-xs text-muted-foreground">{roleDescriptions[selectedRole]}</p>
+        ) : null}
         {fields.role.errors && fields.role.errors.length > 0 && (
           <p className="text-sm text-destructive">{fields.role.errors[0]}</p>
         )}

@@ -5,7 +5,18 @@ import { Link, useLocation } from "react-router"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
-const navGroups = [
+interface NavItem {
+  label: string
+  href: string
+  adminOnly?: boolean
+}
+
+interface NavGroup {
+  label: string
+  items: NavItem[]
+}
+
+const navGroups: NavGroup[] = [
   {
     label: "User",
     items: [
@@ -27,6 +38,9 @@ const navGroups = [
     label: "Workspace",
     items: [
       { label: "General", href: "/settings/workspace/general" },
+      { label: "Connections", href: "/settings/workspace/connections", adminOnly: true },
+      { label: "Chats", href: "/settings/workspace/chats", adminOnly: true },
+      { label: "Apps", href: "/settings/workspace/apps", adminOnly: true },
     ],
   },
 ]
@@ -54,14 +68,23 @@ function NavLink({
   )
 }
 
-export function SettingsNav() {
+interface SettingsNavProps {
+  isOrgAdmin?: boolean
+}
+
+export function SettingsNav({ isOrgAdmin }: SettingsNavProps) {
   const { pathname } = useLocation()
+
+  const filteredGroups = navGroups.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !item.adminOnly || isOrgAdmin),
+  }))
 
   return (
     <nav className="md:w-56 shrink-0">
       <div className="md:hidden px-4 py-3">
         <div className="flex gap-2 overflow-x-auto">
-          {navGroups.flatMap((group) =>
+          {filteredGroups.flatMap((group) =>
             group.items.map((item) => {
               const isActive = pathname === item.href
               return (
@@ -80,7 +103,7 @@ export function SettingsNav() {
       </div>
       <div className="hidden md:block p-4">
         <div className="space-y-6">
-          {navGroups.map((group) => (
+          {filteredGroups.map((group) => (
             <div key={group.label} className="space-y-1">
               <p className="text-xs font-medium text-muted-foreground px-2 uppercase tracking-wide">
                 {group.label}

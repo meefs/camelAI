@@ -79,6 +79,18 @@ export default [
           'settings/workspace/general',
           'routes/_app.settings.workspace.general.tsx'
         ),
+        route(
+          'settings/workspace/connections',
+          'routes/_app.settings.workspace.connections.tsx'
+        ),
+        route(
+          'settings/workspace/chats',
+          'routes/_app.settings.workspace.chats.tsx'
+        ),
+        route(
+          'settings/workspace/apps',
+          'routes/_app.settings.workspace.apps.tsx'
+        ),
       ]),
     ]),
   ]),

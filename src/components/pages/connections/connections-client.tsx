@@ -23,6 +23,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   AlertCircle,
   CheckCircle2,
+  Copy,
   Plug,
   Plus,
   Settings,
@@ -42,6 +43,7 @@ interface ConnectionsClientProps {
   connectionTypes: IntegrationDefinition[];
   categories: string[];
   orgId: string;
+  otherWorkspaces?: Array<{ id: string; name: string }>;
 }
 
 const OAUTH_ERROR_MESSAGES: Record<string, string> = {
@@ -65,6 +67,7 @@ export default function ConnectionsClient({
   connectionTypes,
   categories,
   orgId,
+  otherWorkspaces = [],
 }: ConnectionsClientProps) {
   const { currentOrg, orgs } = useAuthData();
   const revalidator = useRevalidator();
@@ -79,6 +82,7 @@ export default function ConnectionsClient({
   const [selectedConnection, setSelectedConnection] = useState<Integration | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Integration | null>(null);
+  const [copyTarget, setCopyTarget] = useState<Integration | null>(null);
 
   const connections = initialConnections;
   const loading = revalidator.state === 'loading';
@@ -120,6 +124,7 @@ export default function ConnectionsClient({
         setError(fetcher.data.error);
       } else if (fetcher.data.success) {
         setDeleteTarget(null);
+        setCopyTarget(null);
       }
     }
   }, [fetcher.state, fetcher.data]);
@@ -159,6 +164,18 @@ export default function ConnectionsClient({
     setSelectedType(type);
     setAddDialogOpen(true);
     setPickerOpen(false);
+  };
+
+  const handleCopyToWorkspace = (connection: Integration, targetWorkspaceId: string) => {
+    fetcher.submit(
+      {
+        intent: 'duplicateIntegration',
+        integrationId: connection.id,
+        targetWorkspaceId,
+      },
+      { method: 'POST' }
+    );
+    setCopyTarget(null);
   };
 
   const handleEditClick = (connection: Integration) => {
@@ -339,6 +356,16 @@ export default function ConnectionsClient({
                                 <Settings className="mr-2 size-3.5" />
                                 Configure
                               </Button>
+                              {otherWorkspaces.length > 0 ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => setCopyTarget(connection)}
+                                >
+                                  <Copy className="mr-2 size-3.5" />
+                                  Copy to workspace
+                                </Button>
+                              ) : null}
                               <Button
                                 variant="ghost"
                                 size="icon"
@@ -499,6 +526,34 @@ export default function ConnectionsClient({
           void handleDelete();
         }}
       />
+
+      <Dialog open={Boolean(copyTarget)} onOpenChange={(open) => { if (!open) setCopyTarget(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Copy to workspace</DialogTitle>
+            <DialogDescription>
+              Copy &ldquo;{copyTarget?.name}&rdquo; to another workspace in this organization.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {otherWorkspaces.map((ws) => (
+              <button
+                key={ws.id}
+                type="button"
+                className="w-full flex items-center justify-between rounded-md border p-3 text-sm hover:bg-accent transition-colors"
+                onClick={() => {
+                  if (copyTarget) {
+                    handleCopyToWorkspace(copyTarget, ws.id);
+                  }
+                }}
+              >
+                <span className="font-medium">{ws.name}</span>
+                <Copy className="size-4 text-muted-foreground" />
+              </button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
