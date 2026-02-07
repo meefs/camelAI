@@ -121,15 +121,23 @@ export interface ChatEnv {
 interface PendingConnectionSetupInfo {
   mcpDoId: string;
   createdAt: number;
+  integrationType: string;
+  suggestedName?: string;
+  message?: string;
+  dynamicSchema?: DynamicIntegrationSchema;
 }
 
 // Pending bug report capture with MCP callback info
 interface PendingBugReportInfo {
   mcpDoId: string;
   createdAt: number;
+  message?: string;
 }
 
 export class ChatThreadDO extends DurableObject<ChatEnv> {
+  private static readonly CONNECTION_SETUP_TIMEOUT_MS = 30 * 60 * 1000;
+  private static readonly BUG_REPORT_TIMEOUT_MS = 5 * 60 * 1000;
+
   private previewWorkers: string[] = [];
   private previewVersion: number = 0;
   private previewIsPublic: boolean = false;
@@ -188,13 +196,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // Restore pending connection setups from storage (sync KV)
       const pendingEntries = ctx.storage.kv.list({ prefix: 'pending_connection:' });
       for (const [key, value] of pendingEntries) {
-        const info = value as PendingConnectionSetupInfo;
+        const info = value as Partial<PendingConnectionSetupInfo>;
         const requestId = key.replace('pending_connection:', '');
-        // Only restore if not expired (30 minutes)
-        if (Date.now() - info.createdAt < 30 * 60 * 1000) {
-          this.pendingConnectionSetups.set(requestId, info);
+        if (
+          typeof info?.createdAt === 'number' &&
+          typeof info?.mcpDoId === 'string' &&
+          typeof info?.integrationType === 'string'
+        ) {
+          // Only restore if not expired (30 minutes)
+          if (Date.now() - info.createdAt < ChatThreadDO.CONNECTION_SETUP_TIMEOUT_MS) {
+            this.pendingConnectionSetups.set(requestId, info as PendingConnectionSetupInfo);
+          } else {
+            // Clean up expired entries
+            ctx.storage.kv.delete(key);
+          }
         } else {
-          // Clean up expired entries
+          // Clean up legacy or malformed entries we can't replay safely.
           ctx.storage.kv.delete(key);
         }
       }
@@ -202,13 +219,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // Restore pending bug reports from storage (sync KV)
       const bugReportEntries = ctx.storage.kv.list({ prefix: 'pending_bug_report:' });
       for (const [key, value] of bugReportEntries) {
-        const info = value as PendingBugReportInfo;
+        const info = value as Partial<PendingBugReportInfo>;
         const requestId = key.replace('pending_bug_report:', '');
-        // Only restore if not expired (5 minutes - bug reports should be quick)
-        if (Date.now() - info.createdAt < 5 * 60 * 1000) {
-          this.pendingBugReports.set(requestId, info);
+        if (typeof info?.createdAt === 'number' && typeof info?.mcpDoId === 'string') {
+          // Only restore if not expired (5 minutes - bug reports should be quick)
+          if (Date.now() - info.createdAt < ChatThreadDO.BUG_REPORT_TIMEOUT_MS) {
+            this.pendingBugReports.set(requestId, info as PendingBugReportInfo);
+          } else {
+            // Clean up expired entries
+            ctx.storage.kv.delete(key);
+          }
         } else {
-          // Clean up expired entries
           ctx.storage.kv.delete(key);
         }
       }
@@ -233,6 +254,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         version: this.previewVersion,
         isPublic: this.previewIsPublic,
       }));
+      this.sendPendingPromptsToWebSocket(server);
 
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -284,6 +306,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const pendingInfo: PendingConnectionSetupInfo = {
         mcpDoId,
         createdAt: Date.now(),
+        integrationType: body.integrationType,
+        suggestedName: body.suggestedName,
+        message: body.message,
+        dynamicSchema: body.dynamicSchema,
       };
       this.pendingConnectionSetups.set(requestId, pendingInfo);
       this.ctx.storage.kv.put(`pending_connection:${requestId}`, pendingInfo);
@@ -321,6 +347,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const pendingInfo: PendingBugReportInfo = {
         mcpDoId,
         createdAt: Date.now(),
+        message: body.message,
       };
       this.pendingBugReports.set(requestId, pendingInfo);
       this.ctx.storage.kv.put(`pending_bug_report:${requestId}`, pendingInfo);
@@ -473,6 +500,60 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         ws.send(json);
       } catch {
         // WebSocket is already closed, ignore
+      }
+    }
+  }
+
+  private pruneExpiredPendingPrompts(): void {
+    const now = Date.now();
+
+    for (const [requestId, info] of this.pendingConnectionSetups.entries()) {
+      if (now - info.createdAt >= ChatThreadDO.CONNECTION_SETUP_TIMEOUT_MS) {
+        this.pendingConnectionSetups.delete(requestId);
+        this.ctx.storage.kv.delete(`pending_connection:${requestId}`);
+      }
+    }
+
+    for (const [requestId, info] of this.pendingBugReports.entries()) {
+      if (now - info.createdAt >= ChatThreadDO.BUG_REPORT_TIMEOUT_MS) {
+        this.pendingBugReports.delete(requestId);
+        this.ctx.storage.kv.delete(`pending_bug_report:${requestId}`);
+      }
+    }
+  }
+
+  private sendPendingPromptsToWebSocket(ws: WebSocket): void {
+    this.pruneExpiredPendingPrompts();
+
+    const pendingConnectionPrompts = Array.from(this.pendingConnectionSetups.entries())
+      .sort(([, a], [, b]) => a.createdAt - b.createdAt);
+    for (const [requestId, info] of pendingConnectionPrompts) {
+      try {
+        ws.send(JSON.stringify({
+          type: 'connection_setup_prompt',
+          requestId,
+          integrationType: info.integrationType,
+          suggestedName: info.suggestedName,
+          message: info.message,
+          dynamicSchema: info.dynamicSchema,
+          mcpDoId: info.mcpDoId,
+        }));
+      } catch {
+        // Ignore socket send failures; reconnect will retry replay.
+      }
+    }
+
+    const pendingBugReportPrompts = Array.from(this.pendingBugReports.entries())
+      .sort(([, a], [, b]) => a.createdAt - b.createdAt);
+    for (const [requestId, info] of pendingBugReportPrompts) {
+      try {
+        ws.send(JSON.stringify({
+          type: 'bug_report_prompt',
+          requestId,
+          message: info.message,
+        }));
+      } catch {
+        // Ignore socket send failures; reconnect will retry replay.
       }
     }
   }

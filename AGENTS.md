@@ -217,6 +217,12 @@ The floating todo list state persists across reconnections:
 2. On WebSocket init, the server reads the persisted file and sends `todo_state` to the client
 3. On turn completion (`result` event), the persisted file is cleared
 
+### MCP Prompt Replay
+MCP-driven thread prompts (for example connection setup and bug report capture) are persisted in `ChatThreadDO` and replayed to newly connected `/ws/thread/{threadId}` clients:
+1. `ChatThreadDO` stores pending prompt payloads in DO storage when MCP triggers a prompt
+2. On thread WebSocket connect, `ChatThreadDO` sends current preview state and then replays any unexpired pending prompts
+3. Prompts are removed when the client responds or when they expire (`30m` for connection setup, `5m` for bug report capture)
+
 ### Integration Token Refresh
 - OAuth integrations with expiring tokens (for example Notion) store `token_expires_at` and are refreshed by `WorkspaceDO` alarms.
 - BigQuery integrations now follow the same token lifecycle pattern: the encrypted `service_account_json` is used server-side to mint short-lived Google access tokens.
