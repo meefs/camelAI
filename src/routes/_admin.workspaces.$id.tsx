@@ -271,11 +271,9 @@ export default function AdminWorkspaceDetailPage() {
                         const memberUser = userById[member.user_id];
                         const granter = userById[member.granted_by];
                         const accessLabel =
-                          member.access_level === 'read_only'
-                            ? 'Read only'
-                            : member.access_level === 'none'
-                              ? 'None'
-                              : 'Full';
+                          member.access_level === 'none'
+                            ? 'None'
+                            : 'Full';
                         return (
                           <TableRow key={member.user_id}>
                             <TableCell>

@@ -231,6 +231,7 @@ export interface OrgInvitation {
   invited_by: string;
   created_at: number;
   expires_at: number;
+  workspace_access?: Record<string, 'full' | 'none'> | null;
 }
 
 export interface OrgIntegrationRecord {
@@ -306,6 +307,7 @@ export interface OrgThread {
   created_by: string;
   created_at: number;
   updated_at: number;
+  user_message_count: number;
 }
 
 export interface ProxyUsageInput {
@@ -1153,6 +1155,22 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.sql.exec('UPDATE _schema_version SET version = 12');
     }
 
+    if (version < 13) {
+      // V13: Add workspace_access to invitations for pre-acceptance assignment,
+      // and user_message_count to threads for admin visibility
+      try {
+        this.sql.exec('ALTER TABLE invitations ADD COLUMN workspace_access TEXT');
+      } catch {
+        // Column may already exist
+      }
+      try {
+        this.sql.exec('ALTER TABLE threads ADD COLUMN user_message_count INTEGER NOT NULL DEFAULT 0');
+      } catch {
+        // Column may already exist
+      }
+      this.sql.exec('UPDATE _schema_version SET version = 13');
+    }
+
     this.workerScriptsHasPreviewColumns = this.detectWorkerScriptPreviewColumns();
     if (!this.workerScriptsHasPreviewColumns) {
       console.warn('[OrgDO] worker_scripts missing preview columns - preview updates will be skipped');
@@ -1593,35 +1611,48 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   // Invitation methods
   async getInvitations(): Promise<OrgInvitation[]> {
-    return this.sql.exec(
-      'SELECT id, email, role, invited_by, created_at, expires_at FROM invitations ORDER BY created_at DESC'
-    ).toArray() as unknown as OrgInvitation[];
+    const rows = this.sql.exec(
+      'SELECT id, email, role, invited_by, created_at, expires_at, workspace_access FROM invitations ORDER BY created_at DESC'
+    ).toArray() as unknown as Array<Omit<OrgInvitation, 'workspace_access'> & { workspace_access?: string | null }>;
+    return rows.map((row) => ({
+      ...row,
+      workspace_access: row.workspace_access ? JSON.parse(row.workspace_access) : null,
+    }));
   }
 
   async getInvitation(id: string): Promise<OrgInvitation | null> {
     const now = Date.now();
     const rows = this.sql.exec(
-      'SELECT id, email, role, invited_by, created_at, expires_at FROM invitations WHERE id = ? AND expires_at > ?',
+      'SELECT id, email, role, invited_by, created_at, expires_at, workspace_access FROM invitations WHERE id = ? AND expires_at > ?',
       id,
       now
-    ).toArray() as unknown as OrgInvitation[];
-    return rows[0] || null;
+    ).toArray() as unknown as Array<Omit<OrgInvitation, 'workspace_access'> & { workspace_access?: string | null }>;
+    if (!rows[0]) return null;
+    return {
+      ...rows[0],
+      workspace_access: rows[0].workspace_access ? JSON.parse(rows[0].workspace_access) : null,
+    };
   }
 
   async getInvitationByEmail(email: string): Promise<OrgInvitation | null> {
     const now = Date.now();
     const rows = this.sql.exec(
-      'SELECT id, email, role, invited_by, created_at, expires_at FROM invitations WHERE email = ? AND expires_at > ?',
+      'SELECT id, email, role, invited_by, created_at, expires_at, workspace_access FROM invitations WHERE email = ? AND expires_at > ?',
       email.toLowerCase(),
       now
-    ).toArray() as unknown as OrgInvitation[];
-    return rows[0] || null;
+    ).toArray() as unknown as Array<Omit<OrgInvitation, 'workspace_access'> & { workspace_access?: string | null }>;
+    if (!rows[0]) return null;
+    return {
+      ...rows[0],
+      workspace_access: rows[0].workspace_access ? JSON.parse(rows[0].workspace_access) : null,
+    };
   }
 
   async createInvitation(
     email: string,
     role: OrgRole,
-    invitedBy: string
+    invitedBy: string,
+    workspaceAccess?: Record<string, 'full' | 'none'> | null
   ): Promise<OrgInvitation> {
     const id = crypto.randomUUID();
     const now = Date.now();
@@ -1634,16 +1665,18 @@ export class OrgDO extends DurableObject<DOEnv> {
       invited_by: invitedBy,
       created_at: now,
       expires_at: expiresAt,
+      workspace_access: workspaceAccess ?? null,
     };
 
     this.sql.exec(
-      'INSERT INTO invitations (id, email, role, invited_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO invitations (id, email, role, invited_by, created_at, expires_at, workspace_access) VALUES (?, ?, ?, ?, ?, ?, ?)',
       id,
       email.toLowerCase(),
       role,
       invitedBy,
       now,
-      expiresAt
+      expiresAt,
+      workspaceAccess ? JSON.stringify(workspaceAccess) : null
     );
 
     return invitation;
@@ -1653,9 +1686,23 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec('DELETE FROM invitations WHERE id = ?', id);
   }
 
-  async acceptInvitation(invitationId: string, userId: string): Promise<boolean> {
+  async updateInvitationWorkspaceAccess(
+    invitationId: string,
+    workspaceAccess: Record<string, 'full' | 'none'> | null
+  ): Promise<boolean> {
     const invitation = await this.getInvitation(invitationId);
     if (!invitation) return false;
+    this.sql.exec(
+      'UPDATE invitations SET workspace_access = ? WHERE id = ?',
+      workspaceAccess ? JSON.stringify(workspaceAccess) : null,
+      invitationId
+    );
+    return true;
+  }
+
+  async acceptInvitation(invitationId: string, userId: string): Promise<OrgInvitation | null> {
+    const invitation = await this.getInvitation(invitationId);
+    if (!invitation) return null;
 
     // Add user as member with invited role
     await this.addMember(userId, invitation.role, userId);
@@ -1663,7 +1710,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     // Delete the invitation (single use)
     await this.deleteInvitation(invitationId);
 
-    return true;
+    return invitation;
   }
 
   // Integration methods
@@ -2243,6 +2290,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       created_by: creator,
       created_at: now,
       updated_at: now,
+      user_message_count: 0,
     };
   }
 
@@ -2323,11 +2371,15 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   /**
-   * Touch a thread (update its updated_at timestamp)
+   * Touch a thread (update its updated_at timestamp and increment user message count)
    */
   touchThread(id: string): void {
     const now = Date.now();
-    this.sql.exec('UPDATE threads SET updated_at = ? WHERE id = ?', now, id);
+    this.sql.exec(
+      'UPDATE threads SET updated_at = ?, user_message_count = user_message_count + 1 WHERE id = ?',
+      now,
+      id
+    );
   }
 
   /**

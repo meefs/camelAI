@@ -14,6 +14,7 @@ function toThread(orgThread: OrgThread): Thread {
     created_by: orgThread.created_by,
     created_at: orgThread.created_at,
     updated_at: orgThread.updated_at,
+    user_message_count: orgThread.user_message_count ?? 0,
   };
 }
 

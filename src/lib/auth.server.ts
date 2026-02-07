@@ -269,7 +269,7 @@ export async function requireWorkspaceAccess(
   request: Request,
   context: AppLoadContext,
   workspaceId: string,
-  requiredLevel: 'full' | 'read_only' = 'read_only'
+  requiredLevel: 'full' | 'any' = 'any'
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);

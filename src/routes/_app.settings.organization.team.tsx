@@ -2,7 +2,7 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.team';
 import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { createInvitation, removeOrgMember, updateOrgMemberRole, transferOrgOwnership, setWorkspaceAccess, getOrgMembersWithWorkspaceAccess, getOrgInvitations, listOrgWorkspaces } from '@/lib/auth-do';
+import { createInvitation, removeOrgMember, updateOrgMemberRole, transferOrgOwnership, setWorkspaceAccess, updateInvitationWorkspaceAccess, getOrgMembersWithWorkspaceAccess, getOrgInvitations, listOrgWorkspaces } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { TeamTable } from '@/components/settings/team-table';
@@ -93,6 +93,17 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: 'User ID, workspace ID, and access level are required' };
     }
     await setWorkspaceAccess(authEnv, workspaceId, userId, access, actorId);
+    return { success: true };
+  }
+
+  if (intent === 'updateInvitationWorkspaceAccess') {
+    const invitationId = formData.get('invitationId') as string;
+    const workspaceId = formData.get('workspaceId') as string;
+    const access = formData.get('access') as WorkspaceAccessLevel;
+    if (!invitationId || !workspaceId || !access) {
+      return { error: 'Invitation ID, workspace ID, and access level are required' };
+    }
+    await updateInvitationWorkspaceAccess(authEnv, orgId, invitationId, workspaceId, access);
     return { success: true };
   }
 

@@ -842,26 +842,29 @@ export async function getInvitation(env: AuthEnv, orgId: string, invitationId: s
 }
 
 export async function acceptInvitation(env: AuthEnv, orgId: string, invitationId: string, userId: string): Promise<boolean> {
-  const invitation = await getInvitation(env, orgId, invitationId);
-  if (!invitation) return false;
+  // Validate invitation exists and org is not archived
+  const validatedInvitation = await getInvitation(env, orgId, invitationId);
+  if (!validatedInvitation) return false;
 
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  const accepted = await orgStub.acceptInvitation(invitationId, userId);
-  if (!accepted) return false;
+  const acceptedInvitation = await orgStub.acceptInvitation(invitationId, userId);
+  if (!acceptedInvitation) return false;
 
   const workspaces = await listOrgWorkspaces(env, orgId);
   const lastWorkspaceId = workspaces[0]?.id ?? null;
 
-  // Grant default workspace access to all non-archived workspaces
+  // Apply workspace access from invitation, or default to 'full' for all
+  const presetAccess = acceptedInvitation.workspace_access;
   await Promise.all(
     workspaces.map(async (ws) => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
-      await wsStub.setMemberAccess(userId, 'full', userId);
+      const access = presetAccess?.[ws.id] ?? 'full';
+      await wsStub.setMemberAccess(userId, access, userId);
     })
   );
 
   const userStub = env.USER.get(env.USER.idFromName(userId));
-  await userStub.addOrg(orgId, invitation.role, lastWorkspaceId);
+  await userStub.addOrg(orgId, acceptedInvitation.role, lastWorkspaceId);
   await userStub.setOrphaned(false);
 
   return true;
@@ -874,6 +877,7 @@ export async function getOrgInvitations(env: AuthEnv, orgId: string): Promise<Ar
   invited_by: string;
   created_at: number;
   expires_at: number;
+  workspace_access?: Record<string, 'full' | 'none'> | null;
 }>> {
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   const invitations = await stub.getInvitations();
@@ -885,7 +889,31 @@ export async function getOrgInvitations(env: AuthEnv, orgId: string): Promise<Ar
     invited_by: inv.invited_by,
     created_at: inv.created_at,
     expires_at: inv.expires_at,
+    workspace_access: inv.workspace_access ?? null,
   }));
+}
+
+export async function updateInvitationWorkspaceAccess(
+  env: AuthEnv,
+  orgId: string,
+  invitationId: string,
+  workspaceId: string,
+  access: 'full' | 'none'
+): Promise<boolean> {
+  const stub = env.ORG.get(env.ORG.idFromName(orgId));
+  const invitation = await stub.getInvitation(invitationId);
+  if (!invitation) return false;
+
+  const current = invitation.workspace_access ?? {};
+  if (access === 'full') {
+    delete current[workspaceId];
+  } else {
+    current[workspaceId] = access;
+  }
+
+  // If all entries are removed, set to null (default = all access)
+  const updated = Object.keys(current).length > 0 ? current : null;
+  return stub.updateInvitationWorkspaceAccess(invitationId, updated);
 }
 
 

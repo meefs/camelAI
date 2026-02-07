@@ -67,6 +67,7 @@ interface TeamInvitation {
   role: OrgRole
   created_at: number
   expires_at: number
+  workspace_access?: Record<string, WorkspaceAccessLevel> | null
 }
 
 type TeamTableRow =
@@ -193,6 +194,17 @@ export function TeamTable({
   ) => {
     fetcher.submit(
       { intent: "updateWorkspaceAccess", userId, workspaceId, access },
+      { method: "POST" }
+    )
+  }
+
+  const handleInvitationWorkspaceAccessChange = (
+    invitationId: string,
+    workspaceId: string,
+    access: WorkspaceAccessLevel
+  ) => {
+    fetcher.submit(
+      { intent: "updateInvitationWorkspaceAccess", invitationId, workspaceId, access },
       { method: "POST" }
     )
   }
@@ -411,9 +423,20 @@ export function TeamTable({
                     </div>
                   </TableCell>
                   <TableCell>
-                    <span className="text-xs text-muted-foreground">
-                      Not yet
-                    </span>
+                    <WorkspaceAccessTags
+                      memberId={`invite-${invitation.id}`}
+                      workspaces={workspaces}
+                      accessByWorkspace={invitation.workspace_access ?? {}}
+                      canEdit={canManageMembers}
+                      editing={editingWorkspaceAccess}
+                      onAccessChange={(workspaceId, access) =>
+                        handleInvitationWorkspaceAccessChange(
+                          invitation.id,
+                          workspaceId,
+                          access
+                        )
+                      }
+                    />
                   </TableCell>
                   <TableCell>
                     {canManageMembers ? (
@@ -581,13 +604,29 @@ export function TeamTable({
                   <Badge variant="secondary">Invited</Badge>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-2 text-sm">
+              <CardContent className="space-y-4 text-sm">
                 <span className="text-muted-foreground">
                   Sent {formatDate(invitation.created_at)}
                 </span>
-                <p className="text-xs text-muted-foreground">
-                  Workspace access not yet granted.
-                </p>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-2">
+                    Workspace access (on acceptance)
+                  </p>
+                  <WorkspaceAccessTags
+                    memberId={`invite-${invitation.id}`}
+                    workspaces={workspaces}
+                    accessByWorkspace={invitation.workspace_access ?? {}}
+                    canEdit={canManageMembers}
+                    editing={editingWorkspaceAccess}
+                    onAccessChange={(workspaceId, access) =>
+                      handleInvitationWorkspaceAccessChange(
+                        invitation.id,
+                        workspaceId,
+                        access
+                      )
+                    }
+                  />
+                </div>
                 {canManageMembers ? (
                   <Button
                     variant="ghost"

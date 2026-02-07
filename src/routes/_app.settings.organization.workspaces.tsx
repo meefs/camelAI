@@ -48,15 +48,57 @@ export async function action({ request, context }: Route.ActionArgs) {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
 
   // Determine current user's role for permission gating
   const currentUserOrg = authContext.orgs.find((o) => o.org_id === authContext.currentOrg.id);
   const currentUserRole = currentUserOrg?.role ?? 'member';
   const canManage = currentUserRole === 'owner' || currentUserRole === 'admin';
 
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(authContext.currentOrg.id));
+
+  // Fetch org members count and app counts in parallel
+  const [orgMembers, scripts] = await Promise.all([
+    orgStub.getMembers(),
+    orgStub.listWorkerScripts(),
+  ]);
+  const orgMemberCount = orgMembers.length;
+
+  // Aggregate app counts by workspace
+  const appCountMap = new Map<string, number>();
+  for (const script of scripts) {
+    appCountMap.set(script.workspace_id, (appCountMap.get(script.workspace_id) ?? 0) + 1);
+  }
+
+  // For each workspace, get members with explicit 'none' access to subtract from org total
+  const workspaces = authContext.workspaces ?? [];
+  const memberCounts = await Promise.all(
+    workspaces.map(async (ws) => {
+      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
+      const explicitMembers = await wsStub.listMembers();
+      const noneCount = explicitMembers.filter((m: { access_level: string }) => m.access_level === 'none').length;
+      return { id: ws.id, memberCount: orgMemberCount - noneCount };
+    })
+  );
+  const memberCountMap = new Map(memberCounts.map((m) => [m.id, m.memberCount]));
+
+  // Build WorkspaceSummary objects
+  const workspaceSummaries = workspaces.map((ws) => ({
+    id: ws.id,
+    org_id: ws.org_id,
+    name: ws.name,
+    description: ws.description,
+    created_at: ws.created_at,
+    avatar: ws.avatar,
+    member_count: memberCountMap.get(ws.id) ?? orgMemberCount,
+    published_apps: appCountMap.get(ws.id) ?? 0,
+    compute_tier: ws.compute_tier ?? 'standard',
+  }));
+
   return {
     org: authContext.currentOrg,
-    workspaces: authContext.workspaces,
+    workspaces: workspaceSummaries,
     currentWorkspaceId: authContext.currentWorkspace?.id,
     canManage,
   };
@@ -74,7 +116,7 @@ export default function WorkspacesPage() {
       />
       <Separator />
       <WorkspacesList
-        workspaces={workspaces as never[]}
+        workspaces={workspaces}
         canManage={canManage}
         currentWorkspaceId={currentWorkspaceId ?? null}
       />

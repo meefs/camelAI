@@ -264,14 +264,9 @@ export default function AdminUserDetailPage() {
                                     <Badge
                                       key={workspace.id}
                                       variant="secondary"
-                                      className={
-                                        workspace.access_level === 'read_only'
-                                          ? 'border border-dashed border-border text-muted-foreground'
-                                          : ''
-                                      }
+                                      className=""
                                     >
                                       {workspace.name}
-                                      {workspace.access_level === 'read_only' ? ' (read)' : ''}
                                     </Badge>
                                   ))}
                                 </div>
@@ -332,7 +327,7 @@ export default function AdminUserDetailPage() {
                           </TableCell>
                           <TableCell>
                             <Badge variant="outline">
-                              {workspace.access_level === 'read_only' ? 'Read only' : 'Full'}
+                              {workspace.access_level === 'none' ? 'None' : 'Full'}
                             </Badge>
                           </TableCell>
                         </TableRow>

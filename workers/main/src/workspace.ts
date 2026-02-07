@@ -19,7 +19,7 @@ const TOKEN_BATCH_WINDOW_MS = 15 * 60 * 1000;
 const TOKEN_REFRESH_FALLBACK_MS = 60 * 60 * 1000;
 const BIGQUERY_INTEGRATION_TYPE = 'bigquery';
 
-export type WorkspaceAccessLevel = 'full' | 'read_only' | 'none';
+export type WorkspaceAccessLevel = 'full' | 'none';
 
 export interface WorkspaceMember {
   user_id: string;

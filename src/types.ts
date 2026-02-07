@@ -5,6 +5,7 @@ export interface Thread {
   created_by: string;
   created_at: number;
   updated_at: number;
+  user_message_count: number;
   creator?: User;
 }
 
@@ -116,7 +117,7 @@ export interface WorkspaceOperationResult {
 // use chat, access the computer tab, manage team settings, or perform any write
 // operations. They are read-only consumers of workspace output.
 export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer';
-export type WorkspaceAccessLevel = 'full' | 'read_only' | 'none';
+export type WorkspaceAccessLevel = 'full' | 'none';
 export type BillingStatus = 'free' | 'paying';
 
 export interface Avatar {

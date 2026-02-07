@@ -3,7 +3,6 @@
 import { Check, ChevronsUpDown, CircleAlert } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Badge } from "@/components/ui/badge"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -104,11 +103,6 @@ export function WorkspaceSwitcher() {
                               {orgName}
                             </span>
                           ) : null}
-                          {workspace.access_level === "read_only" ? (
-                            <Badge variant="secondary" className="shrink-0 text-[10px]">
-                              Read-only
-                            </Badge>
-                          ) : null}
                         </div>
                       </div>
                     </DropdownMenuItem>
@@ -190,11 +184,6 @@ export function WorkspaceSwitcher() {
                         <span className="truncate text-xs text-muted-foreground">
                           {orgName}
                         </span>
-                      ) : null}
-                      {workspace.access_level === "read_only" ? (
-                        <Badge variant="secondary" className="shrink-0 text-[10px]">
-                          Read-only
-                        </Badge>
                       ) : null}
                     </div>
                   </div>
