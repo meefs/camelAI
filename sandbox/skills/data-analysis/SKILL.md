@@ -215,6 +215,30 @@ result = response.json()
 | `trustServerCertificate` | No | Trust self-signed certs (default: `true`) |
 | `timeout` | No | Query timeout in ms (default: `30000`) |
 
+**Transactions:** For atomic multi-statement operations, wrap queries in `BEGIN TRANSACTION`/`COMMIT`:
+```python
+response = requests.post(
+    f"{base_url}/mssql/query",
+    headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    },
+    json={
+        "server": "your-server.database.windows.net",
+        "user": "username",
+        "password": "password",
+        "database": "mydb",
+        "query": """
+            BEGIN TRANSACTION;
+            INSERT INTO orders (id, amount) VALUES (@id, @amt);
+            UPDATE inventory SET qty = qty - 1 WHERE product_id = @pid;
+            COMMIT;
+        """,
+        "params": {"id": 1, "amt": 100, "pid": 42}
+    }
+)
+```
+
 **Note:** The `usql sqlserver://` CLI shown above also works for interactive exploration but the HTTP API is preferred for programmatic access within scripts.
 
 ### File Formats (Pre-installed)
