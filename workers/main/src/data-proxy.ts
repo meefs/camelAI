@@ -34,21 +34,6 @@ export class DataProxy extends Container<DataProxyEnv> {
     return response.json();
   }
 
-  /**
-   * Execute multiple queries in a transaction against MS SQL Server
-   */
-  async mssqlTransaction(request: MssqlTransactionRequest): Promise<MssqlTransactionResponse> {
-    await this.ensureRunning();
-
-    const response = await this.container!.fetch('http://container/mssql/transaction', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
-
-    return response.json();
-  }
-
   // =============================================================================
   // Health & Lifecycle
   // =============================================================================
@@ -99,27 +84,3 @@ export interface MssqlQueryResponse {
   number?: number;
 }
 
-export interface MssqlTransactionRequest {
-  server: string;
-  port?: number;
-  user: string;
-  password: string;
-  database?: string;
-  queries: Array<{
-    query: string;
-    params?: Record<string, unknown>;
-  }>;
-  encrypt?: boolean;
-  trustServerCertificate?: boolean;
-  timeout?: number;
-}
-
-export interface MssqlTransactionResponse {
-  results?: Array<{
-    recordset?: Record<string, unknown>[];
-    rowsAffected?: number[];
-  }>;
-  error?: string;
-  code?: string;
-  number?: number;
-}

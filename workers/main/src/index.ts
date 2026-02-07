@@ -32,7 +32,7 @@ import {
 import { handleThreadWebSocket, handleChatWebSocket } from './routes/websocket.js';
 import { handleClaudeProxy, handleCountTokens } from './routes/claude-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
-import { handleMssqlQuery, handleMssqlTransaction, handleDataProxyHealth } from './routes/data-proxy.js';
+import { handleMssqlQuery, handleDataProxyHealth } from './routes/data-proxy.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
@@ -85,7 +85,6 @@ const routes: Route[] = [
 
   // Data Proxy API (requires 'data-proxy' scope token)
   { method: 'POST', path: /^\/api\/mssql\/query$/, handler: handleMssqlQuery },
-  { method: 'POST', path: /^\/api\/mssql\/transaction$/, handler: handleMssqlTransaction },
   { method: 'GET', path: /^\/api\/data-proxy\/health$/, handler: handleDataProxyHealth },
 
   // WebSocket routes

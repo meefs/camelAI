@@ -7,7 +7,7 @@
 
 import type { Env } from '../types.js';
 import { isSignedToken, validateSignedToken } from '../signed-tokens.js';
-import type { MssqlQueryRequest, MssqlTransactionRequest } from '../data-proxy.js';
+import type { MssqlQueryRequest } from '../data-proxy.js';
 
 /**
  * Extract Bearer token from Authorization header
@@ -118,52 +118,6 @@ export async function handleMssqlQuery(
     console.error('[data-proxy] mssql query error:', error);
     return errorResponse(
       error instanceof Error ? error.message : 'Query execution failed',
-      500
-    );
-  }
-}
-
-/**
- * POST /api/mssql/transaction
- *
- * Execute multiple queries in a transaction.
- */
-export async function handleMssqlTransaction(
-  request: Request,
-  env: Env
-): Promise<Response> {
-  // Validate token
-  const auth = await validateDataProxyToken(request, env);
-  if (!auth.valid) {
-    return auth.response;
-  }
-
-  // Parse request body
-  let body: MssqlTransactionRequest;
-  try {
-    body = await request.json();
-  } catch {
-    return errorResponse('Invalid JSON body', 400);
-  }
-
-  // Validate required fields
-  if (!body.server || !body.user || !body.password || !body.queries || !Array.isArray(body.queries)) {
-    return errorResponse('Missing required fields: server, user, password, queries', 400);
-  }
-
-  // Get the shared proxy instance
-  const proxyId = env.DATA_PROXY.idFromName('default');
-  const proxy = env.DATA_PROXY.get(proxyId);
-
-  try {
-    const result = await proxy.mssqlTransaction(body);
-    return new Response(JSON.stringify(result), {
-      headers: { 'Content-Type': 'application/json' },
-    });
-  } catch (error) {
-    console.error('[data-proxy] mssql transaction error:', error);
-    return errorResponse(
-      error instanceof Error ? error.message : 'Transaction execution failed',
       500
     );
   }

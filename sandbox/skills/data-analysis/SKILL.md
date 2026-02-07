@@ -172,7 +172,6 @@ MS SQL Server connections use the **Chiridion Data Proxy API**. Direct drivers l
 
 When you need to query MS SQL Server, a `DATA_PROXY_TOKEN` environment variable is available for authentication.
 
-**Single Query:**
 ```python
 import os
 import requests
@@ -200,31 +199,6 @@ response = requests.post(
 result = response.json()
 # result["recordset"] = [{"id": 123, "name": "John", ...}]
 # result["rowsAffected"] = [1]
-```
-
-**Transaction (multiple queries):**
-```python
-response = requests.post(
-    f"{base_url}/mssql/transaction",
-    headers={
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    },
-    json={
-        "server": "your-server.database.windows.net",
-        "user": "username",
-        "password": "password",
-        "database": "mydb",
-        "queries": [
-            {"query": "INSERT INTO orders (id, amount) VALUES (@id, @amt)", "params": {"id": 1, "amt": 100}},
-            {"query": "UPDATE inventory SET qty = qty - 1 WHERE product_id = @pid", "params": {"pid": 42}}
-        ],
-        "encrypt": True
-    }
-)
-
-result = response.json()
-# result["results"] = [{"rowsAffected": [1]}, {"rowsAffected": [1]}]
 ```
 
 **Request Options:**
