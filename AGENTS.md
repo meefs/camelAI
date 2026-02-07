@@ -12,6 +12,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 - One-click app deployment to `*.chiridion.app` subdomains
 - Multi-tenant authentication with users, organizations, and workspaces
 - External service integrations for reading/writing data
+- Organization invitation emails sent through Cloudflare Email bindings
 
 ## Architecture
 
@@ -97,6 +98,8 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 | `src/lib/cookies.server.ts` | Cookie management utilities |
 | `src/lib/chat-do.server.ts` | Chat Durable Object interactions |
 | `src/lib/auth-do.ts` | User/Org DO method wrappers |
+| `src/lib/email.server.ts` | Cloudflare invite-email sending helpers (`send_email` binding + invite URLs) |
+| `src/lib/email/templates/org-invitation-email.tsx` | React Email invitation template component |
 
 ### Worker Core
 | File | Purpose |
@@ -282,7 +285,7 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 ### Organization Routes
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/api/orgs/:id/invite` | POST | Create an invitation for an organization |
+| `/api/orgs/:id/invite` | POST | Create an invitation for an organization and send invite email via Cloudflare when configured |
 | `/api/orgs/:id/invite` | DELETE | Cancel or decline an invitation |
 | `/api/orgs/:id/check-slug` | POST | Validate org slug format and availability |
 | `/api/orgs/:id/update-slug` | POST | One-time org slug update during onboarding |
@@ -388,7 +391,13 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `GITHUB_CLIENT_ID` | GitHub OAuth client ID |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth client secret |
+| `EMAIL_FROM_ADDRESS` | Sender address used by invite emails (must be valid for the Cloudflare email binding) |
 | `DISPATCHER_MISSING_REGISTRY_MODE` | Dispatcher behavior when worker KV metadata is missing: `open` (fail-open), `legacy-open` (fail-open only for legacy hostnames), or `closed` (strict fail-closed) |
+
+#### Cloudflare Email Binding
+
+- Invitation emails use a Worker `send_email` binding named `EMAIL`.
+- Configure the binding in Wrangler for each environment and set `EMAIL_FROM_ADDRESS` in vars/secrets.
 
 #### JuiceFS Container Variables (set automatically by worker)
 
@@ -559,6 +568,8 @@ chiridion-app/
 │   │   ├── auth.server.ts     # Server auth helpers
 │   │   ├── cloudflare.server.ts # CF env helpers
 │   │   ├── cookies.server.ts  # Cookie utils
+│   │   ├── email.server.ts    # Invite email sending helpers
+│   │   ├── email/templates/   # React Email templates
 │   │   ├── utils.ts           # cn() helper
 │   │   └── streaming/         # Stream event handling
 │   └── styles/globals.css     # Tailwind + theme

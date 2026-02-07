@@ -7,6 +7,11 @@ import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { TeamTable } from '@/components/settings/team-table';
 import type { OrgRole, WorkspaceAccessLevel } from '@/types';
+import {
+  buildInvitationUrl,
+  resolveAppBaseUrl,
+  sendOrgInvitationEmail,
+} from '@/lib/email.server';
 
 export function meta() {
   return [
@@ -47,8 +52,42 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!email || !email.includes('@')) {
       return { error: 'Valid email is required' };
     }
-    await createInvitation(authEnv, orgId, email.toLowerCase().trim(), role || 'member', actorId);
-    return { success: true };
+    const normalizedEmail = email.toLowerCase().trim();
+    const invitation = await createInvitation(
+      authEnv,
+      orgId,
+      normalizedEmail,
+      role || 'member',
+      actorId
+    );
+    const baseUrl = resolveAppBaseUrl(env, new URL(request.url));
+    const invitationUrl = buildInvitationUrl(baseUrl, orgId, invitation.id);
+    const emailDelivery = await sendOrgInvitationEmail({
+      env,
+      to: normalizedEmail,
+      orgName: authContext.currentOrg.name,
+      inviterName: authContext.user.name ?? authContext.user.email,
+      role: role || 'member',
+      invitationUrl,
+      expiresAt: invitation.expires_at,
+    });
+
+    if (emailDelivery.status === 'sent') {
+      return { success: true };
+    }
+
+    const warning =
+      emailDelivery.status === 'failed'
+        ? 'Invitation created, but email delivery failed. Share the invitation link manually.'
+        : 'Invitation created, but email delivery is not configured yet. Share the invitation link manually.';
+
+    return {
+      success: true,
+      warning,
+      invitation_url: invitationUrl,
+      email_delivery: emailDelivery.status,
+      email_delivery_reason: emailDelivery.reason ?? null,
+    };
   }
 
   if (intent === 'updateOrgMemberRole') {

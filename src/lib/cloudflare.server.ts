@@ -33,6 +33,7 @@ export interface CloudflareEnv {
   ASSETS: Fetcher;
   IMAGES: unknown; // ImagesBinding
   AI: unknown; // AI binding
+  EMAIL?: SendEmail;
   BROWSER?: Fetcher;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
 
@@ -50,6 +51,7 @@ export interface CloudflareEnv {
   OPENROUTER_PROVISIONING_KEY?: string; // Parent key for creating per-org keys
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
+  EMAIL_FROM_ADDRESS?: string;
 }
 
 /**

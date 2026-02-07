@@ -20,7 +20,8 @@
 		"WORKER_BASE_URL": "http://host.docker.internal:3001",
 		// Claude API proxy (CF AI Gateway)
 		"CF_GATEWAY_NAME": "chiridion",
-		"BEDROCK_REGION": "us-west-2"
+		"BEDROCK_REGION": "us-west-2",
+		"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
 		// CF_GATEWAY_TOKEN is set via .dev.vars
 		// OPENROUTER_PROVISIONING_KEY (for per-org keys) is set via .dev.vars
 	},
@@ -64,6 +65,12 @@
 		{
 			"binding": "SESSIONS",
 			"id": "f5ab08fdb1d7404fbc45a171217b4a27"
+		}
+	],
+	"send_email": [
+		{
+			"name": "EMAIL",
+			"allowed_sender_addresses": ["no-reply@chiridion.ai"]
 		}
 	],
 	"queues": {
@@ -137,7 +144,8 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform",
 				"WORKER_BASE_URL": "https://chiridion.ai",
 				"CF_GATEWAY_NAME": "chiridion",
-				"BEDROCK_REGION": "us-west-2"
+				"BEDROCK_REGION": "us-west-2",
+				"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
 				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
@@ -170,6 +178,12 @@
 				{
 					"binding": "SESSIONS",
 					"id": "67958a5b0d104621bd93c91c802ccd1c"
+				}
+			],
+			"send_email": [
+				{
+					"name": "EMAIL",
+					"allowed_sender_addresses": ["no-reply@chiridion.ai"]
 				}
 			],
 			"queues": {
@@ -235,7 +249,8 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
 				"WORKER_BASE_URL": "https://staging.chiridion.ai",
 				"CF_GATEWAY_NAME": "chiridion",
-				"BEDROCK_REGION": "us-west-2"
+				"BEDROCK_REGION": "us-west-2",
+				"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
 				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
@@ -277,6 +292,12 @@
 				{
 					"binding": "SESSIONS",
 					"id": "f5ab08fdb1d7404fbc45a171217b4a27"
+				}
+			],
+			"send_email": [
+				{
+					"name": "EMAIL",
+					"allowed_sender_addresses": ["no-reply@chiridion.ai"]
 				}
 			],
 			"queues": {
@@ -336,7 +357,8 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
 				"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai",
 				"CF_GATEWAY_NAME": "chiridion",
-				"BEDROCK_REGION": "us-west-2"
+				"BEDROCK_REGION": "us-west-2",
+				"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
 				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
@@ -379,6 +401,12 @@
 				{
 					"binding": "SESSIONS",
 					"id": "a38773869d2e465fbf705c81fa2e01eb"
+				}
+			],
+			"send_email": [
+				{
+					"name": "EMAIL",
+					"allowed_sender_addresses": ["no-reply@chiridion.ai"]
 				}
 			],
 			"queues": {
@@ -438,7 +466,8 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
 				"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai",
 				"CF_GATEWAY_NAME": "chiridion",
-				"BEDROCK_REGION": "us-west-2"
+				"BEDROCK_REGION": "us-west-2",
+				"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
 				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
@@ -481,6 +510,12 @@
 				{
 					"binding": "SESSIONS",
 					"id": "c632a963433e4949b6dea43728034b36"
+				}
+			],
+			"send_email": [
+				{
+					"name": "EMAIL",
+					"allowed_sender_addresses": ["no-reply@chiridion.ai"]
 				}
 			],
 			"queues": {

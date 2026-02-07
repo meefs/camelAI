@@ -45,7 +45,13 @@ export function InviteMemberDialog({
   onOpenChange,
 }: InviteMemberDialogProps) {
   const isMobile = useIsMobile()
-  const fetcher = useFetcher<{ result?: SubmissionResult<string[]>; success?: boolean; error?: string }>()
+  const fetcher = useFetcher<{
+    result?: SubmissionResult<string[]>;
+    success?: boolean;
+    error?: string;
+    warning?: string;
+    invitation_url?: string;
+  }>()
   const saving = fetcher.state !== "idle"
 
   const [selectedRole, setSelectedRole] = useState<string>("member")
@@ -72,7 +78,11 @@ export function InviteMemberDialog({
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data) {
       if (fetcher.data.success) {
-        toast.success("Invitation sent")
+        if (fetcher.data.warning) {
+          toast.warning(fetcher.data.warning)
+        } else {
+          toast.success("Invitation sent")
+        }
         onOpenChange(false)
       } else if (fetcher.data.error) {
         toast.error(fetcher.data.error)

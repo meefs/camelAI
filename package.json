@@ -42,6 +42,8 @@
 		"@conform-to/zod": "^1.15.1",
 		"@modelcontextprotocol/sdk": "^1.25.2",
 		"@monaco-editor/react": "^4.7.0",
+		"@react-email/components": "^1.0.7",
+		"@react-email/render": "^2.0.4",
 		"@react-router/cloudflare": "^7.6.1",
 		"@shikijs/rehype": "^3.20.0",
 		"agents": "^0.3.6",

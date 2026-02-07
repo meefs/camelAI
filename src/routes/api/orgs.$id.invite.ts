@@ -9,6 +9,11 @@ import {
   isOrgAdmin,
 } from '@/lib/auth-do';
 import { inviteMemberFormSchema } from '@/lib/schemas';
+import {
+  buildInvitationUrl,
+  resolveAppBaseUrl,
+  sendOrgInvitationEmail,
+} from '@/lib/email.server';
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   const orgId = params.id;
@@ -51,12 +56,31 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         role,
         session.user_id
       );
+      const inviter = await authEnv.USER.get(
+        authEnv.USER.idFromName(session.user_id)
+      ).getProfile();
+      const org = await authEnv.ORG.get(authEnv.ORG.idFromName(orgId)).getInfo();
+
+      const baseUrl = resolveAppBaseUrl(env, new URL(request.url));
+      const invitationUrl = buildInvitationUrl(baseUrl, orgId, invitation.id);
+      const emailDelivery = await sendOrgInvitationEmail({
+        env,
+        to: email,
+        orgName: org?.name ?? 'your organization',
+        inviterName: inviter?.name ?? inviter?.email ?? null,
+        role,
+        invitationUrl,
+        expiresAt: invitation.expires_at,
+      });
 
       return Response.json({
         id: invitation.id,
         email,
         role,
         expires_at: invitation.expires_at,
+        invitation_url: invitationUrl,
+        email_delivery: emailDelivery.status,
+        email_delivery_reason: emailDelivery.reason ?? null,
       });
     } catch (error) {
       console.error('Create invitation error:', error);
