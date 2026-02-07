@@ -35,6 +35,63 @@ export default function MyPage() {
 }
 ```
 
+## Streaming with React Suspense (Recommended)
+
+Use streaming when a loader has both critical and non-critical data, especially if the non-critical part may take a while. This keeps initial SSR fast and unblocks the UI earlier.
+
+React Router supports Suspense streaming by returning promises from loaders/actions.
+
+### 1. Return a promise from the loader
+
+Return non-critical data as a promise (do not `await` it), and await only critical data needed for first paint.
+
+```typescript
+import type { Route } from "./+types/my-route";
+
+export async function loader({}: Route.LoaderArgs) {
+  // Not awaited on purpose: streamed later
+  const nonCriticalData = new Promise<string>((res) =>
+    setTimeout(() => res("non-critical"), 5000),
+  );
+
+  const criticalData = await new Promise<string>((res) =>
+    setTimeout(() => res("critical"), 300),
+  );
+
+  // Must return an object with keys (not a single bare promise)
+  return { nonCriticalData, criticalData };
+}
+```
+
+### 2. Render fallback + resolved UI (React 19)
+
+Use `React.Suspense` with `React.use()` in a child component to render fallback UI while non-critical data resolves.
+
+```tsx
+import * as React from "react";
+import type { Route } from "./+types/my-route";
+
+function NonCriticalUI({ p }: { p: Promise<string> }) {
+  const value = React.use(p);
+  return <h3>Non-critical value: {value}</h3>;
+}
+
+export default function MyComponent({ loaderData }: Route.ComponentProps) {
+  const { criticalData, nonCriticalData } = loaderData;
+
+  return (
+    <div>
+      <h1>Streaming example</h1>
+      <h2>Critical data value: {criticalData}</h2>
+
+      <React.Suspense fallback={<div>Loading...</div>}>
+        <NonCriticalUI p={nonCriticalData} />
+      </React.Suspense>
+    </div>
+  );
+}
+```
+
 ## Key Files
 
 | File | Purpose |
