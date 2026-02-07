@@ -214,6 +214,13 @@ export async function action({ request, context }: Route.ActionArgs) {
 5. Streaming responses sent back through WebSocket
 6. Thread ID = Claude session_id (received on first message)
 
+### Chat Attachment Uploads (R2 Multipart)
+1. Client starts multipart upload via `POST /api/workspaces/:id/upload?action=mpu-create` with `originalName` and `contentType`.
+2. Client slices files into parts (>= 5MB except last) and uploads in parallel via `PUT /api/workspaces/:id/upload?action=mpu-uploadpart&uploadId=...&filename=...&partNumber=...`.
+3. Client finalizes via `POST /api/workspaces/:id/upload?action=mpu-complete&uploadId=...&filename=...` with collected `{ partNumber, etag }[]`.
+4. On failure, client performs best-effort cleanup via `DELETE /api/workspaces/:id/upload?action=mpu-abort&uploadId=...&filename=...`.
+5. The upload API is multipart-only (legacy single-upload POST without an `action` is not supported).
+
 ### Todo State Persistence
 The floating todo list state persists across reconnections:
 1. When `ws-server.mjs` sees a `TodoWrite` tool call, it broadcasts a `todo_state` event and saves to `/home/claude/.chiridion/todos/{threadId}.json`
@@ -313,7 +320,7 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 | `/api/workspaces/:id/fs/mkdir` | POST | Create directory |
 | `/api/workspaces/:id/fs/move` | POST | Move/rename file |
 | `/api/workspaces/:id/fs/delete` | POST | Delete file or directory |
-| `/api/workspaces/:id/upload` | POST | Upload files to R2 (chat attachments) |
+| `/api/workspaces/:id/upload` | POST / PUT / DELETE | Upload files to R2 (chat attachments), including multipart lifecycle actions (`mpu-create`, `mpu-uploadpart`, `mpu-complete`, `mpu-abort`) |
 | `/api/workspaces/:id/download` | GET | Download files from R2 |
 | `/api/workspaces/:id/uploads/*` | GET | Serve user-uploaded files from R2 (preview/download) |
 | `/api/workspaces/:id/outputs/*` | GET | Stream agent-created output files for download/preview |

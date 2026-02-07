@@ -18,16 +18,23 @@ export interface WorkspaceAuth {
   container: DurableObjectStub<WorkspaceContainer>;
 }
 
+export interface WorkspaceAccessAuth {
+  userId: string;
+  orgId: string;
+  workspaceId: string;
+  access: WorkspaceAccessLevel;
+}
+
 /**
  * Require workspace session with optional write access check.
- * Returns workspace auth info and container stub, or throws Response on error.
+ * Performs auth + access validation only (no container startup).
  */
-export async function requireWorkspaceAuth(
+export async function requireWorkspaceAccess(
   request: Request,
   context: AppLoadContext,
   workspaceId: string,
   options: { requireWrite?: boolean } = {}
-): Promise<WorkspaceAuth> {
+): Promise<WorkspaceAccessAuth> {
   const sessionContext = await getSession(request, context);
   if (!sessionContext) {
     throw Response.json({ error: 'Unauthorized' }, { status: 401 });
@@ -51,18 +58,36 @@ export async function requireWorkspaceAuth(
     throw Response.json({ error: 'Read-only workspace access' }, { status: 403 });
   }
 
-  // Get workspace container - cast to WorkspaceContainerEnv
-  const containerEnv = env as unknown as WorkspaceContainerEnv;
-  const container = getWorkspaceContainer(containerEnv, workspaceId);
-
-  // Ensure container is initialized with env vars before any operations
-  await container.startForWorkspace(workspaceId, workspace.org_id);
-
   return {
     userId: sessionContext.session.user_id,
     orgId: sessionContext.session.org_id,
     workspaceId,
     access,
+  };
+}
+
+/**
+ * Require workspace session with optional write access check.
+ * Returns workspace auth info and container stub, or throws Response on error.
+ */
+export async function requireWorkspaceAuth(
+  request: Request,
+  context: AppLoadContext,
+  workspaceId: string,
+  options: { requireWrite?: boolean } = {}
+): Promise<WorkspaceAuth> {
+  const accessAuth = await requireWorkspaceAccess(request, context, workspaceId, options);
+  const env = getEnv(context);
+
+  // Get workspace container - cast to WorkspaceContainerEnv
+  const containerEnv = env as unknown as WorkspaceContainerEnv;
+  const container = getWorkspaceContainer(containerEnv, accessAuth.workspaceId);
+
+  // Ensure container is initialized with env vars before any operations
+  await container.startForWorkspace(accessAuth.workspaceId, accessAuth.orgId);
+
+  return {
+    ...accessAuth,
     container,
   };
 }

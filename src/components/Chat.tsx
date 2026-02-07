@@ -58,6 +58,7 @@ import {
   normalizeToolResultMessages,
 } from '@/lib/streaming';
 import { getAppUrl, getVanityDomain, getIframeDomain } from '@/lib/app-url';
+import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
 
 interface ChatProps {
   threadId?: string;
@@ -1589,27 +1590,19 @@ export default function Chat({
         contentType: file.type || undefined,
         originalName: file.name,
         status: 'uploading',
+        progress: 0,
       }]);
 
       try {
-        const formData = new FormData();
-        formData.append('file', file);
-
-        const response = await fetch(`/api/workspaces/${resolvedWorkspaceId}/upload`, {
-          method: 'POST',
-          body: formData,
+        const data = await uploadWorkspaceFile(resolvedWorkspaceId, file, {
+          onProgress: (progressPercent) => {
+            setAttachments(prev => prev.map(a =>
+              a.id === id
+                ? { ...a, progress: progressPercent }
+                : a
+            ));
+          },
         });
-
-        if (!response.ok) {
-          throw new Error('Upload failed');
-        }
-
-        const data = await response.json() as {
-          path: string;
-          size: number;
-          contentType?: string;
-          originalName?: string;
-        };
 
         // Update state to complete
         setAttachments(prev => prev.map(a =>
@@ -1621,15 +1614,17 @@ export default function Chat({
               contentType: data.contentType ?? a.contentType,
               originalName: data.originalName ?? a.originalName,
               status: 'complete' as const,
+              progress: 100,
             }
             : a
         ));
       } catch (err) {
         console.error('File upload failed:', err);
+        const errorMessage = err instanceof Error ? err.message : 'Upload failed';
         // Update state to error
         setAttachments(prev => prev.map(a =>
           a.id === id
-            ? { ...a, status: 'error' as const, error: 'Upload failed' }
+            ? { ...a, status: 'error' as const, error: errorMessage, progress: undefined }
             : a
         ));
       }
@@ -1920,18 +1915,11 @@ export default function Chat({
         }
         const screenshotBlob = new Blob([bytes], { type: 'image/jpeg' });
         const screenshotFile = new File([screenshotBlob], `${reportId}-screenshot.jpg`, { type: 'image/jpeg' });
-
-        const screenshotFormData = new FormData();
-        screenshotFormData.append('file', screenshotFile);
-
-        const screenshotResponse = await fetch(`/api/workspaces/${resolvedWorkspaceId}/upload`, {
-          method: 'POST',
-          body: screenshotFormData,
-        });
-
-        if (screenshotResponse.ok) {
-          const screenshotData = await screenshotResponse.json() as { path: string };
+        try {
+          const screenshotData = await uploadWorkspaceFile(resolvedWorkspaceId, screenshotFile);
           screenshotPath = screenshotData.path;
+        } catch (uploadError) {
+          console.error('Failed to upload bug report screenshot:', uploadError);
         }
       }
 
@@ -1942,18 +1930,11 @@ export default function Chat({
           { type: 'application/json' }
         );
         const recordingFile = new File([recordingBlob], `${reportId}-session.json`, { type: 'application/json' });
-
-        const recordingFormData = new FormData();
-        recordingFormData.append('file', recordingFile);
-
-        const recordingResponse = await fetch(`/api/workspaces/${resolvedWorkspaceId}/upload`, {
-          method: 'POST',
-          body: recordingFormData,
-        });
-
-        if (recordingResponse.ok) {
-          const recordingData = await recordingResponse.json() as { path: string };
+        try {
+          const recordingData = await uploadWorkspaceFile(resolvedWorkspaceId, recordingFile);
           sessionRecordingPath = recordingData.path;
+        } catch (uploadError) {
+          console.error('Failed to upload bug report recording:', uploadError);
         }
       }
 
@@ -1988,20 +1969,7 @@ export default function Chat({
       const fileName = `${reportId}.json`;
       const blob = new Blob([JSON.stringify(bugReport, null, 2)], { type: 'application/json' });
       const file = new File([blob], fileName, { type: 'application/json' });
-
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const uploadResponse = await fetch(`/api/workspaces/${resolvedWorkspaceId}/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!uploadResponse.ok) {
-        throw new Error('Failed to upload bug report');
-      }
-
-      const uploadData = await uploadResponse.json() as { path: string };
+      const uploadData = await uploadWorkspaceFile(resolvedWorkspaceId, file);
 
       if (!isMcpTriggered) {
         setBugReportStatus('sending');

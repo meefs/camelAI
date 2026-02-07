@@ -2,6 +2,7 @@
 
 import { X, File, Loader2, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Progress } from '@/components/ui/progress';
 
 export interface Attachment {
   id: string;
@@ -10,6 +11,7 @@ export interface Attachment {
   size: number;
   contentType?: string;
   originalName?: string;
+  progress?: number;
   status: 'uploading' | 'complete' | 'error';
   error?: string;
 }
@@ -49,9 +51,23 @@ export function AttachmentList({ attachments, onRemove, className }: AttachmentL
             <File className="h-3.5 w-3.5 text-muted-foreground" />
           )}
 
-          <span className="max-w-[150px] truncate">
-            {attachment.name}
-          </span>
+          <div className="min-w-0">
+            <span className="block max-w-[160px] truncate">
+              {attachment.name}
+            </span>
+
+            {attachment.status === 'uploading' && (
+              <div className="mt-1 flex items-center gap-2">
+                <Progress
+                  value={attachment.progress ?? 0}
+                  className="h-1 w-24"
+                />
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {Math.max(0, Math.min(100, Math.round(attachment.progress ?? 0)))}%
+                </span>
+              </div>
+            )}
+          </div>
 
           {attachment.status === 'complete' && (
             <span className="text-xs text-muted-foreground">
