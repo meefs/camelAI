@@ -23,13 +23,6 @@ dist
 *.swp
 *.swo
 
-# Ignore test files
-tests
-e2e
-**/*.test.ts
-**/*.test.tsx
-**/*.spec.ts
-
 # Ignore documentation (except skills)
 *.md
 !sandbox/skills/**/*.md

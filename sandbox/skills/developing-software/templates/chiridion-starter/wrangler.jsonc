@@ -32,7 +32,14 @@
 	// },
 	// "migrations": [
 	// 	{ "tag": "v1", "new_sqlite_classes": ["ExampleDO"] }
-	// ]
+	// ],
+
+	/**
+	 * Runtime variables available in loader/action context via context.cloudflare.env
+	 */
+	"vars": {
+		"VALUE_FROM_CLOUDFLARE": "Starter template running on Cloudflare"
+	},
 
 	/**
 	 * Smart Placement
@@ -44,7 +51,7 @@
 	 * Static Assets
 	 * https://developers.cloudflare.com/workers/static-assets/binding/
 	 */
-	"assets": { "directory": "./public/", "binding": "ASSETS" }
+	"assets": { "directory": "./public/", "binding": "ASSETS" },
 
 	/**
 	 * Service Bindings (communicate between multiple Workers)

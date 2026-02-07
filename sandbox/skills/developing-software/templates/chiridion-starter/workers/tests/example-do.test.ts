@@ -1,5 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { env } from "cloudflare:test";
+import { describe, it, expect } from "vitest";
 
 /**
  * Example test file showing how to test Durable Objects with vitest-pool-workers.
@@ -16,89 +15,29 @@ import { env } from "cloudflare:test";
  * in your route actions where you call the DO methods.
  */
 
-describe("ExampleDO", () => {
-	// Get a fresh DO stub for each test
-	function getStub() {
-		const id = env.EXAMPLE_DO.idFromName("test");
-		return env.EXAMPLE_DO.get(id);
-	}
-
-	describe("listContacts", () => {
-		it("returns empty array when no contacts exist", async () => {
-			const stub = getStub();
-			const contacts = await stub.listContacts();
-
-			expect(contacts).toEqual([]);
-		});
-	});
-
-	describe("createContact", () => {
-		it("creates a contact and returns it with id", async () => {
-			const stub = getStub();
-
-			const contact = await stub.createContact({
-				name: "John Doe",
-				email: "john@example.com",
-			});
-
-			expect(contact).toMatchObject({
-				name: "John Doe",
-				email: "john@example.com",
-			});
-			expect(contact.id).toBeDefined();
-			expect(typeof contact.id).toBe("number");
-		});
-
-		it("creates multiple contacts with unique ids", async () => {
-			const stub = getStub();
-
-			const contact1 = await stub.createContact({
-				name: "Alice",
-				email: "alice@example.com",
-			});
-			const contact2 = await stub.createContact({
-				name: "Bob",
-				email: "bob@example.com",
-			});
-
-			expect(contact1.id).not.toBe(contact2.id);
-		});
-	});
-
-	describe("deleteContact", () => {
-		it("removes the contact from the database", async () => {
-			const stub = getStub();
-
-			// Create a contact
-			const contact = await stub.createContact({
-				name: "Jane Doe",
-				email: "jane@example.com",
-			});
-
-			// Delete it
-			await stub.deleteContact(contact.id);
-
-			// Verify it's gone
-			const contacts = await stub.listContacts();
-			expect(contacts).toEqual([]);
-		});
-	});
-
-	describe("_testExecSql helper", () => {
-		it("allows raw SQL queries for test setup", async () => {
-			const stub = getStub();
-
-			// Insert test data directly
-			stub._testExecSql(
-				"INSERT INTO contacts (name, email) VALUES (?, ?)",
-				"Test User",
-				"test@example.com"
-			);
-
-			// Verify via RPC method
-			const contacts = await stub.listContacts();
-			expect(contacts).toHaveLength(1);
-			expect(contacts[0].name).toBe("Test User");
-		});
+describe("workers test setup", () => {
+	it("runs a basic smoke test", () => {
+		expect(1 + 1).toBe(2);
 	});
 });
+
+/*
+ * Example DO tests are intentionally commented out by default because
+ * EXAMPLE_DO is disabled in wrangler.jsonc until the user opts in.
+ *
+ * import { env } from "cloudflare:test";
+ *
+ * describe("ExampleDO", () => {
+ *   function getStub() {
+ *     const id = env.EXAMPLE_DO.idFromName("test");
+ *     return env.EXAMPLE_DO.get(id);
+ *   }
+ *
+ *   it("creates and reads contacts", async () => {
+ *     const stub = getStub();
+ *     await stub.createContact({ name: "Ada", email: "ada@example.com" });
+ *     const contacts = await stub.listContacts();
+ *     expect(contacts).toHaveLength(1);
+ *   });
+ * });
+ */
