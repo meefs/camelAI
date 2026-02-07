@@ -603,6 +603,7 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
       const records = await workspaceStub.getIntegrations();
 
       for (const record of records) {
+        // NOTE: we do not support the legacy "enabled" flag. We do not not check the legacy field. This is intentional. There no way to toggled the enabled state in the UI. 
         const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
         const config = JSON.parse(record.config) as Record<string, unknown>;
         Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
