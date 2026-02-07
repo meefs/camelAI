@@ -11,7 +11,6 @@ import {
 } from '@/lib/onboarding';
 import type { OnboardingPreferences } from '@/types';
 import { OnboardingOption } from './onboarding-option';
-import { useDelayedAdvance } from './use-delayed-advance';
 
 type SingleChoiceField =
   | 'ai_familiarity'
@@ -57,10 +56,6 @@ export function SingleChoiceStep<TField extends SingleChoiceField>({
   const querySuffix = context.teamMode ? '?team=1' : '';
   const previousStep = getPreviousStep(stepId, context.sequence);
   const nextStep = getNextStep(stepId, context.sequence);
-  const { isAdvancing, scheduleAdvance } = useDelayedAdvance(() => {
-    if (!nextStep) return;
-    navigate(`${STEP_PATHS[nextStep]}${querySuffix}`);
-  });
   const selectedValue = context.answers[field] as SingleChoiceValue<TField> | null;
 
   return (
@@ -69,12 +64,10 @@ export function SingleChoiceStep<TField extends SingleChoiceField>({
       totalSteps={context.totalSteps}
       transitionDirection={context.transitionDirection}
       onBack={() => {
-        if (isAdvancing) return;
         if (!previousStep) return;
         navigate(`${STEP_PATHS[previousStep]}${querySuffix}`);
       }}
       onSkip={() => {
-        if (isAdvancing) return;
         context.updateAnswers({ [field]: null } as Partial<OnboardingPreferences>);
         if (!nextStep) return;
         navigate(`${STEP_PATHS[nextStep]}${querySuffix}`);
@@ -96,13 +89,12 @@ export function SingleChoiceStep<TField extends SingleChoiceField>({
               title={option.title}
               description={option.description}
               icon={renderIcon?.(option.value)}
-              disabled={isAdvancing}
               onClick={() => {
-                if (isAdvancing) return;
                 context.updateAnswers({
                   [field]: option.value,
                 } as Partial<OnboardingPreferences>);
-                scheduleAdvance();
+                if (!nextStep) return;
+                navigate(`${STEP_PATHS[nextStep]}${querySuffix}`);
               }}
             />
           ))}

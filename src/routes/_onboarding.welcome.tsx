@@ -1,4 +1,3 @@
-import { Suspense, use, useState } from 'react';
 import { useLoaderData, useNavigate, useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.welcome';
 import { getAuthEnv, requireSession } from '@/lib/auth.server';
@@ -15,9 +14,9 @@ interface TeamContext {
 }
 
 interface WelcomeLoaderData {
-  orgNamePromise: Promise<string>;
-  showOrgSlugStepPromise: Promise<boolean>;
-  teamContextPromise: Promise<TeamContext>;
+  orgName: string;
+  showOrgSlugStep: boolean;
+  teamContext: TeamContext;
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -33,38 +32,30 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     authEnv.USER.idFromName(sessionContext.session.user_id)
   );
 
-  const showOrgSlugStepPromise: Promise<boolean> = Promise.all([
+  const [role, memberCount, workerScripts] = await Promise.all([
     userStub.getOrgRole(orgId),
     orgStub.getMemberCount(),
     orgStub.listWorkerScripts(),
-  ]).then(([role, memberCount, workerScripts]) => {
-    return role === 'owner' && memberCount === 1 && workerScripts.length === 0;
-  });
+  ]);
+  const showOrgSlugStep =
+    role === 'owner' && memberCount === 1 && workerScripts.length === 0;
 
   if (!teamMode) {
     return {
-      orgNamePromise: Promise.resolve('Chiridion'),
-      showOrgSlugStepPromise,
-      teamContextPromise: Promise.resolve({
+      orgName: 'Chiridion',
+      showOrgSlugStep,
+      teamContext: {
         memberCount: 0,
         appCount: 0,
         integrations: [],
-      }),
+      },
     } satisfies WelcomeLoaderData;
   }
-  const memberCountPromise = orgStub.getMemberCount().catch(() => 0);
-  const workerScriptsPromise = orgStub
-    .listWorkerScripts()
-    .catch(() => [] as Array<unknown>);
-
-  const orgNamePromise: Promise<string> = orgStub
-    .getInfo()
-    .then((info) => info?.name ?? 'your team')
-    .catch(() => 'your team');
-
-  const teamContextPromise: Promise<TeamContext> = Promise.all([
-    memberCountPromise,
-    workerScriptsPromise,
+  const [orgName, integrations] = await Promise.all([
+    orgStub
+      .getInfo()
+      .then((info) => info?.name ?? 'your team')
+      .catch(() => 'your team'),
     workspaceId
       ? authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId))
           .getIntegrations()
@@ -75,16 +66,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
           )
           .catch(() => [] as string[])
       : Promise.resolve([] as string[]),
-  ]).then(([memberCount, workerScripts, integrations]) => ({
-    memberCount,
-    appCount: workerScripts.length,
-    integrations: integrations.slice(0, 4),
-  }));
+  ]);
 
   return {
-    orgNamePromise,
-    showOrgSlugStepPromise,
-    teamContextPromise,
+    orgName,
+    showOrgSlugStep,
+    teamContext: {
+      memberCount,
+      appCount: workerScripts.length,
+      integrations: integrations.slice(0, 4),
+    },
   } satisfies WelcomeLoaderData;
 }
 
@@ -111,27 +102,11 @@ function formatTeamSummary(teamContext: TeamContext): string {
   return parts.join('  •  ');
 }
 
-function TeamSummary({ teamContextPromise }: { teamContextPromise: Promise<TeamContext> }) {
-  const teamContext = use(teamContextPromise);
-  return (
-    <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
-      {formatTeamSummary(teamContext)}
-    </div>
-  );
-}
-
-function TeamHeading({ orgNamePromise }: { orgNamePromise: Promise<string> }) {
-  const orgName = use(orgNamePromise);
-  return <>{`Welcome to ${orgName}`}</>;
-}
-
 export default function OnboardingWelcomeRoute() {
   const context = useOutletContext<OnboardingRouteContext>();
   const navigate = useNavigate();
-  const { orgNamePromise, showOrgSlugStepPromise, teamContextPromise } =
+  const { orgName, showOrgSlugStep, teamContext } =
     useLoaderData<typeof loader>() as WelcomeLoaderData;
-  const [starting, setStarting] = useState(false);
-  const [startError, setStartError] = useState<string | null>(null);
   const isTeamWelcome = context.teamMode;
   const querySuffix = context.teamMode ? '?team=1' : '';
 
@@ -146,13 +121,7 @@ export default function OnboardingWelcomeRoute() {
       <div className="space-y-6 text-center">
         <div className="space-y-3">
           <h1 className="text-3xl font-semibold tracking-tight">
-            {isTeamWelcome ? (
-              <Suspense fallback={<>Welcome to your team</>}>
-                <TeamHeading orgNamePromise={orgNamePromise} />
-              </Suspense>
-            ) : (
-              'Welcome to Chiridion'
-            )}
+            {isTeamWelcome ? `Welcome to ${orgName}` : 'Welcome to Chiridion'}
           </h1>
           {!isTeamWelcome ? (
             <>
@@ -168,15 +137,9 @@ export default function OnboardingWelcomeRoute() {
               <p className="text-muted-foreground">
                 You&apos;re joining a team that&apos;s already building.
               </p>
-              <Suspense
-                fallback={
-                  <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
-                    Loading team activity...
-                  </div>
-                }
-              >
-                <TeamSummary teamContextPromise={teamContextPromise} />
-              </Suspense>
+              <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
+                {formatTeamSummary(teamContext)}
+              </div>
               <p className="text-muted-foreground">
                 Let&apos;s learn a bit about you so Claude can help.
               </p>
@@ -184,38 +147,22 @@ export default function OnboardingWelcomeRoute() {
           )}
         </div>
 
-        {startError ? (
-          <p className="text-sm text-destructive">{startError}</p>
-        ) : null}
-
         <div className="pt-2">
           <Button
             type="button"
             size="lg"
-            disabled={starting}
             onClick={() => {
               if (context.teamWelcomeOnly) {
                 context.skipToChat();
                 return;
               }
 
-              setStarting(true);
-              setStartError(null);
-              void showOrgSlugStepPromise
-                .then((showOrgSlugStep) => {
-                  context.setShowOrgSlugStep(showOrgSlugStep);
-                  const step = showOrgSlugStep ? 'orgSlug' : 'q1';
-                  navigate(`${STEP_PATHS[step]}${querySuffix}`);
-                })
-                .catch(() => {
-                  setStartError('Failed to check onboarding steps. Please try again.');
-                })
-                .finally(() => {
-                  setStarting(false);
-                });
+              context.setShowOrgSlugStep(showOrgSlugStep);
+              const step = showOrgSlugStep ? 'orgSlug' : 'q1';
+              navigate(`${STEP_PATHS[step]}${querySuffix}`);
             }}
           >
-            {starting ? 'Loading...' : 'Get Started'}
+            Get Started
           </Button>
         </div>
       </div>
