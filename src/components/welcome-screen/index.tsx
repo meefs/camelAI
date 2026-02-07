@@ -226,8 +226,6 @@ export function WelcomeScreen({
 
   const showUserAppsSection = hasUserApps;
   const showTeamAppsSection = !hasUserApps && hasTeamApps;
-  const showStarterPrompts = !hasUserApps;
-
   const [addConnectionOpen, setAddConnectionOpen] = useState(false);
 
   const allIntegrationDefs = useMemo(
@@ -285,17 +283,6 @@ export function WelcomeScreen({
           />
         )}
       </AnimatedPlaceholder>
-
-      {showStarterPrompts && (
-        <section className="space-y-4">
-          <SectionHeader title="Need inspiration? Try one of these" onRefresh={handleShufflePrompts} />
-          <StarterPrompts
-            prompts={promptsToDisplay}
-            onSelect={handlePromptSelect}
-            shuffleKey={shuffleKey}
-          />
-        </section>
-      )}
 
       {showUserAppsSection && (
         <section className="space-y-4">
@@ -377,6 +364,15 @@ export function WelcomeScreen({
             </div>
           </CollapsibleContent>
         </Collapsible>
+      </section>
+
+      <section className="space-y-4">
+        <SectionHeader title="Need inspiration? Try one of these" onRefresh={handleShufflePrompts} />
+        <StarterPrompts
+          prompts={promptsToDisplay}
+          onSelect={handlePromptSelect}
+          shuffleKey={shuffleKey}
+        />
       </section>
     </div>
   );
