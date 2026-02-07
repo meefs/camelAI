@@ -56,7 +56,7 @@ export interface CloudflareEnv {
   // Gmail API (for sending emails via Google Workspace)
   GMAIL_SERVICE_ACCOUNT_EMAIL?: string;
   GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY?: string;
-  GMAIL_SENDER_EMAIL?: string;
+  GMAIL_SENDER_EMAIL?: string; // User to impersonate and send as
 }
 
 /**

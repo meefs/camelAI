@@ -18,7 +18,7 @@
 export interface GmailConfig {
   serviceAccountEmail: string;
   privateKey: string;
-  senderEmail: string;
+  senderEmail: string; // User to impersonate AND send as
 }
 
 export interface SendEmailParams {
@@ -92,7 +92,7 @@ async function createSignedJwt(config: GmailConfig): Promise<string> {
 
   const payload = {
     iss: config.serviceAccountEmail,
-    sub: config.senderEmail, // Impersonate this user
+    sub: config.senderEmail, // Impersonate this user for API access
     aud: GOOGLE_TOKEN_URL,
     iat: now,
     exp: now + 3600, // 1 hour
