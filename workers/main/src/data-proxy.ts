@@ -1,0 +1,125 @@
+/**
+ * DataProxy - A shared container for accessing data sources that Workers don't support natively.
+ * Currently supports: MS SQL Server
+ * Stateless - connects, queries, returns results per request.
+ */
+import { Container } from '@cloudflare/containers';
+
+export interface DataProxyEnv {
+  DATA_PROXY: DurableObjectNamespace<DataProxy>;
+}
+
+export class DataProxy extends Container<DataProxyEnv> {
+  defaultPort = 8080;
+
+  // Override sleepAfterIdleSeconds - keep warm for 60 seconds after last request
+  override sleepAfterIdleSeconds = 60;
+
+  // =============================================================================
+  // MS SQL Server
+  // =============================================================================
+
+  /**
+   * Execute a SQL query against MS SQL Server
+   */
+  async mssqlQuery(request: MssqlQueryRequest): Promise<MssqlQueryResponse> {
+    await this.ensureRunning();
+
+    const response = await this.container!.fetch('http://container/mssql/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    return response.json();
+  }
+
+  /**
+   * Execute multiple queries in a transaction against MS SQL Server
+   */
+  async mssqlTransaction(request: MssqlTransactionRequest): Promise<MssqlTransactionResponse> {
+    await this.ensureRunning();
+
+    const response = await this.container!.fetch('http://container/mssql/transaction', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    return response.json();
+  }
+
+  // =============================================================================
+  // Health & Lifecycle
+  // =============================================================================
+
+  /**
+   * Health check
+   */
+  async health(): Promise<{ status: string }> {
+    await this.ensureRunning();
+
+    const response = await this.container!.fetch('http://container/health');
+    return response.json();
+  }
+
+  /**
+   * Ensure container is running
+   */
+  private async ensureRunning(): Promise<void> {
+    if (!this.container) {
+      await this.start();
+    }
+  }
+}
+
+// =============================================================================
+// MS SQL Server Types
+// =============================================================================
+
+export interface MssqlQueryRequest {
+  server: string;
+  port?: number;
+  user: string;
+  password: string;
+  database?: string;
+  query: string;
+  params?: Record<string, unknown>;
+  encrypt?: boolean;
+  trustServerCertificate?: boolean;
+  timeout?: number;
+}
+
+export interface MssqlQueryResponse {
+  recordset?: Record<string, unknown>[];
+  recordsets?: Record<string, unknown>[][];
+  rowsAffected?: number[];
+  error?: string;
+  code?: string;
+  number?: number;
+}
+
+export interface MssqlTransactionRequest {
+  server: string;
+  port?: number;
+  user: string;
+  password: string;
+  database?: string;
+  queries: Array<{
+    query: string;
+    params?: Record<string, unknown>;
+  }>;
+  encrypt?: boolean;
+  trustServerCertificate?: boolean;
+  timeout?: number;
+}
+
+export interface MssqlTransactionResponse {
+  results?: Array<{
+    recordset?: Record<string, unknown>[];
+    rowsAffected?: number[];
+  }>;
+  error?: string;
+  code?: string;
+  number?: number;
+}

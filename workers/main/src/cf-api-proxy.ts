@@ -6,7 +6,7 @@
  */
 
 import { waitUntil } from 'cloudflare:workers';
-import { isSignedToken, validateSignedToken } from './signed-tokens.js';
+import { isSignedToken, validateSignedToken, createSignedToken } from './signed-tokens.js';
 import { mapCredentialsToEnvVars } from './integration-env.js';
 import { decryptCredentials } from '../../../src/lib/integration-crypto.js';
 import { decryptOpenRouterKey } from './openrouter-keys.js';
@@ -15,7 +15,7 @@ import type { WorkspaceDO } from './workspace.js';
 
 // Secrets managed by Chiridion (will be cleaned up if removed)
 const MANAGED_SECRET_PREFIXES = ['INT_'];
-const MANAGED_SECRET_NAMES = ['OPENROUTER_API_KEY'];
+const MANAGED_SECRET_NAMES = ['OPENROUTER_API_KEY', 'DATA_PROXY_TOKEN'];
 
 function isManagedSecret(name: string): boolean {
   return MANAGED_SECRET_NAMES.includes(name) || MANAGED_SECRET_PREFIXES.some(p => name.startsWith(p));
@@ -599,6 +599,26 @@ async function syncDispatchScriptSecrets(
       secretsToSync.OPENROUTER_API_KEY = openRouterKey;
     } catch (e) {
       console.error('[cf-api-proxy] Failed to decrypt OpenRouter key for script secrets:', e);
+    }
+  }
+
+  // Create data proxy token for deployed workers
+  const orgSlug = await orgStub.getSlug();
+  if (orgSlug && env.TOKEN_SIGNING_SECRET) {
+    try {
+      // Token expires in 24 hours - will be refreshed on next deploy
+      const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+      const dataProxyToken = await createSignedToken(env.TOKEN_SIGNING_SECRET, {
+        org_id: orgId,
+        org_slug: orgSlug,
+        scopes: ['data-proxy'],
+        exp: Date.now() + TOKEN_TTL_MS,
+        workspace_id: workspaceId,
+        name: `data-proxy-worker-${scriptName}`,
+      });
+      secretsToSync.DATA_PROXY_TOKEN = dataProxyToken;
+    } catch (e) {
+      console.error('[cf-api-proxy] Failed to create data proxy token for script secrets:', e);
     }
   }
 

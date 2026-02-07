@@ -179,6 +179,8 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
   // Track the workspace + org IDs for this container
   private workspaceId: string | null = null;
   private orgId: string | null = null;
+  // Track data proxy token expiry for registration with WorkspaceDO
+  private dataProxyTokenExpiry: number | null = null;
 
   /**
    * Override fetch to ensure env vars are always set before container starts.
@@ -378,6 +380,23 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
       const deployToken = await createDeployToken(this.env.TOKEN_SIGNING_SECRET, workspaceId, orgId, orgSlug, userId);
       envVars.CLOUDFLARE_API_TOKEN = deployToken;
       console.log('[WorkspaceContainer] Created signed deploy token for workspace', { workspaceId, orgId, orgSlug });
+
+      // Data Proxy token - allows container to access data sources via HTTP API
+      const dataProxyTokenExpiry = Date.now() + TOKEN_TTL_MS;
+      const dataProxyToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
+        org_id: orgId,
+        org_slug: orgSlug,
+        user_id: userId,
+        scopes: ['data-proxy'],
+        exp: dataProxyTokenExpiry,
+        workspace_id: workspaceId,
+        name: `data-proxy-${workspaceId}`,
+      });
+      envVars.DATA_PROXY_TOKEN = dataProxyToken;
+      envVars.DATA_PROXY_URL = `${this.env.WORKER_BASE_URL}/api`;
+
+      // Store expiry for later registration with WorkspaceDO
+      this.dataProxyTokenExpiry = dataProxyTokenExpiry;
     }
 
     // Token expires in 24 hours
@@ -450,6 +469,16 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
       orgId,
       success: pushSuccess,
     });
+
+    // Register data proxy token expiry with WorkspaceDO for auto-refresh scheduling
+    if (this.dataProxyTokenExpiry) {
+      try {
+        const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
+        await workspaceStub.registerDataProxyTokenExpiry(this.dataProxyTokenExpiry);
+      } catch (err) {
+        console.error('[WorkspaceContainer] Failed to register data proxy token expiry:', err);
+      }
+    }
   }
 
   /**
@@ -565,7 +594,7 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
 
   /**
    * Fetch integration env vars for this workspace.
-   * Returns a map of INT_* env vars from enabled integrations.
+   * Returns a map of INT_* env vars from enabled integrations, plus DATA_PROXY_TOKEN.
    */
   async fetchIntegrationEnvVars(workspaceId: string): Promise<Record<string, string>> {
     const integrationEnvVars: Record<string, string> = {};
@@ -578,6 +607,14 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
         const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
         const config = JSON.parse(record.config) as Record<string, unknown>;
         Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
+      }
+
+      // Also generate fresh data proxy token for refresh
+      const dataProxyResult = await workspaceStub.generateDataProxyToken();
+      if (dataProxyResult) {
+        integrationEnvVars.DATA_PROXY_TOKEN = dataProxyResult.token;
+        // Update our tracked expiry
+        this.dataProxyTokenExpiry = dataProxyResult.expiresAt;
       }
 
       console.log('[WorkspaceContainer] Fetched integration env vars:', Object.entries(integrationEnvVars).map(

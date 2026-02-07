@@ -13,8 +13,8 @@ export interface SignedTokenPayload {
   org_id: string;
   /** Organization slug for namespaced deployments */
   org_slug: string;
-  /** User ID */
-  user_id: string;
+  /** User ID (optional for service tokens like MSSQL) */
+  user_id?: string;
   /** Permission scopes (e.g., ['proxy'], ['mcp']) */
   scopes: string[];
   /** Issued at timestamp (ms) */

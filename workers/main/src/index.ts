@@ -32,10 +32,12 @@ import {
 import { handleThreadWebSocket, handleChatWebSocket } from './routes/websocket.js';
 import { handleClaudeProxy, handleCountTokens } from './routes/claude-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
+import { handleMssqlQuery, handleMssqlTransaction, handleDataProxyHealth } from './routes/data-proxy.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
 export { WorkspaceContainer as ThreadSandbox } from './workspace-container.js';
+export { DataProxy } from './data-proxy.js';
 export { ChatThreadDO } from './durable-objects.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
@@ -80,6 +82,11 @@ const routes: Route[] = [
   { method: 'GET', path: /^\/api\/integrations\/notion\/callback$/, handler: handleNotionOAuthCallback },
   { method: 'GET', path: /^\/api\/integrations\/salesforce\/oauth$/, handler: handleSalesforceOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/salesforce\/callback$/, handler: handleSalesforceOAuthCallback },
+
+  // Data Proxy API (requires 'data-proxy' scope token)
+  { method: 'POST', path: /^\/api\/mssql\/query$/, handler: handleMssqlQuery },
+  { method: 'POST', path: /^\/api\/mssql\/transaction$/, handler: handleMssqlTransaction },
+  { method: 'GET', path: /^\/api\/data-proxy\/health$/, handler: handleDataProxyHealth },
 
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/thread\/([^/]+)$/, handler: handleThreadWebSocket, websocket: true },

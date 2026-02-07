@@ -1,6 +1,6 @@
 ---
 name: data-analysis
-description: Analyze data using pre-installed Python and SQL tools. Use this skill when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create visualizations, or perform data analysis. Handles pandas, polars, DuckDB for data processing, matplotlib/seaborn/plotly for visualization, scikit-learn for ML, and database connectivity via SQLAlchemy, usql, and the google-cloud-bigquery client with OAuth access tokens. For live dashboards or data apps, read the developing-software skill.
+description: Analyze data using pre-installed Python and SQL tools. Use this skill when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create visualizations, or perform data analysis. Handles pandas, polars, DuckDB for data processing, matplotlib/seaborn/plotly for visualization, scikit-learn for ML, and database connectivity via SQLAlchemy, usql, the google-cloud-bigquery client with OAuth access tokens, and the Chiridion MS SQL Proxy API for SQL Server. For live dashboards or data apps, read the developing-software skill.
 license: Complete terms in LICENSE.txt
 ---
 
@@ -165,6 +165,83 @@ df = client.query("SELECT * FROM dataset.table").to_dataframe()
 ```
 
 **Do NOT** use `bigquery.Client.from_service_account_json()` or try to read a service account JSON file. The raw service account key is never available in the container — only the derived access token is exposed.
+
+#### MS SQL Server
+
+MS SQL Server connections use the **Chiridion Data Proxy API**. Direct drivers like `pymssql` or `pyodbc` are not available in the container. Instead, use the HTTP API with a signed token.
+
+When you need to query MS SQL Server, a `DATA_PROXY_TOKEN` environment variable is available for authentication.
+
+**Single Query:**
+```python
+import os
+import requests
+
+token = os.environ["DATA_PROXY_TOKEN"]
+base_url = os.environ.get("DATA_PROXY_URL", "https://chiridion.ai/api")
+
+response = requests.post(
+    f"{base_url}/mssql/query",
+    headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    },
+    json={
+        "server": "your-server.database.windows.net",
+        "user": "username",
+        "password": "password",
+        "database": "mydb",
+        "query": "SELECT * FROM users WHERE id = @id",
+        "params": {"id": 123},
+        "encrypt": True  # Use TLS (required for Azure SQL)
+    }
+)
+
+result = response.json()
+# result["recordset"] = [{"id": 123, "name": "John", ...}]
+# result["rowsAffected"] = [1]
+```
+
+**Transaction (multiple queries):**
+```python
+response = requests.post(
+    f"{base_url}/mssql/transaction",
+    headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    },
+    json={
+        "server": "your-server.database.windows.net",
+        "user": "username",
+        "password": "password",
+        "database": "mydb",
+        "queries": [
+            {"query": "INSERT INTO orders (id, amount) VALUES (@id, @amt)", "params": {"id": 1, "amt": 100}},
+            {"query": "UPDATE inventory SET qty = qty - 1 WHERE product_id = @pid", "params": {"pid": 42}}
+        ],
+        "encrypt": True
+    }
+)
+
+result = response.json()
+# result["results"] = [{"rowsAffected": [1]}, {"rowsAffected": [1]}]
+```
+
+**Request Options:**
+| Field | Required | Description |
+|-------|----------|-------------|
+| `server` | Yes | SQL Server hostname |
+| `user` | Yes | Username |
+| `password` | Yes | Password |
+| `query` | Yes | SQL query with `@param` placeholders |
+| `database` | No | Database name (default: `master`) |
+| `port` | No | Port (default: `1433`) |
+| `params` | No | Parameter values for the query |
+| `encrypt` | No | Use TLS (default: `true`) |
+| `trustServerCertificate` | No | Trust self-signed certs (default: `true`) |
+| `timeout` | No | Query timeout in ms (default: `30000`) |
+
+**Note:** The `usql sqlserver://` CLI shown above also works for interactive exploration but the HTTP API is preferred for programmatic access within scripts.
 
 ### File Formats (Pre-installed)
 

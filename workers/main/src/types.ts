@@ -5,12 +5,13 @@
 import type { ChatEnv } from './durable-objects.js';
 import type { DOEnv } from './auth.js';
 import type { WorkspaceContainerEnv } from './workspace-container.js';
+import type { DataProxyEnv } from './data-proxy.js';
 import type { CfApiProxyEnv } from './cf-api-proxy.js';
 import type { McpEnv } from './mcp-handler.js';
 import type { WorkspaceDO } from './workspace.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
 
-export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, CfApiProxyEnv, McpEnv {
+export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv, CfApiProxyEnv, McpEnv {
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   SESSIONS: KVNamespace;

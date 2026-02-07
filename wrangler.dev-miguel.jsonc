@@ -65,12 +65,20 @@
 			"image": "./Dockerfile",
 			"instance_type": { "vcpu": 1, "memory_mib": 4096, "disk_mb": 8000 },
 			"max_instances": 5
+		},
+		{
+			"name": "chiridion-app-dev-miguel-mssqlproxy",
+			"class_name": "DataProxy",
+			"image": "./containers/data-proxy/Dockerfile",
+			"instance_type": { "vcpu": 0.5, "memory_mib": 512, "disk_mb": 1000 },
+			"max_instances": 1
 		}
 	],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
 			{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
+			{ "name": "DATA_PROXY", "class_name": "DataProxy" },
 			{ "name": "USER", "class_name": "UserDO" },
 			{ "name": "ORG", "class_name": "OrgDO" },
 			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
@@ -88,6 +96,8 @@
 		{ "tag": "v7", "deleted_classes": ["SessionDO"] },
 		{ "tag": "v8", "deleted_classes": ["ChatIndexDO"] },
 		{ "tag": "v9", "new_sqlite_classes": ["ChiridionMcp"] },
-		{ "tag": "v10", "new_sqlite_classes": ["OrgSlugDO"] }
+		{ "tag": "v10", "new_sqlite_classes": ["OrgSlugDO"] },
+		{ "tag": "v11", "new_sqlite_classes": ["MssqlProxy"] },
+		{ "tag": "v12", "deleted_classes": ["MssqlProxy"], "new_sqlite_classes": ["DataProxy"] }
 	]
 }
