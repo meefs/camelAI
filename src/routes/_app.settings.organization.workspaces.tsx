@@ -2,7 +2,7 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.settings.organization.workspaces';
 import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { createWorkspace, archiveWorkspace } from '@/lib/auth-do';
+import { createWorkspace, archiveWorkspace, listOrgWorkspaces } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { WorkspacesList } from '@/components/settings/workspaces-list';
@@ -100,16 +100,24 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     compute_tier: ws.compute_tier ?? 'standard',
   }));
 
+  // When user has no accessible workspaces, check if the org actually has workspaces
+  let orgWorkspaceCount = workspaceSummaries.length;
+  if (workspaceSummaries.length === 0) {
+    const allOrgWorkspaces = await listOrgWorkspaces(authEnv, authContext.currentOrg.id);
+    orgWorkspaceCount = allOrgWorkspaces.length;
+  }
+
   return {
     org: authContext.currentOrg,
     workspaces: workspaceSummaries,
     currentWorkspaceId: authContext.currentWorkspace?.id,
     canManage,
+    orgWorkspaceCount,
   };
 }
 
 export default function WorkspacesPage() {
-  const { org, workspaces, currentWorkspaceId, canManage } =
+  const { org, workspaces, currentWorkspaceId, canManage, orgWorkspaceCount } =
     useLoaderData<typeof loader>();
 
   return (
@@ -123,6 +131,7 @@ export default function WorkspacesPage() {
         workspaces={workspaces}
         canManage={canManage}
         currentWorkspaceId={currentWorkspaceId ?? null}
+        orgWorkspaceCount={orgWorkspaceCount}
       />
     </div>
   );

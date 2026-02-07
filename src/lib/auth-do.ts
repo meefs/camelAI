@@ -514,6 +514,9 @@ export async function updateOrgMemberRole(env: AuthEnv, orgId: string, userId: s
 }
 
 export async function transferOrgOwnership(env: AuthEnv, orgId: string, newOwnerId: string, actorId: string): Promise<void> {
+  if (newOwnerId === actorId) {
+    throw new Error('Cannot transfer ownership to yourself');
+  }
   const stub = env.ORG.get(env.ORG.idFromName(orgId));
   await stub.transferOwnership(actorId, newOwnerId);
   // Update user roles
@@ -633,9 +636,9 @@ export async function archiveWorkspace(
       const orgs = await userStub.getOrgs();
       const orgEntry = orgs.find((o) => o.org_id === info.org_id);
       if (orgEntry?.last_workspace_id === workspaceId) {
-        // Reassign to another active workspace (or null if none remain)
-        const remainingWorkspaces = await listOrgWorkspaces(env, info.org_id);
-        const newWorkspaceId = remainingWorkspaces[0]?.id ?? null;
+        // Reassign to a workspace the user can actually access (or null if none remain)
+        const userWorkspaces = await listUserWorkspaces(env, member.user_id, info.org_id);
+        const newWorkspaceId = userWorkspaces[0]?.id ?? null;
         await userStub.setOrgLastWorkspace(info.org_id, newWorkspaceId);
       }
     })

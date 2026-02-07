@@ -50,57 +50,49 @@ export function ArchiveOrgSection({ orgName }: ArchiveOrgSectionProps) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div>
-        <h3 className="text-lg font-medium text-destructive">Danger zone</h3>
+        <p className="text-sm font-medium">Archive this organization</p>
         <p className="text-sm text-muted-foreground">
-          Irreversible actions that affect this organization.
+          Archiving will delete this organization and all its workspaces. This action cannot be undone.
         </p>
       </div>
-      <div className="rounded-lg border border-destructive/50 p-4 space-y-3">
-        <div>
-          <p className="text-sm font-medium">Archive this organization</p>
-          <p className="text-sm text-muted-foreground">
-            Archiving will soft-delete this organization and all its workspaces. This action cannot be undone from the regular UI.
-          </p>
-        </div>
-        <AlertDialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setConfirmName(""); }}>
-          <AlertDialogTrigger asChild>
-            <Button variant="destructive" disabled={isSubmitting}>
-              {isSubmitting ? "Archiving..." : "Archive organization"}
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Archive organization?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will archive <strong>{orgName}</strong> and all its workspaces. All members will lose access. This action cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <div className="space-y-2 py-2">
-              <Label htmlFor="confirm-org-name">
-                Type <strong>{orgName}</strong> to confirm
-              </Label>
-              <Input
-                id="confirm-org-name"
-                value={confirmName}
-                onChange={(e) => setConfirmName(e.target.value)}
-                placeholder={orgName}
-              />
-            </div>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={handleArchive}
-                disabled={confirmName !== orgName}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              >
-                Archive organization
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div>
+      <AlertDialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setConfirmName(""); }}>
+        <AlertDialogTrigger asChild>
+          <Button variant="destructive" disabled={isSubmitting}>
+            {isSubmitting ? "Archiving..." : "Archive organization"}
+          </Button>
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive organization?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will archive <strong>{orgName}</strong> and all its workspaces. All members will lose access. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="confirm-org-name">
+              Type <strong>{orgName}</strong> to confirm
+            </Label>
+            <Input
+              id="confirm-org-name"
+              value={confirmName}
+              onChange={(e) => setConfirmName(e.target.value)}
+              placeholder={orgName}
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleArchive}
+              disabled={confirmName !== orgName}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Archive organization
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
