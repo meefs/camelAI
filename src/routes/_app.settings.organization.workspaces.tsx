@@ -71,13 +71,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     appCountMap.set(script.workspace_id, (appCountMap.get(script.workspace_id) ?? 0) + 1);
   }
 
-  // For each workspace, get members with explicit 'none' access to subtract from org total
+  // For each workspace, get members with explicit 'none' access to subtract from org total.
+  // Only count 'none' entries for users still in the org (stale entries may exist from removed users).
+  const orgMemberIds = new Set(orgMembers.map((m: { user_id: string }) => m.user_id));
   const workspaces = authContext.workspaces ?? [];
   const memberCounts = await Promise.all(
     workspaces.map(async (ws) => {
       const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws.id));
       const explicitMembers = await wsStub.listMembers();
-      const noneCount = explicitMembers.filter((m: { access_level: string }) => m.access_level === 'none').length;
+      const noneCount = explicitMembers.filter(
+        (m: { user_id: string; access_level: string }) => m.access_level === 'none' && orgMemberIds.has(m.user_id)
+      ).length;
       return { id: ws.id, memberCount: orgMemberCount - noneCount };
     })
   );

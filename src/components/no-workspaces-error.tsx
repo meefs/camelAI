@@ -3,7 +3,6 @@
 import { Link } from 'react-router';
 import { CircleAlert, ShieldAlert, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertTitle } from '@/components/ui/alert';
 import { useAuthData } from '@/hooks/use-auth-data';
 
 export function NoWorkspacesError() {
@@ -32,25 +31,35 @@ export function NoWorkspacesError() {
       </h3>
       <p className="text-sm text-muted-foreground max-w-sm mb-6">
         {isAccessDenied
-          ? `You don't have access to any workspaces in "${currentOrg.name}". Ask an organization admin to grant you workspace access.`
+          ? isOrgAdmin
+            ? `There are workspaces in "${currentOrg.name}", but you are not assigned to any of them.`
+            : `You don't have access to any workspaces in "${currentOrg.name}". Ask an organization admin to grant you workspace access.`
           : `The organization "${currentOrg.name}" doesn't have any workspaces yet.`}
       </p>
 
-      <div className="w-full max-w-md space-y-4">
-        <Button variant="outline" asChild>
+      <div className="flex flex-col items-center gap-3 w-full max-w-md">
+        {isOrgAdmin && isAccessDenied ? (
+          <Button asChild className="w-full max-w-xs">
+            <Link to="/settings/organization/team">
+              Assign yourself access
+            </Link>
+          </Button>
+        ) : null}
+
+        {isOrgAdmin && !isAccessDenied ? (
+          <Button asChild className="w-full max-w-xs">
+            <Link to="/settings/organization/workspaces">
+              Create a workspace
+            </Link>
+          </Button>
+        ) : null}
+
+        <Button variant="outline" asChild className="w-full max-w-xs">
           <Link to="/settings/organizations">
             <Building2 className="mr-2 h-4 w-4" />
             Switch Organizations
           </Link>
         </Button>
-
-        {isOrgAdmin && !isAccessDenied && (
-          <Alert className="text-left">
-            <AlertTitle>
-              As an Admin, you can <Link to="/settings/organization/workspaces">create a workspace</Link> to use this Organization
-            </AlertTitle>
-          </Alert>
-        )}
       </div>
     </div>
   );
