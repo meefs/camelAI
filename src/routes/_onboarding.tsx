@@ -37,7 +37,7 @@ interface OnboardingLoaderData {
   teamMode: boolean;
 }
 
-const ONBOARDING_AUTO_START_CHAT_KEY = 'chiridion:onboarding:auto-start-chat';
+const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
 
 export interface OnboardingRouteContext extends OnboardingLoaderData {
   answers: OnboardingPreferences;
@@ -224,42 +224,55 @@ export default function OnboardingLayout() {
     async (overrides?: Partial<OnboardingPreferences>) => {
       const withOverrides = mergeAnswers(answers, overrides ?? {});
       const desiredSlug = pendingOrgSlugState?.trim().toLowerCase() ?? null;
+      const completed = mergeAnswers(withOverrides, { completed_at: Date.now() });
+      const response = await fetch('/api/onboarding/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          onboarding: completed,
+          desiredSlug: showOrgSlugStep ? desiredSlug : null,
+        }),
+      });
 
-      if (showOrgSlugStep && desiredSlug) {
-        const response = await fetch(`/api/orgs/${loaderData.orgId}/update-slug`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ slug: desiredSlug }),
-        });
-        if (!response.ok) {
-          let errorMessage = 'Failed to update org slug';
-          try {
-            const data = (await response.json()) as { error?: string };
-            if (data.error) errorMessage = data.error;
-          } catch {
-            // Ignore parse failures and keep default message.
-          }
-          throw new Error(errorMessage);
+      if (!response.ok) {
+        let errorMessage = 'Failed to complete onboarding';
+        try {
+          const data = (await response.json()) as { error?: string };
+          if (data.error) errorMessage = data.error;
+        } catch {
+          // Ignore parse failures and keep default message.
+        }
+        throw new Error(errorMessage);
+      }
+
+      const data = (await response.json()) as {
+        redirectTo?: string;
+        threadId?: string;
+        onboardingSystemMessage?: string | null;
+      };
+      const threadId = data.threadId?.trim();
+      const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
+      if (threadId && onboardingSystemMessage) {
+        try {
+          sessionStorage.setItem(
+            PENDING_NEW_THREAD_MESSAGE_KEY,
+            JSON.stringify({
+              message: `<chiridion system message>${onboardingSystemMessage}</chiridion system message>`,
+              threadId,
+            })
+          );
+        } catch (error) {
+          console.error('Failed to persist onboarding prefill message:', error);
         }
       }
-
-      const completed = mergeAnswers(withOverrides, { completed_at: Date.now() });
-      await saveOnboarding(completed);
       clearStoredProgress();
-      try {
-        sessionStorage.setItem(ONBOARDING_AUTO_START_CHAT_KEY, '1');
-      } catch (error) {
-        console.error('Failed to persist onboarding auto-start flag:', error);
-      }
-      navigate('/chat');
+      navigate(data.redirectTo || '/chat');
     },
     [
       answers,
       clearStoredProgress,
-      loaderData.orgId,
       navigate,
       pendingOrgSlugState,
-      saveOnboarding,
       showOrgSlugStep,
     ]
   );
