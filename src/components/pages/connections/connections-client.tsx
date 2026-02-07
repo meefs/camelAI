@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useFetcher, useRevalidator, useSearchParams } from 'react-router';
 import { useAuthData } from '@/hooks/use-auth-data';
 
@@ -26,9 +26,12 @@ import {
   Copy,
   Plug,
   Plus,
+  Search,
   Settings,
   Trash2,
+  X,
 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 
 const categoryLabels: Record<string, string> = {
   databases: 'Databases',
@@ -83,9 +86,20 @@ export default function ConnectionsClient({
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Integration | null>(null);
   const [copyTarget, setCopyTarget] = useState<Integration | null>(null);
+  const [pickerSearch, setPickerSearch] = useState('');
 
   const connections = initialConnections;
   const loading = revalidator.state === 'loading';
+
+  const filteredConnectionTypes = useMemo(() => {
+    const query = pickerSearch.trim().toLowerCase();
+    if (!query) return connectionTypes;
+    return connectionTypes.filter(
+      (t) =>
+        t.displayName.toLowerCase().includes(query) ||
+        t.type.toLowerCase().includes(query)
+    );
+  }, [connectionTypes, pickerSearch]);
 
   // Handle OAuth success/error from URL params
   useEffect(() => {
@@ -387,7 +401,7 @@ export default function ConnectionsClient({
         </ScrollArea>
       </div>
 
-      <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
+      <Dialog open={pickerOpen} onOpenChange={(open) => { setPickerOpen(open); if (!open) setPickerSearch(''); }}>
         <DialogContent className="sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle>Add a connection</DialogTitle>
@@ -400,58 +414,49 @@ export default function ConnectionsClient({
               No connection types are available right now.
             </div>
           ) : (
-            <Tabs defaultValue="all" className="w-full min-w-0">
-              <div className="mb-4 w-full min-w-0 overflow-x-auto overflow-y-hidden">
-                <TabsList className="w-max justify-start">
-                  <TabsTrigger value="all" className="flex-none">
-                    All
-                  </TabsTrigger>
-                  {categories.map((category) => (
-                    <TabsTrigger key={category} value={category} className="flex-none">
-                      {categoryLabels[category] || category}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
+            <>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={pickerSearch}
+                  onChange={(e) => setPickerSearch(e.target.value)}
+                  placeholder="Search connections..."
+                  className="pl-9 pr-8"
+                />
+                {pickerSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setPickerSearch('')}
+                    className="absolute inset-y-0 right-0 inline-flex items-center px-3 text-muted-foreground hover:text-foreground"
+                    aria-label="Clear search"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                )}
               </div>
-              <ScrollArea className="max-h-[60vh] pr-4 overflow-x-hidden">
-                <div className="min-w-0 p-1">
-                  <TabsContent value="all" className="mt-0">
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {connectionTypes.map((type) => {
-                        const hasIcon = hasIntegrationIcon(type.type);
-                        return (
-                          <button
-                            key={type.type}
-                            onClick={() => handleAddClick(type.type)}
-                            className="flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
-                          >
-                            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
-                              {hasIcon ? (
-                                <IntegrationIcon type={type.type} className="size-5" />
-                              ) : (
-                                <Settings className="size-5" />
-                              )}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-sm font-medium">
-                                {type.displayName}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                {type.authMethod === 'oauth2' ? 'OAuth' : 'API Key'}
-                              </div>
-                            </div>
-                            <Plus className="size-4 shrink-0 text-muted-foreground" />
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </TabsContent>
-                  {categories.map((category) => (
-                    <TabsContent key={category} value={category} className="mt-0">
-                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                        {connectionTypes
-                          .filter((type) => type.category === category)
-                          .map((type) => {
+              <Tabs defaultValue="all" className="w-full min-w-0">
+                <div className="mb-4 w-full min-w-0 overflow-x-auto overflow-y-hidden">
+                  <TabsList className="w-max justify-start">
+                    <TabsTrigger value="all" className="flex-none">
+                      All
+                    </TabsTrigger>
+                    {categories.map((category) => (
+                      <TabsTrigger key={category} value={category} className="flex-none">
+                        {categoryLabels[category] || category}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </div>
+                <ScrollArea className="max-h-[60vh] pr-4 overflow-x-hidden">
+                  <div className="min-w-0 p-1">
+                    <TabsContent value="all" className="mt-0">
+                      {filteredConnectionTypes.length === 0 ? (
+                        <div className="py-6 text-center text-sm text-muted-foreground">
+                          No integrations found
+                        </div>
+                      ) : (
+                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                          {filteredConnectionTypes.map((type) => {
                             const hasIcon = hasIntegrationIcon(type.type);
                             return (
                               <button
@@ -478,12 +483,55 @@ export default function ConnectionsClient({
                               </button>
                             );
                           })}
-                      </div>
+                        </div>
+                      )}
                     </TabsContent>
-                  ))}
-                </div>
-              </ScrollArea>
-            </Tabs>
+                    {categories.map((category) => {
+                      const categoryTypes = filteredConnectionTypes.filter((type) => type.category === category);
+                      return (
+                        <TabsContent key={category} value={category} className="mt-0">
+                          {categoryTypes.length === 0 ? (
+                            <div className="py-6 text-center text-sm text-muted-foreground">
+                              No integrations found
+                            </div>
+                          ) : (
+                            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                              {categoryTypes.map((type) => {
+                                const hasIcon = hasIntegrationIcon(type.type);
+                                return (
+                                  <button
+                                    key={type.type}
+                                    onClick={() => handleAddClick(type.type)}
+                                    className="flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
+                                  >
+                                    <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                                      {hasIcon ? (
+                                        <IntegrationIcon type={type.type} className="size-5" />
+                                      ) : (
+                                        <Settings className="size-5" />
+                                      )}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="truncate text-sm font-medium">
+                                        {type.displayName}
+                                      </div>
+                                      <div className="text-xs text-muted-foreground">
+                                        {type.authMethod === 'oauth2' ? 'OAuth' : 'API Key'}
+                                      </div>
+                                    </div>
+                                    <Plus className="size-4 shrink-0 text-muted-foreground" />
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </TabsContent>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              </Tabs>
+            </>
           )}
         </DialogContent>
       </Dialog>

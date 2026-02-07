@@ -3,14 +3,26 @@
 import { IntegrationIcon } from '@/lib/integration-icons';
 import { cn } from '@/lib/utils';
 
-export const FEATURED_INTEGRATIONS = [
+export const FEATURED_CONNECTIONS = [
   { type: 'stripe', displayName: 'Stripe' },
   { type: 'slack', displayName: 'Slack' },
-  { type: 'notion', displayName: 'Notion' },
-  { type: 'hubspot', displayName: 'HubSpot' },
-  { type: 'github', displayName: 'GitHub' },
-  { type: 'airtable', displayName: 'Airtable' },
   { type: 'postgres', displayName: 'PostgreSQL' },
+  { type: 'github', displayName: 'GitHub' },
+  { type: 'notion', displayName: 'Notion' },
+];
+
+export const LOGO_STACK_CONNECTIONS = [
+  { type: 'hubspot', displayName: 'HubSpot' },
+  { type: 'airtable', displayName: 'Airtable' },
+  { type: 'snowflake', displayName: 'Snowflake' },
+  { type: 'openai', displayName: 'OpenAI' },
+  { type: 'bigquery', displayName: 'BigQuery' },
+];
+
+export const FEATURED_INTEGRATIONS = [
+  ...FEATURED_CONNECTIONS,
+  { type: 'hubspot', displayName: 'HubSpot' },
+  { type: 'airtable', displayName: 'Airtable' },
   { type: 'openai', displayName: 'OpenAI' },
 ];
 
