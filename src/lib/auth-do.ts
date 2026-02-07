@@ -323,6 +323,9 @@ export async function adminTransferOrgOwnership(
   if (!currentOwner) {
     throw new Error('Organization has no owner');
   }
+  if (newOwnerId === currentOwner.user_id) {
+    return;
+  }
 
   await orgStub.adminTransferOwnership(actorId, newOwnerId);
 

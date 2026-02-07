@@ -113,6 +113,27 @@ describe('Workspace archive', () => {
     expect(orgEntry?.last_workspace_id).toBe(ws2.id);
   });
 
+  it('reassigns last_workspace_id to a workspace the member can access', async () => {
+    const ownerEmail = testEmail();
+    const memberEmail = testEmail();
+    const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+    const { userId: memberId } = await createUser(testEnv, memberEmail, 'password', 'Member');
+    const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Access Reassign Org', ownerId);
+    const ws2 = await createWorkspace(testEnv, org.id, 'Workspace 2', ownerId);
+    const ws3 = await createWorkspace(testEnv, org.id, 'Workspace 3', ownerId);
+
+    const { id: invitationId } = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
+    await acceptInvitation(testEnv, org.id, invitationId, memberId);
+
+    await setWorkspaceAccess(testEnv, ws2.id, memberId, 'none', ownerId);
+
+    await archiveWorkspace(testEnv, defaultWorkspaceId, ownerId);
+
+    const orgs = await getUserOrgs(testEnv, memberId);
+    const orgEntry = orgs.find((o) => o.org_id === org.id);
+    expect(orgEntry?.last_workspace_id).toBe(ws3.id);
+  });
+
   it('does not return archived workspaces in normal queries', async () => {
     const ownerEmail = testEmail();
     const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');

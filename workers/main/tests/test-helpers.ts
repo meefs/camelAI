@@ -21,6 +21,7 @@ import { mapCredentialsToEnvVars } from '../src/integration-env';
 // Production business logic - delegated to instead of reimplemented
 import {
   acceptInvitation as prodAcceptInvitation,
+  adminTransferOrgOwnership as prodAdminTransferOrgOwnership,
   createWorkspace as prodCreateWorkspace,
   removeOrgMember as prodRemoveOrgMember,
   archiveOrg as prodArchiveOrg,
@@ -295,6 +296,19 @@ export async function transferOrgOwnership(
   actorId: string
 ): Promise<void> {
   return prodTransferOrgOwnership(env as unknown as AuthEnv, orgId, newOwnerId, actorId);
+}
+
+/**
+ * Delegates to production auth-do.ts adminTransferOrgOwnership.
+ * TestEnv is structurally compatible with AuthEnv.
+ */
+export async function adminTransferOrgOwnership(
+  env: TestEnv,
+  orgId: string,
+  newOwnerId: string,
+  actorId: string
+): Promise<void> {
+  return prodAdminTransferOrgOwnership(env as unknown as AuthEnv, orgId, newOwnerId, actorId);
 }
 
 /**
