@@ -1025,6 +1025,31 @@ export async function proxyCloudflareApi(
     }
   }
 
+  // Intercept R2 bucket verification requests from wrangler.
+  // Wrangler checks if the bucket exists before deploying a worker with r2_bucket bindings.
+  // Since we virtualize all R2 buckets, return a synthetic success response.
+  const r2BucketMatch = pathname.match(/^\/client\/v4\/accounts\/[^/]+\/r2\/buckets\/([^/]+)$/);
+  if (r2BucketMatch && request.method === 'GET') {
+    const bucketName = decodeURIComponent(r2BucketMatch[1]!);
+    console.log('[cf-api-proxy] intercepted R2 bucket verification (virtual bucket)', {
+      bucketName,
+      workspaceId,
+      orgId,
+    });
+    return new Response(JSON.stringify({
+      success: true,
+      errors: [],
+      messages: [],
+      result: {
+        name: bucketName,
+        creation_date: new Date().toISOString(),
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   if (!isAllowedCloudflareApiProxyRequest(pathname, request.method)) {
     console.warn('[cf-api-proxy] blocked', {
       method: request.method,
