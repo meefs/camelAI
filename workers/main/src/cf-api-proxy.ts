@@ -32,7 +32,7 @@ function isManagedSecret(name: string): boolean {
 const FORBIDDEN_BINDING_TYPES = new Set([
   'kv_namespace',           // KV storage
   'd1',                     // D1 database
-  'r2_bucket',              // R2 storage
+  // r2_bucket is NOT forbidden — it's transparently replaced with a virtual R2 service binding
   'queue',                  // Queue producer
   'service',                // Service bindings to other workers
   'analytics_engine',       // Analytics Engine
@@ -44,6 +44,11 @@ const FORBIDDEN_BINDING_TYPES = new Set([
   'dispatch_namespace',     // Workers for Platforms dispatch
   'send_email',             // Email sending
   'version_metadata',       // Version metadata (internal)
+]);
+
+/** Binding types that pass validation but are transformed before forwarding to CF API */
+const TRANSFORMED_BINDING_TYPES = new Set([
+  'r2_bucket',              // Replaced with virtual R2 service binding
 ]);
 
 /** Binding types that are always allowed (safe, self-contained) */
@@ -115,6 +120,11 @@ export function validateBindings(bindings: WorkerBinding[]): BindingValidationRe
       continue;
     }
 
+    // Check if it's a transformed type (allowed through, rewritten before forwarding)
+    if (TRANSFORMED_BINDING_TYPES.has(type)) {
+      continue;
+    }
+
     // Check if it's an allowed type
     if (ALLOWED_BINDING_TYPES.has(type)) {
       continue;
@@ -151,6 +161,7 @@ export interface CfApiProxyEnv {
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
+  CF_WORKER_NAME?: string;
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
   EMAIL_TO_USER: KVNamespace;
@@ -436,6 +447,133 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
   }
 
   return { files, wranglerConfigs, formParts, configPath, bindings };
+}
+
+/**
+ * Transform r2_bucket bindings in the multipart upload body's metadata part into
+ * virtual R2 service bindings. Scans the multipart body at the byte level to
+ * find the metadata JSON part, replaces each r2_bucket binding with a service
+ * binding to R2VirtualBucket, and reconstructs only the metadata bytes — leaving
+ * binary parts (wasm, etc.) completely untouched.
+ *
+ * Returns the modified body or the original if no r2_bucket bindings are found.
+ */
+function transformR2Bindings(
+  body: ArrayBuffer,
+  contentType: string,
+  workspaceId: string,
+  workerServiceName: string
+): ArrayBuffer {
+  const boundaryMatch = contentType.match(/boundary=([^;]+)/i);
+  const boundary = boundaryMatch?.[1]?.trim().replace(/^"|"$/g, '');
+  if (!boundary) return body;
+
+  const bytes = new Uint8Array(body);
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const delimiterBytes = encoder.encode(`--${boundary}`);
+
+  // Find all delimiter positions in the body
+  const delimiterPositions: number[] = [];
+  for (let i = 0; i <= bytes.length - delimiterBytes.length; i++) {
+    let match = true;
+    for (let j = 0; j < delimiterBytes.length; j++) {
+      if (bytes[i + j] !== delimiterBytes[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      delimiterPositions.push(i);
+    }
+  }
+
+  if (delimiterPositions.length < 2) return body;
+
+  // Find the metadata part by scanning each part's headers
+  for (let p = 0; p < delimiterPositions.length - 1; p++) {
+    const partStart = delimiterPositions[p]! + delimiterBytes.length;
+    // Skip the CRLF after delimiter
+    let headerStart = partStart;
+    if (bytes[headerStart] === 0x0d && bytes[headerStart + 1] === 0x0a) {
+      headerStart += 2;
+    }
+
+    // Find the header/body separator (CRLFCRLF)
+    let headerEnd = -1;
+    for (let i = headerStart; i < bytes.length - 3; i++) {
+      if (bytes[i] === 0x0d && bytes[i + 1] === 0x0a && bytes[i + 2] === 0x0d && bytes[i + 3] === 0x0a) {
+        headerEnd = i;
+        break;
+      }
+    }
+    if (headerEnd === -1) continue;
+
+    const headerText = decoder.decode(bytes.slice(headerStart, headerEnd));
+    const nameMatch = headerText.match(/name="([^"]+)"/i);
+    if (nameMatch?.[1] !== 'metadata') continue;
+
+    // Don't transform if it has a filename (would be a file part named metadata)
+    if (/filename="/i.test(headerText)) continue;
+
+    // Found the metadata part — extract its body
+    const bodyStart = headerEnd + 4; // skip CRLFCRLF
+    const nextDelimiter = delimiterPositions[p + 1]!;
+    // Part body ends at CRLF before next delimiter
+    let bodyEnd = nextDelimiter;
+    if (bodyEnd >= 2 && bytes[bodyEnd - 2] === 0x0d && bytes[bodyEnd - 1] === 0x0a) {
+      bodyEnd -= 2;
+    }
+
+    const metadataJson = decoder.decode(bytes.slice(bodyStart, bodyEnd));
+    let metadata: WorkerMetadata;
+    try {
+      metadata = JSON.parse(metadataJson);
+    } catch {
+      console.warn('[cf-api-proxy] failed to parse metadata JSON for R2 binding transformation');
+      return body;
+    }
+
+    if (!metadata.bindings) return body;
+
+    // Find r2_bucket bindings and replace them with virtual R2 service bindings
+    const r2Bindings = metadata.bindings.filter(b => b.type === 'r2_bucket');
+    if (r2Bindings.length === 0) return body;
+
+    metadata.bindings = metadata.bindings.map(binding => {
+      if (binding.type !== 'r2_bucket') return binding;
+      return {
+        type: 'service',
+        name: binding.name,
+        service: workerServiceName,
+        entrypoint: 'R2VirtualBucket',
+        props: { workspaceId, bucketName: binding.bucket_name ?? binding.name },
+      };
+    });
+
+    const newMetadataJson = JSON.stringify(metadata);
+    const newMetadataBytes = encoder.encode(newMetadataJson);
+
+    // Reconstruct the body: everything before the metadata body, new metadata, everything after
+    const before = bytes.slice(0, bodyStart);
+    const after = bytes.slice(bodyEnd);
+    const result = new Uint8Array(before.length + newMetadataBytes.length + after.length);
+    result.set(before, 0);
+    result.set(newMetadataBytes, before.length);
+    result.set(after, before.length + newMetadataBytes.length);
+
+    console.log('[cf-api-proxy] transformed R2 bindings to virtual buckets', {
+      workspaceId,
+      workerServiceName,
+      bindings: r2Bindings.map(b => ({ name: b.name, bucket_name: b.bucket_name })),
+      originalSize: body.byteLength,
+      newSize: result.length,
+    });
+
+    return result.buffer as ArrayBuffer;
+  }
+
+  return body;
 }
 
 async function callCloudflareApi<T>(
@@ -912,7 +1050,7 @@ export async function proxyCloudflareApi(
   headers.delete('host');
 
   const method = request.method.toUpperCase();
-  const body =
+  let body: ArrayBuffer | undefined =
     method === 'GET' || method === 'HEAD'
       ? undefined
       : await request.arrayBuffer();
@@ -1052,6 +1190,15 @@ export async function proxyCloudflareApi(
         `Script name "${originalScriptName}" is already in use by another workspace in this organization. Please choose a different name.`,
         409
       );
+    }
+  }
+
+  // Transform r2_bucket bindings into virtual R2 service bindings
+  if (body && isUploadRequest(pathname, method) && env.CF_WORKER_NAME) {
+    const contentType = request.headers.get('Content-Type') ?? '';
+    if (contentType.toLowerCase().includes('multipart/form-data')) {
+      body = transformR2Bindings(body, contentType, workspaceId, env.CF_WORKER_NAME);
+      headers.set('Content-Length', String(body.byteLength));
     }
   }
 

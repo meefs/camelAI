@@ -109,15 +109,23 @@ describe('Worker Binding Validation', () => {
       expect(result.forbiddenBindings[0]?.type).toBe('d1');
     });
 
-    it('blocks R2 bucket bindings', () => {
+    it('allows R2 bucket bindings (transformed to virtual R2 at deploy time)', () => {
       const bindings: WorkerBinding[] = [
         { type: 'r2_bucket', name: 'MY_BUCKET', bucket_name: 'some-bucket' },
       ];
       const result = validateBindings(bindings);
-      expect(result.valid).toBe(false);
-      expect(result.forbiddenBindings).toHaveLength(1);
-      expect(result.forbiddenBindings[0]?.name).toBe('MY_BUCKET');
-      expect(result.forbiddenBindings[0]?.type).toBe('r2_bucket');
+      expect(result.valid).toBe(true);
+      expect(result.forbiddenBindings).toHaveLength(0);
+    });
+
+    it('allows multiple R2 bucket bindings', () => {
+      const bindings: WorkerBinding[] = [
+        { type: 'r2_bucket', name: 'UPLOADS', bucket_name: 'user-uploads' },
+        { type: 'r2_bucket', name: 'CACHE', bucket_name: 'app-cache' },
+      ];
+      const result = validateBindings(bindings);
+      expect(result.valid).toBe(true);
+      expect(result.forbiddenBindings).toHaveLength(0);
     });
 
     it('blocks queue bindings', () => {
@@ -275,10 +283,11 @@ describe('Worker Binding Validation', () => {
       expect(result.forbiddenBindings).toHaveLength(0);
     });
 
-    it('allows a full-stack app with assets and Durable Objects', () => {
+    it('allows a full-stack app with assets, Durable Objects, and R2', () => {
       const bindings: WorkerBinding[] = [
         { type: 'assets', name: 'ASSETS' },
         { type: 'durable_object_namespace', name: 'ROOMS', class_name: 'ChatRoom' },
+        { type: 'r2_bucket', name: 'STORAGE', bucket_name: 'my-app-storage' },
         { type: 'plain_text', name: 'PUBLIC_URL' },
         { type: 'secret_text', name: 'JWT_SECRET' },
       ];
