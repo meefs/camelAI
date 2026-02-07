@@ -53,6 +53,9 @@ if (!process.env.ANTHROPIC_API_KEY) {
 // Integration env vars file path - system-wide so all processes can source it
 const INTEGRATION_ENV_FILE = '/etc/profile.d/chiridion-integrations.sh';
 
+// Claude SDK env file - re-read every turn so integration updates are picked up
+const CLAUDE_ENV_FILE_PATH = '/tmp/claude-env-vars';
+
 /**
  * Escape a value for use in a shell export statement.
  * Wraps in single quotes and escapes any single quotes in the value.
@@ -73,13 +76,23 @@ async function writeIntegrationEnvFile(envVars) {
     '',
   ];
 
+  // .env format lines for CLAUDE_ENV_FILE (KEY="value", double-quoted)
+  const dotenvLines = [];
+
   for (const [key, value] of Object.entries(envVars)) {
     lines.push(`export ${key}=${escapeShellValue(value)}`);
+    // Double-quote values, escaping backslashes, double quotes, and newlines
+    const escaped = String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    dotenvLines.push(`${key}="${escaped}"`);
   }
 
   const content = lines.join('\n') + '\n';
+  const dotenvContent = dotenvLines.join('\n') + '\n';
 
-  await writeFile(INTEGRATION_ENV_FILE, content, { mode: 0o644 });
+  await Promise.all([
+    writeFile(INTEGRATION_ENV_FILE, content, { mode: 0o644 }),
+    writeFile(CLAUDE_ENV_FILE_PATH, dotenvContent, { mode: 0o644 }),
+  ]);
   log('[ws-server]', 'integration_env_written', { path: INTEGRATION_ENV_FILE, keys: Object.keys(envVars).length });
 }
 
@@ -856,9 +869,11 @@ function handleQuestionResponse(session, questionId, answers) {
 function getQueryOptions(session, fileExists) {
   // Integration env vars are now in process.env (set via /update-env endpoint)
   // BASH_ENV ensures non-interactive bash shells source our integration file
+  // CLAUDE_ENV_FILE tells the SDK to re-read env vars from file each turn
   const envVars = {
     ...process.env,
     BASH_ENV: INTEGRATION_ENV_FILE,
+    CLAUDE_ENV_FILE: CLAUDE_ENV_FILE_PATH,
     THREAD_ID: session.threadId || '',
   };
 
@@ -1488,19 +1503,8 @@ const httpServer = createServer(async (req, res) => {
           const envVars = data.env;
           const keys = Object.keys(envVars);
 
-          // Write to system file for new processes
+          // Write to shell file (BASH_ENV) and .env file (CLAUDE_ENV_FILE)
           await writeIntegrationEnvFile(envVars);
-
-          // Clear old INT_* vars from process.env first, then set new ones
-          // This ensures deleted integrations don't leave stale env vars
-          for (const key of Object.keys(process.env)) {
-            if (key.startsWith('INT_')) {
-              delete process.env[key];
-            }
-          }
-          for (const [key, value] of Object.entries(envVars)) {
-            process.env[key] = value;
-          }
 
           log('[ws-server]', 'update-env', { keys: keys.length });
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1652,8 +1656,14 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, async () => {
   log('[ws-server]', 'Server listening', { port: PORT });
+
+  // Create empty CLAUDE_ENV_FILE so the SDK doesn't error before the first
+  // /update-env call pushes real integration vars.
+  await writeFile(CLAUDE_ENV_FILE_PATH, '', { mode: 0o644 }).catch((err) => {
+    logError('[ws-server]', 'Failed to seed CLAUDE_ENV_FILE:', err?.message || String(err));
+  });
 });
 
 // Ping all connected clients periodically to detect dead connections
