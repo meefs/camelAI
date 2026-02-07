@@ -1,7 +1,7 @@
 import { waitUntil } from 'cloudflare:workers';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.connections';
-import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
+import { requireAuthContext, getAuthEnv, requireWorkspaceAccess } from '@/lib/auth.server';
 import { isOrgAdmin } from '@/lib/auth-do';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { INTEGRATION_REGISTRY, getIntegrationDefinition } from '@/lib/integration-registry';
@@ -60,6 +60,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (!workspaceId) {
     return { error: 'No workspace selected' };
   }
+  await requireWorkspaceAccess(request, context, workspaceId, 'full');
 
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const formData = await request.formData();
