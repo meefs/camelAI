@@ -206,6 +206,12 @@ export async function action({ request, context }: Route.ActionArgs) {
 9. Final submit calls `POST /api/onboarding/complete`, which server-side: persists completion (`completed_at`), applies optional slug update, creates the first thread, writes `~/.chiridion/profile.md`, and returns `threadId` + onboarding system context + redirect target.
 10. The client reuses the existing pending-prefill handoff (`pendingMessage:newThread`) to inject a one-time `<chiridion system message>...</chiridion system message>` into that onboarding-created thread.
 
+### Custom Connection "Other" Handoff
+1. In the Connections page add-connection picker, selecting `other` shows a confirmation modal explaining the user will be moved to chat.
+2. On continue, the client creates a new thread via the `/chat` route action (`intent=createThread`).
+3. The client seeds `sessionStorage` key `pendingMessage:newThread` with a `<chiridion system message>...</chiridion system message>` payload targeting the new `threadId`.
+4. The app navigates to `/chat/{threadId}?newThread=1`, where `Chat.tsx` consumes and sends the hidden seeded message to the agent.
+
 ### Message Sending
 1. User types message in `Chat.tsx`
 2. WebSocket connects to `/ws/{workspace}` - Worker routes to container

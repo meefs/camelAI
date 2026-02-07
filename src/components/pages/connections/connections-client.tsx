@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useFetcher, useRevalidator, useSearchParams } from 'react-router';
+import { useFetcher, useNavigate, useRevalidator, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
 
@@ -64,6 +64,10 @@ const OAUTH_SUCCESS_MESSAGES: Record<string, string> = {
   notion_connected: 'Successfully connected to Notion!',
 };
 
+const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
+const CUSTOM_CONNECTION_SYSTEM_MESSAGE =
+  '<chiridion system message>The user wants to add a custom connection. They have already searched through all available integration templates and selected "Other" — meaning none of the built-in integrations match what they need. Start by asking what tool or service they would like to connect to.</chiridion system message>';
+
 export default function ConnectionsClient({
   initialConnections,
   connectionTypes,
@@ -71,14 +75,20 @@ export default function ConnectionsClient({
   orgId,
   otherWorkspaces = [],
 }: ConnectionsClientProps) {
+  const navigate = useNavigate();
   const { currentOrg, orgs } = useAuthData();
   const revalidator = useRevalidator();
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const createThreadFetcher = useFetcher<{
+    thread?: { id: string };
+    error?: string;
+  }>();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [customConnectionModalOpen, setCustomConnectionModalOpen] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState<Integration | null>(null);
@@ -151,6 +161,25 @@ export default function ConnectionsClient({
     }
   }, [fetcher.state, fetcher.data]);
 
+  // Handle new thread creation for custom "other" connections
+  useEffect(() => {
+    if (createThreadFetcher.state !== 'idle' || !createThreadFetcher.data) return;
+
+    if (createThreadFetcher.data.thread) {
+      const threadId = createThreadFetcher.data.thread.id;
+      sessionStorage.setItem(
+        PENDING_NEW_THREAD_MESSAGE_KEY,
+        JSON.stringify({ message: CUSTOM_CONNECTION_SYSTEM_MESSAGE, threadId })
+      );
+      navigate(`/chat/${threadId}?newThread=1`);
+      return;
+    }
+
+    if (createThreadFetcher.data.error) {
+      toast.error(createThreadFetcher.data.error);
+    }
+  }, [createThreadFetcher.state, createThreadFetcher.data, navigate]);
+
   const handleDelete = () => {
     if (!deleteTarget) return;
 
@@ -172,9 +201,29 @@ export default function ConnectionsClient({
       window.location.href = `/api/integrations/${type}/oauth?redirect=/connections`;
       return;
     }
+
+    // For custom integrations, confirm chat handoff before seeding a new thread
+    if (type === 'other') {
+      setPickerOpen(false);
+      setCustomConnectionModalOpen(true);
+      return;
+    }
+
     setSelectedType(type);
     setAddDialogOpen(true);
     setPickerOpen(false);
+  };
+
+  const handleContinueToCustomConnectionChat = () => {
+    if (createThreadFetcher.state !== 'idle') return;
+
+    createThreadFetcher.submit(
+      {
+        intent: 'createThread',
+        firstMessage: 'Set up a custom connection',
+      },
+      { method: 'post', action: '/chat' }
+    );
   };
 
   const handleCopyToWorkspace = (connection: Integration, targetWorkspaceId: string) => {
@@ -544,6 +593,17 @@ export default function ConnectionsClient({
           onSuccess={handleEditSuccess}
         />
       )}
+      <ConfirmDialog
+        open={customConnectionModalOpen}
+        onOpenChange={setCustomConnectionModalOpen}
+        title="Continue in chat?"
+        description="Custom connections are set up with the agent in chat. We'll open a new chat and help you connect your service."
+        confirmLabel="Continue"
+        onConfirm={() => {
+          handleContinueToCustomConnectionChat();
+        }}
+      />
+
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => {
