@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useFetcher, useRevalidator, useSearchParams } from 'react-router';
+import { toast } from 'sonner';
 import { useAuthData } from '@/hooks/use-auth-data';
 
 // Note: Auth is handled by the (app) layout - no need to check here
@@ -85,6 +86,7 @@ export default function ConnectionsClient({
   const [deleteTarget, setDeleteTarget] = useState<Integration | null>(null);
   const [copyTarget, setCopyTarget] = useState<Integration | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
+  const [pendingAction, setPendingAction] = useState<'clone' | 'delete' | null>(null);
 
   const connections = initialConnections;
   const loading = revalidator.state === 'loading';
@@ -133,11 +135,19 @@ export default function ConnectionsClient({
   useEffect(() => {
     if (fetcher.state === 'idle' && fetcher.data) {
       if (fetcher.data.error) {
-        setError(fetcher.data.error);
+        if (pendingAction === 'clone') {
+          toast.error(fetcher.data.error);
+        } else {
+          setError(fetcher.data.error);
+        }
       } else if (fetcher.data.success) {
+        if (pendingAction === 'clone') {
+          toast.success('Connection cloned to workspace');
+        }
         setDeleteTarget(null);
         setCopyTarget(null);
       }
+      setPendingAction(null);
     }
   }, [fetcher.state, fetcher.data]);
 
@@ -168,6 +178,7 @@ export default function ConnectionsClient({
   };
 
   const handleCopyToWorkspace = (connection: Integration, targetWorkspaceId: string) => {
+    setPendingAction('clone');
     fetcher.submit(
       {
         intent: 'duplicateIntegration',
@@ -335,8 +346,8 @@ export default function ConnectionsClient({
                             {new Date(connection.updated_at).toLocaleDateString()}
                           </span>
                         </div>
-                        <div className="flex items-center justify-end">
-                          {isAdmin && (
+                        {isAdmin && (
+                          <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <Button
                                 variant="outline"
@@ -346,27 +357,27 @@ export default function ConnectionsClient({
                                 <Settings className="mr-2 size-3.5" />
                                 Configure
                               </Button>
-                              {otherWorkspaces.length > 0 ? (
+                              {otherWorkspaces.length > 0 && (
                                 <Button
                                   variant="outline"
                                   size="sm"
                                   onClick={() => setCopyTarget(connection)}
                                 >
                                   <Copy className="mr-2 size-3.5" />
-                                  Copy to workspace
+                                  Clone to workspace
                                 </Button>
-                              ) : null}
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="text-destructive hover:text-destructive"
-                                onClick={() => setDeleteTarget(connection)}
-                              >
-                                <Trash2 className="size-4" />
-                              </Button>
+                              )}
                             </div>
-                          )}
-                        </div>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => setDeleteTarget(connection)}
+                            >
+                              <Trash2 className="size-4" />
+                            </Button>
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   );
@@ -554,9 +565,9 @@ export default function ConnectionsClient({
       <Dialog open={Boolean(copyTarget)} onOpenChange={(open) => { if (!open) setCopyTarget(null); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Copy to workspace</DialogTitle>
+            <DialogTitle>Clone connection</DialogTitle>
             <DialogDescription>
-              Copy &ldquo;{copyTarget?.name}&rdquo; to another workspace in this organization.
+              Clone &ldquo;{copyTarget?.name}&rdquo; to another workspace in this organization.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
