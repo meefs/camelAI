@@ -2,6 +2,7 @@ import type { CloudflareEnv } from './cloudflare.server';
 import { render, toPlainText } from '@react-email/render';
 import { createElement } from 'react';
 import { OrgInvitationEmailTemplate } from './email/templates/org-invitation-email';
+import { sendEmail, getGmailConfig, isGmailConfigured } from './gmail.server';
 
 export type EmailDeliveryStatus = 'sent' | 'skipped' | 'failed';
 
@@ -10,8 +11,17 @@ export interface EmailDeliveryResult {
   reason?: string;
 }
 
+type EmailEnvBindings = Pick<
+  CloudflareEnv,
+  | 'EMAIL'
+  | 'EMAIL_FROM_ADDRESS'
+  | 'GMAIL_SERVICE_ACCOUNT_EMAIL'
+  | 'GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY'
+  | 'GMAIL_SENDER_EMAIL'
+>;
+
 interface OrgInvitationEmailArgs {
-  env: Pick<CloudflareEnv, 'EMAIL' | 'EMAIL_FROM_ADDRESS'>;
+  env: EmailEnvBindings;
   to: string;
   orgName: string;
   inviterName: string | null;
@@ -73,10 +83,45 @@ export async function sendOrgInvitationEmail({
   invitationUrl,
   expiresAt,
 }: OrgInvitationEmailArgs): Promise<EmailDeliveryResult> {
+  const normalizedTo = to.trim().toLowerCase();
+  const inviter = inviterName?.trim() || 'A team member';
+  const subject = sanitizeHeaderValue(`You're invited to join ${orgName} on Chiridion`);
+  const expiration = formatExpiration(expiresAt);
+  const displayRole = roleLabel(role);
+
+  // Render email content
+  const htmlBody = await render(
+    createElement(OrgInvitationEmailTemplate, {
+      orgName,
+      inviterName: inviter,
+      role: displayRole,
+      invitationUrl,
+      expirationLabel: expiration,
+    })
+  );
+  const textBody = toPlainText(htmlBody);
+
+  // Try Gmail API first (preferred for sending to external recipients)
+  if (isGmailConfigured(env)) {
+    const gmailConfig = getGmailConfig(env)!;
+    const result = await sendEmail(gmailConfig, {
+      to: normalizedTo,
+      subject,
+      textBody,
+      htmlBody,
+    });
+
+    if (result.success) {
+      return { status: 'sent' };
+    }
+    return { status: 'failed', reason: result.error };
+  }
+
+  // Fall back to Cloudflare email binding (only works for verified addresses)
   if (!env.EMAIL) {
     return {
       status: 'skipped',
-      reason: 'EMAIL binding is not configured',
+      reason: 'No email provider configured (Gmail API or Cloudflare EMAIL binding)',
     };
   }
 
@@ -88,24 +133,7 @@ export async function sendOrgInvitationEmail({
     };
   }
 
-  const normalizedTo = to.trim().toLowerCase();
-  const inviter = inviterName?.trim() || 'A team member';
-  const subject = sanitizeHeaderValue(`You're invited to join ${orgName} on Chiridion`);
-  const expiration = formatExpiration(expiresAt);
-  const displayRole = roleLabel(role);
-
   try {
-    const htmlBody = await render(
-      createElement(OrgInvitationEmailTemplate, {
-        orgName,
-        inviterName: inviter,
-        role: displayRole,
-        invitationUrl,
-        expirationLabel: expiration,
-      })
-    );
-    const textBody = toPlainText(htmlBody);
-
     const messageId = crypto.randomUUID();
     const boundary = `chiridion_${messageId.replaceAll('-', '')}`;
     const rawMessage = [

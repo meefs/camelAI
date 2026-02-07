@@ -52,6 +52,11 @@ export interface CloudflareEnv {
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
   EMAIL_FROM_ADDRESS?: string;
+
+  // Gmail API (for sending emails via Google Workspace)
+  GMAIL_SERVICE_ACCOUNT_EMAIL?: string;
+  GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY?: string;
+  GMAIL_SENDER_EMAIL?: string;
 }
 
 /**

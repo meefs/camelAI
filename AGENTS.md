@@ -404,12 +404,35 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `GITHUB_CLIENT_ID` | GitHub OAuth client ID |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth client secret |
-| `EMAIL_FROM_ADDRESS` | Sender address used by invite emails (must be valid for the Cloudflare email binding) |
+| `EMAIL_FROM_ADDRESS` | Sender address for Cloudflare email binding fallback |
+| `GMAIL_SERVICE_ACCOUNT_EMAIL` | Google service account email for Gmail API |
+| `GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY` | Private key (PEM) for Gmail API authentication |
+| `GMAIL_SENDER_EMAIL` | Email address to send from (e.g., `no-reply@chiridion.ai`) |
 | `DISPATCHER_MISSING_REGISTRY_MODE` | Dispatcher behavior when worker KV metadata is missing: `open` (fail-open), `legacy-open` (fail-open only for legacy hostnames), or `closed` (strict fail-closed) |
 
-#### Cloudflare Email Binding
+#### Gmail API (Recommended for Production)
 
-- Invitation emails use a Worker `send_email` binding named `EMAIL`.
+Invitation emails are sent via Gmail API using a Google Workspace service account:
+
+1. **Google Cloud Console:**
+   - Create a service account in your project
+   - Enable the Gmail API
+   - Download the JSON key file
+
+2. **Google Workspace Admin (admin.google.com):**
+   - Go to Security → API Controls → Domain-wide Delegation
+   - Add the service account's client ID
+   - Grant scope: `https://www.googleapis.com/auth/gmail.send`
+
+3. **Environment Variables:**
+   - `GMAIL_SERVICE_ACCOUNT_EMAIL`: The service account email (e.g., `chiridion-email@project.iam.gserviceaccount.com`)
+   - `GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY`: The private key from the JSON file (include `-----BEGIN PRIVATE KEY-----` and `-----END PRIVATE KEY-----`)
+   - `GMAIL_SENDER_EMAIL`: The Workspace user to send as (e.g., `no-reply@chiridion.ai`)
+
+#### Cloudflare Email Binding (Fallback)
+
+Falls back to Cloudflare's `send_email` binding if Gmail is not configured. Note: This only works for verified email addresses.
+
 - Configure the binding in Wrangler for each environment and set `EMAIL_FROM_ADDRESS` in vars/secrets.
 
 #### JuiceFS Container Variables (set automatically by worker)
