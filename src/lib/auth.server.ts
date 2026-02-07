@@ -6,7 +6,7 @@ import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
 import type { OnboardingPreferences } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
-import { getUserOrgs, listUserWorkspaces, listUserWorkspacesAcrossOrgs, isOrgAdmin, getWorkspaceAccess } from './auth-do';
+import { getUserOrgs, listUserWorkspaces, listUserWorkspacesAcrossOrgs, listOrgWorkspaces, isOrgAdmin, getWorkspaceAccess } from './auth-do';
 
 // Request-scoped cache for auth context to avoid duplicate DO RPC calls
 // when multiple loaders call requireAuthContext() in the same request
@@ -35,6 +35,8 @@ export interface AuthContext extends UserContext {
   workspaces: WorkspaceWithAccess[];
   /** All workspaces across all orgs (for workspace switcher) */
   allWorkspaces: WorkspaceWithAccess[];
+  /** Total workspaces in org (includes ones user may not have access to) */
+  orgWorkspaceCount: number;
 }
 
 /**
@@ -169,6 +171,13 @@ async function getAuthContextUncached(
     orgs
   );
 
+  // Check if org has workspaces the user can't access (only when user has none)
+  let orgWorkspaceCount = workspaces.length;
+  if (workspaces.length === 0) {
+    const allOrgWorkspaces = await listOrgWorkspaces(authEnv, currentOrg.id);
+    orgWorkspaceCount = allOrgWorkspaces.length;
+  }
+
   // Select current workspace - must be from current org to maintain consistency
   // If no workspaces in current org, currentWorkspace will be null and UI shows NoWorkspacesError
   const sessionWorkspaceId = userContext.session.workspace_id;
@@ -199,6 +208,7 @@ async function getAuthContextUncached(
     onboarding,
     workspaces,
     allWorkspaces,
+    orgWorkspaceCount,
   };
 }
 

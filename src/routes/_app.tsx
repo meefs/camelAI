@@ -60,6 +60,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     onboarding: authContext.onboarding,
     workspaces: authContext.workspaces,
     allWorkspaces: authContext.allWorkspaces,
+    orgWorkspaceCount: authContext.orgWorkspaceCount,
     loading: false,
     error: null,
   };

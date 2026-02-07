@@ -261,6 +261,8 @@ export interface AuthState {
   workspaces?: WorkspaceWithAccess[];
   /** All workspaces across all orgs (for workspace switcher) */
   allWorkspaces?: WorkspaceWithAccess[];
+  /** Total workspaces in org (includes ones user may not have access to) */
+  orgWorkspaceCount?: number;
   loading: boolean;
   error: string | null;
 }
