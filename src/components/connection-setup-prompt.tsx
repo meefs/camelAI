@@ -202,8 +202,13 @@ export function ConnectionSetupPrompt({
   // Allow dynamic mode even without typeDef
   if (!typeDef && !isDynamic) {
     return (
-      <Dialog open onOpenChange={(open) => !open && handleCancel()}>
-        <DialogContent className="sm:max-w-lg">
+      <Dialog open onOpenChange={() => {}}>
+        <DialogContent
+          className="sm:max-w-lg"
+          showCloseButton={false}
+          onInteractOutside={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Plug className="size-5" />
@@ -229,8 +234,13 @@ export function ConnectionSetupPrompt({
   const instructions = isDynamic && dynamicSchema ? dynamicSchema.instructions : undefined;
 
   return (
-    <Dialog open onOpenChange={(open) => !open && handleCancel()}>
-      <DialogContent className="sm:max-w-lg">
+    <Dialog open onOpenChange={() => {}}>
+      <DialogContent
+        className="sm:max-w-lg"
+        showCloseButton={false}
+        onInteractOutside={(event) => event.preventDefault()}
+        onEscapeKeyDown={(event) => event.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Plug className="size-5" />

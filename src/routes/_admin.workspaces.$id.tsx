@@ -333,7 +333,6 @@ export default function AdminWorkspaceDetailPage() {
                         <TableHead>Name</TableHead>
                         <TableHead>Type</TableHead>
                         <TableHead>Category</TableHead>
-                        <TableHead>Enabled</TableHead>
                         <TableHead>Created</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -346,11 +345,6 @@ export default function AdminWorkspaceDetailPage() {
                           </TableCell>
                           <TableCell className="text-muted-foreground">
                             {integration.category}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={integration.enabled ? 'default' : 'outline'}>
-                              {integration.enabled ? 'Enabled' : 'Disabled'}
-                            </Badge>
                           </TableCell>
                           <TableCell className="text-muted-foreground">
                             {formatTimestamp(integration.created_at)}

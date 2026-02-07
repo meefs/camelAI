@@ -730,7 +730,6 @@ export async function listWorkspaceIntegrations(env: AuthEnv, workspaceId: strin
     category: r.category as Integration['category'],
     auth_method: r.auth_method as Integration['auth_method'],
     config: r.config ? JSON.parse(r.config) : {},
-    enabled: r.enabled === 1,
     created_by: r.created_by,
     created_at: r.created_at,
     updated_at: r.updated_at,

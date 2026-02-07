@@ -672,7 +672,6 @@ export async function getWorkspaceIntegrationEnvVars(
 
   const envVars: Record<string, string> = {};
   for (const record of records) {
-    if (record.enabled !== 1) continue;
     if (!record.credentials_encrypted) continue;
 
     const credentials = await decryptCredentials(record.credentials_encrypted, secretKey);

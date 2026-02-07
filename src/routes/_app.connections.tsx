@@ -25,7 +25,6 @@ function recordToIntegration(record: {
   auth_method: string;
   config: string;
   credentials_encrypted: string;
-  enabled: number;
   created_by: string;
   created_at: number;
   updated_at: number;
@@ -37,7 +36,6 @@ function recordToIntegration(record: {
     category: record.category as Integration['category'],
     auth_method: record.auth_method as Integration['auth_method'],
     config: JSON.parse(record.config) as Record<string, unknown>,
-    enabled: record.enabled === 1,
     created_by: record.created_by,
     created_at: record.created_at,
     updated_at: record.updated_at,
@@ -123,7 +121,6 @@ export async function action({ request, context }: Route.ActionArgs) {
         name?: string;
         config?: string;
         credentialsEncrypted?: string;
-        enabled?: boolean;
       } = {};
 
       if (name) updates.name = name;
@@ -143,28 +140,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { success: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Failed to update integration' };
-    }
-  }
-
-  if (intent === 'toggleIntegration') {
-    const integrationId = formData.get('integrationId') as string;
-    const enabled = formData.get('enabled') === 'true';
-
-    if (!integrationId) {
-      return { error: 'Integration ID is required' };
-    }
-
-    try {
-      await stub.updateIntegration(integrationId, { enabled }, authContext.user.id);
-      // Push updated env vars to running container (background, kept alive via waitUntil)
-      waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId)
-          .refreshIntegrationEnvVars(workspaceId)
-          .catch(() => {})
-      );
-      return { success: true };
-    } catch (err) {
-      return { error: err instanceof Error ? err.message : 'Failed to toggle integration' };
     }
   }
 

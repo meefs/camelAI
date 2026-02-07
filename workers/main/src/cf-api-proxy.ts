@@ -584,7 +584,6 @@ async function syncDispatchScriptSecrets(
   const records = await workspaceStub.getIntegrations();
 
   for (const record of records) {
-    if (record.enabled !== 1) continue;
     const credentials = await decryptCredentials(record.credentials_encrypted, env.INTEGRATION_SECRET_KEY);
     const config = JSON.parse(record.config) as Record<string, unknown>;
     Object.assign(secretsToSync, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));

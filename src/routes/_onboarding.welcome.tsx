@@ -59,11 +59,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     workspaceId
       ? authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId))
           .getIntegrations()
-          .then((rows: Array<{ enabled: number; name: string }>) =>
-            rows
-              .filter((row: { enabled: number }) => row.enabled === 1)
-              .map((row: { name: string }) => row.name)
-          )
+          .then((rows: Array<{ name: string }>) => rows.map((row: { name: string }) => row.name))
           .catch(() => [] as string[])
       : Promise.resolve([] as string[]),
   ]);

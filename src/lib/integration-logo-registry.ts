@@ -13,6 +13,7 @@ export const logoRegistry: Record<string, IntegrationLogoVariant> = {
   clickhouse: 'themed',
   github: 'themed',
   mongodb: 'themed',
+  mssql: 'themed',
   mysql: 'themed',
   openai: 'themed',
   openrouter: 'themed',

@@ -1,14 +1,19 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
+import { ChevronUp, Plus } from 'lucide-react';
 import type { WorkerScriptWithCreator, Integration } from '@/types';
 import type { Attachment } from '@/components/attachment-list';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { PromptInput } from '@/components/prompt-input';
+import { ConnectionPicker } from '@/components/connection-picker';
+import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
+import { IntegrationIcon } from '@/lib/integration-icons';
 import { AnimatedPlaceholder } from './animated-placeholder';
 import { WelcomeGreeting } from './welcome-greeting';
 import { SectionHeader } from './section-header';
 import { StarterPrompts, type StarterPromptItem } from './starter-prompts';
-import { IntegrationButtons } from './integration-buttons';
+import { IntegrationButtons, FEATURED_CONNECTIONS, LOGO_STACK_CONNECTIONS } from './integration-buttons';
 import { ConnectedTools } from './connected-tools';
 import { AppCardsRow } from './app-cards-row';
 
@@ -221,9 +226,17 @@ export function WelcomeScreen({
 
   const showUserAppsSection = hasUserApps;
   const showTeamAppsSection = !hasUserApps && hasTeamApps;
-  const showStarterPrompts = !hasUserApps;
-  const showYourConnections = hasConnections;
-  const showConnectSuggestions = !hasConnections;
+  const [addConnectionOpen, setAddConnectionOpen] = useState(false);
+
+  const allIntegrationDefs = useMemo(
+    () =>
+      Object.values(INTEGRATION_REGISTRY).map((def) => ({
+        type: def.type,
+        displayName: def.displayName,
+        category: def.category,
+      })),
+    []
+  );
 
   const [shuffleKey, setShuffleKey] = useState(0);
   const promptsToDisplay = useMemo(
@@ -271,17 +284,6 @@ export function WelcomeScreen({
         )}
       </AnimatedPlaceholder>
 
-      {showStarterPrompts && (
-        <section className="space-y-4">
-          <SectionHeader title="Need inspiration? Try one of these" onRefresh={handleShufflePrompts} />
-          <StarterPrompts
-            prompts={promptsToDisplay}
-            onSelect={handlePromptSelect}
-            shuffleKey={shuffleKey}
-          />
-        </section>
-      )}
-
       {showUserAppsSection && (
         <section className="space-y-4">
           <SectionHeader title="Pick up where you left off" linkHref="/apps" />
@@ -304,24 +306,74 @@ export function WelcomeScreen({
         </section>
       )}
 
-      {showYourConnections && (
-        <section className="space-y-4">
-          <SectionHeader title="Your connected tools" linkHref="/connections" />
-          <ConnectedTools
-            connections={connections}
-            onSelect={handleConnectionSelect}
-          />
-        </section>
-      )}
+      <section className="space-y-4">
+        <SectionHeader
+          title={hasConnections ? 'Your connected tools' : 'Connect your tools'}
+          linkHref="/connections"
+        />
 
-      {showConnectSuggestions && (
-        <section className="space-y-4">
-          <SectionHeader title="Connect your tools" linkHref="/connections" />
+        {hasConnections ? (
+          <ConnectedTools connections={connections} onSelect={handleConnectionSelect} />
+        ) : (
           <IntegrationButtons
+            integrations={FEATURED_CONNECTIONS}
             onSelect={handleIntegrationSelect}
           />
-        </section>
-      )}
+        )}
+
+        <Collapsible open={addConnectionOpen} onOpenChange={setAddConnectionOpen}>
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="group w-full flex items-center justify-between rounded-lg border border-dashed border-muted-foreground/25 px-4 py-2.5 text-muted-foreground hover:border-muted-foreground/50 hover:text-foreground transition-colors"
+            >
+              <span className="flex items-center gap-2 text-sm">
+                {addConnectionOpen ? (
+                  <ChevronUp className="size-4" />
+                ) : (
+                  <Plus className="size-4" />
+                )}
+                {addConnectionOpen
+                  ? 'Hide connections'
+                  : hasConnections
+                    ? 'Add another connection'
+                    : 'Explore all connections'}
+              </span>
+              <div className="flex items-center -space-x-1 opacity-50 transition-opacity duration-200 group-hover:opacity-100">
+                {LOGO_STACK_CONNECTIONS.map((item) => (
+                  <div
+                    key={item.type}
+                    className="flex size-7 items-center justify-center rounded-md bg-background ring-2 ring-background"
+                  >
+                    <IntegrationIcon type={item.type} size={16} />
+                  </div>
+                ))}
+              </div>
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
+            <div className="pt-4">
+              <ConnectionPicker
+                integrations={allIntegrationDefs}
+                mode="single-action"
+                variant="compact"
+                maxHeight="240px"
+                onSelect={handleIntegrationSelect}
+                excludeTypes={['other']}
+              />
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      </section>
+
+      <section className="space-y-4">
+        <SectionHeader title="Need inspiration? Try one of these" onRefresh={handleShufflePrompts} />
+        <StarterPrompts
+          prompts={promptsToDisplay}
+          onSelect={handlePromptSelect}
+          shuffleKey={shuffleKey}
+        />
+      </section>
     </div>
   );
 }

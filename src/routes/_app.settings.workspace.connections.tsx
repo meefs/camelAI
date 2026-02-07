@@ -45,7 +45,6 @@ function recordToIntegration(record: {
   auth_method: string;
   config: string;
   credentials_encrypted: string;
-  enabled: number;
   created_by: string;
   created_at: number;
   updated_at: number;
@@ -57,7 +56,6 @@ function recordToIntegration(record: {
     category: record.category as Integration['category'],
     auth_method: record.auth_method as Integration['auth_method'],
     config: JSON.parse(record.config) as Record<string, unknown>,
-    enabled: record.enabled === 1,
     created_by: record.created_by,
     created_at: record.created_at,
     updated_at: record.updated_at,
@@ -226,7 +224,6 @@ export default function WorkspaceConnectionsPage() {
               <TableHead>Created By</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Last Modified</TableHead>
-              <TableHead>Status</TableHead>
               <TableHead></TableHead>
             </TableRow>
           </TableHeader>
@@ -250,11 +247,6 @@ export default function WorkspaceConnectionsPage() {
                 </TableCell>
                 <TableCell className="text-muted-foreground text-sm">
                   {formatDate(connection.updated_at)}
-                </TableCell>
-                <TableCell>
-                  <Badge variant={connection.enabled ? 'secondary' : 'outline'}>
-                    {connection.enabled ? 'Enabled' : 'Disabled'}
-                  </Badge>
                 </TableCell>
                 <TableCell>
                   <Button

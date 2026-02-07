@@ -41,7 +41,6 @@ export interface WorkspaceIntegrationRecord {
   auth_method: string;
   config: string;
   credentials_encrypted: string;
-  enabled: number;
   created_by: string;
   created_at: number;
   updated_at: number;
@@ -397,7 +396,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return this.sql
       .exec(
         `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at, token_expires_at
+                credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at
          FROM integrations
          WHERE deleted_at IS NULL
          ORDER BY created_at DESC`
@@ -409,7 +408,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const rows = this.sql
       .exec(
         `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at, token_expires_at
+                credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at
          FROM integrations WHERE id = ? AND deleted_at IS NULL`,
         id
       )
@@ -483,8 +482,8 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const now = Date.now();
     this.sql.exec(
       `INSERT INTO integrations
-       (id, integration_type, name, category, auth_method, config, credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at, token_expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?)`,
+       (id, integration_type, name, category, auth_method, config, credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       id,
       integrationType,
       name,
@@ -511,7 +510,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       name?: string;
       config?: string;
       credentialsEncrypted?: string;
-      enabled?: boolean;
       tokenExpiresAt?: number | null;
     },
     actorId: string
@@ -549,10 +547,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     if (updates.credentialsEncrypted !== undefined) {
       setClauses.push('credentials_encrypted = ?');
       params.push(updates.credentialsEncrypted);
-    }
-    if (updates.enabled !== undefined) {
-      setClauses.push('enabled = ?');
-      params.push(updates.enabled ? 1 : 0);
     }
     if (updates.tokenExpiresAt !== undefined) {
       setClauses.push('token_expires_at = ?');
@@ -601,7 +595,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
        FROM integrations
        WHERE token_expires_at IS NOT NULL
          AND deleted_at IS NULL
-         AND enabled = 1
          AND (auth_method = 'oauth2' OR integration_type = ?)`,
       BIGQUERY_INTEGRATION_TYPE
     ).toArray() as { token_expires_at: number | null }[];
@@ -654,12 +647,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       // Find all integration tokens expiring within the batch window
       const expiringIntegrations = this.sql.exec(
         `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, enabled, created_by, created_at, updated_at, deleted_at, token_expires_at
+                credentials_encrypted, created_by, created_at, updated_at, deleted_at, token_expires_at
          FROM integrations
          WHERE token_expires_at IS NOT NULL
            AND token_expires_at <= ?
            AND deleted_at IS NULL
-           AND enabled = 1
            AND (auth_method = 'oauth2' OR integration_type = ?)
          ORDER BY token_expires_at ASC`,
         batchCutoff,

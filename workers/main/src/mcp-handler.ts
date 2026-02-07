@@ -447,13 +447,8 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           .enum(['databases', 'saas', 'ai_services', 'cloud_providers', 'communication'])
           .optional()
           .describe('Optional category to filter integrations'),
-        enabled_only: z
-          .boolean()
-          .optional()
-          .default(false)
-          .describe('If true, only return enabled integrations'),
       },
-      async ({ category, enabled_only }) => {
+      async ({ category }) => {
         const { workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ error: 'No workspace context available' });
@@ -476,7 +471,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             name: r.name,
             category: r.category,
             auth_method: r.auth_method,
-            enabled: Boolean(r.enabled),
             has_credentials: Boolean(r.credentials_encrypted),
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -487,9 +481,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         let filtered = integrations;
         if (category) {
           filtered = filtered.filter((i) => i.category === category);
-        }
-        if (enabled_only) {
-          filtered = filtered.filter((i) => i.enabled);
         }
 
         const result = filtered.map((i) => {
@@ -505,7 +496,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             name: i.name,
             category: i.category,
             auth_method: i.auth_method,
-            enabled: i.enabled,
             has_credentials: i.has_credentials,
             created_at: new Date(i.created_at).toISOString(),
             updated_at: new Date(i.updated_at).toISOString(),
@@ -662,7 +652,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
               type: integration_type,
               name,
               category: definition.category,
-              enabled: true,
               env_var_prefix: envVarPrefix,
               env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
             },
@@ -846,7 +835,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                 type,
                 name,
                 category: intDefinition.category,
-                enabled: true,
                 env_var_prefix: envVarPrefix,
                 env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
               },
@@ -902,7 +890,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
               type,
               name,
               category: definition.category,
-              enabled: true,
               env_var_prefix: envVarPrefix,
               env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
             },
