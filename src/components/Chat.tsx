@@ -471,6 +471,7 @@ export default function Chat({
   const initialScrollDoneRef = useRef(false);
   const stickToBottomRef = useRef(true);
   const forceScrollOnNextUpdate = useRef(false);
+  const splitStreamingMessageOnNextPartRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const previewWsRef = useRef<WebSocket | null>(null);
   const previewReconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -489,6 +490,7 @@ export default function Chat({
   useEffect(() => {
     initialScrollDoneRef.current = false;
     stickToBottomRef.current = true;
+    splitStreamingMessageOnNextPartRef.current = false;
     setCurrentTodos([]);
     setPendingQuestion(null);
     setAppIsPublic(false);
@@ -777,6 +779,43 @@ export default function Chat({
             const existingStreamingMsg = existingStreamingId
               ? currentMsgs.find(msg => msg.id === existingStreamingId)
               : undefined;
+            const fallbackStreamingMsg = existingStreamingMsg
+              ? undefined
+              : currentMsgs.find(msg => msg.isStreaming);
+            const activeStreamingMsg = existingStreamingMsg ?? fallbackStreamingMsg;
+
+            if (splitStreamingMessageOnNextPartRef.current && activeStreamingMsg) {
+              splitStreamingMessageOnNextPartRef.current = false;
+              const nextMsgIdBase = evt.message?.id || (sdkEvent as { uuid?: string }).uuid || `stream_${Date.now()}`;
+              const nextMsgId = currentMsgs.some(msg => msg.id === nextMsgIdBase)
+                ? `${nextMsgIdBase}_${Date.now()}`
+                : nextMsgIdBase;
+
+              setStreamingMessageId(nextMsgId);
+              setMessages(prev => {
+                const finalized = prev.map(msg =>
+                  msg.id === activeStreamingMsg.id ? { ...msg, isStreaming: false } : msg
+                );
+                const newMsg: Message = {
+                  id: nextMsgId,
+                  thread_id: id,
+                  role: 'assistant',
+                  content: [],
+                  created_at: Date.now(),
+                  isStreaming: true,
+                };
+                if (finalized.some(msg => msg.id === nextMsgId)) {
+                  return finalized.map(msg =>
+                    msg.id === nextMsgId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+                  );
+                }
+                const withNew = [...finalized, newMsg];
+                return withNew.map(msg =>
+                  msg.id === nextMsgId ? applyStreamingEventToMessage(msg, sdkEvent) : msg
+                );
+              });
+              return;
+            }
 
             if (existingStreamingMsg) {
               // Claude emits a new message_start after each tool call; append to the active turn.
@@ -786,7 +825,6 @@ export default function Chat({
               return;
             }
 
-            const fallbackStreamingMsg = currentMsgs.find(msg => msg.isStreaming);
             if (fallbackStreamingMsg) {
               setStreamingMessageId(fallbackStreamingMsg.id);
               setMessages(prev => prev.map(msg =>
@@ -831,6 +869,7 @@ export default function Chat({
           }
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
           // System init - just reset the streaming message ID
+          splitStreamingMessageOnNextPartRef.current = false;
           setStreamingMessageId(null);
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
           // Track message ID as fallback
@@ -887,6 +926,7 @@ export default function Chat({
         } else if (sdkEvent.type === 'result') {
           // Query complete - mark message as not streaming
           // Finish streaming
+          splitStreamingMessageOnNextPartRef.current = false;
           const msgId = streamingMessageIdRef.current;
           if (msgId) {
             setMessages(prev => prev.map(msg =>
@@ -922,6 +962,7 @@ export default function Chat({
         console.error('WebSocket error:', data.error);
         setError(data.error || 'An unknown error occurred');
         // Finish streaming on error
+        splitStreamingMessageOnNextPartRef.current = false;
         const msgId = streamingMessageIdRef.current;
         if (msgId) {
           setMessages(prev => prev.map(msg =>
@@ -2109,11 +2150,14 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       sentDuringStreaming: wasSentDuringStreaming,
     };
 
-    // Add user message - it naturally appears after any streaming message
-    if (!wasSentDuringStreaming) {
+    // If user sends mid-stream, keep current part streaming and split at next message_start.
+    if (wasSentDuringStreaming) {
+      splitStreamingMessageOnNextPartRef.current = true;
+      setMessages(prev => [...prev, userMsg]);
+    } else {
       forceScrollOnNextUpdate.current = true;
+      setMessages(prev => [...prev, userMsg]);
     }
-    setMessages(prev => [...prev, userMsg]);
 
     // If WebSocket is connected and ready, send immediately
     if (wsRef.current?.readyState === WebSocket.OPEN && ready) {
