@@ -106,11 +106,14 @@ export async function sendOrgInvitationEmail({
     );
     const textBody = toPlainText(htmlBody);
 
-    const boundary = `chiridion_${crypto.randomUUID().replaceAll('-', '')}`;
+    const messageId = crypto.randomUUID();
+    const boundary = `chiridion_${messageId.replaceAll('-', '')}`;
     const rawMessage = [
       `From: Chiridion <${sanitizeHeaderValue(from)}>`,
       `To: ${sanitizeHeaderValue(normalizedTo)}`,
       `Subject: ${subject}`,
+      `Message-ID: <${messageId}@chiridion.ai>`,
+      `Date: ${new Date().toUTCString()}`,
       'MIME-Version: 1.0',
       `Content-Type: multipart/alternative; boundary="${boundary}"`,
       '',

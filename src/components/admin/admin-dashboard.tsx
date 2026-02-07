@@ -1,8 +1,9 @@
 'use client';
 
-import { Form, Link } from 'react-router';
-import { useMemo, useState } from 'react';
-import { Building2, FolderKanban, MessageSquare, Plug, Rocket, UserX, Users } from 'lucide-react';
+import { Form, Link, useActionData, useNavigation } from 'react-router';
+import { useMemo, useState, useEffect } from 'react';
+import { Building2, FolderKanban, Mail, MessageSquare, Plug, Rocket, UserX, Users } from 'lucide-react';
+import { toast } from 'sonner';
 import type { AdminOverview } from '@/types';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -27,9 +28,37 @@ interface AdminDashboardProps {
   appCount?: number;
 }
 
+type EmailDeliveryStatus = 'sent' | 'skipped' | 'failed';
+
+interface EmailDeliveryResult {
+  status: EmailDeliveryStatus;
+  reason?: string;
+}
+
+interface ActionData {
+  intent?: string;
+  emailResult?: EmailDeliveryResult;
+}
+
 export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: AdminDashboardProps) {
   const [query, setQuery] = useState('');
   const normalizedQuery = query.trim().toLowerCase();
+  const actionData = useActionData<ActionData>();
+  const navigation = useNavigation();
+  const isSendingEmail = navigation.state === 'submitting' && navigation.formData?.get('intent') === 'testEmail';
+
+  useEffect(() => {
+    if (actionData?.intent === 'testEmail' && actionData.emailResult) {
+      const result = actionData.emailResult;
+      if (result.status === 'sent') {
+        toast.success('Test email sent successfully');
+      } else if (result.status === 'skipped') {
+        toast.warning(`Email skipped: ${result.reason}`);
+      } else {
+        toast.error(`Email failed: ${result.reason}`);
+      }
+    }
+  }, [actionData]);
 
   const filteredUsers = useMemo(() => {
     if (!normalizedQuery) return overview.users.slice(0, 10);
@@ -58,12 +87,21 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
                 Superuser-only admin surface for Chiridion.
               </p>
             </div>
-            <Form method="post">
-              <input type="hidden" name="intent" value="restartOwnOnboarding" />
-              <Button type="submit" variant="outline" size="sm">
-                Test Onboarding
-              </Button>
-            </Form>
+            <div className="flex gap-2">
+              <Form method="post">
+                <input type="hidden" name="intent" value="testEmail" />
+                <Button type="submit" variant="outline" size="sm" disabled={isSendingEmail}>
+                  <Mail className="h-4 w-4 mr-1.5" />
+                  {isSendingEmail ? 'Sending...' : 'Test Email'}
+                </Button>
+              </Form>
+              <Form method="post">
+                <input type="hidden" name="intent" value="restartOwnOnboarding" />
+                <Button type="submit" variant="outline" size="sm">
+                  Test Onboarding
+                </Button>
+              </Form>
+            </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">

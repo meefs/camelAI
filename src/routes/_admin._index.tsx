@@ -5,6 +5,7 @@ import * as authDO from '@/lib/auth-do.server';
 import { resetOnboardingForUser } from '@/lib/auth-do';
 import { AdminDashboard } from '@/components/admin/admin-dashboard';
 import { redirect } from 'react-router';
+import { sendOrgInvitationEmail, resolveAppBaseUrl } from '@/lib/email.server';
 
 export function meta() {
   return [
@@ -60,6 +61,24 @@ export async function action({ request, context }: Route.ActionArgs) {
     const authEnv = getAuthEnv(getEnv(context));
     await resetOnboardingForUser(authEnv, authContext.user.id);
     throw redirect('/onboarding?reset=1');
+  }
+
+  if (intent === 'testEmail') {
+    const env = getEnv(context);
+    const baseUrl = resolveAppBaseUrl(env, new URL(request.url));
+    const testInvitationUrl = `${baseUrl}/invitations/test-org-id/test-invitation-id`;
+
+    const result = await sendOrgInvitationEmail({
+      env,
+      to: authContext.user.email,
+      orgName: 'Test Organization',
+      inviterName: authContext.user.name || 'Admin',
+      role: 'member',
+      invitationUrl: testInvitationUrl,
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+    });
+
+    return { intent: 'testEmail', emailResult: result };
   }
 
   return Response.json({ error: 'Unknown intent' }, { status: 400 });
