@@ -191,13 +191,17 @@ export async function action({ request, context }: Route.ActionArgs) {
 
 ### Onboarding Flow
 1. Incomplete users are redirected to `/onboarding` before accessing app routes under `_app`.
-2. Onboarding answers are stored in localStorage (`chiridion:onboarding:progress`) during the flow.
-3. Final answers are persisted to `UserDO` via `POST /api/onboarding` with `completed_at`.
-4. Org slug step is conditional (`owner + one member + zero deployed scripts`) and uses:
+2. The parent onboarding loader (`src/routes/_onboarding.tsx`) is intentionally minimal: session + `UserDO.getAuthBootstrap()` and onboarding completion checks.
+3. Step-specific server data is loaded in child route loaders (for example welcome and org-slug) and can stream via promise-returning loader fields + React Suspense (`use()`/`<Await>` patterns).
+4. `_onboarding.tsx` exports `shouldRevalidate` to avoid rerunning the parent loader on `/onboarding/*` → `/onboarding/*` navigations when `team` mode is unchanged.
+5. Onboarding answers are stored in localStorage (`chiridion:onboarding:progress`) during the flow.
+6. Intermediate answers are persisted to `UserDO` via `POST /api/onboarding`.
+7. Org slug step is conditional (`owner + one member + zero deployed scripts`) and uses:
    - `POST /api/orgs/:id/check-slug` for debounced availability checks
    - `POST /api/orgs/:id/update-slug` for one-time slug updates
-5. Slug uniqueness is enforced by `OrgSlugDO` (`claim/getOwner/release`), not KV.
-6. On first post-onboarding thread creation, chat action injects invisible onboarding context and writes `~/.chiridion/profile.md`.
+8. Slug uniqueness is enforced by `OrgSlugDO` (`claim/getOwner/release`), not KV.
+9. Final submit calls `POST /api/onboarding/complete`, which server-side: persists completion (`completed_at`), applies optional slug update, creates the first thread, writes `~/.chiridion/profile.md`, and returns `threadId` + onboarding system context + redirect target.
+10. The client reuses the existing pending-prefill handoff (`pendingMessage:newThread`) to inject a one-time `<chiridion system message>...</chiridion system message>` into that onboarding-created thread.
 
 ### Message Sending
 1. User types message in `Chat.tsx`
@@ -281,6 +285,7 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 | Route | Method | Purpose |
 |-------|--------|---------|
 | `/api/onboarding` | POST | Save onboarding preferences to `UserDO` |
+| `/api/onboarding/complete` | POST | Finalize onboarding and return first-thread redirect + one-time onboarding prefill context |
 
 ### Invitation Routes
 | Route | Method | Purpose |

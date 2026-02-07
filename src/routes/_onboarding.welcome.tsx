@@ -1,9 +1,83 @@
-import { Suspense, use } from 'react';
-import { useOutletContext } from 'react-router';
+import { useLoaderData, useNavigate, useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.welcome';
+import { getAuthEnv, requireSession } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
 import { Button } from '@/components/ui/button';
-import type { OnboardingRouteContext, TeamContext } from './_onboarding';
+import { STEP_PATHS } from '@/lib/onboarding';
+import type { OnboardingRouteContext } from './_onboarding';
+
+interface TeamContext {
+  memberCount: number;
+  appCount: number;
+  integrations: string[];
+}
+
+interface WelcomeLoaderData {
+  orgName: string;
+  showOrgSlugStep: boolean;
+  teamContext: TeamContext;
+}
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const sessionContext = await requireSession(request, context);
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const url = new URL(request.url);
+  const teamMode = url.searchParams.get('team') === '1';
+  const orgId = sessionContext.session.org_id;
+  const workspaceId = sessionContext.session.workspace_id;
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+  const userStub = authEnv.USER.get(
+    authEnv.USER.idFromName(sessionContext.session.user_id)
+  );
+
+  const [role, memberCount, workerScripts] = await Promise.all([
+    userStub.getOrgRole(orgId),
+    orgStub.getMemberCount(),
+    orgStub.listWorkerScripts(),
+  ]);
+  const showOrgSlugStep =
+    role === 'owner' && memberCount === 1 && workerScripts.length === 0;
+
+  if (!teamMode) {
+    return {
+      orgName: 'Chiridion',
+      showOrgSlugStep,
+      teamContext: {
+        memberCount: 0,
+        appCount: 0,
+        integrations: [],
+      },
+    } satisfies WelcomeLoaderData;
+  }
+  const [orgName, integrations] = await Promise.all([
+    orgStub
+      .getInfo()
+      .then((info) => info?.name ?? 'your team')
+      .catch(() => 'your team'),
+    workspaceId
+      ? authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId))
+          .getIntegrations()
+          .then((rows: Array<{ enabled: number; name: string }>) =>
+            rows
+              .filter((row: { enabled: number }) => row.enabled === 1)
+              .map((row: { name: string }) => row.name)
+          )
+          .catch(() => [] as string[])
+      : Promise.resolve([] as string[]),
+  ]);
+
+  return {
+    orgName,
+    showOrgSlugStep,
+    teamContext: {
+      memberCount,
+      appCount: workerScripts.length,
+      integrations: integrations.slice(0, 4),
+    },
+  } satisfies WelcomeLoaderData;
+}
 
 export function meta(_: Route.MetaArgs) {
   return [
@@ -28,18 +102,13 @@ function formatTeamSummary(teamContext: TeamContext): string {
   return parts.join('  •  ');
 }
 
-function TeamSummary({ teamContextPromise }: { teamContextPromise: Promise<TeamContext> }) {
-  const teamContext = use(teamContextPromise);
-  return (
-    <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
-      {formatTeamSummary(teamContext)}
-    </div>
-  );
-}
-
 export default function OnboardingWelcomeRoute() {
   const context = useOutletContext<OnboardingRouteContext>();
-  const isTeamWelcome = context.teamVariant;
+  const navigate = useNavigate();
+  const { orgName, showOrgSlugStep, teamContext } =
+    useLoaderData<typeof loader>() as WelcomeLoaderData;
+  const isTeamWelcome = context.teamMode;
+  const querySuffix = context.teamMode ? '?team=1' : '';
 
   return (
     <OnboardingLayout
@@ -52,9 +121,7 @@ export default function OnboardingWelcomeRoute() {
       <div className="space-y-6 text-center">
         <div className="space-y-3">
           <h1 className="text-3xl font-semibold tracking-tight">
-            {isTeamWelcome
-              ? `Welcome to ${context.currentOrg.name}`
-              : 'Welcome to Chiridion'}
+            {isTeamWelcome ? `Welcome to ${orgName}` : 'Welcome to Chiridion'}
           </h1>
           {!isTeamWelcome ? (
             <>
@@ -70,15 +137,9 @@ export default function OnboardingWelcomeRoute() {
               <p className="text-muted-foreground">
                 You&apos;re joining a team that&apos;s already building.
               </p>
-              <Suspense
-                fallback={
-                  <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
-                    Loading team activity...
-                  </div>
-                }
-              >
-                <TeamSummary teamContextPromise={context.teamContextPromise} />
-              </Suspense>
+              <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
+                {formatTeamSummary(teamContext)}
+              </div>
               <p className="text-muted-foreground">
                 Let&apos;s learn a bit about you so Claude can help.
               </p>
@@ -95,7 +156,10 @@ export default function OnboardingWelcomeRoute() {
                 context.skipToChat();
                 return;
               }
-              context.goNext('welcome');
+
+              context.setShowOrgSlugStep(showOrgSlugStep);
+              const step = showOrgSlugStep ? 'orgSlug' : 'q1';
+              navigate(`${STEP_PATHS[step]}${querySuffix}`);
             }}
           >
             Get Started

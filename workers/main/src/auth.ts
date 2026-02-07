@@ -30,7 +30,6 @@ const SUPERUSER_EMAILS = new Set([
   '1033072+Vercantez@users.noreply.github.com',
 ]);
 const USER_ONBOARDING_KEY = 'onboarding';
-const USER_ONBOARDING_CONTEXT_INJECTED_AT_KEY = 'onboarding_context_injected_at';
 
 function isSuperuserEmail(email: string | null): boolean {
   if (!email) return false;
@@ -650,31 +649,7 @@ export class UserDO extends DurableObject<DOEnv> {
       USER_ONBOARDING_KEY,
       JSON.stringify(next)
     );
-    this.sql.exec(
-      'DELETE FROM profile WHERE key = ?',
-      USER_ONBOARDING_CONTEXT_INJECTED_AT_KEY
-    );
     return next;
-  }
-
-  async getOnboardingContextInjectedAt(): Promise<number | null> {
-    const rows = this.sql.exec(
-      'SELECT value FROM profile WHERE key = ?',
-      USER_ONBOARDING_CONTEXT_INJECTED_AT_KEY
-    ).toArray() as Array<{ value: string }>;
-    if (rows.length === 0) {
-      return null;
-    }
-    const parsed = Number(rows[0].value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  async markOnboardingContextInjected(at = Date.now()): Promise<void> {
-    this.sql.exec(
-      'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
-      USER_ONBOARDING_CONTEXT_INJECTED_AT_KEY,
-      String(at)
-    );
   }
 
   // Org membership methods

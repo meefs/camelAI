@@ -63,15 +63,6 @@ export async function resetOnboardingForUser(
 
   const defaults = normalizePreferences(DEFAULT_ONBOARDING_PREFERENCES);
   await stub.updateOnboarding(defaults);
-
-  // `0` is intentionally falsy, so onboarding context injection will run again.
-  try {
-    await stub.markOnboardingContextInjected(0);
-  } catch (error) {
-    if (!isMissingRpcMethodError(error, 'markOnboardingContextInjected')) {
-      throw error;
-    }
-  }
 }
 
 // Session functions

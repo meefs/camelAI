@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Outlet, redirect, useLoaderData, useLocation, useNavigate } from 'react-router';
+import {
+  Outlet,
+  redirect,
+  useLoaderData,
+  useLocation,
+  useNavigate,
+  type ShouldRevalidateFunctionArgs,
+} from 'react-router';
 import type { Route } from './+types/_onboarding';
-import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
+import { getAuthEnv, requireSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getVanityDomain } from '@/lib/app-url';
 import {
@@ -12,8 +19,7 @@ import {
   type OnboardingTransitionDirection,
   STEP_PATHS,
   getOnboardingProgressStorageKey,
-  getNextStep,
-  getPreviousStep,
+  getNearestValidStep,
   getStepIndex,
   getStepSequence,
   hasCompletedOnboarding,
@@ -22,32 +28,21 @@ import {
 } from '@/lib/onboarding';
 import type { OnboardingPreferences } from '@/types';
 
-export interface TeamContext {
-  memberCount: number;
-  appCount: number;
-  integrations: string[];
-}
-
 interface OnboardingLoaderData {
   userId: string;
+  orgId: string;
   onboarding: OnboardingPreferences | null;
-  currentOrg: {
-    id: string;
-    name: string;
-    slug: string;
-  };
-  showOrgSlugStep: boolean;
-  teamVariant: boolean;
   teamWelcomeOnly: boolean;
-  teamContextPromise: Promise<TeamContext>;
   vanityDomain: string;
   teamMode: boolean;
 }
 
-const ONBOARDING_AUTO_START_CHAT_KEY = 'chiridion:onboarding:auto-start-chat';
+const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
 
 export interface OnboardingRouteContext extends OnboardingLoaderData {
   answers: OnboardingPreferences;
+  showOrgSlugStep: boolean;
+  setShowOrgSlugStep: (show: boolean) => void;
   pendingOrgSlug: string | null;
   setPendingOrgSlug: (slug: string | null) => void;
   transitionDirection: OnboardingTransitionDirection;
@@ -56,9 +51,6 @@ export interface OnboardingRouteContext extends OnboardingLoaderData {
   sequence: OnboardingStepId[];
   currentStepIndex: number;
   totalSteps: number;
-  goBack: (step?: OnboardingStepId) => void;
-  goNext: (step?: OnboardingStepId) => void;
-  goToStep: (step: OnboardingStepId) => void;
   skipToChat: () => void;
   saveOnboarding: (overrides?: Partial<OnboardingPreferences>) => Promise<OnboardingPreferences>;
   completeOnboarding: (overrides?: Partial<OnboardingPreferences>) => Promise<void>;
@@ -96,72 +88,62 @@ function readStoredProgress(storageKey: string): OnboardingProgressState | null 
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const authContext = await requireAuthContext(request, context);
+  const sessionContext = await requireSession(request, context);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
+  const userStub = authEnv.USER.get(
+    authEnv.USER.idFromName(sessionContext.session.user_id)
+  );
+  const authBootstrap = await userStub.getAuthBootstrap();
+
+  if (!authBootstrap.profile) {
+    const url = new URL(request.url);
+    const redirectTo = encodeURIComponent(url.pathname + url.search);
+    throw redirect(`/login?redirect=${redirectTo}`);
+  }
+
   const url = new URL(request.url);
   const teamMode = url.searchParams.get('team') === '1';
-  const onboarding = authContext.onboarding;
+  const onboarding = authBootstrap.onboarding;
   const onboardingComplete = hasCompletedOnboarding(onboarding);
 
   if (onboardingComplete && !teamMode) {
     throw redirect('/chat');
   }
 
-  const orgStub = authEnv.ORG.get(
-    authEnv.ORG.idFromName(authContext.currentOrg.id)
-  );
-  const membership = authContext.orgs.find(
-    (org) => org.org_id === authContext.currentOrg.id
-  );
-
-  const [memberCount, workerScripts] = await Promise.all([
-    orgStub.getMemberCount(),
-    orgStub.listWorkerScripts(),
-  ]);
-  const appCount = workerScripts.length;
-  const teamContextPromise: Promise<TeamContext> = !teamMode
-    ? Promise.resolve({ memberCount, appCount, integrations: [] })
-    : (authContext.currentWorkspace
-        ? authEnv.WORKSPACE.get(
-            authEnv.WORKSPACE.idFromName(authContext.currentWorkspace.id)
-          )
-            .getIntegrations()
-            .then((rows: Array<{ enabled: number; name: string }>) =>
-              rows
-                .filter((row: { enabled: number }) => row.enabled === 1)
-                .map((row: { name: string }) => row.name)
-            )
-            .catch(() => [] as string[])
-        : Promise.resolve([] as string[])
-      ).then((integrations) => ({
-        memberCount,
-        appCount,
-        integrations: integrations.slice(0, 4),
-      }));
-
-  const showOrgSlugStep =
-    membership?.role === 'owner' &&
-    memberCount === 1 &&
-    appCount === 0;
-
-  const teamVariant = teamMode;
-
   return {
-    userId: authContext.user.id,
+    userId: authBootstrap.profile.id,
+    orgId: sessionContext.session.org_id,
     onboarding,
-    currentOrg: {
-      id: authContext.currentOrg.id,
-      name: authContext.currentOrg.name,
-      slug: authContext.currentOrg.slug,
-    },
-    showOrgSlugStep,
-    teamVariant,
     teamWelcomeOnly: onboardingComplete && teamMode,
-    teamContextPromise,
     vanityDomain: getVanityDomain(request.headers.get('host')?.split(':')[0]),
     teamMode,
   } satisfies OnboardingLoaderData;
+}
+
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  formMethod,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs): boolean {
+  if (formMethod && formMethod.toUpperCase() !== 'GET') {
+    return defaultShouldRevalidate;
+  }
+
+  const currentOnboarding = currentUrl.pathname.startsWith('/onboarding');
+  const nextOnboarding = nextUrl.pathname.startsWith('/onboarding');
+  if (!currentOnboarding || !nextOnboarding) {
+    return defaultShouldRevalidate;
+  }
+
+  const currentTeam = currentUrl.searchParams.get('team');
+  const nextTeam = nextUrl.searchParams.get('team');
+  if (currentTeam !== nextTeam) {
+    return defaultShouldRevalidate;
+  }
+
+  return false;
 }
 
 export default function OnboardingLayout() {
@@ -171,9 +153,10 @@ export default function OnboardingLayout() {
   const [answers, setAnswers] = useState<OnboardingPreferences>(() =>
     normalizePreferences(loaderData.onboarding ?? DEFAULT_ONBOARDING_PREFERENCES)
   );
-  const [pendingOrgSlugState, setPendingOrgSlugState] = useState<string | null>(
-    () => loaderData.currentOrg.slug
+  const [showOrgSlugStep, setShowOrgSlugStepState] = useState<boolean>(() =>
+    location.pathname === STEP_PATHS.orgSlug
   );
+  const [pendingOrgSlugState, setPendingOrgSlugState] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number>(() => Date.now());
   const [hasRestoredProgress, setHasRestoredProgress] = useState(false);
   const [transitionDirection, setTransitionDirection] =
@@ -197,43 +180,14 @@ export default function OnboardingLayout() {
   const sequence = useMemo(
     () =>
       getStepSequence({
-        showOrgSlugStep: loaderData.showOrgSlugStep,
+        showOrgSlugStep,
         aiFamiliarity: answers.ai_familiarity,
         teamWelcomeOnly: loaderData.teamWelcomeOnly,
       }),
-    [answers.ai_familiarity, loaderData.showOrgSlugStep, loaderData.teamWelcomeOnly]
+    [answers.ai_familiarity, showOrgSlugStep, loaderData.teamWelcomeOnly]
   );
   const currentStepIndex = getStepIndex(currentStep, sequence);
   const totalSteps = sequence.length;
-
-  const goToStep = useCallback(
-    (step: OnboardingStepId) => {
-      navigate(`${STEP_PATHS[step]}${querySuffix}`);
-    },
-    [navigate, querySuffix]
-  );
-
-  const goNext = useCallback(
-    (step?: OnboardingStepId) => {
-      const source = step ?? currentStep;
-      const next = getNextStep(source, sequence);
-      if (next) {
-        goToStep(next);
-      }
-    },
-    [currentStep, goToStep, sequence]
-  );
-
-  const goBack = useCallback(
-    (step?: OnboardingStepId) => {
-      const source = step ?? currentStep;
-      const previous = getPreviousStep(source, sequence);
-      if (previous) {
-        goToStep(previous);
-      }
-    },
-    [currentStep, goToStep, sequence]
-  );
 
   const clearStoredProgress = useCallback(() => {
     localStorage.removeItem(progressStorageKey);
@@ -241,6 +195,10 @@ export default function OnboardingLayout() {
 
   const setPendingOrgSlug = useCallback((slug: string | null) => {
     setPendingOrgSlugState(slug ? slug.trim().toLowerCase() : null);
+  }, []);
+
+  const setShowOrgSlugStep = useCallback((show: boolean) => {
+    setShowOrgSlugStepState(show);
   }, []);
 
   const saveOnboarding = useCallback(
@@ -266,48 +224,56 @@ export default function OnboardingLayout() {
     async (overrides?: Partial<OnboardingPreferences>) => {
       const withOverrides = mergeAnswers(answers, overrides ?? {});
       const desiredSlug = pendingOrgSlugState?.trim().toLowerCase() ?? null;
+      const completed = mergeAnswers(withOverrides, { completed_at: Date.now() });
+      const response = await fetch('/api/onboarding/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          onboarding: completed,
+          desiredSlug: showOrgSlugStep ? desiredSlug : null,
+        }),
+      });
 
-      if (
-        loaderData.showOrgSlugStep &&
-        desiredSlug &&
-        desiredSlug !== loaderData.currentOrg.slug
-      ) {
-        const response = await fetch(`/api/orgs/${loaderData.currentOrg.id}/update-slug`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ slug: desiredSlug }),
-        });
-        if (!response.ok) {
-          let errorMessage = 'Failed to update org slug';
-          try {
-            const data = (await response.json()) as { error?: string };
-            if (data.error) errorMessage = data.error;
-          } catch {
-            // Ignore parse failures and keep default message.
-          }
-          throw new Error(errorMessage);
+      if (!response.ok) {
+        let errorMessage = 'Failed to complete onboarding';
+        try {
+          const data = (await response.json()) as { error?: string };
+          if (data.error) errorMessage = data.error;
+        } catch {
+          // Ignore parse failures and keep default message.
+        }
+        throw new Error(errorMessage);
+      }
+
+      const data = (await response.json()) as {
+        redirectTo?: string;
+        threadId?: string;
+        onboardingSystemMessage?: string | null;
+      };
+      const threadId = data.threadId?.trim();
+      const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
+      if (threadId && onboardingSystemMessage) {
+        try {
+          sessionStorage.setItem(
+            PENDING_NEW_THREAD_MESSAGE_KEY,
+            JSON.stringify({
+              message: `<chiridion system message>${onboardingSystemMessage}</chiridion system message>`,
+              threadId,
+            })
+          );
+        } catch (error) {
+          console.error('Failed to persist onboarding prefill message:', error);
         }
       }
-
-      const completed = mergeAnswers(withOverrides, { completed_at: Date.now() });
-      await saveOnboarding(completed);
       clearStoredProgress();
-      try {
-        sessionStorage.setItem(ONBOARDING_AUTO_START_CHAT_KEY, '1');
-      } catch (error) {
-        console.error('Failed to persist onboarding auto-start flag:', error);
-      }
-      navigate('/chat');
+      navigate(data.redirectTo || '/chat');
     },
     [
       answers,
       clearStoredProgress,
-      loaderData.currentOrg.id,
-      loaderData.currentOrg.slug,
-      loaderData.showOrgSlugStep,
       navigate,
       pendingOrgSlugState,
-      saveOnboarding,
+      showOrgSlugStep,
     ]
   );
 
@@ -336,7 +302,8 @@ export default function OnboardingLayout() {
     }
 
     setAnswers(normalizePreferences(loaderData.onboarding ?? DEFAULT_ONBOARDING_PREFERENCES));
-    setPendingOrgSlug(loaderData.currentOrg.slug);
+    setPendingOrgSlug(null);
+    setShowOrgSlugStep(false);
     setStartedAt(Date.now());
     setHasRestoredProgress(false);
 
@@ -348,13 +315,13 @@ export default function OnboardingLayout() {
       { replace: true }
     );
   }, [
-    loaderData.currentOrg.slug,
     loaderData.onboarding,
     location.pathname,
     location.search,
     navigate,
     resetRequested,
     setPendingOrgSlug,
+    setShowOrgSlugStep,
   ]);
 
   useEffect(() => {
@@ -370,8 +337,9 @@ export default function OnboardingLayout() {
         mergeAnswers(previous, stored.answers as Partial<OnboardingPreferences>)
       );
       setStartedAt(stored.startedAt);
-      setPendingOrgSlug(
-        stored.pendingOrgSlug ?? loaderData.currentOrg.slug
+      setPendingOrgSlug(stored.pendingOrgSlug ?? null);
+      setShowOrgSlugStep(
+        Boolean(stored.showOrgSlugStep || stored.currentStep === 'orgSlug')
       );
 
       const storedPath = STEP_PATHS[stored.currentStep];
@@ -385,29 +353,19 @@ export default function OnboardingLayout() {
     loaderData.teamWelcomeOnly,
     location.pathname,
     navigate,
-    loaderData.currentOrg.slug,
     progressStorageKey,
     querySuffix,
     setPendingOrgSlug,
+    setShowOrgSlugStep,
   ]);
 
   useEffect(() => {
     if (loaderData.teamWelcomeOnly) return;
     if (currentStepIndex < 0 && sequence.length > 0) {
-      let fallbackStep = sequence[0];
-      if (
-        answers.ai_familiarity === 'extensive' &&
-        (currentStep === 'q2' || currentStep === 'q3')
-      ) {
-        fallbackStep = 'q4';
-      }
-      if (answers.ai_familiarity === 'extensive' && currentStep === 'q5') {
-        fallbackStep = 'q6';
-      }
+      const fallbackStep = getNearestValidStep(currentStep, sequence) ?? sequence[0];
       navigate(`${STEP_PATHS[fallbackStep]}${querySuffix}`, { replace: true });
     }
   }, [
-    answers.ai_familiarity,
     currentStep,
     currentStepIndex,
     loaderData.teamWelcomeOnly,
@@ -439,6 +397,7 @@ export default function OnboardingLayout() {
       answers,
       startedAt,
       pendingOrgSlug: pendingOrgSlugState,
+      showOrgSlugStep,
     };
     localStorage.setItem(progressStorageKey, JSON.stringify(progress));
   }, [
@@ -448,12 +407,15 @@ export default function OnboardingLayout() {
     loaderData.teamWelcomeOnly,
     pendingOrgSlugState,
     progressStorageKey,
+    showOrgSlugStep,
     startedAt,
   ]);
 
   const contextValue: OnboardingRouteContext = {
     ...loaderData,
     answers,
+    showOrgSlugStep,
+    setShowOrgSlugStep,
     pendingOrgSlug: pendingOrgSlugState,
     setPendingOrgSlug,
     transitionDirection,
@@ -462,9 +424,6 @@ export default function OnboardingLayout() {
     sequence,
     currentStepIndex,
     totalSteps,
-    goBack,
-    goNext,
-    goToStep,
     skipToChat,
     saveOnboarding,
     completeOnboarding,

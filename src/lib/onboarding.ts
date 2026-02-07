@@ -37,6 +37,7 @@ export interface OnboardingProgressState {
   answers: Partial<OnboardingPreferences>;
   startedAt: number;
   pendingOrgSlug?: string | null;
+  showOrgSlugStep?: boolean;
 }
 
 export interface OnboardingOption<TValue extends string> {
@@ -353,6 +354,43 @@ export function getStepSequence(options: {
   }
 
   return sequence;
+}
+
+const ONBOARDING_STEP_ORDER: OnboardingStepId[] = [
+  'welcome',
+  'orgSlug',
+  'q1',
+  'q2',
+  'q3',
+  'q4',
+  'q5',
+  'q6',
+];
+
+export function getNearestValidStep(
+  current: OnboardingStepId,
+  sequence: OnboardingStepId[]
+): OnboardingStepId | null {
+  if (sequence.includes(current)) {
+    return current;
+  }
+  if (sequence.length === 0) {
+    return null;
+  }
+
+  const currentIndex = ONBOARDING_STEP_ORDER.indexOf(current);
+  if (currentIndex < 0) {
+    return sequence[0];
+  }
+
+  for (let index = currentIndex + 1; index < ONBOARDING_STEP_ORDER.length; index += 1) {
+    const candidate = ONBOARDING_STEP_ORDER[index];
+    if (sequence.includes(candidate)) {
+      return candidate;
+    }
+  }
+
+  return sequence[0];
 }
 
 export function getStepIndex(step: OnboardingStepId, sequence: OnboardingStepId[]): number {

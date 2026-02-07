@@ -10,50 +10,12 @@ import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { Integration, WorkerScriptWithCreator } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
-import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
-import {
-  buildOnboardingProfileMarkdown,
-  buildOnboardingSystemContext,
-} from '@/lib/onboarding';
-import {
-  getWorkspaceContainer,
-  type WorkspaceContainerEnv,
-} from '../../workers/main/src/workspace-container';
 
 export function meta() {
   return [
     { title: 'New Chat - Chiridion' },
     { name: 'description', content: 'Start a new AI chat' },
   ];
-}
-
-function buildIntegrationNameMap(): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const definition of Object.values(INTEGRATION_REGISTRY)) {
-    map.set(definition.type, definition.displayName);
-  }
-  return map;
-}
-
-async function writeOnboardingProfile(
-  context: Route.ActionArgs['context'],
-  workspaceId: string,
-  orgId: string,
-  profileMarkdown: string
-): Promise<void> {
-  const env = getEnv(context);
-  const container = getWorkspaceContainer(
-    env as unknown as WorkspaceContainerEnv,
-    workspaceId
-  );
-  await container.startForWorkspace(workspaceId, orgId);
-  const writeResult = await container.writeFile(
-    '/home/claude/.chiridion/profile.md',
-    profileMarkdown
-  );
-  if (!writeResult.success) {
-    throw new Error(writeResult.error ?? 'Unknown profile write error');
-  }
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -135,8 +97,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export async function action({ request, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
 
   if (!authContext.currentWorkspace?.id) {
     return Response.json({ error: 'No workspace selected' }, { status: 400 });
@@ -149,27 +109,6 @@ export async function action({ request, context }: Route.ActionArgs) {
     try {
       const firstMessage = formData.get('firstMessage') as string | null;
       const previewAppsRaw = formData.get('previewApps') as string | null;
-      const userStub = authEnv.USER.get(
-        authEnv.USER.idFromName(authContext.user.id)
-      );
-      const integrationNameMap = buildIntegrationNameMap();
-
-      let onboardingSystemMessage: string | null = null;
-      let onboardingProfileMarkdown: string | null = null;
-      const onboarding = authContext.onboarding;
-      if (onboarding?.completed_at) {
-        const contextInjectedAt = await userStub.getOnboardingContextInjectedAt();
-        if (!contextInjectedAt) {
-          onboardingSystemMessage = buildOnboardingSystemContext(
-            onboarding,
-            integrationNameMap
-          );
-          onboardingProfileMarkdown = buildOnboardingProfileMarkdown(
-            onboarding,
-            integrationNameMap
-          );
-        }
-      }
 
       const thread = await chatDO.createThread(
         context,
@@ -198,48 +137,10 @@ export async function action({ request, context }: Route.ActionArgs) {
         );
       }
 
-      if (onboardingProfileMarkdown) {
-        waitUntil(
-          writeOnboardingProfile(
-            context,
-            authContext.currentWorkspace.id,
-            authContext.currentOrg.id,
-            onboardingProfileMarkdown
-          ).catch((error) => {
-            console.error('Failed to write onboarding profile:', error);
-          })
-        );
-      }
-
-      return Response.json({ thread, onboardingSystemMessage });
+      return Response.json({ thread });
     } catch (error) {
       console.error('Failed to create thread:', error);
       return Response.json({ error: 'Failed to create thread' }, { status: 500 });
-    }
-  }
-
-  if (intent === 'markOnboardingContextInjected') {
-    try {
-      const onboarding = authContext.onboarding;
-      if (!onboarding?.completed_at) {
-        return Response.json({ success: true });
-      }
-
-      const userStub = authEnv.USER.get(
-        authEnv.USER.idFromName(authContext.user.id)
-      );
-      const contextInjectedAt = await userStub.getOnboardingContextInjectedAt();
-      if (!contextInjectedAt) {
-        await userStub.markOnboardingContextInjected();
-      }
-
-      return Response.json({ success: true });
-    } catch (error) {
-      console.error('Failed to mark onboarding context as injected:', error);
-      return Response.json(
-        { error: 'Failed to mark onboarding context as injected' },
-        { status: 500 }
-      );
     }
   }
 
