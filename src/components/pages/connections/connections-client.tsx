@@ -13,8 +13,6 @@ import { AddConnectionDialog } from './AddConnectionDialog';
 import { EditConnectionDialog } from './EditConnectionDialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -142,17 +140,6 @@ export default function ConnectionsClient({
       }
     }
   }, [fetcher.state, fetcher.data]);
-
-  const handleToggleEnabled = (connection: Integration) => {
-    fetcher.submit(
-      {
-        intent: 'toggleIntegration',
-        integrationId: connection.id,
-        enabled: String(!connection.enabled),
-      },
-      { method: 'POST' }
-    );
-  };
 
   const handleDelete = () => {
     if (!deleteTarget) return;
@@ -340,9 +327,6 @@ export default function ConnectionsClient({
                             </CardDescription>
                           </div>
                         </div>
-                        <Badge variant={connection.enabled ? 'default' : 'outline'}>
-                          {connection.enabled ? 'Enabled' : 'Disabled'}
-                        </Badge>
                       </CardHeader>
                       <CardContent className="space-y-4">
                         <div className="flex items-center justify-between text-sm text-muted-foreground">
@@ -351,15 +335,7 @@ export default function ConnectionsClient({
                             {new Date(connection.updated_at).toLocaleDateString()}
                           </span>
                         </div>
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2 text-sm">
-                            <span>Enabled</span>
-                            <Switch
-                              checked={connection.enabled}
-                              onCheckedChange={() => handleToggleEnabled(connection)}
-                              disabled={!isAdmin}
-                            />
-                          </div>
+                        <div className="flex items-center justify-end">
                           {isAdmin && (
                             <div className="flex items-center gap-2">
                               <Button

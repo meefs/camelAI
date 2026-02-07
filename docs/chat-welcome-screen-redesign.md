@@ -367,7 +367,7 @@ const teamApps = allWorkspaceApps
 
 ### 6. Your Connected Tools (User Has Connections)
 
-**Condition:** Show when user has 1+ enabled connections in the workspace.
+**Condition:** Show when user has 1+ connections in the workspace.
 
 **Section Layout:**
 - Header row: "Your connected tools" (left) + "View all →" link (right, links to `/connections`)
@@ -460,7 +460,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   if (workspaceId) {
     const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
     const records = await wsStub.getIntegrations();
-    connections = records.map(recordToIntegration).filter(c => c.enabled);
+    connections = records.map(recordToIntegration);
   }
 
   return {
@@ -469,7 +469,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     userId,
     userName: authContext.user?.name ?? null,
     allApps,         // All workspace apps (for filtering user vs team)
-    connections,     // User's enabled connections
+    connections,     // User's configured connections
     renderedAt: Date.now(),
   };
 }

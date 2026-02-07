@@ -594,7 +594,7 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
 
   /**
    * Fetch integration env vars for this workspace.
-   * Returns a map of INT_* env vars from enabled integrations, plus DATA_PROXY_TOKEN.
+   * Returns a map of INT_* env vars from integrations, plus DATA_PROXY_TOKEN.
    */
   async fetchIntegrationEnvVars(workspaceId: string): Promise<Record<string, string>> {
     const integrationEnvVars: Record<string, string> = {};
@@ -603,7 +603,6 @@ export class WorkspaceContainer extends Container<WorkspaceContainerEnv> {
       const records = await workspaceStub.getIntegrations();
 
       for (const record of records) {
-        if (record.enabled !== 1) continue;
         const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
         const config = JSON.parse(record.config) as Record<string, unknown>;
         Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));

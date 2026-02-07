@@ -372,7 +372,6 @@ export interface Integration {
   category: IntegrationCategory;
   auth_method: IntegrationAuthMethod;
   config: Record<string, unknown>;
-  enabled: boolean;
   created_by: string;
   created_at: number;
   updated_at: number;
@@ -390,7 +389,6 @@ export interface UpdateIntegrationInput {
   name?: string;
   config?: Record<string, unknown>;
   credentials?: Record<string, unknown>;
-  enabled?: boolean;
 }
 
 // API Token types

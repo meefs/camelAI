@@ -239,7 +239,6 @@ describe('Worker Secret Sync', () => {
       const integrations = await workspaceStub.getIntegrations();
       const stripeInt = integrations.find(i => i.id === integrationId);
       expect(stripeInt).toBeDefined();
-      expect(stripeInt!.enabled).toBe(1);
       expect(stripeInt!.integration_type).toBe('stripe');
     });
   });

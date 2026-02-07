@@ -79,9 +79,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   if (workspaceId) {
     const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
     const records = await wsStub.getIntegrations();
-    connections = records
-      .map(integrationRecordToIntegration)
-      .filter((connection) => connection.enabled);
+    connections = records.map(integrationRecordToIntegration);
   }
 
   return {

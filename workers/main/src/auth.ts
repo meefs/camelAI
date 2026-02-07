@@ -247,7 +247,6 @@ export interface OrgIntegrationRecord {
   auth_method: string;
   config: string;
   credentials_encrypted: string;
-  enabled: number;
   created_by: string;
   created_at: number;
   updated_at: number;
@@ -1709,7 +1708,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     return this.sql
       .exec(
         `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, enabled, created_by, created_at, updated_at
+                credentials_encrypted, created_by, created_at, updated_at
          FROM integrations
          ORDER BY created_at DESC`
       )
@@ -1721,7 +1720,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     const rows = this.sql
       .exec(
         `SELECT id, integration_type, name, category, auth_method, config,
-                credentials_encrypted, enabled, created_by, created_at, updated_at
+                credentials_encrypted, created_by, created_at, updated_at
          FROM integrations WHERE id = ?`,
         id
       )
@@ -1743,8 +1742,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     const now = Date.now();
     this.sql.exec(
       `INSERT INTO integrations
-       (id, integration_type, name, category, auth_method, config, credentials_encrypted, enabled, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+       (id, integration_type, name, category, auth_method, config, credentials_encrypted, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       integrationType,
       name,
@@ -1765,7 +1764,6 @@ export class OrgDO extends DurableObject<DOEnv> {
       name?: string;
       config?: string;
       credentialsEncrypted?: string;
-      enabled?: boolean;
     }
   ): Promise<void> {
     const now = Date.now();
@@ -1783,10 +1781,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (updates.credentialsEncrypted !== undefined) {
       setClauses.push('credentials_encrypted = ?');
       params.push(updates.credentialsEncrypted);
-    }
-    if (updates.enabled !== undefined) {
-      setClauses.push('enabled = ?');
-      params.push(updates.enabled ? 1 : 0);
     }
 
     params.push(id);
