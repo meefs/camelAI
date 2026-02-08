@@ -28,7 +28,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = join(__dirname, '..', 'templates');
 
 // Golden template location on JuiceFS (has yarn install done)
-const GOLDEN_TEMPLATES_DIR = join(process.env.HOME || '/home/claude', '.chiridion', 'templates');
+const GOLDEN_TEMPLATES_DIR = join(process.env.HOME || '/home/sprite', '.chiridion', 'templates');
 
 // Valid option values
 const OPTIONS = {

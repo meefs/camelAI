@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN useradd -m -s /bin/bash claude
 
 # Pre-create integration env file with correct permissions
-# This file is written by ws-server (runs as claude) when integrations are pushed
+# This file is written by the Claude runner (runs as claude) when integrations are pushed
 RUN touch /etc/profile.d/chiridion-integrations.sh \
   && chown claude:claude /etc/profile.d/chiridion-integrations.sh \
   && chmod 644 /etc/profile.d/chiridion-integrations.sh
@@ -66,7 +66,7 @@ COPY --chmod=755 sandbox/skills/developing-software/templates ./skills/developin
 
 # Layer 6: App code (changes frequently)
 COPY --chmod=755 sandbox/entrypoint.sh ./
-COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/memory-logger.mjs ./
+COPY --chmod=755 sandbox/claude-runner.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/memory-logger.mjs ./
 COPY --chmod=755 sandbox/session-search ./session-search
 COPY --chmod=755 sandbox/skills/developing-software/scripts ./skills/developing-software/scripts
 COPY --chmod=644 sandbox/skills/developing-software/SKILL.md sandbox/skills/developing-software/AI-APPS.md ./skills/developing-software/

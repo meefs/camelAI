@@ -179,9 +179,7 @@ class MockWebSocket {
 }
 
 function getMainSocket(): MockWebSocket {
-  const socket = MockWebSocket.instances.find(
-    (candidate) => candidate.url.includes('/ws/ws-1') && !candidate.url.includes('/ws/thread/')
-  );
+  const socket = MockWebSocket.instances.find((candidate) => candidate.url.includes('/ws/ws-1'));
   if (!socket) throw new Error('Main chat WebSocket was not created');
   return socket;
 }

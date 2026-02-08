@@ -26,7 +26,7 @@ const CF_ACCOUNT_ID = '85bbd288051330fb51ee1c86031a299b';
 const CF_DISPATCH_NAMESPACE = 'chiridion-platform';
 
 const ENVIRONMENTS = ['staging', 'prod', 'dev-illiana', 'dev-miguel'];
-const ENDPOINTS = ['overview', 'orgs', 'users', 'threads', 'kv-keys', 'r2/list', 'r2/backup', 'workers', 'container'];
+const ENDPOINTS = ['overview', 'orgs', 'users', 'threads', 'kv-keys', 'r2/list', 'r2/backup', 'workers'];
 
 // Direct API endpoints that don't need wrangler/bindings
 const _DIRECT_API_ENDPOINTS = ['workers'];
@@ -137,12 +137,8 @@ Examples:
   admin dev-illiana r2/backup/{orgId}
   admin staging r2/list '?prefix=abc123'
   admin dev-illiana workers
-  admin dev-illiana container/{orgId}/ls
-  admin dev-illiana container/{orgId}/read/path/to/file
-  admin dev-illiana 'container/{orgId}/ls?recursive=true'
-
 Environments: ${ENVIRONMENTS.join(', ')}
-Endpoints: ${ENDPOINTS.join(', ')}, r2/info/{key}, r2/backup/{orgId}, workers/{orgId} (deprecated), container/{orgId}/*
+Endpoints: ${ENDPOINTS.join(', ')}, r2/info/{key}, r2/backup/{orgId}, workers/{orgId} (deprecated)
 `);
 	process.exit(1);
 }
@@ -192,13 +188,12 @@ async function main() {
 	}
 
 	if (args.length > 0) {
-		// Check for exact match or path-style endpoints like r2/backup/abc123 or workers/abc123 or container/abc123/ls
+		// Check for exact match or path-style endpoints like r2/backup/abc123 or workers/abc123
 		const potentialEndpoint = args[0];
 		if (ENDPOINTS.includes(potentialEndpoint) ||
 			potentialEndpoint.startsWith('r2/') ||
 			potentialEndpoint.startsWith('kv/') ||
-			potentialEndpoint.startsWith('workers/') ||
-			potentialEndpoint.startsWith('container/')) {
+			potentialEndpoint.startsWith('workers/')) {
 			endpoint = args.shift();
 		}
 	}

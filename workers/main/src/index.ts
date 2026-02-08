@@ -7,8 +7,7 @@
  * - /api/auth/:provider → User OAuth (Google, GitHub)
  * - /api/integrations/slack/* → Slack OAuth
  * - /api/threads/:id/preview → Thread preview API
- * - /ws/thread/:id → Thread preview WebSocket
- * - /ws/:workspace → Chat WebSocket
+ * - /ws/:workspace → Chat WebSocket (forwarded to ChatThreadDO)
  * - * → React Router SSR
  */
 
@@ -29,14 +28,13 @@ import {
   handleSalesforceOAuthStart,
   handleSalesforceOAuthCallback,
 } from './routes/integrations.js';
-import { handleThreadWebSocket, handleChatWebSocket } from './routes/websocket.js';
+import { handleChatWebSocket } from './routes/websocket.js';
 import { handleClaudeProxy, handleCountTokens } from './routes/claude-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 import { handleMssqlQuery, handleDataProxyHealth } from './routes/data-proxy.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
-export { WorkspaceContainer as ThreadSandbox } from './workspace-container.js';
 export { DataProxy } from './data-proxy.js';
 export { ChatThreadDO } from './durable-objects.js';
 export { UserDO, OrgDO } from './auth.js';
@@ -89,7 +87,6 @@ const routes: Route[] = [
   { method: 'GET', path: /^\/api\/data-proxy\/health$/, handler: handleDataProxyHealth },
 
   // WebSocket routes
-  { method: 'GET', path: /^\/ws\/thread\/([^/]+)$/, handler: handleThreadWebSocket, websocket: true },
   { method: 'GET', path: /^\/ws\/[^/]+$/, handler: handleChatWebSocket, websocket: true },
 ];
 

@@ -11,7 +11,6 @@ import type { OrgSlugDO } from '../../workers/main/src/org-slug-registry';
 export interface CloudflareEnv {
   // Durable Objects
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
-  SANDBOX: DurableObjectNamespace;
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
   ORG_SLUG: DurableObjectNamespace<OrgSlugDO>;
@@ -52,6 +51,9 @@ export interface CloudflareEnv {
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
   EMAIL_FROM_ADDRESS?: string;
+  SPRITES_TOKEN?: string;
+  SPRITES_API_BASE_URL?: string;
+  SPRITES_NAME_PREFIX?: string;
 
   // Gmail API (for sending emails via Google Workspace)
   GMAIL_SERVICE_ACCOUNT_EMAIL?: string;

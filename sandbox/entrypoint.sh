@@ -3,9 +3,9 @@
 # Supports migration from old R2 tar backups to JuiceFS.
 # Environment variables are passed at container start time via @cloudflare/containers.
 #
-# Ports:
-#   8080 - ws-server (Claude SDK) - runs as claude user
-#   9000 - control-plane (exec/fs) - runs as claude user
+# Processes:
+#   claude-runner (Claude SDK runner) - runs as claude user
+#   9000 control-plane (exec/fs) - runs as claude user
 #
 # Version: 2026-02-05-v78-fix-warmup-flag
 set -eu
@@ -713,7 +713,7 @@ mount_juicefs() {
 # to ensure data is properly flushed and backed up.
 #
 # Shutdown order:
-# 1. Stop application processes (ws-server, control-plane)
+# 1. Stop application processes (claude-runner, control-plane)
 # 2. Stop periodic backup loop
 # 3. Unmount JuiceFS (flushes writeback cache to R2, updates SQLite metadata)
 # 4. Final backup of metadata to R2
@@ -722,9 +722,9 @@ cleanup() {
   CLEANUP_START_TS="$(date +%s)"
 
   # Step 1: Stop application processes
-  # Kill ws-server if running
+  # Kill claude-runner if running
   if [ -n "${WS_PID:-}" ] && kill -0 "$WS_PID" 2>/dev/null; then
-    echo "[entrypoint] Stopping ws-server (PID: $WS_PID)..." >&2
+    echo "[entrypoint] Stopping claude-runner (PID: $WS_PID)..." >&2
     kill "$WS_PID" 2>/dev/null || true
     wait "$WS_PID" 2>/dev/null || true
   fi
@@ -806,7 +806,7 @@ else
   fi
 
 # Skills: symlink each system skill individually so user can add their own
-# Must complete before ws-server since Claude agent reads skills at startup
+# Must complete before claude-runner since Claude agent reads skills at startup
 echo "[entrypoint] Setting up skill symlinks..." >&2
 su -s /bin/sh claude -c "mkdir -p '$TARGET_DIR/.claude/skills'" 2>/dev/null || true
 for skill_dir in /etc/claude-code/skills/*/; do
@@ -827,7 +827,7 @@ echo "[entrypoint] Starting background warmup for /home/claude/.claude..." >&2
 CLAUDE_WARMUP_PID=$!
 echo "[entrypoint] .claude warmup PID: $CLAUDE_WARMUP_PID" >&2
 
-# Write env vars to a file that claude user can source (needed before ws-server)
+# Write env vars to a file that claude user can source (needed before claude-runner)
 cat > /tmp/ws-env.sh << ENVEOF
 export HOME='${TARGET_DIR}'
 export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'
@@ -852,15 +852,15 @@ export MCP_SERVER_URL='${MCP_SERVER_URL:-}'
 ENVEOF
 chmod 644 /tmp/ws-env.sh
 
-# Start ws-server EARLY - this is the critical path for WebSocket availability
-# Uses Claude Agent SDK for streaming conversations
+# Start claude-runner
+# Uses Claude Agent SDK for query execution
 # Run in foreground (no exec) so the shell stays alive for the trap
-echo "[entrypoint] Starting ws-server (SDK) as claude user on port 8080..." >&2
-su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && node /app/ws-server.mjs" &
+echo "[entrypoint] Starting claude-runner (SDK) as claude user..." >&2
+su -s /bin/sh claude -c ". /tmp/ws-env.sh && cd '$TARGET_DIR' && node /app/claude-runner.mjs" &
 WS_PID=$!
-echo "[entrypoint] ws-server PID: $WS_PID" >&2
+echo "[entrypoint] claude-runner PID: $WS_PID" >&2
 
-# Everything below runs in parallel while ws-server is starting
+# Everything below runs in parallel while claude-runner is starting
 # These are non-blocking for WebSocket availability
 
 # Start control-plane server as claude user (runs on port 9000)
@@ -969,11 +969,11 @@ echo "[entrypoint] Session indexer PID: $INDEXER_PID" >&2
 END_TS="$(date +%s%3N 2>/dev/null || date +%s)"
 echo "[entrypoint] Initialization complete (ms: $((END_TS - START_TS)))" >&2
 
-# Wait for ws-server - when it exits, the cleanup trap will run
+# Wait for claude-runner - when it exits, the cleanup trap will run
 wait "$WS_PID"
 WS_EXIT=$?
-SHUTDOWN_REASON="ws-server-exit-$WS_EXIT"
-echo "[entrypoint] ws-server exited with code: $WS_EXIT" >&2
+SHUTDOWN_REASON="claude-runner-exit-$WS_EXIT"
+echo "[entrypoint] claude-runner exited with code: $WS_EXIT" >&2
 
-# Exit with ws-server's exit code (cleanup runs via EXIT trap)
+# Exit with claude-runner's exit code (cleanup runs via EXIT trap)
 exit $WS_EXIT

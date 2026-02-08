@@ -18,8 +18,8 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 
 ```
 ┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────────┐
-│  React Router   │────▶│   Cloudflare Worker  │────▶│ Cloudflare Container│
-│   (SSR + WS)    │◀────│   (Durable Objects)  │◀────│   (Claude SDK)      │
+│  React Router   │────▶│   Cloudflare Worker  │────▶│       Sprites       │
+│   (SSR + WS)    │◀────│   (Durable Objects)  │◀────│  (exec + fs + SDK)  │
 └─────────────────┘     └──────────────────────┘     └─────────────────────┘
          │                        │                           │
          │                        ▼                           │
@@ -51,17 +51,17 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
    - `main/` - Main Chiridion app worker
      - React Router SSR handler
      - Durable Objects for state: `UserDO`, `OrgDO`, `OrgSlugDO`, `WorkspaceDO`, `ChatThreadDO`
-     - `ThreadSandbox` - Container lifecycle management
-     - WebSocket routing (one container per workspace)
+     - Sprites-backed workspace runtime (`workers/main/src/workspace-container.ts`)
+     - WebSocket routing (one sprite runtime per workspace)
      - OAuth flow handling
      - MCP server endpoint (`/mcp`) with API key auth
    - `dispatcher/` - Routes `*.chiridion.app` to user workers (Workers for Platforms)
    - `admin-cli/` - Local-only admin CLI for querying live environments
 
 3. **Sandbox** (`sandbox/`)
-   - `entrypoint.sh` - Container startup: mounts JuiceFS, starts services
-   - `ws-server.mjs` - WebSocket server running Claude SDK inside container
-   - `control-plane.mjs` - Exec/filesystem API server for container management
+   - `entrypoint.sh` - Legacy container startup script (kept for reference)
+   - `claude-runner.mjs` - Claude SDK runner process executed via sprite exec
+   - `control-plane.mjs` - Legacy container control plane (sprites runtime now handles fs/exec via API)
    - `sync.mjs` - R2 tar snapshot download (migration tool)
    - `skills/` - Agent skills (developing-software, file-sharing, frontend-design)
 
@@ -108,7 +108,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 | `workers/main/src/auth.ts` | `UserDO`, `OrgDO` implementations |
 | `workers/main/src/org-slug-registry.ts` | `OrgSlugDO` slug ownership registry |
 | `workers/main/src/workspace.ts` | `WorkspaceDO` implementation |
-| `workers/main/src/workspace-container.ts` | `ThreadSandbox` container lifecycle |
+| `workers/main/src/workspace-container.ts` | Sprites workspace runtime + websocket/filesystem proxy |
 | `workers/main/src/durable-objects.ts` | `ChatThreadDO` for thread state |
 | `workers/main/src/cf-api-proxy.ts` | Cloudflare API proxy for deploys |
 | `workers/main/src/mcp-handler.ts` | MCP server with `ChiridionMcp` |
@@ -117,9 +117,9 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 ### Sandbox
 | File | Purpose |
 |------|---------|
-| `sandbox/entrypoint.sh` | Container startup script |
-| `sandbox/ws-server.mjs` | WebSocket server with Claude SDK |
-| `sandbox/control-plane.mjs` | Container exec/filesystem API |
+| `sandbox/entrypoint.sh` | Legacy container startup script |
+| `sandbox/claude-runner.mjs` | Claude SDK runner executable (stdin/stdout NDJSON) |
+| `sandbox/control-plane.mjs` | Legacy container control-plane API |
 | `sandbox/requirements.txt` | Python data analysis packages |
 | `sandbox/skills/developing-software/SKILL.md` | Software development skill documentation |
 
@@ -214,11 +214,11 @@ export async function action({ request, context }: Route.ActionArgs) {
 
 ### Message Sending
 1. User types message in `Chat.tsx`
-2. WebSocket connects to `/ws/{workspace}` - Worker routes to container
-3. Container runs `ws-server.mjs` which calls Claude SDK
-4. Claude SDK stores messages in JSONL files (`~/.claude/projects/.../session.jsonl`)
-5. Streaming responses sent back through WebSocket
-6. Thread ID = Claude session_id (received on first message)
+2. WebSocket connects to `/ws/{workspace}` - Worker validates access and forwards to `ChatThreadDO`
+3. `ChatThreadDO` opens/attaches a sprite exec session running `claude-runner.mjs`
+4. `claude-runner.mjs` calls Claude SDK `query()` and streams events over stdout
+5. `ChatThreadDO` multiplexes/replays events to connected chat clients
+6. Claude SDK stores messages in JSONL files (`~/.claude/projects/.../session.jsonl`)
 
 ### Chat Attachment Uploads (R2 Multipart)
 1. Client starts multipart upload via `POST /api/workspaces/:id/upload?action=mpu-create` with `originalName` and `contentType`.
@@ -229,21 +229,21 @@ export async function action({ request, context }: Route.ActionArgs) {
 
 ### Todo State Persistence
 The floating todo list state persists across reconnections:
-1. When `ws-server.mjs` sees a `TodoWrite` tool call, it broadcasts a `todo_state` event and saves to `/home/claude/.chiridion/todos/{threadId}.json`
-2. On WebSocket init, the server reads the persisted file and sends `todo_state` to the client
-3. On turn completion (`result` event), the persisted file is cleared
+1. When `claude-runner.mjs` sees a `TodoWrite` tool call, it emits a `todo_state` event
+2. `ChatThreadDO` stores the latest todo state in DO storage (`chatTodos`) and replays it on chat WebSocket init
+3. On turn completion (`result` event), `ChatThreadDO` clears persisted todo state
 
 ### MCP Prompt Replay
-MCP-driven thread prompts (for example connection setup and bug report capture) are persisted in `ChatThreadDO` and replayed to newly connected `/ws/thread/{threadId}` clients:
+MCP-driven thread prompts (for example connection setup and bug report capture) are persisted in `ChatThreadDO` and replayed to newly connected chat websocket clients (`/ws/{workspace}`):
 1. `ChatThreadDO` stores pending prompt payloads in DO storage when MCP triggers a prompt
-2. On thread WebSocket connect, `ChatThreadDO` sends current preview state and then replays any unexpired pending prompts
+2. On chat WebSocket init, `ChatThreadDO` sends current preview state and then replays any unexpired pending prompts
 3. Prompts are removed when the client responds or when they expire (`30m` for connection setup, `5m` for bug report capture)
 
 ### Integration Token Refresh
 - OAuth integrations with expiring tokens (for example Notion) store `token_expires_at` and are refreshed by `WorkspaceDO` alarms.
 - BigQuery integrations now follow the same token lifecycle pattern: the encrypted `service_account_json` is used server-side to mint short-lived Google access tokens.
 - Runtime environments receive `INT_BIGQUERY_*_ACCESS_TOKEN` instead of raw service account JSON whenever a token is available.
-- After token refresh, updated credentials are pushed to both the running workspace container and all deployed workspace workers.
+- After token refresh, updated credentials are pushed to both the running workspace sprite runtime and all deployed workspace workers.
 
 ### Workspace Persistence (JuiceFS)
 JuiceFS provides a FUSE-based distributed filesystem with SQLite metadata and R2 data storage:
@@ -254,11 +254,9 @@ JuiceFS provides a FUSE-based distributed filesystem with SQLite metadata and R2
 4. Data is stored in R2 at `{bucket}/chiridion-{org}-{workspace}/`
 5. Background metadata upload loop runs every 60s
 
-### Workspace Container Warmup
-To reduce perceived latency from JuiceFS mount, container warmup happens server-side:
-1. `_app.tsx` loader triggers `container.startForWorkspace()` via `waitUntil`
-2. Container starts in background while page renders
-3. By the time user opens chat, container is often already warm
+### Workspace Runtime Provisioning
+Sprites are provisioned eagerly when a workspace is created (`WorkspaceDO.createWorkspace` calls `WorkspaceContainer.provisionSpriteForWorkspace`).
+Runtime startup is now on-demand from chat/API paths; dashboard route loaders no longer trigger warmup.
 
 ### Threads
 - Each thread belongs to a workspace
@@ -340,7 +338,6 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 | Route | Purpose |
 |-------|---------|
 | `/ws/{workspace}` | Real-time chat streaming |
-| `/ws/thread/{threadId}` | Thread preview state updates |
 
 ### OAuth Routes (Main Worker)
 | Route | Method | Purpose |
@@ -356,14 +353,14 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 | `/mcp/health` | GET | Health check |
 | `/mcp` | POST | MCP protocol endpoint (streamable HTTP) |
 
-MCP auth uses signed JWT tokens with `mcp` scope. Per-thread tokens are created when a WebSocket connects and passed to the container via `X-Chiridion-MCP-Token` header. The token includes the `thread_id` in the payload for secure thread context (can't be spoofed).
+MCP auth uses signed JWT tokens with `mcp` scope. Per-thread tokens are created when a WebSocket connects and passed to the workspace runtime via `X-Chiridion-MCP-Token` header. The token includes the `thread_id` in the payload for secure thread context (can't be spoofed).
 
 ## Development
 
 ### Prerequisites
 - Node.js 22+
 - Bun (package manager - **always use `bun` instead of `npm`**)
-- Docker (for Cloudflare Containers)
+- Docker (optional for legacy local container tooling)
 - Cloudflare account (for deployment)
 
 ### Local Development
@@ -381,12 +378,19 @@ bun run build
 ```
 Runs `react-router build`, outputs to `build/client/` and `build/server/`.
 
+**Runner source sync**
+```bash
+bun run gen:embedded-runner
+```
+Regenerates `workers/main/src/embedded-claude-runner.ts` from `sandbox/claude-runner.mjs` (also run automatically by dev/build/typecheck/worker-test scripts).
+
 ### Environment Variables
 
 Create `.dev.vars`:
 ```
 OPENROUTER_API_KEY=your_openrouter_key_here
 OPENROUTER_PROVISIONING_KEY=your_provisioning_key_here
+SPRITES_TOKEN=your_sprites_api_token_here
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
 GITHUB_CLIENT_ID=your_github_client_id
@@ -397,6 +401,10 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 |----------|-------------|
 | `OPENROUTER_API_KEY` | Fallback OpenRouter API key for LLM access |
 | `OPENROUTER_PROVISIONING_KEY` | OpenRouter provisioning key for creating per-org API keys |
+| `SPRITES_TOKEN` | Sprites API bearer token for workspace runtime creation/exec |
+| `SPRITES_API_BASE_URL` | Optional Sprites API base URL (default: `https://api.sprites.dev`) |
+| `SPRITES_NAME_PREFIX` | Optional sprite name prefix (default: `chiridion`) |
+| `SPRITES_EAGER_PROVISION_ON_CREATE` | Set to `0` to disable eager sprite creation during workspace creation (default: enabled) |
 | `WORKER_BASE_URL` | Base URL for the main worker |
 | `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
 | `TOKEN_SIGNING_SECRET` | Secret for signing auth tokens |
@@ -450,7 +458,7 @@ Falls back to Cloudflare's `send_email` binding if Gmail is not configured. Note
 
 | Variable | Description |
 |----------|-------------|
-| `CHIRIDION_TRACE_EVENTS` | Set to `0` to disable ws-server trace writes |
+| `CHIRIDION_TRACE_EVENTS` | Set to `0` to disable claude-runner trace writes |
 | `CHIRIDION_DEBUG_STARTUP` | Log startup env snapshot (`1` to enable) |
 | `CHIRIDION_DEBUG_SDK` | Log query options (`1` to enable) |
 | `CHIRIDION_DEBUG_FS` | Run filesystem probes at startup (`1` to enable) |
@@ -615,7 +623,7 @@ chiridion-app/
 │   │   ├── auth.ts            # UserDO, OrgDO
 │   │   ├── org-slug-registry.ts # OrgSlugDO uniqueness registry
 │   │   ├── workspace.ts       # WorkspaceDO
-│   │   ├── workspace-container.ts # ThreadSandbox
+│   │   ├── workspace-container.ts # Sprites workspace runtime
 │   │   ├── durable-objects.ts # ChatThreadDO
 │   │   ├── cf-api-proxy.ts    # Deploy proxy
 │   │   ├── mcp-handler.ts     # MCP server
@@ -624,7 +632,7 @@ chiridion-app/
 │   └── admin-cli/             # Admin CLI tool
 ├── sandbox/
 │   ├── entrypoint.sh          # Container startup
-│   ├── ws-server.mjs          # Claude SDK WebSocket
+│   ├── claude-runner.mjs      # Claude SDK runner executable
 │   ├── control-plane.mjs      # Container management API
 │   └── skills/                # Agent skills
 ├── tests/                     # Vitest unit tests
@@ -666,10 +674,10 @@ chiridion-app/
 - WebSocket connection state
 - Preview worker list (out-of-band state)
 
-### ThreadSandbox (per workspace)
-- Container lifecycle using `@cloudflare/containers`
-- WebSocket upgrade handling
-- Control plane API endpoints
+### Workspace Runtime (per workspace)
+- Sprites lifecycle + provisioning
+- Chat WebSocket forwarding to `ChatThreadDO`, which bridges to sprite exec
+- Filesystem and command execution via Sprites exec API
 
 ### ChiridionMcp (MCP Agent)
 - MCP server implementation
@@ -718,7 +726,7 @@ See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
 ### Common Issues
 
 1. **Durable Objects not working locally**: Use `bun run dev` (wrangler-based dev)
-2. **Streaming not working**: Ensure `includePartialMessages: true` in ws-server.mjs
+2. **Streaming not working**: Ensure `includePartialMessages: true` in `sandbox/claude-runner.mjs`
 3. **API key not found**: Check `.dev.vars` has `OPENROUTER_API_KEY`
 4. **Docker cache stale**: Add version comment to `entrypoint.sh` to invalidate
 5. **Session not persisting**: Check cookies and DO worker is running

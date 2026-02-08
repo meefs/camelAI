@@ -474,18 +474,13 @@ export default function Chat({
   const forceScrollOnNextUpdate = useRef(false);
   const splitStreamingMessageOnNextPartRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const previewWsRef = useRef<WebSocket | null>(null);
-  const previewReconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const iframeRefreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const previewReconnectAttempts = useRef(0);
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const previewPingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef(0);
   const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
-  const previewConnectionStartedAtRef = useRef<number | null>(null);
   const fallbackRenderedAtRef = useRef<number>(Date.now());
 
   useEffect(() => {
@@ -597,6 +592,57 @@ export default function Chat({
     revalidator.revalidate();
   }, [revalidator]);
 
+  const handleRealtimeSideChannelEvent = useCallback((data: any) => {
+    if (data.type === 'preview_state' && Array.isArray(data.workers)) {
+      const firstWorker = data.workers[0] || null;
+      const newVersion = data.version || 0;
+      const isNewDeploy = newVersion > previewVersionRef.current;
+      previewVersionRef.current = newVersion;
+
+      setDeployedApp(firstWorker);
+      setAppIsPublic((prev) =>
+        typeof data.isPublic === 'boolean' ? data.isPublic : prev
+      );
+
+      if (firstWorker && isNewDeploy) {
+        if (iframeRefreshTimeoutRef.current) {
+          clearTimeout(iframeRefreshTimeoutRef.current);
+        }
+        setPreviewLoading(true);
+        iframeRefreshTimeoutRef.current = setTimeout(() => {
+          setPreviewLoading(false);
+          setIframeKey(prev => prev + 1);
+          iframeRefreshTimeoutRef.current = null;
+        }, 1500);
+      }
+      return;
+    }
+
+    if (data.type === 'title_updated' && data.title) {
+      setCurrentTitle(data.title);
+      return;
+    }
+
+    if (data.type === 'connection_setup_prompt' && data.requestId && data.integrationType) {
+      setConnectionSetupPrompt({
+        requestId: data.requestId as string,
+        integrationType: data.integrationType as string,
+        suggestedName: data.suggestedName as string | undefined,
+        message: data.message as string | undefined,
+        dynamicSchema: data.dynamicSchema as ConnectionSetupPromptData['dynamicSchema'],
+        mcpDoId: data.mcpDoId as string | undefined,
+      });
+      return;
+    }
+
+    if (data.type === 'bug_report_prompt' && data.requestId) {
+      setMcpBugReportPrompt({
+        requestId: data.requestId as string,
+        message: data.message as string | undefined,
+      });
+    }
+  }, []);
+
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
     if (!id) {
@@ -679,8 +725,8 @@ export default function Chat({
       fetchMessages(id);
     }
 
-    // WebSocket connects at /ws/{workspace}?threadId={id} - one container per workspace handles all threads
-    // threadId in URL allows worker to mint per-thread deploy token for auto-preview
+    // WebSocket connects at /ws/{workspace}?threadId={id}
+    // Worker validates thread scope and forwards to ChatThreadDO for sprite-exec chat transport.
     const wsHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const workspaceIdForConnection = resolvedWorkspaceId;
@@ -972,6 +1018,13 @@ export default function Chat({
         }
         setStreamingMessageId(null);
         setLoading(false);
+      } else if (
+        data.type === 'preview_state' ||
+        data.type === 'title_updated' ||
+        data.type === 'connection_setup_prompt' ||
+        data.type === 'bug_report_prompt'
+      ) {
+        handleRealtimeSideChannelEvent(data);
       }
     };
 
@@ -1020,6 +1073,7 @@ export default function Chat({
     setMessages,
     setPendingMessages,
     setStreamingMessageId,
+    handleRealtimeSideChannelEvent,
   ]);
 
   // Keep the ref updated with the latest function
@@ -1065,29 +1119,14 @@ export default function Chat({
         wsRef.current = null;
       }
 
-      if (previewWsRef.current) {
-        previewWsRef.current.close();
-        previewWsRef.current = null;
-      }
-
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
 
-      if (previewReconnectTimeoutRef.current) {
-        clearTimeout(previewReconnectTimeoutRef.current);
-        previewReconnectTimeoutRef.current = null;
-      }
-
       if (pingIntervalRef.current) {
         clearInterval(pingIntervalRef.current);
         pingIntervalRef.current = null;
-      }
-
-      if (previewPingIntervalRef.current) {
-        clearInterval(previewPingIntervalRef.current);
-        previewPingIntervalRef.current = null;
       }
 
       if (iframeRefreshTimeoutRef.current) {
@@ -1097,168 +1136,12 @@ export default function Chat({
     };
   }, [bumpConnectionId]);
 
-  // Preview WebSocket - connects to /ws/thread/{threadId} for live preview state updates
-  // Uses a stable connect function to handle reconnection
-  const connectPreviewWebSocket = useCallback((id: string, isReconnect = false) => {
-    // Clear any pending reconnect
-    if (previewReconnectTimeoutRef.current) {
-      clearTimeout(previewReconnectTimeoutRef.current);
-      previewReconnectTimeoutRef.current = null;
-    }
-
-    // Close existing connection
-    if (previewWsRef.current) {
-      previewWsRef.current.close();
-      previewWsRef.current = null;
-    }
-
-    // Clear any existing ping interval
-    if (previewPingIntervalRef.current) {
-      clearInterval(previewPingIntervalRef.current);
-      previewPingIntervalRef.current = null;
-    }
-
-    if (!isReconnect) {
-      previewReconnectAttempts.current = 0;
-    }
-
-    const wsHost = window.location.host;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${wsHost}/ws/thread/${id}`;
-    const ws = new WebSocket(wsUrl);
-    previewWsRef.current = ws;
-    previewConnectionStartedAtRef.current = Date.now();
-
-    ws.onopen = () => {
-      previewReconnectAttempts.current = 0;
-
-      // Start ping interval to detect connection issues early
-      // The DO auto-responds without waking up
-      if (previewPingIntervalRef.current) {
-        clearInterval(previewPingIntervalRef.current);
-      }
-      previewPingIntervalRef.current = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ping' }));
-        }
-      }, 30000); // Ping every 30 seconds
-    };
-
-    ws.onmessage = (event) => {
-      if (previewWsRef.current !== ws) return; // Ignore stale connections
-
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'preview_state' && Array.isArray(data.workers)) {
-          // Use the first worker for the preview iframe
-          const firstWorker = data.workers[0] || null;
-          const newVersion = data.version || 0;
-
-          // Check if this is a new deploy (version changed or first deploy)
-          const isNewDeploy = newVersion > previewVersionRef.current;
-          previewVersionRef.current = newVersion;
-
-          setDeployedApp(firstWorker);
-          setAppIsPublic((prev) =>
-            typeof data.isPublic === 'boolean' ? data.isPublic : prev
-          );
-
-          // Add delay before showing iframe to allow worker to fully initialize
-          if (firstWorker && isNewDeploy) {
-            // Clear any existing pending refresh
-            if (iframeRefreshTimeoutRef.current) {
-              clearTimeout(iframeRefreshTimeoutRef.current);
-            }
-            setPreviewLoading(true);
-            iframeRefreshTimeoutRef.current = setTimeout(() => {
-              setPreviewLoading(false);
-              setIframeKey(prev => prev + 1);
-              iframeRefreshTimeoutRef.current = null;
-            }, 1500); // 1.5 second delay for worker initialization
-          }
-        } else if (data.type === 'title_updated' && data.title) {
-          // Update thread title when AI generates it
-          setCurrentTitle(data.title);
-        } else if (data.type === 'connection_setup_prompt' && data.requestId && data.integrationType) {
-          // MCP server is prompting user to set up a connection
-          setConnectionSetupPrompt({
-            requestId: data.requestId as string,
-            integrationType: data.integrationType as string,
-            suggestedName: data.suggestedName as string | undefined,
-            message: data.message as string | undefined,
-            dynamicSchema: data.dynamicSchema as ConnectionSetupPromptData['dynamicSchema'],
-            mcpDoId: data.mcpDoId as string | undefined,
-          });
-        } else if (data.type === 'bug_report_prompt' && data.requestId) {
-          // MCP server is prompting user to capture a bug report - auto-capture without dialog
-          const mcpRequest = {
-            requestId: data.requestId as string,
-            message: data.message as string | undefined,
-          };
-          // Store the request and trigger auto-capture
-          setMcpBugReportPrompt(mcpRequest);
-        }
-      } catch (e) {
-        console.error('Preview WebSocket message parse error:', e);
-      }
-    };
-
-    ws.onclose = () => {
-      if (previewWsRef.current !== ws) return; // Ignore stale connections
-      previewWsRef.current = null;
-      previewConnectionStartedAtRef.current = null;
-
-      // Clear ping interval
-      if (previewPingIntervalRef.current) {
-        clearInterval(previewPingIntervalRef.current);
-        previewPingIntervalRef.current = null;
-      }
-
-      // Auto-reconnect with exponential backoff
-      const maxAttempts = 5;
-      if (previewReconnectAttempts.current < maxAttempts) {
-        const delay = Math.min(1000 * Math.pow(2, previewReconnectAttempts.current), 30000);
-        previewReconnectAttempts.current++;
-        previewReconnectTimeoutRef.current = setTimeout(() => {
-          connectPreviewWebSocket(id, true);
-        }, delay);
-      }
-    };
-
-    ws.onerror = () => {
-      // Error will trigger close, which handles reconnection
-    };
-  }, []);
-
   useEffect(() => {
     if (!threadId) {
-      // No thread - cleanup preview WebSocket
-      if (previewReconnectTimeoutRef.current) {
-        clearTimeout(previewReconnectTimeoutRef.current);
-        previewReconnectTimeoutRef.current = null;
-      }
-      if (previewWsRef.current) {
-        previewWsRef.current.close();
-        previewWsRef.current = null;
-      }
       setDeployedApp(null);
       setAppIsPublic(false);
-      return;
     }
-
-    connectPreviewWebSocket(threadId);
-
-    return () => {
-      if (previewReconnectTimeoutRef.current) {
-        clearTimeout(previewReconnectTimeoutRef.current);
-        previewReconnectTimeoutRef.current = null;
-      }
-      if (previewWsRef.current) {
-        previewWsRef.current.close();
-        previewWsRef.current = null;
-      }
-    };
-  }, [threadId, connectPreviewWebSocket]);
+  }, [threadId]);
 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
@@ -1353,26 +1236,12 @@ export default function Chat({
           reconnectAttempts.current = 0; // Fresh start when user returns to tab
           connectWebSocketRef.current?.(threadId, true);
         }
-
-        // Check if preview WebSocket is dead
-        const previewNeedsReconnect = !previewWsRef.current ||
-          previewWsRef.current.readyState === WebSocket.CLOSED ||
-          previewWsRef.current.readyState === WebSocket.CLOSING;
-
-        if (previewNeedsReconnect && threadId) {
-          if (previewReconnectTimeoutRef.current) {
-            clearTimeout(previewReconnectTimeoutRef.current);
-            previewReconnectTimeoutRef.current = null;
-          }
-          previewReconnectAttempts.current = 0;
-          connectPreviewWebSocket(threadId, true);
-        }
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [threadId, shouldShowChat, resolvedWorkspaceId, connectPreviewWebSocket]);
+  }, [threadId, shouldShowChat, resolvedWorkspaceId]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const container = scrollContainerRef.current;
@@ -1797,14 +1666,14 @@ export default function Chat({
     setPendingQuestion(null);
   }, [pendingQuestion]);
 
-  // Handle connection setup response - send via thread preview WebSocket
+  // Handle connection setup response - send via chat WebSocket
   const handleConnectionSetupResponse = useCallback((response: ConnectionSetupResponse) => {
-    if (!previewWsRef.current || previewWsRef.current.readyState !== WebSocket.OPEN) {
-      console.error('[Chat] Preview WebSocket not available for connection setup response');
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.error('[Chat] WebSocket not available for connection setup response');
       return;
     }
 
-    previewWsRef.current.send(JSON.stringify({
+    wsRef.current.send(JSON.stringify({
       type: 'connection_setup_response',
       ...response,
     }));
@@ -1821,8 +1690,8 @@ export default function Chat({
   const handleBugReportOpenChange = useCallback((open: boolean) => {
     if (!open && mcpBugReportPrompt) {
       // User closed the dialog while MCP capture was pending - send cancellation
-      if (previewWsRef.current?.readyState === WebSocket.OPEN) {
-        previewWsRef.current.send(JSON.stringify({
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
           type: 'bug_report_response',
           requestId: mcpBugReportPrompt.requestId,
           cancelled: true,
@@ -1975,9 +1844,9 @@ export default function Chat({
         setBugReportStatus('sending');
       }
 
-      // If this is an MCP-triggered capture, send response via preview WebSocket
-      if (isMcpTriggered && mcpRequestId && previewWsRef.current?.readyState === WebSocket.OPEN) {
-        previewWsRef.current.send(JSON.stringify({
+      // If this is an MCP-triggered capture, send response via chat WebSocket
+      if (isMcpTriggered && mcpRequestId && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
           type: 'bug_report_response',
           requestId: mcpRequestId,
           cancelled: false,
@@ -2050,8 +1919,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       console.error('Bug report submission failed:', e);
 
       // If MCP-triggered, send cancellation response
-      if (isMcpTriggered && mcpRequestId && previewWsRef.current?.readyState === WebSocket.OPEN) {
-        previewWsRef.current.send(JSON.stringify({
+      if (isMcpTriggered && mcpRequestId && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
           type: 'bug_report_response',
           requestId: mcpRequestId,
           cancelled: true,

@@ -27,7 +27,6 @@ import type {
 	OrgThread,
 } from '../../main/src/auth';
 import type { WorkspaceDO, Workspace } from '../../main/src/workspace';
-import type { WorkspaceContainer } from '../../main/src/workspace-container';
 
 interface Env {
 	EMAIL_TO_USER: KVNamespace;
@@ -35,7 +34,6 @@ interface Env {
 	ORG: DurableObjectNamespace<OrgDO>;
 	USER: DurableObjectNamespace<UserDO>;
 	WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
-	SANDBOX: DurableObjectNamespace<WorkspaceContainer>;
 	TARGET_HOST: string;
 }
 
@@ -50,10 +48,6 @@ function getUserStub(env: Env, userId: string): DurableObjectStub<UserDO> {
 
 function getWorkspaceStub(env: Env, workspaceId: string): DurableObjectStub<WorkspaceDO> {
 	return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)) as DurableObjectStub<WorkspaceDO>;
-}
-
-function getSandboxStub(env: Env, workspaceId: string): DurableObjectStub<WorkspaceContainer> {
-	return env.SANDBOX.get(env.SANDBOX.idFromName(workspaceId)) as DurableObjectStub<WorkspaceContainer>;
 }
 
 // Types for admin responses

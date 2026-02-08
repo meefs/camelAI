@@ -8,7 +8,6 @@ import { mintBigQueryAccessTokenFromServiceAccount } from './google-service-acco
 import { createSignedToken } from './signed-tokens';
 import {
   getWorkspaceContainer,
-  type WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from './workspace-container';
 
@@ -60,7 +59,6 @@ export interface WorkspaceAuditLogEntry {
 export interface WorkspaceEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   ORG: DurableObjectNamespace<OrgDO>;
-  SANDBOX?: DurableObjectNamespace<WorkspaceContainer>;
   INTEGRATION_SECRET_KEY: string;
   // OAuth credentials for token refresh
   NOTION_CLIENT_ID?: string;
@@ -254,6 +252,16 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       this.env.ORG.idFromName(orgId)
     ) as unknown as OrgDO;
     await orgStub.addWorkspace(id, name, now, createdBy);
+
+    // Eagerly provision sprite at workspace creation so runtime paths usually avoid
+    // first-touch create races. Runtime keeps a fallback create for drift recovery.
+    const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
+    const shouldEagerProvision =
+      runtimeEnv.SPRITES_TOKEN && runtimeEnv.SPRITES_EAGER_PROVISION_ON_CREATE !== '0';
+    if (shouldEagerProvision) {
+      const runtime = getWorkspaceContainer(runtimeEnv, id);
+      await runtime.provisionSpriteForWorkspace(id);
+    }
 
     return info;
   }
@@ -745,11 +753,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
    * This keeps active chat sessions in sync with newly rotated tokens.
    */
   private async syncIntegrationEnvVarsToContainer(): Promise<void> {
-    if (!this.env.SANDBOX) {
-      console.warn('[WorkspaceDO] Cannot sync container env vars: SANDBOX binding missing');
-      return;
-    }
-
     const info = await this.getInfo();
     if (!info) {
       console.warn('[WorkspaceDO] Cannot sync container env vars: workspace info not found');

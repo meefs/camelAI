@@ -7,13 +7,14 @@ import type { SessionData } from '../session-kv.js';
 import type { WorkspaceDO } from '../workspace.js';
 import type { OrgDO } from '../auth.js';
 import { getSession } from '../session-kv.js';
-import { getSessionId, text } from './response.js';
+import { getSessionIdFromRequest } from '../cookies.js';
+import { text } from './response.js';
 import { getWorkspaceStub, getOrgStub } from './stubs.js';
 
 export type AuthResult = { session: SessionData } | { error: Response };
 
 export async function requireSession(req: Request, env: Env): Promise<AuthResult> {
-  const sessionId = getSessionId(req);
+  const sessionId = getSessionIdFromRequest(req);
   if (!sessionId) return { error: text('Unauthorized', 401) };
 
   const session = await getSession(env.SESSIONS, sessionId);

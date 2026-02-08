@@ -12,7 +12,7 @@ import type { ApiTokenData } from './api-tokens';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
 import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse } from './durable-objects';
-import type { WorkspaceContainer, WorkspaceContainerEnv } from './workspace-container';
+import type { WorkspaceContainerEnv } from './workspace-container';
 import { getWorkspaceContainer } from './workspace-container';
 import type { Integration } from '../../../src/types';
 import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition, validateConfig, validateCredentials } from '../../../src/lib/integration-registry';

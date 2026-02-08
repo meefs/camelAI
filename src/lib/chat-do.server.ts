@@ -234,11 +234,21 @@ export async function getMessages(
     await container.startForWorkspace(workspaceId, wsInfo.org_id);
 
     // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
-    const jsonlPath = `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`;
+    // Sprites runtime uses /home/sprite (-home-sprite).
+    const candidatePaths = [
+      `/home/sprite/.claude/projects/-home-sprite/${threadId}.jsonl`,
+    ];
 
-    // Check if file exists
-    const exists = await container.exists(jsonlPath);
-    if (!exists.exists) {
+    let jsonlPath: string | null = null;
+    for (const candidate of candidatePaths) {
+      const exists = await container.exists(candidate);
+      if (exists.exists) {
+        jsonlPath = candidate;
+        break;
+      }
+    }
+
+    if (!jsonlPath) {
       return [];
     }
 

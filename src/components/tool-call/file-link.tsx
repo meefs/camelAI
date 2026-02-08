@@ -7,7 +7,7 @@ import { useAuthData } from '@/hooks/use-auth-data';
 import { cn } from '@/lib/utils';
 import { FilePreviewPopover } from '@/components/chat-file-preview';
 
-const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
+const WORKSPACE_ROOT_PREFIXES = ['/home/sprite', '/workspace', '/root'];
 
 const TEMP_FILE_PREFIXES = [
   { prefix: '/mnt/user-uploads/', type: 'upload' as const, urlSegment: 'uploads' },

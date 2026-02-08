@@ -30,8 +30,7 @@
 		"bindings": [
 			{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-staging", "remote": true },
 			{ "name": "USER", "class_name": "UserDO", "script_name": "chiridion-app-staging", "remote": true },
-			{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app-staging", "remote": true },
-			{ "name": "SANDBOX", "class_name": "ThreadSandbox", "script_name": "chiridion-app-staging", "remote": true }
+			{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app-staging", "remote": true }
 		]
 	},
 
@@ -61,8 +60,7 @@
 				"bindings": [
 					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app", "remote": true },
 					{ "name": "USER", "class_name": "UserDO", "script_name": "chiridion-app", "remote": true },
-					{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app", "remote": true },
-					{ "name": "SANDBOX", "class_name": "ThreadSandbox", "script_name": "chiridion-app", "remote": true }
+					{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app", "remote": true }
 				]
 			}
 		},
@@ -90,8 +88,7 @@
 				"bindings": [
 					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-dev-illiana", "remote": true },
 					{ "name": "USER", "class_name": "UserDO", "script_name": "chiridion-app-dev-illiana", "remote": true },
-					{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app-dev-illiana", "remote": true },
-					{ "name": "SANDBOX", "class_name": "ThreadSandbox", "script_name": "chiridion-app-dev-illiana", "remote": true }
+					{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app-dev-illiana", "remote": true }
 				]
 			}
 		},
@@ -119,8 +116,7 @@
 				"bindings": [
 					{ "name": "ORG", "class_name": "OrgDO", "script_name": "chiridion-app-dev-miguel", "remote": true },
 					{ "name": "USER", "class_name": "UserDO", "script_name": "chiridion-app-dev-miguel", "remote": true },
-					{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app-dev-miguel", "remote": true },
-					{ "name": "SANDBOX", "class_name": "ThreadSandbox", "script_name": "chiridion-app-dev-miguel", "remote": true }
+					{ "name": "WORKSPACE", "class_name": "WorkspaceDO", "script_name": "chiridion-app-dev-miguel", "remote": true }
 				]
 			}
 		}

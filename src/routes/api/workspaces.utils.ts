@@ -15,7 +15,7 @@ export interface WorkspaceAuth {
   orgId: string;
   workspaceId: string;
   access: WorkspaceAccessLevel;
-  container: DurableObjectStub<WorkspaceContainer>;
+  container: WorkspaceContainer;
 }
 
 export interface WorkspaceAccessAuth {
@@ -92,8 +92,8 @@ export async function requireWorkspaceAuth(
   };
 }
 
-/** Workspace root directory inside the container */
-const WORKSPACE_ROOT = '/home/claude';
+/** Workspace root directory inside sprite runtime */
+const WORKSPACE_ROOT = '/home/sprite';
 
 const NORMALIZABLE_WHITESPACE = /[ \u00A0\u2007\u202F]/;
 
@@ -136,7 +136,7 @@ export function normalizeWorkspacePath(input?: string | null): string {
 
 /**
  * Convert a workspace-relative path to an absolute container path.
- * Workspace path '/' maps to '/home/claude', '/foo' maps to '/home/claude/foo'.
+ * Workspace path '/' maps to '/home/sprite', '/foo' maps to '/home/sprite/foo'.
  */
 export function toContainerPath(workspacePath: string): string {
   const normalized = normalizeWorkspacePath(workspacePath);
@@ -167,7 +167,7 @@ function joinContainerPath(dir: string, base: string): string {
  * Returns null if no match is found or the path has no normalizable whitespace.
  */
 export async function resolveContainerPath(
-  container: DurableObjectStub<WorkspaceContainer>,
+  container: WorkspaceContainer,
   workspacePath: string
 ): Promise<string | null> {
   const normalizedPath = normalizeWorkspacePath(workspacePath);
@@ -219,7 +219,7 @@ export async function resolveContainerPath(
  * to resolve the parent directory and join the original basename.
  */
 export async function resolveContainerPathForWrite(
-  container: DurableObjectStub<WorkspaceContainer>,
+  container: WorkspaceContainer,
   workspacePath: string,
   options: { allowExisting?: boolean } = {}
 ): Promise<string> {

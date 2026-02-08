@@ -70,7 +70,7 @@ async function writeOnboardingProfile(
   );
   await container.startForWorkspace(workspaceId, orgId);
   const writeResult = await container.writeFile(
-    '/home/claude/.chiridion/profile.md',
+    '/home/sprite/.chiridion/profile.md',
     profileMarkdown
   );
   if (!writeResult.success) {

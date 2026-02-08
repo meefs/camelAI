@@ -1,14 +1,9 @@
-/**
- * Workspace container routing tests using Cloudflare Vitest pool
- */
-
 import { describe, it, expect, vi } from 'vitest';
 import { WorkspaceContainer, getContainerIdForWorkspace, getWorkspaceContainer } from '../src/workspace-container';
 import type { WorkspaceContainerEnv } from '../src/workspace-container';
 import type { OrgDO } from '../src/auth';
 import type { WorkspaceDO } from '../src/workspace';
 
-// Mock the OpenRouter key functions to avoid actual crypto in tests
 vi.mock('../src/openrouter-keys', () => ({
   decryptOpenRouterKey: vi.fn().mockResolvedValue('sk-or-test-key-12345'),
   encryptOpenRouterKey: vi.fn().mockResolvedValue('mock-encrypted'),
@@ -24,7 +19,6 @@ function buildEnvVarsForTest(workspaceId: string, orgId: string) {
     ORG: {
       get: () => ({
         getInfo: async () => ({ created_by: 'user-1', name: 'Test Org' }),
-        // Return a mock key record - the actual decryption is mocked below
         getOpenRouterKeyRecord: async () => ({
           key_hash: 'test-hash',
           key_encrypted: 'mock-encrypted-value',
@@ -41,17 +35,12 @@ function buildEnvVarsForTest(workspaceId: string, orgId: string) {
     } as unknown as DurableObjectNamespace<WorkspaceDO>,
   } as unknown as WorkspaceContainerEnv;
 
-  const container = {
-    env: fakeEnv,
-    workspaceId: null,
-    orgId: null,
-  } as unknown as WorkspaceContainer;
-
-  return WorkspaceContainer.prototype.buildEnvVars.call(container, workspaceId, orgId) as Promise<Record<string, string>>;
+  const runtime = new WorkspaceContainer(fakeEnv, workspaceId);
+  return runtime.buildEnvVars(workspaceId, orgId);
 }
 
-describe('container routing', () => {
-  it('derives container ID from workspace ID', () => {
+describe('sprite runtime', () => {
+  it('derives runtime ID from workspace ID', () => {
     const id = getContainerIdForWorkspace('workspace-123');
     expect(id).toBe('ws-workspace-123');
   });
@@ -67,25 +56,12 @@ describe('container routing', () => {
     expect(id.length).toBeLessThanOrEqual(63);
   });
 
-  it('prefixes container ID with ws-', () => {
+  it('prefixes runtime ID with ws-', () => {
     const id = getContainerIdForWorkspace('abc');
     expect(id.startsWith('ws-')).toBe(true);
   });
 
-  it('routes WebSocket to correct container', () => {
-    const idFromName = vi.fn((name: string) => name as unknown);
-    const get = vi.fn((id: unknown) => ({ id }));
-    const env = {
-      SANDBOX: { idFromName, get },
-    } as unknown as WorkspaceContainerEnv;
-
-    getWorkspaceContainer(env, 'ws:with/chars');
-
-    expect(idFromName).toHaveBeenCalledWith('ws-ws_with_chars');
-    expect(get).toHaveBeenCalledWith('ws-ws_with_chars');
-  });
-
-  it('passes workspaceId and orgId to container env', async () => {
+  it('passes workspaceId and orgId to runtime env', async () => {
     const envVars = await buildEnvVarsForTest('ws-1', 'org-1');
     expect(envVars.WORKSPACE_ID).toBe('ws-1');
     expect(envVars.ORG_ID).toBe('org-1');
@@ -99,5 +75,12 @@ describe('container routing', () => {
   it('keeps legacy R2 prefix for org-id workspaces', async () => {
     const envVars = await buildEnvVarsForTest('org-legacy', 'org-legacy');
     expect(envVars.R2_PREFIX).toBe('org-legacy/');
+  });
+
+  it('reuses cached runtime per workspace for same env object', () => {
+    const env = {} as WorkspaceContainerEnv;
+    const a = getWorkspaceContainer(env, 'ws-1');
+    const b = getWorkspaceContainer(env, 'ws-1');
+    expect(a).toBe(b);
   });
 });

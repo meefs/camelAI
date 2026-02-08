@@ -61,13 +61,6 @@
 	],
 	"containers": [
 		{
-			"name": "chiridion-app-staging-threadsandbox-staging",
-			"class_name": "ThreadSandbox",
-			"image": "./Dockerfile",
-			"instance_type": { "vcpu": 1, "memory_mib": 4096, "disk_mb": 8000 },
-			"max_instances": 5
-		},
-		{
 			"name": "chiridion-app-staging-dataproxy",
 			"class_name": "DataProxy",
 			"image": "./containers/data-proxy/Dockerfile",
@@ -78,7 +71,6 @@
 	"durable_objects": {
 		"bindings": [
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" },
-			{ "name": "SANDBOX", "class_name": "ThreadSandbox" },
 			{ "name": "DATA_PROXY", "class_name": "DataProxy" },
 			{ "name": "USER", "class_name": "UserDO" },
 			{ "name": "ORG", "class_name": "OrgDO" },
@@ -99,6 +91,7 @@
 		{ "tag": "v9", "new_sqlite_classes": ["ChiridionMcp"] },
 		{ "tag": "v10", "new_sqlite_classes": ["OrgSlugDO"] },
 		{ "tag": "v11", "new_sqlite_classes": ["MssqlProxy"] },
-		{ "tag": "v12", "deleted_classes": ["MssqlProxy"], "new_sqlite_classes": ["DataProxy"] }
+		{ "tag": "v12", "deleted_classes": ["MssqlProxy"], "new_sqlite_classes": ["DataProxy"] },
+		{ "tag": "v13", "deleted_classes": ["ThreadSandbox"] }
 	]
 }

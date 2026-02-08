@@ -283,9 +283,9 @@ Currently in Chat.tsx:
 
 ### Proposed Data Flow
 
-**Option A: Fetch via preview WebSocket**
+**Option A: Fetch via chat WebSocket**
 
-The preview WebSocket (`/ws/thread/{threadId}`) already sends `preview_state` events with worker info. Extend this to include `is_public`:
+The chat WebSocket (`/ws/{workspace}`) already sends `preview_state` events with worker info. Extend this to include `is_public`:
 
 ```typescript
 // In ws message handler
