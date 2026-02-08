@@ -155,7 +155,6 @@ async function getAuthContextUncached(
   const currentOrgInfoPromise = currentOrgStub.getInfo();
   const [authBootstrap, orgInfo] = await Promise.all([
     userStub.getAuthBootstrap(),
-    // Get current org info directly from DO
     currentOrgInfoPromise,
   ]);
   const profile = authBootstrap.profile;

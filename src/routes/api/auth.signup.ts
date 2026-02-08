@@ -1,6 +1,6 @@
 import type { Route } from './+types/auth.signup';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { createSessionCookieHeader, createDeleteLegacySessionCookieHeader } from '@/lib/cookies.server';
+import { createSessionCookieHeader } from '@/lib/cookies.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import {
   getUserByEmail,
@@ -37,33 +37,20 @@ export async function action({ request, context }: Route.ActionArgs) {
     const env = getEnv(context);
     const authEnv = getAuthEnv(env);
 
-    // Check if user already exists
     const existingUser = await getUserByEmail(authEnv, email);
     if (existingUser) {
       return Response.json({ error: 'User already exists' }, { status: 400 });
     }
 
-    // Create user
     const { userId } = await createUser(authEnv, email, password, name ?? null);
-
-    // Create org for new user (which also creates default workspace)
     const orgName = name || email.split('@')[0];
     const { org, defaultWorkspaceId } = await createOrg(authEnv, orgName, userId);
+    const { sessionId } = await createSession(authEnv, userId, org.id, defaultWorkspaceId);
 
-    // Create session with the default workspace
-    const { sessionId } = await createSession(
-      authEnv,
-      userId,
-      org.id,
-      defaultWorkspaceId
+    return Response.json(
+      { success: true },
+      { headers: { 'Set-Cookie': createSessionCookieHeader(sessionId, request) } }
     );
-
-    // Create response with session cookie (with domain for subdomain access)
-    const headers = new Headers();
-    headers.append('Set-Cookie', createSessionCookieHeader(sessionId, request));
-    headers.append('Set-Cookie', createDeleteLegacySessionCookieHeader(request));
-
-    return Response.json({ success: true }, { headers });
   } catch (error) {
     console.error('Signup error:', error);
     return Response.json({ error: 'Signup failed' }, { status: 500 });

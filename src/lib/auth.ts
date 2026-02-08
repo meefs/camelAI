@@ -5,8 +5,7 @@ import {
   createDeleteSessionCookieHeader,
 } from './cookies.server';
 
-// Re-export cookie configuration for convenience
-export { SESSION_COOKIE_NAME, SESSION_MAX_AGE } from './cookies.server';
+export { SESSION_COOKIE_NAME, SESSION_MAX_AGE };
 
 export interface SessionCookieOptions {
   httpOnly: boolean;
@@ -23,18 +22,10 @@ export const SESSION_COOKIE_OPTIONS: SessionCookieOptions = {
   maxAge: SESSION_MAX_AGE,
 };
 
-/**
- * Get session ID from request cookies.
- * Use this in loaders/actions where you have access to the request.
- */
 export function getSessionId(request: Request): string | null {
   return getSessionIdFromRequest(request);
 }
 
-/**
- * Create a Set-Cookie header to delete the session cookie.
- * Add this to your response headers.
- */
 export function deleteSessionCookie(request: Request): string {
   return createDeleteSessionCookieHeader(request);
 }

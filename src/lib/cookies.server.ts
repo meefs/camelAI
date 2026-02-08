@@ -1,112 +1,63 @@
 /**
  * Cookie utilities for React Router routes.
- *
- * Uses the shared cookie module from workers/main/src/cookies.ts
- * for constants and domain logic.
  */
 
-import { parse } from 'cookie';
 import type { SessionData } from '../../workers/main/src/session-kv';
 import { getSession as getSessionKV } from '../../workers/main/src/session-kv';
+import { parse } from 'cookie';
 import {
-  SESSION_COOKIE,
-  LEGACY_SESSION_COOKIE,
   SESSION_MAX_AGE,
-  getCookieDomain,
-  shouldUseSecureCookie,
-  getHostname,
+  getSessionCookieName,
+  getSessionIdFromRequest as getSessionIdFromRequestBase,
   createSessionCookie,
   createDeleteSessionCookie,
-  createDeleteLegacyCookie,
-  getSessionIdFromRequest,
   withSessionCookies,
   withDeleteSessionCookies,
 } from '../../workers/main/src/cookies';
 
-// Re-export constants for backwards compatibility
-export const SESSION_COOKIE_NAME = SESSION_COOKIE;
-export const LEGACY_SESSION_COOKIE_NAME = LEGACY_SESSION_COOKIE;
 export { SESSION_MAX_AGE };
 
-interface EnvWithSessions {
-  SESSIONS: KVNamespace;
+// For backwards compat - returns the cookie name for the current request
+export function getSessionCookieNameForRequest(request: Request): string {
+  const hostname = request.headers.get('host')?.split(':')[0];
+  return getSessionCookieName(hostname);
 }
 
-/**
- * Parse cookies from a request
- */
+// Alias for backwards compat
+export const SESSION_COOKIE_NAME = 'chiridion_session_v3'; // Default/prod name
+
+export function getSessionIdFromRequest(request: Request): string | null {
+  return getSessionIdFromRequestBase(request);
+}
+
 export function parseCookies(request: Request): Record<string, string | undefined> {
   const cookieHeader = request.headers.get('Cookie');
   return cookieHeader ? parse(cookieHeader) : {};
 }
 
-/**
- * Get session ID from request cookies
- */
-export { getSessionIdFromRequest };
-
-/**
- * Alias for getSessionIdFromRequest for convenience
- */
-export function getSessionId(request: Request): string | null {
-  return getSessionIdFromRequest(request);
-}
-
-/**
- * Create a Set-Cookie header value for the session
- */
-export function createSessionCookieHeader(sessionId: string, request: Request): string {
-  return createSessionCookie(sessionId, request);
-}
-
-/**
- * Create a Set-Cookie header to delete the session cookie
- */
-export function createDeleteSessionCookieHeader(request: Request): string {
-  return createDeleteSessionCookie(request);
-}
-
-/**
- * Create a Set-Cookie header to delete the legacy session cookie
- */
-export function createDeleteLegacySessionCookieHeader(request: Request): string {
-  return createDeleteLegacyCookie(request);
-}
-
-/**
- * Add session cookie to response headers
- */
-export function withSessionCookie(
-  headers: Headers,
-  sessionId: string,
-  request: Request
-): Headers {
-  return withSessionCookies(headers, sessionId, request);
-}
-
-/**
- * Add delete session cookie to response headers
- */
-export function withDeleteSessionCookie(
-  headers: Headers,
-  request: Request
-): Headers {
-  return withDeleteSessionCookies(headers, request);
-}
-
-/**
- * Get a specific cookie value from the request
- */
 export function getCookie(request: Request, name: string): string | null {
   const cookies = parseCookies(request);
   return cookies[name] || null;
 }
 
-/**
- * Get session data from KV storage
- */
+export function createSessionCookieHeader(sessionId: string, request: Request): string {
+  return createSessionCookie(sessionId, request);
+}
+
+export function createDeleteSessionCookieHeader(request: Request): string {
+  return createDeleteSessionCookie(request);
+}
+
+export function withSessionCookie(headers: Headers, sessionId: string, request: Request): Headers {
+  return withSessionCookies(headers, sessionId, request);
+}
+
+export function withDeleteSessionCookie(headers: Headers, request: Request): Headers {
+  return withDeleteSessionCookies(headers, request);
+}
+
 export async function getSession(
-  env: EnvWithSessions,
+  env: { SESSIONS: KVNamespace },
   sessionId: string
 ): Promise<SessionData | null> {
   return getSessionKV(env.SESSIONS, sessionId);
