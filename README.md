@@ -1,94 +1,74 @@
-# Chiridion App Starter
+# Chiridion App
 
-Starter template for Chiridion: Next.js UI + Cloudflare Workers + Containers, with streaming AI over WebSockets.
+Chiridion is an AI coding assistant platform built on Cloudflare Workers + Durable Objects with per-workspace Fly Sprites runtimes.
 
-## Getting Started
+## Prerequisites
 
-Read the OpenNext Cloudflare docs at https://opennext.js.org/cloudflare.
+- Node.js 22+
+- Bun
+- Cloudflare account
+- Fly Sprites token (`SPRITES_TOKEN`)
 
-## Develop
-
-Run the local dev stack (wrangler dev + next dev + proxy):
+## Local Development
 
 ```bash
-npm run dev
-# or similar package manager command
+bun run dev
 ```
 
-The proxy routes `/ws/*` and `/client/v4/*` to Wrangler and everything else to Next:
+This runs React Router dev with Cloudflare bindings.
+Default app URL: `http://localhost:3001` (override with `VITE_DEV_PORT`).
 
-- App: http://localhost:3100
-- Wrangler: http://localhost:8787
-- Next: http://localhost:3001
-
-Override ports with `PROXY_DEV_PORT`, `WRANGLER_DEV_PORT`, `NEXT_DEV_PORT`.
-
-You can start editing the UI in `src/app/`.
-
-## Preview
-
-Preview the application locally on the Cloudflare runtime:
+## Build
 
 ```bash
-npm run preview
-# or similar package manager command
+bun run build
+```
+
+## Test
+
+```bash
+bun run test
+bun run test:run
+bun run test:workers
+bun run test:e2e
 ```
 
 ## Deploy
 
-Deploy the application to Cloudflare:
-
 ```bash
-npm run deploy:prod
-# or similar package manager command
+bun run deploy:main:prod
+bun run deploy:main:staging
+bun run deploy:main:dev-miguel
+bun run deploy:main:dev-illiana
 ```
 
-Staging:
+Dispatcher deploys:
 
 ```bash
-npm run deploy:staging
+bun run deploy:dispatcher:prod
+bun run deploy:dispatcher:staging
 ```
 
-## R2 Workspace Persistence
+## Sprites Runtime Notes
 
-The sandbox container downloads/uploads workspace tar snapshots from R2 at startup/shutdown.
-Workspace root defaults to `/home/claude`.
-
-- Bucket: `chiridion-sandbox` (created via `wrangler r2 bucket create chiridion-sandbox`)
-- Required secrets (R2 S3 API keys): `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-- Required vars: `R2_ACCOUNT_ID`, `R2_BUCKET_NAME` (set in `wrangler.jsonc`)
-- Optional: `R2_MOUNT_DIR`, `R2_MOUNT_READONLY=1`
-
-Set secrets:
+- The workspace runtime is implemented in `workers/main/src/workspace-container.ts`.
+- The runner source at `sandbox/claude-runner.mjs` is embedded into the worker via:
 
 ```bash
-npx wrangler secret put AWS_ACCESS_KEY_ID
-npx wrangler secret put AWS_SECRET_ACCESS_KEY
+bun run gen:embedded-runner
 ```
 
-## Sandbox Starter Worker (WFP)
+This generation step is already included in `dev`, `build`, `typecheck`, and worker test scripts.
 
-On first run, the sandbox seeds a starter Workers for Platforms project into `$HOME/project` from `sandbox/starter-worker` (the template is baked into the container image via `Dockerfile`).
+## Core Environment Variables
 
-Inside the sandbox, you can deploy it via the app’s proxy endpoint:
+Set in `.dev.vars` (and secrets/vars for deployed environments):
 
-```bash
-cd "$HOME/project"
-npm run deploy
-```
-
-This runs `wrangler deploy` inside the sandbox. The app injects:
-
-- `CLOUDFLARE_API_BASE_URL` pointing to our API proxy (`${WORKER_BASE_URL}/client/v4`)
-- `CLOUDFLARE_API_TOKEN` as a per-org deploy token that maps to a fixed `script_name` in KV
-
-The API proxy validates the token, looks up the mapped script name, and rewrites API requests to deploy to the correct WFP namespace/script.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `SPRITES_TOKEN`
+- `SPRITES_API_BASE_URL` (optional)
+- `SPRITES_NAME_PREFIX` (optional)
+- `WORKER_BASE_URL` (must be publicly reachable from sprites)
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_PROVISIONING_KEY`
+- `TOKEN_SIGNING_SECRET`
+- `INTEGRATION_SECRET_KEY`

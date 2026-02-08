@@ -59,10 +59,9 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
    - `admin-cli/` - Local-only admin CLI for querying live environments
 
 3. **Sandbox** (`sandbox/`)
-   - `entrypoint.sh` - Legacy container startup script (kept for reference)
    - `claude-runner.mjs` - Claude SDK runner process executed via sprite exec
-   - `control-plane.mjs` - Legacy container control plane (sprites runtime now handles fs/exec via API)
-   - `sync.mjs` - R2 tar snapshot download (migration tool)
+   - `memory-logger.mjs` - Runner helper for loading user profile context
+   - `session-search/` - Session search CLI/daemon used inside workspaces
    - `skills/` - Agent skills (developing-software, file-sharing, frontend-design)
 
 ## Key Files
@@ -117,10 +116,9 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 ### Sandbox
 | File | Purpose |
 |------|---------|
-| `sandbox/entrypoint.sh` | Legacy container startup script |
 | `sandbox/claude-runner.mjs` | Claude SDK runner executable (stdin/stdout NDJSON) |
-| `sandbox/control-plane.mjs` | Legacy container control-plane API |
-| `sandbox/requirements.txt` | Python data analysis packages |
+| `sandbox/memory-logger.mjs` | Runner helper utilities |
+| `sandbox/session-search/src/cli.mjs` | Session search CLI entrypoint |
 | `sandbox/skills/developing-software/SKILL.md` | Software development skill documentation |
 
 ## Configuration Files
@@ -248,11 +246,10 @@ MCP-driven thread prompts (for example connection setup and bug report capture) 
 ### Workspace Persistence (JuiceFS)
 JuiceFS provides a FUSE-based distributed filesystem with SQLite metadata and R2 data storage:
 
-1. Container entrypoint downloads JuiceFS SQLite metadata from R2
-2. If no JuiceFS metadata exists but an old tar backup is found, migrates data
-3. JuiceFS mounts at `R2_MOUNT_DIR` (defaults to `/home/claude`) with writeback caching
-4. Data is stored in R2 at `{bucket}/chiridion-{org}-{workspace}/`
-5. Background metadata upload loop runs every 60s
+1. Sprites runtime mounts workspace storage using JuiceFS-backed R2 persistence.
+2. Mount location is configured by `R2_MOUNT_DIR` (currently `/home/claude` in wrangler env configs).
+3. Data is stored in R2 at `{bucket}/chiridion-{org}-{workspace}/`.
+4. Runtime paths perform on-demand startup and recovery (no container entrypoint boot sequence).
 
 ### Workspace Runtime Provisioning
 Sprites are provisioned eagerly when a workspace is created (`WorkspaceDO.createWorkspace` calls `WorkspaceContainer.provisionSpriteForWorkspace`).
@@ -391,6 +388,7 @@ Create `.dev.vars`:
 OPENROUTER_API_KEY=your_openrouter_key_here
 OPENROUTER_PROVISIONING_KEY=your_provisioning_key_here
 SPRITES_TOKEN=your_sprites_api_token_here
+WORKER_BASE_URL=https://your-ngrok-subdomain.ngrok-free.app
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
 GITHUB_CLIENT_ID=your_github_client_id
@@ -405,7 +403,7 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 | `SPRITES_API_BASE_URL` | Optional Sprites API base URL (default: `https://api.sprites.dev`) |
 | `SPRITES_NAME_PREFIX` | Optional sprite name prefix (default: `chiridion`) |
 | `SPRITES_EAGER_PROVISION_ON_CREATE` | Set to `0` to disable eager sprite creation during workspace creation (default: enabled) |
-| `WORKER_BASE_URL` | Base URL for the main worker |
+| `WORKER_BASE_URL` | Base URL for the main worker (must be publicly reachable from sprites; use ngrok in local dev) |
 | `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
 | `TOKEN_SIGNING_SECRET` | Secret for signing auth tokens |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
@@ -631,9 +629,9 @@ chiridion-app/
 │   ├── dispatcher/src/        # WfP subdomain router
 │   └── admin-cli/             # Admin CLI tool
 ├── sandbox/
-│   ├── entrypoint.sh          # Container startup
 │   ├── claude-runner.mjs      # Claude SDK runner executable
-│   ├── control-plane.mjs      # Container management API
+│   ├── memory-logger.mjs      # User profile loader helper
+│   ├── session-search/        # Session search CLI/daemon
 │   └── skills/                # Agent skills
 ├── tests/                     # Vitest unit tests
 ├── e2e/                       # Playwright E2E tests
@@ -721,17 +719,16 @@ waitUntil(
 
 ## Known Issues & Solutions
 
-See `STREAMING_BUG_SUMMARY.md` for streaming-related bugs and fixes.
+See repository history/PR context for legacy streaming bug investigations and fixes.
 
 ### Common Issues
 
 1. **Durable Objects not working locally**: Use `bun run dev` (wrangler-based dev)
 2. **Streaming not working**: Ensure `includePartialMessages: true` in `sandbox/claude-runner.mjs`
 3. **API key not found**: Check `.dev.vars` has `OPENROUTER_API_KEY`
-4. **Docker cache stale**: Add version comment to `entrypoint.sh` to invalidate
-5. **Session not persisting**: Check cookies and DO worker is running
-6. **JuiceFS mount fails**: Check `/dev/fuse` exists, verify R2 credentials
-7. **Type errors after route changes**: Run `bun run typecheck` to regenerate types
+4. **Session not persisting**: Check cookies and DO worker is running
+5. **JuiceFS mount fails**: Check `/dev/fuse` exists, verify R2 credentials
+6. **Type errors after route changes**: Run `bun run typecheck` to regenerate types
 
 ## Testing Strategy
 

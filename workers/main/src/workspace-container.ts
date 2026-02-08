@@ -774,30 +774,24 @@ export class WorkspaceContainer {
     }
 
     const workerBaseUrl = this.env.WORKER_BASE_URL;
-    const useDirectAnthropic = this.isLocalOnlyWorkerBaseUrl(workerBaseUrl);
-
-    if (useDirectAnthropic) {
-      // Local worker URLs are not reachable from sprites. In local dev, route Claude SDK
-      // directly to Anthropic so chat remains usable.
-      envVars.ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
-      envVars.ANTHROPIC_API_KEY = this.env.ANTHROPIC_API_KEY;
-      console.warn(
-        '[WorkspaceContainer] WORKER_BASE_URL is local-only; using direct Anthropic API for sprite runtime',
-        { workerBaseUrl }
+    if (this.isLocalOnlyWorkerBaseUrl(workerBaseUrl)) {
+      throw new Error(
+        `WORKER_BASE_URL must be publicly reachable from sprites (got ${workerBaseUrl}). ` +
+        'Use an ngrok URL for local development.'
       );
-    } else {
-      const claudeApiToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
-        org_id: orgId,
-        org_slug: orgSlug,
-        user_id: userId,
-        scopes: ['claude_api'],
-        exp: Date.now() + TOKEN_TTL_MS,
-        workspace_id: workspaceId,
-        name: `claude-api-${workspaceId}`,
-      });
-      envVars.ANTHROPIC_BASE_URL = `${workerBaseUrl}/api/claude`;
-      envVars.ANTHROPIC_API_KEY = claudeApiToken;
     }
+
+    const claudeApiToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
+      org_id: orgId,
+      org_slug: orgSlug,
+      user_id: userId,
+      scopes: ['claude_api'],
+      exp: Date.now() + TOKEN_TTL_MS,
+      workspace_id: workspaceId,
+      name: `claude-api-${workspaceId}`,
+    });
+    envVars.ANTHROPIC_BASE_URL = `${workerBaseUrl}/api/claude`;
+    envVars.ANTHROPIC_API_KEY = claudeApiToken;
 
     const keyRecord = await orgStub.getOpenRouterKeyRecord();
     if (keyRecord) {
@@ -848,9 +842,7 @@ export class WorkspaceContainer {
     envVars.DATA_PROXY_URL = `${workerBaseUrl}/api`;
     this.dataProxyTokenExpiry = dataProxyTokenExpiry;
 
-    if (!useDirectAnthropic) {
-      envVars.MCP_SERVER_URL = `${workerBaseUrl}/mcp`;
-    }
+    envVars.MCP_SERVER_URL = `${workerBaseUrl}/mcp`;
 
     return envVars;
   }

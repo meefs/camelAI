@@ -5,7 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"gen:embedded-runner": "node scripts/generate-embedded-claude-runner.mjs",
-		"dev": "bun run gen:embedded-runner && ./scripts/dev.sh",
+		"dev": "bun run gen:embedded-runner && react-router dev",
 		"build": "bun run gen:embedded-runner && react-router build",
 		"build:cf": "bun run gen:embedded-runner && react-router build",
 		"start": "wrangler dev",
