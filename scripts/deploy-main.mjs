@@ -40,11 +40,12 @@ if (!fs.existsSync(path.join(rootDir, 'build/server/index.js'))) {
 console.log(`Reading ${sourceConfig}...`);
 let configContent = fs.readFileSync(sourceConfig, 'utf8');
 
-// Fix paths: main, assets directory, and Dockerfile should be relative to build/server
+// Fix paths: main, assets directory, and Dockerfiles should be relative to build/server
 configContent = configContent
   .replace(/"build\/server\/index\.js"/g, '"index.js"')
   .replace(/"build\/client"/g, '"../client"')
-  .replace(/"\.\/Dockerfile"/g, '"../../Dockerfile"');
+  // Fix all Dockerfile paths (./Dockerfile, ./containers/*/Dockerfile, etc.)
+  .replace(/"\.\/([^"]*Dockerfile)"/g, '"../../$1"');
 
 // Write to build/server
 console.log(`Writing ${targetConfig}...`);
