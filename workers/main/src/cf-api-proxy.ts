@@ -379,6 +379,7 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
   }> = [];
   let configPath: string | undefined;
   let bindings: WorkerBinding[] | undefined;
+  let rawMetadataJson: string | undefined;
   const maxConfigLogChars = 20000;
   const maxPartLogChars = 2000;
 
@@ -417,6 +418,7 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
         if (metadata.bindings) {
           bindings = metadata.bindings;
         }
+        rawMetadataJson = bodyText;
       } catch {
         // Ignore JSON parse errors
       }
@@ -446,134 +448,91 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
     }
   }
 
-  return { files, wranglerConfigs, formParts, configPath, bindings };
+  return { files, wranglerConfigs, formParts, configPath, bindings, rawMetadataJson };
 }
 
 /**
- * Transform r2_bucket bindings in the multipart upload body's metadata part into
- * virtual R2 service bindings. Scans the multipart body at the byte level to
- * find the metadata JSON part, replaces each r2_bucket binding with a service
- * binding to R2VirtualBucket, and reconstructs only the metadata bytes — leaving
- * binary parts (wasm, etc.) completely untouched.
- *
- * Returns the modified body or the original if no r2_bucket bindings are found.
+ * Transform r2_bucket bindings in the multipart upload body by finding the raw
+ * metadata JSON (already extracted by parseMultipartUploads) in the body bytes
+ * and replacing it with modified metadata. This avoids fragile multipart parsing
+ * and works regardless of line ending conventions.
  */
 function transformR2Bindings(
   body: ArrayBuffer,
-  contentType: string,
+  rawMetadataJson: string,
+  bindings: WorkerBinding[],
   workspaceId: string,
   workerServiceName: string
 ): ArrayBuffer {
-  const boundaryMatch = contentType.match(/boundary=([^;]+)/i);
-  const boundary = boundaryMatch?.[1]?.trim().replace(/^"|"$/g, '');
-  if (!boundary) return body;
+  const r2Bindings = bindings.filter(b => b.type === 'r2_bucket');
+  if (r2Bindings.length === 0) return body;
 
-  const bytes = new Uint8Array(body);
+  // Parse and transform the metadata
+  let metadata: WorkerMetadata;
+  try {
+    metadata = JSON.parse(rawMetadataJson);
+  } catch {
+    console.warn('[cf-api-proxy] failed to parse metadata JSON for R2 binding transformation');
+    return body;
+  }
+
+  if (!metadata.bindings) return body;
+
+  metadata.bindings = metadata.bindings.map(binding => {
+    if (binding.type !== 'r2_bucket') return binding;
+    return {
+      type: 'service',
+      name: binding.name,
+      service: workerServiceName,
+      entrypoint: 'R2VirtualBucket',
+      props: { workspaceId, bucketName: binding.bucket_name ?? binding.name },
+    };
+  });
+
+  const newMetadataJson = JSON.stringify(metadata);
+
+  // Find the raw metadata bytes in the body and replace them.
+  // Metadata JSON is always ASCII, so text bytes == body bytes for this region.
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-  const delimiterBytes = encoder.encode(`--${boundary}`);
+  const oldBytes = encoder.encode(rawMetadataJson);
+  const newBytes = encoder.encode(newMetadataJson);
+  const bodyBytes = new Uint8Array(body);
 
-  // Find all delimiter positions in the body
-  const delimiterPositions: number[] = [];
-  for (let i = 0; i <= bytes.length - delimiterBytes.length; i++) {
-    let match = true;
-    for (let j = 0; j < delimiterBytes.length; j++) {
-      if (bytes[i + j] !== delimiterBytes[j]) {
-        match = false;
-        break;
-      }
+  // Byte-level search for the old metadata
+  let matchPos = -1;
+  outer: for (let i = 0; i <= bodyBytes.length - oldBytes.length; i++) {
+    for (let j = 0; j < oldBytes.length; j++) {
+      if (bodyBytes[i + j] !== oldBytes[j]) continue outer;
     }
-    if (match) {
-      delimiterPositions.push(i);
-    }
+    matchPos = i;
+    break;
   }
 
-  if (delimiterPositions.length < 2) return body;
-
-  // Find the metadata part by scanning each part's headers
-  for (let p = 0; p < delimiterPositions.length - 1; p++) {
-    const partStart = delimiterPositions[p]! + delimiterBytes.length;
-    // Skip the CRLF after delimiter
-    let headerStart = partStart;
-    if (bytes[headerStart] === 0x0d && bytes[headerStart + 1] === 0x0a) {
-      headerStart += 2;
-    }
-
-    // Find the header/body separator (CRLFCRLF)
-    let headerEnd = -1;
-    for (let i = headerStart; i < bytes.length - 3; i++) {
-      if (bytes[i] === 0x0d && bytes[i + 1] === 0x0a && bytes[i + 2] === 0x0d && bytes[i + 3] === 0x0a) {
-        headerEnd = i;
-        break;
-      }
-    }
-    if (headerEnd === -1) continue;
-
-    const headerText = decoder.decode(bytes.slice(headerStart, headerEnd));
-    const nameMatch = headerText.match(/name="([^"]+)"/i);
-    if (nameMatch?.[1] !== 'metadata') continue;
-
-    // Don't transform if it has a filename (would be a file part named metadata)
-    if (/filename="/i.test(headerText)) continue;
-
-    // Found the metadata part — extract its body
-    const bodyStart = headerEnd + 4; // skip CRLFCRLF
-    const nextDelimiter = delimiterPositions[p + 1]!;
-    // Part body ends at CRLF before next delimiter
-    let bodyEnd = nextDelimiter;
-    if (bodyEnd >= 2 && bytes[bodyEnd - 2] === 0x0d && bytes[bodyEnd - 1] === 0x0a) {
-      bodyEnd -= 2;
-    }
-
-    const metadataJson = decoder.decode(bytes.slice(bodyStart, bodyEnd));
-    let metadata: WorkerMetadata;
-    try {
-      metadata = JSON.parse(metadataJson);
-    } catch {
-      console.warn('[cf-api-proxy] failed to parse metadata JSON for R2 binding transformation');
-      return body;
-    }
-
-    if (!metadata.bindings) return body;
-
-    // Find r2_bucket bindings and replace them with virtual R2 service bindings
-    const r2Bindings = metadata.bindings.filter(b => b.type === 'r2_bucket');
-    if (r2Bindings.length === 0) return body;
-
-    metadata.bindings = metadata.bindings.map(binding => {
-      if (binding.type !== 'r2_bucket') return binding;
-      return {
-        type: 'service',
-        name: binding.name,
-        service: workerServiceName,
-        entrypoint: 'R2VirtualBucket',
-        props: { workspaceId, bucketName: binding.bucket_name ?? binding.name },
-      };
+  if (matchPos === -1) {
+    console.warn('[cf-api-proxy] could not find metadata bytes in body for R2 transformation', {
+      metadataLength: rawMetadataJson.length,
+      bodyLength: body.byteLength,
     });
-
-    const newMetadataJson = JSON.stringify(metadata);
-    const newMetadataBytes = encoder.encode(newMetadataJson);
-
-    // Reconstruct the body: everything before the metadata body, new metadata, everything after
-    const before = bytes.slice(0, bodyStart);
-    const after = bytes.slice(bodyEnd);
-    const result = new Uint8Array(before.length + newMetadataBytes.length + after.length);
-    result.set(before, 0);
-    result.set(newMetadataBytes, before.length);
-    result.set(after, before.length + newMetadataBytes.length);
-
-    console.log('[cf-api-proxy] transformed R2 bindings to virtual buckets', {
-      workspaceId,
-      workerServiceName,
-      bindings: r2Bindings.map(b => ({ name: b.name, bucket_name: b.bucket_name })),
-      originalSize: body.byteLength,
-      newSize: result.length,
-    });
-
-    return result.buffer as ArrayBuffer;
+    return body;
   }
 
-  return body;
+  // Reconstruct: before + new metadata + after
+  const before = bodyBytes.slice(0, matchPos);
+  const after = bodyBytes.slice(matchPos + oldBytes.length);
+  const result = new Uint8Array(before.length + newBytes.length + after.length);
+  result.set(before, 0);
+  result.set(newBytes, before.length);
+  result.set(after, before.length + newBytes.length);
+
+  console.log('[cf-api-proxy] transformed R2 bindings to virtual buckets', {
+    workspaceId,
+    workerServiceName,
+    bindings: r2Bindings.map(b => ({ name: b.name, bucket_name: b.bucket_name })),
+    originalSize: body.byteLength,
+    newSize: result.length,
+  });
+
+  return result.buffer as ArrayBuffer;
 }
 
 async function callCloudflareApi<T>(
@@ -1218,12 +1177,17 @@ export async function proxyCloudflareApi(
     }
   }
 
-  // Transform r2_bucket bindings into virtual R2 service bindings
+  // Transform r2_bucket bindings into virtual R2 service bindings.
+  // uploadInfo is already parsed above; reuse rawMetadataJson + bindings from it.
   if (body && isUploadRequest(pathname, method) && env.CF_WORKER_NAME) {
     const contentType = request.headers.get('Content-Type') ?? '';
     if (contentType.toLowerCase().includes('multipart/form-data')) {
-      body = transformR2Bindings(body, contentType, workspaceId, env.CF_WORKER_NAME);
-      headers.set('Content-Length', String(body.byteLength));
+      // Re-parse if uploadInfo wasn't computed yet (shouldn't happen, but be safe)
+      const uploadInfo2 = parseMultipartUploads(body, contentType);
+      if (uploadInfo2?.rawMetadataJson && uploadInfo2?.bindings) {
+        body = transformR2Bindings(body, uploadInfo2.rawMetadataJson, uploadInfo2.bindings, workspaceId, env.CF_WORKER_NAME);
+        headers.set('Content-Length', String(body.byteLength));
+      }
     }
   }
 
