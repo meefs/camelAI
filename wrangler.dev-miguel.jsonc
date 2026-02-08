@@ -20,7 +20,8 @@
 		"CF_GATEWAY_NAME": "chiridion",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
 		"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai",
-		"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
+		"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai",
+		"CF_WORKER_NAME": "chiridion-app-dev-miguel"
 		// OPENROUTER_PROVISIONING_KEY is set via secrets
 	},
 	"assets": {
@@ -67,10 +68,10 @@
 			"max_instances": 5
 		},
 		{
-			"name": "chiridion-app-dev-miguel-mssqlproxy",
+			"name": "chiridion-app-dev-miguel-dataproxy",
 			"class_name": "DataProxy",
 			"image": "./containers/data-proxy/Dockerfile",
-			"instance_type": { "vcpu": 0.5, "memory_mib": 512, "disk_mb": 1000 },
+			"instance_type": "basic",
 			"max_instances": 1
 		}
 	],

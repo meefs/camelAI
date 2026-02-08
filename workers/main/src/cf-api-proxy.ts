@@ -1178,11 +1178,9 @@ export async function proxyCloudflareApi(
   }
 
   // Transform r2_bucket bindings into virtual R2 service bindings.
-  // uploadInfo is already parsed above; reuse rawMetadataJson + bindings from it.
   if (body && isUploadRequest(pathname, method) && env.CF_WORKER_NAME) {
     const contentType = request.headers.get('Content-Type') ?? '';
     if (contentType.toLowerCase().includes('multipart/form-data')) {
-      // Re-parse if uploadInfo wasn't computed yet (shouldn't happen, but be safe)
       const uploadInfo2 = parseMultipartUploads(body, contentType);
       if (uploadInfo2?.rawMetadataJson && uploadInfo2?.bindings) {
         body = transformR2Bindings(body, uploadInfo2.rawMetadataJson, uploadInfo2.bindings, workspaceId, env.CF_WORKER_NAME);
