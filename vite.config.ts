@@ -46,8 +46,25 @@ function suppressUndiciTerminatedErrors(): Plugin {
   };
 }
 
-export default defineConfig(({ command }) => ({
-  plugins: [
+export default defineConfig(({ command }) => {
+  // Allow common tunnel hosts for local development (e.g., ngrok).
+  // Additional hosts can be provided via VITE_ALLOWED_HOSTS=host1,host2.
+  // Leading dot entries allow subdomains (e.g. ".ngrok-free.app").
+  const extraAllowedHosts = (process.env.VITE_ALLOWED_HOSTS || '')
+    .split(',')
+    .map((host) => host.trim())
+    .filter(Boolean);
+  const allowedHosts = Array.from(new Set([
+    'host.docker.internal',
+    '.ngrok-free.app',
+    '.ngrok-free.dev',
+    '.ngrok.app',
+    '.ngrok.io',
+    ...extraAllowedHosts,
+  ]));
+
+  return {
+    plugins: [
     suppressUndiciTerminatedErrors(),
     cloudflare({
       configPath: './wrangler.jsonc',
@@ -55,35 +72,36 @@ export default defineConfig(({ command }) => ({
     }),
     reactRouter(),
     tsconfigPaths({ ignoreConfigErrors: true }),
-  ],
-  // Configure SSR environment to use Cloudflare's worker entry as the rollup input
-  // This ensures Durable Object exports are included in the bundle
-  environments: {
-    ssr: {
-      build: {
-        rollupOptions: {
-          input: 'virtual:cloudflare/worker-entry',
+    ],
+    // Configure SSR environment to use Cloudflare's worker entry as the rollup input
+    // This ensures Durable Object exports are included in the bundle
+    environments: {
+      ssr: {
+        build: {
+          rollupOptions: {
+            input: 'virtual:cloudflare/worker-entry',
+          },
         },
       },
     },
-  },
-  build: {
-    target: 'esnext',
-    // Only enable source maps in development to avoid exposing server code in production
-    sourcemap: command !== 'build',
-  },
-  optimizeDeps: {
-    include: ['react', 'react-dom', 'react-dom/client', 'react-router'],
-    // Disable dep discovery during builds to avoid WebSocket error in @cloudflare/vite-plugin
-    ...(command === 'build' && { noDiscovery: true }),
-  },
-  server: {
-    port: 3001,
-    strictPort: false,
-    host: true,
-    allowedHosts: ['host.docker.internal'],
-    watch: {
-      ignored: ['**/packages/**', '**/workers/**', '**/sandbox/**'],
+    build: {
+      target: 'esnext',
+      // Only enable source maps in development to avoid exposing server code in production
+      sourcemap: command !== 'build',
     },
-  },
-}));
+    optimizeDeps: {
+      include: ['react', 'react-dom', 'react-dom/client', 'react-router'],
+      // Disable dep discovery during builds to avoid WebSocket error in @cloudflare/vite-plugin
+      ...(command === 'build' && { noDiscovery: true }),
+    },
+    server: {
+      port: 3001,
+      strictPort: false,
+      host: true,
+      allowedHosts,
+      watch: {
+        ignored: ['**/packages/**', '**/workers/**', '**/sandbox/**'],
+      },
+    },
+  };
+});

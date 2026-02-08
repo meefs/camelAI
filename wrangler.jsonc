@@ -18,7 +18,6 @@
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-local",
 		"CF_WORKER_NAME": "chiridion-app",
 		// For containers, use host.docker.internal to reach the host (Vite dev on port 3001)
-		"WORKER_BASE_URL": "http://host.docker.internal:3001",
 		// Claude API proxy (CF AI Gateway)
 		"CF_GATEWAY_NAME": "chiridion",
 		"BEDROCK_REGION": "us-west-2",
