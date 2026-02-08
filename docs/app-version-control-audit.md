@@ -6,44 +6,34 @@ This audit verifies how "version control" currently works for deployed apps, bas
 ## Executive Summary
 - There is no first-class app version history model in Durable Objects today.
 - App deployment metadata is stored as one row per `script_name` and overwritten on redeploy.
-- Filesystem snapshots are created by the sandbox build script (`vite-build.mjs`) after successful builds, and old snapshots are pruned to 50 per project directory.
+- Filesystem snapshots are not created automatically by the build command anymore.
 - Revert is currently a manual/agent workflow (`juicefs clone ...`), not an API-backed operation.
 
 ## Verification of Your High-Level Statement
 
 ### 1) "We make a clone every time the agent deploys"
-Partially true.
+False today.
 
 What is implemented:
-- Snapshot clone is created in `sandbox/vite-build.mjs` via:
-  - `juicefs clone "{projectPath}" "{snapshotPath}"`
-- This happens in `createSnapshot()` after successful build completion.
+- Deploy command still runs `yarn build && wrangler deploy ...` in starter projects.
+- Build now uses `react-router build` and does not create snapshots by itself.
 
 Important caveat:
-- Snapshots are tied to **build**, not strictly to deploy side effects.
-- If deploy is run without this build path, no snapshot is guaranteed.
-- Snapshot failure is non-fatal (deploy/build can continue even if snapshot fails).
-- `--no-snapshot` skips snapshot creation.
+- Any snapshot behavior is now manual (`juicefs clone ...`) unless a separate automation path is added.
 
 Code:
-- `sandbox/vite-build.mjs`
 - `sandbox/skills/developing-software/templates/chiridion-starter/package.json` (`"deploy": "yarn build && wrangler deploy ..."`)
 
 ### 2) "We store the 50 latest clones"
-True, with nuance.
+False today.
 
 What is implemented:
-- `MAX_SNAPSHOTS = 50` in `sandbox/vite-build.mjs`.
-- Cleanup sorts by mtime and removes entries beyond 50 in that project's snapshot folder.
+- There is no automatic retention policy in code for snapshots now.
 
 Nuance:
-- Retention is per `~/.chiridion/snapshots/{projectName}`.
-- Manual named snapshots and auto snapshots share the same pool and can evict each other.
+- Snapshots persist until manually removed.
 
-Code:
-- `sandbox/vite-build.mjs`
-
-### 3) "We can roll back by cloning one of the 50 latest back into source"
+### 3) "We can roll back by cloning a snapshot back into source"
 Functionally true as an agent workflow.
 
 What is implemented:
@@ -284,4 +274,3 @@ If you add a version model, include:
 3. Add a "safety snapshot before revert" step to the agent instruction to reduce risk.
 4. Keep workspace-bound checks (existing app flows already do this).
 5. Expect some versions to be missing snapshots and show explicit status in UI.
-

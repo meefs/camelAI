@@ -513,9 +513,9 @@ Features include:
 
 JuiceFS clone creates instant project snapshots. This is faster than git and captures the complete project state including node_modules and build artifacts.
 
-### Automatic Build Snapshots
+### Snapshot Location
 
-**Every successful `yarn build` automatically creates a snapshot.** These are stored outside the project at:
+Snapshots are stored outside the project at:
 
 ```
 ~/.chiridion/snapshots/{projectName}/
@@ -524,7 +524,7 @@ JuiceFS clone creates instant project snapshots. This is faster than git and cap
   ...
 ```
 
-The last 50 snapshots are kept automatically. Use `--no-snapshot` to skip: `yarn build --no-snapshot`
+Create snapshots manually with `juicefs clone`.
 
 ### Manual Snapshots
 
@@ -546,7 +546,7 @@ When something breaks, restore instantly:
 # List available snapshots
 ls ~/.chiridion/snapshots/my-app/
 
-# Restore from a timestamped build snapshot
+# Restore from a timestamped snapshot
 rm -rf ~/my-app
 juicefs clone ~/.chiridion/snapshots/my-app/2026-02-04T15-30-00-000Z ~/my-app
 
@@ -555,9 +555,9 @@ rm -rf ~/my-app
 juicefs clone ~/.chiridion/snapshots/my-app/auth-working ~/my-app
 ```
 
-### When to Create Manual Snapshots
+### When to Create Snapshots
 
-Since builds auto-snapshot, manual snapshots are mainly useful for:
+Snapshots are useful for:
 
 1. **Before risky non-build changes** - Config changes, dependency updates
 2. **Named milestones** - "auth-working", "before-refactor" are easier to find than timestamps

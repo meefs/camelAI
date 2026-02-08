@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Version: 2026-02-04-v78-vite-daemon
+# Version: 2026-02-08-v79-react-router-build
 # Slim container with Node, Yarn PnP, Python for Claude SDK sandbox
 
 EXPOSE 8080 9000
@@ -66,7 +66,7 @@ COPY --chmod=755 sandbox/skills/developing-software/templates ./skills/developin
 
 # Layer 6: App code (changes frequently)
 COPY --chmod=755 sandbox/entrypoint.sh ./
-COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/memory-logger.mjs sandbox/vite-build.mjs sandbox/vite-daemon.mjs ./
+COPY --chmod=755 sandbox/ws-server.mjs sandbox/sync.mjs sandbox/control-plane.mjs sandbox/memory-logger.mjs ./
 COPY --chmod=755 sandbox/session-search ./session-search
 COPY --chmod=755 sandbox/skills/developing-software/scripts ./skills/developing-software/scripts
 COPY --chmod=644 sandbox/skills/developing-software/SKILL.md sandbox/skills/developing-software/AI-APPS.md ./skills/developing-software/
