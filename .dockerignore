@@ -1,7 +1,6 @@
-# Ignore template install artifacts - yarn install runs at container startup
+# Ignore template install artifacts - bun install runs at container startup
 sandbox/skills/developing-software/templates/*/node_modules
-sandbox/skills/developing-software/templates/*/.yarn/cache
-sandbox/skills/developing-software/templates/*/.yarn/unplugged
+sandbox/skills/developing-software/templates/*/.bun
 sandbox/skills/developing-software/templates/*/.pnp.cjs
 sandbox/skills/developing-software/templates/*/.pnp.loader.mjs
 

@@ -74,19 +74,19 @@ A 30x speedup means you can iterate 30 times faster. This compounds: what takes 
 
 3. **Run the test to confirm it fails** - Verify you've reproduced the bug
    ```bash
-   yarn test
+   bun test
    ```
 
 4. **Fix the code** - Make changes to fix the failing test
 
 5. **Run the test again** - Confirm the fix works
    ```bash
-   yarn test
+   bun test
    ```
 
 6. **Deploy** - Once tests pass, deploy with confidence
    ```bash
-   yarn deploy
+   bun deploy
    ```
 
 ### Test File Location
@@ -270,19 +270,19 @@ const name = user?.profile?.name ?? 'Unknown';
 
 ```bash
 # Run all tests
-yarn test
+bun test
 
 # Run tests in watch mode (re-runs on file changes)
-yarn test --watch
+bun test --watch
 
 # Run a specific test file
-yarn test src/cart.test.ts
+bun test src/cart.test.ts
 
 # Run tests matching a pattern
-yarn test -t "discount"
+bun test -t "discount"
 
 # Run with coverage report
-yarn test --coverage
+bun test --coverage
 ```
 
 ## Debugging Checklist

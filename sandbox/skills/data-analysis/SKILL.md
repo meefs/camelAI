@@ -277,7 +277,7 @@ When the user wants a **live dashboard**, **data app**, or any interactive web U
 - `create-worker` for scaffolding React + Vite projects
 - Durable Objects with SQLite for server-side state
 - shadcn/ui components for charts, tables, and UI
-- Deployment via `yarn deploy`
+- Deployment via `bun deploy`
 
 Database connection credentials are available as environment variables in deployed workers (same `INT_*` env vars documented above), so dashboards can query databases directly at runtime.
 

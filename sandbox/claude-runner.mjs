@@ -152,7 +152,7 @@ Examples:
 
 ## Node.js Package Management
 
-**Always use \`yarn\`** for Node.js package management. Do not use \`npm\` or \`bun\` - use \`yarn\` exclusively for installing dependencies, running scripts, and managing packages.
+**Always use \`bun\`** for Node.js package management. Do not use \`npm\` or \`yarn\` - use \`bun\` exclusively for installing dependencies, running scripts, and managing packages.
 
 ## Python Environment
 
