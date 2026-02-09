@@ -6,25 +6,25 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(SCRIPT_DIR, '..');
 
 const RUNNER_PATH = resolve(ROOT_DIR, 'sandbox/claude-runner.mjs');
+const MEMORY_LOGGER_PATH = resolve(ROOT_DIR, 'sandbox/memory-logger.mjs');
 const OUT_PATH = resolve(ROOT_DIR, 'workers/main/src/embedded-claude-runner.ts');
 
-const IMPORT_LINE = "import { loadUserProfile } from './memory-logger.mjs';\n";
-const PROFILE_LOAD_LINE = '      session.userProfile = await loadUserProfile().catch(() => null);\n';
-
-function toEmbeddedSource(source) {
-  let embedded = source.replace(IMPORT_LINE, '');
-  embedded = embedded.replace(PROFILE_LOAD_LINE, '      session.userProfile = null;\n');
-
+function toEmbeddedSource(runnerSource, memoryLoggerSource) {
   return `/**\n` +
     ` * Embedded Claude runner source uploaded to sprites via /fs/write.\n` +
-    ` * Generated from sandbox/claude-runner.mjs with local-import stripping for self-contained bootstrap.\n` +
+    ` * Generated from sandbox/claude-runner.mjs and sandbox/memory-logger.mjs.\n` +
     ` */\n\n` +
-    `export const EMBEDDED_CLAUDE_RUNNER_SOURCE = ${JSON.stringify(embedded)};\n`;
+    `export const EMBEDDED_CLAUDE_RUNNER_SOURCE = ${JSON.stringify(runnerSource)};\n\n` +
+    `export const EMBEDDED_MEMORY_LOGGER_SOURCE = ${JSON.stringify(memoryLoggerSource)};\n`;
 }
 
 async function main() {
-  const runnerSource = await readFile(RUNNER_PATH, 'utf8');
-  const nextOutput = toEmbeddedSource(runnerSource);
+  const [runnerSource, memoryLoggerSource] = await Promise.all([
+    readFile(RUNNER_PATH, 'utf8'),
+    readFile(MEMORY_LOGGER_PATH, 'utf8'),
+  ]);
+
+  const nextOutput = toEmbeddedSource(runnerSource, memoryLoggerSource);
 
   let currentOutput = '';
   try {

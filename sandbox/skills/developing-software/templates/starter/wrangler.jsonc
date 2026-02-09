@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "rr7-template",
+	"name": "starter",
 	"compatibility_date": "2025-04-04",
 	"compatibility_flags": ["nodejs_compat"],
 	"main": "./workers/app.ts",
@@ -21,7 +21,7 @@
 	 * 2. Export it from workers/app.ts
 	 * 3. Add binding below
 	 * 4. Add migration (increment tag, add new_sqlite_classes for SQLite DOs)
-	 * 5. Run `wrangler types` to update Env types
+	 * 5. Run `bun wrangler types` to update Env types
 	 */
 	// Uncomment to enable Durable Objects:
 	// "durable_objects": {

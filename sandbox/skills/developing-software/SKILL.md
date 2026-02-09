@@ -6,17 +6,16 @@ license: Complete terms in LICENSE.txt
 
 # Deploying Software to Cloudflare
 
-This skill guides deployment of production software to Cloudflare's edge network using Workers, Durable Objects, and the globally installed wrangler CLI.
+This skill guides deployment of production software to Cloudflare's edge network using Workers and Durable Objects.
 
 ## Core Principles
 
-1. **Always use the globally installed `wrangler` binary** - Do not install wrangler locally
-2. **Use `create-worker` to scaffold projects** - Do not use `wrangler init` or `npm create cloudflare`
-3. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
-4. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
-5. **Use React Router 7 framework mode for fullstack web apps** - It is the successor to Remix; default to route `loader()`/`action()` patterns, not SPA-style client data fetching
-6. **Use shadcn/ui for frontend components** - The CLI is globally installed, use `shadcn add <component>` (NOT `npx shadcn`)
-7. **Avoid large package installations** - Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies that take a long time to install. The `create-worker` template has everything pre-configured.
+1. **Use `create-worker` to scaffold projects** - Do not use `wrangler init` or `npm create cloudflare`
+2. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
+3. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
+4. **Use React Router 7 framework mode for fullstack web apps** - It is the successor to Remix; default to route `loader()`/`action()` patterns, not SPA-style client data fetching
+5. **Use shadcn/ui for frontend components** - Use `bun run shadcn add <component>` to add components
+6. **Avoid large package installations** - Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies that take a long time to install. The `create-worker` template has everything pre-configured.
 
 ## Creating New Projects
 
@@ -56,10 +55,10 @@ create-worker --help
 
 ```bash
 # Deploy to production
-yarn deploy
+bun run deploy
 
 # View logs
-wrangler tail
+bun wrangler tail
 ```
 
 > **Note:** `wrangler dev` is not available. Deployments are fast - just deploy and iterate in the cloud.
@@ -72,7 +71,7 @@ After deploying a worker, use MCP tools to verify the deployment and get the liv
 2. **Take a screenshot** - Use the `take_app_screenshot` MCP tool to capture the deployed app and verify it looks correct
 
 ```bash
-# Example workflow after yarn deploy
+# Example workflow after bun run deploy
 # 1. List apps to get the URL
 #    → Use MCP tool: list_apps
 
@@ -407,16 +406,17 @@ create-worker my-app --auth
 
 cd my-app
 
-# Dependencies are pre-cached - do not run yarn install
+# Install dependencies
+bun install
 
-# Add shadcn/ui components (globally installed - do NOT use npx)
-shadcn add button card form input
+# Add shadcn/ui components
+bun run shadcn add button card form input
 
 # Local development
-yarn dev
+bun dev
 
 # Deploy
-yarn deploy
+bun run deploy
 ```
 
 The template includes:
@@ -427,6 +427,7 @@ The template includes:
 - TypeScript
 - Cloudflare Worker entry in `workers/app.ts`
 - Server data/mutation patterns via route `loader()` and `action()`
+- wrangler and shadcn as local dependencies
 
 ### Wrangler Configuration for React + Vite
 
@@ -508,71 +509,6 @@ Features include:
 - Web search plugin for real-time information
 
 **See [AI-APPS.md](AI-APPS.md) for setup, customization, and common pitfalls.**
-
-## Project Snapshots with JuiceFS
-
-JuiceFS clone creates instant project snapshots. This is faster than git and captures the complete project state including node_modules and build artifacts.
-
-### Snapshot Location
-
-Snapshots are stored outside the project at:
-
-```
-~/.chiridion/snapshots/{projectName}/
-  2026-02-04T15-30-00-000Z/
-  2026-02-04T15-31-00-000Z/
-  ...
-```
-
-Create snapshots manually with `juicefs clone`.
-
-### Manual Snapshots
-
-For named checkpoints (more memorable than timestamps):
-
-```bash
-# Snapshot before risky changes
-juicefs clone ~/my-app ~/.chiridion/snapshots/my-app/before-refactor
-
-# Snapshot after a feature works
-juicefs clone ~/my-app ~/.chiridion/snapshots/my-app/auth-working
-```
-
-### Rollback
-
-When something breaks, restore instantly:
-
-```bash
-# List available snapshots
-ls ~/.chiridion/snapshots/my-app/
-
-# Restore from a timestamped snapshot
-rm -rf ~/my-app
-juicefs clone ~/.chiridion/snapshots/my-app/2026-02-04T15-30-00-000Z ~/my-app
-
-# Or from a named snapshot
-rm -rf ~/my-app
-juicefs clone ~/.chiridion/snapshots/my-app/auth-working ~/my-app
-```
-
-### When to Create Snapshots
-
-Snapshots are useful for:
-
-1. **Before risky non-build changes** - Config changes, dependency updates
-2. **Named milestones** - "auth-working", "before-refactor" are easier to find than timestamps
-3. **Before experimenting** - Try ideas without fear
-
-### Why JuiceFS Instead of Git
-
-| Aspect | JuiceFS Clone | Git |
-|--------|---------------|-----|
-| Speed | Instant (copy-on-write) | Slow (hashing, indexing) |
-| Scope | Complete project state | Only tracked files |
-| node_modules | Included | Excluded (.gitignore) |
-| Build artifacts | Included | Excluded |
-| Complexity | Single command | Stage, commit, manage index |
-| Rollback | Instant clone | Reset, checkout, potential conflicts |
 
 ## Best Practices
 

@@ -13,7 +13,8 @@ import {
   getKeyHash,
 } from './openrouter-keys';
 import { SpritesClient } from '@fly/sprites';
-import { EMBEDDED_CLAUDE_RUNNER_SOURCE } from './embedded-claude-runner';
+import { EMBEDDED_CLAUDE_RUNNER_SOURCE, EMBEDDED_MEMORY_LOGGER_SOURCE } from './embedded-claude-runner';
+import { EMBEDDED_SKILLS_ARCHIVE_BASE64, EMBEDDED_SKILLS_VERSION } from './embedded-skills';
 import type { OrgDO } from './auth';
 import type { WorkspaceDO } from './workspace';
 
@@ -35,7 +36,6 @@ export interface WorkspaceContainerEnv {
   R2_PARENT_ACCESS_KEY_ID?: string;
   WORKER_BASE_URL?: string;
   OPENROUTER_PROVISIONING_KEY?: string;
-  DISABLE_JUICEFS?: string;
   CHIRIDION_TRACE_EVENTS?: string;
   CHIRIDION_DEBUG_STARTUP?: string;
   CHIRIDION_DEBUG_SDK?: string;
@@ -167,6 +167,9 @@ const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const runtimeCache = new Map<string, WorkspaceContainer>();
 const SPRITE_RUNNER_HOME_DIR = '/opt/chiridion';
 const DEFAULT_RUNNER_SCRIPT_PATH = `${SPRITE_RUNNER_HOME_DIR}/claude-runner.mjs`;
+const SPRITE_MANAGED_SKILLS_DIR = '/etc/claude-code/.claude/skills';
+const SPRITE_MANAGED_SKILLS_VERSION_PATH = `${SPRITE_MANAGED_SKILLS_DIR}/.chiridion-version`;
+const SPRITE_MANAGED_SKILLS_PARENT_DIR = '/etc/claude-code/.claude';
 const RUNNER_DEP_PACKAGE = '@anthropic-ai/claude-agent-sdk';
 const SPRITES_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const SPRITES_MAX_RETRY_ATTEMPTS = 6;
@@ -208,6 +211,7 @@ export class WorkspaceContainer {
   private spritesClient: SpritesClient | null = null;
   private runnerScriptBootstrapped = false;
   private runnerDependencyBootstrapped = false;
+  private runnerSkillsBootstrapped = false;
   private runnerBootstrapPromise: Promise<void> | null = null;
   private dataProxyTokenExpiry: number | null = null;
   private integrationEnvCache: Record<string, string> = {};
@@ -274,6 +278,16 @@ export class WorkspaceContainer {
     if (normalized === '/') return '/';
     const idx = normalized.lastIndexOf('/');
     return idx < 0 ? normalized : normalized.slice(idx + 1);
+  }
+
+  private decodeBase64(base64: string): ArrayBuffer {
+    const binary = atob(base64);
+    const buffer = new ArrayBuffer(binary.length);
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return buffer;
   }
 
   private extractStatusCode(err: unknown): number | null {
@@ -380,17 +394,17 @@ export class WorkspaceContainer {
     throw new Error(`Failed to get sprite ${name}`);
   }
 
-  private async createSpriteWithRetry(client: SpritesClient, name: string): Promise<void> {
+  private async createSpriteWithRetry(client: SpritesClient, name: string): Promise<boolean> {
     let lastError: unknown = null;
 
     for (let attempt = 1; attempt <= SPRITES_MAX_RETRY_ATTEMPTS; attempt += 1) {
       try {
         await client.createSprite(name);
-        return;
+        return true;
       } catch (err) {
         lastError = err;
         if (this.isSpriteAlreadyExistsError(err)) {
-          return;
+          return false;
         }
         if (this.isRetryableSpriteError(err) && attempt < SPRITES_MAX_RETRY_ATTEMPTS) {
           await delay(this.computeRetryDelayMs(attempt));
@@ -401,6 +415,7 @@ export class WorkspaceContainer {
     }
 
     if (lastError) throw lastError;
+    return false;
   }
 
   private toSpriteRecord(sprite: { id?: string; name: string; url?: string; status?: string }): SpriteRecord {
@@ -412,19 +427,37 @@ export class WorkspaceContainer {
     };
   }
 
-  private async createAndFetchSpriteRecord(name: string): Promise<SpriteRecord> {
+  private async createAndFetchSpriteRecord(name: string): Promise<{ sprite: SpriteRecord; created: boolean }> {
     const client = this.getSpritesClient();
-    await this.createSpriteWithRetry(client, name);
+    const didCreate = await this.createSpriteWithRetry(client, name);
 
-    const created = await this.getSpriteWithRetry(client, name, {
+    const spriteDetails = await this.getSpriteWithRetry(client, name, {
       allowNotFound: false,
       attempts: SPRITES_MAX_GET_AFTER_CREATE_ATTEMPTS,
     });
-    if (!created) {
+    if (!spriteDetails) {
       throw new Error(`Sprite not found after creation: ${name}`);
     }
 
-    return this.toSpriteRecord(created);
+    return { sprite: this.toSpriteRecord(spriteDetails), created: didCreate };
+  }
+
+  private async clearSpriteUserClaudeDir(spriteName: string): Promise<void> {
+    const response = await this.fetchSpriteFs(spriteName, 'delete', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: '/home/sprite/.claude',
+        workingDir: this.getFsWorkingDir(),
+        recursive: true,
+        asRoot: false,
+      }),
+    });
+
+    if (!response.ok && response.status !== 404) {
+      const body = await response.text();
+      throw new Error(`Failed clearing /home/sprite/.claude: ${response.status} ${body}`);
+    }
   }
 
   private async fetchSpriteFs(
@@ -561,6 +594,30 @@ export class WorkspaceContainer {
     this.runnerScriptBootstrapped = true;
   }
 
+  private async ensureMemoryLoggerScript(spriteName: string): Promise<void> {
+    const path = `${SPRITE_RUNNER_HOME_DIR}/memory-logger.mjs`;
+    const response = await this.fetchSpriteFs(
+      spriteName,
+      'write',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
+        body: EMBEDDED_MEMORY_LOGGER_SOURCE,
+      },
+      {
+        path,
+        workingDir: this.getFsWorkingDir(),
+        mode: '0644',
+        mkdir: true,
+      }
+    );
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Failed to bootstrap memory-logger script at ${path}: ${response.status} ${body}`);
+    }
+  }
+
   private async ensureRunnerDependencies(spriteName: string): Promise<void> {
     if (this.runnerDependencyBootstrapped) return;
 
@@ -622,8 +679,109 @@ export class WorkspaceContainer {
     this.runnerDependencyBootstrapped = true;
   }
 
+  private async readSpriteTextFile(spriteName: string, path: string): Promise<string | null> {
+    const response = await this.fetchSpriteFs(
+      spriteName,
+      'read',
+      { method: 'GET' },
+      {
+        path: this.normalizeFsPath(path),
+        workingDir: this.getFsWorkingDir(),
+      }
+    );
+
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Failed reading sprite file ${path}: ${response.status} ${body}`);
+    }
+
+    return (await response.text()).trim();
+  }
+
+  private async writeManagedSkillsArchive(spriteName: string, archivePath: string): Promise<void> {
+    const response = await this.fetchSpriteFs(
+      spriteName,
+      'write',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/gzip' },
+        body: this.decodeBase64(EMBEDDED_SKILLS_ARCHIVE_BASE64),
+      },
+      {
+        path: archivePath,
+        workingDir: this.getFsWorkingDir(),
+        mode: '0644',
+        mkdir: true,
+      }
+    );
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Failed writing managed skills archive ${archivePath}: ${response.status} ${body}`);
+    }
+  }
+
+  private async ensureRunnerSkills(spriteName: string): Promise<void> {
+    if (this.runnerSkillsBootstrapped) return;
+
+    const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_MANAGED_SKILLS_VERSION_PATH);
+    if (installedVersion === EMBEDDED_SKILLS_VERSION) {
+      this.runnerSkillsBootstrapped = true;
+      return;
+    }
+
+    const archivePath = `/tmp/chiridion-skills-${EMBEDDED_SKILLS_VERSION.slice(0, 16)}.tar.gz`;
+    await this.writeManagedSkillsArchive(spriteName, archivePath);
+
+    const installResult = await this.execHttpRawForSprite(
+      spriteName,
+      [
+        'bash',
+        '-lc',
+        [
+          'set -euo pipefail',
+          `rm -rf ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)}`,
+          `mkdir -p ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
+          `tar -xzf ${JSON.stringify(archivePath)} -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
+          `rm -f ${JSON.stringify(archivePath)}`,
+        ].join('; '),
+      ]
+    );
+    if (!installResult.success) {
+      throw new Error(
+        `Failed extracting managed skills archive: ${installResult.stderr || installResult.stdout || 'unknown error'}`
+      );
+    }
+
+    const versionWrite = await this.fetchSpriteFs(
+      spriteName,
+      'write',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: EMBEDDED_SKILLS_VERSION,
+      },
+      {
+        path: SPRITE_MANAGED_SKILLS_VERSION_PATH,
+        workingDir: this.getFsWorkingDir(),
+        mode: '0644',
+        mkdir: true,
+      }
+    );
+    if (!versionWrite.ok) {
+      const body = await versionWrite.text();
+      throw new Error(
+        `Failed writing managed skills version marker at ${SPRITE_MANAGED_SKILLS_VERSION_PATH}: ` +
+        `${versionWrite.status} ${body}`
+      );
+    }
+
+    this.runnerSkillsBootstrapped = true;
+  }
+
   private async ensureRunnerBootstrap(spriteName: string): Promise<void> {
-    if (this.runnerScriptBootstrapped && this.runnerDependencyBootstrapped) {
+    if (this.runnerScriptBootstrapped && this.runnerDependencyBootstrapped && this.runnerSkillsBootstrapped) {
       return;
     }
 
@@ -633,8 +791,12 @@ export class WorkspaceContainer {
     }
 
     this.runnerBootstrapPromise = (async () => {
-      await this.ensureRunnerScript(spriteName);
+      await Promise.all([
+        this.ensureRunnerScript(spriteName),
+        this.ensureMemoryLoggerScript(spriteName),
+      ]);
       await this.ensureRunnerDependencies(spriteName);
+      await this.ensureRunnerSkills(spriteName);
     })();
 
     try {
@@ -669,7 +831,10 @@ export class WorkspaceContainer {
 
   async provisionSpriteForWorkspace(workspaceId = this.workspaceId): Promise<SpriteRecord> {
     this.workspaceId = workspaceId;
-    const sprite = await this.createAndFetchSpriteRecord(this.getSpriteName(workspaceId));
+    const { sprite, created } = await this.createAndFetchSpriteRecord(this.getSpriteName(workspaceId));
+    if (created) {
+      await this.clearSpriteUserClaudeDir(sprite.name);
+    }
     this.sprite = sprite;
     return sprite;
   }
@@ -688,7 +853,11 @@ export class WorkspaceContainer {
         sprite = this.toSpriteRecord(existing);
       } else {
         // Eager provisioning should create this ahead of first use; this is drift repair.
-        sprite = await this.createAndFetchSpriteRecord(name);
+        const created = await this.createAndFetchSpriteRecord(name);
+        sprite = created.sprite;
+        if (created.created) {
+          await this.clearSpriteUserClaudeDir(sprite.name);
+        }
       }
     }
 
@@ -710,7 +879,6 @@ export class WorkspaceContainer {
     if (this.env.R2_ACCOUNT_ID) envVars.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
     if (this.env.R2_MOUNT_DIR) envVars.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
     if (this.env.R2_MOUNT_READONLY) envVars.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
-    if (this.env.DISABLE_JUICEFS) envVars.DISABLE_JUICEFS = this.env.DISABLE_JUICEFS;
     if (this.env.CHIRIDION_TRACE_EVENTS) envVars.CHIRIDION_TRACE_EVENTS = this.env.CHIRIDION_TRACE_EVENTS;
     if (this.env.CHIRIDION_DEBUG_STARTUP) envVars.CHIRIDION_DEBUG_STARTUP = this.env.CHIRIDION_DEBUG_STARTUP;
     if (this.env.CHIRIDION_DEBUG_SDK) envVars.CHIRIDION_DEBUG_SDK = this.env.CHIRIDION_DEBUG_SDK;
@@ -730,14 +898,14 @@ export class WorkspaceContainer {
         const sanitizeName = (s: string) => s.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 20) || 'x';
         const orgSafe = sanitizeName(orgId);
         const wsSafe = sanitizeName(workspaceId);
-        const juicefsVolumeName = `chiridion-${orgSafe}-${wsSafe}`;
+        const volumeName = `chiridion-${orgSafe}-${wsSafe}`;
 
         const tempCreds = await getTempR2Credentials(
           this.env.R2_ACCOUNT_ID,
           this.env.R2_BUCKET_NAME,
           this.env.R2_PARENT_ACCESS_KEY_ID,
           this.env.R2_API_TOKEN,
-          [prefix, `${juicefsVolumeName}/`],
+          [prefix, `${volumeName}/`],
           86400
         );
         envVars.AWS_ACCESS_KEY_ID = tempCreds.accessKeyId;

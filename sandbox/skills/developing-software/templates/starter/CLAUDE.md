@@ -106,10 +106,10 @@ export default function MyComponent({ loaderData }: Route.ComponentProps) {
 ## Commands
 
 ```bash
-yarn dev      # Local development
-yarn deploy   # Deploy to Cloudflare
-yarn test     # Run Vitest tests
-shadcn add    # Add UI components (globally installed)
+bun dev                    # Local development
+bun run deploy             # Deploy to Cloudflare
+bun run test               # Run Vitest tests
+bun run shadcn add <name>  # Add UI components
 ```
 
 ## Preinstalled Data Libraries
@@ -161,12 +161,11 @@ export async function loader({ context }: Route.LoaderArgs) {
 2. Export from `workers/app.ts`
 3. Add binding to `wrangler.jsonc`
 4. Add migration with incremented tag
-5. Run `wrangler types` to update Env
+5. Run `bun wrangler types` to update Env
 
 ## Common Pitfalls
 
 - **useAgent uses `name`, not `id`**: `useAgent({ agent: "Chat", name: sessionId })`
 - **Generate session IDs in loaders**, not in component body (causes re-render issues)
 - **Use MarkdownRenderer for AI output** - AI responses are markdown-formatted
-- **Don't install wrangler locally** - use the global binary
-- **Don't use npx for shadcn** - use `shadcn add` directly
+- **Use `bun run shadcn add`** - not `npx shadcn`

@@ -4,16 +4,6 @@
 *.tsbuildinfo
 package-lock.json
 
-# Yarn PnP - generated at container boot
-.pnp.cjs
-.pnp.loader.mjs
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/sdks
-!.yarn/versions
-
 # React Router
 /.react-router/
 /build/

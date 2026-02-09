@@ -100,7 +100,7 @@ function toErrorMessage(error: unknown): string {
   return String(error);
 }
 
-function sanitizeJuiceFsName(value: string): string {
+function sanitizeStorageName(value: string): string {
   return value.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 20) || 'x';
 }
 
@@ -1083,7 +1083,7 @@ export async function hardDeleteAdminOrg(
     warnings.push(`Failed to clean screenshot sessions: ${toErrorMessage(error)}`);
   }
 
-  // Best-effort cleanup of R2 artifacts (uploads/outputs/previews/JuiceFS blobs).
+  // Best-effort cleanup of R2 artifacts (uploads/outputs/previews/workspace storage).
   try {
     await deleteR2Prefix(env.R2_BUCKET, `${PREVIEW_PREFIX}${orgId}/`);
   } catch (error) {
@@ -1097,13 +1097,13 @@ export async function hardDeleteAdminOrg(
   }
 
   try {
-    const orgSafe = sanitizeJuiceFsName(orgId);
+    const orgSafe = sanitizeStorageName(orgId);
     for (const workspaceId of workspaceIds) {
-      const wsSafe = sanitizeJuiceFsName(workspaceId);
+      const wsSafe = sanitizeStorageName(workspaceId);
       await deleteR2Prefix(env.R2_BUCKET, `chiridion-${orgSafe}-${wsSafe}/`);
     }
   } catch (error) {
-    warnings.push(`Failed to clean JuiceFS blobs in R2: ${toErrorMessage(error)}`);
+    warnings.push(`Failed to clean workspace storage in R2: ${toErrorMessage(error)}`);
   }
 
   return {

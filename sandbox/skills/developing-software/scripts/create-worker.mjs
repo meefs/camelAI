@@ -2,9 +2,6 @@
 /**
  * create-worker - Scaffold Cloudflare Worker projects with React Router v7 and shadcn/ui
  *
- * Uses JuiceFS clone for instant project creation via copy-on-write.
- * Golden template has yarn install done, so cloned projects are ready to use.
- *
  * Usage:
  *   create-worker <project-name> [options]
  *
@@ -19,16 +16,13 @@
  *   --help                  Show this help message
  */
 
-import { execFileSync, spawnSync } from 'child_process';
-import { writeFileSync, existsSync, readFileSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { writeFileSync, existsSync, readFileSync, cpSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEMPLATES_DIR = join(__dirname, '..', 'templates');
-
-// Golden template location on JuiceFS (has yarn install done)
-const GOLDEN_TEMPLATES_DIR = join(process.env.HOME || '/home/sprite', '.chiridion', 'templates');
+const TEMPLATE_DIR = join(__dirname, '..', 'templates', 'starter');
 
 // Valid option values
 const OPTIONS = {
@@ -223,7 +217,7 @@ function generateCssFromPreset(preset, options) {
     .join('\n');
 
   // Read template and replace placeholders
-  const templatePath = join(TEMPLATES_DIR, 'chiridion-starter', 'app', 'app.css.template');
+  const templatePath = join(TEMPLATE_DIR, 'app', 'app.css.template');
   const template = readFileSync(templatePath, 'utf-8');
 
   return template
@@ -235,63 +229,14 @@ function generateCssFromPreset(preset, options) {
 }
 
 /**
- * Wait for golden template to be ready.
- * Returns path to golden template, or null if not available.
+ * Copy template directory to project directory
  */
-function waitForGoldenTemplate(templateName) {
-  const goldenTemplate = join(GOLDEN_TEMPLATES_DIR, templateName);
-  const lockFile = join(GOLDEN_TEMPLATES_DIR, `.${templateName}.lock`);
-  const readyFile = join(goldenTemplate, '.chiridion-ready');
-  const pnpFile = join(goldenTemplate, '.pnp.cjs');
-
-  // Wait for lock file to be removed (max 2 minutes)
-  let waited = false;
-  for (let i = 0; i < 120 && existsSync(lockFile); i++) {
-    if (!waited) {
-      console.log(`         Waiting for golden template...`);
-      waited = true;
-    }
-    spawnSync('sleep', ['1']);
+function copyTemplate(projectDir) {
+  if (!existsSync(TEMPLATE_DIR)) {
+    throw new Error(`Template directory not found: ${TEMPLATE_DIR}`);
   }
 
-  if (existsSync(lockFile)) {
-    console.log(`         Golden template lock did not clear after 120s`);
-    return null;
-  }
-
-  return existsSync(readyFile) && existsSync(pnpFile) ? goldenTemplate : null;
-}
-
-/**
- * Clone template using JuiceFS copy-on-write (instant)
- */
-function copyTemplate(templateName, projectDir) {
-  const start = Date.now();
-  const goldenTemplate = waitForGoldenTemplate(templateName);
-  const waitTime = Date.now() - start;
-
-  if (!goldenTemplate) {
-    throw new Error('Golden template not ready. Please try again in a moment.');
-  }
-
-  if (waitTime > 100) {
-    console.log(`         (waited ${waitTime}ms for golden template)`);
-  }
-
-  console.log(`         Cloning template (JuiceFS copy-on-write)...`);
-
-  const cloneStart = Date.now();
-  const result = spawnSync('juicefs', ['clone', goldenTemplate, projectDir], {
-    stdio: 'pipe',
-  });
-  const cloneTime = Date.now() - cloneStart;
-
-  console.log(`         Clone took ${cloneTime}ms`);
-
-  if (result.status !== 0) {
-    const stderr = result.stderr?.toString() || '';
-    throw new Error(`JuiceFS clone failed: ${stderr}`);
-  }
+  cpSync(TEMPLATE_DIR, projectDir, { recursive: true });
 }
 
 function formatTime(ms) {
@@ -312,14 +257,14 @@ async function createProject(projectName, options) {
   console.log(`Style: ${options.style}, Theme: ${options.theme}, Font: ${options.font}`);
   console.log('');
 
-  // Step 1: Clone React Router + Cloudflare template (instant via JuiceFS copy-on-write)
-  console.log('Step 1/4: Cloning React Router + Cloudflare template...');
+  // Step 1: Copy template
+  console.log('Step 1/4: Copying template...');
   let stepStart = Date.now();
   try {
-    copyTemplate('chiridion-starter', projectDir);
+    copyTemplate(projectDir);
     console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
   } catch (error) {
-    console.error('Failed to clone template:', error.message);
+    console.error('Failed to copy template:', error.message);
     process.exit(1);
   }
 
@@ -357,9 +302,18 @@ async function createProject(projectName, options) {
   if (existsSync(wranglerPath)) {
     let wranglerConfig = readFileSync(wranglerPath, 'utf-8');
     // Replace the name field (JSONC so can't use JSON.parse)
-    wranglerConfig = wranglerConfig.replace(/"name":\s*"rr7-template"/, `"name": "${projectName}"`);
+    wranglerConfig = wranglerConfig.replace(/"name":\s*"[^"]+"/, `"name": "${projectName}"`);
     writeFileSync(wranglerPath, wranglerConfig);
   }
+
+  // Update package.json with project name
+  const packageJsonPath = join(projectDir, 'package.json');
+  if (existsSync(packageJsonPath)) {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    packageJson.name = projectName;
+    writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, '\t') + '\n');
+  }
+
   console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
 
   const totalTime = Date.now() - totalStart;
@@ -368,11 +322,12 @@ Project created successfully in ${formatTime(totalTime)}!
 
 Next steps:
   cd ${projectName}
-  yarn dev         # Start development server
-  yarn deploy      # Deploy to Cloudflare
+  bun install      # Install dependencies
+  bun dev          # Start development server
+  bun run deploy   # Deploy to Cloudflare
 
-Add shadcn components (globally installed - do NOT use npx):
-  shadcn add button card input
+Add shadcn components:
+  bun run shadcn add button card input
 
 <system-reminder>
 IMPORTANT: Read \`${projectName}/CLAUDE.md\` for a quick reference on the template structure, key files, and how to enable features like Durable Objects and AI chat.

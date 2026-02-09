@@ -1,25 +1,18 @@
 {
-	"name": "rr7-template",
+	"name": "starter",
 	"version": "0.0.2",
 	"private": true,
 	"type": "module",
-	"packageManager": "yarn@4.9.2",
-	"resolutions": {
-		"@cloudflare/vite-plugin": "patch:@cloudflare/vite-plugin@npm%3A1.22.1#./.yarn/patches/@cloudflare-vite-plugin-npm-1.22.1-7df410eafa.patch",
-		"@cloudflare/vitest-pool-workers": "patch:@cloudflare/vitest-pool-workers@npm%3A0.12.9#./.yarn/patches/@cloudflare-vitest-pool-workers-npm-0.12.9-b95aa175b4.patch",
-		"vite": "8.0.0-beta.11",
-		"esbuild": "0.27.0",
-		"@babel/runtime-corejs3": "npm:@babel/runtime@^7.26.0"
-	},
 	"scripts": {
 		"build": "react-router build",
-		"cf-typegen": "wrangler types",
-		"postinstall": "yarn cf-typegen",
-		"deploy": "yarn build && wrangler deploy --dispatch-namespace chiridion",
+		"cf-typegen": "bun wrangler types",
+		"postinstall": "bun run cf-typegen",
+		"deploy": "bun run build && bun wrangler deploy --dispatch-namespace chiridion",
 		"dev": "react-router dev",
-		"preview": "yarn build && vite preview",
+		"preview": "bun run build && vite preview",
 		"test": "vitest",
-		"typecheck": "yarn cf-typegen && react-router typegen && tsc -b"
+		"typecheck": "bun run cf-typegen && react-router typegen && tsc -b",
+		"shadcn": "bun shadcn"
 	},
 	"dependencies": {
 		"@ai-sdk/react": "^3.0.0",
@@ -65,9 +58,11 @@
 		"@types/react-is": "^19",
 		"@vitest/runner": "^3.2.0",
 		"@vitest/snapshot": "^3.2.0",
+		"shadcn": "^2.5.0",
 		"tailwindcss": "^4.1.13",
 		"typescript": "^5.9.2",
 		"vite": "8.0.0-beta.11",
-		"vitest": "^3.2.0"
+		"vitest": "^3.2.0",
+		"wrangler": "^4.16.0"
 	}
 }

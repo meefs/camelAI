@@ -8,7 +8,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 
 **Key Capabilities:**
 - Real-time AI chat with streaming responses via WebSockets
-- Persistent workspaces with JuiceFS-backed filesystem
+- Persistent workspaces with R2-backed filesystem
 - One-click app deployment to `*.chiridion.app` subdomains
 - Multi-tenant authentication with users, organizations, and workspaces
 - External service integrations for reading/writing data
@@ -29,10 +29,10 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
          │              └──────────────────┘                  │
          │                        │                           │
          ▼                        ▼                           ▼
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
-│   R2 Storage    │     │    OpenRouter    │     │     JuiceFS         │
-│  (Files/Assets) │     │   (LLM Access)   │     │   (Workspace FS)    │
-└─────────────────┘     └──────────────────┘     └─────────────────────┘
+┌─────────────────┐     ┌──────────────────┐
+│   R2 Storage    │     │    OpenRouter    │
+│  (Files/Assets) │     │   (LLM Access)   │
+└─────────────────┘     └──────────────────┘
 ```
 
 ### Components
@@ -243,14 +243,6 @@ MCP-driven thread prompts (for example connection setup and bug report capture) 
 - Runtime environments receive `INT_BIGQUERY_*_ACCESS_TOKEN` instead of raw service account JSON whenever a token is available.
 - After token refresh, updated credentials are pushed to both the running workspace sprite runtime and all deployed workspace workers.
 
-### Workspace Persistence (JuiceFS)
-JuiceFS provides a FUSE-based distributed filesystem with SQLite metadata and R2 data storage:
-
-1. Sprites runtime mounts workspace storage using JuiceFS-backed R2 persistence.
-2. Mount location is configured by `R2_MOUNT_DIR` (currently `/home/claude` in wrangler env configs).
-3. Data is stored in R2 at `{bucket}/chiridion-{org}-{workspace}/`.
-4. Runtime paths perform on-demand startup and recovery (no container entrypoint boot sequence).
-
 ### Workspace Runtime Provisioning
 Sprites are provisioned eagerly when a workspace is created (`WorkspaceDO.createWorkspace` calls `WorkspaceContainer.provisionSpriteForWorkspace`).
 Runtime startup is now on-demand from chat/API paths; dashboard route loaders no longer trigger warmup.
@@ -440,17 +432,6 @@ Invitation emails are sent via Gmail API using a Google Workspace service accoun
 Falls back to Cloudflare's `send_email` binding if Gmail is not configured. Note: This only works for verified email addresses.
 
 - Configure the binding in Wrangler for each environment and set `EMAIL_FROM_ADDRESS` in vars/secrets.
-
-#### JuiceFS Container Variables (set automatically by worker)
-
-| Variable | Description |
-|----------|-------------|
-| `JUICEFS_META_DIR` | Directory for JuiceFS SQLite metadata (default: `/var/lib/juicefs`) |
-| `JUICEFS_CACHE_DIR` | Directory for JuiceFS FUSE cache (default: `/tmp/juicefs-cache`) |
-| `JUICEFS_UPLOAD_DELAY` | Delay before uploading dirty data to R2 (default: `5s`) |
-| `JUICEFS_BUFFER_SIZE` | Read/write buffer size in MB (default: `2048`) |
-| `JUICEFS_CACHE_SIZE` | Max local cache size in MB (default: `4096` = 4GB, container has 8GB disk) |
-| `DISABLE_JUICEFS` | Set to `1` to skip JuiceFS mount |
 
 #### Sandbox Debug Variables (optional)
 
@@ -727,8 +708,7 @@ See repository history/PR context for legacy streaming bug investigations and fi
 2. **Streaming not working**: Ensure `includePartialMessages: true` in `sandbox/claude-runner.mjs`
 3. **API key not found**: Check `.dev.vars` has `OPENROUTER_API_KEY`
 4. **Session not persisting**: Check cookies and DO worker is running
-5. **JuiceFS mount fails**: Check `/dev/fuse` exists, verify R2 credentials
-6. **Type errors after route changes**: Run `bun run typecheck` to regenerate types
+5. **Type errors after route changes**: Run `bun run typecheck` to regenerate types
 
 ## Testing Strategy
 

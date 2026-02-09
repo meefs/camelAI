@@ -9,10 +9,10 @@ Use React Router 7 in framework mode (successor to Remix): data reads in route `
 ## Quick Start
 
 ```bash
-yarn dev      # Start dev server
-yarn test     # Run tests
-yarn build    # Build for production
-yarn deploy   # Deploy to Cloudflare
+bun dev          # Start dev server
+bun run test     # Run tests
+bun run build    # Build for production
+bun run deploy   # Deploy to Cloudflare
 ```
 
 ## Project Structure
@@ -96,7 +96,7 @@ export function HydrateFallback() {
 ## Testing
 
 ```bash
-yarn test     # Run tests with vitest
+bun run test  # Run tests with vitest
 ```
 
 ### Testing Durable Objects
@@ -143,7 +143,7 @@ See `workers/tests/example-do.test.ts` for a complete example.
      { "tag": "v2", "new_sqlite_classes": ["MyDO"] }
    ]
    ```
-5. `postinstall` runs `wrangler types` automatically; re-run `yarn cf-typegen` after binding changes to update `Env` types
+5. `postinstall` runs `wrangler types` automatically; re-run `bun run cf-typegen` after binding changes to update `Env` types
 
 ## Adding shadcn/ui Components
 
