@@ -10,32 +10,28 @@ This skill guides deployment of production software to Cloudflare's edge network
 
 ## Core Principles
 
-1. **Use `create-worker` to scaffold projects** - Do not use `wrangler init` or `npm create cloudflare`
+1. **Use `bun run scripts/create-worker` to scaffold projects** - Do not use `wrangler init` or `npm create cloudflare`
 2. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
 3. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
 4. **Use React Router 7 framework mode for fullstack web apps** - It is the successor to Remix; default to route `loader()`/`action()` patterns, not SPA-style client data fetching
 5. **Use shadcn/ui for frontend components** - Use `bun run shadcn add <component>` to add components
-6. **Avoid large package installations** - Do not install large frameworks like OpenNext, Next.js, or other heavy dependencies that take a long time to install. The `create-worker` template has everything pre-configured.
 
 ## Creating New Projects
 
-Use the `create-worker` command to scaffold new projects. Do NOT use `wrangler init` or `npm create cloudflare`.
+Use the `bun run scripts/create-worker` command to scaffold new projects. Do NOT use `wrangler init` or `npm create cloudflare`.
 
 ```bash
 # Create a fullstack React app with defaults
-create-worker my-app
+bun run scripts/create-worker my-app
 
 # Customize the UI style and theme
-create-worker my-app --style nova --theme blue
-
-# Create with authentication boilerplate
-create-worker my-app --auth
+bun run scripts/create-worker my-app --style nova --theme blue
 
 # Full customization example
-create-worker my-app --style lyra --theme emerald --font figtree --radius large
+bun run scripts/create-worker my-app --style lyra --theme emerald --font figtree --radius large
 
 # See all options
-create-worker --help
+bun run scripts/create-worker --help
 ```
 
 ### Style Options
@@ -49,7 +45,6 @@ create-worker --help
 | `--radius` | default, none, small, medium, large | default | Border radius |
 | `--menu-color` | default, inverted | default | Menu color style |
 | `--menu-accent` | subtle, bold | subtle | Menu accent style |
-| `--auth` | - | - | Add session-based authentication with login page and auth API routes |
 
 ## Deployment Commands
 
@@ -392,17 +387,14 @@ for (const socket of roomSockets) {
 
 ## Fullstack Apps with React + Vite
 
-For fullstack applications, use the `create-worker` command:
+For fullstack applications, use the `bun run scripts/create-worker` command:
 
 ```bash
 # Create React app with Vite
-create-worker my-app
+bun run scripts/create-worker my-app
 
 # Or with custom styling
-create-worker my-app --style nova --theme blue
-
-# Or with authentication
-create-worker my-app --auth
+bun run scripts/create-worker my-app --style nova --theme blue
 
 cd my-app
 
