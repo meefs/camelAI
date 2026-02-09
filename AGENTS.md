@@ -216,7 +216,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 3. `ChatThreadDO` opens/attaches a sprite exec session running `claude-runner.mjs`
 4. `claude-runner.mjs` calls Claude SDK `query()` and streams events over stdout
 5. `ChatThreadDO` multiplexes/replays events to connected chat clients
-6. Claude SDK stores messages in JSONL files (`~/.claude/projects/.../session.jsonl`)
+6. Claude SDK stores messages in JSONL files on the sprite at `/home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl`
 
 ### Chat Attachment Uploads (R2 Multipart)
 1. Client starts multipart upload via `POST /api/workspaces/:id/upload?action=mpu-create` with `originalName` and `contentType`.
@@ -550,6 +550,29 @@ bun run admin:dev-illiana
 | `/kv-keys` | List KV keys (optional `?prefix=`) |
 | `/r2/list` | List R2 objects (optional `?prefix=`) |
 | `/workers` | List all user workers in dispatch namespace |
+
+### Sprite CLI
+
+The `sprite` CLI is a globally installed binary for interacting with workspace sprite computers. No installation needed.
+
+```bash
+# List all sprites
+sprite ls
+
+# Execute a command on a sprite
+sprite exec -s <sprite-name> -- <command>
+
+# Open interactive shell
+sprite console -s <sprite-name>
+```
+
+Sprite names follow the pattern `chiridion-ws-{workspaceId}`. Each workspace has one sprite.
+
+**Pulling chat JSONL from a sprite:**
+```bash
+# JSONL files live at /home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl
+sprite exec -s chiridion-ws-{workspaceId} -- cat /home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl > {threadId}.jsonl
+```
 
 ## Project Structure
 
