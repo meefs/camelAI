@@ -228,14 +228,7 @@ export async function getMessages(
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return [];
 
-    // Ensure sprite is created and bootstrapped via WorkspaceDO
-    const wsStub = env.WORKSPACE.get(
-      env.WORKSPACE.idFromName(workspaceId)
-    ) as unknown as WorkspaceDO;
-    await wsStub.ensureSpriteReady(workspaceId, wsInfo.org_id);
-
     const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId);
-    await container.startForWorkspace(workspaceId, wsInfo.org_id);
 
     // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
     // Sprites runtime uses /home/sprite (-home-sprite).
