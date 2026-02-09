@@ -66,3 +66,7 @@ sandbox/bun.lock
 tests/integration/.server-url
 sandbox/.r2-creds
 package-lock.json
+
+# Auto-generated embedded files
+workers/main/src/embedded-create-worker.ts
+workers/main/src/embedded-skills.ts
