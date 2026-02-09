@@ -28,7 +28,6 @@ export interface DOEnv {
 const SUPERUSER_EMAILS = new Set([
   'admin@example.com',
   '1033072+Vercantez@users.noreply.github.com',
-  'owner@example.com',
 ]);
 const USER_ONBOARDING_KEY = 'onboarding';
 
@@ -336,21 +335,14 @@ export interface OpenRouterKeyRecord {
  * Migration Pattern for Durable Objects
  * ======================================
  *
- * Each DO uses a `_schema_version` table to track schema version.
- * Migrations run in `blockConcurrencyWhile()` to prevent race conditions.
+ * Schema version is tracked in sync KV (`ctx.storage.kv`) under key `schemaVersion`.
+ * Existing DOs fall back to the legacy `_schema_version` SQL table on first load,
+ * then persist the version to KV going forward.
  *
  * To add a new migration:
  * 1. Add a new `if (version < N)` block in the `migrate()` method
  * 2. Put your schema changes inside the block
- * 3. End with: `this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (N)')`
- *
- * Example:
- *   if (version < 2) {
- *     this.sql.exec('ALTER TABLE foo ADD COLUMN bar TEXT');
- *     this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (2)');
- *   }
- *
- * Note: PRAGMA user_version is NOT supported by Cloudflare SQLite.
+ * 3. Bump `CURRENT_SCHEMA_VERSION` at the bottom of `migrate()`
  */
 
 // User Durable Object - one per user
@@ -367,14 +359,16 @@ export class UserDO extends DurableObject<DOEnv> {
   }
 
   private migrate() {
-    // Create schema version table first (if not exists)
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS _schema_version (
-        version INTEGER PRIMARY KEY
-      )
-    `);
-    const rows = this.sql.exec<{ version: number }>('SELECT MAX(version) as version FROM _schema_version').toArray();
-    const version = rows[0]?.version ?? 0;
+    // Read version from sync KV, falling back to legacy SQL table for existing DOs.
+    let version = this.ctx.storage.kv.get<number>('schemaVersion') ?? null;
+    if (version === null) {
+      try {
+        const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+        version = rows[0]?.version ?? 0;
+      } catch {
+        version = 0;
+      }
+    }
 
     if (version < 1) {
       // V1: Fresh start
@@ -403,7 +397,6 @@ export class UserDO extends DurableObject<DOEnv> {
           PRIMARY KEY (org_id, project_id)
         )
       `);
-      this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
     }
 
     if (version < 2) {
@@ -420,13 +413,11 @@ export class UserDO extends DurableObject<DOEnv> {
           );
         }
       }
-      this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (2)');
     }
 
     if (version < 3) {
       // V3: Remove projects table - projects feature removed
       this.sql.exec('DROP TABLE IF EXISTS projects');
-      this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (3)');
     }
 
     if (version < 4) {
@@ -444,7 +435,6 @@ export class UserDO extends DurableObject<DOEnv> {
           JSON.stringify(profile)
         );
       }
-      this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (4)');
     }
 
     if (version < 5) {
@@ -453,7 +443,6 @@ export class UserDO extends DurableObject<DOEnv> {
       } catch {
         // Column may already exist in fresh databases.
       }
-      this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (5)');
     }
 
     if (version < 6) {
@@ -466,31 +455,14 @@ export class UserDO extends DurableObject<DOEnv> {
           PRIMARY KEY (provider)
         )
       `);
-      this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (6)');
     }
 
-    if (version < 7) {
-      // V7: Reserve profile keys for onboarding state.
-      // Uses existing key-value table, so no schema changes needed.
-      this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (7)');
+    // V7: Reserve profile keys for onboarding state. No schema changes needed.
+
+    const CURRENT_SCHEMA_VERSION = 7;
+    if (version < CURRENT_SCHEMA_VERSION) {
+      this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
-  }
-
-  /**
-   * Re-run migrations as if the DO was re-instantiated.
-   * Used for testing migration idempotency.
-   */
-  remigrate(): void {
-    this.migrate();
-  }
-
-  /**
-   * Returns the schema version as read by the migration logic.
-   * Used for testing that the version query returns the correct value.
-   */
-  getSchemaVersion(): number {
-    const rows = this.sql.exec<{ version: number }>('SELECT MAX(version) as version FROM _schema_version').toArray();
-    return rows[0]?.version ?? 0;
   }
 
   // Profile methods
@@ -790,14 +762,16 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   private migrate() {
-    // Create schema version table first (if not exists)
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS _schema_version (
-        version INTEGER PRIMARY KEY
-      )
-    `);
-    const rows = this.sql.exec<{ version: number }>('SELECT MAX(version) as version FROM _schema_version').toArray();
-    const version = rows[0]?.version ?? 0;
+    // Read version from sync KV, falling back to legacy SQL table for existing DOs.
+    let version = this.ctx.storage.kv.get<number>('schemaVersion') ?? null;
+    if (version === null) {
+      try {
+        const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+        version = rows[0]?.version ?? 0;
+      } catch {
+        version = 0;
+      }
+    }
 
     if (version < 1) {
       // V1: Fresh start
@@ -845,7 +819,6 @@ export class OrgDO extends DurableObject<DOEnv> {
           updated_at INTEGER NOT NULL
         )
       `);
-      this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
     }
 
     if (version < 2) {
@@ -880,7 +853,6 @@ export class OrgDO extends DurableObject<DOEnv> {
           JSON.stringify(info)
         );
       }
-      this.sql.exec('UPDATE _schema_version SET version = 2');
     }
 
     if (version < 3) {
@@ -894,7 +866,6 @@ export class OrgDO extends DurableObject<DOEnv> {
         )
       `);
       this.sql.exec('CREATE INDEX IF NOT EXISTS worker_scripts_workspace_id ON worker_scripts(workspace_id)');
-      this.sql.exec('UPDATE _schema_version SET version = 3');
     }
 
     if (version < 4) {
@@ -904,12 +875,10 @@ export class OrgDO extends DurableObject<DOEnv> {
       } catch {
         // Column may already exist in fresh databases that ran V3 after this migration was added
       }
-      this.sql.exec('UPDATE _schema_version SET version = 4');
     }
 
     if (version < 5) {
       // V5: Add threads table (consolidated from ChatIndexDO)
-      // Threads are now stored per-org with workspace_id for filtering
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS threads (
           id TEXT PRIMARY KEY,
@@ -922,7 +891,6 @@ export class OrgDO extends DurableObject<DOEnv> {
       `);
       this.sql.exec('CREATE INDEX IF NOT EXISTS threads_workspace_id ON threads(workspace_id)');
       this.sql.exec('CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at)');
-      this.sql.exec('UPDATE _schema_version SET version = 5');
     }
 
     if (version < 6) {
@@ -937,7 +905,6 @@ export class OrgDO extends DurableObject<DOEnv> {
           created_at INTEGER NOT NULL
         )
       `);
-      this.sql.exec('UPDATE _schema_version SET version = 6');
     }
 
     if (version < 7) {
@@ -967,8 +934,8 @@ export class OrgDO extends DurableObject<DOEnv> {
       } catch {
         // Skip update if columns are unavailable (fallback queries will handle nulls)
       }
-      this.sql.exec('UPDATE _schema_version SET version = 7');
     }
+
     if (version < 8) {
       // V8: Proxy usage rollups per user
       this.sql.exec(`
@@ -986,7 +953,6 @@ export class OrgDO extends DurableObject<DOEnv> {
           updated_at INTEGER NOT NULL
         )
       `);
-      this.sql.exec('UPDATE _schema_version SET version = 8');
     }
 
     if (version < 9) {
@@ -1114,8 +1080,6 @@ export class OrgDO extends DurableObject<DOEnv> {
       } catch {
         // Column already exists
       }
-
-      this.sql.exec('UPDATE _schema_version SET version = 9');
     }
 
     if (version < 10) {
@@ -1132,7 +1096,6 @@ export class OrgDO extends DurableObject<DOEnv> {
           updated_at INTEGER NOT NULL
         )
       `);
-      this.sql.exec('UPDATE _schema_version SET version = 10');
     }
 
     if (version < 11) {
@@ -1142,7 +1105,6 @@ export class OrgDO extends DurableObject<DOEnv> {
       } catch {
         // Column may already exist
       }
-      this.sql.exec('UPDATE _schema_version SET version = 11');
     }
 
     if (version < 12) {
@@ -1159,7 +1121,6 @@ export class OrgDO extends DurableObject<DOEnv> {
           );
         }
       }
-      this.sql.exec('UPDATE _schema_version SET version = 12');
     }
 
     if (version < 13) {
@@ -1175,7 +1136,11 @@ export class OrgDO extends DurableObject<DOEnv> {
       } catch {
         // Column may already exist
       }
-      this.sql.exec('UPDATE _schema_version SET version = 13');
+    }
+
+    const CURRENT_SCHEMA_VERSION = 13;
+    if (version < CURRENT_SCHEMA_VERSION) {
+      this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
 
     this.workerScriptsHasPreviewColumns = this.detectWorkerScriptPreviewColumns();

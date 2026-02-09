@@ -8,6 +8,7 @@ import { mintBigQueryAccessTokenFromServiceAccount } from './google-service-acco
 import { createSignedToken } from './signed-tokens';
 import {
   getWorkspaceContainer,
+  BOOTSTRAP_VERSION,
   type WorkspaceContainerEnv,
 } from './workspace-container';
 
@@ -92,13 +93,16 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   }
 
   private migrate() {
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS _schema_version (
-        version INTEGER PRIMARY KEY
-      )
-    `);
-    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
-    const version = rows[0]?.version ?? 0;
+    // Read version from sync KV, falling back to legacy SQL table for existing DOs.
+    let version = this.ctx.storage.kv.get<number>('schemaVersion') ?? null;
+    if (version === null) {
+      try {
+        const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+        version = rows[0]?.version ?? 0;
+      } catch {
+        version = 0;
+      }
+    }
 
     if (version < 1) {
       this.sql.exec('DROP TABLE IF EXISTS workspace_info');
@@ -146,7 +150,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
           created_at INTEGER NOT NULL
         )
       `);
-      this.sql.exec('INSERT INTO _schema_version (version) VALUES (1)');
     }
 
     if (version < 2) {
@@ -161,14 +164,40 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
           created_at INTEGER NOT NULL
         )
       `);
-      this.sql.exec('UPDATE _schema_version SET version = 2');
     }
 
     if (version < 3) {
       // V3: Add token_expires_at column for OAuth token refresh scheduling
       this.sql.exec('ALTER TABLE integrations ADD COLUMN token_expires_at INTEGER');
       this.sql.exec('CREATE INDEX IF NOT EXISTS idx_integrations_token_expires ON integrations(token_expires_at) WHERE token_expires_at IS NOT NULL AND deleted_at IS NULL');
-      this.sql.exec('UPDATE _schema_version SET version = 3');
+    }
+
+    const CURRENT_SCHEMA_VERSION = 3;
+    if (version < CURRENT_SCHEMA_VERSION) {
+      this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sprite Bootstrap Version Tracking (sync KV)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Ensure the workspace sprite is created and bootstrapped.
+   * Single entry point for all callers that need a ready sprite.
+   * Persists bootstrap version in sync KV so cold starts skip filesystem checks.
+   */
+  async ensureSpriteReady(workspaceId: string, orgId: string): Promise<void> {
+    const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
+    const container = getWorkspaceContainer(runtimeEnv, workspaceId);
+
+    const storedVersion = this.ctx.storage.kv.get<string>('bootstrapVersion');
+    container.setKnownBootstrapVersion(storedVersion);
+
+    await container.ensureSpriteBootstrapped(workspaceId);
+
+    if (storedVersion !== BOOTSTRAP_VERSION) {
+      this.ctx.storage.kv.put('bootstrapVersion', BOOTSTRAP_VERSION);
     }
   }
 
@@ -253,14 +282,16 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     ) as unknown as OrgDO;
     await orgStub.addWorkspace(id, name, now, createdBy);
 
-    // Eagerly provision sprite at workspace creation so runtime paths usually avoid
-    // first-touch create races. Runtime keeps a fallback create for drift recovery.
+    // Eagerly provision sprite and run bootstrap at workspace creation so runtime
+    // paths usually avoid first-touch create races and bootstrap latency.
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
     const shouldEagerProvision =
       runtimeEnv.SPRITES_TOKEN && runtimeEnv.SPRITES_EAGER_PROVISION_ON_CREATE !== '0';
     if (shouldEagerProvision) {
       const runtime = getWorkspaceContainer(runtimeEnv, id);
       await runtime.provisionSpriteForWorkspace(id);
+      await runtime.ensureSpriteBootstrapped(id);
+      this.ctx.storage.kv.put('bootstrapVersion', BOOTSTRAP_VERSION);
     }
 
     return info;

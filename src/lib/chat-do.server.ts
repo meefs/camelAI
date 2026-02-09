@@ -3,7 +3,7 @@ import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import type { Thread, Message, PaginatedResult, PaginationParams, ContentBlock } from '@/types';
 import { OrgDO, type OrgThread } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
-import { getWorkspaceContainer } from '../../workers/main/src/workspace-container';
+import { getWorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 
 // Helper to convert OrgThread to Thread
 function toThread(orgThread: OrgThread): Thread {
@@ -228,9 +228,13 @@ export async function getMessages(
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return [];
 
-    const container = getWorkspaceContainer(env as any, workspaceId);
+    // Ensure sprite is created and bootstrapped via WorkspaceDO
+    const wsStub = env.WORKSPACE.get(
+      env.WORKSPACE.idFromName(workspaceId)
+    ) as unknown as WorkspaceDO;
+    await wsStub.ensureSpriteReady(workspaceId, wsInfo.org_id);
 
-    // Ensure container is running (R2 restore happens in entrypoint)
+    const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId);
     await container.startForWorkspace(workspaceId, wsInfo.org_id);
 
     // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl

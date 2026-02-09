@@ -9,6 +9,7 @@ import {
   buildOnboardingSystemContext,
 } from '@/lib/onboarding';
 import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
+import type { WorkspaceDO } from '../../../workers/main/src/workspace';
 import {
   getWorkspaceContainer,
   type WorkspaceContainerEnv,
@@ -64,6 +65,13 @@ async function writeOnboardingProfile(
   profileMarkdown: string
 ): Promise<void> {
   const env = getEnv(context);
+
+  // Ensure sprite is created and bootstrapped via WorkspaceDO
+  const wsStub = env.WORKSPACE.get(
+    env.WORKSPACE.idFromName(workspaceId)
+  ) as unknown as WorkspaceDO;
+  await wsStub.ensureSpriteReady(workspaceId, orgId);
+
   const container = getWorkspaceContainer(
     env as unknown as WorkspaceContainerEnv,
     workspaceId
