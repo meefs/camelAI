@@ -96,6 +96,38 @@ export async function verifyUserPassword(
   return userStub.verifyPassword(password);
 }
 
+export async function updateUserProfile(
+  env: TestEnv,
+  userId: string,
+  updates: { name?: string | null; avatar?: { color?: string; content?: string }; is_superuser?: boolean }
+): Promise<User | null> {
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  return userStub.updateProfile(updates);
+}
+
+/**
+ * Re-run UserDO migrations, simulating a DO re-instantiation (eviction + re-creation).
+ * This triggers the same migration path as the constructor.
+ */
+export async function remigrateUser(
+  env: TestEnv,
+  userId: string
+): Promise<void> {
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  await userStub.remigrate();
+}
+
+/**
+ * Get the schema version as read by the UserDO migration logic.
+ */
+export async function getUserSchemaVersion(
+  env: TestEnv,
+  userId: string
+): Promise<number> {
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  return userStub.getSchemaVersion();
+}
+
 export async function getUserOrgs(
   env: TestEnv,
   userId: string

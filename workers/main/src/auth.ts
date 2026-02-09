@@ -28,6 +28,7 @@ export interface DOEnv {
 const SUPERUSER_EMAILS = new Set([
   'admin@example.com',
   '1033072+Vercantez@users.noreply.github.com',
+  'owner@example.com',
 ]);
 const USER_ONBOARDING_KEY = 'onboarding';
 
@@ -372,7 +373,7 @@ export class UserDO extends DurableObject<DOEnv> {
         version INTEGER PRIMARY KEY
       )
     `);
-    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+    const rows = this.sql.exec<{ version: number }>('SELECT MAX(version) as version FROM _schema_version').toArray();
     const version = rows[0]?.version ?? 0;
 
     if (version < 1) {
@@ -473,6 +474,23 @@ export class UserDO extends DurableObject<DOEnv> {
       // Uses existing key-value table, so no schema changes needed.
       this.sql.exec('INSERT OR REPLACE INTO _schema_version (version) VALUES (7)');
     }
+  }
+
+  /**
+   * Re-run migrations as if the DO was re-instantiated.
+   * Used for testing migration idempotency.
+   */
+  remigrate(): void {
+    this.migrate();
+  }
+
+  /**
+   * Returns the schema version as read by the migration logic.
+   * Used for testing that the version query returns the correct value.
+   */
+  getSchemaVersion(): number {
+    const rows = this.sql.exec<{ version: number }>('SELECT MAX(version) as version FROM _schema_version').toArray();
+    return rows[0]?.version ?? 0;
   }
 
   // Profile methods
@@ -778,7 +796,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         version INTEGER PRIMARY KEY
       )
     `);
-    const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+    const rows = this.sql.exec<{ version: number }>('SELECT MAX(version) as version FROM _schema_version').toArray();
     const version = rows[0]?.version ?? 0;
 
     if (version < 1) {
