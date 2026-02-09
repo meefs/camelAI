@@ -676,10 +676,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
     this.sendPendingPromptsToWebSocket(ws);
 
-    if (Array.isArray(this.currentTodos) && this.currentTodos.length > 0) {
-      this.sendDirect(ws, { type: 'todo_state', todos: this.currentTodos });
-    }
-
     for (const pending of this.pendingQuestions.values()) {
       this.sendDirect(ws, {
         type: 'ask_user_question',
@@ -690,6 +686,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     this.replayChatEvents(ws, lastEventId);
+
+    // Send todo_state AFTER event replay so it arrives after any sdk_event that
+    // triggers streaming state. The client clears todos when streaming starts,
+    // so sending this last ensures the current todos aren't immediately cleared.
+    if (this.currentTodos.length > 0) {
+      this.sendDirect(ws, { type: 'todo_state', todos: this.currentTodos });
+    }
 
     // Ensure we are attached to the sprite exec stream so in-flight output can resume.
     void this.ensureRunnerConnected().catch((err) => {
