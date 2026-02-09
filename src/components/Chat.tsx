@@ -48,6 +48,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { MessageBubble } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
+import { CompactingIndicator } from '@/components/compacting-indicator';
 import { WelcomeScreen } from '@/components/welcome-screen';
 import { cn } from '@/lib/utils';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
@@ -129,6 +130,15 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
 
   // Plain string content
   return content;
+}
+
+/**
+ * True when the message was directly authored by the user — not a
+ * system-generated message that happens to carry `role: 'user'`
+ * (e.g. compact summaries, meta/skill-sheet messages).
+ */
+function isDirectUserMessage(msg: Message): boolean {
+  return msg.role === 'user' && !msg.isCompactSummary;
 }
 
 function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
@@ -359,6 +369,8 @@ export default function Chat({
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const [bugReportStatus, setBugReportStatus] = useState<BugReportStatus>('idle');
   const [bugReportError, setBugReportError] = useState<string | null>(null);
+  // Compaction in-progress indicator
+  const [isCompacting, setIsCompacting] = useState(false);
   // MCP-triggered bug report capture
   const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -918,6 +930,9 @@ export default function Chat({
           // System init - just reset the streaming message ID
           splitStreamingMessageOnNextPartRef.current = false;
           setStreamingMessageId(null);
+        } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
+          // Compaction started — show loading indicator
+          setIsCompacting(true);
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
           // Track message ID as fallback
           if (!currentStreamingId) {
@@ -928,6 +943,25 @@ export default function Chat({
             }
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
+          // Compact summary — system-generated context recap
+          const isCompactSummary = Boolean(
+            (sdkEvent as unknown as Record<string, unknown>).isCompactSummary
+          );
+          if (isCompactSummary) {
+            setIsCompacting(false);
+            const content = sdkEvent.message.content;
+            const compactMsg: Message = {
+              id: (sdkEvent as { uuid?: string }).uuid || `compact_${Date.now()}`,
+              thread_id: id,
+              role: 'user',
+              content,
+              created_at: Date.now(),
+              isCompactSummary: true,
+            };
+            setMessages(prev => [...prev, compactMsg]);
+            return;
+          }
+
           const contentBlocks = sdkEvent.message.content;
           const isToolResultEvent =
             Array.isArray(contentBlocks) &&
@@ -982,6 +1016,7 @@ export default function Chat({
           }
           setStreamingMessageId(null);
           setLoading(false);
+          setIsCompacting(false);
         }
       } else if (data.type === 'todo_state') {
         // Direct todo state from server - no extraction needed
@@ -1018,6 +1053,7 @@ export default function Chat({
         }
         setStreamingMessageId(null);
         setLoading(false);
+        setIsCompacting(false);
       } else if (
         data.type === 'preview_state' ||
         data.type === 'title_updated' ||
@@ -2156,7 +2192,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                 key={msg.id}
                 ref={messageRef}
                 data-message-id={msg.id}
-                className={cn("group", msg.role === 'user' ? "mt-6 mb-1" : "")}
+                className={cn("group", isDirectUserMessage(msg) ? "mt-6 mb-1" : "")}
               >
                 <MessageBubble
                   message={msg}
@@ -2192,6 +2228,11 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                 </Button>
               </div>
             </div>
+          )}
+
+          {/* Compaction in-progress indicator */}
+          {isCompacting && (
+            <CompactingIndicator />
           )}
 
           {/* Loading indicator when waiting for assistant response */}

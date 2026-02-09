@@ -52,6 +52,8 @@ export interface Message {
   isMeta?: boolean;
   /** Links meta message to the originating tool_use block */
   sourceToolUseID?: string;
+  /** True when this message is a compaction summary (system-generated context recap) */
+  isCompactSummary?: boolean;
 }
 
 export interface SandboxFileInfo {

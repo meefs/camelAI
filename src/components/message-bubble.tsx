@@ -11,6 +11,7 @@ import {
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ThinkingBlock, ToolCall } from '@/components/tool-call';
 import { LoadingDots } from '@/components/loading-dots';
+import { CompactSummaryCard } from '@/components/compact-summary-card';
 import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
@@ -337,6 +338,11 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   if (message.isMeta || message.sourceToolUseID) {
     return null;
+  }
+
+  // Compact summaries get their own distinct rendering
+  if (message.isCompactSummary) {
+    return <CompactSummaryCard content={message.content} />;
   }
 
   // Hide messages that are entirely system messages (no visible content after stripping)

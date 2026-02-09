@@ -350,6 +350,11 @@ export async function getMessages(
         const event = JSON.parse(line);
         if (!event || typeof event !== 'object') continue;
 
+        // Skip compact_boundary system events (transient; the summary replaces them)
+        if (event.type === 'system' && event.subtype === 'compact_boundary') {
+          continue;
+        }
+
         // Handle user messages
         if (event.type === 'user' && event.message?.content) {
           // Extract meta info for Skill tool prompts and other injected content
@@ -375,10 +380,26 @@ export async function getMessages(
           const firstContent = Array.isArray(event.message.content) ? event.message.content[0] : null;
           const isToolResult = firstContent?.type === 'tool_result';
 
+          // Detect compact summary messages (system-generated context recap)
+          const isCompactSummary = Boolean(event.isCompactSummary);
+
           if (isToolResult) {
             // Tool results get appended to the current assistant segment
             const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
             appendToolResult(event.message.content, createdAt);
+          } else if (isCompactSummary) {
+            // Compact summaries are system-generated context recaps, not real user messages.
+            flushAssistantGroup();
+            const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
+            const id = event.uuid || `compact_${messages.length}`;
+            messages.push({
+              id,
+              thread_id: threadId,
+              role: 'user',
+              content: event.message.content,
+              created_at: createdAt,
+              isCompactSummary: true,
+            });
           } else if (isMeta || resolvedToolUseId) {
             // Meta messages (like Skill prompts) are hidden but stored for skill sheet display
             const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
