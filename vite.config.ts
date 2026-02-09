@@ -2,6 +2,7 @@ import { reactRouter } from '@react-router/dev/vite';
 import { cloudflare } from '@cloudflare/vite-plugin';
 import { defineConfig, type Plugin } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
+import { execSync } from 'node:child_process';
 
 // Plugin to suppress benign "terminated" errors from undici/miniflare
 // These occur when WebSocket connections are aborted during HMR/navigation
@@ -46,6 +47,50 @@ function suppressUndiciTerminatedErrors(): Plugin {
   };
 }
 
+/**
+ * Watches sandbox source files and rebuilds sprite assets when they change.
+ * Vite then picks up manifest changes normally.
+ */
+function spriteAssetWatcher(): Plugin {
+  const watchPaths = [
+    'sandbox/claude-runner.mjs',
+    'sandbox/memory-logger.mjs',
+    'sandbox/skills/',
+    'sandbox/create-worker/',
+  ];
+
+  return {
+    name: 'sprite-asset-watcher',
+    configureServer(server) {
+      for (const p of watchPaths) {
+        server.watcher.add(p);
+      }
+
+      let debounce: ReturnType<typeof setTimeout> | null = null;
+      let pending = false;
+
+      server.watcher.on('change', (file) => {
+        const match = watchPaths.some((p) => file.includes(p.replace(/\/$/, '')));
+        if (!match) return;
+        pending = true;
+
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          if (!pending) return;
+          pending = false;
+          try {
+            console.log('[sprite-asset-watcher] rebuilding sprite assets...');
+            execSync('bun run build:sprite-assets', { stdio: 'inherit' });
+          } catch (err) {
+            console.error('[sprite-asset-watcher] build failed:', err);
+          }
+          debounce = null;
+        }, 300);
+      });
+    },
+  };
+}
+
 export default defineConfig(({ command }) => {
   // Allow common tunnel hosts for local development (e.g., ngrok).
   // Additional hosts can be provided via VITE_ALLOWED_HOSTS=host1,host2.
@@ -66,6 +111,7 @@ export default defineConfig(({ command }) => {
   return {
     plugins: [
     suppressUndiciTerminatedErrors(),
+    spriteAssetWatcher(),
     cloudflare({
       configPath: './wrangler.jsonc',
       viteEnvironment: { name: 'ssr' },
@@ -99,9 +145,6 @@ export default defineConfig(({ command }) => {
       strictPort: false,
       host: true,
       allowedHosts,
-      watch: {
-        ignored: ['**/packages/**', '**/workers/**', '**/sandbox/**'],
-      },
     },
   };
 });

@@ -13,9 +13,7 @@ import {
   getKeyHash,
 } from './openrouter-keys';
 import { SpritesClient } from '@fly/sprites';
-import { EMBEDDED_CLAUDE_RUNNER_SOURCE, EMBEDDED_MEMORY_LOGGER_SOURCE } from './embedded-claude-runner';
-import { EMBEDDED_SKILLS_ARCHIVE_BASE64, EMBEDDED_SKILLS_VERSION } from './embedded-skills';
-import { EMBEDDED_CREATE_WORKER_ARCHIVE_BASE64, EMBEDDED_CREATE_WORKER_VERSION } from './embedded-create-worker';
+import { SPRITE_ASSETS, SPRITE_BOOTSTRAP_VERSION } from './sprite-assets-manifest';
 import type { OrgDO } from './auth';
 import type { WorkspaceDO } from './workspace';
 
@@ -180,10 +178,9 @@ const RUNNER_DEP_VERSION = '0.2.37';
 // Composite version — auto-bumps when any bootstrap component changes.
 // Stored in workspace DO storage to skip all sprite filesystem checks on cold start.
 export const BOOTSTRAP_VERSION = [
-  '1',                            // schema version — bump for structural bootstrap changes
+  '2',                            // schema version — bump for structural bootstrap changes
   RUNNER_DEP_VERSION,             // SDK pinned version
-  EMBEDDED_SKILLS_VERSION,        // skills archive hash
-  EMBEDDED_CREATE_WORKER_VERSION, // create-worker archive hash
+  SPRITE_BOOTSTRAP_VERSION,       // combined asset hashes from manifest
 ].join(':');
 const SPRITES_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const SPRITES_MAX_RETRY_ATTEMPTS = 6;
@@ -294,16 +291,6 @@ export class WorkspaceContainer {
     if (normalized === '/') return '/';
     const idx = normalized.lastIndexOf('/');
     return idx < 0 ? normalized : normalized.slice(idx + 1);
-  }
-
-  private decodeBase64(base64: string): ArrayBuffer {
-    const binary = atob(base64);
-    const buffer = new ArrayBuffer(binary.length);
-    const bytes = new Uint8Array(buffer);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return buffer;
   }
 
   private extractStatusCode(err: unknown): number | null {
@@ -582,57 +569,40 @@ export class WorkspaceContainer {
     return true;
   }
 
-  private async ensureRunnerScript(spriteName: string): Promise<void> {
-    if (this.runnerScriptBootstrapped) return;
-    console.log(`[Sprite] bootstrap: writing runner script to ${DEFAULT_RUNNER_SCRIPT_PATH}`);
+  private getAssetUrl(assetPath: string): string {
+    const baseUrl = this.env.WORKER_BASE_URL;
+    if (!baseUrl) {
+      throw new Error('WORKER_BASE_URL is required for sprite asset downloads');
+    }
+    return `${baseUrl.replace(/\/$/, '')}${assetPath}`;
+  }
 
-    const path = DEFAULT_RUNNER_SCRIPT_PATH;
-    const response = await this.fetchSpriteFs(
+  private async ensureRunnerScripts(spriteName: string): Promise<void> {
+    if (this.runnerScriptBootstrapped) return;
+    console.log(`[Sprite] bootstrap: downloading runner scripts (${SPRITE_ASSETS.runner.hash})`);
+
+    const assetUrl = this.getAssetUrl(SPRITE_ASSETS.runner.path);
+    const installResult = await this.execHttpRawForSprite(
       spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
-        body: EMBEDDED_CLAUDE_RUNNER_SOURCE,
-      },
-      {
-        path,
-        workingDir: this.getFsWorkingDir(),
-        mode: '0755',
-        mkdir: true,
-      }
+      [
+        'bash',
+        '-lc',
+        [
+          'set -euo pipefail',
+          `mkdir -p ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
+          `curl -fsSL ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
+          `chmod +x ${JSON.stringify(DEFAULT_RUNNER_SCRIPT_PATH)}`,
+        ].join('; '),
+      ]
     );
 
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Failed to bootstrap claude runner script at ${path}: ${response.status} ${body}`);
+    if (!installResult.success) {
+      throw new Error(
+        `Failed to download runner scripts: ${installResult.stderr || installResult.stdout || 'unknown error'}`
+      );
     }
 
     this.runnerScriptBootstrapped = true;
-  }
-
-  private async ensureMemoryLoggerScript(spriteName: string): Promise<void> {
-    const path = `${SPRITE_RUNNER_HOME_DIR}/memory-logger.mjs`;
-    const response = await this.fetchSpriteFs(
-      spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
-        body: EMBEDDED_MEMORY_LOGGER_SOURCE,
-      },
-      {
-        path,
-        workingDir: this.getFsWorkingDir(),
-        mode: '0644',
-        mkdir: true,
-      }
-    );
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Failed to bootstrap memory-logger script at ${path}: ${response.status} ${body}`);
-    }
   }
 
   private async ensureRunnerDependencies(spriteName: string): Promise<void> {
@@ -729,44 +699,18 @@ export class WorkspaceContainer {
     return (await response.text()).trim();
   }
 
-  private async writeManagedSkillsArchive(spriteName: string, archivePath: string): Promise<void> {
-    const response = await this.fetchSpriteFs(
-      spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/gzip' },
-        body: this.decodeBase64(EMBEDDED_SKILLS_ARCHIVE_BASE64),
-      },
-      {
-        path: archivePath,
-        workingDir: this.getFsWorkingDir(),
-        mode: '0644',
-        mkdir: true,
-      }
-    );
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Failed writing managed skills archive ${archivePath}: ${response.status} ${body}`);
-    }
-  }
-
   private async ensureRunnerSkills(spriteName: string): Promise<void> {
     if (this.runnerSkillsBootstrapped) return;
 
     const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_MANAGED_SKILLS_VERSION_PATH);
-    if (installedVersion === EMBEDDED_SKILLS_VERSION) {
-      console.log(`[Sprite] bootstrap: skills already at version ${EMBEDDED_SKILLS_VERSION.slice(0, 16)}`);
+    if (installedVersion === SPRITE_ASSETS.skills.hash) {
+      console.log(`[Sprite] bootstrap: skills already at version ${SPRITE_ASSETS.skills.hash}`);
       this.runnerSkillsBootstrapped = true;
       return;
     }
-    console.log(`[Sprite] bootstrap: updating skills (${installedVersion?.slice(0, 16) || 'none'} → ${EMBEDDED_SKILLS_VERSION.slice(0, 16)})`);
+    console.log(`[Sprite] bootstrap: updating skills (${installedVersion || 'none'} → ${SPRITE_ASSETS.skills.hash})`);
 
-
-    const archivePath = `/tmp/chiridion-skills-${EMBEDDED_SKILLS_VERSION.slice(0, 16)}.tar.gz`;
-    await this.writeManagedSkillsArchive(spriteName, archivePath);
-
+    const assetUrl = this.getAssetUrl(SPRITE_ASSETS.skills.path);
     const installResult = await this.execHttpRawForSprite(
       spriteName,
       [
@@ -776,14 +720,13 @@ export class WorkspaceContainer {
           'set -euo pipefail',
           `rm -rf ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)}`,
           `mkdir -p ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
-          `tar -xzf ${JSON.stringify(archivePath)} -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
-          `rm -f ${JSON.stringify(archivePath)}`,
+          `curl -fsSL ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
         ].join('; '),
       ]
     );
     if (!installResult.success) {
       throw new Error(
-        `Failed extracting managed skills archive: ${installResult.stderr || installResult.stdout || 'unknown error'}`
+        `Failed downloading/extracting skills: ${installResult.stderr || installResult.stdout || 'unknown error'}`
       );
     }
 
@@ -793,7 +736,7 @@ export class WorkspaceContainer {
       {
         method: 'PUT',
         headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: EMBEDDED_SKILLS_VERSION,
+        body: SPRITE_ASSETS.skills.hash,
       },
       {
         path: SPRITE_MANAGED_SKILLS_VERSION_PATH,
@@ -817,36 +760,14 @@ export class WorkspaceContainer {
     if (this.createWorkerBootstrapped) return;
 
     const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_CREATE_WORKER_VERSION_PATH);
-    if (installedVersion === EMBEDDED_CREATE_WORKER_VERSION) {
-      console.log(`[Sprite] bootstrap: create-worker already at version ${EMBEDDED_CREATE_WORKER_VERSION.slice(0, 16)}`);
+    if (installedVersion === SPRITE_ASSETS.createWorker.hash) {
+      console.log(`[Sprite] bootstrap: create-worker already at version ${SPRITE_ASSETS.createWorker.hash}`);
       this.createWorkerBootstrapped = true;
       return;
     }
-    console.log(`[Sprite] bootstrap: updating create-worker (${installedVersion?.slice(0, 16) || 'none'} → ${EMBEDDED_CREATE_WORKER_VERSION.slice(0, 16)})`);
+    console.log(`[Sprite] bootstrap: updating create-worker (${installedVersion || 'none'} → ${SPRITE_ASSETS.createWorker.hash})`);
 
-
-    const archivePath = `/tmp/chiridion-create-worker-${EMBEDDED_CREATE_WORKER_VERSION.slice(0, 16)}.tar.gz`;
-
-    const archiveWrite = await this.fetchSpriteFs(
-      spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/gzip' },
-        body: this.decodeBase64(EMBEDDED_CREATE_WORKER_ARCHIVE_BASE64),
-      },
-      {
-        path: archivePath,
-        workingDir: this.getFsWorkingDir(),
-        mode: '0644',
-        mkdir: true,
-      }
-    );
-    if (!archiveWrite.ok) {
-      const body = await archiveWrite.text();
-      throw new Error(`Failed writing create-worker archive ${archivePath}: ${archiveWrite.status} ${body}`);
-    }
-
+    const assetUrl = this.getAssetUrl(SPRITE_ASSETS.createWorker.path);
     const installResult = await this.execHttpRawForSprite(
       spriteName,
       [
@@ -856,8 +777,7 @@ export class WorkspaceContainer {
           'set -euo pipefail',
           `rm -rf ${JSON.stringify(SPRITE_CREATE_WORKER_DIR)}`,
           `mkdir -p /usr/local/lib`,
-          `tar -xzf ${JSON.stringify(archivePath)} -C /usr/local/lib`,
-          `rm -f ${JSON.stringify(archivePath)}`,
+          `curl -fsSL ${JSON.stringify(assetUrl)} | tar -xzf - -C /usr/local/lib`,
           `chmod +x ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)}`,
           `ln -sf ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)} ${JSON.stringify(SPRITE_CREATE_WORKER_BIN)}`,
         ].join('; '),
@@ -865,7 +785,7 @@ export class WorkspaceContainer {
     );
     if (!installResult.success) {
       throw new Error(
-        `Failed extracting create-worker archive: ${installResult.stderr || installResult.stdout || 'unknown error'}`
+        `Failed downloading/extracting create-worker: ${installResult.stderr || installResult.stdout || 'unknown error'}`
       );
     }
 
@@ -875,7 +795,7 @@ export class WorkspaceContainer {
       {
         method: 'PUT',
         headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: EMBEDDED_CREATE_WORKER_VERSION,
+        body: SPRITE_ASSETS.createWorker.hash,
       },
       {
         path: SPRITE_CREATE_WORKER_VERSION_PATH,
@@ -925,10 +845,7 @@ export class WorkspaceContainer {
 
     console.log(`[Sprite] bootstrap: running full bootstrap (v=${BOOTSTRAP_VERSION.slice(0, 40)})`);
     this.runnerBootstrapPromise = (async () => {
-      await Promise.all([
-        this.ensureRunnerScript(spriteName),
-        this.ensureMemoryLoggerScript(spriteName),
-      ]);
+      await this.ensureRunnerScripts(spriteName);
       await this.ensureRunnerDependencies(spriteName);
       await Promise.all([
         this.ensureRunnerSkills(spriteName),
