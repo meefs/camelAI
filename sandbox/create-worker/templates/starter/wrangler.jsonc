@@ -42,7 +42,7 @@
 	 * Access via env.MY_BUCKET.get(), .put(), .list(), .delete()
 	 */
 	// "r2_buckets": [
-	// 	{ "binding": "MY_BUCKET", "bucket_name": "my-bucket" }
+	// 	{ "binding": "MY_BUCKET", "bucket_name": "starter-uploads" }
 	// ],
 
 	/**

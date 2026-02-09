@@ -137,13 +137,13 @@ R2 buckets are available for storing files, images, and any unstructured data. Y
 1. Add `r2_buckets` to `wrangler.jsonc`:
 ```jsonc
 "r2_buckets": [
-  { "binding": "MY_BUCKET", "bucket_name": "my-bucket" }
+  { "binding": "MY_BUCKET", "bucket_name": "myapp-uploads" }
 ]
 ```
 2. Run `bun wrangler types` to update Env
 3. Use in loaders/actions: `context.cloudflare.env.MY_BUCKET.put(key, data)`
 
-Multiple buckets with any names are supported — just add more entries to the array.
+Multiple buckets with any names are supported — just add more entries to the array. Use project-specific bucket names (e.g. `myapp-uploads` not just `uploads`) to avoid collisions with other projects.
 
 ### AI Chat Agent
 

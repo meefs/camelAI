@@ -513,18 +513,18 @@ Add `r2_buckets` to `wrangler.jsonc`:
 ```jsonc
 {
   "r2_buckets": [
-    { "binding": "MY_BUCKET", "bucket_name": "my-bucket" }
+    { "binding": "MY_BUCKET", "bucket_name": "myapp-uploads" }
   ]
 }
 ```
 
-You can use any `bucket_name` — buckets are created automatically on first use. You can also declare multiple buckets:
+You can use any `bucket_name` — buckets are created automatically on first use. Use project-specific names (e.g. `myapp-uploads` instead of just `uploads`) to avoid collisions with other projects in the same workspace. You can declare multiple buckets:
 
 ```jsonc
 {
   "r2_buckets": [
-    { "binding": "UPLOADS", "bucket_name": "uploads" },
-    { "binding": "CACHE", "bucket_name": "cache" }
+    { "binding": "UPLOADS", "bucket_name": "myapp-uploads" },
+    { "binding": "CACHE", "bucket_name": "myapp-cache" }
   ]
 }
 ```
