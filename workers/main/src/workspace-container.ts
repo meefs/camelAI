@@ -228,6 +228,7 @@ export class WorkspaceContainer {
   private runnerSkillsBootstrapped = false;
   private createWorkerBootstrapped = false;
   private runnerBootstrapPromise: Promise<void> | null = null;
+  private spriteKnownToExist = false;
   private dataProxyTokenExpiry: number | null = null;
   private integrationEnvCache: Record<string, string> = {};
 
@@ -899,6 +900,10 @@ export class WorkspaceContainer {
    * is at the current BOOTSTRAP_VERSION (e.g. from workspace DO storage).
    */
   setKnownBootstrapVersion(version: string | null | undefined): void {
+    if (!version) return;
+    // Any persisted version means the sprite was successfully created and bootstrapped at
+    // some point. We can skip the Sprites API lookup on cold start.
+    this.spriteKnownToExist = true;
     if (version === BOOTSTRAP_VERSION) {
       this.runnerScriptBootstrapped = true;
       this.runnerDependencyBootstrapped = true;
@@ -980,6 +985,15 @@ export class WorkspaceContainer {
     if (this.sprite) return this.sprite;
 
     const name = this.getSpriteName(this.workspaceId);
+
+    // If a bootstrap version was ever persisted, the sprite must exist —
+    // skip the API lookup and construct the record from the deterministic name.
+    if (this.spriteKnownToExist) {
+      console.log(`[Sprite] ensureSprite: sprite known to exist, skipping API lookup for sprite=${name}`);
+      this.sprite = { id: name, name, url: '', status: 'warm' };
+      return this.sprite;
+    }
+
     console.log(`[Sprite] ensureSprite: looking up sprite=${name}`);
     const existing = await this.getSpriteWithRetry(this.getSpritesClient(), name, {
       allowNotFound: true,
