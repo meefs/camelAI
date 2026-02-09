@@ -175,6 +175,16 @@ const SPRITE_CREATE_WORKER_DIR = '/usr/local/lib/create-worker';
 const SPRITE_CREATE_WORKER_VERSION_PATH = `${SPRITE_CREATE_WORKER_DIR}/.chiridion-version`;
 const SPRITE_CREATE_WORKER_BIN = '/usr/local/bin/create-worker';
 const RUNNER_DEP_PACKAGE = '@anthropic-ai/claude-agent-sdk';
+const RUNNER_DEP_VERSION = '0.2.37';
+
+// Composite version — auto-bumps when any bootstrap component changes.
+// Stored in workspace DO storage to skip all sprite filesystem checks on cold start.
+export const BOOTSTRAP_VERSION = [
+  '1',                            // schema version — bump for structural bootstrap changes
+  RUNNER_DEP_VERSION,             // SDK pinned version
+  EMBEDDED_SKILLS_VERSION,        // skills archive hash
+  EMBEDDED_CREATE_WORKER_VERSION, // create-worker archive hash
+].join(':');
 const SPRITES_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const SPRITES_MAX_RETRY_ATTEMPTS = 6;
 const SPRITES_MAX_GET_AFTER_CREATE_ATTEMPTS = 12;
@@ -230,7 +240,7 @@ export class WorkspaceContainer {
   }
 
   get runnerExecCommand(): string[] {
-    return ['node', DEFAULT_RUNNER_SCRIPT_PATH];
+    return ['bun', 'run', DEFAULT_RUNNER_SCRIPT_PATH];
   }
 
   private get spritesApiBaseUrl(): string {
@@ -573,6 +583,7 @@ export class WorkspaceContainer {
 
   private async ensureRunnerScript(spriteName: string): Promise<void> {
     if (this.runnerScriptBootstrapped) return;
+    console.log(`[Sprite] bootstrap: writing runner script to ${DEFAULT_RUNNER_SCRIPT_PATH}`);
 
     const path = DEFAULT_RUNNER_SCRIPT_PATH;
     const response = await this.fetchSpriteFs(
@@ -629,6 +640,24 @@ export class WorkspaceContainer {
     const installPrefix = SPRITE_RUNNER_HOME_DIR;
     const dependencyPackageJsonPath = `${installPrefix}/node_modules/@anthropic-ai/claude-agent-sdk/package.json`;
 
+    // Check installed version — skip install if it matches the pinned version.
+    const installedPkgJson = await this.readSpriteTextFile(spriteName, dependencyPackageJsonPath);
+    if (installedPkgJson) {
+      try {
+        const { version } = JSON.parse(installedPkgJson) as { version?: string };
+        if (version === RUNNER_DEP_VERSION) {
+          console.log(`[Sprite] bootstrap: ${RUNNER_DEP_PACKAGE}@${version} already installed`);
+          this.runnerDependencyBootstrapped = true;
+          return;
+        }
+        console.log(`[Sprite] bootstrap: upgrading ${RUNNER_DEP_PACKAGE} ${version} → ${RUNNER_DEP_VERSION}`);
+      } catch {
+        // Corrupt package.json — reinstall.
+      }
+    } else {
+      console.log(`[Sprite] bootstrap: installing ${RUNNER_DEP_PACKAGE}@${RUNNER_DEP_VERSION}`);
+    }
+
     const packageJsonWrite = await this.fetchSpriteFs(
       spriteName,
       'write',
@@ -657,7 +686,7 @@ export class WorkspaceContainer {
       [
         'bash',
         '-lc',
-        `npm install --prefix ${installPrefix} --silent --no-progress --no-audit --no-fund ${RUNNER_DEP_PACKAGE}`,
+        `cd ${installPrefix} && bun install --no-progress ${RUNNER_DEP_PACKAGE}@${RUNNER_DEP_VERSION}`,
       ]
     );
 
@@ -727,9 +756,12 @@ export class WorkspaceContainer {
 
     const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_MANAGED_SKILLS_VERSION_PATH);
     if (installedVersion === EMBEDDED_SKILLS_VERSION) {
+      console.log(`[Sprite] bootstrap: skills already at version ${EMBEDDED_SKILLS_VERSION.slice(0, 16)}`);
       this.runnerSkillsBootstrapped = true;
       return;
     }
+    console.log(`[Sprite] bootstrap: updating skills (${installedVersion?.slice(0, 16) || 'none'} → ${EMBEDDED_SKILLS_VERSION.slice(0, 16)})`);
+
 
     const archivePath = `/tmp/chiridion-skills-${EMBEDDED_SKILLS_VERSION.slice(0, 16)}.tar.gz`;
     await this.writeManagedSkillsArchive(spriteName, archivePath);
@@ -785,9 +817,12 @@ export class WorkspaceContainer {
 
     const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_CREATE_WORKER_VERSION_PATH);
     if (installedVersion === EMBEDDED_CREATE_WORKER_VERSION) {
+      console.log(`[Sprite] bootstrap: create-worker already at version ${EMBEDDED_CREATE_WORKER_VERSION.slice(0, 16)}`);
       this.createWorkerBootstrapped = true;
       return;
     }
+    console.log(`[Sprite] bootstrap: updating create-worker (${installedVersion?.slice(0, 16) || 'none'} → ${EMBEDDED_CREATE_WORKER_VERSION.slice(0, 16)})`);
+
 
     const archivePath = `/tmp/chiridion-create-worker-${EMBEDDED_CREATE_WORKER_VERSION.slice(0, 16)}.tar.gz`;
 
@@ -859,8 +894,22 @@ export class WorkspaceContainer {
     this.createWorkerBootstrapped = true;
   }
 
+  /**
+   * Mark all bootstrap steps as done if the caller already knows the sprite
+   * is at the current BOOTSTRAP_VERSION (e.g. from workspace DO storage).
+   */
+  setKnownBootstrapVersion(version: string | null | undefined): void {
+    if (version === BOOTSTRAP_VERSION) {
+      this.runnerScriptBootstrapped = true;
+      this.runnerDependencyBootstrapped = true;
+      this.runnerSkillsBootstrapped = true;
+      this.createWorkerBootstrapped = true;
+    }
+  }
+
   private async ensureRunnerBootstrap(spriteName: string): Promise<void> {
     if (this.runnerScriptBootstrapped && this.runnerDependencyBootstrapped && this.runnerSkillsBootstrapped && this.createWorkerBootstrapped) {
+      console.log(`[Sprite] bootstrap: all components up to date (v=${BOOTSTRAP_VERSION.slice(0, 40)})`);
       return;
     }
 
@@ -869,6 +918,7 @@ export class WorkspaceContainer {
       return;
     }
 
+    console.log(`[Sprite] bootstrap: running full bootstrap (v=${BOOTSTRAP_VERSION.slice(0, 40)})`);
     this.runnerBootstrapPromise = (async () => {
       await Promise.all([
         this.ensureRunnerScript(spriteName),
@@ -913,39 +963,55 @@ export class WorkspaceContainer {
 
   async provisionSpriteForWorkspace(workspaceId = this.workspaceId): Promise<SpriteRecord> {
     this.workspaceId = workspaceId;
-    const { sprite, created } = await this.createAndFetchSpriteRecord(this.getSpriteName(workspaceId));
+    const name = this.getSpriteName(workspaceId);
+    console.log(`[Sprite] provisioning sprite=${name} workspace=${workspaceId}`);
+    const { sprite, created } = await this.createAndFetchSpriteRecord(name);
     if (created) {
+      console.log(`[Sprite] created new sprite=${name}, clearing .claude dir`);
       await this.clearSpriteUserClaudeDir(sprite.name);
+    } else {
+      console.log(`[Sprite] sprite=${name} already exists (status=${sprite.status})`);
     }
     this.sprite = sprite;
     return sprite;
   }
 
   private async ensureSprite(): Promise<SpriteRecord> {
-    let sprite = this.sprite;
+    if (this.sprite) return this.sprite;
 
-    if (!sprite) {
-      const name = this.getSpriteName(this.workspaceId);
-      const existing = await this.getSpriteWithRetry(this.getSpritesClient(), name, {
-        allowNotFound: true,
-        attempts: SPRITES_MAX_RETRY_ATTEMPTS,
-      });
+    const name = this.getSpriteName(this.workspaceId);
+    console.log(`[Sprite] ensureSprite: looking up sprite=${name}`);
+    const existing = await this.getSpriteWithRetry(this.getSpritesClient(), name, {
+      allowNotFound: true,
+      attempts: SPRITES_MAX_RETRY_ATTEMPTS,
+    });
 
-      if (existing) {
-        sprite = this.toSpriteRecord(existing);
-      } else {
-        // Eager provisioning should create this ahead of first use; this is drift repair.
-        const created = await this.createAndFetchSpriteRecord(name);
-        sprite = created.sprite;
-        if (created.created) {
-          await this.clearSpriteUserClaudeDir(sprite.name);
-        }
+    let sprite: SpriteRecord;
+    if (existing) {
+      sprite = this.toSpriteRecord(existing);
+      console.log(`[Sprite] ensureSprite: found existing sprite=${name} status=${sprite.status}`);
+    } else {
+      console.log(`[Sprite] ensureSprite: sprite=${name} not found, creating (drift repair)`);
+      const created = await this.createAndFetchSpriteRecord(name);
+      sprite = created.sprite;
+      if (created.created) {
+        await this.clearSpriteUserClaudeDir(sprite.name);
       }
     }
 
-    await this.ensureRunnerBootstrap(sprite.name);
     this.sprite = sprite;
     return sprite;
+  }
+
+  /**
+   * Ensure the sprite exists and is fully bootstrapped (runner script,
+   * dependencies, skills, create-worker). Called by WorkspaceDO.ensureSpriteReady()
+   * which owns the persistent bootstrap version tracking.
+   */
+  async ensureSpriteBootstrapped(workspaceId: string): Promise<void> {
+    this.workspaceId = workspaceId;
+    const sprite = await this.ensureSprite();
+    await this.ensureRunnerBootstrap(sprite.name);
   }
 
   async buildEnvVars(workspaceId: string, orgId: string): Promise<Record<string, string>> {
@@ -1101,11 +1167,10 @@ export class WorkspaceContainer {
     this.workspaceId = workspaceId;
     this.orgId = orgId;
 
-    if (!this.envVars || Object.keys(this.envVars).length === 0) {
-      this.envVars = await this.buildEnvVars(workspaceId, orgId);
-    }
+    if (this.envVars && Object.keys(this.envVars).length > 0) return;
 
-    await this.ensureSprite();
+    console.log(`[Sprite] startForWorkspace: building env vars workspace=${workspaceId} org=${orgId}`);
+    this.envVars = await this.buildEnvVars(workspaceId, orgId);
 
     if (this.dataProxyTokenExpiry) {
       try {
@@ -1122,6 +1187,7 @@ export class WorkspaceContainer {
       throw new Error('WorkspaceContainer not initialized. Call startForWorkspace first.');
     }
 
+    console.log(`[Sprite] buildClaudeRunnerEnv: thread=${options.threadId}`);
     const baseEnv = this.envVars || (await this.buildEnvVars(this.workspaceId, this.orgId));
     const integrationEnv = await this.fetchIntegrationEnvVars(this.workspaceId);
     this.integrationEnvCache = { ...integrationEnv };
@@ -1130,6 +1196,7 @@ export class WorkspaceContainer {
       ...baseEnv,
       ...integrationEnv,
       CHIRIDION_THREAD_ID: options.threadId,
+      DEBUG_CLAUDE_AGENT_SDK: '1',
     };
 
     if (options.threadDeployToken) env.CHIRIDION_THREAD_DEPLOY_TOKEN = options.threadDeployToken;
@@ -1151,10 +1218,9 @@ export class WorkspaceContainer {
       throw new Error('connectExecWebSocket requires cmd[] or sessionId');
     }
 
-    const base = hasSessionId && !hasCmd
-      ? `${this.spritesApiBaseUrl}/v1/sprites/${encodeURIComponent(spriteName)}/exec/${encodeURIComponent(params.sessionId!)}`
-      : `${this.spritesApiBaseUrl}/v1/sprites/${encodeURIComponent(spriteName)}/exec`;
-    const url = new URL(base);
+    console.log(`[Sprite] connectExecWebSocket: sprite=${spriteName} cmd=${hasCmd ? params.cmd!.join(' ') : 'none'} sessionId=${params.sessionId || 'none'}`);
+
+    const url = new URL(`${this.spritesApiBaseUrl}/v1/sprites/${encodeURIComponent(spriteName)}/exec`);
 
     if (hasCmd) {
       for (const arg of params.cmd!) {
@@ -1162,7 +1228,7 @@ export class WorkspaceContainer {
       }
       url.searchParams.set('path', params.path || params.cmd![0]);
     }
-    if (hasSessionId && hasCmd) url.searchParams.set('id', params.sessionId!);
+    if (hasSessionId) url.searchParams.set('id', params.sessionId!);
     if (params.tty) url.searchParams.set('tty', 'true');
     if (params.stdin !== false) url.searchParams.set('stdin', 'true');
     if (typeof params.cols === 'number') url.searchParams.set('cols', `${params.cols}`);
@@ -1187,12 +1253,12 @@ export class WorkspaceContainer {
 
     if (response.status !== 101 || !response.webSocket) {
       const body = await response.text();
+      console.error(`[Sprite] connectExecWebSocket: upgrade failed status=${response.status} body=${body.slice(0, 500)}`);
       throw new Error(`Failed to open exec websocket: ${response.status} ${body}`);
     }
 
-    const ws = response.webSocket;
-    ws.accept();
-    return ws;
+    console.log(`[Sprite] connectExecWebSocket: websocket opened for sprite=${spriteName}`);
+    return response.webSocket;
   }
 
   async fetch(_request: Request): Promise<Response> {

@@ -171,7 +171,6 @@ interface ChatClientQuestionResponse {
 
 const CHAT_SOCKET_TAG = 'chat';
 
-const RUNNER_SESSION_ID_KEY = 'chatRunnerSessionId';
 const CHAT_CONTEXT_KEY = 'chatContext';
 const CHAT_TODOS_KEY = 'chatTodos';
 const CHAT_NEXT_EVENT_ID_KEY = 'chatNextEventId';
@@ -221,7 +220,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
   private runnerDetachedByUs: boolean = false;
-  private runnerSessionId: number | null = null;
   private runnerStdoutBuffer = '';
 
   private readonly textEncoder = new TextEncoder();
@@ -313,11 +311,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const storedContext = ctx.storage.kv.get<ChatContextState>(CHAT_CONTEXT_KEY);
       if (storedContext && storedContext.threadId && storedContext.workspaceId && storedContext.orgId) {
         this.chatContext = storedContext;
-      }
-
-      const storedRunnerSessionId = ctx.storage.kv.get<number>(RUNNER_SESSION_ID_KEY);
-      if (typeof storedRunnerSessionId === 'number' && Number.isFinite(storedRunnerSessionId)) {
-        this.runnerSessionId = storedRunnerSessionId;
       }
 
       const storedTodos = ctx.storage.kv.get<unknown[]>(CHAT_TODOS_KEY);
@@ -495,8 +488,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   webSocketClose(): void {
-    // Detach runner transport when no chat clients are connected. The sprite session
-    // continues running and can be reattached via runnerSessionId.
+    // Detach runner transport when no chat clients are connected.
     if (this.getChatSockets().length === 0) {
       this.detachRunnerSocket();
     }
@@ -790,8 +782,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private async ensureRunnerConnected(): Promise<void> {
-    if (this.runnerSocket) return;
+    if (this.runnerSocket) {
+      console.log(`[ChatThreadDO] ensureRunnerConnected: already connected`);
+      return;
+    }
     if (this.runnerConnectPromise) {
+      console.log(`[ChatThreadDO] ensureRunnerConnected: waiting on existing connect`);
       await this.runnerConnectPromise;
       return;
     }
@@ -802,25 +798,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         throw new Error('Missing chat context');
       }
 
+      console.log(`[ChatThreadDO] ensureRunnerConnected: starting new runner for thread=${context.threadId}`);
+
+      // Delegate sprite creation + bootstrap to WorkspaceDO (persistent version tracking).
+      const workspaceStub = this.env.WORKSPACE.get(
+        this.env.WORKSPACE.idFromName(context.workspaceId)
+      );
+      await workspaceStub.ensureSpriteReady(context.workspaceId, context.orgId);
+
       if (!this.runtime) {
         this.runtime = getWorkspaceContainer(this.env, context.workspaceId);
       }
 
+      // Build env vars for the runner process (no bootstrap, just env init).
       await this.runtime.startForWorkspace(context.workspaceId, context.orgId);
-
-      // First try attaching to an existing long-running runner session.
-      if (typeof this.runnerSessionId === 'number') {
-        try {
-          const attached = await this.runtime.connectExecWebSocket({
-            sessionId: `${this.runnerSessionId}`,
-          });
-          this.attachRunnerSocket(attached);
-          return;
-        } catch {
-          this.runnerSessionId = null;
-          this.ctx.storage.kv.delete(RUNNER_SESSION_ID_KEY);
-        }
-      }
 
       // Start a new runner process.
       const envVars = await this.runtime.buildClaudeRunnerEnv({
@@ -840,6 +831,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
 
       this.attachRunnerSocket(runnerWs);
+      console.log(`[ChatThreadDO] ensureRunnerConnected: runner attached for thread=${context.threadId}`);
     })();
 
     try {
@@ -861,20 +853,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
     });
 
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (event) => {
       const detached = this.runnerDetachedByUs;
       this.runnerDetachedByUs = false;
       this.runnerSocket = null;
       this.runnerStdoutBuffer = '';
 
-      if (!detached && this.getChatSockets().length > 0) {
-        this.emitChatError('Sprite runner disconnected');
-      }
+      console.log(`[ChatThreadDO] runner websocket closed (code=${event.code}, detached=${detached})`);
     });
 
     ws.addEventListener('error', (err) => {
       console.error('[ChatThreadDO] runner websocket error', err);
     });
+
+    // Accept after handlers are attached so no early messages are lost.
+    ws.accept();
   }
 
   private detachRunnerSocket(): void {
@@ -914,16 +907,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private handleRunnerTextMessage(text: string): void {
-    try {
-      const parsed = JSON.parse(text) as { type?: string; session_id?: number };
-      if (parsed.type === 'session_info' && typeof parsed.session_id === 'number') {
-        this.runnerSessionId = parsed.session_id;
-        this.ctx.storage.kv.put(RUNNER_SESSION_ID_KEY, this.runnerSessionId);
-      }
-    } catch {
-      // Non-JSON control text; ignore.
-    }
+  private handleRunnerTextMessage(_text: string): void {
+    // Text frames from sprite exec are control messages (e.g. session_info).
+    // Currently unused — all runner protocol data arrives as binary frames.
   }
 
   private handleRunnerBinaryMessage(payload: Uint8Array): void {
@@ -981,6 +967,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private handleRunnerEvent(event: Record<string, unknown>): void {
     const eventType = typeof event.type === 'string' ? event.type : '';
 
+    if (eventType === 'error') {
+      console.error(`[ChatThreadDO] runner error: ${JSON.stringify({ error: event.error, source: event.source }).slice(0, 500)}`);
+    }
+
     if (eventType === 'todo_state') {
       const todos = event.todos;
       if (Array.isArray(todos)) {
@@ -1025,17 +1015,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private handleRunnerExit(exitCode: number): void {
+    console.log(`[ChatThreadDO] runner exited with code ${exitCode}`);
     this.runnerSocket = null;
     this.runnerStdoutBuffer = '';
 
-    this.runnerSessionId = null;
-    this.ctx.storage.kv.delete(RUNNER_SESSION_ID_KEY);
-
     if (exitCode !== 0) {
       this.emitChatError(`Sprite runner exited with code ${exitCode}`);
-    } else {
-      this.emitChatError('Sprite runner exited');
     }
+    // exit code 0 is a graceful shutdown — no error emitted
   }
 
   private sendRunnerCommand(message: Record<string, unknown>): void {
