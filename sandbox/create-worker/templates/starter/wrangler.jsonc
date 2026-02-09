@@ -35,6 +35,17 @@
 	// ],
 
 	/**
+	 * R2 Object Storage
+	 * https://developers.cloudflare.com/r2/
+	 *
+	 * Use any bucket name — buckets are created automatically on first use.
+	 * Access via env.MY_BUCKET.get(), .put(), .list(), .delete()
+	 */
+	// "r2_buckets": [
+	// 	{ "binding": "MY_BUCKET", "bucket_name": "my-bucket" }
+	// ],
+
+	/**
 	 * Runtime variables available in loader/action context via context.cloudflare.env
 	 */
 	"vars": {

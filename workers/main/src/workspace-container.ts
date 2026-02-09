@@ -15,6 +15,7 @@ import {
 import { SpritesClient } from '@fly/sprites';
 import { EMBEDDED_CLAUDE_RUNNER_SOURCE, EMBEDDED_MEMORY_LOGGER_SOURCE } from './embedded-claude-runner';
 import { EMBEDDED_SKILLS_ARCHIVE_BASE64, EMBEDDED_SKILLS_VERSION } from './embedded-skills';
+import { EMBEDDED_CREATE_WORKER_ARCHIVE_BASE64, EMBEDDED_CREATE_WORKER_VERSION } from './embedded-create-worker';
 import type { OrgDO } from './auth';
 import type { WorkspaceDO } from './workspace';
 
@@ -170,6 +171,9 @@ const DEFAULT_RUNNER_SCRIPT_PATH = `${SPRITE_RUNNER_HOME_DIR}/claude-runner.mjs`
 const SPRITE_MANAGED_SKILLS_DIR = '/etc/claude-code/.claude/skills';
 const SPRITE_MANAGED_SKILLS_VERSION_PATH = `${SPRITE_MANAGED_SKILLS_DIR}/.chiridion-version`;
 const SPRITE_MANAGED_SKILLS_PARENT_DIR = '/etc/claude-code/.claude';
+const SPRITE_CREATE_WORKER_DIR = '/usr/local/lib/create-worker';
+const SPRITE_CREATE_WORKER_VERSION_PATH = `${SPRITE_CREATE_WORKER_DIR}/.chiridion-version`;
+const SPRITE_CREATE_WORKER_BIN = '/usr/local/bin/create-worker';
 const RUNNER_DEP_PACKAGE = '@anthropic-ai/claude-agent-sdk';
 const SPRITES_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const SPRITES_MAX_RETRY_ATTEMPTS = 6;
@@ -212,6 +216,7 @@ export class WorkspaceContainer {
   private runnerScriptBootstrapped = false;
   private runnerDependencyBootstrapped = false;
   private runnerSkillsBootstrapped = false;
+  private createWorkerBootstrapped = false;
   private runnerBootstrapPromise: Promise<void> | null = null;
   private dataProxyTokenExpiry: number | null = null;
   private integrationEnvCache: Record<string, string> = {};
@@ -780,8 +785,87 @@ export class WorkspaceContainer {
     this.runnerSkillsBootstrapped = true;
   }
 
+  private async ensureCreateWorker(spriteName: string): Promise<void> {
+    if (this.createWorkerBootstrapped) return;
+
+    const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_CREATE_WORKER_VERSION_PATH);
+    if (installedVersion === EMBEDDED_CREATE_WORKER_VERSION) {
+      this.createWorkerBootstrapped = true;
+      return;
+    }
+
+    const archivePath = `/tmp/chiridion-create-worker-${EMBEDDED_CREATE_WORKER_VERSION.slice(0, 16)}.tar.gz`;
+
+    const archiveWrite = await this.fetchSpriteFs(
+      spriteName,
+      'write',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/gzip' },
+        body: this.decodeBase64(EMBEDDED_CREATE_WORKER_ARCHIVE_BASE64),
+      },
+      {
+        path: archivePath,
+        workingDir: this.getFsWorkingDir(),
+        mode: '0644',
+        mkdir: true,
+      }
+    );
+    if (!archiveWrite.ok) {
+      const body = await archiveWrite.text();
+      throw new Error(`Failed writing create-worker archive ${archivePath}: ${archiveWrite.status} ${body}`);
+    }
+
+    const installResult = await this.execHttpRawForSprite(
+      spriteName,
+      [
+        'bash',
+        '-lc',
+        [
+          'set -euo pipefail',
+          `rm -rf ${JSON.stringify(SPRITE_CREATE_WORKER_DIR)}`,
+          `mkdir -p /usr/local/lib`,
+          `tar -xzf ${JSON.stringify(archivePath)} -C /usr/local/lib`,
+          `rm -f ${JSON.stringify(archivePath)}`,
+          `chmod +x ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)}`,
+          `ln -sf ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)} ${JSON.stringify(SPRITE_CREATE_WORKER_BIN)}`,
+        ].join('; '),
+      ]
+    );
+    if (!installResult.success) {
+      throw new Error(
+        `Failed extracting create-worker archive: ${installResult.stderr || installResult.stdout || 'unknown error'}`
+      );
+    }
+
+    const versionWrite = await this.fetchSpriteFs(
+      spriteName,
+      'write',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: EMBEDDED_CREATE_WORKER_VERSION,
+      },
+      {
+        path: SPRITE_CREATE_WORKER_VERSION_PATH,
+        workingDir: this.getFsWorkingDir(),
+        mode: '0644',
+        mkdir: true,
+      }
+    );
+    if (!versionWrite.ok) {
+      const body = await versionWrite.text();
+      throw new Error(
+        `Failed writing create-worker version marker at ${SPRITE_CREATE_WORKER_VERSION_PATH}: ` +
+        `${versionWrite.status} ${body}`
+      );
+    }
+
+    this.createWorkerBootstrapped = true;
+  }
+
   private async ensureRunnerBootstrap(spriteName: string): Promise<void> {
-    if (this.runnerScriptBootstrapped && this.runnerDependencyBootstrapped && this.runnerSkillsBootstrapped) {
+    if (this.runnerScriptBootstrapped && this.runnerDependencyBootstrapped && this.runnerSkillsBootstrapped && this.createWorkerBootstrapped) {
       return;
     }
 
@@ -796,7 +880,10 @@ export class WorkspaceContainer {
         this.ensureMemoryLoggerScript(spriteName),
       ]);
       await this.ensureRunnerDependencies(spriteName);
-      await this.ensureRunnerSkills(spriteName);
+      await Promise.all([
+        this.ensureRunnerSkills(spriteName),
+        this.ensureCreateWorker(spriteName),
+      ]);
     })();
 
     try {

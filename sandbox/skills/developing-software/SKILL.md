@@ -10,7 +10,7 @@ This skill guides deployment of production software to Cloudflare's edge network
 
 ## Core Principles
 
-1. **Use `bun run scripts/create-worker` to scaffold projects** - Do not use `wrangler init` or `npm create cloudflare`
+1. **Use `create-worker` to scaffold projects** - Do not use `wrangler init` or `npm create cloudflare`
 2. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
 3. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
 4. **Use React Router 7 framework mode for fullstack web apps** - It is the successor to Remix; default to route `loader()`/`action()` patterns, not SPA-style client data fetching
@@ -18,20 +18,20 @@ This skill guides deployment of production software to Cloudflare's edge network
 
 ## Creating New Projects
 
-Use the `bun run scripts/create-worker` command to scaffold new projects. Do NOT use `wrangler init` or `npm create cloudflare`.
+Use the `create-worker` command to scaffold new projects. Do NOT use `wrangler init` or `npm create cloudflare`.
 
 ```bash
 # Create a fullstack React app with defaults
-bun run scripts/create-worker my-app
+create-worker my-app
 
 # Customize the UI style and theme
-bun run scripts/create-worker my-app --style nova --theme blue
+create-worker my-app --style nova --theme blue
 
 # Full customization example
-bun run scripts/create-worker my-app --style lyra --theme emerald --font figtree --radius large
+create-worker my-app --style lyra --theme emerald --font figtree --radius large
 
 # See all options
-bun run scripts/create-worker --help
+create-worker --help
 ```
 
 ### Style Options
@@ -387,14 +387,14 @@ for (const socket of roomSockets) {
 
 ## Fullstack Apps with React + Vite
 
-For fullstack applications, use the `bun run scripts/create-worker` command:
+For fullstack applications, use the `create-worker` command:
 
 ```bash
 # Create React app with Vite
-bun run scripts/create-worker my-app
+create-worker my-app
 
 # Or with custom styling
-bun run scripts/create-worker my-app --style nova --theme blue
+create-worker my-app --style nova --theme blue
 
 cd my-app
 
@@ -501,6 +501,107 @@ Features include:
 - Web search plugin for real-time information
 
 **See [AI-APPS.md](AI-APPS.md) for setup, customization, and common pitfalls.**
+
+## R2 Object Storage
+
+User workers can use R2 bucket bindings for storing files, images, blobs, and any unstructured data. Buckets are virtualized — you can use any bucket name and don't need to create them ahead of time. Just declare the binding and start using it.
+
+### Configuration
+
+Add `r2_buckets` to `wrangler.jsonc`:
+
+```jsonc
+{
+  "r2_buckets": [
+    { "binding": "MY_BUCKET", "bucket_name": "my-bucket" }
+  ]
+}
+```
+
+You can use any `bucket_name` — buckets are created automatically on first use. You can also declare multiple buckets:
+
+```jsonc
+{
+  "r2_buckets": [
+    { "binding": "UPLOADS", "bucket_name": "uploads" },
+    { "binding": "CACHE", "bucket_name": "cache" }
+  ]
+}
+```
+
+### Usage
+
+Access R2 bindings through `env` just like any other Cloudflare binding:
+
+```typescript
+// Store an object
+await env.MY_BUCKET.put('images/photo.jpg', imageData, {
+  httpMetadata: { contentType: 'image/jpeg' }
+});
+
+// Retrieve an object
+const obj = await env.MY_BUCKET.get('images/photo.jpg');
+if (obj) {
+  const data = await obj.text(); // or .arrayBuffer(), .json(), .blob()
+}
+
+// List objects
+const listed = await env.MY_BUCKET.list({ prefix: 'images/' });
+for (const obj of listed.objects) {
+  console.log(obj.key, obj.size);
+}
+
+// Delete an object
+await env.MY_BUCKET.delete('images/photo.jpg');
+```
+
+### In Route Loaders/Actions
+
+```typescript
+export async function action({ request, context }: Route.ActionArgs) {
+  const formData = await request.formData();
+  const file = formData.get('file') as File;
+
+  await context.cloudflare.env.UPLOADS.put(
+    `files/${file.name}`,
+    file.stream(),
+    { httpMetadata: { contentType: file.type } }
+  );
+
+  return { success: true };
+}
+
+export async function loader({ context, params }: Route.LoaderArgs) {
+  const obj = await context.cloudflare.env.UPLOADS.get(`files/${params.filename}`);
+  if (!obj) return new Response('Not found', { status: 404 });
+
+  return new Response(obj.body, {
+    headers: { 'Content-Type': obj.httpMetadata?.contentType || 'application/octet-stream' }
+  });
+}
+```
+
+### Key R2 Methods
+
+| Method | Description |
+|--------|-------------|
+| `put(key, value, options?)` | Store an object (string, ArrayBuffer, ReadableStream, Blob) |
+| `get(key)` | Retrieve an object with body |
+| `head(key)` | Get object metadata without body |
+| `delete(key)` | Delete one or more objects |
+| `list(options?)` | List objects with optional prefix, limit, cursor |
+| `createMultipartUpload(key)` | Start a multipart upload for large files |
+
+### When to Use R2 vs SQLite
+
+| Use Case | Recommendation |
+|----------|----------------|
+| File/image/blob storage | R2 |
+| Structured/relational data | SQLite (Durable Objects) |
+| JSON documents with queries | SQLite |
+| Large binary assets | R2 |
+| User uploads | R2 |
+| Session/config data | SQLite KV |
 
 ## Best Practices
 

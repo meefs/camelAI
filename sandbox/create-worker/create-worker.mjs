@@ -22,7 +22,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEMPLATE_DIR = join(__dirname, '..', 'templates', 'starter');
+const TEMPLATE_DIR = join(__dirname, 'templates', 'starter');
 
 // Valid option values
 const OPTIONS = {

@@ -130,6 +130,21 @@ These are already included in the starter template and ready to import:
 1. Uncomment bindings and migrations in `wrangler.jsonc`
 2. The `ExampleDO` is ready to use - just enable it
 
+### R2 Object Storage (for files/blobs)
+
+R2 buckets are available for storing files, images, and any unstructured data. You can use any bucket name — buckets are created automatically, no setup required.
+
+1. Add `r2_buckets` to `wrangler.jsonc`:
+```jsonc
+"r2_buckets": [
+  { "binding": "MY_BUCKET", "bucket_name": "my-bucket" }
+]
+```
+2. Run `bun wrangler types` to update Env
+3. Use in loaders/actions: `context.cloudflare.env.MY_BUCKET.put(key, data)`
+
+Multiple buckets with any names are supported — just add more entries to the array.
+
 ### AI Chat Agent
 
 The template has a complete AI chat setup - just uncomment:
