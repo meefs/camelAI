@@ -954,6 +954,17 @@ export class WorkspaceContainer {
     return (normalized || `chiridion-${Date.now()}`).slice(0, 63);
   }
 
+  /**
+   * Return the deterministic sprite name for the current workspace.
+   * Unlike ensureSprite(), this makes no API calls — it computes the name
+   * from the workspaceId alone. Safe for all FS/exec operations since the
+   * sprite is guaranteed to exist (provisioned at workspace creation, with
+   * bootstrap handled by WorkspaceDO).
+   */
+  private requireSpriteName(): string {
+    return this.getSpriteName(this.workspaceId);
+  }
+
   private buildSpritesHeaders(extra: HeadersInit = {}): Headers {
     const headers = new Headers(extra);
     headers.set('Authorization', `Bearer ${this.requireSpritesToken()}`);
@@ -1220,8 +1231,7 @@ export class WorkspaceContainer {
   }
 
   async connectExecWebSocket(params: ExecWebSocketParams): Promise<WebSocket> {
-    const sprite = await this.ensureSprite();
-    return this.connectExecWebSocketForSprite(sprite.name, params);
+    return this.connectExecWebSocketForSprite(this.requireSpriteName(), params);
   }
 
   private async connectExecWebSocketForSprite(spriteName: string, params: ExecWebSocketParams): Promise<WebSocket> {
@@ -1346,8 +1356,7 @@ export class WorkspaceContainer {
       env?: Record<string, string>;
     } = {}
   ): Promise<ControlPlaneExecResponse> {
-    const sprite = await this.ensureSprite();
-    return this.execHttpRawForSprite(sprite.name, args, options);
+    return this.execHttpRawForSprite(this.requireSpriteName(), args, options);
   }
 
   async exec(command: string, options?: { timeout?: number; cwd?: string }): Promise<ControlPlaneExecResponse> {
@@ -1379,10 +1388,10 @@ export class WorkspaceContainer {
   }
 
   async readFile(path: string): Promise<ControlPlaneReadResponse> {
-    const sprite = await this.ensureSprite();
+    const spriteName = this.requireSpriteName();
     const normalizedPath = this.normalizeFsPath(path);
     const response = await this.fetchSpriteFs(
-      sprite.name,
+      spriteName,
       'read',
       { method: 'GET' },
       { path: normalizedPath, workingDir: this.getFsWorkingDir() }
@@ -1413,10 +1422,10 @@ export class WorkspaceContainer {
   }
 
   async writeFile(path: string, content: string): Promise<ControlPlaneWriteResponse> {
-    const sprite = await this.ensureSprite();
+    const spriteName = this.requireSpriteName();
     const normalizedPath = this.normalizeFsPath(path);
     const response = await this.fetchSpriteFs(
-      sprite.name,
+      spriteName,
       'write',
       {
         method: 'PUT',
@@ -1439,11 +1448,11 @@ export class WorkspaceContainer {
   }
 
   async writeBinaryFile(path: string, base64Content: string): Promise<ControlPlaneWriteResponse> {
-    const sprite = await this.ensureSprite();
+    const spriteName = this.requireSpriteName();
     const normalizedPath = this.normalizeFsPath(path);
     const binaryBuffer = Buffer.from(base64Content, 'base64');
     const response = await this.fetchSpriteFs(
-      sprite.name,
+      spriteName,
       'write',
       {
         method: 'PUT',
@@ -1466,7 +1475,7 @@ export class WorkspaceContainer {
   }
 
   async listFiles(path: string, options?: { recursive?: boolean; includeHidden?: boolean }): Promise<ControlPlaneListResponse> {
-    const sprite = await this.ensureSprite();
+    const spriteName = this.requireSpriteName();
     const root = this.normalizeFsPath(path);
     const recursive = options?.recursive === true;
     const includeHidden = options?.includeHidden === true;
@@ -1474,7 +1483,7 @@ export class WorkspaceContainer {
 
     const walk = async (current: string): Promise<void> => {
       const response = await this.fetchSpriteFs(
-        sprite.name,
+        spriteName,
         'list',
         { method: 'GET' },
         { path: current, workingDir: this.getFsWorkingDir() }
@@ -1555,8 +1564,7 @@ export class WorkspaceContainer {
   }
 
   async moveFile(source: string, destination: string): Promise<ControlPlaneMoveResponse> {
-    const sprite = await this.ensureSprite();
-    const response = await this.fetchSpriteFs(sprite.name, 'rename', {
+    const response = await this.fetchSpriteFs(this.requireSpriteName(), 'rename', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1576,8 +1584,7 @@ export class WorkspaceContainer {
   }
 
   async deleteFile(path: string): Promise<ControlPlaneDeleteResponse> {
-    const sprite = await this.ensureSprite();
-    const response = await this.fetchSpriteFs(sprite.name, 'delete', {
+    const response = await this.fetchSpriteFs(this.requireSpriteName(), 'delete', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1632,8 +1639,8 @@ export class WorkspaceContainer {
 
   async destroy(): Promise<void> {
     try {
-      const sprite = await this.ensureSprite();
-      const sessionsRes = await this.fetchSprite(`/v1/sprites/${encodeURIComponent(sprite.name)}/exec`, {
+      const spriteName = this.requireSpriteName();
+      const sessionsRes = await this.fetchSprite(`/v1/sprites/${encodeURIComponent(spriteName)}/exec`, {
         method: 'GET',
       });
 
@@ -1643,7 +1650,7 @@ export class WorkspaceContainer {
           sessions
             .filter((session) => session.is_active)
             .map(async (session) => {
-              await this.fetchSprite(`/v1/sprites/${encodeURIComponent(sprite.name)}/exec/${session.id}/kill`, {
+              await this.fetchSprite(`/v1/sprites/${encodeURIComponent(spriteName)}/exec/${session.id}/kill`, {
                 method: 'POST',
               }).catch(() => {});
             })

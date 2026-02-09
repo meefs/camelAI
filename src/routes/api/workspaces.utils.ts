@@ -3,7 +3,7 @@ import { getSession } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import { getWorkspace, getWorkspaceAccess } from '@/lib/auth-do';
-import type { WorkspaceDO, WorkspaceAccessLevel } from '../../../workers/main/src/workspace';
+import type { WorkspaceAccessLevel } from '../../../workers/main/src/workspace';
 import {
   getWorkspaceContainer,
   type WorkspaceContainer,
@@ -78,17 +78,7 @@ export async function requireWorkspaceAuth(
 ): Promise<WorkspaceAuth> {
   const accessAuth = await requireWorkspaceAccess(request, context, workspaceId, options);
   const env = getEnv(context);
-
-  // Ensure sprite is created and bootstrapped via WorkspaceDO (persistent version tracking)
-  const workspaceStub = env.WORKSPACE.get(
-    env.WORKSPACE.idFromName(accessAuth.workspaceId)
-  ) as unknown as WorkspaceDO;
-  await workspaceStub.ensureSpriteReady(accessAuth.workspaceId, accessAuth.orgId);
-
-  // Get workspace container and init env vars
-  const containerEnv = env as unknown as WorkspaceContainerEnv;
-  const container = getWorkspaceContainer(containerEnv, accessAuth.workspaceId);
-  await container.startForWorkspace(accessAuth.workspaceId, accessAuth.orgId);
+  const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, accessAuth.workspaceId);
 
   return {
     ...accessAuth,
