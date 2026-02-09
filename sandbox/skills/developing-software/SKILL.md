@@ -16,6 +16,45 @@ This skill guides deployment of production software to Cloudflare's edge network
 4. **Use React Router 7 framework mode for fullstack web apps** - It is the successor to Remix; default to route `loader()`/`action()` patterns, not SPA-style client data fetching
 5. **Use shadcn/ui for frontend components** - Use `bun run shadcn add <component>` to add components
 
+## Using Agent Teams for Parallel Development
+
+When building applications with multiple independent components that can be developed in parallel, consider using an **agent team** approach to speed up development. This is especially effective for:
+
+- **Separate frontend and backend work** - One agent builds the API routes while another creates the UI components
+- **Multiple independent features** - Different agents implement different features simultaneously (e.g., authentication, data dashboard, admin panel)
+- **Multi-page applications** - Each agent owns different routes or pages
+- **Component library + integration** - One agent builds reusable components while another integrates them into pages
+
+### When to Use Agent Teams
+
+Use agent teams when work can be cleanly separated into independent pieces:
+
+- ✅ Frontend UI and backend API development
+- ✅ Multiple route handlers with different responsibilities
+- ✅ Separate Durable Object classes for different domains
+- ✅ Independent shadcn/ui component implementations
+- ✅ Database schema + application logic that uses it
+
+Avoid agent teams when:
+
+- ❌ Work has tight coupling and constant back-and-forth
+- ❌ The task is small and wouldn't benefit from parallelization
+- ❌ Clear boundaries between components haven't been established
+
+### How to Structure Agent Team Work
+
+1. **Define clear boundaries** - Decide which agent owns which files/features
+2. **Establish interfaces first** - Agree on API contracts, types, and schemas before parallel work
+3. **Minimize shared files** - Each agent should work on separate files when possible
+4. **Coordinate integration** - Have one agent handle final integration and testing
+
+Example workflow for a data dashboard app:
+- **Agent 1**: Build Durable Object with SQLite schema and data access methods
+- **Agent 2**: Create shadcn/ui components for charts, tables, and forms
+- **Agent 3**: Implement React Router routes that connect the UI to the backend
+
+This parallel approach can significantly reduce total development time for complex applications.
+
 ## Creating New Projects
 
 Use the `create-worker` command to scaffold new projects. Do NOT use `wrangler init` or `npm create cloudflare`.

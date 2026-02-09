@@ -258,7 +258,7 @@ async function createProject(projectName, options) {
   console.log('');
 
   // Step 1: Copy template
-  console.log('Step 1/4: Copying template...');
+  console.log('Step 1/5: Copying template...');
   let stepStart = Date.now();
   try {
     copyTemplate(projectDir);
@@ -269,7 +269,7 @@ async function createProject(projectName, options) {
   }
 
   // Step 2: Fetch shadcn preset configuration from API
-  console.log('\nStep 2/4: Fetching shadcn styling configuration...');
+  console.log('\nStep 2/5: Fetching shadcn styling configuration...');
   stepStart = Date.now();
   const presetUrl = buildPresetUrl(options);
   let presetConfig;
@@ -283,7 +283,7 @@ async function createProject(projectName, options) {
   }
 
   // Step 3: Generate and write CSS
-  console.log('\nStep 3/4: Applying shadcn styling...');
+  console.log('\nStep 3/5: Applying shadcn styling...');
   stepStart = Date.now();
   const targetCssPath = join(projectDir, 'app', 'app.css');
   const generatedCss = generateCssFromPreset(presetConfig, options);
@@ -291,7 +291,7 @@ async function createProject(projectName, options) {
   console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
 
   // Step 4: Configure project for shadcn
-  console.log('\nStep 4/4: Configuring project...');
+  console.log('\nStep 4/5: Configuring project...');
   stepStart = Date.now();
 
   // Create components.json (dynamic based on user options)
@@ -316,13 +316,27 @@ async function createProject(projectName, options) {
 
   console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
 
+  // Step 5: Install dependencies
+  console.log('\nStep 5/5: Installing dependencies...');
+  stepStart = Date.now();
+  const installResult = spawnSync('bun', ['install'], {
+    cwd: projectDir,
+    stdio: 'inherit',
+    shell: true
+  });
+
+  if (installResult.status !== 0) {
+    console.error('\nWarning: Failed to install dependencies. You can run "bun install" manually.');
+  } else {
+    console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
+  }
+
   const totalTime = Date.now() - totalStart;
   console.log(`
 Project created successfully in ${formatTime(totalTime)}!
 
 Next steps:
   cd ${projectName}
-  bun install      # Install dependencies
   bun dev          # Start development server
   bun run deploy   # Deploy to Cloudflare
 

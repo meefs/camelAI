@@ -112,16 +112,17 @@ bun run test               # Run Vitest tests
 bun run shadcn add <name>  # Add UI components
 ```
 
-## Preinstalled Data Libraries
+## Common Data Libraries
 
-These are already included in the starter template and ready to import:
+The starter template includes these packages in `package.json` for data-driven applications:
 
 - `recharts` - Chart components for dashboards/visualizations
 - `@tanstack/react-table` - Headless data table engine (sorting/filtering/pagination)
 - `date-fns` - Date parsing/formatting/utilities
 - `papaparse` - CSV parsing/export utilities
 - `lodash-es` - General data manipulation helpers
-- `react-is` - React element/type runtime checks (often used by UI tooling)
+
+These are installed when you run `bun install`. Add additional packages as needed with `bun add <package>`.
 
 ## Enabling Features
 

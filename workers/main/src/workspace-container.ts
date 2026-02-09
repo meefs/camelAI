@@ -628,11 +628,6 @@ export class WorkspaceContainer {
 
     const installPrefix = SPRITE_RUNNER_HOME_DIR;
     const dependencyPackageJsonPath = `${installPrefix}/node_modules/@anthropic-ai/claude-agent-sdk/package.json`;
-    const dependencyExists = await this.spriteFileExists(spriteName, dependencyPackageJsonPath);
-    if (dependencyExists) {
-      this.runnerDependencyBootstrapped = true;
-      return;
-    }
 
     const packageJsonWrite = await this.fetchSpriteFs(
       spriteName,

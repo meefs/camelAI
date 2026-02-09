@@ -389,6 +389,7 @@ function getQueryOptions(fileExists) {
   const envVars = {
     ...process.env,
     THREAD_ID: session.threadId,
+    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
   };
 
   if (THREAD_DEPLOY_TOKEN) {

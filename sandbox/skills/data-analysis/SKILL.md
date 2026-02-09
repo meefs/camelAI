@@ -1,12 +1,40 @@
 ---
 name: data-analysis
-description: Analyze data using pre-installed Python and SQL tools. Use this skill when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create visualizations, or perform data analysis. Handles pandas, polars, DuckDB for data processing, matplotlib/seaborn/plotly for visualization, scikit-learn for ML, and database connectivity via SQLAlchemy, usql, the google-cloud-bigquery client with OAuth access tokens, and the Chiridion MS SQL Proxy API for SQL Server. For live dashboards or data apps, read the developing-software skill.
+description: Analyze data using Python and SQL tools. Use this skill when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create visualizations, or perform data analysis. Supports pandas, polars, DuckDB for data processing, matplotlib/seaborn/plotly for visualization, scikit-learn for ML, and database connectivity via SQLAlchemy, usql, the google-cloud-bigquery client with OAuth access tokens, and the Chiridion MS SQL Proxy API for SQL Server. For live dashboards or data apps, read the developing-software skill.
 license: Complete terms in LICENSE.txt
 ---
 
 # Data Analysis Tools
 
-This skill provides pre-installed tools for data analysis, database querying, and visualization.
+This skill provides tools for data analysis, database querying, and visualization. Python packages can be installed on-demand and persist across sessions.
+
+## Package Installation
+
+Python packages are **not pre-installed** by default. When you need a package, install it using **`uv`** (a fast Python package installer).
+
+### Installing uv (if not already installed)
+
+```bash
+# Check if uv is installed
+which uv
+
+# If not found, install it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Installing Python packages
+
+```bash
+# Recommended: Use uv (much faster than pip)
+uv pip install --system <package>
+
+# Alternative: Use pip (slower)
+pip install <package>
+```
+
+**Why use `uv` over `pip`?** `uv` is significantly faster than `pip` for package installation and resolution, making it the preferred choice for data analysis workflows.
+
+**Installs persist** — once a package is installed in a workspace, it remains available across all future sessions. Before using a package, check if it needs to be installed first (with `python -c "import package_name"` or similar), and install it if missing.
 
 ## Database CLI
 
@@ -46,14 +74,16 @@ sqlite3 data.db "SELECT * FROM users LIMIT 10"
 
 ## Python Data Processing
 
-### Core Libraries (Pre-installed)
+### Core Libraries
 
-| Package | Purpose |
-|---------|---------|
-| `pandas` | DataFrames and data manipulation |
-| `numpy` | Numerical computing |
-| `polars` | Fast DataFrame library (Rust-based) |
-| `duckdb` | In-process SQL analytics |
+| Package | Purpose | Install |
+|---------|---------|---------|
+| `pandas` | DataFrames and data manipulation | `uv pip install --system pandas` |
+| `numpy` | Numerical computing | `uv pip install --system numpy` |
+| `polars` | Fast DataFrame library (Rust-based) | `uv pip install --system polars` |
+| `duckdb` | In-process SQL analytics | `uv pip install --system duckdb` |
+
+**Install if needed, then use:**
 
 ```python
 import pandas as pd
@@ -73,13 +103,15 @@ result = duckdb.sql("SELECT * FROM 'data.csv' WHERE amount > 1000")
 print(result.df())
 ```
 
-### Visualization (Pre-installed)
+### Visualization
 
-| Package | Purpose |
-|---------|---------|
-| `matplotlib` | Static plots and charts |
-| `seaborn` | Statistical visualization |
-| `plotly` | Interactive charts |
+| Package | Purpose | Install |
+|---------|---------|---------|
+| `matplotlib` | Static plots and charts | `uv pip install --system matplotlib` |
+| `seaborn` | Statistical visualization | `uv pip install --system seaborn` |
+| `plotly` | Interactive charts | `uv pip install --system plotly` |
+
+**Install if needed, then use:**
 
 ```python
 import matplotlib.pyplot as plt
@@ -100,12 +132,14 @@ fig = px.line(df, x="date", y="value")
 fig.write_html("chart.html")
 ```
 
-### Scientific Computing & ML (Pre-installed)
+### Scientific Computing & ML
 
-| Package | Purpose |
-|---------|---------|
-| `scipy` | Scientific computing, optimization |
-| `scikit-learn` | Machine learning algorithms |
+| Package | Purpose | Install |
+|---------|---------|---------|
+| `scipy` | Scientific computing, optimization | `uv pip install --system scipy` |
+| `scikit-learn` | Machine learning algorithms | `uv pip install --system scikit-learn` |
+
+**Install if needed, then use:**
 
 ```python
 from sklearn.model_selection import train_test_split
@@ -116,15 +150,17 @@ model = LinearRegression().fit(X_train, y_train)
 predictions = model.predict(X_test)
 ```
 
-### Database Connectivity (Pre-installed)
+### Database Connectivity
 
-| Package | Purpose |
-|---------|---------|
-| `sqlalchemy` | Python ORM and database toolkit |
-| `psycopg` | PostgreSQL driver |
-| `pymysql` | MySQL driver |
-| `google-cloud-bigquery` | BigQuery client |
-| `google-auth` | Google authentication (used for BigQuery tokens) |
+| Package | Purpose | Install |
+|---------|---------|---------|
+| `sqlalchemy` | Python ORM and database toolkit | `uv pip install --system sqlalchemy` |
+| `psycopg` | PostgreSQL driver | `uv pip install --system psycopg` |
+| `pymysql` | MySQL driver | `uv pip install --system pymysql` |
+| `google-cloud-bigquery` | BigQuery client | `uv pip install --system google-cloud-bigquery` |
+| `google-auth` | Google authentication (used for BigQuery tokens) | `uv pip install --system google-auth` |
+
+**Install if needed, then use:**
 
 ```python
 from sqlalchemy import create_engine
@@ -241,16 +277,18 @@ response = requests.post(
 
 **Note:** The `usql sqlserver://` CLI shown above also works for interactive exploration but the HTTP API is preferred for programmatic access within scripts.
 
-### File Formats (Pre-installed)
+### File Formats
 
-| Package | Purpose |
-|---------|---------|
-| `pyarrow` | Parquet, Arrow files |
-| `openpyxl` | Excel (.xlsx) read/write |
-| `xlsxwriter` | Excel creation with formatting |
-| `pdfplumber` | PDF text and table extraction |
-| `python-docx` | Word documents |
-| `python-pptx` | PowerPoint files |
+| Package | Purpose | Install |
+|---------|---------|---------|
+| `pyarrow` | Parquet, Arrow files | `uv pip install --system pyarrow` |
+| `openpyxl` | Excel (.xlsx) read/write | `uv pip install --system openpyxl` |
+| `xlsxwriter` | Excel creation with formatting | `uv pip install --system xlsxwriter` |
+| `pdfplumber` | PDF text and table extraction | `uv pip install --system pdfplumber` |
+| `python-docx` | Word documents | `uv pip install --system python-docx` |
+| `python-pptx` | PowerPoint files | `uv pip install --system python-pptx` |
+
+**Install if needed, then use:**
 
 ```python
 # Read Excel
@@ -281,13 +319,13 @@ When the user wants a **live dashboard**, **data app**, or any interactive web U
 
 Database connection credentials are available as environment variables in deployed workers (same `INT_*` env vars documented above), so dashboards can query databases directly at runtime.
 
-## On-Demand Packages
+## Additional Packages
 
-These are NOT pre-installed. Install with `uv pip install --system <package>`:
+Common packages for specialized analysis:
 
-| Package | Purpose |
-|---------|---------|
-| `statsmodels` | Statistical modeling, time series |
-| `xgboost` | Gradient boosting |
-| `geopandas` | Geospatial data |
-| `opencv-python-headless` | Computer vision |
+| Package | Purpose | Install |
+|---------|---------|---------|
+| `statsmodels` | Statistical modeling, time series | `uv pip install --system statsmodels` |
+| `xgboost` | Gradient boosting | `uv pip install --system xgboost` |
+| `geopandas` | Geospatial data | `uv pip install --system geopandas` |
+| `opencv-python-headless` | Computer vision | `uv pip install --system opencv-python-headless` |
