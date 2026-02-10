@@ -277,6 +277,27 @@ function emitStreamTextPart(socket: MockWebSocket, messageId: string, text: stri
   });
 }
 
+function emitCompactionSummaryBlock(socket: MockWebSocket, summary: string) {
+  socket.emitMessage({
+    type: 'sdk_event',
+    event: {
+      type: 'stream_event',
+      event: { type: 'content_block_start', index: 0, content_block: { type: 'compaction' } },
+    },
+  });
+  socket.emitMessage({
+    type: 'sdk_event',
+    event: {
+      type: 'stream_event',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'compaction_delta', content: summary } },
+    },
+  });
+  socket.emitMessage({
+    type: 'sdk_event',
+    event: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+  });
+}
+
 const OriginalWebSocket = globalThis.WebSocket;
 
 beforeAll(() => {
@@ -334,6 +355,46 @@ describe('Chat compaction event lifecycle', () => {
     expect(screen.getByTestId('compact-summary')).toBeInTheDocument();
   });
 
+  it('does not treat /COMPACT as a manual compact command', async () => {
+    const user = userEvent.setup();
+    render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
+    const socket = getMainSocket();
+
+    await act(async () => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await user.type(screen.getByLabelText('Prompt'), '/COMPACT');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(screen.queryByTestId('compacting-indicator')).not.toBeInTheDocument();
+    const sentPayloadRaw = socket.send.mock.calls.at(-1)?.[0];
+    expect(typeof sentPayloadRaw).toBe('string');
+    const sentPayload = JSON.parse(String(sentPayloadRaw));
+    expect(sentPayload.content).toBe('/COMPACT');
+  });
+
+  it('does not treat /compact with trailing args as a manual compact command', async () => {
+    const user = userEvent.setup();
+    render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
+    const socket = getMainSocket();
+
+    await act(async () => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await user.type(screen.getByLabelText('Prompt'), '/compact now');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(screen.queryByTestId('compacting-indicator')).not.toBeInTheDocument();
+    const sentPayloadRaw = socket.send.mock.calls.at(-1)?.[0];
+    expect(typeof sentPayloadRaw).toBe('string');
+    const sentPayload = JSON.parse(String(sentPayloadRaw));
+    expect(sentPayload.content).toBe('/compact now');
+  });
+
   it('immediately shows compact summary card on compact_boundary', async () => {
     render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
     const socket = getMainSocket();
@@ -355,6 +416,32 @@ describe('Chat compaction event lifecycle', () => {
     });
 
     expect(screen.getByTestId('compact-summary')).toBeInTheDocument();
+  });
+
+  it('does not append a placeholder when compaction summary was already captured from stream events', async () => {
+    render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
+    const socket = getMainSocket();
+
+    await act(async () => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+      emitCompactionSummaryBlock(socket, 'Summary from stream-event compaction block');
+    });
+
+    let cards = screen.getAllByTestId('compact-summary');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toHaveTextContent('Summary from stream-event compaction block');
+
+    await act(async () => {
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'system', subtype: 'compact_boundary' },
+      });
+    });
+
+    cards = screen.getAllByTestId('compact-summary');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toHaveTextContent('Summary from stream-event compaction block');
   });
 
   it('replaces placeholder card with full summary when isCompactSummary user event arrives', async () => {

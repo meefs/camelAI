@@ -147,7 +147,7 @@ function isDirectUserMessage(msg: Message): boolean {
 }
 
 function isManualCompactCommand(value: string): boolean {
-  return /^\/compact(?:\s+.*)?$/i.test(value.trim());
+  return value.trim() === '/compact';
 }
 
 function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
@@ -389,6 +389,7 @@ export default function Chat({
   // content block of type 'compaction' with 'compaction_delta' deltas)
   const isInCompactionBlockRef = useRef(false);
   const compactionContentRef = useRef('');
+  const hasCapturedCompactionSummaryRef = useRef(false);
   // MCP-triggered bug report capture
   const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -860,6 +861,7 @@ export default function Chat({
           if (evt?.type === 'content_block_start' && evt?.content_block?.type === 'compaction') {
             isInCompactionBlockRef.current = true;
             compactionContentRef.current = '';
+            hasCapturedCompactionSummaryRef.current = false;
             return;
           }
           if (isInCompactionBlockRef.current) {
@@ -872,6 +874,7 @@ export default function Chat({
               isInCompactionBlockRef.current = false;
               compactionContentRef.current = '';
               if (summary) {
+                hasCapturedCompactionSummaryRef.current = true;
                 setIsCompacting(false);
                 const compactMsg: Message = {
                   id: `compact_${Date.now()}`,
@@ -998,6 +1001,10 @@ export default function Chat({
           // summary card immediately. If claude-runner later forwards the full
           // summary (isCompactSummary user event), it will replace this placeholder.
           setIsCompacting(false);
+          if (hasCapturedCompactionSummaryRef.current) {
+            hasCapturedCompactionSummaryRef.current = false;
+            return;
+          }
           const compactMsg: Message = {
             id: `compact_${Date.now()}`,
             thread_id: id,
@@ -1023,6 +1030,7 @@ export default function Chat({
           );
           if (isCompactSummary) {
             setIsCompacting(false);
+            hasCapturedCompactionSummaryRef.current = false;
             const content = sdkEvent.message.content;
             const compactMsg: Message = {
               id: (sdkEvent as { uuid?: string }).uuid || `compact_${Date.now()}`,
@@ -1104,6 +1112,7 @@ export default function Chat({
           setStreamingMessageId(null);
           setLoading(false);
           setIsCompacting(false);
+          hasCapturedCompactionSummaryRef.current = false;
         }
       } else if (data.type === 'todo_state') {
         // Direct todo state from server - no extraction needed
@@ -1141,6 +1150,7 @@ export default function Chat({
         setStreamingMessageId(null);
         setLoading(false);
         setIsCompacting(false);
+        hasCapturedCompactionSummaryRef.current = false;
       } else if (
         data.type === 'preview_state' ||
         data.type === 'title_updated' ||
