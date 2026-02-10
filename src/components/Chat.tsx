@@ -146,6 +146,21 @@ function isDirectUserMessage(msg: Message): boolean {
   return true;
 }
 
+/**
+ * User-authored messages that should anchor the page-style spacer animation.
+ * Slash commands count; compact summaries and synthetic stdout/interrupt rows do not.
+ */
+function isUserTurnAnchorMessage(msg: Message): boolean {
+  if (msg.role !== 'user' || msg.isCompactSummary) return false;
+  if (isInterruptMessage(msg.content)) return false;
+  if (parseLocalCommandStdout(msg.content)) return false;
+  return true;
+}
+
+function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
+  return Boolean(msg && (msg.role === 'assistant' || msg.isCompactSummary));
+}
+
 function isManualCompactCommand(value: string): boolean {
   return value.trim() === '/compact';
 }
@@ -498,6 +513,7 @@ export default function Chat({
   const messageColumnRef = useRef<HTMLDivElement>(null);
   const lastUserMessageRef = useRef<HTMLDivElement>(null);
   const assistantMeasureRef = useRef<HTMLDivElement>(null);
+  const assistantPendingMeasureRef = useRef<HTMLDivElement>(null);
   const assistantSpacerRef = useRef<HTMLDivElement>(null);
   const spacerHeightRef = useRef(0);
   const initialScrollDoneRef = useRef(false);
@@ -1279,17 +1295,18 @@ export default function Chat({
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
   const lastMessage = visibleMessages[visibleMessages.length - 1];
+  const isLastMessageAssistantLike = isAssistantLikeMessage(lastMessage);
   const showAssistantTail = loading || isStreaming;
-  const isAwaitingAssistant = showAssistantTail && lastMessage?.role === 'user';
+  const isAwaitingAssistant = showAssistantTail && Boolean(lastMessage) && !isLastMessageAssistantLike;
   const lastUserMessage = useMemo(() => {
     for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
-      if (visibleMessages[i].role === 'user') return visibleMessages[i];
+      if (isUserTurnAnchorMessage(visibleMessages[i])) return visibleMessages[i];
     }
     return null;
   }, [visibleMessages]);
   const shouldRenderSpacer = Boolean(lastUserMessage) &&
     !lastUserMessage?.sentDuringStreaming &&
-    (isAwaitingAssistant || lastMessage?.role === 'assistant');
+    (isAwaitingAssistant || isLastMessageAssistantLike);
 
   // Connect when threadId changes
   useEffect(() => {
@@ -1419,6 +1436,7 @@ export default function Chat({
     const spacer = assistantSpacerRef.current;
     const userEl = lastUserMessageRef.current;
     const assistantEl = assistantMeasureRef.current;
+    const pendingAssistantEl = assistantPendingMeasureRef.current;
     if (!container || !spacer) {
       spacerHeightRef.current = 0;
       return;
@@ -1427,6 +1445,7 @@ export default function Chat({
     const updateSpacer = () => {
       const measureUser = lastUserMessageRef.current;
       const measureAssistant = assistantMeasureRef.current;
+      const measurePendingAssistant = assistantPendingMeasureRef.current;
 
       // Need at least a user message to calculate spacer
       if (!measureUser) {
@@ -1450,6 +1469,16 @@ export default function Chat({
         const assistantMarginBottom = Number.isNaN(assistantMarginBottomValue) ? 0 : assistantMarginBottomValue;
         const exchangeTop = userRect.top - userMarginTop;
         const exchangeBottom = assistantRect.bottom + assistantMarginBottom;
+        exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
+      } else if (measurePendingAssistant) {
+        // No assistant message yet; include pending assistant placeholder
+        // (e.g. loading dots / compacting indicator) in the measured exchange.
+        const pendingRect = measurePendingAssistant.getBoundingClientRect();
+        const pendingStyle = getComputedStyle(measurePendingAssistant);
+        const pendingMarginBottomValue = parseFloat(pendingStyle.marginBottom || '0');
+        const pendingMarginBottom = Number.isNaN(pendingMarginBottomValue) ? 0 : pendingMarginBottomValue;
+        const exchangeTop = userRect.top - userMarginTop;
+        const exchangeBottom = pendingRect.bottom + pendingMarginBottom;
         exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
       } else {
         // No assistant message yet (awaiting response) - just use user message height
@@ -1492,6 +1521,9 @@ export default function Chat({
     }
     if (assistantEl) {
       observer.observe(assistantEl);
+    }
+    if (pendingAssistantEl) {
+      observer.observe(pendingAssistantEl);
     }
 
     return () => {
@@ -2287,7 +2319,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         <div ref={messageColumnRef} className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col">
           {visibleMessages.map(msg => {
             const isLastUserMessage = msg.id === lastUserMessage?.id;
-            const isLastAssistantMessage = !isAwaitingAssistant && lastMessage?.role === 'assistant' && msg.id === lastMessage?.id;
+            const isLastAssistantMessage = !isAwaitingAssistant && isLastMessageAssistantLike && msg.id === lastMessage?.id;
             const messageRef = isLastUserMessage
               ? lastUserMessageRef
               : (isLastAssistantMessage ? assistantMeasureRef : undefined);
@@ -2336,12 +2368,16 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
           {/* Compaction in-progress indicator */}
           {isCompacting && (
-            <CompactingIndicator />
+            <div ref={assistantPendingMeasureRef}>
+              <CompactingIndicator />
+            </div>
           )}
 
           {/* Loading indicator when waiting for assistant response */}
           {loading && !isStreaming && !hasStreamingMessage && !isCompacting && (
-            <LoadingDots />
+            <div ref={assistantPendingMeasureRef}>
+              <LoadingDots />
+            </div>
           )}
           {shouldRenderSpacer ? (
             <div className="flex flex-col">
