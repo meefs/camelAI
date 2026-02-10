@@ -558,19 +558,14 @@ export async function listUserWorkspaces(env: AuthEnv, userId: string, orgId: st
 
   const workspaces = await listOrgWorkspaces(env, orgId);
 
-  // Fetch all member access levels in parallel instead of sequential loop
-  const accessResults = await Promise.all(
-    workspaces.map(async (workspace) => {
-      const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspace.id));
-      const memberAccess = await wsStub.getMemberAccess(userId);
-      const accessLevel = memberAccess?.access_level ?? 'full';
-      return { workspace, accessLevel };
-    })
-  );
-
-  return accessResults
-    .filter(({ accessLevel }) => accessLevel !== 'none')
-    .map(({ workspace, accessLevel }) => ({ ...workspace, access_level: accessLevel }));
+  // Assume 'full' access for all workspaces. The default is 'full' (no record = full access),
+  // and explicit 'none' restrictions are rare. Actual access is verified lazily by
+  // requireWorkspaceAccess() when the user tries to access a specific workspace.
+  //
+  // NOTE: This optimization assumes binary access ('full' or 'none'). If we add granular
+  // access levels (e.g., 'viewer', 'editor'), we should store access info in OrgDO for
+  // batch loading, or add a listUserWorkspaceAccess() method to avoid N RPC calls.
+  return workspaces.map((workspace) => ({ ...workspace, access_level: 'full' as const }));
 }
 
 export async function listUserWorkspacesAcrossOrgs(

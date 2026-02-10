@@ -297,9 +297,20 @@ export async function requireWorkspaceAccess(
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
 
-  // Use cached workspace access from authContext instead of re-fetching
+  // Check if workspace exists in user's accessible workspaces
   const workspace = authContext.allWorkspaces.find((ws) => ws.id === workspaceId);
-  const accessLevel = workspace?.access_level ?? 'none';
+  if (!workspace) {
+    throw redirect('/');
+  }
+
+  // Workspace access is assumed 'full' by default during auth context load.
+  // For routes that require workspace access, we check for explicit 'none' restrictions.
+  // Since restrictions are rare (default is 'full'), this single RPC call is cheaper
+  // than checking N workspaces during every auth context load.
+  const env = getEnv(context);
+  const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  const memberAccess = await wsStub.getMemberAccess(authContext.user.id);
+  const accessLevel = memberAccess?.access_level ?? 'full';
 
   if (accessLevel === 'none') {
     throw redirect('/');
