@@ -16,6 +16,7 @@ import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
 import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
+import { isSupportedSlashCommand } from '@/lib/slash-commands';
 
 // Format timestamp to readable time (e.g., "12:25 PM")
 function formatMessageTime(timestamp: number): string {
@@ -52,10 +53,14 @@ export function isInterruptMessage(content: string | ContentBlock[]): boolean {
 export function parseSlashCommand(content: string | ContentBlock[]): string | null {
   const raw = extractRawText(content).trim();
   const wrapped = raw.match(WRAPPED_SLASH_COMMAND_REGEX);
-  if (wrapped) return wrapped[1];
+  const wrappedCommand = wrapped?.[1];
+  if (wrappedCommand && isSupportedSlashCommand(wrappedCommand)) {
+    return wrappedCommand;
+  }
 
   const bare = raw.match(BARE_SLASH_COMMAND_REGEX);
-  return bare ? bare[1] : null;
+  const bareCommand = bare?.[1];
+  return bareCommand && isSupportedSlashCommand(bareCommand) ? bareCommand : null;
 }
 
 /** Returns the inner text of a `<local-command-stdout>` message, or null. */

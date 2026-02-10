@@ -60,6 +60,7 @@ import {
 } from '@/lib/streaming';
 import { getAppUrl, getVanityDomain, getIframeDomain } from '@/lib/app-url';
 import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
+import { isManualCompactCommand } from '@/lib/slash-commands';
 
 interface ChatProps {
   threadId?: string;
@@ -159,10 +160,6 @@ function isUserTurnAnchorMessage(msg: Message): boolean {
 
 function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
   return Boolean(msg && (msg.role === 'assistant' || msg.isCompactSummary));
-}
-
-function isManualCompactCommand(value: string): boolean {
-  return value.trim() === '/compact';
 }
 
 function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
@@ -404,6 +401,33 @@ export default function Chat({
   const compactionContentRef = useRef('');
   const hasCapturedCompactionSummaryRef = useRef(false);
   const pendingCompactionPlaceholderIdRef = useRef<string | null>(null);
+  const queuedManualCompactionsRef = useRef(0);
+  const activeManualCompactionTurnRef = useRef(false);
+  const syncManualCompactionIndicator = useCallback(() => {
+    const shouldShowIndicator = activeManualCompactionTurnRef.current || queuedManualCompactionsRef.current > 0;
+    setIsCompacting(shouldShowIndicator);
+  }, [setIsCompacting]);
+  const queueManualCompaction = useCallback(() => {
+    queuedManualCompactionsRef.current += 1;
+    syncManualCompactionIndicator();
+  }, [syncManualCompactionIndicator]);
+  const startQueuedManualCompactionIfNeeded = useCallback(() => {
+    if (activeManualCompactionTurnRef.current || queuedManualCompactionsRef.current <= 0) {
+      return;
+    }
+    queuedManualCompactionsRef.current -= 1;
+    activeManualCompactionTurnRef.current = true;
+    syncManualCompactionIndicator();
+  }, [syncManualCompactionIndicator]);
+  const completeActiveManualCompaction = useCallback(() => {
+    activeManualCompactionTurnRef.current = false;
+    syncManualCompactionIndicator();
+  }, [syncManualCompactionIndicator]);
+  const clearManualCompactionQueue = useCallback(() => {
+    activeManualCompactionTurnRef.current = false;
+    queuedManualCompactionsRef.current = 0;
+    syncManualCompactionIndicator();
+  }, [syncManualCompactionIndicator]);
   // MCP-triggered bug report capture
   const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -890,7 +914,7 @@ export default function Chat({
               compactionContentRef.current = '';
               if (summary) {
                 hasCapturedCompactionSummaryRef.current = true;
-                setIsCompacting(false);
+                completeActiveManualCompaction();
                 const compactMsg: Message = {
                   id: `compact_${Date.now()}`,
                   thread_id: id,
@@ -1004,12 +1028,13 @@ export default function Chat({
           // System init - reset the streaming message ID
           splitStreamingMessageOnNextPartRef.current = false;
           setStreamingMessageId(null);
+          startQueuedManualCompactionIfNeeded();
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
           // Compaction is complete — the compact_boundary event arrives AFTER the
           // SDK finishes generating the summary (not before). Insert a compact
           // summary card immediately. If claude-runner later forwards the full
           // summary (isCompactSummary user event), it will replace this placeholder.
-          setIsCompacting(false);
+          completeActiveManualCompaction();
           if (hasCapturedCompactionSummaryRef.current) {
             hasCapturedCompactionSummaryRef.current = false;
             return;
@@ -1039,7 +1064,7 @@ export default function Chat({
             (sdkEvent as unknown as Record<string, unknown>).isCompactSummary
           );
           if (isCompactSummary) {
-            setIsCompacting(false);
+            completeActiveManualCompaction();
             hasCapturedCompactionSummaryRef.current = false;
             const placeholderId = pendingCompactionPlaceholderIdRef.current;
             pendingCompactionPlaceholderIdRef.current = null;
@@ -1138,7 +1163,9 @@ export default function Chat({
           }
           setStreamingMessageId(null);
           setLoading(false);
-          setIsCompacting(false);
+          if (activeManualCompactionTurnRef.current) {
+            completeActiveManualCompaction();
+          }
           hasCapturedCompactionSummaryRef.current = false;
         }
       } else if (data.type === 'todo_state') {
@@ -1176,7 +1203,7 @@ export default function Chat({
         }
         setStreamingMessageId(null);
         setLoading(false);
-        setIsCompacting(false);
+        clearManualCompactionQueue();
         hasCapturedCompactionSummaryRef.current = false;
       } else if (
         data.type === 'preview_state' ||
@@ -2143,7 +2170,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     const shouldShowCompactingIndicator = isManualCompactCommand(finalContent);
 
     if (shouldShowCompactingIndicator) {
-      setIsCompacting(true);
+      queueManualCompaction();
     }
 
     // Clear attachments after building message

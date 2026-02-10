@@ -6,6 +6,7 @@ import {
   type WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from './workspace-container';
+import { SUPPORTED_SLASH_COMMANDS } from '../../../src/lib/slash-commands';
 
 // Preview state for a thread
 export interface PreviewState {
@@ -740,13 +741,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
-  private static readonly SLASH_COMMANDS = new Set([
-    '/compact',
-    '/context',
-    '/debug',
-    '/insights',
-    '/security-review',
-  ]);
+  private static readonly SLASH_COMMANDS = new Set<string>(SUPPORTED_SLASH_COMMANDS);
 
   private formatAttributedUserMessage(content: string): string {
     if (!content) return '';
