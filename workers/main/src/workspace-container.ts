@@ -1230,13 +1230,20 @@ export class WorkspaceContainer {
     // Check if mounts are already active — skip exec but still update script/env above
     const mountCheck = await this.execHttpRawForSprite(
       spriteName,
-      ['bash', '-c', 'mountpoint -q /mnt/user-uploads && mountpoint -q /mnt/user-outputs && echo ok']
+      ['bash', '-c', [
+        'echo "uploads=$(mountpoint /mnt/user-uploads 2>&1)"',
+        'echo "outputs=$(mountpoint /mnt/user-outputs 2>&1)"',
+        'echo "goofys=$(pgrep -c goofys 2>/dev/null || echo 0) procs"',
+        'mountpoint -q /mnt/user-uploads && mountpoint -q /mnt/user-outputs && echo ok',
+      ].join('; ')]
     );
-    if (mountCheck.success && mountCheck.stdout.trim() === 'ok') {
-      console.log(`[Sprite] ensureR2MountService: mounts already active for sprite=${spriteName}, skipping exec`);
+    const checkOutput = mountCheck.stdout.trim();
+    if (mountCheck.success && checkOutput.endsWith('ok')) {
+      console.log(`[Sprite] ensureR2MountService: mounts already active for sprite=${spriteName}, skipping exec (${checkOutput})`);
       this.r2MountServiceCreated = true;
       return;
     }
+    console.log(`[Sprite] ensureR2MountService: mounts not active for sprite=${spriteName} (${checkOutput})`);
 
     // Run the mount script via exec (Services API is broken on sprites rc31)
     console.log(`[Sprite] ensureR2MountService: running mount script for sprite=${spriteName}`);
