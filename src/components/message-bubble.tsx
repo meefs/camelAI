@@ -252,6 +252,18 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
       const latestResult = results[results.length - 1];
       const isTaskTool = block.name === 'Task';
       const skillSheet = skillSheets?.get(block.id);
+      // Check if the agent received results after this tool call.
+      // A subsequent text block means the agent continued with a response;
+      // a subsequent tool_result means results arrived for this batch.
+      // Sibling tool_use blocks are excluded — parallel calls are emitted
+      // together before any results arrive, so they don't prove completion.
+      // Note: any tool_result (not just ID-matched ones) is sufficient because
+      // parallel results arrive atomically in a single SDK user event — if one
+      // result exists, all results for the batch exist (possibly with mismatched
+      // IDs, which is the bug this heuristic compensates for).
+      const agentContinued = content.slice(index + 1).some(
+        b => b.type === 'text' || b.type === 'tool_result'
+      );
       items.push({
         kind: 'tool',
         key: `tool-${block.id || index}`,
@@ -263,6 +275,7 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
             isStreaming={isStreaming}
             skillSheet={skillSheet}
             progressCount={isTaskTool ? results.length : undefined}
+            agentContinued={agentContinued}
           />
         ),
       });

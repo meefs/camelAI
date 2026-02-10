@@ -18,6 +18,9 @@ export interface ToolCallProps {
   defaultExpanded?: boolean;
   skillSheet?: string;
   progressCount?: number;
+  /** True when the message contains text or tool_result blocks after this tool call,
+   *  indicating the agent moved past this tool's execution. */
+  agentContinued?: boolean;
 }
 
 function getStatusClass(status: ToolStatus) {
@@ -84,10 +87,11 @@ export function ToolCall({
   defaultExpanded = false,
   skillSheet,
   progressCount,
+  agentContinued,
 }: ToolCallProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const resolvedResults = results ?? (result ? [result] : []);
-  const status = getToolStatus(tool, result, isStreaming, resolvedResults);
+  const status = getToolStatus(tool, result, isStreaming, resolvedResults, agentContinued);
   const resolvedProgressCount = typeof progressCount === 'number'
     ? progressCount
     : resolvedResults.length;

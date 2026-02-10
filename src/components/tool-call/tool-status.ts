@@ -6,7 +6,8 @@ export function getToolStatus(
   tool?: ToolUseBlock,
   result?: ToolResultBlock,
   isStreaming?: boolean,
-  results?: ToolResultBlock[]
+  results?: ToolResultBlock[],
+  agentContinued?: boolean
 ): ToolStatus {
   if (tool?.name === 'Task') {
     const finalResult = results?.find(block => !block.isTaskUpdate) ??
@@ -19,5 +20,8 @@ export function getToolStatus(
   if (result && (result as { is_error?: boolean }).is_error) return 'error';
   if (isStreaming && !result) return 'running';
   if (result) return 'complete';
+  // No result object, but the agent produced content after this tool call —
+  // the tool must have completed since the agent can't continue without its result.
+  if (agentContinued) return 'complete';
   return 'running';
 }
