@@ -18,7 +18,8 @@ export interface ToolCallProps {
   defaultExpanded?: boolean;
   skillSheet?: string;
   progressCount?: number;
-  /** True when the message contains content (text/tool_use) after this tool call. */
+  /** True when the message contains text or tool_result blocks after this tool call,
+   *  indicating the agent moved past this tool's execution. */
   agentContinued?: boolean;
 }
 
