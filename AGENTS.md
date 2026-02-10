@@ -269,6 +269,10 @@ Runtime startup is now on-demand from chat/API paths; dashboard route loaders no
 3. JPEG previews stored in R2 under `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg`
 4. Apps page loads previews through `/api/apps/:scriptName/preview`
 
+### Notebook File Previews
+- Notebook previews are read-only and render cells in the chat preview panel.
+- Rich notebook outputs (`text/html` and `application/vnd.plotly.v1+json`) are rendered in sandboxed iframes (`allow-scripts`) to support interactive charts while isolating output scripts from the main app UI.
+
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization
 - `stream_event` - Real-time streaming:
@@ -689,7 +693,7 @@ chiridion-app/
 ### ChiridionMcp (MCP Agent)
 - MCP server implementation
 - Deployment management tools
-- Thread-scoped preview controls (for example `set_file_preview` to set the active file preview target from a path)
+- Thread-scoped preview controls (for example `set_file_preview` and `set_app_preview` to set the active preview target)
 - Context-aware operations
 
 ### Storage APIs

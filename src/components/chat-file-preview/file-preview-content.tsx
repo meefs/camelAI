@@ -36,6 +36,12 @@ interface NotebookFile {
   cells?: NotebookCell[];
 }
 
+type NotebookOutputRender =
+  | { kind: 'html'; html: string }
+  | { kind: 'image'; src: string }
+  | { kind: 'text'; text: string }
+  | { kind: 'unsupported' };
+
 function truncateTextLines(text: string, maxLines = MAX_TEXT_LINES) {
   const lines = text.split('\n');
   const totalLines = lines.length;
@@ -67,6 +73,87 @@ function getFilenameFromPath(path: string): string {
   return path.split('/').filter(Boolean).pop() || path;
 }
 
+function toHtml(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    const html = value
+      .map((item) => (typeof item === 'string' ? item : String(item)))
+      .join('');
+    return html || null;
+  }
+  return null;
+}
+
+function buildPlotlyHtmlDocument(payload: unknown): string {
+  // Escape to keep the payload safe inside an inline script.
+  const serializedPayload = JSON.stringify(payload ?? {}).replace(/</g, '\\u003c');
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; }
+      #plotly-root { width: 100%; min-height: 320px; height: 100%; }
+      .plotly-error { padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #b91c1c; }
+    </style>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  </head>
+  <body>
+    <div id="plotly-root"></div>
+    <script>
+      try {
+        const payload = ${serializedPayload};
+        const figure = payload?.data ? payload : (payload?.figure ?? {});
+        const traces = Array.isArray(figure?.data) ? figure.data : [];
+        const layout = typeof figure?.layout === 'object' && figure.layout ? figure.layout : {};
+        const config = typeof payload?.config === 'object' && payload.config ? payload.config : { responsive: true };
+        Plotly.newPlot('plotly-root', traces, layout, config);
+      } catch (error) {
+        const el = document.createElement('pre');
+        el.className = 'plotly-error';
+        el.textContent = 'Failed to render Plotly output: ' + (error?.message || String(error));
+        document.body.appendChild(el);
+      }
+    </script>
+  </body>
+</html>`;
+}
+
+function buildHtmlDocument(fragmentOrDocument: string): string {
+  const trimmed = fragmentOrDocument.trim();
+  if (trimmed.startsWith('<!doctype') || /<html[\s>]/i.test(trimmed)) {
+    return fragmentOrDocument;
+  }
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { margin: 0; padding: 0.5rem; font: 13px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+      pre, code { white-space: pre-wrap; }
+      img, svg, canvas { max-width: 100%; }
+    </style>
+  </head>
+  <body>${fragmentOrDocument}</body>
+</html>`;
+}
+
+function getHtmlOutputDocument(output: NotebookOutput): string | null {
+  const data = output.data ?? {};
+  const plotly = data['application/vnd.plotly.v1+json'];
+  if (typeof plotly !== 'undefined') {
+    return buildPlotlyHtmlDocument(plotly);
+  }
+
+  const html = toHtml(data['text/html']);
+  if (!html) return null;
+  return buildHtmlDocument(html);
+}
+
 function getOutputText(output: NotebookOutput): string {
   if (output.output_type === 'stream') {
     return toText(output.text);
@@ -85,9 +172,6 @@ function getOutputText(output: NotebookOutput): string {
   if (typeof data['application/json'] !== 'undefined') {
     return toText(data['application/json']);
   }
-  if (typeof data['text/html'] !== 'undefined') {
-    return '[HTML output omitted in preview for safety]';
-  }
 
   return '';
 }
@@ -105,6 +189,48 @@ function getImageDataUrl(output: NotebookOutput): string | null {
   }
 
   return null;
+}
+
+function getOutputRender(output: NotebookOutput): NotebookOutputRender {
+  const htmlOutput = getHtmlOutputDocument(output);
+  if (htmlOutput) {
+    return { kind: 'html', html: htmlOutput };
+  }
+
+  const imageOutput = getImageDataUrl(output);
+  if (imageOutput) {
+    return { kind: 'image', src: imageOutput };
+  }
+
+  const textOutput = getOutputText(output);
+  if (textOutput) {
+    return { kind: 'text', text: textOutput };
+  }
+
+  return { kind: 'unsupported' };
+}
+
+function NotebookHtmlOutput({
+  html,
+  layout,
+  title,
+}: {
+  html: string;
+  layout: PreviewLayout;
+  title: string;
+}) {
+  return (
+    <iframe
+      title={title}
+      srcDoc={html}
+      sandbox="allow-scripts allow-downloads"
+      referrerPolicy="no-referrer"
+      className={cn(
+        'w-full rounded border bg-background',
+        layout === 'panel' ? 'h-[420px]' : 'h-[360px]'
+      )}
+    />
+  );
 }
 
 interface NotebookPreviewProps {
@@ -157,18 +283,23 @@ function NotebookPreview({ notebook, layout }: NotebookPreviewProps) {
                     {outputs.length} {outputs.length === 1 ? 'output' : 'outputs'}
                   </div>
                   {outputs.map((output, outputIndex) => {
-                    const textOutput = getOutputText(output);
-                    const imageOutput = getImageDataUrl(output);
+                    const renderOutput = getOutputRender(output);
                     return (
                       <div key={`output-${index}-${outputIndex}`} className="rounded border bg-muted/20 p-2">
-                        {imageOutput ? (
+                        {renderOutput.kind === 'html' ? (
+                          <NotebookHtmlOutput
+                            title={`Notebook output ${outputIndex + 1}`}
+                            html={renderOutput.html}
+                            layout={layout}
+                          />
+                        ) : renderOutput.kind === 'image' ? (
                           <img
-                            src={imageOutput}
+                            src={renderOutput.src}
                             alt={`Notebook output ${outputIndex + 1}`}
                             className="max-h-[320px] w-auto max-w-full rounded"
                           />
-                        ) : textOutput ? (
-                          <pre className="overflow-auto text-xs whitespace-pre-wrap">{textOutput}</pre>
+                        ) : renderOutput.kind === 'text' ? (
+                          <pre className="overflow-auto text-xs whitespace-pre-wrap">{renderOutput.text}</pre>
                         ) : (
                           <div className="text-xs text-muted-foreground">Output type is not supported in preview.</div>
                         )}

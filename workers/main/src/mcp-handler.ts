@@ -494,6 +494,59 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
       }
     );
 
+    // Set preview panel to a deployed app
+    this.server.tool(
+      'set_app_preview',
+      'Set the chat preview panel to a deployed app in the current workspace.',
+      {
+        script_name: z.string().describe('The name of the deployed app/worker script to preview.'),
+      },
+      async ({ script_name }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+
+        // Thread ID comes from the signed token (can't be spoofed)
+        const threadId = this.threadId;
+        if (!threadId) {
+          return this.textResponse({
+            success: false,
+            error: 'No thread context available. This tool requires a per-thread MCP token.',
+          });
+        }
+
+        const orgStub = this.getOrgStub();
+        const script: WorkerScript | null = await orgStub.getWorkerScript(script_name);
+        if (!script) {
+          return this.textResponse({ success: false, error: `App '${script_name}' not found` });
+        }
+        if (script.workspace_id !== workspaceId) {
+          return this.textResponse({ success: false, error: `App '${script_name}' belongs to a different workspace` });
+        }
+
+        const target: PreviewTarget = {
+          kind: 'app',
+          scriptName: script.script_name,
+          isPublic: script.is_public,
+        };
+
+        const chatThreadStub = this.getChatThreadStub(threadId);
+        await chatThreadStub.setPreviewTarget(target);
+
+        return this.textResponse({
+          success: true,
+          target,
+          app: {
+            name: script.script_name,
+            url: await this.getAppUrl(script.script_name),
+            is_public: script.is_public,
+          },
+          message: `Preview set to app '${script.script_name}'`,
+        });
+      }
+    );
+
     // Take a screenshot of a deployed app
     this.server.tool(
       'take_app_screenshot',

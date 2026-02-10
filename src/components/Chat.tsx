@@ -235,6 +235,25 @@ function coercePreviewTarget(value: unknown): PreviewTarget | null {
   return null;
 }
 
+function isSamePreviewItem(a: PreviewTarget | null, b: PreviewTarget | null): boolean {
+  if (!a || !b) return false;
+  if (a.kind !== b.kind) return false;
+
+  if (a.kind === 'app' && b.kind === 'app') {
+    return a.scriptName === b.scriptName;
+  }
+
+  if (a.kind === 'file' && b.kind === 'file') {
+    return (
+      a.source === b.source &&
+      a.workspaceId === b.workspaceId &&
+      a.path === b.path
+    );
+  }
+
+  return false;
+}
+
 function MobileViewSwitcher({
   value,
   onChange,
@@ -564,6 +583,7 @@ export default function Chat({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(initialPreviewTarget ?? null);
+  const previewTargetRef = useRef<PreviewTarget | null>(initialPreviewTarget ?? null);
   const [iframeKey, setIframeKey] = useState(0);
   const [filePreviewKey, setFilePreviewKey] = useState(0);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -602,8 +622,13 @@ export default function Chat({
 
   useEffect(() => {
     setPreviewTarget(initialPreviewTarget ?? null);
+    previewTargetRef.current = initialPreviewTarget ?? null;
     previewVersionRef.current = 0;
   }, [threadId, initialPreviewTarget]);
+
+  useEffect(() => {
+    previewTargetRef.current = previewTarget;
+  }, [previewTarget]);
 
   const deployedApp = previewTarget?.kind === 'app' ? previewTarget.scriptName : null;
   const appIsPublic = previewTarget?.kind === 'app' ? previewTarget.isPublic : false;
@@ -718,12 +743,14 @@ export default function Chat({
     if (data.type === 'preview_state') {
       const nextTarget = coercePreviewTarget(data.target);
       const newVersion = typeof data.version === 'number' ? data.version : 0;
-      const isNewDeploy = newVersion > previewVersionRef.current;
+      const hasVersionBump = newVersion > previewVersionRef.current;
+      const currentTarget = previewTargetRef.current;
+      const shouldRefreshSameItem = hasVersionBump && isSamePreviewItem(currentTarget, nextTarget);
       previewVersionRef.current = newVersion;
 
       setPreviewTarget(nextTarget);
 
-      if (nextTarget?.kind === 'app' && isNewDeploy) {
+      if (nextTarget?.kind === 'app' && hasVersionBump) {
         if (iframeRefreshTimeoutRef.current) {
           clearTimeout(iframeRefreshTimeoutRef.current);
         }
@@ -733,6 +760,9 @@ export default function Chat({
           setIframeKey(prev => prev + 1);
           iframeRefreshTimeoutRef.current = null;
         }, 1500);
+      } else if (nextTarget?.kind === 'file' && shouldRefreshSameItem) {
+        setFilePreviewKey((prev) => prev + 1);
+        setPreviewLoading(false);
       } else {
         setPreviewLoading(false);
       }
