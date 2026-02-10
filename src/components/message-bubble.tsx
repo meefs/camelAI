@@ -252,6 +252,11 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
       const latestResult = results[results.length - 1];
       const isTaskTool = block.name === 'Task';
       const skillSheet = skillSheets?.get(block.id);
+      // Check if the agent produced content after this tool call.
+      // If so, the tool must have completed (agent can't continue without the result).
+      const agentContinued = content.slice(index + 1).some(
+        b => b.type === 'text' || b.type === 'tool_use'
+      );
       items.push({
         kind: 'tool',
         key: `tool-${block.id || index}`,
@@ -263,6 +268,7 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
             isStreaming={isStreaming}
             skillSheet={skillSheet}
             progressCount={isTaskTool ? results.length : undefined}
+            agentContinued={agentContinued}
           />
         ),
       });
