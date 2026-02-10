@@ -33,8 +33,7 @@ export function CompactSummaryCard({ content }: CompactSummaryCardProps) {
   return (
     <div className="compact-summary mt-1 mb-4 rounded-lg border border-border/50 bg-muted/10 px-4 py-3">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-2">
-        <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+      <div className="mb-2">
         <span className="text-sm text-muted-foreground font-medium">
           Context compacted
         </span>

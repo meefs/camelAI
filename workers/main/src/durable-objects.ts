@@ -740,6 +740,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
   }
 
+  private static readonly SLASH_COMMANDS = new Set([
+    '/compact',
+    '/context',
+    '/debug',
+    '/insights',
+    '/security-review',
+  ]);
+
   private formatAttributedUserMessage(content: string): string {
     if (!content) return '';
 
@@ -758,9 +766,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       .trim();
     CHIRIDION_SYSTEM_MESSAGE_REGEX.lastIndex = 0;
 
+    // Pass slash commands through without author attribution so the
+    // Claude SDK recognises them as bare `/command` inputs.
+    const isSlashCommand = ChatThreadDO.SLASH_COMMANDS.has(userMessage);
+
     const userName = this.chatContext?.userName;
     const userEmail = this.chatContext?.userEmail;
-    const authorPrefix = this.formatAuthorPrefix(userName, userEmail);
+    const authorPrefix = isSlashCommand ? '' : this.formatAuthorPrefix(userName, userEmail);
     const attributedUserMessage = userMessage ? `${authorPrefix}${userMessage}` : '';
 
     const contextualPrefix = contextMessages.length > 0

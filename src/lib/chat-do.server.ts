@@ -296,7 +296,10 @@ export async function getMessages(
       return [...toolResults, ...incoming];
     };
 
-    // Assistant segment grouping - groups consecutive assistant messages into one
+    // Assistant segment grouping - groups consecutive assistant messages into one.
+    // `assistantGroupCreatedAt` always tracks the LATEST timestamp seen across all
+    // events in the group (assistant events, tool results, result) so the final
+    // message `created_at` reflects when the assistant *finished*, not when it started.
     let assistantSegments: Array<{ id: string; content: Message['content']; createdAt: number }> = [];
     let assistantGroupId: string | null = null;
     let assistantGroupCreatedAt: number | null = null;
@@ -323,6 +326,9 @@ export async function getMessages(
     const upsertAssistantSegment = (id: string, content: Message['content'], createdAt: number) => {
       if (!assistantGroupId) {
         assistantGroupId = id;
+      }
+      // Always keep the latest timestamp
+      if (!assistantGroupCreatedAt || createdAt > assistantGroupCreatedAt) {
         assistantGroupCreatedAt = createdAt;
       }
       const lastSegment = assistantSegments[assistantSegments.length - 1];
@@ -433,6 +439,14 @@ export async function getMessages(
           const id = event.message?.id || event.uuid || `assistant_${messages.length}`;
           const createdAt = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
           upsertAssistantSegment(id, event.message.content, createdAt);
+        }
+
+        // Result event marks the end of the assistant turn — use its timestamp
+        if (event.type === 'result' && assistantSegments.length > 0 && event.timestamp) {
+          const ts = new Date(event.timestamp).getTime();
+          if (!assistantGroupCreatedAt || ts > assistantGroupCreatedAt) {
+            assistantGroupCreatedAt = ts;
+          }
         }
       } catch {
         // Skip malformed lines

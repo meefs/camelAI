@@ -46,7 +46,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { MessageBubble } from '@/components/message-bubble';
+import { MessageBubble, isInterruptMessage, parseSlashCommand, parseLocalCommandStdout } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
 import { CompactingIndicator } from '@/components/compacting-indicator';
 import { WelcomeScreen } from '@/components/welcome-screen';
@@ -135,10 +135,19 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
 /**
  * True when the message was directly authored by the user — not a
  * system-generated message that happens to carry `role: 'user'`
- * (e.g. compact summaries, meta/skill-sheet messages).
+ * (e.g. compact summaries, meta/skill-sheet messages, interrupts,
+ * slash commands, local-command-stdout).
  */
 function isDirectUserMessage(msg: Message): boolean {
-  return msg.role === 'user' && !msg.isCompactSummary;
+  if (msg.role !== 'user' || msg.isCompactSummary) return false;
+  if (isInterruptMessage(msg.content)) return false;
+  if (parseSlashCommand(msg.content)) return false;
+  if (parseLocalCommandStdout(msg.content)) return false;
+  return true;
+}
+
+function isManualCompactCommand(value: string): boolean {
+  return /^\/compact(?:\s+.*)?$/i.test(value.trim());
 }
 
 function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
@@ -370,7 +379,16 @@ export default function Chat({
   const [bugReportStatus, setBugReportStatus] = useState<BugReportStatus>('idle');
   const [bugReportError, setBugReportError] = useState<string | null>(null);
   // Compaction in-progress indicator
-  const [isCompacting, setIsCompacting] = useState(false);
+  const [isCompacting, setIsCompactingState] = useState(false);
+  const isCompactingRef = useRef(false);
+  const setIsCompacting = useCallback((value: boolean) => {
+    isCompactingRef.current = value;
+    setIsCompactingState(value);
+  }, []);
+  // Track compaction content block streaming (compaction summary arrives as a
+  // content block of type 'compaction' with 'compaction_delta' deltas)
+  const isInCompactionBlockRef = useRef(false);
+  const compactionContentRef = useRef('');
   // MCP-triggered bug report capture
   const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -832,6 +850,43 @@ export default function Chat({
 
         if (sdkEvent.type === 'stream_event') {
           const evt = sdkEvent.event;
+
+          // ── Compaction content block interception ──
+          // The API streams the compaction summary as a content block of type
+          // 'compaction' with a single 'compaction_delta' containing the full
+          // summary text. Intercept these events before they reach the normal
+          // streaming pipeline so the summary is rendered as a standalone
+          // CompactSummaryCard instead of being appended to the assistant message.
+          if (evt?.type === 'content_block_start' && evt?.content_block?.type === 'compaction') {
+            isInCompactionBlockRef.current = true;
+            compactionContentRef.current = '';
+            return;
+          }
+          if (isInCompactionBlockRef.current) {
+            if (evt?.type === 'content_block_delta' && evt?.delta?.type === 'compaction_delta') {
+              compactionContentRef.current += evt.delta.content || '';
+              return;
+            }
+            if (evt?.type === 'content_block_stop') {
+              const summary = compactionContentRef.current;
+              isInCompactionBlockRef.current = false;
+              compactionContentRef.current = '';
+              if (summary) {
+                setIsCompacting(false);
+                const compactMsg: Message = {
+                  id: `compact_${Date.now()}`,
+                  thread_id: id,
+                  role: 'user',
+                  content: summary,
+                  created_at: Date.now(),
+                  isCompactSummary: true,
+                };
+                setMessages(prev => [...prev, compactMsg]);
+              }
+              return;
+            }
+          }
+
           if (evt?.type === 'message_start') {
             const currentMsgs = messagesRef.current;
             const existingStreamingId = streamingMessageIdRef.current;
@@ -927,12 +982,31 @@ export default function Chat({
             }
           }
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-          // System init - just reset the streaming message ID
+          // System init - reset the streaming message ID
           splitStreamingMessageOnNextPartRef.current = false;
           setStreamingMessageId(null);
+
+          // Safety net: if the compaction content block handler didn't already
+          // clear the indicator (e.g. the compaction block was empty or skipped),
+          // clear it here so the indicator doesn't get stuck.
+          if (isCompactingRef.current) {
+            setIsCompacting(false);
+          }
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
-          // Compaction started — show loading indicator
-          setIsCompacting(true);
+          // Compaction is complete — the compact_boundary event arrives AFTER the
+          // SDK finishes generating the summary (not before). Insert a compact
+          // summary card immediately. If claude-runner later forwards the full
+          // summary (isCompactSummary user event), it will replace this placeholder.
+          setIsCompacting(false);
+          const compactMsg: Message = {
+            id: `compact_${Date.now()}`,
+            thread_id: id,
+            role: 'user',
+            content: 'The conversation context was compacted to continue this session.',
+            created_at: Date.now(),
+            isCompactSummary: true,
+          };
+          setMessages(prev => [...prev, compactMsg]);
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
           // Track message ID as fallback
           if (!currentStreamingId) {
@@ -958,7 +1032,14 @@ export default function Chat({
               created_at: Date.now(),
               isCompactSummary: true,
             };
-            setMessages(prev => [...prev, compactMsg]);
+            // Replace any existing placeholder compact card from the
+            // compact_boundary handler with the full summary.
+            setMessages(prev => {
+              const withoutPlaceholder = prev.filter(
+                m => !(m.isCompactSummary && m.id.startsWith('compact_')),
+              );
+              return [...withoutPlaceholder, compactMsg];
+            });
             return;
           }
 
@@ -1010,8 +1091,9 @@ export default function Chat({
           splitStreamingMessageOnNextPartRef.current = false;
           const msgId = streamingMessageIdRef.current;
           if (msgId) {
+            const now = Date.now();
             setMessages(prev => prev.map(msg =>
-              msg.id === msgId ? { ...msg, isStreaming: false } : msg
+              msg.id === msgId ? { ...msg, isStreaming: false, created_at: now } : msg
             ));
           }
           setStreamingMessageId(null);
@@ -1989,7 +2071,12 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     hasHadUserInteraction.current = true;
 
     const userMessage = input.trim();
+    const shouldShowCompactingIndicator = isManualCompactCommand(userMessage);
     setInput('');
+
+    if (shouldShowCompactingIndicator) {
+      setIsCompacting(true);
+    }
 
     // Build message content with file references appended
     const completedAttachments = attachments.filter(a => a.status === 'complete');
@@ -2028,7 +2115,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       splitStreamingMessageOnNextPartRef.current = true;
       setMessages(prev => [...prev, userMsg]);
     } else {
-      forceScrollOnNextUpdate.current = true;
+      // /compact is operational and can happen while users read older messages.
+      // Avoid forcing a jump to bottom in that case.
+      forceScrollOnNextUpdate.current = !shouldShowCompactingIndicator;
       setMessages(prev => [...prev, userMsg]);
     }
 
@@ -2236,7 +2325,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
           )}
 
           {/* Loading indicator when waiting for assistant response */}
-          {loading && !isStreaming && !hasStreamingMessage && (
+          {loading && !isStreaming && !hasStreamingMessage && !isCompacting && (
             <LoadingDots />
           )}
           {shouldRenderSpacer ? (

@@ -36,6 +36,8 @@ export interface SDKEvent {
       text?: string;
       stop_reason?: string;
       partial_json?: string;
+      /** Compaction summary content (delivered as a single chunk) */
+      content?: string;
     };
     content_block?: {
       type: string;
