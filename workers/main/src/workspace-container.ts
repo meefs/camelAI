@@ -1107,6 +1107,166 @@ export class WorkspaceContainer {
     return envVars;
   }
 
+  /**
+   * Create or update an R2 mount as a sprite service.
+   * Uses sprite-env services for proper process supervision and auto-restart.
+   */
+  private async ensureR2MountServiceInstance(
+    spriteName: string,
+    serviceName: string,
+    bucketPath: string,
+    mountPoint: string,
+    readOnly: boolean,
+    rcloneConfigPath: string
+  ): Promise<void> {
+    // Check if service already exists and is running
+    const listResult = await this.execHttpRawForSprite(spriteName, [
+      'sprite-env', 'services', 'get', serviceName,
+    ]);
+
+    if (listResult.success && listResult.stdout.includes('"status":"running"')) {
+      // Service running - check if mount is actually healthy
+      const mountCheck = await this.execHttpRawForSprite(spriteName, [
+        'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
+      ]);
+      if (mountCheck.success && mountCheck.stdout.trim() === 'ok') {
+        console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} already running and healthy`);
+        return;
+      }
+      // Mount is stale - restart the service
+      console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} running but mount stale, restarting`);
+      await this.execHttpRawForSprite(spriteName, ['sprite-env', 'services', 'restart', serviceName]);
+      await delay(500);
+      return;
+    } else if (listResult.success && listResult.stdout.includes('"name"')) {
+      // Service exists but not running - delete and recreate
+      console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} exists but not running, recreating`);
+      await this.execHttpRawForSprite(spriteName, ['sprite-env', 'services', 'delete', serviceName]);
+    }
+
+    // Ensure mount point exists with correct ownership
+    await this.execHttpRawForSprite(spriteName, [
+      'bash', '-c', `sudo mkdir -p ${mountPoint} && sudo chown sprite:sprite ${mountPoint}`,
+    ]);
+
+    // Build rclone mount command args (comma-separated for sprite-env)
+    // Uses sudo for FUSE access permissions
+    const rcloneArgs = [
+      'rclone',
+      'mount',
+      bucketPath,
+      mountPoint,
+      `--config=${rcloneConfigPath}`,
+      '--allow-other',
+      '--uid=1001',
+      '--gid=1001',
+      '--dir-cache-time=1s',
+    ];
+
+    if (readOnly) {
+      rcloneArgs.push('--read-only', '--vfs-cache-mode=minimal');
+    } else {
+      rcloneArgs.push('--vfs-cache-mode=writes', '--vfs-write-back=0');
+    }
+
+    // Create the service using sprite-env (sudo for FUSE access)
+    console.log(`[Sprite] ensureR2MountServiceInstance: creating service ${serviceName} for ${bucketPath} -> ${mountPoint}`);
+    const createResult = await this.execHttpRawForSprite(spriteName, [
+      'sprite-env', 'services', 'create', serviceName,
+      '--cmd', 'sudo',
+      '--args', rcloneArgs.join(','),
+      '--no-stream',
+    ]);
+
+    if (!createResult.success) {
+      throw new Error(
+        `Failed to create ${serviceName} service: ${createResult.stderr || createResult.stdout || 'unknown error'}`
+      );
+    }
+
+    // Verify mount is working
+    await delay(500);
+    const verifyResult = await this.execHttpRawForSprite(spriteName, [
+      'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
+    ]);
+    if (!verifyResult.success || verifyResult.stdout.trim() !== 'ok') {
+      console.warn(`[Sprite] ensureR2MountServiceInstance: ${serviceName} created but mount not yet accessible`);
+    } else {
+      console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} ready at ${mountPoint}`);
+    }
+  }
+
+  /**
+   * Ensure rclone and fuse are installed on the sprite.
+   */
+  private async ensureRcloneInstalled(spriteName: string): Promise<void> {
+    const checkResult = await this.execHttpRawForSprite(spriteName, [
+      'bash', '-c', 'command -v rclone && grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null && echo ok',
+    ]);
+
+    if (checkResult.success && checkResult.stdout.trim().endsWith('ok')) {
+      return; // Already installed and configured
+    }
+
+    console.log(`[Sprite] ensureRcloneInstalled: installing rclone + fuse for sprite=${spriteName}`);
+    const installResult = await this.execHttpRawForSprite(spriteName, [
+      'bash', '-c', [
+        'sudo apt-get update -qq',
+        'sudo apt-get install -y -qq rclone fuse 2>/dev/null || true',
+        'grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null || echo "user_allow_other" | sudo tee -a /etc/fuse.conf > /dev/null',
+      ].join(' && '),
+    ]);
+
+    if (!installResult.success) {
+      throw new Error(
+        `Failed to install rclone: ${installResult.stderr || installResult.stdout || 'unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * Write rclone configuration file for R2 access.
+   */
+  private async writeRcloneConfig(
+    spriteName: string,
+    configPath: string,
+    accountId: string,
+    accessKeyId: string,
+    secretAccessKey: string,
+    sessionToken: string
+  ): Promise<void> {
+    const rcloneConfig = [
+      '[r2]',
+      'type = s3',
+      'provider = Cloudflare',
+      `access_key_id = ${accessKeyId}`,
+      `secret_access_key = ${secretAccessKey}`,
+      `session_token = ${sessionToken}`,
+      `endpoint = https://${accountId}.r2.cloudflarestorage.com`,
+    ].join('\n');
+
+    const configWrite = await this.fetchSpriteFs(
+      spriteName,
+      'write',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: rcloneConfig,
+      },
+      {
+        path: configPath,
+        workingDir: this.getFsWorkingDir(),
+        mode: '0600',
+        mkdir: true,
+      }
+    );
+
+    if (!configWrite.ok) {
+      const body = await configWrite.text();
+      throw new Error(`Failed writing rclone.conf: ${configWrite.status} ${body}`);
+    }
+  }
+
   private async ensureR2MountService(): Promise<void> {
     if (this.r2MountServiceCreated) return;
     if (!this.envVars) return;
@@ -1130,138 +1290,35 @@ export class WorkspaceContainer {
     const spriteName = this.requireSpriteName();
     console.log(`[Sprite] ensureR2MountService: setting up rclone mounts for sprite=${spriteName}`);
 
-    const r2Endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
+    // Ensure rclone is installed
+    await this.ensureRcloneInstalled(spriteName);
 
-    // Always write rclone config so credentials stay current across deploys.
-    const rcloneConfig = [
-      '[r2]',
-      'type = s3',
-      'provider = Cloudflare',
-      `access_key_id = ${accessKeyId}`,
-      `secret_access_key = ${secretAccessKey}`,
-      `session_token = ${sessionToken}`,
-      `endpoint = ${r2Endpoint}`,
-    ].join('\n');
-
+    // Write rclone config file (credentials need to be in a file for sprite-env services)
     const rcloneConfigPath = `${SPRITE_RUNNER_HOME_DIR}/rclone.conf`;
-    const configWrite = await this.fetchSpriteFs(
-      spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: rcloneConfig,
-      },
-      {
-        path: rcloneConfigPath,
-        workingDir: this.getFsWorkingDir(),
-        mode: '0600',
-        mkdir: true,
-      }
-    );
-    if (!configWrite.ok) {
-      const body = await configWrite.text();
-      throw new Error(`Failed writing rclone.conf: ${configWrite.status} ${body}`);
-    }
+    await this.writeRcloneConfig(spriteName, rcloneConfigPath, accountId, accessKeyId, secretAccessKey, sessionToken);
 
-    // Write the mount script
-    const mountScript = [
-      '#!/bin/bash',
-      'set -euo pipefail',
-      '',
-      `RCLONE_CONF="${rcloneConfigPath}"`,
-      `BUCKET="${bucketName}"`,
-      `PREFIX="${mountPrefix}"`,
-      '',
-      '# Install rclone + fuse if needed',
-      'if ! command -v rclone &>/dev/null; then',
-      '  echo "[r2-mount] Installing rclone + fuse..."',
-      '  sudo apt-get update -qq && sudo apt-get install -y -qq rclone fuse 2>/dev/null || true',
-      'fi',
-      '',
-      '# Enable user_allow_other for FUSE',
-      'grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null || echo "user_allow_other" | sudo tee -a /etc/fuse.conf > /dev/null',
-      '',
-      '# Clean up stale mounts from previous runs',
-      'sudo fusermount -u /mnt/user-uploads 2>/dev/null || true',
-      'sudo fusermount -u /mnt/user-outputs 2>/dev/null || true',
-      'sudo pkill -f "rclone mount.*r2:" 2>/dev/null || true',
-      'sleep 0.5',
-      '',
-      'sudo mkdir -p /mnt/user-uploads /mnt/user-outputs',
-      '',
-      '# Mount user-uploads (read-only) — files owned by sprite user (uid=1001)',
-      'sudo rclone mount "r2:${BUCKET}/${PREFIX}user-uploads" /mnt/user-uploads \\',
-      '  --config "$RCLONE_CONF" \\',
-      '  --allow-other --read-only \\',
-      '  --uid 1001 --gid 1001 \\',
-      '  --vfs-cache-mode minimal \\',
-      '  --dir-cache-time 1s \\',
-      '  --daemon 2>&1',
-      '',
-      '# Mount user-outputs (read-write) — files owned by sprite user (uid=1001)',
-      'sudo rclone mount "r2:${BUCKET}/${PREFIX}user-outputs" /mnt/user-outputs \\',
-      '  --config "$RCLONE_CONF" \\',
-      '  --allow-other \\',
-      '  --uid 1001 --gid 1001 \\',
-      '  --vfs-cache-mode writes --vfs-write-back 0 \\',
-      '  --dir-cache-time 1s \\',
-      '  --daemon 2>&1',
-      '',
-      'sleep 1',
-      'echo "[r2-mount] Mounts ready: /mnt/user-uploads (ro), /mnt/user-outputs (rw)"',
-    ].join('\n');
-
-    const scriptWrite = await this.fetchSpriteFs(
-      spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: mountScript,
-      },
-      {
-        path: `${SPRITE_RUNNER_HOME_DIR}/r2-mount.sh`,
-        workingDir: this.getFsWorkingDir(),
-        mode: '0755',
-        mkdir: true,
-      }
-    );
-    if (!scriptWrite.ok) {
-      const body = await scriptWrite.text();
-      throw new Error(`Failed writing r2-mount.sh: ${scriptWrite.status} ${body}`);
-    }
-
-    // Check if mounts are already active and healthy (ls detects stale FUSE mounts)
-    const mountCheck = await this.execHttpRawForSprite(
-      spriteName,
-      ['bash', '-c', [
-        'ls /mnt/user-uploads/ >/dev/null 2>&1 && ls /mnt/user-outputs/ >/dev/null 2>&1 && echo ok',
-      ].join('; ')]
-    );
-    const checkOutput = mountCheck.stdout.trim();
-    if (mountCheck.success && checkOutput.endsWith('ok')) {
-      console.log(`[Sprite] ensureR2MountService: mounts already active for sprite=${spriteName}, skipping exec (${checkOutput})`);
-      this.r2MountServiceCreated = true;
-      return;
-    }
-    console.log(`[Sprite] ensureR2MountService: mounts not active for sprite=${spriteName} (${checkOutput})`);
-
-    // Run the mount script
-    console.log(`[Sprite] ensureR2MountService: running mount script for sprite=${spriteName}`);
-    const result = await this.execHttpRawForSprite(
-      spriteName,
-      ['bash', `${SPRITE_RUNNER_HOME_DIR}/r2-mount.sh`]
-    );
-
-    if (!result.success) {
-      throw new Error(
-        `R2 mount script failed: ${result.stderr || result.stdout || 'unknown error'}`
-      );
-    }
+    // Create mount services in parallel
+    await Promise.all([
+      this.ensureR2MountServiceInstance(
+        spriteName,
+        'r2-uploads',
+        `r2:${bucketName}/${mountPrefix}user-uploads`,
+        '/mnt/user-uploads',
+        true, // read-only
+        rcloneConfigPath
+      ),
+      this.ensureR2MountServiceInstance(
+        spriteName,
+        'r2-outputs',
+        `r2:${bucketName}/${mountPrefix}user-outputs`,
+        '/mnt/user-outputs',
+        false, // read-write
+        rcloneConfigPath
+      ),
+    ]);
 
     this.r2MountServiceCreated = true;
-    console.log(`[Sprite] ensureR2MountService: rclone mounts ready for sprite=${spriteName}`);
+    console.log(`[Sprite] ensureR2MountService: rclone mount services ready for sprite=${spriteName}`);
   }
 
   async startForWorkspace(workspaceId: string, orgId: string): Promise<void> {
