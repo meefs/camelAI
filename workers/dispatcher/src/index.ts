@@ -44,6 +44,14 @@ import {
   shouldFailOpenForMissingRegistry,
   type WorkerAccessInfo,
 } from './access-control';
+import {
+  errorResponse,
+  error401Page,
+  error403Page,
+  error404Page,
+  error500Page,
+  error503Page,
+} from './error-pages';
 import { getSession as getSessionKV, type SessionData } from '../../main/src/session-kv';
 import type { OrgDO } from '../../main/src/auth';
 
@@ -486,7 +494,7 @@ async function handleWorkerRequest(
   } catch (e) {
     // Fail closed on errors - don't bypass auth
     console.error(`[dispatcher] Error getting worker access info: ${e}`);
-    return new Response('Service temporarily unavailable', { status: 503 });
+    return errorResponse(error503Page(getMainAppUrl(url.hostname)));
   }
 
   const missingRegistryMode = resolveMissingRegistryMode(env.DISPATCHER_MISSING_REGISTRY_MODE);
@@ -497,7 +505,7 @@ async function handleWorkerRequest(
       return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
     }
     console.warn(`[dispatcher] Worker "${dispatchScriptName}" not in registry, denying access (fail closed)`);
-    return new Response('App not found', { status: 404 });
+    return errorResponse(error404Page(getMainAppUrl(url.hostname), scriptName));
   }
 
   // Legacy URL redirect: If using old URL format AND the worker was deployed with the
@@ -543,7 +551,7 @@ async function handleWorkerRequest(
     if (!mainSessionId) {
       // No session cookie - user is not logged in
       console.log(`[dispatcher] No session cookie found for ${scriptName}`);
-      return new Response('Unauthorized - no session cookie', { status: 401 });
+      return errorResponse(error401Page(getMainAppUrl(url.hostname)));
     }
 
     try {
@@ -551,7 +559,7 @@ async function handleWorkerRequest(
       if (!session) {
         // Invalid/expired session
         console.log(`[dispatcher] Session not found in KV for ${scriptName}, sessionId prefix: ${mainSessionId.slice(0, 8)}...`);
-        return new Response('Unauthorized - session not found', { status: 401 });
+        return errorResponse(error401Page(getMainAppUrl(url.hostname)));
       }
 
       // Check if user is a member of the org that owns this worker
@@ -560,14 +568,14 @@ async function handleWorkerRequest(
       if (!memberCheck) {
         // User is logged in but not a member of this workspace
         console.log(`[dispatcher] User ${session.user_id} is not a member of org ${accessInfo.org_id}`);
-        return new Response('Forbidden - not a member of this organization', { status: 403 });
+        return errorResponse(error403Page(getMainAppUrl(url.hostname)));
       }
 
       console.log(`[dispatcher] Same-site auth: user ${session.user_id} accessing ${scriptName} via main session`);
       return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
     } catch (e) {
       console.error(`[dispatcher] Error validating main session: ${e}`);
-      return new Response('Service temporarily unavailable', { status: 503 });
+      return errorResponse(error503Page(getMainAppUrl(url.hostname)));
     }
   }
 
@@ -664,16 +672,11 @@ async function dispatchToWorker(
     return response;
   } catch (e) {
     const error = e as Error;
+    const pageHomeUrl = getMainAppUrl(new URL(request.url).hostname);
     if (error.message?.startsWith('Worker not found')) {
-      return new Response(`Worker "${userFacingScriptName}" not found`, {
-        status: 404,
-        headers: { 'Content-Type': 'text/plain' },
-      });
+      return errorResponse(error404Page(pageHomeUrl, userFacingScriptName));
     }
-    return new Response(`Error dispatching to worker "${userFacingScriptName}": ${error.message}`, {
-      status: 500,
-      headers: { 'Content-Type': 'text/plain' },
-    });
+    return errorResponse(error500Page(pageHomeUrl));
   }
 }
 
