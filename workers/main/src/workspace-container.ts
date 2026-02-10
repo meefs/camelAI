@@ -1203,7 +1203,7 @@ export class WorkspaceContainer {
       '  --config "$RCLONE_CONF" \\',
       '  --allow-other \\',
       '  --uid 1001 --gid 1001 \\',
-      '  --vfs-cache-mode writes \\',
+      '  --vfs-cache-mode writes --vfs-write-back 0 \\',
       '  --daemon 2>&1',
       '',
       'sleep 1',
