@@ -252,10 +252,13 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
       const latestResult = results[results.length - 1];
       const isTaskTool = block.name === 'Task';
       const skillSheet = skillSheets?.get(block.id);
-      // Check if the agent produced content after this tool call.
-      // If so, the tool must have completed (agent can't continue without the result).
+      // Check if the agent received results after this tool call.
+      // A subsequent text block means the agent continued with a response;
+      // a subsequent tool_result means results arrived for this batch.
+      // Sibling tool_use blocks are excluded — parallel calls are emitted
+      // together before any results arrive, so they don't prove completion.
       const agentContinued = content.slice(index + 1).some(
-        b => b.type === 'text' || b.type === 'tool_use'
+        b => b.type === 'text' || b.type === 'tool_result'
       );
       items.push({
         kind: 'tool',
