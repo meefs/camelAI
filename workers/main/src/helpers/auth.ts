@@ -30,6 +30,10 @@ export interface WorkspaceAccess {
   userId: string;
   wsStub: WorkspaceDO;
   orgStub: OrgDO;
+  /** Workspace info - already fetched during auth, avoid re-fetching */
+  wsInfo: Awaited<ReturnType<WorkspaceDO['getInfo']>> & {};
+  /** Organization info - already fetched during auth, avoid re-fetching */
+  orgInfo: Awaited<ReturnType<OrgDO['getInfo']>> & {};
 }
 
 export type WorkspaceAccessResult = WorkspaceAccess | { error: Response };
@@ -60,7 +64,7 @@ export async function requireWorkspaceAccess(req: Request, env: Env): Promise<Wo
       return { error: text('Forbidden', 403) };
     }
 
-    return { session, orgId, workspaceId, userId, wsStub, orgStub };
+    return { session, orgId, workspaceId, userId, wsStub, orgStub, wsInfo, orgInfo };
   } catch {
     return { error: text('Forbidden', 403) };
   }

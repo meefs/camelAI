@@ -13,7 +13,7 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
   const access = await requireWorkspaceAccess(req, env);
   if ('error' in access) return access.error;
 
-  const { orgId, workspaceId, userId, wsStub, orgStub } = access;
+  const { orgId, workspaceId, userId, orgStub, wsInfo, orgInfo } = access;
 
   // Get user profile
   const profile = await getUserStub(env, userId).getProfile();
@@ -25,19 +25,15 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
     return text('Missing threadId', 400);
   }
 
-  const wsInfo = await wsStub.getInfo();
-  if (!wsInfo || wsInfo.archived) {
-    return text('Workspace not found', 404);
-  }
+  // wsInfo and orgInfo already validated by requireWorkspaceAccess
   const thread = await orgStub.getThread(threadIdFromUrl);
   if (!thread || thread.workspace_id !== workspaceId) {
     return text('Thread not found', 404);
   }
   const validatedThreadId = threadIdFromUrl;
 
-  // Get org slug for deploy tokens
-  const orgInfo = await orgStub.getInfo();
-  const orgSlug = orgInfo?.slug || `org-${orgId.slice(0, 3)}`;
+  // Use org slug from already-fetched orgInfo
+  const orgSlug = orgInfo.slug || `org-${orgId.slice(0, 3)}`;
 
   // Build request with user info headers
   const headers = new Headers(req.headers);
