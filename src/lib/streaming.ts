@@ -2,6 +2,7 @@ import type { ContentBlock, Message, ToolResultBlock, ToolUseBlock } from '@/typ
 
 export interface SDKEvent {
   type: string;
+  timestamp?: string;
   subtype?: string;
   isMeta?: boolean;
   is_meta?: boolean;

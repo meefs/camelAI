@@ -1091,9 +1091,14 @@ export default function Chat({
           splitStreamingMessageOnNextPartRef.current = false;
           const msgId = streamingMessageIdRef.current;
           if (msgId) {
-            const now = Date.now();
+            const parsedResultTimestamp = typeof sdkEvent.timestamp === 'string'
+              ? new Date(sdkEvent.timestamp).getTime()
+              : NaN;
+            const completedAt = Number.isFinite(parsedResultTimestamp)
+              ? parsedResultTimestamp
+              : Date.now();
             setMessages(prev => prev.map(msg =>
-              msg.id === msgId ? { ...msg, isStreaming: false, created_at: now } : msg
+              msg.id === msgId ? { ...msg, isStreaming: false, created_at: completedAt } : msg
             ));
           }
           setStreamingMessageId(null);
