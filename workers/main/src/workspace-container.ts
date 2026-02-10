@@ -1128,81 +1128,85 @@ export class WorkspaceContainer {
     }
 
     const spriteName = this.requireSpriteName();
-    console.log(`[Sprite] ensureR2MountService: writing mount script for sprite=${spriteName}`);
+    console.log(`[Sprite] ensureR2MountService: setting up rclone mounts for sprite=${spriteName}`);
 
-    // Always write the credentials env file and script so they stay current across deploys.
-    const envFileContent = [
-      `AWS_ACCESS_KEY_ID=${accessKeyId}`,
-      `AWS_SECRET_ACCESS_KEY=${secretAccessKey}`,
-      `AWS_SESSION_TOKEN=${sessionToken}`,
-      `R2_ACCOUNT_ID=${accountId}`,
-      `R2_BUCKET_NAME=${bucketName}`,
-      `R2_PREFIX=${mountPrefix}`,
+    const r2Endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
+
+    // Always write rclone config so credentials stay current across deploys.
+    const rcloneConfig = [
+      '[r2]',
+      'type = s3',
+      'provider = Cloudflare',
+      `access_key_id = ${accessKeyId}`,
+      `secret_access_key = ${secretAccessKey}`,
+      `session_token = ${sessionToken}`,
+      `endpoint = ${r2Endpoint}`,
     ].join('\n');
 
-    const envFileWrite = await this.fetchSpriteFs(
+    const rcloneConfigPath = `${SPRITE_RUNNER_HOME_DIR}/rclone.conf`;
+    const configWrite = await this.fetchSpriteFs(
       spriteName,
       'write',
       {
         method: 'PUT',
         headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: envFileContent,
+        body: rcloneConfig,
       },
       {
-        path: `${SPRITE_RUNNER_HOME_DIR}/r2-mount.env`,
+        path: rcloneConfigPath,
         workingDir: this.getFsWorkingDir(),
         mode: '0600',
         mkdir: true,
       }
     );
-    if (!envFileWrite.ok) {
-      const body = await envFileWrite.text();
-      throw new Error(`Failed writing r2-mount.env: ${envFileWrite.status} ${body}`);
+    if (!configWrite.ok) {
+      const body = await configWrite.text();
+      throw new Error(`Failed writing rclone.conf: ${configWrite.status} ${body}`);
     }
 
-    // Write the mount script (goofys daemonizes itself, so the script returns after mounting)
+    // Write the mount script
     const mountScript = [
       '#!/bin/bash',
       'set -euo pipefail',
       '',
-      `CONFIG="${SPRITE_RUNNER_HOME_DIR}/r2-mount.env"`,
-      '[ -f "$CONFIG" ] || { echo "[r2-mount] No config at $CONFIG"; exit 1; }',
-      'source "$CONFIG"',
+      `RCLONE_CONF="${rcloneConfigPath}"`,
+      `BUCKET="${bucketName}"`,
+      `PREFIX="${mountPrefix}"`,
       '',
-      '# Install goofys + fuse if needed',
-      'if ! command -v goofys &>/dev/null; then',
-      '  echo "[r2-mount] Installing goofys + fuse..."',
-      '  apt-get update -qq && apt-get install -y -qq fuse 2>/dev/null || true',
-      '  curl -fsSL "https://github.com/kahing/goofys/releases/download/v0.24.0/goofys" \\',
-      '    -o /usr/local/bin/goofys',
-      '  chmod +x /usr/local/bin/goofys',
+      '# Install rclone + fuse if needed',
+      'if ! command -v rclone &>/dev/null; then',
+      '  echo "[r2-mount] Installing rclone + fuse..."',
+      '  sudo apt-get update -qq && sudo apt-get install -y -qq rclone fuse 2>/dev/null || true',
       'fi',
       '',
-      '# Clean up stale goofys processes and mounts from previous runs',
-      'if pgrep -x goofys &>/dev/null; then',
-      '  echo "[r2-mount] Killing stale goofys processes..."',
-      '  fusermount -u /mnt/user-uploads 2>/dev/null || true',
-      '  fusermount -u /mnt/user-outputs 2>/dev/null || true',
-      '  pkill -x goofys 2>/dev/null || true',
-      '  sleep 1',
-      'fi',
+      '# Enable user_allow_other for FUSE',
+      'grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null || echo "user_allow_other" | sudo tee -a /etc/fuse.conf > /dev/null',
       '',
-      'mkdir -p /mnt/user-uploads /mnt/user-outputs',
+      '# Clean up stale mounts from previous runs',
+      'sudo fusermount -u /mnt/user-uploads 2>/dev/null || true',
+      'sudo fusermount -u /mnt/user-outputs 2>/dev/null || true',
+      'sudo pkill -f "rclone mount.*r2:" 2>/dev/null || true',
+      'sleep 0.5',
       '',
-      'R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"',
-      'BUCKET_UPLOADS="${R2_BUCKET_NAME}:${R2_PREFIX}user-uploads"',
-      'BUCKET_OUTPUTS="${R2_BUCKET_NAME}:${R2_PREFIX}user-outputs"',
+      'sudo mkdir -p /mnt/user-uploads /mnt/user-outputs',
       '',
-      '# Mount user-uploads (read-only)',
-      'goofys --endpoint "$R2_ENDPOINT" --region auto -o ro \\',
-      '  --stat-cache-ttl 1s --type-cache-ttl 1s \\',
-      '  "$BUCKET_UPLOADS" /mnt/user-uploads',
+      '# Mount user-uploads (read-only) — files owned by sprite user (uid=1001)',
+      'sudo rclone mount "r2:${BUCKET}/${PREFIX}user-uploads" /mnt/user-uploads \\',
+      '  --config "$RCLONE_CONF" \\',
+      '  --allow-other --read-only \\',
+      '  --uid 1001 --gid 1001 \\',
+      '  --vfs-cache-mode minimal \\',
+      '  --daemon 2>&1',
       '',
-      '# Mount user-outputs (read-write)',
-      'goofys --endpoint "$R2_ENDPOINT" --region auto \\',
-      '  --stat-cache-ttl 1s --type-cache-ttl 1s \\',
-      '  "$BUCKET_OUTPUTS" /mnt/user-outputs',
+      '# Mount user-outputs (read-write) — files owned by sprite user (uid=1001)',
+      'sudo rclone mount "r2:${BUCKET}/${PREFIX}user-outputs" /mnt/user-outputs \\',
+      '  --config "$RCLONE_CONF" \\',
+      '  --allow-other \\',
+      '  --uid 1001 --gid 1001 \\',
+      '  --vfs-cache-mode writes \\',
+      '  --daemon 2>&1',
       '',
+      'sleep 1',
       'echo "[r2-mount] Mounts ready: /mnt/user-uploads (ro), /mnt/user-outputs (rw)"',
     ].join('\n');
 
@@ -1226,23 +1230,12 @@ export class WorkspaceContainer {
       throw new Error(`Failed writing r2-mount.sh: ${scriptWrite.status} ${body}`);
     }
 
-    // Create R2 placeholder keys so goofys sees non-empty prefixes
-    await Promise.all([
-      this.env.R2_BUCKET.head(`${mountPrefix}user-uploads/.keep`).then(async (existing) => {
-        if (!existing) await this.env.R2_BUCKET.put(`${mountPrefix}user-uploads/.keep`, '');
-      }),
-      this.env.R2_BUCKET.head(`${mountPrefix}user-outputs/.keep`).then(async (existing) => {
-        if (!existing) await this.env.R2_BUCKET.put(`${mountPrefix}user-outputs/.keep`, '');
-      }),
-    ]);
-
-    // Check if mounts are already active — skip exec but still update script/env above
+    // Check if mounts are already active — skip exec but still update config/script above
     const mountCheck = await this.execHttpRawForSprite(
       spriteName,
       ['bash', '-c', [
         'echo "uploads=$(mountpoint /mnt/user-uploads 2>&1)"',
         'echo "outputs=$(mountpoint /mnt/user-outputs 2>&1)"',
-        'echo "goofys=$(pgrep -c goofys 2>/dev/null || echo 0) procs"',
         'mountpoint -q /mnt/user-uploads && mountpoint -q /mnt/user-outputs && echo ok',
       ].join('; ')]
     );
@@ -1254,7 +1247,7 @@ export class WorkspaceContainer {
     }
     console.log(`[Sprite] ensureR2MountService: mounts not active for sprite=${spriteName} (${checkOutput})`);
 
-    // Run the mount script via exec (Services API is broken on sprites rc31)
+    // Run the mount script
     console.log(`[Sprite] ensureR2MountService: running mount script for sprite=${spriteName}`);
     const result = await this.execHttpRawForSprite(
       spriteName,
@@ -1268,7 +1261,7 @@ export class WorkspaceContainer {
     }
 
     this.r2MountServiceCreated = true;
-    console.log(`[Sprite] ensureR2MountService: R2 FUSE mounts ready for sprite=${spriteName}`);
+    console.log(`[Sprite] ensureR2MountService: rclone mounts ready for sprite=${spriteName}`);
   }
 
   async startForWorkspace(workspaceId: string, orgId: string): Promise<void> {
