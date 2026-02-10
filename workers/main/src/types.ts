@@ -55,7 +55,7 @@ export interface Route {
 }
 
 // Re-export cookie constants from cookies.ts (single source of truth)
-export { SESSION_COOKIE, LEGACY_SESSION_COOKIE, SESSION_HEADER } from './cookies.js';
+export { SESSION_HEADER } from './cookies.js';
 
 export const THREAD_TOKEN_HEADER = 'X-Chiridion-Thread-Deploy-Token';
 // New prefix with org-slug namespacing: script:{script-name}--{org-slug}
