@@ -1230,13 +1230,11 @@ export class WorkspaceContainer {
       throw new Error(`Failed writing r2-mount.sh: ${scriptWrite.status} ${body}`);
     }
 
-    // Check if mounts are already active — skip exec but still update config/script above
+    // Check if mounts are already active and healthy (ls detects stale FUSE mounts)
     const mountCheck = await this.execHttpRawForSprite(
       spriteName,
       ['bash', '-c', [
-        'echo "uploads=$(mountpoint /mnt/user-uploads 2>&1)"',
-        'echo "outputs=$(mountpoint /mnt/user-outputs 2>&1)"',
-        'mountpoint -q /mnt/user-uploads && mountpoint -q /mnt/user-outputs && echo ok',
+        'ls /mnt/user-uploads/ >/dev/null 2>&1 && ls /mnt/user-outputs/ >/dev/null 2>&1 && echo ok',
       ].join('; ')]
     );
     const checkOutput = mountCheck.stdout.trim();
