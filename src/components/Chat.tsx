@@ -420,7 +420,13 @@ export default function Chat({
     syncManualCompactionIndicator();
   }, [syncManualCompactionIndicator]);
   const completeActiveManualCompaction = useCallback(() => {
-    activeManualCompactionTurnRef.current = false;
+    if (activeManualCompactionTurnRef.current) {
+      activeManualCompactionTurnRef.current = false;
+    } else if (queuedManualCompactionsRef.current > 0) {
+      // Some reconnect/replay paths can miss `system/init` for the compact turn.
+      // If completion arrives without an active turn, consume one queued entry.
+      queuedManualCompactionsRef.current -= 1;
+    }
     syncManualCompactionIndicator();
   }, [syncManualCompactionIndicator]);
   const clearManualCompactionQueue = useCallback(() => {
