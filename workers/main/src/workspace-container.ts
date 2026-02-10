@@ -1124,6 +1124,19 @@ export class WorkspaceContainer {
     }
 
     const spriteName = this.requireSpriteName();
+
+    // Check if mounts are already active (e.g. from a previous startForWorkspace call
+    // before the worker instance was recycled)
+    const mountCheck = await this.execHttpRawForSprite(
+      spriteName,
+      ['bash', '-c', 'mountpoint -q /mnt/user-uploads && mountpoint -q /mnt/user-outputs && echo ok']
+    );
+    if (mountCheck.success && mountCheck.stdout.trim() === 'ok') {
+      console.log(`[Sprite] ensureR2MountService: mounts already active for sprite=${spriteName}, skipping`);
+      this.r2MountServiceCreated = true;
+      return;
+    }
+
     console.log(`[Sprite] ensureR2MountService: setting up R2 FUSE mounts for sprite=${spriteName}`);
 
     // Write the credentials env file
