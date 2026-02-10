@@ -1196,6 +1196,7 @@ export class WorkspaceContainer {
       '  --allow-other --read-only \\',
       '  --uid 1001 --gid 1001 \\',
       '  --vfs-cache-mode minimal \\',
+      '  --dir-cache-time 1s \\',
       '  --daemon 2>&1',
       '',
       '# Mount user-outputs (read-write) — files owned by sprite user (uid=1001)',
@@ -1204,6 +1205,7 @@ export class WorkspaceContainer {
       '  --allow-other \\',
       '  --uid 1001 --gid 1001 \\',
       '  --vfs-cache-mode writes --vfs-write-back 0 \\',
+      '  --dir-cache-time 1s \\',
       '  --daemon 2>&1',
       '',
       'sleep 1',
@@ -1323,7 +1325,7 @@ export class WorkspaceContainer {
       throw new Error('connectExecWebSocket requires cmd[] or sessionId');
     }
 
-    console.log(`[Sprite] connectExecWebSocket: sprite=${spriteName} cmd=${hasCmd ? params.cmd!.join(' ') : 'none'} sessionId=${params.sessionId || 'none'}`);
+    console.log(`[Sprite] connectExecWebSocket: sprite=${spriteName} cmd=${hasCmd ? params.cmd!.join(' ') : 'none'} sessionId=${params.sessionId || 'none'} envCount=${params.env ? Object.keys(params.env).length : 0}`);
 
     const url = new URL(`${this.spritesApiBaseUrl}/v1/sprites/${encodeURIComponent(spriteName)}/exec`);
 
@@ -1348,7 +1350,10 @@ export class WorkspaceContainer {
       }
     }
 
-    const response = await fetch(url.toString(), {
+    const urlString = url.toString();
+    console.log(`[Sprite] connectExecWebSocket: URL length=${urlString.length}`);
+
+    const response = await fetch(urlString, {
       headers: {
         Authorization: `Bearer ${this.requireSpritesToken()}`,
         Upgrade: 'websocket',
