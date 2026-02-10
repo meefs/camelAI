@@ -395,9 +395,7 @@ export default function Chat({
   const [bugReportError, setBugReportError] = useState<string | null>(null);
   // Compaction in-progress indicator
   const [isCompacting, setIsCompactingState] = useState(false);
-  const isCompactingRef = useRef(false);
   const setIsCompacting = useCallback((value: boolean) => {
-    isCompactingRef.current = value;
     setIsCompactingState(value);
   }, []);
   // Track compaction content block streaming (compaction summary arrives as a
@@ -405,6 +403,7 @@ export default function Chat({
   const isInCompactionBlockRef = useRef(false);
   const compactionContentRef = useRef('');
   const hasCapturedCompactionSummaryRef = useRef(false);
+  const pendingCompactionPlaceholderIdRef = useRef<string | null>(null);
   // MCP-triggered bug report capture
   const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -900,6 +899,7 @@ export default function Chat({
                   created_at: Date.now(),
                   isCompactSummary: true,
                 };
+                pendingCompactionPlaceholderIdRef.current = compactMsg.id;
                 setMessages(prev => [...prev, compactMsg]);
               }
               return;
@@ -1004,13 +1004,6 @@ export default function Chat({
           // System init - reset the streaming message ID
           splitStreamingMessageOnNextPartRef.current = false;
           setStreamingMessageId(null);
-
-          // Safety net: if the compaction content block handler didn't already
-          // clear the indicator (e.g. the compaction block was empty or skipped),
-          // clear it here so the indicator doesn't get stuck.
-          if (isCompactingRef.current) {
-            setIsCompacting(false);
-          }
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
           // Compaction is complete — the compact_boundary event arrives AFTER the
           // SDK finishes generating the summary (not before). Insert a compact
@@ -1029,6 +1022,7 @@ export default function Chat({
             created_at: Date.now(),
             isCompactSummary: true,
           };
+          pendingCompactionPlaceholderIdRef.current = compactMsg.id;
           setMessages(prev => [...prev, compactMsg]);
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
           // Track message ID as fallback
@@ -1047,6 +1041,8 @@ export default function Chat({
           if (isCompactSummary) {
             setIsCompacting(false);
             hasCapturedCompactionSummaryRef.current = false;
+            const placeholderId = pendingCompactionPlaceholderIdRef.current;
+            pendingCompactionPlaceholderIdRef.current = null;
             const content = sdkEvent.message.content;
             const compactMsg: Message = {
               id: (sdkEvent as { uuid?: string }).uuid || `compact_${Date.now()}`,
@@ -1056,12 +1052,12 @@ export default function Chat({
               created_at: Date.now(),
               isCompactSummary: true,
             };
-            // Replace any existing placeholder compact card from the
-            // compact_boundary handler with the full summary.
+            // Replace only the currently tracked provisional compact card
+            // with the forwarded full summary.
             setMessages(prev => {
-              const withoutPlaceholder = prev.filter(
-                m => !(m.isCompactSummary && m.id.startsWith('compact_')),
-              );
+              const withoutPlaceholder = placeholderId
+                ? prev.filter(m => m.id !== placeholderId)
+                : prev;
               return [...withoutPlaceholder, compactMsg];
             });
             return;
@@ -2118,12 +2114,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     hasHadUserInteraction.current = true;
 
     const userMessage = input.trim();
-    const shouldShowCompactingIndicator = isManualCompactCommand(userMessage);
     setInput('');
-
-    if (shouldShowCompactingIndicator) {
-      setIsCompacting(true);
-    }
 
     // Build message content with file references appended
     const completedAttachments = attachments.filter(a => a.status === 'complete');
@@ -2133,6 +2124,11 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         .map(a => `(user uploaded file to ${a.path})`)
         .join('\n');
       finalContent = `${userMessage}\n\n${fileRefs}`;
+    }
+    const shouldShowCompactingIndicator = isManualCompactCommand(finalContent);
+
+    if (shouldShowCompactingIndicator) {
+      setIsCompacting(true);
     }
 
     // Clear attachments after building message
