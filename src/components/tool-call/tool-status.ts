@@ -19,5 +19,7 @@ export function getToolStatus(
   if (result && (result as { is_error?: boolean }).is_error) return 'error';
   if (isStreaming && !result) return 'running';
   if (result) return 'complete';
-  return 'running';
+  // No result but streaming is done — the tool must have completed since the
+  // agent cannot proceed past a tool call without receiving its result.
+  return isStreaming ? 'running' : 'complete';
 }
