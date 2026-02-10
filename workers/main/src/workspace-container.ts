@@ -1116,9 +1116,13 @@ export class WorkspaceContainer {
     const sessionToken = this.envVars.AWS_SESSION_TOKEN;
     const accountId = this.env.R2_ACCOUNT_ID;
     const bucketName = this.env.R2_BUCKET_NAME;
-    const prefix = this.envVars.R2_PREFIX;
+    // Always use {orgId}/{workspaceId}/ to match the upload API's buildUploadKey(),
+    // which always includes both — unlike R2_PREFIX which collapses to {orgId}/ for legacy workspaces.
+    const mountPrefix = this.orgId && this.workspaceId
+      ? `${this.orgId}/${this.workspaceId}/`
+      : null;
 
-    if (!accessKeyId || !secretAccessKey || !sessionToken || !accountId || !bucketName || !prefix) {
+    if (!accessKeyId || !secretAccessKey || !sessionToken || !accountId || !bucketName || !mountPrefix) {
       console.log('[Sprite] ensureR2MountService: missing R2 credentials, skipping mount service');
       return;
     }
@@ -1146,7 +1150,7 @@ export class WorkspaceContainer {
       `AWS_SESSION_TOKEN=${sessionToken}`,
       `R2_ACCOUNT_ID=${accountId}`,
       `R2_BUCKET_NAME=${bucketName}`,
-      `R2_PREFIX=${prefix}`,
+      `R2_PREFIX=${mountPrefix}`,
     ].join('\n');
 
     const envFileWrite = await this.fetchSpriteFs(
@@ -1228,11 +1232,11 @@ export class WorkspaceContainer {
 
     // Create R2 placeholder keys so goofys sees non-empty prefixes
     await Promise.all([
-      this.env.R2_BUCKET.head(`${prefix}user-uploads/.keep`).then(async (existing) => {
-        if (!existing) await this.env.R2_BUCKET.put(`${prefix}user-uploads/.keep`, '');
+      this.env.R2_BUCKET.head(`${mountPrefix}user-uploads/.keep`).then(async (existing) => {
+        if (!existing) await this.env.R2_BUCKET.put(`${mountPrefix}user-uploads/.keep`, '');
       }),
-      this.env.R2_BUCKET.head(`${prefix}user-outputs/.keep`).then(async (existing) => {
-        if (!existing) await this.env.R2_BUCKET.put(`${prefix}user-outputs/.keep`, '');
+      this.env.R2_BUCKET.head(`${mountPrefix}user-outputs/.keep`).then(async (existing) => {
+        if (!existing) await this.env.R2_BUCKET.put(`${mountPrefix}user-outputs/.keep`, '');
       }),
     ]);
 
