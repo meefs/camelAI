@@ -1304,7 +1304,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (changed) {
       await this.setInfo(info);
     }
-    await this.ensureSlugClaimed(info.id, info.slug);
     return info;
   }
 

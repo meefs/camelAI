@@ -6,7 +6,7 @@ import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
 import type { OnboardingPreferences } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
-import { getUserOrgs, listUserWorkspacesAcrossOrgs, listOrgWorkspaces, isOrgAdmin, getWorkspaceAccess } from './auth-do';
+import { getUserOrgs, listUserWorkspacesAcrossOrgs, listOrgWorkspaces } from './auth-do';
 
 // Request-scoped cache for auth context to avoid duplicate DO RPC calls
 // when multiple loaders call requireAuthContext() in the same request
@@ -274,12 +274,12 @@ export async function requireOrgAdmin(
   orgId: string
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
 
-  const adminStatus = await isOrgAdmin(authEnv, authContext.user.id, orgId);
+  // Use cached org membership from authContext instead of re-fetching
+  const userOrg = authContext.orgs.find((o) => o.org_id === orgId);
+  const isAdmin = userOrg?.role === 'owner' || userOrg?.role === 'admin';
 
-  if (!adminStatus) {
+  if (!isAdmin) {
     throw redirect('/');
   }
 
@@ -296,14 +296,10 @@ export async function requireWorkspaceAccess(
   requiredLevel: 'full' | 'any' = 'any'
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
 
-  const accessLevel = await getWorkspaceAccess(
-    authEnv,
-    workspaceId,
-    authContext.user.id
-  );
+  // Use cached workspace access from authContext instead of re-fetching
+  const workspace = authContext.allWorkspaces.find((ws) => ws.id === workspaceId);
+  const accessLevel = workspace?.access_level ?? 'none';
 
   if (accessLevel === 'none') {
     throw redirect('/');
