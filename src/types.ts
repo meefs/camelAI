@@ -9,6 +9,21 @@ export interface Thread {
   creator?: User;
 }
 
+export type PreviewTarget =
+  | {
+      kind: 'app';
+      scriptName: string;
+      isPublic: boolean;
+    }
+  | {
+      kind: 'file';
+      source: 'workspace' | 'upload' | 'output';
+      workspaceId: string;
+      path: string;
+      filename?: string;
+      contentType?: string;
+    };
+
 // Content block types for structured message content
 export interface TextBlock {
   type: 'text';

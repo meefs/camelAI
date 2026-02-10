@@ -71,7 +71,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     throw redirect('/qaml-backdoor/threads');
   }
 
-  const { thread, messages, org_id, org_name, workspace_id, workspace_name, preview_workers } = result;
+  const { thread, messages, org_id, org_name, workspace_id, workspace_name, preview_target } = result;
 
   // Create plain object for Client Component
   const safeThread = {
@@ -91,7 +91,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     org_name,
     workspace_id,
     workspace_name,
-    preview_workers,
+    preview_target,
     vanityDomain,
   };
 }
@@ -104,7 +104,7 @@ export default function AdminThreadDetailPage() {
     org_name,
     workspace_id,
     workspace_name,
-    preview_workers,
+    preview_target,
     vanityDomain,
   } = useLoaderData<typeof loader>();
 
@@ -172,29 +172,34 @@ export default function AdminThreadDetailPage() {
 
             <Card>
               <CardHeader>
-                <CardTitle>Preview Workers</CardTitle>
-                <CardDescription>
-                  {preview_workers.length} {preview_workers.length === 1 ? 'worker' : 'workers'}
-                </CardDescription>
+                <CardTitle>Active Preview</CardTitle>
+                <CardDescription>Current thread preview target</CardDescription>
               </CardHeader>
               <CardContent>
-                {preview_workers.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No preview workers</p>
-                ) : (
+                {!preview_target ? (
+                  <p className="text-sm text-muted-foreground">No active preview target</p>
+                ) : preview_target.kind === 'app' ? (
                   <div className="space-y-2">
-                    {preview_workers.map((worker) => (
-                      <div key={worker} className="flex items-center justify-between p-2 rounded-md bg-muted">
-                        <code className="text-sm">{worker}</code>
-                        <a
-                          href={`https://${worker}.${vanityDomain}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-sm text-primary hover:underline"
-                        >
-                          https://{worker}.{vanityDomain}
-                        </a>
-                      </div>
-                    ))}
+                    <div className="flex items-center justify-between p-2 rounded-md bg-muted">
+                      <code className="text-sm">{preview_target.scriptName}</code>
+                      <a
+                        href={`https://${preview_target.scriptName}.${vanityDomain}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-primary hover:underline"
+                      >
+                        https://{preview_target.scriptName}.{vanityDomain}
+                      </a>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Visibility: {preview_target.isPublic ? 'Public' : 'Private'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2 text-sm">
+                    <div className="font-medium">{preview_target.filename || preview_target.path}</div>
+                    <div className="text-muted-foreground">Source: {preview_target.source}</div>
+                    <div className="text-muted-foreground break-all">Path: {preview_target.path}</div>
                   </div>
                 )}
               </CardContent>

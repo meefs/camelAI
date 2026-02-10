@@ -8,7 +8,7 @@ import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import type { Message } from '@/types';
+import type { Message, PreviewTarget } from '@/types';
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || 'Chat';
@@ -39,8 +39,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 // Type for the combined data promise
 interface ChatData {
   messages: Message[];
-  deployedApp: string | null;
-  initialAppIsPublic: boolean | null;
+  previewTarget: PreviewTarget | null;
 }
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -50,7 +49,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return {
       threadId: params.id,
       workspaceId: null,
-      chatDataPromise: Promise.resolve({ messages: [], deployedApp: null, initialAppIsPublic: null }),
+      chatDataPromise: Promise.resolve({ messages: [], previewTarget: null }),
       threadTitle: null,
       isNewThread: false,
       hostname: undefined,
@@ -72,25 +71,27 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
   // Create promise for slower data - NOT awaited, will be streamed
   const chatDataPromise: Promise<ChatData> = isNewThread
-    ? Promise.resolve({ messages: [], deployedApp: null, initialAppIsPublic: null })
+    ? Promise.resolve({ messages: [], previewTarget: null })
     : (async () => {
-        const [messages, previewWorkers] = await Promise.all([
+        const [messages, previewTargetRaw] = await Promise.all([
           chatDO.getMessages(context, params.id, workspaceId),
-          chatDO.getThreadPreview(context, params.id).catch(() => []),
+          chatDO.getThreadPreviewTarget(context, params.id).catch(() => null),
         ]);
 
-        // Look up the app's actual visibility from the source of truth (OrgDO)
-        let initialAppIsPublic: boolean | null = null;
-        const deployedApp = previewWorkers[0] ?? null;
-        if (deployedApp) {
-          const script = await getWorkerScript(authEnv, orgId, deployedApp);
-          initialAppIsPublic = script?.is_public ?? null;
+        let previewTarget = previewTargetRaw;
+        if (previewTarget?.kind === 'app') {
+          const script = await getWorkerScript(authEnv, orgId, previewTarget.scriptName);
+          if (script) {
+            previewTarget = {
+              ...previewTarget,
+              isPublic: script.is_public,
+            };
+          }
         }
 
         return {
           messages,
-          deployedApp,
-          initialAppIsPublic,
+          previewTarget,
         };
       })();
 
@@ -132,8 +133,7 @@ function ChatWithData({
       workspaceId={workspaceId}
       initialMessages={chatData?.messages ?? []}
       threadTitle={threadTitle}
-      initialDeployedApp={chatData?.deployedApp ?? null}
-      initialAppIsPublic={chatData?.initialAppIsPublic ?? null}
+      initialPreviewTarget={chatData?.previewTarget ?? null}
       isNewThread={isNewThread}
       hostname={hostname}
       orgSlug={orgSlug}

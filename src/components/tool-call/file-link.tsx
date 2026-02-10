@@ -6,8 +6,10 @@ import { useState } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { cn } from '@/lib/utils';
 import { FilePreviewPopover } from '@/components/chat-file-preview';
+import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
+import type { PreviewTarget } from '@/types';
 
-const WORKSPACE_ROOT_PREFIXES = ['/home/sprite', '/workspace', '/root'];
+const WORKSPACE_ROOT_PREFIXES = ['/home/sprite', '/home/claude', '/workspace', '/root'];
 
 const TEMP_FILE_PREFIXES = [
   { prefix: '/mnt/user-uploads/', type: 'upload' as const, urlSegment: 'uploads' },
@@ -49,6 +51,10 @@ function encodePathSegments(path: string): string {
     .join('/');
 }
 
+function getBasename(path: string): string {
+  return path.split('/').filter(Boolean).pop() || path;
+}
+
 interface FileLinkProps {
   path: string;
   children?: ReactNode;
@@ -66,6 +72,7 @@ export function FileLink({
 }: FileLinkProps) {
   const { currentWorkspace } = useAuthData();
   const [previewOpen, setPreviewOpen] = useState(false);
+  const previewContext = useChatPreviewContext();
   const tempInfo = getTempFileInfo(path);
   const normalizedPath = normalizeWorkspacePath(path);
 
@@ -80,6 +87,41 @@ export function FileLink({
   if (tempInfo) {
     const previewUrl = `/api/workspaces/${currentWorkspace.id}/${tempInfo.urlSegment}/${encodePathSegments(tempInfo.relativePath)}`;
     const displayName = tempInfo.relativePath.split('/').pop() || tempInfo.relativePath;
+    const previewTarget: PreviewTarget = {
+      kind: 'file',
+      source: tempInfo.type,
+      workspaceId: currentWorkspace.id,
+      path: tempInfo.relativePath,
+      filename: displayName,
+    };
+
+    if (previewContext) {
+      return (
+        <button
+          type="button"
+          className={cn(
+            "inline-flex min-w-0 max-w-full items-center gap-1 hover:underline",
+            "text-foreground/80 hover:text-foreground",
+            mono && "font-mono",
+            className
+          )}
+          onClick={(event) => {
+            event.stopPropagation();
+            previewContext.openPreviewTarget(previewTarget);
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.stopPropagation();
+            }
+          }}
+        >
+          {children ?? displayName}
+          {showIcon ? <ExternalLink className="h-3 w-3 opacity-50" /> : null}
+        </button>
+      );
+    }
 
     return (
       <>
@@ -117,6 +159,41 @@ export function FileLink({
   }
 
   const href = `/computer/${currentWorkspace.id}?file=${encodeURIComponent(normalizedPath)}`;
+  if (previewContext) {
+    const previewTarget: PreviewTarget = {
+      kind: 'file',
+      source: 'workspace',
+      workspaceId: currentWorkspace.id,
+      path: normalizedPath,
+      filename: getBasename(normalizedPath),
+    };
+
+    return (
+      <button
+        type="button"
+        className={cn(
+          "inline-flex min-w-0 max-w-full items-center gap-1 hover:underline",
+          "text-foreground/80 hover:text-foreground",
+          mono && "font-mono",
+          className
+        )}
+        onClick={(event) => {
+          event.stopPropagation();
+          previewContext.openPreviewTarget(previewTarget);
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.stopPropagation();
+          }
+        }}
+      >
+        {children ?? path}
+        {showIcon ? <ExternalLink className="h-3 w-3 opacity-50" /> : null}
+      </button>
+    );
+  }
 
   return (
     <a

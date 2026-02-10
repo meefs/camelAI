@@ -11,6 +11,7 @@ import type {
   ToolUseBlock,
   WorkerScriptWithCreator,
   Integration,
+  PreviewTarget,
 } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -50,6 +51,8 @@ import { MessageBubble, isInterruptMessage, parseSlashCommand, parseLocalCommand
 import { LoadingDots } from '@/components/loading-dots';
 import { CompactingIndicator } from '@/components/compacting-indicator';
 import { WelcomeScreen } from '@/components/welcome-screen';
+import { FilePreviewContent } from '@/components/chat-file-preview';
+import { ChatPreviewProvider } from '@/components/chat-preview/preview-context';
 import { cn } from '@/lib/utils';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
 import {
@@ -67,9 +70,7 @@ interface ChatProps {
   workspaceId: string;
   initialMessages?: Message[];
   threadTitle?: string | null;
-  initialDeployedApp?: string | null;
-  /** Initial app visibility from OrgDO source of truth */
-  initialAppIsPublic?: boolean | null;
+  initialPreviewTarget?: PreviewTarget | null;
   isNewThread?: boolean;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
   hostname?: string;
@@ -199,6 +200,39 @@ function getLastToolUseIdFromMessages(messages: Message[]): string | undefined {
     if (id) return id;
   }
   return undefined;
+}
+
+function coercePreviewTarget(value: unknown): PreviewTarget | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'app') {
+    if (typeof record.scriptName !== 'string') return null;
+    return {
+      kind: 'app',
+      scriptName: record.scriptName,
+      isPublic: Boolean(record.isPublic),
+    };
+  }
+
+  if (record.kind === 'file') {
+    if (
+      typeof record.workspaceId !== 'string' ||
+      typeof record.path !== 'string' ||
+      (record.source !== 'workspace' && record.source !== 'upload' && record.source !== 'output')
+    ) {
+      return null;
+    }
+    return {
+      kind: 'file',
+      source: record.source,
+      workspaceId: record.workspaceId,
+      path: record.path,
+      filename: typeof record.filename === 'string' ? record.filename : undefined,
+      contentType: typeof record.contentType === 'string' ? record.contentType : undefined,
+    };
+  }
+
+  return null;
 }
 
 function MobileViewSwitcher({
@@ -353,8 +387,7 @@ export default function Chat({
   workspaceId,
   initialMessages,
   threadTitle,
-  initialDeployedApp,
-  initialAppIsPublic,
+  initialPreviewTarget,
   isNewThread = false,
   hostname,
   orgSlug,
@@ -530,9 +563,9 @@ export default function Chat({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [deployedApp, setDeployedApp] = useState<string | null>(initialDeployedApp ?? null);
-  const [appIsPublic, setAppIsPublic] = useState(initialAppIsPublic ?? false);
+  const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(initialPreviewTarget ?? null);
   const [iframeKey, setIframeKey] = useState(0);
+  const [filePreviewKey, setFilePreviewKey] = useState(0);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
@@ -565,12 +598,25 @@ export default function Chat({
     splitStreamingMessageOnNextPartRef.current = false;
     setCurrentTodos([]);
     setPendingQuestion(null);
-    setAppIsPublic(false);
   }, [threadId]);
 
   useEffect(() => {
+    setPreviewTarget(initialPreviewTarget ?? null);
+    previewVersionRef.current = 0;
+  }, [threadId, initialPreviewTarget]);
+
+  const deployedApp = previewTarget?.kind === 'app' ? previewTarget.scriptName : null;
+  const appIsPublic = previewTarget?.kind === 'app' ? previewTarget.isPublic : false;
+  const setAppIsPublic = useCallback((isPublic: boolean) => {
+    setPreviewTarget((prev) => {
+      if (!prev || prev.kind !== 'app') return prev;
+      return { ...prev, isPublic };
+    });
+  }, []);
+
+  useEffect(() => {
     setMobileView('chat');
-  }, [threadId, deployedApp]);
+  }, [threadId]);
 
 
   // Todo state comes directly from server via todo_state events
@@ -669,18 +715,15 @@ export default function Chat({
   }, [revalidator]);
 
   const handleRealtimeSideChannelEvent = useCallback((data: any) => {
-    if (data.type === 'preview_state' && Array.isArray(data.workers)) {
-      const firstWorker = data.workers[0] || null;
-      const newVersion = data.version || 0;
+    if (data.type === 'preview_state') {
+      const nextTarget = coercePreviewTarget(data.target);
+      const newVersion = typeof data.version === 'number' ? data.version : 0;
       const isNewDeploy = newVersion > previewVersionRef.current;
       previewVersionRef.current = newVersion;
 
-      setDeployedApp(firstWorker);
-      setAppIsPublic((prev) =>
-        typeof data.isPublic === 'boolean' ? data.isPublic : prev
-      );
+      setPreviewTarget(nextTarget);
 
-      if (firstWorker && isNewDeploy) {
+      if (nextTarget?.kind === 'app' && isNewDeploy) {
         if (iframeRefreshTimeoutRef.current) {
           clearTimeout(iframeRefreshTimeoutRef.current);
         }
@@ -690,6 +733,8 @@ export default function Chat({
           setIframeKey(prev => prev + 1);
           iframeRefreshTimeoutRef.current = null;
         }, 1500);
+      } else {
+        setPreviewLoading(false);
       }
       return;
     }
@@ -1348,8 +1393,7 @@ export default function Chat({
 
   useEffect(() => {
     if (!threadId) {
-      setDeployedApp(null);
-      setAppIsPublic(false);
+      setPreviewTarget(null);
     }
   }, [threadId]);
 
@@ -2168,6 +2212,45 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     }
   }, [mcpBugReportPrompt, deployedApp, resolvedWorkspaceId, threadId, submitBugReport]);
 
+  const setPreviewTargetForThread = useCallback((target: PreviewTarget | null) => {
+    if (!threadId) return;
+
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      if (target === null) {
+        setPreviewTarget(null);
+        setPreviewLoading(false);
+        return;
+      }
+      toast.error('Preview is unavailable while reconnecting.');
+      return;
+    }
+
+    socket.send(JSON.stringify({
+      type: 'set_preview_target',
+      target,
+      threadId,
+    }));
+
+    setPreviewTarget(target);
+    if (target?.kind === 'app') {
+      setPreviewLoading(true);
+      setIframeKey((prev) => prev + 1);
+    } else {
+      setPreviewLoading(false);
+    }
+  }, [threadId]);
+
+  const openPreviewTarget = useCallback((target: PreviewTarget) => {
+    setPreviewTargetForThread(target);
+    setMobileView('preview');
+  }, [setPreviewTargetForThread]);
+
+  const clearPreviewTarget = useCallback(() => {
+    setPreviewTargetForThread(null);
+    setMobileView('chat');
+  }, [setPreviewTargetForThread]);
+
   function sendMessage() {
     if (!input.trim() || !shouldShowChat || !resolvedWorkspaceId || !threadId) {
       return;
@@ -2256,110 +2339,225 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     { label: 'Chat' },
     { label: currentTitle?.trim() || 'Untitled Chat' },
   ];
+
+  const encodePathSegments = useCallback((path: string) => {
+    return path
+      .split('/')
+      .map(segment => encodeURIComponent(segment))
+      .join('/');
+  }, []);
+
+  const previewFileName = useMemo(() => {
+    if (previewTarget?.kind !== 'file') return '';
+    if (previewTarget.filename) return previewTarget.filename;
+    return previewTarget.path.split('/').filter(Boolean).pop() || 'file';
+  }, [previewTarget]);
+
   const previewDomains = useMemo(() => {
-    if (!deployedApp) {
+    if (previewTarget?.kind !== 'app') {
       return { iframeHost: '', vanityHost: '' };
     }
+    const scriptName = previewTarget.scriptName;
     if (orgSlug) {
       return {
-        iframeHost: `${deployedApp}--${orgSlug}.${getIframeDomain(hostname)}`,
-        vanityHost: `${deployedApp}--${orgSlug}.${getVanityDomain(hostname)}`,
+        iframeHost: `${scriptName}--${orgSlug}.${getIframeDomain(hostname)}`,
+        vanityHost: `${scriptName}--${orgSlug}.${getVanityDomain(hostname)}`,
       };
     }
     // Legacy format without org slug
     return {
-      iframeHost: `${deployedApp}.${getIframeDomain(hostname)}`,
-      vanityHost: `${deployedApp}.${getVanityDomain(hostname)}`,
+      iframeHost: `${scriptName}.${getIframeDomain(hostname)}`,
+      vanityHost: `${scriptName}.${getVanityDomain(hostname)}`,
     };
-  }, [deployedApp, hostname, orgSlug]);
-  const previewUrl = previewDomains.iframeHost ? `https://${previewDomains.iframeHost}` : '';
-  const previewVanityUrl = previewDomains.vanityHost ? `https://${previewDomains.vanityHost}` : '';
-  const showMobilePreview = Boolean(deployedApp) && mobileView === 'preview';
+  }, [previewTarget, hostname, orgSlug]);
+  const appPreviewUrl = previewDomains.iframeHost ? `https://${previewDomains.iframeHost}` : '';
+  const appPreviewVanityUrl = previewDomains.vanityHost ? `https://${previewDomains.vanityHost}` : '';
+
+  const filePreviewUrl = useMemo(() => {
+    if (previewTarget?.kind !== 'file') return '';
+    const normalizedPath = previewTarget.path.replace(/^\/+/, '');
+    const encodedPath = encodePathSegments(normalizedPath);
+    const route = previewTarget.source === 'workspace'
+      ? `fs/content/${encodedPath}`
+      : `${previewTarget.source === 'upload' ? 'uploads' : 'outputs'}/${encodedPath}`;
+    return `/api/workspaces/${previewTarget.workspaceId}/${route}?v=${filePreviewKey}`;
+  }, [previewTarget, encodePathSegments, filePreviewKey]);
+
+  const filePreviewOpenUrl = useMemo(() => {
+    if (previewTarget?.kind !== 'file') return '';
+    const normalizedPath = previewTarget.path.replace(/^\/+/, '');
+    const encodedPath = encodePathSegments(normalizedPath);
+    const route = previewTarget.source === 'workspace'
+      ? `fs/content/${encodedPath}`
+      : `${previewTarget.source === 'upload' ? 'uploads' : 'outputs'}/${encodedPath}`;
+    return `/api/workspaces/${previewTarget.workspaceId}/${route}`;
+  }, [previewTarget, encodePathSegments]);
+
+  const showMobilePreview = Boolean(previewTarget) && mobileView === 'preview';
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
-
-  const previewPanelBody = deployedApp ? (
-    <>
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 bg-green-500 rounded-full" />
-          <span className="text-sm font-medium">{previewDomains.vanityHost}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <ShareStatusButton
-            threadId={threadId}
-            scriptName={deployedApp}
-            isPublic={appIsPublic}
-            isAdmin={Boolean(isAdmin)}
-            onStatusChange={setAppIsPublic}
-          />
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => {
-                  setBugReportOpen(true);
-                  setBugReportStatus('idle');
-                  setBugReportError(null);
-                }}
-              >
-                <Bug className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Report a bug</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => setIframeKey(prev => prev + 1)}
-              >
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Reload</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                asChild
-              >
-                <a
-                  href={previewVanityUrl || 'about:blank'}
-                  target="_blank"
-                  rel="noopener noreferrer"
+  const previewPanelBody = previewTarget ? (
+    previewTarget.kind === 'app' ? (
+      <>
+        <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 bg-green-500 rounded-full" />
+            <span className="text-sm font-medium">{previewDomains.vanityHost}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <ShareStatusButton
+              threadId={threadId}
+              scriptName={previewTarget.scriptName}
+              isPublic={appIsPublic}
+              isAdmin={Boolean(isAdmin)}
+              onStatusChange={setAppIsPublic}
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => {
+                    setBugReportOpen(true);
+                    setBugReportStatus('idle');
+                    setBugReportError(null);
+                  }}
                 >
-                  <ExternalLink className="h-4 w-4" />
-                </a>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Open in new tab</TooltipContent>
-          </Tooltip>
+                  <Bug className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Report a bug</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setIframeKey(prev => prev + 1)}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Reload</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  asChild
+                >
+                  <a
+                    href={appPreviewVanityUrl || 'about:blank'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Open in new tab</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={clearPreviewTarget}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Close preview</TooltipContent>
+            </Tooltip>
+          </div>
         </div>
-      </div>
-      <div className="flex-1 min-h-0">
-        {previewLoading ? (
-          <div className="w-full h-full flex items-center justify-center bg-muted/30">
-            <div className="flex flex-col items-center gap-3">
-              <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">Loading preview...</span>
+        <div className="flex-1 min-h-0">
+          {previewLoading ? (
+            <div className="w-full h-full flex items-center justify-center bg-muted/30">
+              <div className="flex flex-col items-center gap-3">
+                <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">Loading preview...</span>
+              </div>
+            </div>
+          ) : (
+            <iframe
+              ref={iframeRef}
+              key={iframeKey}
+              src={appPreviewUrl || 'about:blank'}
+              className="w-full h-full bg-white"
+              title="Deployed App Preview"
+            />
+          )}
+        </div>
+      </>
+    ) : (
+      <>
+        <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+          <div className="min-w-0 flex items-center gap-2">
+            <div className="w-2 h-2 bg-blue-500 rounded-full shrink-0" />
+            <div className="min-w-0">
+              <div className="text-sm font-medium truncate">{previewFileName}</div>
+              <div className="text-xs text-muted-foreground truncate">
+                {previewTarget.source}: {previewTarget.path}
+              </div>
             </div>
           </div>
-        ) : (
-          <iframe
-            ref={iframeRef}
-            key={iframeKey}
-            src={previewUrl || 'about:blank'}
-            className="w-full h-full bg-white"
-            title="Deployed App Preview"
+          <div className="flex items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setFilePreviewKey((prev) => prev + 1)}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Reload</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  asChild
+                >
+                  <a
+                    href={filePreviewOpenUrl || 'about:blank'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Open in new tab</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={clearPreviewTarget}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Close preview</TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
+        <div className="flex-1 min-h-0 overflow-hidden p-3">
+          <FilePreviewContent
+            filename={previewFileName}
+            previewUrl={filePreviewUrl}
+            contentType={previewTarget.contentType}
+            layout="panel"
           />
-        )}
-      </div>
-    </>
+        </div>
+      </>
+    )
   ) : null;
 
   const chatPanelContent = (
@@ -2512,86 +2710,11 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
   return (
     <TooltipProvider>
-      <>
-        {shouldShowChat ? (
-          <div
-            className="flex-1 min-h-0 relative flex flex-col"
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-          >
-            {/* Drag overlay */}
-            {isDragOver && (
-              <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
-                <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
-                  <span className="text-lg font-medium text-primary">Drop files here to upload</span>
-                </div>
-              </div>
-            )}
-            {isMobile ? (
-              <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
-                {deployedApp ? (
-                  <>
-                    <div className="relative flex-1 min-h-0 overflow-hidden">
-                      <div
-                        className={cn(
-                          "flex h-full w-[200%] will-change-transform motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-out",
-                          showMobilePreview ? "-translate-x-1/2" : "translate-x-0"
-                        )}
-                      >
-                        <div className="flex w-1/2 shrink-0 flex-col min-h-0">
-                          {chatPanelContent}
-                        </div>
-                        <div className="flex w-1/2 shrink-0 flex-col min-h-0 bg-background">
-                          {previewPanelBody}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="shrink-0 border-t border-border bg-background">
-                      <MobileViewSwitcher value={mobileView} onChange={setMobileView} />
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex flex-1 min-h-0 flex-col">
-                    {chatPanelContent}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <ResizablePanelGroup
-                direction="horizontal"
-                className="flex-1 min-h-0"
-              >
-                <ResizablePanel
-                  defaultSize={deployedApp ? "50%" : "100%"}
-                  minSize="30%"
-                  className="flex flex-col min-h-0 min-w-0"
-                >
-                  {chatPanelContent}
-                </ResizablePanel>
-
-                {deployedApp && (
-                  <>
-                    <ResizableHandle withHandle />
-                    <ResizablePanel
-                      defaultSize="50%"
-                      minSize="25%"
-                      maxSize="70%"
-                      className="flex flex-col min-h-0 min-w-0 bg-background"
-                    >
-                      {previewPanelBody}
-                    </ResizablePanel>
-                  </>
-                )}
-              </ResizablePanelGroup>
-            )}
-          </div>
-        ) : (
-          <>
-            <PageHeader breadcrumbs={[{ label: 'Home' }]} />
-            {/* Welcome Screen */}
+      <ChatPreviewProvider value={{ openPreviewTarget, clearPreviewTarget }}>
+        <>
+          {shouldShowChat ? (
             <div
-              className="flex-1 flex flex-col items-center px-4 py-8 relative overflow-y-auto"
+              className="flex-1 min-h-0 relative flex flex-col"
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
@@ -2604,25 +2727,102 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   </div>
                 </div>
               )}
-              <WelcomeScreen
-                userId={resolvedWelcomeData.userId}
-                userName={resolvedWelcomeData.userName}
-                allApps={resolvedWelcomeData.allApps}
-                connections={resolvedWelcomeData.connections}
-                renderedAt={resolvedWelcomeData.renderedAt}
-                inputValue={welcomeInput}
-                onPromptChange={setWelcomeInput}
-                onSubmit={startNewChat}
-                onStartChatForApp={handleStartChatForApp}
-                attachments={attachments}
-                onFilesSelected={handleFilesSelected}
-                onAttachmentRemove={handleAttachmentRemove}
-                isCreatingThread={isCreatingThread || createThreadFetcher.state !== 'idle'}
-              />
+              {isMobile ? (
+                <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+                  {previewTarget ? (
+                    <>
+                      <div className="relative flex-1 min-h-0 overflow-hidden">
+                        <div
+                          className={cn(
+                            "flex h-full w-[200%] will-change-transform motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-out",
+                            showMobilePreview ? "-translate-x-1/2" : "translate-x-0"
+                          )}
+                        >
+                          <div className="flex w-1/2 shrink-0 flex-col min-h-0">
+                            {chatPanelContent}
+                          </div>
+                          <div className="flex w-1/2 shrink-0 flex-col min-h-0 bg-background">
+                            {previewPanelBody}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="shrink-0 border-t border-border bg-background">
+                        <MobileViewSwitcher value={mobileView} onChange={setMobileView} />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-1 min-h-0 flex-col">
+                      {chatPanelContent}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <ResizablePanelGroup
+                  direction="horizontal"
+                  className="flex-1 min-h-0"
+                >
+                  <ResizablePanel
+                    defaultSize={previewTarget ? "50%" : "100%"}
+                    minSize="30%"
+                    className="flex flex-col min-h-0 min-w-0"
+                  >
+                    {chatPanelContent}
+                  </ResizablePanel>
+
+                  {previewTarget && (
+                    <>
+                      <ResizableHandle withHandle />
+                      <ResizablePanel
+                        defaultSize="50%"
+                        minSize="25%"
+                        maxSize="70%"
+                        className="flex flex-col min-h-0 min-w-0 bg-background"
+                      >
+                        {previewPanelBody}
+                      </ResizablePanel>
+                    </>
+                  )}
+                </ResizablePanelGroup>
+              )}
             </div>
-          </>
-        )}
-      </>
+          ) : (
+            <>
+              <PageHeader breadcrumbs={[{ label: 'Home' }]} />
+              {/* Welcome Screen */}
+              <div
+                className="flex-1 flex flex-col items-center px-4 py-8 relative overflow-y-auto"
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
+                {/* Drag overlay */}
+                {isDragOver && (
+                  <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
+                    <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
+                      <span className="text-lg font-medium text-primary">Drop files here to upload</span>
+                    </div>
+                  </div>
+                )}
+                <WelcomeScreen
+                  userId={resolvedWelcomeData.userId}
+                  userName={resolvedWelcomeData.userName}
+                  allApps={resolvedWelcomeData.allApps}
+                  connections={resolvedWelcomeData.connections}
+                  renderedAt={resolvedWelcomeData.renderedAt}
+                  inputValue={welcomeInput}
+                  onPromptChange={setWelcomeInput}
+                  onSubmit={startNewChat}
+                  onStartChatForApp={handleStartChatForApp}
+                  attachments={attachments}
+                  onFilesSelected={handleFilesSelected}
+                  onAttachmentRemove={handleAttachmentRemove}
+                  isCreatingThread={isCreatingThread || createThreadFetcher.state !== 'idle'}
+                />
+              </div>
+            </>
+          )}
+        </>
+      </ChatPreviewProvider>
 
       {/* Connection Setup Prompt Modal */}
       {connectionSetupPrompt && (

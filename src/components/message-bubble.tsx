@@ -492,6 +492,13 @@ export function MessageBubble({
                   key={ref.mountPath}
                   filename={ref.originalName}
                   previewUrl={`/api/workspaces/${workspaceId}/uploads/${encodePathSegments(ref.filename)}`}
+                  previewTarget={{
+                    kind: 'file',
+                    source: 'upload',
+                    workspaceId,
+                    path: ref.filename,
+                    filename: ref.originalName,
+                  }}
                 />
               ))}
             </div>
@@ -545,6 +552,13 @@ export function MessageBubble({
                 key={ref.mountPath}
                 filename={ref.originalName}
                 previewUrl={`/api/workspaces/${workspaceId}/uploads/${encodePathSegments(ref.filename)}`}
+                previewTarget={{
+                  kind: 'file',
+                  source: 'upload',
+                  workspaceId,
+                  path: ref.filename,
+                  filename: ref.originalName,
+                }}
               />
             ))}
           </div>

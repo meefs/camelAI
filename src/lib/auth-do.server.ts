@@ -21,11 +21,12 @@ import type {
   PaginatedResult,
   PaginationParams,
   Message,
+  PreviewTarget,
 } from '@/types';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import { type AuthEnv, getAuthEnv } from './auth-helpers';
 import * as authDO from './auth-do';
-import { getMessages as getThreadMessages, getThreadPreview } from './chat-do.server';
+import { getMessages as getThreadMessages, getThreadPreviewTarget } from './chat-do.server';
 import {
   getWorkspaceContainer,
   type WorkspaceContainerEnv,
@@ -677,7 +678,7 @@ export async function adminGetThreadWithMessages(
   workspace_id: string;
   org_name: string;
   workspace_name: string;
-  preview_workers: string[];
+  preview_target: PreviewTarget | null;
 } | null> {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
@@ -687,11 +688,11 @@ export async function adminGetThreadWithMessages(
     try {
       const thread = await authEnv.ORG.get(authEnv.ORG.idFromName(orgId)).getThread(threadId);
       if (thread) {
-        const [orgInfo, workspaces, messages, preview_workers] = await Promise.all([
+        const [orgInfo, workspaces, messages, preview_target] = await Promise.all([
           authDO.getOrg(authEnv, orgId),
           authDO.listOrgWorkspaces(authEnv, orgId),
           getThreadMessages(context, threadId, thread.workspace_id),
-          getThreadPreview(context, threadId),
+          getThreadPreviewTarget(context, threadId),
         ]);
 
         const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
@@ -709,7 +710,7 @@ export async function adminGetThreadWithMessages(
           workspace_id: thread.workspace_id,
           org_name: orgInfo?.name || 'Unknown',
           workspace_name: workspaceMap.get(thread.workspace_id) || 'Unknown',
-          preview_workers,
+          preview_target,
         };
       }
     } catch {

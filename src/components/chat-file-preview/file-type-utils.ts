@@ -12,6 +12,7 @@ import {
 export type FileCategory =
   | 'image'
   | 'pdf'
+  | 'notebook'
   | 'spreadsheet'
   | 'code'
   | 'text'
@@ -19,10 +20,11 @@ export type FileCategory =
   | 'video'
   | 'other';
 
-export type PreviewType = 'image' | 'pdf' | 'text' | 'audio' | 'video' | 'other';
+export type PreviewType = 'image' | 'pdf' | 'notebook' | 'text' | 'audio' | 'video' | 'other';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
 const PDF_EXTENSIONS = new Set(['pdf']);
+const NOTEBOOK_EXTENSIONS = new Set(['ipynb']);
 const SPREADSHEET_EXTENSIONS = new Set(['csv', 'xlsx', 'xls']);
 const CODE_EXTENSIONS = new Set([
   'txt',
@@ -68,6 +70,7 @@ export function getFileCategory(filename: string, contentType?: string): FileCat
     if (contentType.startsWith('audio/')) return 'audio';
     if (contentType.startsWith('video/')) return 'video';
     if (contentType === 'application/pdf') return 'pdf';
+    if (contentType.includes('ipynb')) return 'notebook';
     if (contentType.startsWith('text/')) return 'text';
     if (contentType.includes('json') || contentType.includes('xml')) return 'code';
     if (contentType.includes('csv') || contentType.includes('spreadsheet')) return 'spreadsheet';
@@ -76,6 +79,7 @@ export function getFileCategory(filename: string, contentType?: string): FileCat
   const ext = getFileExtension(filename);
   if (IMAGE_EXTENSIONS.has(ext)) return 'image';
   if (PDF_EXTENSIONS.has(ext)) return 'pdf';
+  if (NOTEBOOK_EXTENSIONS.has(ext)) return 'notebook';
   if (SPREADSHEET_EXTENSIONS.has(ext)) return 'spreadsheet';
   if (CODE_EXTENSIONS.has(ext)) return 'code';
   if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
@@ -88,6 +92,7 @@ export function getPreviewType(filename: string, contentType?: string): PreviewT
   const category = getFileCategory(filename, contentType);
   if (category === 'image') return 'image';
   if (category === 'pdf') return 'pdf';
+  if (category === 'notebook') return 'notebook';
   if (category === 'audio') return 'audio';
   if (category === 'video') return 'video';
   if (category === 'code' || category === 'text' || category === 'spreadsheet') return 'text';
@@ -100,6 +105,8 @@ export function getFileIcon(category: FileCategory): LucideIcon {
       return FileImage;
     case 'pdf':
       return FileText;
+    case 'notebook':
+      return FileCode;
     case 'spreadsheet':
       return FileSpreadsheet;
     case 'code':

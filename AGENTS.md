@@ -244,7 +244,7 @@ The floating todo list state persists across reconnections:
 ### MCP Prompt Replay
 MCP-driven thread prompts (for example connection setup and bug report capture) are persisted in `ChatThreadDO` and replayed to newly connected chat websocket clients (`/ws/{workspace}`):
 1. `ChatThreadDO` stores pending prompt payloads in DO storage when MCP triggers a prompt
-2. On chat WebSocket init, `ChatThreadDO` sends current preview state and then replays any unexpired pending prompts
+2. On chat WebSocket init, `ChatThreadDO` sends current preview target state and then replays any unexpired pending prompts
 3. Prompts are removed when the client responds or when they expire (`30m` for connection setup, `5m` for bug report capture)
 
 ### Integration Token Refresh
@@ -260,7 +260,7 @@ Runtime startup is now on-demand from chat/API paths; dashboard route loaders no
 ### Threads
 - Each thread belongs to a workspace
 - Threads stored in `OrgDO` (one per organization)
-- `ChatThreadDO` handles real-time preview state
+- `ChatThreadDO` handles real-time preview target state (single active target: deployed app or file)
 - History queries threads across accessible workspaces
 
 ### App Previews
@@ -317,6 +317,7 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 |-------|--------|---------|
 | `/api/workspaces/:id/fs/list` | GET | List directory contents |
 | `/api/workspaces/:id/fs/read` | GET | Read file contents |
+| `/api/workspaces/:id/fs/content/*` | GET | Stream raw workspace file contents for inline preview/download |
 | `/api/workspaces/:id/fs/write` | POST | Write text file |
 | `/api/workspaces/:id/fs/upload` | POST | Upload binary file (FormData) |
 | `/api/workspaces/:id/fs/create` | POST | Create new file |
@@ -678,7 +679,7 @@ chiridion-app/
 
 ### ChatThreadDO (per thread)
 - WebSocket connection state
-- Preview worker list (out-of-band state)
+- Active preview target state (out-of-band, one target at a time: app or file)
 
 ### Workspace Runtime (per workspace)
 - Sprites lifecycle + provisioning

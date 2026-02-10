@@ -131,6 +131,7 @@ export default [
   // Workspace filesystem API routes
   route('api/workspaces/:id/fs/list', 'routes/api/workspaces.$id.fs.list.ts'),
   route('api/workspaces/:id/fs/read', 'routes/api/workspaces.$id.fs.read.ts'),
+  route('api/workspaces/:id/fs/content/*', 'routes/api/workspaces.$id.fs.content.$.ts'),
   route('api/workspaces/:id/fs/write', 'routes/api/workspaces.$id.fs.write.ts'),
   route('api/workspaces/:id/fs/mkdir', 'routes/api/workspaces.$id.fs.mkdir.ts'),
   route('api/workspaces/:id/fs/delete', 'routes/api/workspaces.$id.fs.delete.ts'),

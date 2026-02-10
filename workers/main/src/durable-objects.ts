@@ -8,11 +8,20 @@ import {
 } from './workspace-container';
 import { SUPPORTED_SLASH_COMMANDS } from '../../../src/lib/slash-commands';
 
-// Preview state for a thread
-export interface PreviewState {
-  workers: string[]; // Worker script names to preview
-  isPublic?: boolean;
-}
+export type PreviewTarget =
+  | {
+      kind: 'app';
+      scriptName: string;
+      isPublic: boolean;
+    }
+  | {
+      kind: 'file';
+      source: 'workspace' | 'upload' | 'output';
+      workspaceId: string;
+      path: string;
+      filename?: string;
+      contentType?: string;
+    };
 
 // Dynamic field for custom integrations (matches src/lib/integration-registry.ts)
 export interface DynamicField {
@@ -169,6 +178,11 @@ interface ChatClientQuestionResponse {
   answers?: Record<string, unknown>;
 }
 
+interface ChatClientSetPreviewTarget {
+  type: 'set_preview_target';
+  target?: PreviewTarget | null;
+}
+
 const CHAT_SOCKET_TAG = 'chat';
 
 const CHAT_CONTEXT_KEY = 'chatContext';
@@ -198,9 +212,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private static readonly CONNECTION_SETUP_TIMEOUT_MS = 30 * 60 * 1000;
   private static readonly BUG_REPORT_TIMEOUT_MS = 5 * 60 * 1000;
 
-  private previewWorkers: string[] = [];
+  private previewTarget: PreviewTarget | null = null;
   private previewVersion: number = 0;
-  private previewIsPublic: boolean = false;
 
   // Pending connection setup requests (requestId -> MCP DO callback info)
   // This is also persisted to storage to survive hibernation
@@ -238,37 +251,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // Restore state from storage
     ctx.blockConcurrencyWhile(async () => {
-      const stored = ctx.storage.kv.get<string[]>('previewWorkers');
-      if (stored) {
-        this.previewWorkers = stored;
+      const storedTarget = ctx.storage.kv.get<PreviewTarget>('previewTarget');
+      if (storedTarget) {
+        this.previewTarget = storedTarget;
       }
       const version = ctx.storage.kv.get<number>('previewVersion');
       if (typeof version === 'number') {
         this.previewVersion = version;
-      }
-      const storedIsPublic = ctx.storage.kv.get<boolean>('previewIsPublic');
-      if (typeof storedIsPublic === 'boolean') {
-        this.previewIsPublic = storedIsPublic;
-      } else if (this.previewWorkers[0]) {
-        try {
-          const scriptStored = await this.env.APP_KV.get(`script_org:${this.previewWorkers[0]}`);
-          if (scriptStored) {
-            try {
-              const parsed = JSON.parse(scriptStored) as { is_public?: boolean };
-              if (typeof parsed.is_public === 'boolean') {
-                this.previewIsPublic = parsed.is_public;
-              } else {
-                this.previewIsPublic = true;
-              }
-              ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
-            } catch {
-              this.previewIsPublic = true;
-              ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
-            }
-          }
-        } catch (err) {
-          console.error('[ChatThreadDO] Failed to backfill preview visibility', err);
-        }
       }
 
       // Restore pending connection setups from storage (sync KV)
@@ -343,13 +332,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // HTTP API for setting preview state
     if (url.pathname === '/preview' && request.method === 'POST') {
-      const body = await request.json() as { workers?: string[]; isPublic?: boolean };
-      if (body.workers) {
-        await this.setPreviewWorkers(body.workers, body.isPublic);
-      }
+      const body = await request.json() as { target?: PreviewTarget | null };
+      await this.setPreviewTarget(body.target ?? null);
       return new Response(JSON.stringify({
-        workers: this.previewWorkers,
-        isPublic: this.previewIsPublic,
+        target: this.previewTarget,
+        version: this.previewVersion,
       }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -357,8 +344,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     if (url.pathname === '/preview' && request.method === 'GET') {
       return new Response(JSON.stringify({
-        workers: this.previewWorkers,
-        isPublic: this.previewIsPublic,
+        target: this.previewTarget,
+        version: this.previewVersion,
       }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -485,6 +472,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       await this.handleQuestionResponse(data as unknown as ChatClientQuestionResponse);
       return;
     }
+
+    if (data.type === 'set_preview_target') {
+      await this.handleSetPreviewTarget(data as unknown as ChatClientSetPreviewTarget);
+      return;
+    }
   }
 
   webSocketClose(): void {
@@ -494,72 +486,36 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  // Get preview workers
-  getPreviewWorkers(): string[] {
-    return this.previewWorkers;
+  getPreviewTarget(): PreviewTarget | null {
+    return this.previewTarget;
   }
 
-  // Set preview workers and broadcast to connected chat clients
-  async setPreviewWorkers(workers: string[], isPublic?: boolean): Promise<void> {
-    this.previewWorkers = workers;
-    if (workers.length === 0) {
-      this.previewIsPublic = false;
-    } else if (typeof isPublic === 'boolean') {
-      this.previewIsPublic = isPublic;
-    }
+  async setPreviewTarget(target: PreviewTarget | null): Promise<void> {
+    this.previewTarget = this.normalizePreviewTarget(target);
     this.previewVersion++;
-    this.ctx.storage.kv.put('previewWorkers', workers);
+    this.ctx.storage.kv.put('previewTarget', this.previewTarget);
     this.ctx.storage.kv.put('previewVersion', this.previewVersion);
-    this.ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
-    this.broadcastRealtime({
-      type: 'preview_state',
-      workers: this.previewWorkers,
-      version: this.previewVersion,
-      isPublic: this.previewIsPublic,
-    });
+    this.broadcastPreviewState();
   }
 
-  // Update preview visibility without bumping version (avoid iframe reloads)
-  async setPreviewVisibility(isPublic: boolean): Promise<void> {
-    this.previewIsPublic = isPublic;
-    this.ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
-    this.broadcastRealtime({
-      type: 'preview_state',
-      workers: this.previewWorkers,
-      version: this.previewVersion,
-      isPublic: this.previewIsPublic,
-    });
+  async clearPreviewTarget(): Promise<void> {
+    await this.setPreviewTarget(null);
   }
 
-  // Add a worker to preview list
-  async addPreviewWorker(worker: string): Promise<void> {
-    if (!this.previewWorkers.includes(worker)) {
-      this.previewWorkers.push(worker);
-      this.ctx.storage.kv.put('previewWorkers', this.previewWorkers);
-      this.broadcastRealtime({
-        type: 'preview_state',
-        workers: this.previewWorkers,
-        isPublic: this.previewIsPublic,
-      });
+  async setPreviewAppVisibility(scriptName: string, isPublic: boolean): Promise<void> {
+    if (
+      this.previewTarget?.kind !== 'app' ||
+      this.previewTarget.scriptName !== scriptName
+    ) {
+      return;
     }
-  }
 
-  // Remove a worker from preview list
-  async removePreviewWorker(worker: string): Promise<void> {
-    const index = this.previewWorkers.indexOf(worker);
-    if (index !== -1) {
-      this.previewWorkers.splice(index, 1);
-      if (this.previewWorkers.length === 0) {
-        this.previewIsPublic = false;
-        this.ctx.storage.kv.put('previewIsPublic', this.previewIsPublic);
-      }
-      this.ctx.storage.kv.put('previewWorkers', this.previewWorkers);
-      this.broadcastRealtime({
-        type: 'preview_state',
-        workers: this.previewWorkers,
-        isPublic: this.previewIsPublic,
-      });
-    }
+    this.previewTarget = {
+      ...this.previewTarget,
+      isPublic,
+    };
+    this.ctx.storage.kv.put('previewTarget', this.previewTarget);
+    this.broadcastPreviewState();
   }
 
   // Set thread title and broadcast to connected chat clients
@@ -663,9 +619,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.sendDirect(ws, { type: 'ready' });
     this.sendDirect(ws, {
       type: 'preview_state',
-      workers: this.previewWorkers,
+      target: this.previewTarget,
       version: this.previewVersion,
-      isPublic: this.previewIsPublic,
     });
     this.sendPendingPromptsToWebSocket(ws);
 
@@ -734,6 +689,72 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private static readonly SLASH_COMMANDS = new Set<string>(SUPPORTED_SLASH_COMMANDS);
+  private async handleSetPreviewTarget(data: ChatClientSetPreviewTarget): Promise<void> {
+    if (!this.chatContext) {
+      this.emitChatError('No session - send init first');
+      return;
+    }
+
+    const normalized = this.normalizePreviewTarget(data.target ?? null);
+
+    if (normalized?.kind === 'file') {
+      if (normalized.workspaceId !== this.chatContext.workspaceId) {
+        this.emitChatError('Invalid preview target workspace');
+        return;
+      }
+    }
+
+    await this.setPreviewTarget(normalized);
+  }
+
+  private normalizePreviewTarget(target: PreviewTarget | null | undefined): PreviewTarget | null {
+    if (!target || typeof target !== 'object') {
+      return null;
+    }
+
+    if (target.kind === 'app') {
+      const scriptName = target.scriptName.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 63);
+      if (!scriptName) return null;
+      return {
+        kind: 'app',
+        scriptName,
+        isPublic: Boolean(target.isPublic),
+      };
+    }
+
+    if (target.kind === 'file') {
+      const source = target.source;
+      if (source !== 'workspace' && source !== 'upload' && source !== 'output') {
+        return null;
+      }
+
+      const workspaceId = typeof target.workspaceId === 'string' ? target.workspaceId.trim() : '';
+      const path = typeof target.path === 'string' ? target.path.trim() : '';
+
+      if (!workspaceId || !path || path.includes('..')) {
+        return null;
+      }
+
+      return {
+        kind: 'file',
+        source,
+        workspaceId,
+        path,
+        filename: typeof target.filename === 'string' ? target.filename.trim() : undefined,
+        contentType: typeof target.contentType === 'string' ? target.contentType : undefined,
+      };
+    }
+
+    return null;
+  }
+
+  private broadcastPreviewState(): void {
+    this.broadcastRealtime({
+      type: 'preview_state',
+      target: this.previewTarget,
+      version: this.previewVersion,
+    });
+  }
 
   private formatAttributedUserMessage(content: string): string {
     if (!content) return '';

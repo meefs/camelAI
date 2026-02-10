@@ -5,6 +5,7 @@ import type { Route } from './+types/_app.chat._index';
 import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv, integrationRecordToIntegration } from '@/lib/auth-helpers';
+import { getWorkerScript } from '@/lib/auth-do';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
@@ -95,6 +96,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export async function action({ request, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
 
   if (!authContext.currentWorkspace?.id) {
     return Response.json({ error: 'No workspace selected' }, { status: 400 });
@@ -119,7 +122,13 @@ export async function action({ request, context }: Route.ActionArgs) {
       if (previewAppsRaw) {
         const previewApps = previewAppsRaw.split(',').filter(Boolean);
         if (previewApps.length > 0) {
-          await chatDO.setThreadPreview(context, thread.id, previewApps);
+          const scriptName = previewApps[0];
+          const script = await getWorkerScript(authEnv, authContext.currentOrg.id, scriptName);
+          await chatDO.setThreadPreviewTarget(context, thread.id, {
+            kind: 'app',
+            scriptName,
+            isPublic: script?.is_public ?? false,
+          });
         }
       }
 

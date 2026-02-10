@@ -1303,7 +1303,13 @@ export async function proxyCloudflareApi(
               await threadStub.fetch(new Request('http://internal/preview', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workers: [originalScriptName], isPublic }),
+                body: JSON.stringify({
+                  target: {
+                    kind: 'app',
+                    scriptName: originalScriptName,
+                    isPublic,
+                  },
+                }),
               }));
               console.log('[cf-api-proxy] auto-set preview', {
                 threadId,

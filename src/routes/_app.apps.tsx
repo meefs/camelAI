@@ -64,7 +64,7 @@ export async function action({ request, context }: Route.ActionArgs) {
         try {
           const thread = await chatDO.getThread(context, threadId, authContext.currentWorkspace.id);
           if (thread) {
-            await chatDO.setThreadPreviewVisibility(context, threadId, isPublic);
+            await chatDO.setThreadPreviewAppVisibility(context, threadId, scriptName, isPublic);
           }
         } catch (err) {
           console.error('Failed to update preview visibility:', err);

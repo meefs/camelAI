@@ -2,6 +2,7 @@ import type { AppLoadContext } from 'react-router';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import type { Thread, Message, PaginatedResult, PaginationParams } from '@/types';
 import { parseClaudeJsonlMessages } from './chat-jsonl-parser';
+import type { PreviewTarget } from '@/types';
 import { OrgDO, type OrgThread } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
 import { getWorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
@@ -262,33 +263,33 @@ export async function getMessages(
   }
 }
 
-export async function setThreadPreview(
+export async function setThreadPreviewTarget(
   context: AppLoadContext,
   threadId: string,
-  workers: string[],
-  isPublic?: boolean
-): Promise<string[]> {
+  target: PreviewTarget | null
+): Promise<PreviewTarget | null> {
   const env = getEnv(context);
   const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  await stub.setPreviewWorkers(workers, isPublic);
-  return stub.getPreviewWorkers();
+  await stub.setPreviewTarget(target);
+  return stub.getPreviewTarget();
 }
 
-export async function setThreadPreviewVisibility(
+export async function setThreadPreviewAppVisibility(
   context: AppLoadContext,
   threadId: string,
+  scriptName: string,
   isPublic: boolean
 ): Promise<void> {
   const env = getEnv(context);
   const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  await stub.setPreviewVisibility(isPublic);
+  await stub.setPreviewAppVisibility(scriptName, isPublic);
 }
 
-export async function getThreadPreview(
+export async function getThreadPreviewTarget(
   context: AppLoadContext,
   threadId: string
-): Promise<string[]> {
+): Promise<PreviewTarget | null> {
   const env = getEnv(context);
   const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  return stub.getPreviewWorkers();
+  return stub.getPreviewTarget();
 }
