@@ -183,7 +183,7 @@ export const BOOTSTRAP_VERSION = [
   RUNNER_DEP_VERSION,             // SDK pinned version
   SPRITE_BOOTSTRAP_VERSION,       // combined asset hashes from manifest
 ].join(':');
-const SPRITES_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const SPRITES_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504, 524]);
 const SPRITES_MAX_RETRY_ATTEMPTS = 6;
 const SPRITES_MAX_GET_AFTER_CREATE_ATTEMPTS = 12;
 const SPRITES_BASE_RETRY_DELAY_MS = 250;
