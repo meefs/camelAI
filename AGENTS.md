@@ -689,6 +689,7 @@ chiridion-app/
 ### ChiridionMcp (MCP Agent)
 - MCP server implementation
 - Deployment management tools
+- Thread-scoped preview controls (for example `set_file_preview` to set the active file preview target from a path)
 - Context-aware operations
 
 ### Storage APIs

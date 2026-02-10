@@ -11,7 +11,7 @@ import { z } from 'zod';
 import type { ApiTokenData } from './api-tokens';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
-import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse } from './durable-objects';
+import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse, PreviewTarget } from './durable-objects';
 import type { WorkspaceContainerEnv } from './workspace-container';
 import { getWorkspaceContainer } from './workspace-container';
 import type { Integration } from '../../../src/types';
@@ -47,6 +47,12 @@ const AUTH_HEADER_USER_ID = 'x-chiridion-user-id';
 const AUTH_HEADER_WORKSPACE_ID = 'x-chiridion-workspace-id';
 const AUTH_HEADER_THREAD_ID = 'x-chiridion-thread-id';
 
+const WORKSPACE_ROOT_PREFIXES = ['/home/sprite', '/home/claude', '/workspace', '/root'];
+const TEMP_PREVIEW_PREFIXES = [
+  { prefix: '/mnt/user-uploads/', source: 'upload' as const },
+  { prefix: '/mnt/user-outputs/', source: 'output' as const },
+];
+
 // Pending connection setup request with resolver
 interface PendingConnectionSetup {
   resolve: (response: ConnectionSetupResponse) => void;
@@ -59,6 +65,12 @@ interface PendingBugReportCapture {
   resolve: (response: BugReportCaptureResponse) => void;
   reject: (error: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
+}
+
+interface ParsedFilePreviewPath {
+  source: 'workspace' | 'upload' | 'output';
+  path: string;
+  filename: string;
 }
 
 /**
@@ -269,6 +281,79 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     return `https://${scriptName}.${this.getVanityDomain()}`;
   }
 
+  private sanitizePathInput(path: string): string {
+    return path.trim().replace(/\\/g, '/');
+  }
+
+  private normalizePathSegments(path: string, leadingSlash: boolean): string | null {
+    const segments = path
+      .split('/')
+      .filter((segment) => segment.length > 0 && segment !== '.');
+
+    if (segments.some((segment) => segment === '..')) {
+      return null;
+    }
+
+    const normalized = segments.join('/');
+    if (leadingSlash) {
+      return normalized ? `/${normalized}` : '/';
+    }
+    return normalized;
+  }
+
+  private basename(path: string): string {
+    return path.split('/').filter(Boolean).pop() || path;
+  }
+
+  private encodePathSegments(path: string): string {
+    return path
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+  }
+
+  private parseFilePreviewPath(rawPath: string): ParsedFilePreviewPath | null {
+    const trimmed = this.sanitizePathInput(rawPath);
+    if (!trimmed) return null;
+
+    const absoluteInput = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+
+    for (const { prefix, source } of TEMP_PREVIEW_PREFIXES) {
+      if (!absoluteInput.startsWith(prefix)) continue;
+      const relative = absoluteInput.slice(prefix.length);
+      const normalized = this.normalizePathSegments(relative, false);
+      if (!normalized) return null;
+      return {
+        source,
+        path: normalized,
+        filename: this.basename(normalized),
+      };
+    }
+
+    let workspacePath = absoluteInput;
+    for (const prefix of WORKSPACE_ROOT_PREFIXES) {
+      if (workspacePath === prefix) {
+        workspacePath = '/';
+        break;
+      }
+      if (workspacePath.startsWith(`${prefix}/`)) {
+        workspacePath = workspacePath.slice(prefix.length);
+        if (!workspacePath.startsWith('/')) {
+          workspacePath = `/${workspacePath}`;
+        }
+        break;
+      }
+    }
+
+    const normalizedWorkspacePath = this.normalizePathSegments(workspacePath, true);
+    if (!normalizedWorkspacePath || normalizedWorkspacePath === '/') return null;
+    return {
+      source: 'workspace',
+      path: normalizedWorkspacePath,
+      filename: this.basename(normalizedWorkspacePath),
+    };
+  }
+
   async init() {
     // ==========================================
     // Deployment Management Tools
@@ -341,6 +426,70 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             updated_at: new Date(result.updated_at).toISOString(),
           },
           message: `App '${script_name}' is now ${is_public ? 'public' : 'private'}`,
+        });
+      }
+    );
+
+    // Set preview panel to a file
+    this.server.tool(
+      'set_file_preview',
+      'Set the chat preview panel to a file path. Supports workspace paths and temp output paths like /mnt/user-uploads/... or /mnt/user-outputs/....',
+      {
+        path: z
+          .string()
+          .describe('Path to preview. Examples: "/home/sprite/README.md", "src/app.tsx", "/mnt/user-outputs/plot.png", "/mnt/user-uploads/notebook.ipynb"'),
+        content_type: z
+          .string()
+          .optional()
+          .describe('Optional MIME type hint (for example "application/x-ipynb+json" or "image/png").'),
+      },
+      async ({ path, content_type }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+
+        // Thread ID comes from the signed token (can't be spoofed)
+        const threadId = this.threadId;
+        if (!threadId) {
+          return this.textResponse({
+            success: false,
+            error: 'No thread context available. This tool requires a per-thread MCP token.',
+          });
+        }
+
+        const parsedPath = this.parseFilePreviewPath(path);
+        if (!parsedPath) {
+          return this.textResponse({
+            success: false,
+            error: 'Invalid file path. Use a workspace path, /mnt/user-uploads/..., or /mnt/user-outputs/... without ".." segments.',
+          });
+        }
+
+        const target: PreviewTarget = {
+          kind: 'file',
+          source: parsedPath.source,
+          workspaceId,
+          path: parsedPath.path,
+          filename: parsedPath.filename,
+          contentType: typeof content_type === 'string' && content_type.trim() ? content_type.trim() : undefined,
+        };
+
+        const chatThreadStub = this.getChatThreadStub(threadId);
+        await chatThreadStub.setPreviewTarget(target);
+
+        const normalizedPath = target.path.replace(/^\/+/, '');
+        const encodedPath = this.encodePathSegments(normalizedPath);
+        const route = target.source === 'workspace'
+          ? `fs/content/${encodedPath}`
+          : `${target.source === 'upload' ? 'uploads' : 'outputs'}/${encodedPath}`;
+        const previewUrl = `/api/workspaces/${workspaceId}/${route}`;
+
+        return this.textResponse({
+          success: true,
+          target,
+          preview_url: previewUrl,
+          message: `Preview set to ${target.path}`,
         });
       }
     );
