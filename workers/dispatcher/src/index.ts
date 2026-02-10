@@ -227,15 +227,18 @@ function getMainAppUrl(hostname: string): string {
   // New format: worker.org-slug.dev-miguel.chiridion.app -> dev-miguel.chiridion.ai (main app)
   // Legacy: worker.chiridion.app -> chiridion.ai (main app)
   // Legacy: worker.dev-miguel.chiridion.app -> dev-miguel.chiridion.ai (main app)
+  // Local: worker.local.chiridion.app -> local.chiridion.ai (main app)
   const parts = hostname.split('.');
+
+  const isKnownEnvPrefix = (s: string | undefined): boolean =>
+    s !== undefined && (s.startsWith('dev-') || s === 'staging' || s === 'prod' || s === 'local');
 
   // For .chiridion.app domains
   if (hostname.endsWith('.chiridion.app')) {
-    // Find the environment prefix if any (e.g., dev-miguel, staging)
+    // Find the environment prefix if any (e.g., dev-miguel, staging, local)
     // It's the part before .chiridion.app that looks like an env prefix
-    const envPrefixes = ['dev-miguel', 'dev-illiana', 'staging', 'prod'];
     for (let i = parts.length - 3; i >= 1; i--) {
-      if (envPrefixes.some(prefix => parts[i] === prefix || parts[i]?.startsWith('dev-'))) {
+      if (isKnownEnvPrefix(parts[i])) {
         const envPrefix = parts[i];
         return `https://${envPrefix}.chiridion.ai`;
       }
@@ -246,9 +249,8 @@ function getMainAppUrl(hostname: string): string {
   // For .chiridion.ai domains (same-site)
   if (hostname.endsWith('.chiridion.ai')) {
     // Remove worker and org-slug subdomains
-    const envPrefixes = ['dev-miguel', 'dev-illiana', 'staging', 'prod'];
     for (let i = parts.length - 3; i >= 1; i--) {
-      if (envPrefixes.some(prefix => parts[i] === prefix || parts[i]?.startsWith('dev-'))) {
+      if (isKnownEnvPrefix(parts[i])) {
         const envPrefix = parts[i];
         return `https://${envPrefix}.chiridion.ai`;
       }
