@@ -176,6 +176,10 @@ const SPRITE_CREATE_WORKER_BIN = '/usr/local/bin/create-worker';
 const RUNNER_DEP_PACKAGE = '@anthropic-ai/claude-agent-sdk';
 const RUNNER_DEP_VERSION = '0.2.37';
 
+// Bump this version when changing rclone mount args or configuration.
+// Services will be recreated when this version changes.
+const R2_MOUNT_SERVICE_VERSION = '1';
+
 // Composite version — auto-bumps when any bootstrap component changes.
 // Stored in workspace DO storage to skip all sprite filesystem checks on cold start.
 export const BOOTSTRAP_VERSION = [
@@ -1110,6 +1114,7 @@ export class WorkspaceContainer {
   /**
    * Create or update an R2 mount as a sprite service.
    * Uses sprite-env services for proper process supervision and auto-restart.
+   * Tracks service version to detect when config changes require recreation.
    */
   private async ensureR2MountServiceInstance(
     spriteName: string,
@@ -1119,25 +1124,37 @@ export class WorkspaceContainer {
     readOnly: boolean,
     rcloneConfigPath: string
   ): Promise<void> {
+    const versionMarkerPath = `${SPRITE_RUNNER_HOME_DIR}/.${serviceName}.version`;
+
+    // Check installed version to detect config changes
+    const installedVersion = await this.readSpriteTextFile(spriteName, versionMarkerPath);
+    const needsUpgrade = installedVersion !== R2_MOUNT_SERVICE_VERSION;
+
     // Check if service already exists and is running
     const listResult = await this.execHttpRawForSprite(spriteName, [
       'sprite-env', 'services', 'get', serviceName,
     ]);
 
     if (listResult.success && listResult.stdout.includes('"status":"running"')) {
-      // Service running - check if mount is actually healthy
-      const mountCheck = await this.execHttpRawForSprite(spriteName, [
-        'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
-      ]);
-      if (mountCheck.success && mountCheck.stdout.trim() === 'ok') {
-        console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} already running and healthy`);
+      if (needsUpgrade) {
+        // Version changed - delete and recreate with new config
+        console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} needs upgrade (${installedVersion} -> ${R2_MOUNT_SERVICE_VERSION})`);
+        await this.execHttpRawForSprite(spriteName, ['sprite-env', 'services', 'delete', serviceName]);
+      } else {
+        // Service running with correct version - check if mount is actually healthy
+        const mountCheck = await this.execHttpRawForSprite(spriteName, [
+          'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
+        ]);
+        if (mountCheck.success && mountCheck.stdout.trim() === 'ok') {
+          console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} already running and healthy (v${R2_MOUNT_SERVICE_VERSION})`);
+          return;
+        }
+        // Mount is stale - restart the service
+        console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} running but mount stale, restarting`);
+        await this.execHttpRawForSprite(spriteName, ['sprite-env', 'services', 'restart', serviceName]);
+        await delay(500);
         return;
       }
-      // Mount is stale - restart the service
-      console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} running but mount stale, restarting`);
-      await this.execHttpRawForSprite(spriteName, ['sprite-env', 'services', 'restart', serviceName]);
-      await delay(500);
-      return;
     } else if (listResult.success && listResult.stdout.includes('"name"')) {
       // Service exists but not running - delete and recreate
       console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} exists but not running, recreating`);
@@ -1192,8 +1209,25 @@ export class WorkspaceContainer {
     if (!verifyResult.success || verifyResult.stdout.trim() !== 'ok') {
       console.warn(`[Sprite] ensureR2MountServiceInstance: ${serviceName} created but mount not yet accessible`);
     } else {
-      console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} ready at ${mountPoint}`);
+      console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} ready at ${mountPoint} (v${R2_MOUNT_SERVICE_VERSION})`);
     }
+
+    // Write version marker for future upgrade detection
+    await this.fetchSpriteFs(
+      spriteName,
+      'write',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: R2_MOUNT_SERVICE_VERSION,
+      },
+      {
+        path: versionMarkerPath,
+        workingDir: this.getFsWorkingDir(),
+        mode: '0644',
+        mkdir: true,
+      }
+    );
   }
 
   /**
