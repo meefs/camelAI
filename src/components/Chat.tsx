@@ -921,8 +921,9 @@ export default function Chat({
               if (summary) {
                 hasCapturedCompactionSummaryRef.current = true;
                 completeActiveManualCompaction();
+                const existingPlaceholderId = pendingCompactionPlaceholderIdRef.current;
                 const compactMsg: Message = {
-                  id: `compact_${Date.now()}`,
+                  id: existingPlaceholderId || `compact_${Date.now()}`,
                   thread_id: id,
                   role: 'user',
                   content: summary,
@@ -930,7 +931,23 @@ export default function Chat({
                   isCompactSummary: true,
                 };
                 pendingCompactionPlaceholderIdRef.current = compactMsg.id;
-                setMessages(prev => [...prev, compactMsg]);
+                setMessages(prev => {
+                  if (existingPlaceholderId) {
+                    const placeholderIndex = prev.findIndex(m => m.id === existingPlaceholderId);
+                    if (placeholderIndex !== -1) {
+                      const next = [...prev];
+                      next[placeholderIndex] = compactMsg;
+                      return next;
+                    }
+                  }
+                  const existingSummaryIndex = prev.findIndex(m => m.id === compactMsg.id);
+                  if (existingSummaryIndex !== -1) {
+                    const next = [...prev];
+                    next[existingSummaryIndex] = compactMsg;
+                    return next;
+                  }
+                  return [...prev, compactMsg];
+                });
               }
               return;
             }
