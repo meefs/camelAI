@@ -1055,10 +1055,16 @@ export default function Chat({
             // Replace only the currently tracked provisional compact card
             // with the forwarded full summary.
             setMessages(prev => {
-              const withoutPlaceholder = placeholderId
-                ? prev.filter(m => m.id !== placeholderId)
-                : prev;
-              return [...withoutPlaceholder, compactMsg];
+              if (!placeholderId) {
+                return [...prev, compactMsg];
+              }
+              const placeholderIndex = prev.findIndex(m => m.id === placeholderId);
+              if (placeholderIndex === -1) {
+                return [...prev, compactMsg];
+              }
+              const next = [...prev];
+              next[placeholderIndex] = compactMsg;
+              return next;
             });
             return;
           }
