@@ -505,7 +505,8 @@ async function initSession() {
   }
 }
 
-const COMPACT_SUMMARY_RETRY_DELAYS_MS = [0, 150, 250, 400, 650, 1000];
+// Keep retries bounded, but long enough to tolerate occasional JSONL write lag.
+const COMPACT_SUMMARY_RETRY_DELAYS_MS = [0, 150, 300, 500, 800, 1200, 1800, 2600, 3600];
 const COMPACT_SUMMARY_TIMESTAMP_SKEW_MS = 15_000;
 const COMPACT_SUMMARY_FALLBACK_MAX_AGE_MS = 2 * 60_000;
 
@@ -568,6 +569,8 @@ async function forwardCompactSummary(boundaryEvent) {
       : fallbackMinTimestampMs
   );
 
+  const totalRetryDelayMs = COMPACT_SUMMARY_RETRY_DELAYS_MS.reduce((sum, delayMs) => sum + delayMs, 0);
+
   for (const delayMs of COMPACT_SUMMARY_RETRY_DELAYS_MS) {
     if (delayMs > 0) {
       await new Promise(resolve => setTimeout(resolve, delayMs));
@@ -593,7 +596,9 @@ async function forwardCompactSummary(boundaryEvent) {
 
     const summaryKey = getCompactSummaryKey(entry);
     if (summaryKey && summaryKey === session.lastForwardedCompactSummaryKey) {
-      return;
+      // Keep retrying. JSONL writes can lag compact_boundary, so an early read
+      // may still surface the previously forwarded summary.
+      continue;
     }
 
     session.lastForwardedCompactSummaryKey = summaryKey;
@@ -608,6 +613,11 @@ async function forwardCompactSummary(boundaryEvent) {
     });
     return;
   }
+
+  logError(
+    `compact summary not found after ${COMPACT_SUMMARY_RETRY_DELAYS_MS.length} attempts (~${totalRetryDelayMs}ms total delay)`,
+    new Error(`threadId=${session.threadId} boundaryTimestamp=${boundaryEvent?.timestamp ?? 'unknown'}`)
+  );
 }
 
 function startEventLoop() {
