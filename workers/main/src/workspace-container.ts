@@ -1128,22 +1128,9 @@ export class WorkspaceContainer {
     }
 
     const spriteName = this.requireSpriteName();
+    console.log(`[Sprite] ensureR2MountService: writing mount script for sprite=${spriteName}`);
 
-    // Check if mounts are already active (e.g. from a previous startForWorkspace call
-    // before the worker instance was recycled)
-    const mountCheck = await this.execHttpRawForSprite(
-      spriteName,
-      ['bash', '-c', 'mountpoint -q /mnt/user-uploads && mountpoint -q /mnt/user-outputs && echo ok']
-    );
-    if (mountCheck.success && mountCheck.stdout.trim() === 'ok') {
-      console.log(`[Sprite] ensureR2MountService: mounts already active for sprite=${spriteName}, skipping`);
-      this.r2MountServiceCreated = true;
-      return;
-    }
-
-    console.log(`[Sprite] ensureR2MountService: setting up R2 FUSE mounts for sprite=${spriteName}`);
-
-    // Write the credentials env file
+    // Always write the credentials env file and script so they stay current across deploys.
     const envFileContent = [
       `AWS_ACCESS_KEY_ID=${accessKeyId}`,
       `AWS_SECRET_ACCESS_KEY=${secretAccessKey}`,
@@ -1240,7 +1227,19 @@ export class WorkspaceContainer {
       }),
     ]);
 
+    // Check if mounts are already active — skip exec but still update script/env above
+    const mountCheck = await this.execHttpRawForSprite(
+      spriteName,
+      ['bash', '-c', 'mountpoint -q /mnt/user-uploads && mountpoint -q /mnt/user-outputs && echo ok']
+    );
+    if (mountCheck.success && mountCheck.stdout.trim() === 'ok') {
+      console.log(`[Sprite] ensureR2MountService: mounts already active for sprite=${spriteName}, skipping exec`);
+      this.r2MountServiceCreated = true;
+      return;
+    }
+
     // Run the mount script via exec (Services API is broken on sprites rc31)
+    console.log(`[Sprite] ensureR2MountService: running mount script for sprite=${spriteName}`);
     const result = await this.execHttpRawForSprite(
       spriteName,
       ['bash', `${SPRITE_RUNNER_HOME_DIR}/r2-mount.sh`]
