@@ -377,12 +377,6 @@ bun run build
 ```
 Runs `react-router build`, outputs to `build/client/` and `build/server/`.
 
-**Runner source sync**
-```bash
-bun run gen:embedded-runner
-```
-Regenerates `workers/main/src/embedded-claude-runner.ts` from `sandbox/claude-runner.mjs` (also run automatically by dev/build/typecheck/worker-test scripts).
-
 ### Environment Variables
 
 Create `.dev.vars`:

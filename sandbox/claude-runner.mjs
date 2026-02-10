@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { access, readFile } from 'fs/promises';
 import { createInterface } from 'readline';
+import { homedir } from 'os';
 import { loadUserProfile, MEMORY_DIR, PROFILE_PATH } from './memory-logger.mjs';
 
 const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/sprite';
@@ -10,6 +11,10 @@ const THREAD_DEPLOY_TOKEN = process.env.CHIRIDION_THREAD_DEPLOY_TOKEN || '';
 const MCP_TOKEN = process.env.CHIRIDION_MCP_TOKEN || '';
 
 const keepAliveTimer = setInterval(() => {}, 60_000);
+
+let shuttingDown = false;
+
+const IDLE_SHUTDOWN_MS = 30_000;
 
 const session = {
   threadId: THREAD_ID,
@@ -22,6 +27,7 @@ const session = {
   pendingQuestions: new Map(),
   userProfile: null,
   lastForwardedCompactSummaryKey: null,
+  idleTimer: null,
 };
 
 function send(payload) {
@@ -30,7 +36,29 @@ function send(payload) {
 
 function logError(message, error) {
   const suffix = error ? ` ${String(error?.message || error)}` : '';
-  process.stderr.write(`[claude-runner] ${message}${suffix}\n`);
+  const text = `[claude-runner] ${message}${suffix}`;
+  process.stderr.write(`${text}\n`);
+}
+
+function clearIdleShutdown() {
+  if (session.idleTimer) {
+    clearTimeout(session.idleTimer);
+    session.idleTimer = null;
+  }
+}
+
+function scheduleIdleShutdown() {
+  clearIdleShutdown();
+  session.idleTimer = setTimeout(() => {
+    if (session.messageQueue.length > 0) return;
+    logError('idle after turn, triggering shutdown');
+    shuttingDown = true;
+    if (session.messageResolver) {
+      const resolver = session.messageResolver;
+      session.messageResolver = null;
+      resolver(null);
+    }
+  }, IDLE_SHUTDOWN_MS);
 }
 
 function extractTodosFromEvent(event) {
@@ -51,8 +79,8 @@ function normalizeUserMessage(rawContent) {
 
 async function sessionFileExists(sessionId) {
   if (!sessionId) return false;
-  const projectPath = '-home-sprite';
-  const jsonlPath = `${SYNC_DIR}/.claude/projects/${projectPath}/${sessionId}.jsonl`;
+  const projectPath = process.cwd().replace(/\//g, '-');
+  const jsonlPath = `${homedir()}/.claude/projects/${projectPath}/${sessionId}.jsonl`;
   try {
     await access(jsonlPath);
     return true;
@@ -438,8 +466,10 @@ function getQueryOptions(fileExists) {
 
   if (session.threadId) {
     if (fileExists) {
+      logError(`resuming session ${session.threadId}`);
       options.resume = session.threadId;
     } else {
+      logError(`starting new session ${session.threadId}`);
       options.extraArgs = { 'session-id': session.threadId };
     }
   }
@@ -454,9 +484,18 @@ async function* createMessageStream() {
       if (session.messageQueue.length > 0) {
         message = session.messageQueue.shift();
       } else {
+        if (shuttingDown) return;
         message = await new Promise((resolve) => {
           session.messageResolver = resolve;
         });
+        if (shuttingDown) {
+          // Check queue one last time in case a message raced the shutdown
+          if (session.messageQueue.length > 0) {
+            message = session.messageQueue.shift();
+          } else {
+            return;
+          }
+        }
       }
 
       if (message === null || message === undefined) {
@@ -485,13 +524,16 @@ async function initSession() {
 
   session.initPromise = (async () => {
     try {
+      logError(`initSession starting (threadId=${session.threadId})`);
       session.userProfile = await loadUserProfile().catch(() => null);
       const fileExists = await sessionFileExists(session.threadId);
+      logError(`session file exists: ${fileExists}`);
       const options = getQueryOptions(fileExists);
       const messageStream = createMessageStream();
 
       session.activeQuery = query({ prompt: messageStream, options });
       session.queryIterator = session.activeQuery[Symbol.asyncIterator]();
+      logError('session init complete');
     } catch (error) {
       logError('session init failed', error);
       send({ type: 'error', error: `Failed to initialize session: ${String(error)}` });
@@ -559,8 +601,8 @@ function selectLatestCompactSummaryEntry(lines, minTimestampMs) {
  * forward it to the client so the full summary is available without a refresh.
  */
 async function forwardCompactSummary(boundaryEvent) {
-  const projectPath = '-home-sprite';
-  const jsonlPath = `${SYNC_DIR}/.claude/projects/${projectPath}/${session.threadId}.jsonl`;
+  const projectPath = process.cwd().replace(/\//g, '-');
+  const jsonlPath = `${homedir()}/.claude/projects/${projectPath}/${session.threadId}.jsonl`;
   const boundaryTimestampMs = parseEventTimestampMs(boundaryEvent?.timestamp);
   const fallbackMinTimestampMs = Date.now() - COMPACT_SUMMARY_FALLBACK_MAX_AGE_MS;
   const minTimestampMs = (
@@ -651,14 +693,25 @@ function startEventLoop() {
         if (todos) {
           send({ type: 'todo_state', todos });
         }
+
+        // Schedule idle shutdown when the agent finishes a turn
+        if (event?.type === 'result') {
+          scheduleIdleShutdown();
+        }
       }
     } catch (error) {
-      logError('query loop error', error);
-      send({ type: 'error', error: String(error) });
+      logError(`query loop error: ${error?.message || error}`);
+      send({ type: 'error', error: String(error), details: errorDetails(error), source: 'eventLoop' });
     } finally {
       session.activeQuery = null;
       session.queryIterator = null;
       session.eventLoopRunning = false;
+
+      if (shuttingDown) {
+        logError('event loop finished, exiting');
+        clearInterval(keepAliveTimer);
+        process.exit(0);
+      }
     }
   })();
 }
@@ -667,6 +720,7 @@ async function handleUserMessage(content) {
   const normalized = normalizeUserMessage(content);
   if (!normalized) return;
 
+  clearIdleShutdown();
   await initSession();
   startEventLoop();
 
@@ -720,14 +774,25 @@ async function handleClientMessage(raw) {
   }
 }
 
+function errorDetails(error) {
+  return {
+    message: error?.message,
+    exitCode: error?.exitCode,
+    stderr: error?.stderr?.toString?.()?.slice?.(0, 2000),
+    stdout: error?.stdout?.toString?.()?.slice?.(0, 2000),
+    stack: error?.stack?.slice?.(0, 1000),
+    keys: error ? Object.keys(error) : [],
+  };
+}
+
 process.on('uncaughtException', (error) => {
   logError('uncaught exception', error);
-  send({ type: 'error', error: String(error) });
+  send({ type: 'error', error: String(error), details: errorDetails(error), source: 'uncaughtException' });
 });
 
 process.on('unhandledRejection', (error) => {
   logError('unhandled rejection', error);
-  send({ type: 'error', error: String(error) });
+  send({ type: 'error', error: String(error), details: errorDetails(error), source: 'unhandledRejection' });
 });
 
 const rl = createInterface({
@@ -743,12 +808,22 @@ rl.on('close', () => {
   // Keep process alive while detached; the sprite exec session controls lifecycle.
 });
 
-process.on('SIGTERM', () => {
-  clearInterval(keepAliveTimer);
-  process.exit(0);
-});
+function gracefulShutdown(signal) {
+  logError(`received ${signal}`);
+  rl.close();
 
-process.on('SIGINT', () => {
-  clearInterval(keepAliveTimer);
-  process.exit(0);
-});
+  if (session.activeQuery) {
+    session.activeQuery.interrupt().catch((error) => {
+      logError('interrupt failed during shutdown', error);
+      clearInterval(keepAliveTimer);
+      process.exit(1);
+    });
+  } else {
+    logError('no active query, exiting');
+    clearInterval(keepAliveTimer);
+    process.exit(0);
+  }
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
