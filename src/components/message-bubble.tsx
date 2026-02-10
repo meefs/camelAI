@@ -30,7 +30,8 @@ function formatMessageTime(timestamp: number): string {
 
 const INTERRUPT_TEXT = '[Request interrupted by user]';
 
-const SLASH_COMMAND_REGEX = /<command-name>(\/\w[\w-]*)<\/command-name>/;
+const WRAPPED_SLASH_COMMAND_REGEX = /<command-name>(\/\w[\w-]*)<\/command-name>/;
+const BARE_SLASH_COMMAND_REGEX = /^(\/\w[\w-]*)$/;
 
 const LOCAL_COMMAND_STDOUT_REGEX = /^<local-command-stdout>([\s\S]*?)<\/local-command-stdout>$/;
 
@@ -49,8 +50,12 @@ export function isInterruptMessage(content: string | ContentBlock[]): boolean {
 
 /** Returns the slash command name (e.g. "/compact") or null. */
 export function parseSlashCommand(content: string | ContentBlock[]): string | null {
-  const match = extractRawText(content).match(SLASH_COMMAND_REGEX);
-  return match ? match[1] : null;
+  const raw = extractRawText(content).trim();
+  const wrapped = raw.match(WRAPPED_SLASH_COMMAND_REGEX);
+  if (wrapped) return wrapped[1];
+
+  const bare = raw.match(BARE_SLASH_COMMAND_REGEX);
+  return bare ? bare[1] : null;
 }
 
 /** Returns the inner text of a `<local-command-stdout>` message, or null. */
