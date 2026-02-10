@@ -12,6 +12,7 @@ import {
   decryptOpenRouterKey,
   getKeyHash,
 } from './openrouter-keys';
+import { waitUntil } from 'cloudflare:workers';
 import { SpritesClient } from '@fly/sprites';
 import { SPRITE_ASSETS, SPRITE_BOOTSTRAP_VERSION } from './sprite-assets-manifest';
 import type { OrgDO } from './auth';
@@ -226,6 +227,7 @@ export class WorkspaceContainer {
   private createWorkerBootstrapped = false;
   private runnerBootstrapPromise: Promise<void> | null = null;
   private spriteKnownToExist = false;
+  private r2MountServiceCreated = false;
   private dataProxyTokenExpiry: number | null = null;
   private integrationEnvCache: Record<string, string> = {};
 
@@ -1105,6 +1107,138 @@ export class WorkspaceContainer {
     return envVars;
   }
 
+  private async ensureR2MountService(): Promise<void> {
+    if (this.r2MountServiceCreated) return;
+    if (!this.envVars) return;
+
+    const accessKeyId = this.envVars.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = this.envVars.AWS_SECRET_ACCESS_KEY;
+    const sessionToken = this.envVars.AWS_SESSION_TOKEN;
+    const accountId = this.env.R2_ACCOUNT_ID;
+    const bucketName = this.env.R2_BUCKET_NAME;
+    const prefix = this.envVars.R2_PREFIX;
+
+    if (!accessKeyId || !secretAccessKey || !sessionToken || !accountId || !bucketName || !prefix) {
+      console.log('[Sprite] ensureR2MountService: missing R2 credentials, skipping mount service');
+      return;
+    }
+
+    const spriteName = this.requireSpriteName();
+    console.log(`[Sprite] ensureR2MountService: setting up R2 FUSE mounts for sprite=${spriteName}`);
+
+    // Write the credentials env file
+    const envFileContent = [
+      `AWS_ACCESS_KEY_ID=${accessKeyId}`,
+      `AWS_SECRET_ACCESS_KEY=${secretAccessKey}`,
+      `AWS_SESSION_TOKEN=${sessionToken}`,
+      `R2_ACCOUNT_ID=${accountId}`,
+      `R2_BUCKET_NAME=${bucketName}`,
+      `R2_PREFIX=${prefix}`,
+    ].join('\n');
+
+    const envFileWrite = await this.fetchSpriteFs(
+      spriteName,
+      'write',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: envFileContent,
+      },
+      {
+        path: `${SPRITE_RUNNER_HOME_DIR}/r2-mount.env`,
+        workingDir: this.getFsWorkingDir(),
+        mode: '0600',
+        mkdir: true,
+      }
+    );
+    if (!envFileWrite.ok) {
+      const body = await envFileWrite.text();
+      throw new Error(`Failed writing r2-mount.env: ${envFileWrite.status} ${body}`);
+    }
+
+    // Write the mount script (goofys daemonizes itself, so the script returns after mounting)
+    const mountScript = [
+      '#!/bin/bash',
+      'set -euo pipefail',
+      '',
+      `CONFIG="${SPRITE_RUNNER_HOME_DIR}/r2-mount.env"`,
+      '[ -f "$CONFIG" ] || { echo "[r2-mount] No config at $CONFIG"; exit 1; }',
+      'source "$CONFIG"',
+      '',
+      '# Install goofys + fuse if needed',
+      'if ! command -v goofys &>/dev/null; then',
+      '  echo "[r2-mount] Installing goofys + fuse..."',
+      '  apt-get update -qq && apt-get install -y -qq fuse 2>/dev/null || true',
+      '  curl -fsSL "https://github.com/kahing/goofys/releases/download/v0.24.0/goofys" \\',
+      '    -o /usr/local/bin/goofys',
+      '  chmod +x /usr/local/bin/goofys',
+      'fi',
+      '',
+      'mkdir -p /mnt/user-uploads /mnt/user-outputs',
+      '',
+      'R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"',
+      'BUCKET_UPLOADS="${R2_BUCKET_NAME}:${R2_PREFIX}user-uploads"',
+      'BUCKET_OUTPUTS="${R2_BUCKET_NAME}:${R2_PREFIX}user-outputs"',
+      '',
+      '# Mount user-uploads (read-only)',
+      'goofys --endpoint "$R2_ENDPOINT" --region auto -o ro \\',
+      '  --stat-cache-ttl 1s --type-cache-ttl 1s \\',
+      '  "$BUCKET_UPLOADS" /mnt/user-uploads',
+      '',
+      '# Mount user-outputs (read-write)',
+      'goofys --endpoint "$R2_ENDPOINT" --region auto \\',
+      '  --stat-cache-ttl 1s --type-cache-ttl 1s \\',
+      '  "$BUCKET_OUTPUTS" /mnt/user-outputs',
+      '',
+      'echo "[r2-mount] Mounts ready: /mnt/user-uploads (ro), /mnt/user-outputs (rw)"',
+    ].join('\n');
+
+    const scriptWrite = await this.fetchSpriteFs(
+      spriteName,
+      'write',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: mountScript,
+      },
+      {
+        path: `${SPRITE_RUNNER_HOME_DIR}/r2-mount.sh`,
+        workingDir: this.getFsWorkingDir(),
+        mode: '0755',
+        mkdir: true,
+      }
+    );
+    if (!scriptWrite.ok) {
+      const body = await scriptWrite.text();
+      throw new Error(`Failed writing r2-mount.sh: ${scriptWrite.status} ${body}`);
+    }
+
+    // Create R2 placeholder keys so goofys sees non-empty prefixes
+    await Promise.all([
+      this.env.R2_BUCKET.head(`${prefix}user-uploads/.keep`).then(async (existing) => {
+        if (!existing) await this.env.R2_BUCKET.put(`${prefix}user-uploads/.keep`, '');
+      }),
+      this.env.R2_BUCKET.head(`${prefix}user-outputs/.keep`).then(async (existing) => {
+        if (!existing) await this.env.R2_BUCKET.put(`${prefix}user-outputs/.keep`, '');
+      }),
+    ]);
+
+    // Run the mount script via exec (Services API is broken on sprites rc31)
+    const result = await this.execHttpRawForSprite(
+      spriteName,
+      ['bash', `${SPRITE_RUNNER_HOME_DIR}/r2-mount.sh`]
+    );
+
+    if (!result.success) {
+      throw new Error(
+        `R2 mount script failed: ${result.stderr || result.stdout || 'unknown error'}`
+      );
+    }
+
+    this.r2MountServiceCreated = true;
+    console.log(`[Sprite] ensureR2MountService: R2 FUSE mounts ready for sprite=${spriteName}`);
+  }
+
   async startForWorkspace(workspaceId: string, orgId: string): Promise<void> {
     this.workspaceId = workspaceId;
     this.orgId = orgId;
@@ -1113,6 +1247,13 @@ export class WorkspaceContainer {
 
     console.log(`[Sprite] startForWorkspace: building env vars workspace=${workspaceId} org=${orgId}`);
     this.envVars = await this.buildEnvVars(workspaceId, orgId);
+
+    // Fire-and-forget: set up R2 FUSE mounts in background
+    waitUntil(
+      this.ensureR2MountService().catch((err) =>
+        console.error('[WorkspaceContainer] R2 mount service setup failed:', err)
+      )
+    );
 
     if (this.dataProxyTokenExpiry) {
       try {
