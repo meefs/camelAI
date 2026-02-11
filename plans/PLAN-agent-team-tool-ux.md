@@ -77,48 +77,65 @@ This renders as a **right-aligned user chat bubble** with the raw XML tags visib
 
 ### Target Behavior
 
-Teammate messages render as **collapsible tool-call rows** - the exact same visual pattern as every other tool call. Compact by default, expandable to see the full message.
+Teammate messages render as **collapsible tool-call rows** with an action-oriented label and a nested expandable message body. The collapsed state communicates *what happened* (received an update from an agent), and the expanded state shows the agent ID and the message they sent.
 
 ```
 COLLAPSED (default):
-┌─────────────────────────────────────────────────────────────────┐
-│ ●  team-lead: completed pixelDissolve improvement in /ho…    ▸ │
-└─────────────────────────────────────────────────────────────────┘
-  green dot ─┘     └─ teammate ID + first line preview     chevron ─┘
+┌──────────────────────────────────────────────────────────────┐
+│ ●  Received update from team-lead                          ▸ │
+└──────────────────────────────────────────────────────────────┘
+  green dot ─┘   action label ─────────┘              chevron ─┘
 
 
-EXPANDED (on click):
-┌─────────────────────────────────────────────────────────────────┐
-│ ●  team-lead: completed pixelDissolve improvement in /ho…    ▾ │
-└─────────────────────────────────────────────────────────────────┘
+EXPANDED (click the row):
+┌──────────────────────────────────────────────────────────────┐
+│ ●  Received update from team-lead                          ▾ │
+└──────────────────────────────────────────────────────────────┘
+  ┊  Agent:   team-lead
   ┊
-  ┊  I've completed the `pixelDissolve` improvement in
-  ┊  `/home/sprite/svg-animator/app/lib/animations.ts`
-  ┊  (lines 657-703). Here's a summary of what changed:
+  ┊  ▸ Message   I've completed the `pixelDissolve` improv…
+  ┊              ↑ collapsible sub-row (follows TaskDetails ResultItem pattern)
+
+
+FULLY EXPANDED (click "Message" sub-row):
+┌──────────────────────────────────────────────────────────────┐
+│ ●  Received update from team-lead                          ▾ │
+└──────────────────────────────────────────────────────────────┘
+  ┊  Agent:   team-lead
   ┊
-  ┊  - Changed iteration from sequential to random pixel
-  ┊    selection
-  ┊  - Added opacity fade-out for smoother look
-  ┊
-  ┊  TypeScript compiles cleanly with no errors.
-  ┊
+  ┊  ▾ Message
+  ┊     ┌────────────────────────────────────────────────────┐
+  ┊     │  I've completed the `pixelDissolve` improvement    │
+  ┊     │  in `/home/sprite/svg-animator/app/lib/            │
+  ┊     │  animations.ts` (lines 657-703). Here's a         │
+  ┊     │  summary of what changed:                          │
+  ┊     │                                                    │
+  ┊     │  - Changed iteration from sequential to random     │
+  ┊     │    pixel selection                                 │
+  ┊     │  - Added opacity fade-out for smoother look        │
+  ┊     │                                                    │
+  ┊     │  TypeScript compiles cleanly with no errors.       │
+  ┊     └────────────────────────────────────────────────────┘
 ```
 
 This reuses the **exact same visual language** as every other tool call:
-- Colored status dot (green = complete, since these arrive finished)
-- Single-line summary with truncation
+- Green status dot (teammate messages arrive complete, never stream)
+- Action-oriented summary label: `"Received update from {teammateId}"`
 - Chevron that rotates on expand (hidden until hover, like all tool calls)
 - Left-bordered detail panel on expand (same `pl-4 border-l border-border/50 ml-1`)
-- Full message rendered as markdown in the expanded panel
+- `DetailRow` for the agent ID (same shared component used across all detail views)
+- Collapsible "Message" sub-row inside the detail panel (follows the `ResultItem` pattern from `task-details.tsx` - chevron + "Message" label + truncated first-line preview, expanding to show the full markdown body in a `bg-muted/30` block)
 
 ### Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
+| **Summary = `"Received update from {id}"`** | Reads like an action label (matches "Read file.tsx", "Ran build", "Agent: working...") rather than previewing content. Communicates "we got a message from the team." |
 | **Status dot = green** | Teammate messages arrive complete, never stream |
-| **Summary = `"{id}: {preview}"`** | Shows who and what at a glance; first non-empty line, truncated to 60 chars |
-| **Expanded = MarkdownRenderer** | Messages contain backticks, code refs, bullet lists |
-| **No user bubble** | Entire user message consumed by the tool-call row; no right-aligned bubble |
+| **Agent DetailRow in expanded state** | Shows the teammate role/ID prominently in the structured detail panel |
+| **Collapsible "Message" sub-row** | Follows existing `ResultItem` pattern from `TaskDetails`. Keeps the detail panel compact; user can drill into the full message on demand. Collapsed shows first-line preview; expanded shows full markdown. |
+| **MarkdownRenderer for message body** | Messages contain backticks, code refs, bullet lists |
+| **No user bubble** | Entire user message consumed by the tool-call row; no right-aligned bubble rendered |
 | **Same CSS as ToolCall** | `tool-call`, `group/toolcall`, same hover/focus styles, identical animations |
 
 ### Implementation
@@ -127,7 +144,7 @@ This reuses the **exact same visual language** as every other tool call:
 
 **New file:** `src/components/tool-call/teammate-message.tsx`
 
-This component mirrors the structure of `ToolCall` in `tool-call.tsx` but is self-contained since the data comes from parsed XML, not a `ToolUseBlock`.
+This component mirrors the structure of `ToolCall` in `tool-call.tsx` for the outer row, and uses the `ResultItem`-style collapsible sub-row pattern from `task-details.tsx` for the message body.
 
 ```tsx
 "use client";
@@ -137,25 +154,28 @@ import { ChevronRight } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
+import { DetailRow } from './details/shared';
 
 interface TeammateMessageProps {
   teammateId: string;
   content: string;
 }
 
-function getSummaryPreview(content: string): string {
+function getMessagePreview(content: string): string {
   const firstLine = content.split(/\r?\n/).find(line => line.trim()) ?? '';
   const trimmed = firstLine.trim();
-  const max = 60;
+  const max = 72;
   return trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
 }
 
 export function TeammateMessage({ teammateId, content }: TeammateMessageProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const preview = getSummaryPreview(content);
+  const [messageExpanded, setMessageExpanded] = useState(false);
+  const preview = getMessagePreview(content);
 
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
+      {/* ── Outer trigger row (identical CSS to ToolCall) ── */}
       <CollapsibleTrigger asChild>
         <div
           role="button"
@@ -174,7 +194,7 @@ export function TeammateMessage({ teammateId, content }: TeammateMessageProps) {
         >
           <span className="tool-call__dot w-1.5 h-1.5 rounded-full shrink-0 bg-green-500" />
           <span className="tool-call__text min-w-0 flex-1 truncate">
-            {teammateId}: {preview}
+            Received update from {teammateId}
           </span>
           <ChevronRight
             className={cn(
@@ -185,6 +205,8 @@ export function TeammateMessage({ teammateId, content }: TeammateMessageProps) {
           />
         </div>
       </CollapsibleTrigger>
+
+      {/* ── Detail panel (same wrapper as ToolCallDetails) ── */}
       <CollapsibleContent
         className={cn(
           "group/details overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up",
@@ -192,7 +214,38 @@ export function TeammateMessage({ teammateId, content }: TeammateMessageProps) {
         )}
       >
         <div className="pl-4 mt-1 text-xs text-muted-foreground/80 border-l border-border/50 ml-1">
-          <MarkdownRenderer content={content} />
+          <div className="space-y-2">
+            {/* Agent ID row (uses shared DetailRow) */}
+            <DetailRow label="Agent:" value={teammateId} />
+
+            {/* Collapsible message sub-row (ResultItem pattern from TaskDetails) */}
+            <Collapsible open={messageExpanded} onOpenChange={setMessageExpanded}>
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  className="group/result flex w-full items-center gap-2 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted/30"
+                >
+                  <ChevronRight
+                    className={cn(
+                      "h-3.5 w-3.5 text-muted-foreground/60 transition-transform",
+                      messageExpanded && "rotate-90"
+                    )}
+                  />
+                  <span className="shrink-0">Message</span>
+                  {!messageExpanded && preview ? (
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground/60">
+                      {preview}
+                    </span>
+                  ) : null}
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="pl-6 pt-1">
+                <div className="rounded bg-muted/30 p-2">
+                  <MarkdownRenderer content={content} />
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          </div>
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -200,11 +253,14 @@ export function TeammateMessage({ teammateId, content }: TeammateMessageProps) {
 }
 ```
 
-Notable:
-- Same `className` strings as `ToolCall` trigger row and content panel - pixel-identical styling
-- Hardcoded `bg-green-500` on the dot (no status logic needed)
-- Summary: `{teammateId}: {firstLinePreview}` - e.g. "team-lead: completed pixelDissolve improvement in /ho..."
-- Content panel wraps `MarkdownRenderer` in the same `pl-4 mt-1 border-l border-border/50 ml-1` div used by `ToolCallDetails`
+Key structural notes:
+- **Outer row**: Identical CSS to `ToolCall` trigger. Summary reads `"Received update from {teammateId}"`.
+- **Detail panel**: Same `pl-4 mt-1 border-l border-border/50 ml-1` wrapper as `ToolCallDetails`.
+- **Agent row**: `DetailRow` from `shared.tsx` (same component used by `TaskDetails`, `TeamCreateDetails`, etc.).
+- **Message sub-row**: Follows the `ResultItem` pattern from `task-details.tsx`:
+  - `button` trigger with chevron + "Message" label + truncated preview (preview hidden when expanded)
+  - `CollapsibleContent` with `pl-6 pt-1` indent containing content in a `rounded bg-muted/30 p-2` block
+  - Content rendered via `MarkdownRenderer` for code blocks, backticks, file paths
 
 #### B. Update `message-bubble.tsx`
 
@@ -212,7 +268,7 @@ The parsing functions (`parseTeammateMessage`, `stripTeammateMessageTags`) are a
 
 **Changes needed:**
 
-1. **Remove** the `TeammateMessageBubble` component (the big blue-bordered block, currently around lines 318-370)
+1. **Remove** the `TeammateMessageBubble` component (the blue-bordered block with `Users` icon, currently around lines 318-370)
 2. **Remove** the `Users` import from lucide-react (line 3) since it's no longer used
 3. **Add** import for the new component:
    ```typescript
@@ -260,7 +316,7 @@ Teammate messages arrive as complete `user` role messages, never streamed. No pa
 | `src/components/tool-call/tool-summary.ts` | Already done | `TeamCreate` case with running/complete tense |
 | `src/components/tool-call/tool-details.tsx` | Already done | Import + register `TeamCreateDetails` |
 | `src/components/tool-call/details/team-create-details.tsx` | Already done | Detail renderer: team, description, lead agent, config link |
-| `src/components/tool-call/teammate-message.tsx` | **New** | Collapsible tool-call-style row for teammate messages |
+| `src/components/tool-call/teammate-message.tsx` | **New** | Collapsible tool-call row with nested expandable message body |
 | `src/components/message-bubble.tsx` | **Edit** | Remove `TeammateMessageBubble` + `Users` import, use `TeammateMessage` |
 
 ---
@@ -279,8 +335,10 @@ Teammate messages arrive as complete `user` role messages, never streamed. No pa
 - [x] TeamCreate expanded state shows structured `DetailRow` fields (not raw JSON)
 - [x] Config path is a clickable `FileLink`
 - [ ] Teammate messages render as a collapsible tool-call row with green status dot
-- [ ] Collapsed state shows `"{teammateId}: {first line preview...}"` as summary text
-- [ ] Expanded state shows full message content as markdown in the standard left-bordered detail panel
+- [ ] Collapsed summary reads `"Received update from {teammateId}"` (action-oriented label, no content preview)
+- [ ] Expanded state shows `Agent:` DetailRow with the teammate ID
+- [ ] Expanded state shows a collapsible "Message" sub-row with first-line preview (follows TaskDetails ResultItem pattern)
+- [ ] Clicking the "Message" sub-row reveals the full message rendered as markdown in a `bg-muted/30` block
 - [ ] Same hover/chevron/animation behavior as all other tool calls
 - [ ] Raw `<teammate-message>` XML tags are never visible to the user
 - [ ] Copying content strips teammate XML tags
