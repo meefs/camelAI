@@ -701,7 +701,9 @@ export class WorkspaceContainer {
   private async ensureRunnerSkills(spriteName: string): Promise<void> {
     if (this.runnerSkillsBootstrapped) return;
 
+    console.log(`[Sprite] ensureRunnerSkills: checking version at ${SPRITE_MANAGED_SKILLS_VERSION_PATH}`);
     const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_MANAGED_SKILLS_VERSION_PATH);
+    console.log(`[Sprite] ensureRunnerSkills: installedVersion=${installedVersion || 'null'}, expected=${SPRITE_ASSETS.skills.hash}`);
     if (installedVersion === SPRITE_ASSETS.skills.hash) {
       console.log(`[Sprite] bootstrap: skills already at version ${SPRITE_ASSETS.skills.hash}`);
       this.runnerSkillsBootstrapped = true;
@@ -710,19 +712,27 @@ export class WorkspaceContainer {
     console.log(`[Sprite] bootstrap: updating skills (${installedVersion || 'none'} → ${SPRITE_ASSETS.skills.hash})`);
 
     const assetUrl = this.getAssetUrl(SPRITE_ASSETS.skills.path);
+    console.log(`[Sprite] ensureRunnerSkills: downloading from ${assetUrl}`);
+    console.log(`[Sprite] ensureRunnerSkills: extracting to ${SPRITE_MANAGED_SKILLS_PARENT_DIR}`);
+    const installCmd = [
+      'set -euo pipefail',
+      `rm -rf ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)}`,
+      `mkdir -p ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
+      `curl -fsSL ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
+      `echo "=== Skills directory contents ===" && ls -la ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)} || echo "Skills dir does not exist"`,
+    ].join('; ');
+    console.log(`[Sprite] ensureRunnerSkills: running command: ${installCmd}`);
     const installResult = await this.execOnSprite(
       spriteName,
       [
         'bash',
         '-lc',
-        [
-          'set -euo pipefail',
-          `rm -rf ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)}`,
-          `mkdir -p ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
-          `curl -fsSL ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
-        ].join('; '),
+        installCmd,
       ]
     );
+    console.log(`[Sprite] ensureRunnerSkills: installResult.success=${installResult.success}`);
+    console.log(`[Sprite] ensureRunnerSkills: stdout=${installResult.stdout?.slice(0, 1000) || '(empty)'}`);
+    console.log(`[Sprite] ensureRunnerSkills: stderr=${installResult.stderr?.slice(0, 500) || '(empty)'}`);
     if (!installResult.success) {
       throw new Error(
         `Failed downloading/extracting skills: ${installResult.stderr || installResult.stdout || 'unknown error'}`
@@ -752,6 +762,7 @@ export class WorkspaceContainer {
       );
     }
 
+    console.log(`[Sprite] ensureRunnerSkills: successfully installed skills to ${SPRITE_MANAGED_SKILLS_DIR}`);
     this.runnerSkillsBootstrapped = true;
   }
 
@@ -819,25 +830,31 @@ export class WorkspaceContainer {
    * is at the current BOOTSTRAP_VERSION (e.g. from workspace DO storage).
    */
   setKnownBootstrapVersion(version: string | null | undefined): void {
+    console.log(`[Sprite] setKnownBootstrapVersion: stored=${version || 'null'}, current=${BOOTSTRAP_VERSION}`);
     if (!version) return;
     // Any persisted version means the sprite was successfully created and bootstrapped at
     // some point. We can skip the Sprites API lookup on cold start.
     this.spriteKnownToExist = true;
     if (version === BOOTSTRAP_VERSION) {
+      console.log(`[Sprite] setKnownBootstrapVersion: versions match, skipping bootstrap`);
       this.runnerScriptBootstrapped = true;
       this.runnerDependencyBootstrapped = true;
       this.runnerSkillsBootstrapped = true;
       this.createWorkerBootstrapped = true;
+    } else {
+      console.log(`[Sprite] setKnownBootstrapVersion: versions differ, will run bootstrap`);
     }
   }
 
   private async ensureRunnerBootstrap(spriteName: string): Promise<void> {
+    console.log(`[Sprite] ensureRunnerBootstrap: scripts=${this.runnerScriptBootstrapped} deps=${this.runnerDependencyBootstrapped} skills=${this.runnerSkillsBootstrapped} createWorker=${this.createWorkerBootstrapped}`);
     if (this.runnerScriptBootstrapped && this.runnerDependencyBootstrapped && this.runnerSkillsBootstrapped && this.createWorkerBootstrapped) {
       console.log(`[Sprite] bootstrap: all components up to date (v=${BOOTSTRAP_VERSION.slice(0, 40)})`);
       return;
     }
 
     if (this.runnerBootstrapPromise) {
+      console.log(`[Sprite] ensureRunnerBootstrap: waiting on existing promise`);
       await this.runnerBootstrapPromise;
       return;
     }
@@ -846,10 +863,12 @@ export class WorkspaceContainer {
     this.runnerBootstrapPromise = (async () => {
       await this.ensureRunnerScripts(spriteName);
       await this.ensureRunnerDependencies(spriteName);
+      console.log(`[Sprite] ensureRunnerBootstrap: scripts+deps done, running skills+createWorker in parallel`);
       await Promise.all([
         this.ensureRunnerSkills(spriteName),
         this.ensureCreateWorker(spriteName),
       ]);
+      console.log(`[Sprite] ensureRunnerBootstrap: all bootstrap steps complete`);
     })();
 
     try {
