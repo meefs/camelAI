@@ -589,7 +589,8 @@ export class WorkspaceContainer {
         [
           'set -euo pipefail',
           `mkdir -p ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
-          `curl -fsSL ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
+          // Add ngrok-skip-browser-warning header to bypass ngrok's interstitial page
+          `curl -fsSL -H "ngrok-skip-browser-warning: true" ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
           `chmod +x ${JSON.stringify(DEFAULT_RUNNER_SCRIPT_PATH)}`,
         ].join('; '),
       ]
@@ -730,7 +731,8 @@ export class WorkspaceContainer {
       'set -euo pipefail',
       `rm -rf ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)}`,
       `mkdir -p ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
-      `curl -fsSL ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
+      // Add ngrok-skip-browser-warning header to bypass ngrok's interstitial page
+      `curl -fsSL -H "ngrok-skip-browser-warning: true" ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
       `echo "=== Skills directory contents ===" && ls -la ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)} || echo "Skills dir does not exist"`,
     ].join('; ');
     console.log(`[Sprite] ensureRunnerSkills: running command: ${installCmd}`);
@@ -799,7 +801,8 @@ export class WorkspaceContainer {
           'set -euo pipefail',
           `rm -rf ${JSON.stringify(SPRITE_CREATE_WORKER_DIR)}`,
           `mkdir -p /usr/local/lib`,
-          `curl -fsSL ${JSON.stringify(assetUrl)} | tar -xzf - -C /usr/local/lib`,
+          // Add ngrok-skip-browser-warning header to bypass ngrok's interstitial page
+          `curl -fsSL -H "ngrok-skip-browser-warning: true" ${JSON.stringify(assetUrl)} | tar -xzf - -C /usr/local/lib`,
           `chmod +x ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)}`,
           `ln -sf ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)} ${JSON.stringify(SPRITE_CREATE_WORKER_BIN)}`,
         ].join('; '),
