@@ -7,160 +7,46 @@ The Claude agent can spawn sub-agent teams using the `TeamCreate` tool and recei
 1. **TeamCreate** falls through to `GenericDetails` and shows raw JSON for input/output
 2. **Teammate messages** appear as regular user messages with raw XML tags visible
 
-This plan addresses both issues to make the agent team experience feel native.
+This plan addresses both issues to make the agent team experience feel native and consistent with the existing tool call UI.
 
 ---
 
 ## Goals
 
 - Give `TeamCreate` a proper summary line, status, and detail view matching the existing tool call system
-- Parse `<teammate-message>` XML out of user messages and render them as distinct "teammate update" blocks rather than user chat bubbles
+- Render `<teammate-message>` blocks as **collapsible tool-call-style rows** (not chat bubbles), keeping them compact and non-disruptive
 - Keep changes minimal and consistent with existing patterns
 
 ---
 
 ## 1. TeamCreate Tool Call Styling
 
-### Current Behavior
+> **Status: Already implemented.** Included here for reference only.
 
-TeamCreate falls through to the `default` case in `tool-details.tsx`, which renders `GenericDetails` - raw JSON blobs for input and output:
-
-```
-┌──────────────────────────────────────────────────┐
-│ ●  TeamCreate                                  ▸ │  ← no custom summary text
-└──────────────────────────────────────────────────┘
-  Expanded:
-  ┊  Input
-  ┊  ┌────────────────────────────────────────────┐
-  ┊  │ {                                          │
-  ┊  │   "team_name": "animation-fixes",          │
-  ┊  │   "description": "Fix and enhance SVG..."  │
-  ┊  │ }                                          │
-  ┊  └────────────────────────────────────────────┘
-  ┊  Output
-  ┊  ┌────────────────────────────────────────────┐
-  ┊  │ {                                          │
-  ┊  │   "team_name": "animation-fixes",          │
-  ┊  │   "team_file_path": "/home/sprite/..."     │
-  ┊  │   "lead_agent_id": "team-lead@anim..."     │
-  ┊  │ }                                          │
-  ┊  └────────────────────────────────────────────┘
-```
-
-### Target Behavior
+### Current → Target
 
 ```
-┌──────────────────────────────────────────────────┐
-│ ◉  Creating team animation-fixes...            ▸ │  ← running (blue pulse)
-└──────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────┐
-│ ●  Created team animation-fixes                ▸ │  ← complete (green)
-└──────────────────────────────────────────────────┘
-  Expanded:
-  ┊  Team:          animation-fixes
-  ┊  Description:   Fix and enhance SVG animation presets in parallel
-  ┊  Lead agent:    team-lead@animation-fixes
-  ┊  Config:        config.json  ← clickable FileLink
+BEFORE:                                          AFTER:
+┌────────────────────────────────────┐           ┌──────────────────────────────────────────┐
+│ ●  TeamCreate                    ▸ │           │ ◉  Creating team animation-fixes...     ▸ │  running
+└────────────────────────────────────┘           └──────────────────────────────────────────┘
+  ┊  Input                                       ┌──────────────────────────────────────────┐
+  ┊  { "team_name": "animation-…" }              │ ●  Created team animation-fixes         ▸ │  complete
+  ┊  Output                                      └──────────────────────────────────────────┘
+  ┊  { "team_name": "animation-…",                ┊  Team:        animation-fixes
+  ┊    "team_file_path": "…",                      ┊  Description: Fix and enhance SVG…
+  ┊    "lead_agent_id": "…" }                      ┊  Lead agent:  team-lead@animation-fixes
+                                                   ┊  Config:      config.json  ← FileLink
 ```
 
-### Implementation
-
-#### A. Add summary in `tool-summary.ts`
-
-Add a new case in the `switch (name)` block (after the `Task` case, around line 151):
-
-```typescript
-case 'TeamCreate': {
-  const teamName = typeof inputRecord.team_name === 'string' ? inputRecord.team_name : '';
-  if (status === 'running') {
-    if (!teamName) return { action: 'Creating team...' };
-    return { action: `Creating team ${teamName}...` };
-  }
-  return { action: `Created team ${teamName || 'team'}` };
-}
-```
-
-**File:** `src/components/tool-call/tool-summary.ts` (insert after line 151)
-
-#### B. Create `TeamCreateDetails` component
-
-Create a new file at `src/components/tool-call/details/team-create-details.tsx`:
-
-```tsx
-"use client";
-
-import type { ToolResultBlock, ToolUseBlock } from '@/types';
-import { DetailRow } from './shared';
-import { getResultText } from '../tool-utils';
-
-interface TeamCreateDetailsProps {
-  tool?: ToolUseBlock;
-  result?: ToolResultBlock;
-}
-
-export function TeamCreateDetails({ tool, result }: TeamCreateDetailsProps) {
-  const input = tool?.input ?? {};
-  const teamName = typeof input.team_name === 'string' ? input.team_name : '';
-  const description = typeof input.description === 'string' ? input.description : '';
-
-  // Parse structured fields from result JSON
-  let leadAgentId = '';
-  let configPath = '';
-  if (result) {
-    const text = getResultText(result);
-    try {
-      const parsed = JSON.parse(text);
-      leadAgentId = typeof parsed.lead_agent_id === 'string' ? parsed.lead_agent_id : '';
-      configPath = typeof parsed.team_file_path === 'string' ? parsed.team_file_path : '';
-    } catch {
-      // Result isn't JSON - ignore
-    }
-  }
-
-  // Extract just the filename from the config path for display
-  const configFilename = configPath ? configPath.split('/').pop() || configPath : '';
-
-  return (
-    <div className="space-y-1">
-      {teamName && <DetailRow label="Team:" value={teamName} />}
-      {description && <DetailRow label="Description:" value={description} />}
-      {leadAgentId && <DetailRow label="Lead agent:" value={leadAgentId} mono />}
-      {configPath && (
-        <DetailRow
-          label="Config:"
-          value={configFilename}
-          asFileLink
-          filePath={configPath}
-          copyValue={configPath}
-        />
-      )}
-    </div>
-  );
-}
-```
-
-#### C. Register in `tool-details.tsx`
-
-Add the import at the top of the file:
-
-```typescript
-import { TeamCreateDetails } from './details/team-create-details';
-```
-
-Add a new case in the switch block (after the `Bash` case or wherever appropriate, before `default`):
-
-```typescript
-case 'TeamCreate':
-  content = <TeamCreateDetails tool={tool} result={result} />;
-  break;
-```
-
-**File:** `src/components/tool-call/tool-details.tsx`
+Already done in:
+- `src/components/tool-call/tool-summary.ts` - `TeamCreate` case
+- `src/components/tool-call/details/team-create-details.tsx` - new component
+- `src/components/tool-call/tool-details.tsx` - registered
 
 ---
 
-## 2. Teammate Message Rendering
+## 2. Teammate Message Rendering (as Tool Call Row)
 
 ### Current Behavior
 
@@ -168,168 +54,186 @@ Teammate messages arrive as `role: "user"` messages with content like:
 
 ```
 <teammate-message teammate_id="team-lead">
-I've completed the `pixelDissolve` improvement...
-
+I've completed the `pixelDissolve` improvement in
+`/home/sprite/svg-animator/app/lib/animations.ts` (lines 657-703).
+Here's a summary of what changed:
+...
 TypeScript compiles cleanly with no errors.
 </teammate-message>
 ```
 
-Because there is no parsing for this XML, the entire content (including the opening and closing tags) renders as a right-aligned user chat bubble. This is confusing - it looks like the human user sent it.
+This renders as a **right-aligned user chat bubble** with the raw XML tags visible:
+
+```
+                    ┌──────────────────────────────────────────┐
+                    │  <teammate-message teammate_id="team-    │  ← raw XML
+                    │  lead">                                  │
+                    │  I've completed the `pixelDissolve`      │
+                    │  improvement...                          │
+                    │  </teammate-message>                     │  ← raw XML
+                    └──────────────────────────────────────────┘
+                           Sent by Alice at 3:45 PM  [Copy]
+```
 
 ### Target Behavior
 
-Teammate messages should render as left-aligned, visually distinct blocks - not as user bubbles and not as assistant messages. They should look like an "incoming report" from a sub-agent.
+Teammate messages render as **collapsible tool-call rows** - the exact same visual pattern as every other tool call. Compact by default, expandable to see the full message.
 
 ```
-  ┌─ teammate icon ───────────────────────────────┐
-  │  team-lead                                     │
-  │                                                │
-  │  I've completed the `pixelDissolve`            │
-  │  improvement in `/home/sprite/svg-animator/    │
-  │  app/lib/animations.ts` (lines 657-703).       │
-  │  Here's a summary of what changed:             │
-  │  ...                                           │
-  │  TypeScript compiles cleanly with no errors.   │
-  └────────────────────────────────────────────────┘
+COLLAPSED (default):
+┌─────────────────────────────────────────────────────────────────┐
+│ ●  team-lead: completed pixelDissolve improvement in /ho…    ▸ │
+└─────────────────────────────────────────────────────────────────┘
+  green dot ─┘     └─ teammate ID + first line preview     chevron ─┘
+
+
+EXPANDED (on click):
+┌─────────────────────────────────────────────────────────────────┐
+│ ●  team-lead: completed pixelDissolve improvement in /ho…    ▾ │
+└─────────────────────────────────────────────────────────────────┘
+  ┊
+  ┊  I've completed the `pixelDissolve` improvement in
+  ┊  `/home/sprite/svg-animator/app/lib/animations.ts`
+  ┊  (lines 657-703). Here's a summary of what changed:
+  ┊
+  ┊  - Changed iteration from sequential to random pixel
+  ┊    selection
+  ┊  - Added opacity fade-out for smoother look
+  ┊
+  ┊  TypeScript compiles cleanly with no errors.
+  ┊
 ```
 
-### Design
+This reuses the **exact same visual language** as every other tool call:
+- Colored status dot (green = complete, since these arrive finished)
+- Single-line summary with truncation
+- Chevron that rotates on expand (hidden until hover, like all tool calls)
+- Left-bordered detail panel on expand (same `pl-4 border-l border-border/50 ml-1`)
+- Full message rendered as markdown in the expanded panel
 
-The teammate message should:
-- Be **left-aligned** (like assistant messages, not right-aligned like user messages)
-- Have a subtle visual distinction from normal assistant text:
-  - A small header showing the teammate ID (e.g., "team-lead") with a `Users` icon from lucide
-  - A left border accent (using `border-l-2 border-blue-500/40`) to visually group it
-  - A light background tint (`bg-muted/20 rounded-lg p-3`)
-- Render the inner content as **markdown** (teammate messages contain code references, backticks, etc.)
-- **Not** show user attribution footer ("Sent by ... at ...")
-- **Not** show the copy action row that user messages show (or show it on hover, adapted)
+### Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **Status dot = green** | Teammate messages arrive complete, never stream |
+| **Summary = `"{id}: {preview}"`** | Shows who and what at a glance; first non-empty line, truncated to 60 chars |
+| **Expanded = MarkdownRenderer** | Messages contain backticks, code refs, bullet lists |
+| **No user bubble** | Entire user message consumed by the tool-call row; no right-aligned bubble |
+| **Same CSS as ToolCall** | `tool-call`, `group/toolcall`, same hover/focus styles, identical animations |
 
 ### Implementation
 
-#### A. Parse teammate messages in `message-bubble.tsx`
+#### A. Create `TeammateMessage` component
 
-Add a regex and parser function near the existing `stripSystemMessageTags` function:
+**New file:** `src/components/tool-call/teammate-message.tsx`
 
-```typescript
-const TEAMMATE_MESSAGE_REGEX = /^<teammate-message\s+teammate_id="([^"]+)">\n?([\s\S]*?)\n?<\/teammate-message>$/;
-
-interface ParsedTeammateMessage {
-  teammateId: string;
-  content: string;
-}
-
-function parseTeammateMessage(rawContent: string): ParsedTeammateMessage | null {
-  // Strip system message tags first, then check for teammate message
-  const stripped = stripSystemMessageTags(rawContent).trim();
-  const match = stripped.match(TEAMMATE_MESSAGE_REGEX);
-  if (!match) return null;
-  return {
-    teammateId: match[1] ?? '',
-    content: (match[2] ?? '').trim(),
-  };
-}
-```
-
-**File:** `src/components/message-bubble.tsx` (add near line 54, after `stripSystemMessageTags`)
-
-#### B. Handle teammate messages in `MessageBubble`
-
-In the `MessageBubble` component, add an early check at the start of the `message.role === 'user'` branch (around line 354), **before** the existing author parsing logic:
-
-```typescript
-if (message.role === 'user') {
-  // Check for teammate messages first
-  const rawText = typeof message.content === 'string'
-    ? message.content
-    : message.content
-        .map(block => (block.type === 'text' ? block.text : ''))
-        .filter(Boolean)
-        .join('\n');
-
-  const teammateMessage = parseTeammateMessage(rawText);
-  if (teammateMessage) {
-    return (
-      <TeammateMessageBubble
-        teammateId={teammateMessage.teammateId}
-        content={teammateMessage.content}
-        timestamp={message.created_at}
-      />
-    );
-  }
-
-  // ... existing author parsing code continues ...
-}
-```
-
-#### C. Create `TeammateMessageBubble` component
-
-Add this component either in `message-bubble.tsx` (above the `MessageBubble` export) or as a separate file at `src/components/teammate-message-bubble.tsx`. Keeping it in `message-bubble.tsx` is simpler since it's small and uses the same imports:
+This component mirrors the structure of `ToolCall` in `tool-call.tsx` but is self-contained since the data comes from parsed XML, not a `ToolUseBlock`.
 
 ```tsx
-import { Users } from 'lucide-react';
+"use client";
 
-function TeammateMessageBubble({
-  teammateId,
-  content,
-  timestamp,
-}: {
+import { useState } from 'react';
+import { ChevronRight } from 'lucide-react';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { cn } from '@/lib/utils';
+import { MarkdownRenderer } from '@/components/markdown-renderer';
+
+interface TeammateMessageProps {
   teammateId: string;
   content: string;
-  timestamp: number;
-}) {
+}
+
+function getSummaryPreview(content: string): string {
+  const firstLine = content.split(/\r?\n/).find(line => line.trim()) ?? '';
+  const trimmed = firstLine.trim();
+  const max = 60;
+  return trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
+}
+
+export function TeammateMessage({ teammateId, content }: TeammateMessageProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const preview = getSummaryPreview(content);
+
   return (
-    <div className="flex flex-col gap-1">
-      <div className="max-w-none border-l-2 border-blue-500/40 bg-muted/20 rounded-lg pl-3 pr-3 py-2">
-        <div className="flex items-center gap-1.5 mb-1.5">
-          <Users className="h-3.5 w-3.5 text-blue-500/70" />
-          <span className="text-xs font-medium text-blue-500/70">{teammateId}</span>
+    <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
+      <CollapsibleTrigger asChild>
+        <div
+          role="button"
+          tabIndex={0}
+          className={cn(
+            "tool-call group/toolcall flex w-full items-center gap-2 py-1 text-sm text-muted-foreground",
+            "hover:bg-muted/30 rounded px-2 -mx-2 cursor-pointer text-left",
+            "transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/50"
+          )}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              setIsExpanded(prev => !prev);
+            }
+          }}
+        >
+          <span className="tool-call__dot w-1.5 h-1.5 rounded-full shrink-0 bg-green-500" />
+          <span className="tool-call__text min-w-0 flex-1 truncate">
+            {teammateId}: {preview}
+          </span>
+          <ChevronRight
+            className={cn(
+              "tool-call__chevron h-4 w-4 text-muted-foreground/50 opacity-0 transition-all duration-150",
+              "group-hover/toolcall:opacity-100",
+              isExpanded && "opacity-100 rotate-90"
+            )}
+          />
         </div>
-        <div className="max-w-none">
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        className={cn(
+          "group/details overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up",
+          "motion-reduce:animate-none"
+        )}
+      >
+        <div className="pl-4 mt-1 text-xs text-muted-foreground/80 border-l border-border/50 ml-1">
           <MarkdownRenderer content={content} />
         </div>
-      </div>
-      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
-        <span className="text-muted-foreground text-xs mr-1">
-          {formatMessageTime(timestamp)}
-        </span>
-      </div>
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 ```
 
-**Key design decisions:**
-- `Users` icon from lucide-react (already in the project's lucide dependency) signals "team/group"
-- `border-l-2 border-blue-500/40` gives a subtle blue accent that differentiates from regular text without being loud
-- `bg-muted/20` provides a very subtle background tint
-- The teammate ID is shown in a small blue label (matches the border accent)
-- The content is rendered via `MarkdownRenderer` so code blocks, backticks, etc. all work
-- Left-aligned like assistant messages (default `flex-col` without `items-end`)
+Notable:
+- Same `className` strings as `ToolCall` trigger row and content panel - pixel-identical styling
+- Hardcoded `bg-green-500` on the dot (no status logic needed)
+- Summary: `{teammateId}: {firstLinePreview}` - e.g. "team-lead: completed pixelDissolve improvement in /ho..."
+- Content panel wraps `MarkdownRenderer` in the same `pl-4 mt-1 border-l border-border/50 ml-1` div used by `ToolCallDetails`
 
-#### D. Update `hasVisibleContent` to handle teammate messages
+#### B. Update `message-bubble.tsx`
 
-The existing `hasVisibleContent` function strips `<chiridion system message>` tags. We need it to also recognize teammate messages as visible content so they aren't accidentally hidden. Since teammate messages have actual text content inside the XML, the existing logic should work correctly - the content won't be empty after stripping system tags. No change needed here.
+The parsing functions (`parseTeammateMessage`, `stripTeammateMessageTags`) are already in the codebase from the previous implementation. Keep them.
 
-#### E. Update `contentToString` for copy support
+**Changes needed:**
 
-In the `contentToString` function (`message-bubble.tsx`), teammate message XML should be stripped for copying. Add a strip function:
+1. **Remove** the `TeammateMessageBubble` component (the big blue-bordered block, currently around lines 318-370)
+2. **Remove** the `Users` import from lucide-react (line 3) since it's no longer used
+3. **Add** import for the new component:
+   ```typescript
+   import { TeammateMessage } from '@/components/tool-call/teammate-message';
+   ```
+4. **Simplify** the early return in the user message branch to use `TeammateMessage` instead of `TeammateMessageBubble`, dropping the unnecessary props (`timestamp`, `onCopy`, `isCopied`, `messageId`):
+   ```typescript
+   const teammateMessage = parseTeammateMessage(rawTextForTeammate);
+   if (teammateMessage) {
+     return (
+       <TeammateMessage
+         teammateId={teammateMessage.teammateId}
+         content={teammateMessage.content}
+       />
+     );
+   }
+   ```
 
-```typescript
-function stripTeammateMessageTags(text: string): string {
-  return text.replace(
-    /<teammate-message\s+teammate_id="[^"]*">\n?/g, ''
-  ).replace(/<\/teammate-message>/g, '').trim();
-}
-```
+#### C. Keep `contentToString` / `stripTeammateMessageTags` as-is
 
-Then in `contentToString`, apply it after `stripSystemMessageTags`:
-
-```typescript
-if (block.type === 'text') return stripTeammateMessageTags(stripSystemMessageTags(block.text));
-```
-
-This ensures that when copying a teammate message, you get the plain text content without XML tags.
+The existing `stripTeammateMessageTags` in `contentToString` is still correct - if any code path calls `contentToString` on a message containing teammate XML, the tags get stripped cleanly.
 
 ---
 
@@ -337,24 +241,15 @@ This ensures that when copying a teammate message, you get the plain text conten
 
 ### Multiple teammate messages in one user message
 
-If multiple `<teammate-message>` blocks arrive in a single message, the regex approach (which expects the entire content to be one teammate message) won't match. Handle this gracefully:
-
-- If the regex doesn't match a single full-message pattern, fall through to the existing user message rendering
-- The `stripTeammateMessageTags` function will still strip the XML tags for display, so at worst the content shows as a user message without raw XML
-
-For a more robust approach, if we find this is common, a follow-up could split on multiple teammate-message blocks. For now the single-message pattern covers the observed format.
+If multiple `<teammate-message>` blocks arrive in a single message, the regex (which expects the entire content to be one teammate message) won't match. Falls through to normal user rendering with `stripTeammateMessageTags` cleaning the XML from display.
 
 ### Teammate message with author prefix
 
-The `ChatThreadDO.formatAttributedUserMessage` adds `[Name (email)]:` prefixes to user messages. If a teammate message passes through this pipeline, the content might be prefixed. The `parseTeammateMessage` function works on the raw text before author stripping, so:
-
-- If the message is `[Name (email)]: <teammate-message ...>`, the author parsing in `parseMessageAuthor` would strip the prefix and return content starting with `<teammate-message`. The teammate check happens on the `rawText` **before** author parsing, so we should be fine - `rawText` includes the full content.
-
-Actually, to be safe, the teammate check should operate on content that has had system message tags stripped but **not** author prefixes stripped. The current implementation gets `rawText` from the raw message content, which is correct. The regex should tolerate leading/trailing whitespace (the `.trim()` in `parseTeammateMessage` handles this).
+The `ChatThreadDO.formatAttributedUserMessage` adds `[Name (email)]:` prefixes. Teammate messages are injected by the Claude SDK, not typed by users, so they shouldn't go through author attribution. If they do, the regex won't match (it expects `<teammate-message` at start) and they'll fall through to regular rendering with XML stripped.
 
 ### Streaming teammate messages
 
-Teammate messages arrive as complete `user` role messages (not streamed incrementally), so there's no partial-render concern.
+Teammate messages arrive as complete `user` role messages, never streamed. No partial-render concern.
 
 ---
 
@@ -362,31 +257,31 @@ Teammate messages arrive as complete `user` role messages (not streamed incremen
 
 | File | Change | Description |
 |------|--------|-------------|
-| `src/components/tool-call/tool-summary.ts` | Edit | Add `TeamCreate` case with running/complete tense |
-| `src/components/tool-call/tool-details.tsx` | Edit | Import + register `TeamCreateDetails` component |
-| `src/components/tool-call/details/team-create-details.tsx` | **New** | Detail renderer showing team name, description, lead agent, config link |
-| `src/components/message-bubble.tsx` | Edit | Add teammate message parsing + `TeammateMessageBubble` component |
+| `src/components/tool-call/tool-summary.ts` | Already done | `TeamCreate` case with running/complete tense |
+| `src/components/tool-call/tool-details.tsx` | Already done | Import + register `TeamCreateDetails` |
+| `src/components/tool-call/details/team-create-details.tsx` | Already done | Detail renderer: team, description, lead agent, config link |
+| `src/components/tool-call/teammate-message.tsx` | **New** | Collapsible tool-call-style row for teammate messages |
+| `src/components/message-bubble.tsx` | **Edit** | Remove `TeammateMessageBubble` + `Users` import, use `TeammateMessage` |
 
 ---
 
 ## Implementation Order
 
-1. **TeamCreate tool summary** (`tool-summary.ts`) - quickest win, gives proper collapsed text
-2. **TeamCreateDetails** (`team-create-details.tsx` + `tool-details.tsx`) - proper expanded state
-3. **Teammate message parsing** (`message-bubble.tsx`) - regex + parser function
-4. **TeammateMessageBubble** (`message-bubble.tsx`) - the rendered component
-5. **Copy support** (`message-bubble.tsx`) - strip XML tags from copy text
+1. Create `TeammateMessage` component (`src/components/tool-call/teammate-message.tsx`)
+2. Update `message-bubble.tsx`: remove `TeammateMessageBubble` + `Users` import, import + use `TeammateMessage`
+3. Verify build
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] TeamCreate tool shows "Creating team {name}..." while running and "Created team {name}" when complete
-- [ ] TeamCreate expanded state shows Team, Description, Lead agent, and Config as structured `DetailRow` fields (not raw JSON)
-- [ ] Config path is a clickable `FileLink`
-- [ ] Teammate messages render left-aligned with blue accent border and `Users` icon
-- [ ] Teammate ID is displayed as a small label above the message content
-- [ ] Teammate message content renders as markdown (code blocks, backticks, etc.)
+- [x] TeamCreate tool shows "Creating team {name}..." while running and "Created team {name}" when complete
+- [x] TeamCreate expanded state shows structured `DetailRow` fields (not raw JSON)
+- [x] Config path is a clickable `FileLink`
+- [ ] Teammate messages render as a collapsible tool-call row with green status dot
+- [ ] Collapsed state shows `"{teammateId}: {first line preview...}"` as summary text
+- [ ] Expanded state shows full message content as markdown in the standard left-bordered detail panel
+- [ ] Same hover/chevron/animation behavior as all other tool calls
 - [ ] Raw `<teammate-message>` XML tags are never visible to the user
-- [ ] Copying a teammate message gives plain text without XML tags
+- [ ] Copying content strips teammate XML tags
 - [ ] Regular user messages are unaffected by the teammate parsing
