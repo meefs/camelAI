@@ -835,15 +835,17 @@ export class WorkspaceContainer {
     // Any persisted version means the sprite was successfully created and bootstrapped at
     // some point. We can skip the Sprites API lookup on cold start.
     this.spriteKnownToExist = true;
-    if (version === BOOTSTRAP_VERSION) {
-      console.log(`[Sprite] setKnownBootstrapVersion: versions match, skipping bootstrap`);
-      this.runnerScriptBootstrapped = true;
-      this.runnerDependencyBootstrapped = true;
-      this.runnerSkillsBootstrapped = true;
-      this.createWorkerBootstrapped = true;
-    } else {
-      console.log(`[Sprite] setKnownBootstrapVersion: versions differ, will run bootstrap`);
-    }
+    // DEBUG: Force bootstrap to always run while debugging skills installation
+    console.log(`[Sprite] setKnownBootstrapVersion: DEBUG MODE - forcing full bootstrap`);
+    // if (version === BOOTSTRAP_VERSION) {
+    //   console.log(`[Sprite] setKnownBootstrapVersion: versions match, skipping bootstrap`);
+    //   this.runnerScriptBootstrapped = true;
+    //   this.runnerDependencyBootstrapped = true;
+    //   this.runnerSkillsBootstrapped = true;
+    //   this.createWorkerBootstrapped = true;
+    // } else {
+    //   console.log(`[Sprite] setKnownBootstrapVersion: versions differ, will run bootstrap`);
+    // }
   }
 
   private async ensureRunnerBootstrap(spriteName: string): Promise<void> {
