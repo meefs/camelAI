@@ -126,11 +126,52 @@ plt.savefig("chart.png")
 sns.barplot(data=df, x="category", y="amount")
 plt.savefig("barplot.png")
 
-# Plotly (interactive HTML)
+# Plotly (interactive)
 import plotly.express as px
 fig = px.line(df, x="date", y="value")
-fig.write_html("chart.html")
+fig.show()
 ```
+
+## Jupyter Notebook Workflow (Preferred)
+
+For exploratory analysis, prefer delivering results as a Jupyter notebook (`.ipynb`) instead of a standalone `.py` script with separate chart/image files. Notebooks let you combine code, visual output, and markdown conclusions in one artifact.
+
+### Build notebooks incrementally
+
+- Prefer using `NotebookEdit` for notebook changes (add/update markdown and code cells) instead of hand-editing raw JSON.
+- Keep a narrative flow:
+  - markdown cell: objective and dataset context
+  - code cell: data loading/cleaning
+  - markdown cell: what to look for
+  - code cell: chart/query
+  - markdown cell: interpretation and takeaway
+
+### Execute notebooks
+
+```bash
+# Install tools if needed
+uv pip install --system jupyter nbconvert
+
+# Execute in place so outputs are saved into the notebook file
+python -m jupyter nbconvert --to notebook --execute --inplace analysis.ipynb
+```
+
+### Preview notebooks in chat
+
+After creating or updating a notebook, set the active chat preview to the notebook file:
+
+```text
+set_file_preview(
+  path="/home/sprite/analysis.ipynb",
+  content_type="application/x-ipynb+json"
+)
+```
+
+### Interactive output guidance
+
+- Prefer `plotly` for interactive charts in notebook previews (`fig.show()` or Plotly MIME output).
+- `matplotlib`/`seaborn` outputs render as static images in notebooks.
+- Prefer Plotly over niche notebook-specific chart stacks when you need reliable interactive behavior in preview.
 
 ### Scientific Computing & ML
 
