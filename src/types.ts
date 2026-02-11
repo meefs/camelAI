@@ -50,7 +50,13 @@ export interface ThinkingBlock {
   thinking: string;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock;
+export interface TeammateMessageBlock {
+  type: 'teammate_message';
+  teammateId: string;
+  content: string;
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock | TeammateMessageBlock;
 
 export interface Message {
   id: string;

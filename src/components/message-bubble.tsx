@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/tooltip';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ThinkingBlock, ToolCall } from '@/components/tool-call';
+import { TeammateMessage } from '@/components/tool-call/teammate-message';
 import { LoadingDots } from '@/components/loading-dots';
 import { CompactSummaryCard } from '@/components/compact-summary-card';
 import type { ReactNode } from 'react';
@@ -227,6 +228,7 @@ export function contentToString(content: string | ContentBlock[]): string {
       if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
       if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
       if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+      if (block.type === 'teammate_message') return `[Update from ${block.teammateId}]\n${block.content}`;
       return '';
     })
     .filter(Boolean)
@@ -332,6 +334,20 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
         kind: 'tool',
         key: `result-${block.tool_use_id || index}`,
         node: <ToolCall result={block} isStreaming={isStreaming} />,
+      });
+      return;
+    }
+
+    if (block.type === 'teammate_message') {
+      items.push({
+        kind: 'tool',
+        key: `teammate-${index}`,
+        node: (
+          <TeammateMessage
+            teammateId={block.teammateId}
+            content={block.content}
+          />
+        ),
       });
     }
   });

@@ -14,6 +14,7 @@ import { NotebookDetails } from './details/notebook-details';
 import { GenericDetails } from './details/generic-details';
 import { McpDetails } from './details/mcp-details';
 import { SkillDetails } from './details/skill-details';
+import { TeamCreateDetails } from './details/team-create-details';
 import { isMcpTool } from './mcp-utils';
 
 interface ToolCallDetailsProps {
@@ -74,6 +75,9 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
       break;
     case 'NotebookEdit':
       content = <NotebookDetails tool={tool} />;
+      break;
+    case 'TeamCreate':
+      content = <TeamCreateDetails tool={tool} result={result} />;
       break;
     default:
       content = <GenericDetails tool={tool} result={result} />;

@@ -149,6 +149,18 @@ export function getToolSummaryParts(
       const summary = description || (isStreaming ? 'working...' : 'task');
       return { action: `Agent: ${summary}` };
     }
+    case 'TeamCreate': {
+      const teamName = typeof inputRecord.team_name === 'string' ? inputRecord.team_name : '';
+      if (status === 'running') {
+        if (!teamName) return { action: 'Creating team...' };
+        return { action: `Creating team ${teamName}...` };
+      }
+      if (status === 'error') {
+        if (!teamName) return { action: 'Failed to create team' };
+        return { action: `Failed to create team ${teamName}` };
+      }
+      return { action: `Created team ${teamName || 'team'}` };
+    }
     case 'Skill': {
       const skill = typeof inputRecord.skill === 'string' ? inputRecord.skill : '';
       if (!result) {
