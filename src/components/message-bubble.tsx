@@ -1,6 +1,6 @@
 'use client';
 
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, Users } from 'lucide-react';
 import type { Message, ContentBlock, ToolResultBlock } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -51,6 +51,30 @@ const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
  */
 function stripSystemMessageTags(text: string): string {
   return text.replace(/<chiridion system message>[\s\S]*?<\/chiridion system message>/g, '').trim();
+}
+
+const TEAMMATE_MESSAGE_REGEX = /^<teammate-message\s+teammate_id="([^"]+)">\n?([\s\S]*?)\n?<\/teammate-message>$/;
+
+interface ParsedTeammateMessage {
+  teammateId: string;
+  content: string;
+}
+
+function parseTeammateMessage(rawContent: string): ParsedTeammateMessage | null {
+  const stripped = stripSystemMessageTags(rawContent).trim();
+  const match = stripped.match(TEAMMATE_MESSAGE_REGEX);
+  if (!match) return null;
+  return {
+    teammateId: match[1] ?? '',
+    content: (match[2] ?? '').trim(),
+  };
+}
+
+function stripTeammateMessageTags(text: string): string {
+  return text
+    .replace(/<teammate-message\s+teammate_id="[^"]*">\n?/g, '')
+    .replace(/<\/teammate-message>/g, '')
+    .trim();
 }
 
 function parseMessageAuthor(rawContent: string): ParsedMessage {
@@ -176,10 +200,10 @@ function hasVisibleContent(content: string | ContentBlock[]): boolean {
 
 // Convert content to string for copy functionality
 export function contentToString(content: string | ContentBlock[]): string {
-  if (typeof content === 'string') return stripSystemMessageTags(content);
+  if (typeof content === 'string') return stripTeammateMessageTags(stripSystemMessageTags(content));
   return content
     .map(block => {
-      if (block.type === 'text') return stripSystemMessageTags(block.text);
+      if (block.type === 'text') return stripTeammateMessageTags(stripSystemMessageTags(block.text));
       if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
       if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
       if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
@@ -315,6 +339,60 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
   return <div className="space-y-4">{sections}</div>;
 }
 
+function TeammateMessageBubble({
+  teammateId,
+  content,
+  timestamp,
+  onCopy,
+  isCopied,
+  messageId,
+}: {
+  teammateId: string;
+  content: string;
+  timestamp: number;
+  onCopy: (id: string, content: string) => void;
+  isCopied: boolean;
+  messageId: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="max-w-none border-l-2 border-blue-500/40 bg-muted/20 rounded-lg pl-3 pr-3 py-2">
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <Users className="h-3.5 w-3.5 text-blue-500/70" />
+          <span className="text-xs font-medium text-blue-500/70">{teammateId}</span>
+        </div>
+        <div className="max-w-none">
+          <MarkdownRenderer content={content} />
+        </div>
+      </div>
+      <div
+        className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+        role="group"
+        aria-label="Message actions"
+      >
+        <span className="text-muted-foreground text-xs mr-1">
+          {formatMessageTime(timestamp)}
+        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground"
+              onClick={() => onCopy(messageId, content)}
+            >
+              {isCopied ? <Check /> : <Copy />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {isCopied ? 'Copied!' : 'Copy message'}
+          </TooltipContent>
+        </Tooltip>
+      </div>
+    </div>
+  );
+}
+
 interface MessageBubbleProps {
   message: Message;
   onCopy: (id: string, content: string) => void;
@@ -352,6 +430,28 @@ export function MessageBubble({
     : message.content.length > 0;
 
   if (message.role === 'user') {
+    // Check for teammate messages first - these render differently from user bubbles
+    const rawTextForTeammate = typeof message.content === 'string'
+      ? message.content
+      : message.content
+          .map(block => (block.type === 'text' ? block.text : ''))
+          .filter(Boolean)
+          .join('\n');
+
+    const teammateMessage = parseTeammateMessage(rawTextForTeammate);
+    if (teammateMessage) {
+      return (
+        <TeammateMessageBubble
+          teammateId={teammateMessage.teammateId}
+          content={teammateMessage.content}
+          timestamp={message.created_at}
+          onCopy={onCopy}
+          isCopied={isCopied}
+          messageId={message.id}
+        />
+      );
+    }
+
     // Parse author attribution from content and strip prefix for display
     let author: ParsedAuthor | null = null;
     let displayContent: string | ContentBlock[];
