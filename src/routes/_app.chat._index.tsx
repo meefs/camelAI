@@ -9,7 +9,7 @@ import { getWorkerScript } from '@/lib/auth-do';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
-import type { Integration, WorkerScriptWithCreator } from '@/types';
+import type { Integration, Thread, WorkerScriptWithCreator } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
 
 export function meta() {
@@ -77,10 +77,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   }
 
   let connections: Integration[] = [];
+  let recentThreads: Thread[] = [];
   if (workspaceId) {
-    const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-    const records = await wsStub.getIntegrations();
+    const [records, threads] = await Promise.all([
+      env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)).getIntegrations(),
+      chatDO.getRecentThreads(context, workspaceId, 6),
+    ]);
     connections = records.map(integrationRecordToIntegration);
+    recentThreads = threads;
   }
 
   return {
@@ -90,6 +94,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     userName,
     allApps,
     connections,
+    recentThreads,
     renderedAt,
   };
 }
@@ -115,7 +120,8 @@ export async function action({ request, context }: Route.ActionArgs) {
         context,
         authContext.currentWorkspace.id,
         undefined, // title will be generated asynchronously
-        authContext.user?.id
+        authContext.user?.id,
+        firstMessage || undefined
       );
 
       // Set preview apps if provided (for "chat with this app" flow)
@@ -162,6 +168,7 @@ export default function NewChatPage() {
     userName,
     allApps,
     connections,
+    recentThreads,
     renderedAt,
   } = useLoaderData<typeof loader>();
   const { currentWorkspace } = useAuthData();
@@ -189,6 +196,7 @@ export default function NewChatPage() {
         userName,
         allApps,
         connections,
+        recentThreads,
         renderedAt,
       }}
     />

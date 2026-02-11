@@ -6,6 +6,7 @@ export interface Thread {
   created_at: number;
   updated_at: number;
   user_message_count: number;
+  first_user_message?: string | null;
   creator?: User;
 }
 

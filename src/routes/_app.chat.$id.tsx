@@ -1,9 +1,11 @@
+import { waitUntil } from 'cloudflare:workers';
 import { Suspense, use } from 'react';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getWorkerScript } from '@/lib/auth-do';
+import { getFirstThreadPreviewUserMessage } from '@/lib/thread-preview';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
@@ -59,6 +61,19 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
           chatDO.getMessages(context, params.id, workspaceId),
           chatDO.getThreadPreviewTarget(context, params.id).catch(() => null),
         ]);
+
+        if (!thread?.first_user_message) {
+          const firstUserMessage = getFirstThreadPreviewUserMessage(messages);
+          if (firstUserMessage) {
+            waitUntil(
+              chatDO
+                .setThreadFirstUserMessage(context, params.id, firstUserMessage, workspaceId)
+                .catch((error) => {
+                  console.warn('[chat loader] Failed to lazy-populate first_user_message:', error);
+                })
+            );
+          }
+        }
 
         let previewTarget = previewTargetRaw;
         if (previewTarget?.kind === 'app') {

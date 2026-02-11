@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import type {
   Message,
   ContentBlock,
+  Thread,
   ToolResultBlock,
   ToolUseBlock,
   WorkerScriptWithCreator,
@@ -85,6 +86,7 @@ interface ChatProps {
     userName: string | null;
     allApps: WorkerScriptWithCreator[];
     connections: Integration[];
+    recentThreads: Thread[];
     renderedAt: number;
   };
 }
@@ -812,6 +814,7 @@ export default function Chat({
     userName: user?.name ?? null,
     allApps: [],
     connections: [],
+    recentThreads: [],
     renderedAt: fallbackRenderedAtRef.current,
   };
   // Use static key for pending messages - threadId in payload ensures correct matching
@@ -2951,6 +2954,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   userName={resolvedWelcomeData.userName}
                   allApps={resolvedWelcomeData.allApps}
                   connections={resolvedWelcomeData.connections}
+                  recentThreads={resolvedWelcomeData.recentThreads}
                   renderedAt={resolvedWelcomeData.renderedAt}
                   inputValue={welcomeInput}
                   onPromptChange={setWelcomeInput}
