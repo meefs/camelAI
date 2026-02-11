@@ -13,7 +13,8 @@ import {
   getKeyHash,
 } from './openrouter-keys';
 import { waitUntil } from 'cloudflare:workers';
-import { SpritesClient } from '@fly/sprites';
+import { SpritesClient, Sprite } from '@fly/sprites';
+import type { ExecResult } from '@fly/sprites';
 import { SPRITE_ASSETS, SPRITE_BOOTSTRAP_VERSION } from './sprite-assets-manifest';
 import type { OrgDO } from './auth';
 import type { WorkspaceDO } from './workspace';
@@ -266,6 +267,13 @@ export class WorkspaceContainer {
       });
     }
     return this.spritesClient;
+  }
+
+  /**
+   * Get a Sprite instance for executing commands.
+   */
+  private getSprite(name: string): Sprite {
+    return new Sprite(name, this.getSpritesClient());
   }
 
   private getFsWorkingDir(): string {
@@ -588,7 +596,7 @@ export class WorkspaceContainer {
     console.log(`[Sprite] bootstrap: downloading runner scripts (${SPRITE_ASSETS.runner.hash})`);
 
     const assetUrl = this.getAssetUrl(SPRITE_ASSETS.runner.path);
-    const installResult = await this.execHttpRawForSprite(
+    const installResult = await this.execOnSprite(
       spriteName,
       [
         'bash',
@@ -658,7 +666,7 @@ export class WorkspaceContainer {
       throw new Error(`Failed writing /app/package.json: ${packageJsonWrite.status} ${body}`);
     }
 
-    const installResult = await this.execHttpRawForSprite(
+    const installResult = await this.execOnSprite(
       spriteName,
       [
         'bash',
@@ -717,7 +725,7 @@ export class WorkspaceContainer {
     console.log(`[Sprite] bootstrap: updating skills (${installedVersion || 'none'} → ${SPRITE_ASSETS.skills.hash})`);
 
     const assetUrl = this.getAssetUrl(SPRITE_ASSETS.skills.path);
-    const installResult = await this.execHttpRawForSprite(
+    const installResult = await this.execOnSprite(
       spriteName,
       [
         'bash',
@@ -774,7 +782,7 @@ export class WorkspaceContainer {
     console.log(`[Sprite] bootstrap: updating create-worker (${installedVersion || 'none'} → ${SPRITE_ASSETS.createWorker.hash})`);
 
     const assetUrl = this.getAssetUrl(SPRITE_ASSETS.createWorker.path);
-    const installResult = await this.execHttpRawForSprite(
+    const installResult = await this.execOnSprite(
       spriteName,
       [
         'bash',
@@ -1131,7 +1139,7 @@ export class WorkspaceContainer {
     const needsUpgrade = installedVersion !== R2_MOUNT_SERVICE_VERSION;
 
     // Check if service already exists and is running
-    const listResult = await this.execHttpRawForSprite(spriteName, [
+    const listResult = await this.execOnSprite(spriteName, [
       'sprite-env', 'services', 'get', serviceName,
     ]);
 
@@ -1139,10 +1147,10 @@ export class WorkspaceContainer {
       if (needsUpgrade) {
         // Version changed - delete and recreate with new config
         console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} needs upgrade (${installedVersion} -> ${R2_MOUNT_SERVICE_VERSION})`);
-        await this.execHttpRawForSprite(spriteName, ['sprite-env', 'services', 'delete', serviceName]);
+        await this.execOnSprite(spriteName, ['sprite-env', 'services', 'delete', serviceName]);
       } else {
         // Service running with correct version - check if mount is actually healthy
-        const mountCheck = await this.execHttpRawForSprite(spriteName, [
+        const mountCheck = await this.execOnSprite(spriteName, [
           'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
         ]);
         if (mountCheck.success && mountCheck.stdout.trim() === 'ok') {
@@ -1151,18 +1159,18 @@ export class WorkspaceContainer {
         }
         // Mount is stale - restart the service
         console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} running but mount stale, restarting`);
-        await this.execHttpRawForSprite(spriteName, ['sprite-env', 'services', 'restart', serviceName]);
+        await this.execOnSprite(spriteName, ['sprite-env', 'services', 'restart', serviceName]);
         await delay(500);
         return;
       }
     } else if (listResult.success && listResult.stdout.includes('"name"')) {
       // Service exists but not running - delete and recreate
       console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} exists but not running, recreating`);
-      await this.execHttpRawForSprite(spriteName, ['sprite-env', 'services', 'delete', serviceName]);
+      await this.execOnSprite(spriteName, ['sprite-env', 'services', 'delete', serviceName]);
     }
 
     // Ensure mount point exists with correct ownership
-    await this.execHttpRawForSprite(spriteName, [
+    await this.execOnSprite(spriteName, [
       'bash', '-c', `sudo mkdir -p ${mountPoint} && sudo chown sprite:sprite ${mountPoint}`,
     ]);
 
@@ -1188,7 +1196,7 @@ export class WorkspaceContainer {
 
     // Create the service using sprite-env (sudo for FUSE access)
     console.log(`[Sprite] ensureR2MountServiceInstance: creating service ${serviceName} for ${bucketPath} -> ${mountPoint}`);
-    const createResult = await this.execHttpRawForSprite(spriteName, [
+    const createResult = await this.execOnSprite(spriteName, [
       'sprite-env', 'services', 'create', serviceName,
       '--cmd', 'sudo',
       '--args', rcloneArgs.join(','),
@@ -1203,7 +1211,7 @@ export class WorkspaceContainer {
 
     // Verify mount is working
     await delay(500);
-    const verifyResult = await this.execHttpRawForSprite(spriteName, [
+    const verifyResult = await this.execOnSprite(spriteName, [
       'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
     ]);
     if (!verifyResult.success || verifyResult.stdout.trim() !== 'ok') {
@@ -1234,7 +1242,7 @@ export class WorkspaceContainer {
    * Ensure rclone and fuse are installed on the sprite.
    */
   private async ensureRcloneInstalled(spriteName: string): Promise<void> {
-    const checkResult = await this.execHttpRawForSprite(spriteName, [
+    const checkResult = await this.execOnSprite(spriteName, [
       'bash', '-c', 'command -v rclone && grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null && echo ok',
     ]);
 
@@ -1243,7 +1251,7 @@ export class WorkspaceContainer {
     }
 
     console.log(`[Sprite] ensureRcloneInstalled: installing rclone + fuse for sprite=${spriteName}`);
-    const installResult = await this.execHttpRawForSprite(spriteName, [
+    const installResult = await this.execOnSprite(spriteName, [
       'bash', '-c', [
         'sudo apt-get update -qq',
         'sudo apt-get install -y -qq rclone fuse 2>/dev/null || true',
@@ -1471,69 +1479,66 @@ export class WorkspaceContainer {
     return { status: sprite.status || 'unknown' };
   }
 
-  private async execHttpRawForSprite(
+  /**
+   * Execute a command on a sprite using the official SDK.
+   * Wraps the library's execFile to maintain compatibility with existing code.
+   */
+  private async execOnSprite(
     spriteName: string,
     args: string[],
     options: {
       cwd?: string;
-      stdin?: string;
       env?: Record<string, string>;
     } = {}
   ): Promise<ControlPlaneExecResponse> {
-    const url = new URL(`${this.spritesApiBaseUrl}/v1/sprites/${encodeURIComponent(spriteName)}/exec`);
-
-    for (const arg of args) {
-      url.searchParams.append('cmd', arg);
+    if (args.length === 0) {
+      return { success: false, stdout: '', stderr: 'No command provided', exitCode: 1 };
     }
 
-    if (options.cwd) {
-      url.searchParams.set('dir', options.cwd);
-    }
+    const sprite = this.getSprite(spriteName);
+    const [command, ...commandArgs] = args;
 
-    if (typeof options.stdin === 'string') {
-      url.searchParams.set('stdin', 'true');
-    }
+    try {
+      const result = await sprite.execFile(command, commandArgs, {
+        cwd: options.cwd,
+        env: options.env,
+      });
 
-    if (options.env && Object.keys(options.env).length > 0) {
-      for (const [key, value] of Object.entries(options.env)) {
-        url.searchParams.append('env', `${key}=${value}`);
+      return {
+        success: result.exitCode === 0,
+        stdout: String(result.stdout),
+        stderr: String(result.stderr),
+        exitCode: result.exitCode,
+      };
+    } catch (err) {
+      // ExecError is thrown for non-zero exit codes
+      const execErr = err as { result?: ExecResult; message?: string };
+      if (execErr.result) {
+        return {
+          success: false,
+          stdout: String(execErr.result.stdout),
+          stderr: String(execErr.result.stderr),
+          exitCode: execErr.result.exitCode,
+        };
       }
-    }
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: this.buildSpritesHeaders(),
-      body: options.stdin,
-    });
-
-    const body = await response.text();
-
-    if (!response.ok) {
+      // Other errors (network, etc.)
       return {
         success: false,
         stdout: '',
-        stderr: body,
-        exitCode: response.status,
+        stderr: String(execErr.message || err),
+        exitCode: 1,
       };
     }
-
-    return {
-      success: true,
-      stdout: body,
-      stderr: '',
-      exitCode: 0,
-    };
   }
 
   private async execHttpRaw(
     args: string[],
     options: {
       cwd?: string;
-      stdin?: string;
       env?: Record<string, string>;
     } = {}
   ): Promise<ControlPlaneExecResponse> {
-    return this.execHttpRawForSprite(this.requireSpriteName(), args, options);
+    return this.execOnSprite(this.requireSpriteName(), args, options);
   }
 
   async exec(command: string, options?: { timeout?: number; cwd?: string }): Promise<ControlPlaneExecResponse> {
