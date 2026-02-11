@@ -709,6 +709,7 @@ export default function Chat({
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentPreviewUrlsRef = useRef<Set<string>>(new Set());
   const [isDragOver, setIsDragOver] = useState(false);
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(initialPreviewTarget ?? null);
   const previewTargetRef = useRef<PreviewTarget | null>(initialPreviewTarget ?? null);
@@ -757,6 +758,12 @@ export default function Chat({
   useEffect(() => {
     previewTargetRef.current = previewTarget;
   }, [previewTarget]);
+
+  const revokeAttachmentPreviewUrl = useCallback((url?: string) => {
+    if (!url) return;
+    attachmentPreviewUrlsRef.current.delete(url);
+    URL.revokeObjectURL(url);
+  }, []);
 
   const deployedApp = previewTarget?.kind === 'app' ? previewTarget.scriptName : null;
   const appIsPublic = previewTarget?.kind === 'app' ? previewTarget.isPublic : false;
@@ -1527,6 +1534,12 @@ export default function Chat({
       connectedThreadIdRef.current = null;
       connectedWorkspaceIdRef.current = null;
 
+      // Revoke any remaining attachment blob URLs that were not removed/sent.
+      for (const previewUrl of attachmentPreviewUrlsRef.current) {
+        URL.revokeObjectURL(previewUrl);
+      }
+      attachmentPreviewUrlsRef.current.clear();
+
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -1882,6 +1895,9 @@ export default function Chat({
       const previewUrl = isImageFile(file.name, file.type || undefined)
         ? URL.createObjectURL(file)
         : undefined;
+      if (previewUrl) {
+        attachmentPreviewUrlsRef.current.add(previewUrl);
+      }
 
       // Add to state as uploading
       setAttachments(prev => [...prev, {
@@ -1937,12 +1953,10 @@ export default function Chat({
   const handleAttachmentRemove = useCallback((id: string) => {
     setAttachments(prev => {
       const removed = prev.find(a => a.id === id);
-      if (removed?.previewUrl) {
-        URL.revokeObjectURL(removed.previewUrl);
-      }
+      revokeAttachmentPreviewUrl(removed?.previewUrl);
       return prev.filter(a => a.id !== id);
     });
-  }, []);
+  }, [revokeAttachmentPreviewUrl]);
 
   // Drag-drop handlers for the whole chat area
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -2073,7 +2087,9 @@ export default function Chat({
 
     // Clear attachments (revoke any blob URLs to avoid memory leaks)
     setAttachments(prev => {
-      for (const a of prev) { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); }
+      for (const a of prev) {
+        revokeAttachmentPreviewUrl(a.previewUrl);
+      }
       return [];
     });
 
@@ -2454,7 +2470,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
     // Clear attachments after building message (revoke any blob URLs to avoid memory leaks)
     setAttachments(prev => {
-      for (const a of prev) { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); }
+      for (const a of prev) {
+        revokeAttachmentPreviewUrl(a.previewUrl);
+      }
       return [];
     });
 

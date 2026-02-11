@@ -36,7 +36,7 @@ export function AttachmentList({ attachments, onRemove, className }: AttachmentL
         // Image attachments that are fully uploaded get a square thumbnail preview
         if (isImage && attachment.previewUrl && attachment.status === 'complete') {
           return (
-            <div key={attachment.id} className="group/card relative">
+            <div key={attachment.id} className="group/card relative outline-none" tabIndex={0}>
               <div className="h-[88px] w-[88px] overflow-hidden rounded-lg border border-border bg-muted/30">
                 <img
                   src={attachment.previewUrl}
@@ -47,7 +47,7 @@ export function AttachmentList({ attachments, onRemove, className }: AttachmentL
               <button
                 type="button"
                 onClick={() => onRemove(attachment.id)}
-                className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground/80 text-background opacity-0 transition-opacity group-hover/card:opacity-100"
+                className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground/80 text-background opacity-0 transition-opacity group-hover/card:opacity-100 group-focus-within/card:opacity-100"
                 aria-label={`Remove ${attachment.name}`}
               >
                 <X className="h-2.5 w-2.5" />

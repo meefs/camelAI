@@ -55,7 +55,7 @@ export function FileCard({
   const CardElement = onClick ? 'button' : 'div';
 
   return (
-    <div className="group/card relative">
+    <div className="group/card relative outline-none" tabIndex={showRemove ? 0 : undefined}>
       <CardElement
         {...(onClick ? { type: 'button' as const, onClick } : {})}
         className={cn(
@@ -128,7 +128,7 @@ export function FileCard({
             e.stopPropagation();
             onRemove?.();
           }}
-          className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground/80 text-background opacity-0 transition-opacity group-hover/card:opacity-100"
+          className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground/80 text-background opacity-0 transition-opacity group-hover/card:opacity-100 group-focus-within/card:opacity-100"
           aria-label={`Remove ${filename}`}
         >
           <X className="h-2.5 w-2.5" />
