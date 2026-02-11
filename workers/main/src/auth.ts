@@ -314,6 +314,18 @@ export interface OrgThread {
   user_message_count: number;
 }
 
+export type OrgChatThreadAccessResult =
+  | {
+      ok: true;
+      orgId: string;
+      orgSlug: string;
+      threadId: string;
+    }
+  | {
+      ok: false;
+      reason: 'org_not_found' | 'forbidden' | 'thread_not_found';
+    };
+
 export interface ProxyUsageInput {
   input_tokens: number;
   output_tokens: number;
@@ -2346,6 +2358,33 @@ export class OrgDO extends DurableObject<DOEnv> {
       now,
       id
     );
+  }
+
+  async validateChatThreadAccess(
+    userId: string,
+    workspaceId: string,
+    threadId: string
+  ): Promise<OrgChatThreadAccessResult> {
+    const info = await this.getInfo();
+    if (!info || info.archived) {
+      return { ok: false, reason: 'org_not_found' };
+    }
+
+    if (!(await this.isMember(userId))) {
+      return { ok: false, reason: 'forbidden' };
+    }
+
+    const thread = this.getThread(threadId);
+    if (!thread || thread.workspace_id !== workspaceId) {
+      return { ok: false, reason: 'thread_not_found' };
+    }
+
+    return {
+      ok: true,
+      orgId: info.id,
+      orgSlug: info.slug || `org-${info.id.slice(0, 3)}`,
+      threadId,
+    };
   }
 
   /**

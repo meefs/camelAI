@@ -18,24 +18,6 @@ export function meta({ data }: Route.MetaArgs) {
   ];
 }
 
-export async function action({ request, context, params }: Route.ActionArgs) {
-  const authContext = await requireAuthContext(request, context);
-
-  if (!authContext.currentWorkspace?.id) {
-    return { success: false };
-  }
-
-  const formData = await request.formData();
-  const intent = formData.get('intent');
-
-  if (intent === 'touch') {
-    await chatDO.touchThread(context, params.id, authContext.currentWorkspace.id);
-    return { success: true };
-  }
-
-  return { success: false };
-}
-
 // Type for the combined data promise
 interface ChatData {
   messages: Message[];

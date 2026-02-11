@@ -5,35 +5,24 @@
 import type { RouteContext } from '../types.js';
 import { THREAD_TOKEN_HEADER } from '../types.js';
 import { createSignedToken } from '../signed-tokens.js';
-import { requireWorkspaceAccess } from '../helpers/auth.js';
+import { requireChatWebSocketAccess } from '../helpers/auth.js';
 import { getUserStub, getThreadStub } from '../helpers/stubs.js';
 import { text } from '../helpers/response.js';
 
 export async function handleChatWebSocket({ req, env, url }: RouteContext): Promise<Response> {
-  const access = await requireWorkspaceAccess(req, env);
-  if ('error' in access) return access.error;
-
-  const { orgId, workspaceId, userId, orgStub, wsInfo, orgInfo } = access;
-
-  // Get user profile
-  const profile = await getUserStub(env, userId).getProfile();
-  if (!profile) return text('User not found', 404);
-
-  // Validate thread - required for chat channel
   const threadIdFromUrl = url.searchParams.get('threadId');
   if (!threadIdFromUrl) {
     return text('Missing threadId', 400);
   }
 
-  // wsInfo and orgInfo already validated by requireWorkspaceAccess
-  const thread = await orgStub.getThread(threadIdFromUrl);
-  if (!thread || thread.workspace_id !== workspaceId) {
-    return text('Thread not found', 404);
-  }
-  const validatedThreadId = threadIdFromUrl;
+  const access = await requireChatWebSocketAccess(req, env, threadIdFromUrl);
+  if ('error' in access) return access.error;
 
-  // Use org slug from already-fetched orgInfo
-  const orgSlug = orgInfo.slug || `org-${orgId.slice(0, 3)}`;
+  const { orgId, orgSlug, workspaceId, userId, threadId } = access;
+
+  // Get user profile
+  const profile = await getUserStub(env, userId).getProfile();
+  if (!profile) return text('User not found', 404);
 
   // Build request with user info headers
   const headers = new Headers(req.headers);
@@ -51,8 +40,8 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
       scopes: ['deploy'],
       exp: Date.now() + 24 * 60 * 60 * 1000,
       workspace_id: workspaceId,
-      thread_id: validatedThreadId,
-      name: `deploy-thread-${validatedThreadId}`,
+      thread_id: threadId,
+      name: `deploy-thread-${threadId}`,
     })
   );
   headers.set(
@@ -64,16 +53,16 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
       scopes: ['mcp'],
       exp: Date.now() + 24 * 60 * 60 * 1000,
       workspace_id: workspaceId,
-      thread_id: validatedThreadId,
-      name: `mcp-thread-${validatedThreadId}`,
+      thread_id: threadId,
+      name: `mcp-thread-${threadId}`,
     })
   );
 
   const doUrl = new URL('https://chat-thread/chat');
-  doUrl.searchParams.set('threadId', validatedThreadId);
+  doUrl.searchParams.set('threadId', threadId);
   doUrl.searchParams.set('workspaceId', workspaceId);
   doUrl.searchParams.set('orgId', orgId);
 
   const modifiedReq = new Request(doUrl.toString(), { method: 'GET', headers });
-  return getThreadStub(env, validatedThreadId).fetch(modifiedReq);
+  return getThreadStub(env, threadId).fetch(modifiedReq);
 }

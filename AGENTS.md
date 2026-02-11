@@ -213,10 +213,11 @@ export async function action({ request, context }: Route.ActionArgs) {
 ### Message Sending
 1. User types message in `Chat.tsx`
 2. WebSocket connects to `/ws/{workspace}` - Worker validates access and forwards to `ChatThreadDO`
-3. `ChatThreadDO` opens/attaches a sprite exec session running `claude-runner.mjs`
-4. `claude-runner.mjs` calls Claude SDK `query()` and streams events over stdout
-5. `ChatThreadDO` multiplexes/replays events to connected chat clients
-6. Claude SDK stores messages in JSONL files on the sprite at `/home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl`
+3. On accepted user messages, `ChatThreadDO` updates thread metadata (`updated_at` and `user_message_count`) via `OrgDO.touchThread`
+4. `ChatThreadDO` opens/attaches a sprite exec session running `claude-runner.mjs`
+5. `claude-runner.mjs` calls Claude SDK `query()` and streams events over stdout
+6. `ChatThreadDO` multiplexes/replays events to connected chat clients
+7. Claude SDK stores messages in JSONL files on the sprite at `/home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl`
 
 ### Slash Commands
 Users can send Claude SDK slash commands by typing the command as their entire message (nothing else). `ChatThreadDO.formatAttributedUserMessage()` detects these and strips the author prefix so the SDK receives the bare command. Supported commands:

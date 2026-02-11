@@ -663,6 +663,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       type: 'message',
       content: attributedContent,
     });
+
+    this.ctx.waitUntil(
+      this.touchThreadForUserMessage().catch((err) => {
+        console.error('[ChatThreadDO] failed to touch thread after user message', err);
+      })
+    );
   }
 
   private async handleChatStop(): Promise<void> {
@@ -800,6 +806,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (userName) return `[${userName}]: `;
     if (userEmail) return `[${userEmail}]: `;
     return '';
+  }
+
+  private async touchThreadForUserMessage(): Promise<void> {
+    const context = this.chatContext;
+    if (!context?.orgId || !context?.threadId) return;
+
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(context.orgId));
+    await orgStub.touchThread(context.threadId);
   }
 
   private async ensureRunnerConnected(): Promise<void> {

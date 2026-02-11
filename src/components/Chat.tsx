@@ -547,7 +547,6 @@ export default function Chat({
     thread?: { id: string };
     error?: string;
   }>();
-  const touchFetcher = useFetcher();
   const { user, currentWorkspace, currentOrg, orgs } = useAuthData();
   const isMobile = useIsMobile();
   // Anchor to last message for existing threads with messages (not new threads)
@@ -2442,12 +2441,6 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
     // Clear any previous error
     setError(null);
-
-    // Update thread timestamp so it appears at top of history list
-    touchFetcher.submit(
-      { intent: 'touch' },
-      { method: 'POST' }
-    );
 
     // Add user message to state immediately (optimistic)
     const userMsg: Message = {

@@ -965,6 +965,8 @@ export class WorkspaceContainer {
   }
 
   async buildEnvVars(workspaceId: string, orgId: string): Promise<Record<string, string>> {
+    const buildStartedAt = Date.now();
+    console.log(`[WorkspaceContainer] buildEnvVars:start workspace=${workspaceId} org=${orgId}`);
     this.workspaceId = workspaceId;
     this.orgId = orgId;
 
@@ -1047,6 +1049,7 @@ export class WorkspaceContainer {
       );
     }
 
+    const claudeTokenStartedAt = Date.now();
     const claudeApiToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
       org_id: orgId,
       org_slug: orgSlug,
@@ -1056,14 +1059,17 @@ export class WorkspaceContainer {
       workspace_id: workspaceId,
       name: `claude-api-${workspaceId}`,
     });
+    console.log(`[WorkspaceContainer] buildEnvVars:claude_api_token workspace=${workspaceId} ms=${Date.now() - claudeTokenStartedAt}`);
     envVars.ANTHROPIC_BASE_URL = `${workerBaseUrl}/api/claude`;
     envVars.ANTHROPIC_API_KEY = claudeApiToken;
 
+    const openRouterStartedAt = Date.now();
     const keyRecord = await orgStub.getOpenRouterKeyRecord();
     if (keyRecord) {
       try {
         const openRouterKey = await decryptOpenRouterKey(keyRecord.key_encrypted, this.env.INTEGRATION_SECRET_KEY);
         envVars.OPENROUTER_API_KEY = openRouterKey;
+        console.log(`[WorkspaceContainer] buildEnvVars:openrouter workspace=${workspaceId} source=existing ms=${Date.now() - openRouterStartedAt}`);
       } catch (e) {
         console.error('[WorkspaceContainer] Failed to decrypt org OpenRouter key:', e);
       }
@@ -1083,17 +1089,23 @@ export class WorkspaceContainer {
           null
         );
         envVars.OPENROUTER_API_KEY = keyResponse.key;
+        console.log(`[WorkspaceContainer] buildEnvVars:openrouter workspace=${workspaceId} source=provisioned ms=${Date.now() - openRouterStartedAt}`);
       } catch (e) {
         console.error('[WorkspaceContainer] Failed to create org OpenRouter key:', e);
       }
+    } else {
+      console.log(`[WorkspaceContainer] buildEnvVars:openrouter workspace=${workspaceId} source=none ms=${Date.now() - openRouterStartedAt}`);
     }
 
     envVars.WORKER_BASE_URL = workerBaseUrl;
     envVars.CLOUDFLARE_API_BASE_URL = `${workerBaseUrl}/client/v4`;
 
+    const deployTokenStartedAt = Date.now();
     const deployToken = await createDeployToken(this.env.TOKEN_SIGNING_SECRET, workspaceId, orgId, orgSlug, userId);
+    console.log(`[WorkspaceContainer] buildEnvVars:deploy_token workspace=${workspaceId} ms=${Date.now() - deployTokenStartedAt}`);
     envVars.CLOUDFLARE_API_TOKEN = deployToken;
 
+    const dataProxyStartedAt = Date.now();
     const dataProxyTokenExpiry = Date.now() + TOKEN_TTL_MS;
     const dataProxyToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
       org_id: orgId,
@@ -1104,11 +1116,13 @@ export class WorkspaceContainer {
       workspace_id: workspaceId,
       name: `data-proxy-${workspaceId}`,
     });
+    console.log(`[WorkspaceContainer] buildEnvVars:data_proxy_token workspace=${workspaceId} ms=${Date.now() - dataProxyStartedAt}`);
     envVars.DATA_PROXY_TOKEN = dataProxyToken;
     envVars.DATA_PROXY_URL = `${workerBaseUrl}/api`;
     this.dataProxyTokenExpiry = dataProxyTokenExpiry;
 
     envVars.MCP_SERVER_URL = `${workerBaseUrl}/mcp`;
+    console.log(`[WorkspaceContainer] buildEnvVars:done workspace=${workspaceId} org=${orgId} totalMs=${Date.now() - buildStartedAt}`);
 
     return envVars;
   }
@@ -1786,23 +1800,41 @@ export class WorkspaceContainer {
 
   async fetchIntegrationEnvVars(workspaceId: string): Promise<Record<string, string>> {
     const integrationEnvVars: Record<string, string> = {};
+    const startedAt = Date.now();
+    let integrationCount = 0;
+    let getIntegrationsMs = 0;
+    let decryptAndMapMs = 0;
+    let dataProxyMs = 0;
     try {
       const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
+      const getIntegrationsStartedAt = Date.now();
       const records = await workspaceStub.getIntegrations();
+      getIntegrationsMs = Date.now() - getIntegrationsStartedAt;
+      integrationCount = records.length;
 
+      const decryptStartedAt = Date.now();
       for (const record of records) {
         const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
         const config = JSON.parse(record.config) as Record<string, unknown>;
         Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
       }
+      decryptAndMapMs = Date.now() - decryptStartedAt;
 
+      const dataProxyStartedAt = Date.now();
       const dataProxyResult = await workspaceStub.generateDataProxyToken();
+      dataProxyMs = Date.now() - dataProxyStartedAt;
       if (dataProxyResult) {
         integrationEnvVars.DATA_PROXY_TOKEN = dataProxyResult.token;
         this.dataProxyTokenExpiry = dataProxyResult.expiresAt;
       }
+      console.log(
+        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} dataProxyMs=${dataProxyMs} totalMs=${Date.now() - startedAt}`
+      );
     } catch (e) {
       console.error('[WorkspaceContainer] Failed to fetch integration env vars:', e);
+      console.log(
+        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} failed=true integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} dataProxyMs=${dataProxyMs} totalMs=${Date.now() - startedAt}`
+      );
     }
 
     return integrationEnvVars;

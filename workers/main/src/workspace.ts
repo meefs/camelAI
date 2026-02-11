@@ -57,6 +57,24 @@ export interface WorkspaceAuditLogEntry {
   created_at: number;
 }
 
+export type ChatThreadAccessResult =
+  | {
+      ok: true;
+      orgId: string;
+      orgSlug: string;
+      workspaceId: string;
+      threadId: string;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'workspace_not_found'
+        | 'workspace_org_mismatch'
+        | 'org_not_found'
+        | 'forbidden'
+        | 'thread_not_found';
+    };
+
 export interface WorkspaceEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   ORG: DurableObjectNamespace<OrgDO>;
@@ -386,6 +404,51 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return this.sql.exec(
       'SELECT user_id, access_level, granted_by, granted_at FROM members ORDER BY granted_at ASC'
     ).toArray() as unknown as WorkspaceMember[];
+  }
+
+  async validateChatThreadAccess(
+    userId: string,
+    expectedOrgId: string,
+    threadId: string
+  ): Promise<ChatThreadAccessResult> {
+    const info = await this.getInfo();
+    if (!info || info.archived) {
+      return { ok: false, reason: 'workspace_not_found' };
+    }
+
+    if (info.org_id !== expectedOrgId) {
+      return { ok: false, reason: 'workspace_org_mismatch' };
+    }
+
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(info.org_id)) as unknown as OrgDO;
+    const [memberAccess, orgValidation] = await Promise.all([
+      this.getMemberAccess(userId),
+      orgStub.validateChatThreadAccess(userId, info.id, threadId),
+    ]);
+
+    if (!orgValidation.ok) {
+      switch (orgValidation.reason) {
+        case 'org_not_found':
+          return { ok: false, reason: 'org_not_found' };
+        case 'thread_not_found':
+          return { ok: false, reason: 'thread_not_found' };
+        case 'forbidden':
+        default:
+          return { ok: false, reason: 'forbidden' };
+      }
+    }
+
+    if ((memberAccess?.access_level ?? 'full') !== 'full') {
+      return { ok: false, reason: 'forbidden' };
+    }
+
+    return {
+      ok: true,
+      orgId: orgValidation.orgId,
+      orgSlug: orgValidation.orgSlug,
+      workspaceId: info.id,
+      threadId: orgValidation.threadId,
+    };
   }
 
   async setMemberAccess(
@@ -958,26 +1021,33 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
    * Returns the token and its expiry time.
    */
   async generateDataProxyToken(): Promise<{ token: string; expiresAt: number } | null> {
+    const startedAt = Date.now();
     const info = await this.getInfo();
     if (!info) {
-      console.warn('[WorkspaceDO] Cannot generate data proxy token: workspace info not found');
+      console.warn('[WorkspaceDO] Cannot generate data proxy token: workspace info not found', { elapsedMs: Date.now() - startedAt });
       return null;
     }
 
     if (!this.env.TOKEN_SIGNING_SECRET) {
-      console.warn('[WorkspaceDO] Cannot generate data proxy token: TOKEN_SIGNING_SECRET not configured');
+      console.warn('[WorkspaceDO] Cannot generate data proxy token: TOKEN_SIGNING_SECRET not configured', { elapsedMs: Date.now() - startedAt });
       return null;
     }
 
     // Get org slug for the token
+    const slugStartedAt = Date.now();
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(info.org_id)) as unknown as OrgDO;
     const orgSlug = await orgStub.getSlug();
+    const slugMs = Date.now() - slugStartedAt;
     if (!orgSlug) {
-      console.warn('[WorkspaceDO] Cannot generate data proxy token: org has no slug');
+      console.warn('[WorkspaceDO] Cannot generate data proxy token: org has no slug', {
+        slugLookupMs: slugMs,
+        elapsedMs: Date.now() - startedAt,
+      });
       return null;
     }
 
     const expiresAt = Date.now() + DATA_PROXY_TOKEN_TTL_MS;
+    const signStartedAt = Date.now();
     const token = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
       org_id: info.org_id,
       org_slug: orgSlug,
@@ -985,6 +1055,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       exp: expiresAt,
       workspace_id: info.id,
       name: `data-proxy-${info.id}`,
+    });
+    const signMs = Date.now() - signStartedAt;
+    console.log('[WorkspaceDO] Generated data proxy token', {
+      workspaceId: info.id,
+      slugLookupMs: slugMs,
+      signMs,
+      elapsedMs: Date.now() - startedAt,
+      expiresAt: new Date(expiresAt).toISOString(),
     });
 
     return { token, expiresAt };

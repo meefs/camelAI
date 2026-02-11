@@ -34,6 +34,8 @@ describe('WebSocket access guard', () => {
 
     const workspaces = await listOrgWorkspaces(testEnv, org.id);
     const workspaceId = workspaces[0]?.id ?? null;
+    const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+    const thread = await orgStub.createThread(workspaceId!, 'Test thread', memberId);
     const { sessionId, sessionData } = await createNewSession(sessionsKV, memberId, org.id, workspaceId);
     expect(sessionData.workspace_id).toBeTruthy();
 
@@ -42,16 +44,17 @@ describe('WebSocket access guard', () => {
       memberId,
       orgId: org.id,
       workspaceId: sessionData.workspace_id!,
+      threadId: thread.id,
       sessionId,
     };
   }
 
   it('denies WebSocket upgrade for read_only workspace access', async () => {
-    const { ownerId, memberId, workspaceId, sessionId } = await setupMemberSession();
+    const { ownerId, memberId, workspaceId, threadId, sessionId } = await setupMemberSession();
 
     await setWorkspaceAccess(testEnv, workspaceId, memberId, 'read_only', ownerId);
 
-    const response = await SELF.fetch(`http://example/ws/${workspaceId}`, {
+    const response = await SELF.fetch(`http://example/ws/${workspaceId}?threadId=${threadId}`, {
       headers: {
         Upgrade: 'websocket',
         Connection: 'Upgrade',
@@ -63,11 +66,11 @@ describe('WebSocket access guard', () => {
   });
 
   it('denies WebSocket upgrade when org membership is removed', async () => {
-    const { ownerId, memberId, orgId, workspaceId, sessionId } = await setupMemberSession();
+    const { ownerId, memberId, orgId, workspaceId, threadId, sessionId } = await setupMemberSession();
 
     await removeOrgMember(testEnv, orgId, memberId, ownerId);
 
-    const response = await SELF.fetch(`http://example/ws/${workspaceId}`, {
+    const response = await SELF.fetch(`http://example/ws/${workspaceId}?threadId=${threadId}`, {
       headers: {
         Upgrade: 'websocket',
         Connection: 'Upgrade',

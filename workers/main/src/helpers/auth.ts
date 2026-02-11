@@ -38,6 +38,18 @@ export interface WorkspaceAccess {
 
 export type WorkspaceAccessResult = WorkspaceAccess | { error: Response };
 
+export interface ChatWebSocketAccess {
+  session: SessionData;
+  orgId: string;
+  orgSlug: string;
+  workspaceId: string;
+  userId: string;
+  wsStub: WorkspaceDO;
+  threadId: string;
+}
+
+export type ChatWebSocketAccessResult = ChatWebSocketAccess | { error: Response };
+
 export async function requireWorkspaceAccess(req: Request, env: Env): Promise<WorkspaceAccessResult> {
   const auth = await requireSession(req, env);
   if ('error' in auth) return auth;
@@ -65,6 +77,51 @@ export async function requireWorkspaceAccess(req: Request, env: Env): Promise<Wo
     }
 
     return { session, orgId, workspaceId, userId, wsStub, orgStub, wsInfo, orgInfo };
+  } catch {
+    return { error: text('Forbidden', 403) };
+  }
+}
+
+export async function requireChatWebSocketAccess(
+  req: Request,
+  env: Env,
+  threadId: string
+): Promise<ChatWebSocketAccessResult> {
+  const auth = await requireSession(req, env);
+  if ('error' in auth) return auth;
+
+  const { session } = auth;
+  const { org_id: orgId, workspace_id: workspaceId, user_id: userId } = session;
+
+  if (!orgId) return { error: text('No organization selected', 400) };
+  if (!workspaceId) return { error: text('No workspace selected', 400) };
+
+  try {
+    const wsStub = getWorkspaceStub(env, workspaceId);
+    const validation = await wsStub.validateChatThreadAccess(userId, orgId, threadId);
+    if (!validation.ok) {
+      switch (validation.reason) {
+        case 'workspace_not_found':
+        case 'org_not_found':
+          return { error: text('Workspace not found', 404) };
+        case 'thread_not_found':
+          return { error: text('Thread not found', 404) };
+        case 'workspace_org_mismatch':
+        case 'forbidden':
+        default:
+          return { error: text('Forbidden', 403) };
+      }
+    }
+
+    return {
+      session,
+      orgId: validation.orgId,
+      orgSlug: validation.orgSlug,
+      workspaceId: validation.workspaceId,
+      userId,
+      wsStub,
+      threadId: validation.threadId,
+    };
   } catch {
     return { error: text('Forbidden', 403) };
   }
