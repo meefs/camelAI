@@ -1,11 +1,12 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { getFileCategory, getFileIcon, isImageFile } from './file-type-utils';
+import { isImageFile } from './file-type-utils';
 import { FilePreviewPopover } from './file-preview-popover';
 import type { PreviewTarget } from '@/types';
 import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
+import { FileCard } from '@/components/file-card';
 
 export interface FilePreviewChipProps {
   filename: string;
@@ -13,6 +14,7 @@ export interface FilePreviewChipProps {
   contentType?: string;
   className?: string;
   previewTarget?: PreviewTarget;
+  fileSize?: number;
 }
 
 export function FilePreviewChip({
@@ -21,13 +23,12 @@ export function FilePreviewChip({
   contentType,
   className,
   previewTarget,
+  fileSize,
 }: FilePreviewChipProps) {
   const [imageError, setImageError] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const previewContext = useChatPreviewContext();
-  const category = useMemo(() => getFileCategory(filename, contentType), [filename, contentType]);
   const showImage = isImageFile(filename, contentType) && !imageError;
-  const Icon = getFileIcon(category);
   const shouldUseChatPanel = Boolean(previewContext && previewTarget);
 
   const handleOpen = () => {
@@ -45,7 +46,7 @@ export function FilePreviewChip({
           type="button"
           onClick={handleOpen}
           className={cn(
-            'h-[120px] w-[120px] overflow-hidden rounded-lg transition-opacity hover:opacity-90',
+            'h-[88px] w-[88px] overflow-hidden rounded-lg transition-opacity hover:opacity-90',
             className
           )}
           aria-label={`Open preview for ${filename}`}
@@ -73,23 +74,13 @@ export function FilePreviewChip({
 
   return (
     <>
-      <button
-        type="button"
+      <FileCard
+        filename={filename}
+        fileSize={fileSize}
+        contentType={contentType}
         onClick={handleOpen}
-        className={cn(
-          'flex w-[160px] flex-col gap-2 rounded-md border border-border bg-muted/50 p-2 text-left text-xs',
-          'transition-colors hover:bg-muted/70',
-          className
-        )}
-        aria-label={`Open preview for ${filename}`}
-      >
-        <div className="flex h-[80px] items-center justify-center overflow-hidden rounded-sm bg-muted/80">
-          <Icon className="h-6 w-6 text-muted-foreground" />
-        </div>
-        <span className="truncate" title={filename}>
-          {filename}
-        </span>
-      </button>
+        className={className}
+      />
       {!shouldUseChatPanel && (
         <FilePreviewPopover
           open={previewOpen}

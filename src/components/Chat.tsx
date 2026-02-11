@@ -52,7 +52,7 @@ import { MessageBubble, isInterruptMessage, parseSlashCommand, parseLocalCommand
 import { LoadingDots } from '@/components/loading-dots';
 import { CompactingIndicator } from '@/components/compacting-indicator';
 import { WelcomeScreen } from '@/components/welcome-screen';
-import { FilePreviewContent } from '@/components/chat-file-preview';
+import { FilePreviewContent, isImageFile } from '@/components/chat-file-preview';
 import { ChatPreviewProvider } from '@/components/chat-preview/preview-context';
 import { cn } from '@/lib/utils';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
@@ -709,6 +709,7 @@ export default function Chat({
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentPreviewUrlsRef = useRef<Set<string>>(new Set());
   const [isDragOver, setIsDragOver] = useState(false);
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(initialPreviewTarget ?? null);
   const previewTargetRef = useRef<PreviewTarget | null>(initialPreviewTarget ?? null);
@@ -757,6 +758,12 @@ export default function Chat({
   useEffect(() => {
     previewTargetRef.current = previewTarget;
   }, [previewTarget]);
+
+  const revokeAttachmentPreviewUrl = useCallback((url?: string) => {
+    if (!url) return;
+    attachmentPreviewUrlsRef.current.delete(url);
+    URL.revokeObjectURL(url);
+  }, []);
 
   const deployedApp = previewTarget?.kind === 'app' ? previewTarget.scriptName : null;
   const appIsPublic = previewTarget?.kind === 'app' ? previewTarget.isPublic : false;
@@ -1527,6 +1534,12 @@ export default function Chat({
       connectedThreadIdRef.current = null;
       connectedWorkspaceIdRef.current = null;
 
+      // Revoke any remaining attachment blob URLs that were not removed/sent.
+      for (const previewUrl of attachmentPreviewUrlsRef.current) {
+        URL.revokeObjectURL(previewUrl);
+      }
+      attachmentPreviewUrlsRef.current.clear();
+
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -1878,6 +1891,14 @@ export default function Chat({
     for (const file of files) {
       const id = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
+      // Create a blob URL for browser-renderable image preview in the input field
+      const previewUrl = isImageFile(file.name, file.type || undefined)
+        ? URL.createObjectURL(file)
+        : undefined;
+      if (previewUrl) {
+        attachmentPreviewUrlsRef.current.add(previewUrl);
+      }
+
       // Add to state as uploading
       setAttachments(prev => [...prev, {
         id,
@@ -1888,6 +1909,7 @@ export default function Chat({
         originalName: file.name,
         status: 'uploading',
         progress: 0,
+        previewUrl,
       }]);
 
       try {
@@ -1929,8 +1951,12 @@ export default function Chat({
   }, [resolvedWorkspaceId]);
 
   const handleAttachmentRemove = useCallback((id: string) => {
-    setAttachments(prev => prev.filter(a => a.id !== id));
-  }, []);
+    setAttachments(prev => {
+      const removed = prev.find(a => a.id === id);
+      revokeAttachmentPreviewUrl(removed?.previewUrl);
+      return prev.filter(a => a.id !== id);
+    });
+  }, [revokeAttachmentPreviewUrl]);
 
   // Drag-drop handlers for the whole chat area
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -2059,8 +2085,13 @@ export default function Chat({
       finalContent = `${userMessage}\n\n${fileRefs}`;
     }
 
-    // Clear attachments
-    setAttachments([]);
+    // Clear attachments (revoke any blob URLs to avoid memory leaks)
+    setAttachments(prev => {
+      for (const a of prev) {
+        revokeAttachmentPreviewUrl(a.previewUrl);
+      }
+      return [];
+    });
 
     // Store pending message info for the effect to use after thread creation
     pendingNewChatRef.current = { finalContent };
@@ -2437,8 +2468,13 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       queueManualCompaction();
     }
 
-    // Clear attachments after building message
-    setAttachments([]);
+    // Clear attachments after building message (revoke any blob URLs to avoid memory leaks)
+    setAttachments(prev => {
+      for (const a of prev) {
+        revokeAttachmentPreviewUrl(a.previewUrl);
+      }
+      return [];
+    });
 
     // Clear any previous error
     setError(null);

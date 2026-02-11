@@ -1,8 +1,9 @@
 'use client';
 
-import { X, File, Loader2, AlertCircle } from 'lucide-react';
+import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Progress } from '@/components/ui/progress';
+import { isImageFile } from '@/components/chat-file-preview/file-type-utils';
+import { FileCard } from '@/components/file-card';
 
 export interface Attachment {
   id: string;
@@ -14,6 +15,8 @@ export interface Attachment {
   progress?: number;
   status: 'uploading' | 'complete' | 'error';
   error?: string;
+  /** Client-side blob URL for image preview in the input field */
+  previewUrl?: string;
 }
 
 interface AttachmentListProps {
@@ -22,72 +25,51 @@ interface AttachmentListProps {
   className?: string;
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 export function AttachmentList({ attachments, onRemove, className }: AttachmentListProps) {
   if (attachments.length === 0) return null;
 
   return (
     <div className={cn('flex flex-wrap gap-2 px-3 pb-2', className)}>
-      {attachments.map((attachment) => (
-        <div
-          key={attachment.id}
-          className={cn(
-            'flex items-center gap-2 rounded-md border px-2 py-1.5 text-sm',
-            attachment.status === 'error'
-              ? 'border-destructive/50 bg-destructive/10 text-destructive'
-              : 'border-border bg-muted/50'
-          )}
-        >
-          {attachment.status === 'uploading' ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-          ) : attachment.status === 'error' ? (
-            <AlertCircle className="h-3.5 w-3.5" />
-          ) : (
-            <File className="h-3.5 w-3.5 text-muted-foreground" />
-          )}
+      {attachments.map((attachment) => {
+        const isImage = isImageFile(attachment.name, attachment.contentType);
 
-          <div className="min-w-0">
-            <span className="block max-w-[160px] truncate">
-              {attachment.name}
-            </span>
-
-            {attachment.status === 'uploading' && (
-              <div className="mt-1 flex items-center gap-2">
-                <Progress
-                  value={attachment.progress ?? 0}
-                  className="h-1 w-24"
+        // Image attachments that are fully uploaded get a square thumbnail preview
+        if (isImage && attachment.previewUrl && attachment.status === 'complete') {
+          return (
+            <div key={attachment.id} className="group/card relative outline-none" tabIndex={0}>
+              <div className="h-[88px] w-[88px] overflow-hidden rounded-lg border border-border bg-muted/30">
+                <img
+                  src={attachment.previewUrl}
+                  alt={attachment.name}
+                  className="h-full w-full object-cover"
                 />
-                <span className="text-xs text-muted-foreground tabular-nums">
-                  {Math.max(0, Math.min(100, Math.round(attachment.progress ?? 0)))}%
-                </span>
               </div>
-            )}
-          </div>
+              <button
+                type="button"
+                onClick={() => onRemove(attachment.id)}
+                className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground/80 text-background opacity-0 transition-opacity group-hover/card:opacity-100 group-focus-within/card:opacity-100"
+                aria-label={`Remove ${attachment.name}`}
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </div>
+          );
+        }
 
-          {attachment.status === 'complete' && (
-            <span className="text-xs text-muted-foreground">
-              ({formatFileSize(attachment.size)})
-            </span>
-          )}
-
-          <button
-            type="button"
-            onClick={() => onRemove(attachment.id)}
-            className={cn(
-              'ml-1 rounded p-0.5 hover:bg-accent',
-              attachment.status === 'error' && 'hover:bg-destructive/20'
-            )}
-            aria-label={`Remove ${attachment.name}`}
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      ))}
+        // Non-image files (and images still uploading) use FileCard
+        return (
+          <FileCard
+            key={attachment.id}
+            filename={attachment.name}
+            fileSize={attachment.size}
+            contentType={attachment.contentType}
+            uploadStatus={attachment.status}
+            uploadProgress={attachment.progress}
+            uploadError={attachment.error}
+            onRemove={() => onRemove(attachment.id)}
+          />
+        );
+      })}
     </div>
   );
 }
