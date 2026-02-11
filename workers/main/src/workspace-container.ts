@@ -139,13 +139,6 @@ interface SpriteRecord {
   status: string;
 }
 
-interface SpriteExecSession {
-  id: number;
-  command: string;
-  is_active: boolean;
-  tty: boolean;
-}
-
 export interface ExecWebSocketParams {
   cmd?: string[];
   path?: string;
@@ -1822,22 +1815,21 @@ export class WorkspaceContainer {
   async destroy(): Promise<void> {
     try {
       const spriteName = this.requireSpriteName();
-      const sessionsRes = await this.fetchSprite(`/v1/sprites/${encodeURIComponent(spriteName)}/exec`, {
-        method: 'GET',
-      });
+      const sprite = this.getSprite(spriteName);
 
-      if (sessionsRes.ok) {
-        const sessions = await sessionsRes.json() as SpriteExecSession[];
-        await Promise.all(
-          sessions
-            .filter((session) => session.is_active)
-            .map(async (session) => {
-              await this.fetchSprite(`/v1/sprites/${encodeURIComponent(spriteName)}/exec/${session.id}/kill`, {
-                method: 'POST',
-              }).catch(() => {});
-            })
-        );
-      }
+      // Use SDK to list sessions
+      const sessions = await sprite.listSessions();
+
+      // Kill active sessions (SDK doesn't have kill, so use manual fetch)
+      await Promise.all(
+        sessions
+          .filter((session) => session.isActive)
+          .map(async (session) => {
+            await this.fetchSprite(`/v1/sprites/${encodeURIComponent(spriteName)}/exec/${session.id}/kill`, {
+              method: 'POST',
+            }).catch(() => {});
+          })
+      );
     } catch (err) {
       console.error('[WorkspaceContainer] destroy() failed:', err);
       throw err;
