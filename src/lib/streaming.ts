@@ -2,6 +2,7 @@ import type { ContentBlock, Message, ToolResultBlock, ToolUseBlock } from '@/typ
 
 export interface SDKEvent {
   type: string;
+  timestamp?: string;
   subtype?: string;
   isMeta?: boolean;
   is_meta?: boolean;
@@ -36,6 +37,8 @@ export interface SDKEvent {
       text?: string;
       stop_reason?: string;
       partial_json?: string;
+      /** Compaction summary content (delivered as a single chunk) */
+      content?: string;
     };
     content_block?: {
       type: string;

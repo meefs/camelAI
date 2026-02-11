@@ -218,6 +218,16 @@ export async function action({ request, context }: Route.ActionArgs) {
 5. `ChatThreadDO` multiplexes/replays events to connected chat clients
 6. Claude SDK stores messages in JSONL files on the sprite at `/home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl`
 
+### Slash Commands
+Users can send Claude SDK slash commands by typing the command as their entire message (nothing else). `ChatThreadDO.formatAttributedUserMessage()` detects these and strips the author prefix so the SDK receives the bare command. Supported commands:
+- `/compact` - Manually compact the conversation context
+- `/context` - Show current context window usage
+- `/debug` - Toggle debug mode
+- `/insights` - Show conversation insights
+- `/security-review` - Run a security review
+
+The allowlist is maintained in `ChatThreadDO.SLASH_COMMANDS` (`workers/main/src/durable-objects.ts`).
+
 ### Chat Attachment Uploads (R2 Multipart)
 1. Client starts multipart upload via `POST /api/workspaces/:id/upload?action=mpu-create` with `originalName` and `contentType`.
 2. Client slices files into parts (>= 5MB except last) and uploads in parallel via `PUT /api/workspaces/:id/upload?action=mpu-uploadpart&uploadId=...&filename=...&partNumber=...`.

@@ -82,6 +82,9 @@ vi.mock('@/components/message-bubble', () => ({
 
     return <div data-testid="chat-bubble">{`${message.role}: ${renderedContent}`}</div>;
   },
+  isInterruptMessage: () => false,
+  parseSlashCommand: () => null,
+  parseLocalCommandStdout: () => null,
 }));
 
 vi.mock('@/components/loading-dots', () => ({

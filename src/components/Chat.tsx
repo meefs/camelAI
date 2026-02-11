@@ -46,8 +46,9 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { MessageBubble } from '@/components/message-bubble';
+import { MessageBubble, isInterruptMessage, parseSlashCommand, parseLocalCommandStdout } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
+import { CompactingIndicator } from '@/components/compacting-indicator';
 import { WelcomeScreen } from '@/components/welcome-screen';
 import { cn } from '@/lib/utils';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
@@ -59,6 +60,7 @@ import {
 } from '@/lib/streaming';
 import { getAppUrl, getVanityDomain, getIframeDomain } from '@/lib/app-url';
 import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
+import { isManualCompactCommand } from '@/lib/slash-commands';
 
 interface ChatProps {
   threadId?: string;
@@ -129,6 +131,35 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
 
   // Plain string content
   return content;
+}
+
+/**
+ * True when the message was directly authored by the user — not a
+ * system-generated message that happens to carry `role: 'user'`
+ * (e.g. compact summaries, meta/skill-sheet messages, interrupts,
+ * slash commands, local-command-stdout).
+ */
+function isDirectUserMessage(msg: Message): boolean {
+  if (msg.role !== 'user' || msg.isCompactSummary) return false;
+  if (isInterruptMessage(msg.content)) return false;
+  if (parseSlashCommand(msg.content)) return false;
+  if (parseLocalCommandStdout(msg.content)) return false;
+  return true;
+}
+
+/**
+ * User-authored messages that should anchor the page-style spacer animation.
+ * Slash commands count; compact summaries and synthetic stdout/interrupt rows do not.
+ */
+function isUserTurnAnchorMessage(msg: Message): boolean {
+  if (msg.role !== 'user' || msg.isCompactSummary) return false;
+  if (isInterruptMessage(msg.content)) return false;
+  if (parseLocalCommandStdout(msg.content)) return false;
+  return true;
+}
+
+function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
+  return Boolean(msg && (msg.role === 'assistant' || msg.isCompactSummary));
 }
 
 function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
@@ -359,6 +390,50 @@ export default function Chat({
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const [bugReportStatus, setBugReportStatus] = useState<BugReportStatus>('idle');
   const [bugReportError, setBugReportError] = useState<string | null>(null);
+  // Compaction in-progress indicator
+  const [isCompacting, setIsCompactingState] = useState(false);
+  const setIsCompacting = useCallback((value: boolean) => {
+    setIsCompactingState(value);
+  }, []);
+  // Track compaction content block streaming (compaction summary arrives as a
+  // content block of type 'compaction' with 'compaction_delta' deltas)
+  const isInCompactionBlockRef = useRef(false);
+  const compactionContentRef = useRef('');
+  const hasCapturedCompactionSummaryRef = useRef(false);
+  const pendingCompactionPlaceholderIdRef = useRef<string | null>(null);
+  const queuedManualCompactionsRef = useRef(0);
+  const activeManualCompactionTurnRef = useRef(false);
+  const syncManualCompactionIndicator = useCallback(() => {
+    const shouldShowIndicator = activeManualCompactionTurnRef.current || queuedManualCompactionsRef.current > 0;
+    setIsCompacting(shouldShowIndicator);
+  }, [setIsCompacting]);
+  const queueManualCompaction = useCallback(() => {
+    queuedManualCompactionsRef.current += 1;
+    syncManualCompactionIndicator();
+  }, [syncManualCompactionIndicator]);
+  const startQueuedManualCompactionIfNeeded = useCallback(() => {
+    if (activeManualCompactionTurnRef.current || queuedManualCompactionsRef.current <= 0) {
+      return;
+    }
+    queuedManualCompactionsRef.current -= 1;
+    activeManualCompactionTurnRef.current = true;
+    syncManualCompactionIndicator();
+  }, [syncManualCompactionIndicator]);
+  const completeActiveManualCompaction = useCallback(() => {
+    if (activeManualCompactionTurnRef.current) {
+      activeManualCompactionTurnRef.current = false;
+    } else if (queuedManualCompactionsRef.current > 0) {
+      // Some reconnect/replay paths can miss `system/init` for the compact turn.
+      // If completion arrives without an active turn, consume one queued entry.
+      queuedManualCompactionsRef.current -= 1;
+    }
+    syncManualCompactionIndicator();
+  }, [syncManualCompactionIndicator]);
+  const clearManualCompactionQueue = useCallback(() => {
+    activeManualCompactionTurnRef.current = false;
+    queuedManualCompactionsRef.current = 0;
+    syncManualCompactionIndicator();
+  }, [syncManualCompactionIndicator]);
   // MCP-triggered bug report capture
   const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -467,6 +542,7 @@ export default function Chat({
   const messageColumnRef = useRef<HTMLDivElement>(null);
   const lastUserMessageRef = useRef<HTMLDivElement>(null);
   const assistantMeasureRef = useRef<HTMLDivElement>(null);
+  const assistantPendingMeasureRef = useRef<HTMLDivElement>(null);
   const assistantSpacerRef = useRef<HTMLDivElement>(null);
   const spacerHeightRef = useRef(0);
   const initialScrollDoneRef = useRef(false);
@@ -820,6 +896,63 @@ export default function Chat({
 
         if (sdkEvent.type === 'stream_event') {
           const evt = sdkEvent.event;
+
+          // ── Compaction content block interception ──
+          // The API streams the compaction summary as a content block of type
+          // 'compaction' with a single 'compaction_delta' containing the full
+          // summary text. Intercept these events before they reach the normal
+          // streaming pipeline so the summary is rendered as a standalone
+          // CompactSummaryCard instead of being appended to the assistant message.
+          if (evt?.type === 'content_block_start' && evt?.content_block?.type === 'compaction') {
+            isInCompactionBlockRef.current = true;
+            compactionContentRef.current = '';
+            hasCapturedCompactionSummaryRef.current = false;
+            return;
+          }
+          if (isInCompactionBlockRef.current) {
+            if (evt?.type === 'content_block_delta' && evt?.delta?.type === 'compaction_delta') {
+              compactionContentRef.current += evt.delta.content || '';
+              return;
+            }
+            if (evt?.type === 'content_block_stop') {
+              const summary = compactionContentRef.current;
+              isInCompactionBlockRef.current = false;
+              compactionContentRef.current = '';
+              if (summary) {
+                hasCapturedCompactionSummaryRef.current = true;
+                completeActiveManualCompaction();
+                const existingPlaceholderId = pendingCompactionPlaceholderIdRef.current;
+                const compactMsg: Message = {
+                  id: existingPlaceholderId || `compact_${Date.now()}`,
+                  thread_id: id,
+                  role: 'user',
+                  content: summary,
+                  created_at: Date.now(),
+                  isCompactSummary: true,
+                };
+                pendingCompactionPlaceholderIdRef.current = compactMsg.id;
+                setMessages(prev => {
+                  if (existingPlaceholderId) {
+                    const placeholderIndex = prev.findIndex(m => m.id === existingPlaceholderId);
+                    if (placeholderIndex !== -1) {
+                      const next = [...prev];
+                      next[placeholderIndex] = compactMsg;
+                      return next;
+                    }
+                  }
+                  const existingSummaryIndex = prev.findIndex(m => m.id === compactMsg.id);
+                  if (existingSummaryIndex !== -1) {
+                    const next = [...prev];
+                    next[existingSummaryIndex] = compactMsg;
+                    return next;
+                  }
+                  return [...prev, compactMsg];
+                });
+              }
+              return;
+            }
+          }
+
           if (evt?.type === 'message_start') {
             const currentMsgs = messagesRef.current;
             const existingStreamingId = streamingMessageIdRef.current;
@@ -915,9 +1048,30 @@ export default function Chat({
             }
           }
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-          // System init - just reset the streaming message ID
+          // System init - reset the streaming message ID
           splitStreamingMessageOnNextPartRef.current = false;
           setStreamingMessageId(null);
+          startQueuedManualCompactionIfNeeded();
+        } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
+          // Compaction is complete — the compact_boundary event arrives AFTER the
+          // SDK finishes generating the summary (not before). Insert a compact
+          // summary card immediately. If claude-runner later forwards the full
+          // summary (isCompactSummary user event), it will replace this placeholder.
+          completeActiveManualCompaction();
+          if (hasCapturedCompactionSummaryRef.current) {
+            hasCapturedCompactionSummaryRef.current = false;
+            return;
+          }
+          const compactMsg: Message = {
+            id: `compact_${Date.now()}`,
+            thread_id: id,
+            role: 'user',
+            content: 'The conversation context was compacted to continue this session.',
+            created_at: Date.now(),
+            isCompactSummary: true,
+          };
+          pendingCompactionPlaceholderIdRef.current = compactMsg.id;
+          setMessages(prev => [...prev, compactMsg]);
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
           // Track message ID as fallback
           if (!currentStreamingId) {
@@ -928,6 +1082,50 @@ export default function Chat({
             }
           }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
+          // Compact summary — system-generated context recap
+          const isCompactSummary = Boolean(
+            (sdkEvent as unknown as Record<string, unknown>).isCompactSummary
+          );
+          if (isCompactSummary) {
+            completeActiveManualCompaction();
+            hasCapturedCompactionSummaryRef.current = false;
+            const placeholderId = pendingCompactionPlaceholderIdRef.current;
+            pendingCompactionPlaceholderIdRef.current = null;
+            const content = sdkEvent.message.content;
+            const compactMsg: Message = {
+              id: (sdkEvent as { uuid?: string }).uuid || `compact_${Date.now()}`,
+              thread_id: id,
+              role: 'user',
+              content,
+              created_at: Date.now(),
+              isCompactSummary: true,
+            };
+            // Replace only the currently tracked provisional compact card
+            // with the forwarded full summary.
+            setMessages(prev => {
+              const existingSummaryIndex = prev.findIndex(m => m.id === compactMsg.id);
+              const upsertBySummaryId = () => {
+                if (existingSummaryIndex === -1) {
+                  return [...prev, compactMsg];
+                }
+                const next = [...prev];
+                next[existingSummaryIndex] = compactMsg;
+                return next;
+              };
+              if (!placeholderId) {
+                return upsertBySummaryId();
+              }
+              const placeholderIndex = prev.findIndex(m => m.id === placeholderId);
+              if (placeholderIndex === -1) {
+                return upsertBySummaryId();
+              }
+              const next = [...prev];
+              next[placeholderIndex] = compactMsg;
+              return next;
+            });
+            return;
+          }
+
           const contentBlocks = sdkEvent.message.content;
           const isToolResultEvent =
             Array.isArray(contentBlocks) &&
@@ -976,12 +1174,22 @@ export default function Chat({
           splitStreamingMessageOnNextPartRef.current = false;
           const msgId = streamingMessageIdRef.current;
           if (msgId) {
+            const parsedResultTimestamp = typeof sdkEvent.timestamp === 'string'
+              ? new Date(sdkEvent.timestamp).getTime()
+              : NaN;
+            const completedAt = Number.isFinite(parsedResultTimestamp)
+              ? parsedResultTimestamp
+              : Date.now();
             setMessages(prev => prev.map(msg =>
-              msg.id === msgId ? { ...msg, isStreaming: false } : msg
+              msg.id === msgId ? { ...msg, isStreaming: false, created_at: completedAt } : msg
             ));
           }
           setStreamingMessageId(null);
           setLoading(false);
+          if (activeManualCompactionTurnRef.current) {
+            completeActiveManualCompaction();
+          }
+          hasCapturedCompactionSummaryRef.current = false;
         }
       } else if (data.type === 'todo_state') {
         // Direct todo state from server - no extraction needed
@@ -1018,6 +1226,8 @@ export default function Chat({
         }
         setStreamingMessageId(null);
         setLoading(false);
+        clearManualCompactionQueue();
+        hasCapturedCompactionSummaryRef.current = false;
       } else if (
         data.type === 'preview_state' ||
         data.type === 'title_updated' ||
@@ -1146,17 +1356,18 @@ export default function Chat({
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
   const lastMessage = visibleMessages[visibleMessages.length - 1];
+  const isLastMessageAssistantLike = isAssistantLikeMessage(lastMessage);
   const showAssistantTail = loading || isStreaming;
-  const isAwaitingAssistant = showAssistantTail && lastMessage?.role === 'user';
+  const isAwaitingAssistant = showAssistantTail && Boolean(lastMessage) && !isLastMessageAssistantLike;
   const lastUserMessage = useMemo(() => {
     for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
-      if (visibleMessages[i].role === 'user') return visibleMessages[i];
+      if (isUserTurnAnchorMessage(visibleMessages[i])) return visibleMessages[i];
     }
     return null;
   }, [visibleMessages]);
   const shouldRenderSpacer = Boolean(lastUserMessage) &&
     !lastUserMessage?.sentDuringStreaming &&
-    (isAwaitingAssistant || lastMessage?.role === 'assistant');
+    (isAwaitingAssistant || isLastMessageAssistantLike);
 
   // Connect when threadId changes
   useEffect(() => {
@@ -1286,6 +1497,7 @@ export default function Chat({
     const spacer = assistantSpacerRef.current;
     const userEl = lastUserMessageRef.current;
     const assistantEl = assistantMeasureRef.current;
+    const pendingAssistantEl = assistantPendingMeasureRef.current;
     if (!container || !spacer) {
       spacerHeightRef.current = 0;
       return;
@@ -1294,6 +1506,7 @@ export default function Chat({
     const updateSpacer = () => {
       const measureUser = lastUserMessageRef.current;
       const measureAssistant = assistantMeasureRef.current;
+      const measurePendingAssistant = assistantPendingMeasureRef.current;
 
       // Need at least a user message to calculate spacer
       if (!measureUser) {
@@ -1317,6 +1530,16 @@ export default function Chat({
         const assistantMarginBottom = Number.isNaN(assistantMarginBottomValue) ? 0 : assistantMarginBottomValue;
         const exchangeTop = userRect.top - userMarginTop;
         const exchangeBottom = assistantRect.bottom + assistantMarginBottom;
+        exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
+      } else if (measurePendingAssistant) {
+        // No assistant message yet; include pending assistant placeholder
+        // (e.g. loading dots / compacting indicator) in the measured exchange.
+        const pendingRect = measurePendingAssistant.getBoundingClientRect();
+        const pendingStyle = getComputedStyle(measurePendingAssistant);
+        const pendingMarginBottomValue = parseFloat(pendingStyle.marginBottom || '0');
+        const pendingMarginBottom = Number.isNaN(pendingMarginBottomValue) ? 0 : pendingMarginBottomValue;
+        const exchangeTop = userRect.top - userMarginTop;
+        const exchangeBottom = pendingRect.bottom + pendingMarginBottom;
         exchangeHeight = Math.max(exchangeBottom - exchangeTop, 0);
       } else {
         // No assistant message yet (awaiting response) - just use user message height
@@ -1359,6 +1582,9 @@ export default function Chat({
     }
     if (assistantEl) {
       observer.observe(assistantEl);
+    }
+    if (pendingAssistantEl) {
+      observer.observe(pendingAssistantEl);
     }
 
     return () => {
@@ -1964,6 +2190,11 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         .join('\n');
       finalContent = `${userMessage}\n\n${fileRefs}`;
     }
+    const shouldShowCompactingIndicator = isManualCompactCommand(finalContent);
+
+    if (shouldShowCompactingIndicator) {
+      queueManualCompaction();
+    }
 
     // Clear attachments after building message
     setAttachments([]);
@@ -1992,7 +2223,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       splitStreamingMessageOnNextPartRef.current = true;
       setMessages(prev => [...prev, userMsg]);
     } else {
-      forceScrollOnNextUpdate.current = true;
+      // /compact is operational and can happen while users read older messages.
+      // Avoid forcing a jump to bottom in that case.
+      forceScrollOnNextUpdate.current = !shouldShowCompactingIndicator;
       setMessages(prev => [...prev, userMsg]);
     }
 
@@ -2147,7 +2380,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         <div ref={messageColumnRef} className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col">
           {visibleMessages.map(msg => {
             const isLastUserMessage = msg.id === lastUserMessage?.id;
-            const isLastAssistantMessage = !isAwaitingAssistant && lastMessage?.role === 'assistant' && msg.id === lastMessage?.id;
+            const isLastAssistantMessage = !isAwaitingAssistant && isLastMessageAssistantLike && msg.id === lastMessage?.id;
             const messageRef = isLastUserMessage
               ? lastUserMessageRef
               : (isLastAssistantMessage ? assistantMeasureRef : undefined);
@@ -2156,7 +2389,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                 key={msg.id}
                 ref={messageRef}
                 data-message-id={msg.id}
-                className={cn("group", msg.role === 'user' ? "mt-6 mb-1" : "")}
+                className={cn("group", isDirectUserMessage(msg) ? "mt-6 mb-1" : "")}
               >
                 <MessageBubble
                   message={msg}
@@ -2194,9 +2427,18 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             </div>
           )}
 
+          {/* Compaction in-progress indicator */}
+          {isCompacting && (
+            <div ref={assistantPendingMeasureRef}>
+              <CompactingIndicator />
+            </div>
+          )}
+
           {/* Loading indicator when waiting for assistant response */}
-          {loading && !isStreaming && !hasStreamingMessage && (
-            <LoadingDots />
+          {loading && !isStreaming && !hasStreamingMessage && !isCompacting && (
+            <div ref={assistantPendingMeasureRef}>
+              <LoadingDots />
+            </div>
           )}
           {shouldRenderSpacer ? (
             <div className="flex flex-col">

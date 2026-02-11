@@ -11,10 +11,12 @@ import {
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ThinkingBlock, ToolCall } from '@/components/tool-call';
 import { LoadingDots } from '@/components/loading-dots';
+import { CompactSummaryCard } from '@/components/compact-summary-card';
 import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
 import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
+import { isSupportedSlashCommand } from '@/lib/slash-commands';
 
 // Format timestamp to readable time (e.g., "12:25 PM")
 function formatMessageTime(timestamp: number): string {
@@ -23,6 +25,48 @@ function formatMessageTime(timestamp: number): string {
     minute: '2-digit',
     hour12: true,
   });
+}
+
+// ── Special message detection ──
+
+const INTERRUPT_TEXT = '[Request interrupted by user]';
+
+const WRAPPED_SLASH_COMMAND_REGEX = /<command-name>(\/\w[\w-]*)<\/command-name>/;
+const BARE_SLASH_COMMAND_REGEX = /^(\/\w[\w-]*)$/;
+
+const LOCAL_COMMAND_STDOUT_REGEX = /^<local-command-stdout>([\s\S]*?)<\/local-command-stdout>$/;
+
+/** Extract raw text from content, stripping author prefix and system tags. */
+function extractRawText(content: string | ContentBlock[]): string {
+  const text = typeof content === 'string'
+    ? content
+    : content.map(b => (b.type === 'text' ? b.text : '')).filter(Boolean).join('\n');
+  return stripSystemMessageTags(parseMessageAuthor(text).content);
+}
+
+/** True when the message is the SDK's "[Request interrupted by user]" sentinel. */
+export function isInterruptMessage(content: string | ContentBlock[]): boolean {
+  return extractRawText(content).trim() === INTERRUPT_TEXT;
+}
+
+/** Returns the slash command name (e.g. "/compact") or null. */
+export function parseSlashCommand(content: string | ContentBlock[]): string | null {
+  const raw = extractRawText(content).trim();
+  const wrapped = raw.match(WRAPPED_SLASH_COMMAND_REGEX);
+  const wrappedCommand = wrapped?.[1];
+  if (wrappedCommand && isSupportedSlashCommand(wrappedCommand)) {
+    return wrappedCommand;
+  }
+
+  const bare = raw.match(BARE_SLASH_COMMAND_REGEX);
+  const bareCommand = bare?.[1];
+  return bareCommand && isSupportedSlashCommand(bareCommand) ? bareCommand : null;
+}
+
+/** Returns the inner text of a `<local-command-stdout>` message, or null. */
+export function parseLocalCommandStdout(content: string | ContentBlock[]): string | null {
+  const match = extractRawText(content).trim().match(LOCAL_COMMAND_STDOUT_REGEX);
+  return match ? match[1].trim() : null;
 }
 
 /**
@@ -352,6 +396,44 @@ export function MessageBubble({
     return null;
   }
 
+  // Compact summaries get their own distinct rendering
+  if (message.isCompactSummary) {
+    return <CompactSummaryCard content={message.content} />;
+  }
+
+  // ── Special user-role messages with distinct rendering ──
+
+  if (message.role === 'user') {
+    // "[Request interrupted by user]" → grey italic "Stopped by User"
+    if (isInterruptMessage(message.content)) {
+      return (
+        <div className="flex justify-end">
+          <span className="text-muted-foreground text-sm italic">Stopped by User</span>
+        </div>
+      );
+    }
+
+    // Slash commands (e.g. /compact) → monospaced, outside bubble
+    const slashCmd = parseSlashCommand(message.content);
+    if (slashCmd) {
+      return (
+        <div className="flex justify-end">
+          <span className="text-foreground text-sm font-mono">{slashCmd}</span>
+        </div>
+      );
+    }
+
+    // <local-command-stdout> → assistant-side grey italic text
+    const localStdout = parseLocalCommandStdout(message.content);
+    if (localStdout) {
+      return (
+        <div className="flex justify-start">
+          <span className="text-muted-foreground text-sm italic">{localStdout}</span>
+        </div>
+      );
+    }
+  }
+
   // Hide messages that are entirely system messages (no visible content after stripping)
   if (!hasVisibleContent(message.content)) {
     return null;
@@ -507,6 +589,8 @@ export function MessageBubble({
   }
 
   // Assistant message
+  const assistantTimestamp = message.created_at;
+
   return (
     <div className="flex flex-col gap-1">
       <div className="max-w-none space-y-4">
@@ -523,7 +607,7 @@ export function MessageBubble({
           aria-label="Message actions"
         >
           <span className="text-muted-foreground text-xs mr-1">
-            {formatMessageTime(message.created_at)}
+            {formatMessageTime(assistantTimestamp)}
           </span>
           <Tooltip>
             <TooltipTrigger asChild>

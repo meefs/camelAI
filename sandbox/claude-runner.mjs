@@ -1,5 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { access } from 'fs/promises';
+import { access, readFile } from 'fs/promises';
 import { createInterface } from 'readline';
 import { homedir } from 'os';
 import { loadUserProfile, MEMORY_DIR, PROFILE_PATH } from './memory-logger.mjs';
@@ -26,6 +26,7 @@ const session = {
   messageQueue: [],
   pendingQuestions: new Map(),
   userProfile: null,
+  lastForwardedCompactSummaryKey: null,
   idleTimer: null,
 };
 
@@ -546,6 +547,121 @@ async function initSession() {
   }
 }
 
+// Keep retries bounded, but long enough to tolerate occasional JSONL write lag.
+const COMPACT_SUMMARY_RETRY_DELAYS_MS = [0, 150, 300, 500, 800, 1200, 1800, 2600, 3600];
+const COMPACT_SUMMARY_TIMESTAMP_SKEW_MS = 15_000;
+const COMPACT_SUMMARY_FALLBACK_MAX_AGE_MS = 2 * 60_000;
+
+function parseEventTimestampMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function getCompactSummaryKey(entry) {
+  if (typeof entry?.uuid === 'string' && entry.uuid) {
+    return `uuid:${entry.uuid}`;
+  }
+  const timestampMs = parseEventTimestampMs(entry?.timestamp);
+  const content = entry?.message?.content;
+  const contentKey = typeof content === 'string'
+    ? content.slice(0, 120)
+    : JSON.stringify(content ?? '').slice(0, 120);
+  return `fallback:${timestampMs ?? 'na'}:${contentKey}`;
+}
+
+function selectLatestCompactSummaryEntry(lines, minTimestampMs) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let entry;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+
+    if (!(entry?.isCompactSummary && entry?.type === 'user' && entry?.message?.content)) {
+      continue;
+    }
+
+    const entryTimestampMs = parseEventTimestampMs(entry.timestamp);
+    if (minTimestampMs && entryTimestampMs && entryTimestampMs < minTimestampMs) {
+      continue;
+    }
+
+    return entry;
+  }
+
+  return null;
+}
+
+/**
+ * After a compact_boundary event, read the JSONL to find the isCompactSummary
+ * user event that the SDK wrote but did not yield through the iterator, and
+ * forward it to the client so the full summary is available without a refresh.
+ */
+async function forwardCompactSummary(boundaryEvent) {
+  const projectPath = process.cwd().replace(/\//g, '-');
+  const jsonlPath = `${homedir()}/.claude/projects/${projectPath}/${session.threadId}.jsonl`;
+  const boundaryTimestampMs = parseEventTimestampMs(boundaryEvent?.timestamp);
+  const fallbackMinTimestampMs = Date.now() - COMPACT_SUMMARY_FALLBACK_MAX_AGE_MS;
+  const minTimestampMs = (
+    boundaryTimestampMs
+      ? boundaryTimestampMs - COMPACT_SUMMARY_TIMESTAMP_SKEW_MS
+      : fallbackMinTimestampMs
+  );
+
+  const totalRetryDelayMs = COMPACT_SUMMARY_RETRY_DELAYS_MS.reduce((sum, delayMs) => sum + delayMs, 0);
+
+  for (const delayMs of COMPACT_SUMMARY_RETRY_DELAYS_MS) {
+    if (delayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+
+    let content = '';
+    try {
+      content = await readFile(jsonlPath, 'utf-8');
+    } catch {
+      continue;
+    }
+
+    const trimmed = content.trimEnd();
+    if (!trimmed) {
+      continue;
+    }
+
+    const lines = trimmed.split('\n');
+    const entry = selectLatestCompactSummaryEntry(lines, minTimestampMs);
+    if (!entry) {
+      continue;
+    }
+
+    const summaryKey = getCompactSummaryKey(entry);
+    if (summaryKey && summaryKey === session.lastForwardedCompactSummaryKey) {
+      // Keep retrying. JSONL writes can lag compact_boundary, so an early read
+      // may still surface the previously forwarded summary.
+      continue;
+    }
+
+    session.lastForwardedCompactSummaryKey = summaryKey;
+    send({
+      type: 'sdk_event',
+      event: {
+        type: 'user',
+        isCompactSummary: true,
+        message: entry.message,
+        uuid: entry.uuid,
+      },
+    });
+    return;
+  }
+
+  logError(
+    `compact summary not found after ${COMPACT_SUMMARY_RETRY_DELAYS_MS.length} attempts (~${totalRetryDelayMs}ms total delay)`,
+    new Error(`threadId=${session.threadId} boundaryTimestamp=${boundaryEvent?.timestamp ?? 'unknown'}`)
+  );
+}
+
 function startEventLoop() {
   if (session.eventLoopRunning || !session.queryIterator) {
     return;
@@ -563,6 +679,15 @@ function startEventLoop() {
         }
 
         send({ type: 'sdk_event', event });
+
+        // After a compact_boundary, the SDK writes the full summary to the
+        // JSONL as a user event with isCompactSummary: true, but marks it
+        // isVisibleInTranscriptOnly so it is NOT yielded through the iterator.
+        // Read it from the JSONL and forward it explicitly so the client can
+        // display the full summary without requiring a page refresh.
+        if (event?.type === 'system' && event?.subtype === 'compact_boundary') {
+          forwardCompactSummary(event).catch(() => {});
+        }
 
         const todos = extractTodosFromEvent(event);
         if (todos) {
