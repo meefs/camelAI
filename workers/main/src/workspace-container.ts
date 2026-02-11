@@ -160,9 +160,9 @@ const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const runtimeCache = new Map<string, WorkspaceContainer>();
 const SPRITE_RUNNER_HOME_DIR = '/opt/chiridion';
 const DEFAULT_RUNNER_SCRIPT_PATH = `${SPRITE_RUNNER_HOME_DIR}/claude-runner.mjs`;
-const SPRITE_MANAGED_SKILLS_DIR = '/home/sprite/.claude/skills';
+const SPRITE_MANAGED_SKILLS_DIR = '/etc/claude-code/.claude/skills';
 const SPRITE_MANAGED_SKILLS_VERSION_PATH = `${SPRITE_MANAGED_SKILLS_DIR}/.chiridion-version`;
-const SPRITE_MANAGED_SKILLS_PARENT_DIR = '/home/sprite/.claude';
+const SPRITE_MANAGED_SKILLS_PARENT_DIR = '/etc/claude-code/.claude';
 const SPRITE_CREATE_WORKER_DIR = '/usr/local/lib/create-worker';
 const SPRITE_CREATE_WORKER_VERSION_PATH = `${SPRITE_CREATE_WORKER_DIR}/.chiridion-version`;
 const SPRITE_CREATE_WORKER_BIN = '/usr/local/bin/create-worker';
@@ -176,7 +176,7 @@ const R2_MOUNT_SERVICE_VERSION = '1';
 // Composite version — auto-bumps when any bootstrap component changes.
 // Stored in workspace DO storage to skip all sprite filesystem checks on cold start.
 export const BOOTSTRAP_VERSION = [
-  '3',                            // schema version — bump for structural bootstrap changes (3: moved skills to ~/.claude/skills)
+  '3',                            // schema version — bump for structural bootstrap changes
   RUNNER_DEP_VERSION,             // SDK pinned version
   SPRITE_BOOTSTRAP_VERSION,       // combined asset hashes from manifest
 ].join(':');
