@@ -1,6 +1,6 @@
 'use client';
 
-import { Copy, Check, Users } from 'lucide-react';
+import { Copy, Check } from 'lucide-react';
 import type { Message, ContentBlock, ToolResultBlock } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/tooltip';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ThinkingBlock, ToolCall } from '@/components/tool-call';
+import { TeammateMessage } from '@/components/tool-call/teammate-message';
 import { LoadingDots } from '@/components/loading-dots';
 import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
@@ -339,60 +340,6 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
   return <div className="space-y-4">{sections}</div>;
 }
 
-function TeammateMessageBubble({
-  teammateId,
-  content,
-  timestamp,
-  onCopy,
-  isCopied,
-  messageId,
-}: {
-  teammateId: string;
-  content: string;
-  timestamp: number;
-  onCopy: (id: string, content: string) => void;
-  isCopied: boolean;
-  messageId: string;
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="max-w-none border-l-2 border-blue-500/40 bg-muted/20 rounded-lg pl-3 pr-3 py-2">
-        <div className="flex items-center gap-1.5 mb-1.5">
-          <Users className="h-3.5 w-3.5 text-blue-500/70" />
-          <span className="text-xs font-medium text-blue-500/70">{teammateId}</span>
-        </div>
-        <div className="max-w-none">
-          <MarkdownRenderer content={content} />
-        </div>
-      </div>
-      <div
-        className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
-        role="group"
-        aria-label="Message actions"
-      >
-        <span className="text-muted-foreground text-xs mr-1">
-          {formatMessageTime(timestamp)}
-        </span>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="text-muted-foreground"
-              onClick={() => onCopy(messageId, content)}
-            >
-              {isCopied ? <Check /> : <Copy />}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            {isCopied ? 'Copied!' : 'Copy message'}
-          </TooltipContent>
-        </Tooltip>
-      </div>
-    </div>
-  );
-}
-
 interface MessageBubbleProps {
   message: Message;
   onCopy: (id: string, content: string) => void;
@@ -441,13 +388,9 @@ export function MessageBubble({
     const teammateMessage = parseTeammateMessage(rawTextForTeammate);
     if (teammateMessage) {
       return (
-        <TeammateMessageBubble
+        <TeammateMessage
           teammateId={teammateMessage.teammateId}
           content={teammateMessage.content}
-          timestamp={message.created_at}
-          onCopy={onCopy}
-          isCopied={isCopied}
-          messageId={message.id}
         />
       );
     }
