@@ -731,8 +731,11 @@ export class WorkspaceContainer {
       'set -euo pipefail',
       `rm -rf ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)}`,
       `mkdir -p ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
-      // Add ngrok-skip-browser-warning header to bypass ngrok's interstitial page
-      `curl -fsSL -H "ngrok-skip-browser-warning: true" ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
+      // Debug: download to temp file first to inspect what we're getting
+      `curl -fsSL -H "ngrok-skip-browser-warning: 1" -o /tmp/skills.tar.gz ${JSON.stringify(assetUrl)}`,
+      `echo "=== Downloaded file info ===" && file /tmp/skills.tar.gz && ls -la /tmp/skills.tar.gz`,
+      `echo "=== First 200 bytes ===" && head -c 200 /tmp/skills.tar.gz | xxd | head -20`,
+      `tar -xzf /tmp/skills.tar.gz -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
       `echo "=== Skills directory contents ===" && ls -la ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)} || echo "Skills dir does not exist"`,
     ].join('; ');
     console.log(`[Sprite] ensureRunnerSkills: running command: ${installCmd}`);
