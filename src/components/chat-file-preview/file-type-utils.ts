@@ -122,6 +122,24 @@ export function getFileIcon(category: FileCategory): LucideIcon {
   }
 }
 
+/**
+ * Image formats that browsers can natively render in an <img> tag.
+ * Excludes HEIC/HEIF/TIFF and other formats that most browsers can't display.
+ */
+const BROWSER_RENDERABLE_IMAGE_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif',
+]);
+
+const BROWSER_RENDERABLE_IMAGE_TYPES = new Set([
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+  'image/svg+xml', 'image/bmp', 'image/x-icon', 'image/avif',
+]);
+
+/**
+ * Returns true only for image formats that browsers can render in an <img> tag.
+ * HEIC, HEIF, TIFF, etc. return false and will render as a FileCard instead.
+ */
 export function isImageFile(filename: string, contentType?: string): boolean {
-  return getPreviewType(filename, contentType) === 'image';
+  if (contentType && BROWSER_RENDERABLE_IMAGE_TYPES.has(contentType)) return true;
+  return BROWSER_RENDERABLE_IMAGE_EXTENSIONS.has(getFileExtension(filename));
 }

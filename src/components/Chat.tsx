@@ -52,7 +52,7 @@ import { MessageBubble, isInterruptMessage, parseSlashCommand, parseLocalCommand
 import { LoadingDots } from '@/components/loading-dots';
 import { CompactingIndicator } from '@/components/compacting-indicator';
 import { WelcomeScreen } from '@/components/welcome-screen';
-import { FilePreviewContent } from '@/components/chat-file-preview';
+import { FilePreviewContent, isImageFile } from '@/components/chat-file-preview';
 import { ChatPreviewProvider } from '@/components/chat-preview/preview-context';
 import { cn } from '@/lib/utils';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
@@ -1878,8 +1878,8 @@ export default function Chat({
     for (const file of files) {
       const id = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
-      // Create a blob URL for image preview in the input field
-      const previewUrl = file.type.startsWith('image/')
+      // Create a blob URL for browser-renderable image preview in the input field
+      const previewUrl = isImageFile(file.name, file.type || undefined)
         ? URL.createObjectURL(file)
         : undefined;
 
