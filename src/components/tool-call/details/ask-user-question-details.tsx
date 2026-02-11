@@ -37,12 +37,55 @@ function escapeRegExp(value: string): string {
 }
 
 function decodeQuotedValue(value: string): string {
-  return value
-    .replace(/\\\\/g, '\\')
-    .replace(/\\"/g, '"')
-    .replace(/\\n/g, '\n')
-    .replace(/\\r/g, '\r')
-    .replace(/\\t/g, '\t');
+  let decoded = '';
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char !== '\\') {
+      decoded += char;
+      continue;
+    }
+
+    const next = value[index + 1];
+    if (next === undefined) {
+      decoded += '\\';
+      break;
+    }
+
+    if (next === '\\') {
+      decoded += '\\';
+      index += 1;
+      continue;
+    }
+
+    if (next === '"') {
+      decoded += '"';
+      index += 1;
+      continue;
+    }
+
+    if (next === 'n') {
+      decoded += '\n';
+      index += 1;
+      continue;
+    }
+
+    if (next === 'r') {
+      decoded += '\r';
+      index += 1;
+      continue;
+    }
+
+    if (next === 't') {
+      decoded += '\t';
+      index += 1;
+      continue;
+    }
+
+    decoded += '\\';
+  }
+
+  return decoded;
 }
 
 function extractQuestionsAndAnswers(tool?: ToolUseBlock, result?: ToolResultBlock): {
