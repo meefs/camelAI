@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, memo } from 'react';
+import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { useNavigate, useFetcher, useRevalidator } from 'react-router';
 import { ArrowDown, RefreshCw, ExternalLink, X, Bug, ChevronDown, Globe, Lock } from 'lucide-react';
 import { toast } from 'sonner';
@@ -399,6 +400,133 @@ function ShareStatusButton({
     </DropdownMenu>
   );
 }
+
+interface ChatMessagesViewProps {
+  visibleMessages: Message[];
+  lastUserMessageId: string | null;
+  lastMessageId: string | null;
+  isAwaitingAssistant: boolean;
+  isLastMessageAssistantLike: boolean;
+  copyMessage: (messageId: string, content: string) => void;
+  copiedMessageId: string | null;
+  lastStreamingMessageId: string | null;
+  skillSheetsByToolId: Map<string, string>;
+  hostname?: string;
+  orgSlug?: string;
+  error: string | null;
+  setError: Dispatch<SetStateAction<string | null>>;
+  isCompacting: boolean;
+  loading: boolean;
+  isStreaming: boolean;
+  hasStreamingMessage: boolean;
+  shouldRenderSpacer: boolean;
+  lastUserMessageRef: RefObject<HTMLDivElement | null>;
+  assistantMeasureRef: RefObject<HTMLDivElement | null>;
+  assistantPendingMeasureRef: RefObject<HTMLDivElement | null>;
+  assistantSpacerRef: RefObject<HTMLDivElement | null>;
+  messagesEndRef: RefObject<HTMLDivElement | null>;
+}
+
+const ChatMessagesView = memo(function ChatMessagesView({
+  visibleMessages,
+  lastUserMessageId,
+  lastMessageId,
+  isAwaitingAssistant,
+  isLastMessageAssistantLike,
+  copyMessage,
+  copiedMessageId,
+  lastStreamingMessageId,
+  skillSheetsByToolId,
+  hostname,
+  orgSlug,
+  error,
+  setError,
+  isCompacting,
+  loading,
+  isStreaming,
+  hasStreamingMessage,
+  shouldRenderSpacer,
+  lastUserMessageRef,
+  assistantMeasureRef,
+  assistantPendingMeasureRef,
+  assistantSpacerRef,
+  messagesEndRef,
+}: ChatMessagesViewProps) {
+  return (
+    <>
+      {visibleMessages.map(msg => {
+        const isLastUserMessage = msg.id === lastUserMessageId;
+        const isLastAssistantMessage = !isAwaitingAssistant && isLastMessageAssistantLike && msg.id === lastMessageId;
+        const messageRef = isLastUserMessage
+          ? lastUserMessageRef
+          : (isLastAssistantMessage ? assistantMeasureRef : undefined);
+        return (
+          <div
+            key={msg.id}
+            ref={messageRef}
+            data-message-id={msg.id}
+            className={cn("group", isDirectUserMessage(msg) ? "mt-6 mb-1" : "")}
+          >
+            <MessageBubble
+              message={msg}
+              onCopy={copyMessage}
+              copiedId={copiedMessageId}
+              showStreamingIndicator={msg.id === lastStreamingMessageId}
+              skillSheets={skillSheetsByToolId}
+              hostname={hostname}
+              orgSlug={orgSlug}
+            />
+          </div>
+        );
+      })}
+
+      {/* Error display */}
+      {error && (
+        <div className="bg-destructive/10 border border-destructive/20 px-4 py-3 rounded-xl">
+          <div className="flex items-start gap-3">
+            <svg className="w-5 h-5 text-destructive shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-destructive mb-1">Something went wrong</p>
+              <p className="text-sm text-muted-foreground">{error}</p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={() => setError(null)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Compaction in-progress indicator */}
+      {isCompacting && (
+        <div ref={assistantPendingMeasureRef}>
+          <CompactingIndicator />
+        </div>
+      )}
+
+      {/* Loading indicator when waiting for assistant response */}
+      {loading && !isStreaming && !hasStreamingMessage && !isCompacting && (
+        <div ref={assistantPendingMeasureRef}>
+          <LoadingDots />
+        </div>
+      )}
+      {shouldRenderSpacer ? (
+        <div className="flex flex-col">
+          <div ref={assistantSpacerRef} aria-hidden="true" className="pointer-events-none w-full shrink-0" />
+          <div ref={messagesEndRef} />
+        </div>
+      ) : (
+        <div ref={messagesEndRef} />
+      )}
+    </>
+  );
+});
 
 
 export default function Chat({
@@ -2606,76 +2734,31 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       >
         {/* Centered message column */}
         <div ref={messageColumnRef} className="max-w-3xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 flex flex-col">
-          {visibleMessages.map(msg => {
-            const isLastUserMessage = msg.id === lastUserMessage?.id;
-            const isLastAssistantMessage = !isAwaitingAssistant && isLastMessageAssistantLike && msg.id === lastMessage?.id;
-            const messageRef = isLastUserMessage
-              ? lastUserMessageRef
-              : (isLastAssistantMessage ? assistantMeasureRef : undefined);
-            return (
-              <div
-                key={msg.id}
-                ref={messageRef}
-                data-message-id={msg.id}
-                className={cn("group", isDirectUserMessage(msg) ? "mt-6 mb-1" : "")}
-              >
-                <MessageBubble
-                  message={msg}
-                  onCopy={copyMessage}
-                  copiedId={copiedMessageId}
-                  showStreamingIndicator={msg.id === lastStreamingMessageId}
-                  skillSheets={skillSheetsByToolId}
-                  hostname={hostname}
-                  orgSlug={orgSlug}
-                />
-              </div>
-            );
-          })}
-
-          {/* Error display */}
-          {error && (
-            <div className="bg-destructive/10 border border-destructive/20 px-4 py-3 rounded-xl">
-              <div className="flex items-start gap-3">
-                <svg className="w-5 h-5 text-destructive shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-destructive mb-1">Something went wrong</p>
-                  <p className="text-sm text-muted-foreground">{error}</p>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="shrink-0 text-muted-foreground hover:text-foreground"
-                  onClick={() => setError(null)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Compaction in-progress indicator */}
-          {isCompacting && (
-            <div ref={assistantPendingMeasureRef}>
-              <CompactingIndicator />
-            </div>
-          )}
-
-          {/* Loading indicator when waiting for assistant response */}
-          {loading && !isStreaming && !hasStreamingMessage && !isCompacting && (
-            <div ref={assistantPendingMeasureRef}>
-              <LoadingDots />
-            </div>
-          )}
-          {shouldRenderSpacer ? (
-            <div className="flex flex-col">
-              <div ref={assistantSpacerRef} aria-hidden="true" className="pointer-events-none w-full shrink-0" />
-              <div ref={messagesEndRef} />
-            </div>
-          ) : (
-            <div ref={messagesEndRef} />
-          )}
+          <ChatMessagesView
+            visibleMessages={visibleMessages}
+            lastUserMessageId={lastUserMessage?.id ?? null}
+            lastMessageId={lastMessage?.id ?? null}
+            isAwaitingAssistant={isAwaitingAssistant}
+            isLastMessageAssistantLike={isLastMessageAssistantLike}
+            copyMessage={copyMessage}
+            copiedMessageId={copiedMessageId}
+            lastStreamingMessageId={lastStreamingMessageId}
+            skillSheetsByToolId={skillSheetsByToolId}
+            hostname={hostname}
+            orgSlug={orgSlug}
+            error={error}
+            setError={setError}
+            isCompacting={isCompacting}
+            loading={loading}
+            isStreaming={isStreaming}
+            hasStreamingMessage={hasStreamingMessage}
+            shouldRenderSpacer={shouldRenderSpacer}
+            lastUserMessageRef={lastUserMessageRef}
+            assistantMeasureRef={assistantMeasureRef}
+            assistantPendingMeasureRef={assistantPendingMeasureRef}
+            assistantSpacerRef={assistantSpacerRef}
+            messagesEndRef={messagesEndRef}
+          />
         </div>
       </div>
 
