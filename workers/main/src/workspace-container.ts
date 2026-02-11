@@ -176,7 +176,7 @@ const R2_MOUNT_SERVICE_VERSION = '1';
 // Composite version — auto-bumps when any bootstrap component changes.
 // Stored in workspace DO storage to skip all sprite filesystem checks on cold start.
 export const BOOTSTRAP_VERSION = [
-  '3',                            // schema version — bump for structural bootstrap changes
+  '4',                            // schema version — bump for structural bootstrap changes
   RUNNER_DEP_VERSION,             // SDK pinned version
   SPRITE_BOOTSTRAP_VERSION,       // combined asset hashes from manifest
 ].join(':');
