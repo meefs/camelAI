@@ -222,6 +222,7 @@ export class WorkspaceContainer {
   private runnerDependencyBootstrapped = false;
   private runnerSkillsBootstrapped = false;
   private createWorkerBootstrapped = false;
+  private uvInstallStarted = false;
   private runnerBootstrapPromise: Promise<void> | null = null;
   private spriteKnownToExist = false;
   private r2MountServiceCreated = false;
@@ -823,6 +824,55 @@ export class WorkspaceContainer {
   }
 
   /**
+   * Install uv (Python package manager) in the background.
+   * Runs async and doesn't block bootstrap - uses waitUntil for fire-and-forget.
+   */
+  private startUvInstallBackground(spriteName: string): void {
+    if (this.uvInstallStarted) return;
+    this.uvInstallStarted = true;
+
+    const installUv = async () => {
+      // Check if uv is already installed
+      const checkResult = await this.execOnSprite(spriteName, [
+        'bash', '-c', 'command -v uv && uv --version',
+      ]);
+
+      if (checkResult.success && checkResult.stdout.includes('uv')) {
+        console.log(`[Sprite] uv already installed: ${checkResult.stdout.trim().split('\n').pop()}`);
+        return;
+      }
+
+      console.log(`[Sprite] installing uv to /usr/local/bin`);
+      const installResult = await this.execOnSprite(spriteName, [
+        'bash',
+        '-lc',
+        [
+          'set -euo pipefail',
+          // Download and install uv to /usr/local/bin (global PATH)
+          'curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin sh',
+        ].join('; '),
+      ]);
+
+      if (!installResult.success) {
+        console.error(`[Sprite] uv install failed: ${installResult.stderr || installResult.stdout || 'unknown error'}`);
+        return;
+      }
+
+      // Verify installation
+      const verifyResult = await this.execOnSprite(spriteName, ['uv', '--version']);
+      if (verifyResult.success) {
+        console.log(`[Sprite] uv installed successfully: ${verifyResult.stdout.trim()}`);
+      } else {
+        console.error(`[Sprite] uv install verification failed: ${verifyResult.stderr || verifyResult.stdout}`);
+      }
+    };
+
+    waitUntil(
+      installUv().catch((err) => console.error('[Sprite] uv background install error:', err))
+    );
+  }
+
+  /**
    * Mark all bootstrap steps as done if the caller already knows the sprite
    * is at the current BOOTSTRAP_VERSION (e.g. from workspace DO storage).
    */
@@ -842,6 +892,8 @@ export class WorkspaceContainer {
   private async ensureRunnerBootstrap(spriteName: string): Promise<void> {
     if (this.runnerScriptBootstrapped && this.runnerDependencyBootstrapped && this.runnerSkillsBootstrapped && this.createWorkerBootstrapped) {
       console.log(`[Sprite] bootstrap: all components up to date (v=${BOOTSTRAP_VERSION.slice(0, 40)})`);
+      // Still install uv in background even when main bootstrap is skipped
+      this.startUvInstallBackground(spriteName);
       return;
     }
 
@@ -865,6 +917,9 @@ export class WorkspaceContainer {
     } finally {
       this.runnerBootstrapPromise = null;
     }
+
+    // Fire-and-forget: install uv in background (doesn't block bootstrap)
+    this.startUvInstallBackground(spriteName);
   }
 
   private getSpriteName(workspaceId = this.workspaceId): string {
