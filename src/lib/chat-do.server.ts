@@ -17,6 +17,7 @@ function toThread(orgThread: OrgThread): Thread {
     created_at: orgThread.created_at,
     updated_at: orgThread.updated_at,
     user_message_count: orgThread.user_message_count ?? 0,
+    first_user_message: orgThread.first_user_message ?? null,
   };
 }
 
@@ -101,7 +102,8 @@ export async function createThread(
   context: AppLoadContext,
   workspaceId: string,
   title: string | undefined,
-  createdBy?: string
+  createdBy?: string,
+  firstUserMessage?: string
 ): Promise<Thread> {
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
@@ -109,8 +111,21 @@ export async function createThread(
     throw new Error('Workspace not found');
   }
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const thread = await orgStub.createThread(workspaceId, title, createdBy);
+  const thread = await orgStub.createThread(workspaceId, title, createdBy, firstUserMessage);
   return toThread(thread);
+}
+
+export async function getRecentThreads(
+  context: AppLoadContext,
+  workspaceId: string,
+  limit = 6
+): Promise<Thread[]> {
+  const env = getEnv(context);
+  const wsInfo = await getWorkspaceInfo(env, workspaceId);
+  if (!wsInfo) return [];
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
+  const result = await orgStub.getThreadsPaginated(0, limit, workspaceId);
+  return result.items.map((t) => toThread(t));
 }
 
 export async function getThread(
@@ -143,6 +158,24 @@ export async function updateThread(
   const existing = await orgStub.getThread(id);
   if (!existing || existing.workspace_id !== workspaceId) return null;
   const thread = await orgStub.updateThread(id, title);
+  if (!thread) return null;
+  return toThread(thread);
+}
+
+export async function setThreadFirstUserMessage(
+  context: AppLoadContext,
+  id: string,
+  firstUserMessage: string,
+  workspaceId: string
+): Promise<Thread | null> {
+  const env = getEnv(context);
+  const wsInfo = await getWorkspaceInfo(env, workspaceId);
+  if (!wsInfo) return null;
+  const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
+  // Verify the thread belongs to this workspace first
+  const existing = await orgStub.getThread(id);
+  if (!existing || existing.workspace_id !== workspaceId) return null;
+  const thread = await orgStub.setThreadFirstUserMessage(id, firstUserMessage);
   if (!thread) return null;
   return toThread(thread);
 }

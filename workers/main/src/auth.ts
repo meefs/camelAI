@@ -312,6 +312,7 @@ export interface OrgThread {
   created_at: number;
   updated_at: number;
   user_message_count: number;
+  first_user_message: string | null;
 }
 
 export type OrgChatThreadAccessResult =
@@ -1150,7 +1151,16 @@ export class OrgDO extends DurableObject<DOEnv> {
       }
     }
 
-    const CURRENT_SCHEMA_VERSION = 13;
+    if (version < 14) {
+      // V14: Add first_user_message to threads for welcome screen preview
+      try {
+        this.sql.exec('ALTER TABLE threads ADD COLUMN first_user_message TEXT');
+      } catch {
+        // Column may already exist
+      }
+    }
+
+    const CURRENT_SCHEMA_VERSION = 14;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -2246,19 +2256,21 @@ export class OrgDO extends DurableObject<DOEnv> {
   /**
    * Create a new thread with a server-generated UUID
    */
-  createThread(workspaceId: string, title: string | undefined, createdBy?: string): OrgThread {
+  createThread(workspaceId: string, title: string | undefined, createdBy?: string, firstUserMessage?: string): OrgThread {
     const id = crypto.randomUUID();
     const now = Date.now();
     const t = title || 'New Chat';
     const creator = createdBy?.trim() || 'system';
+    const msg = firstUserMessage?.slice(0, 500) || null;
     this.sql.exec(
-      'INSERT INTO threads (id, workspace_id, title, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO threads (id, workspace_id, title, created_by, created_at, updated_at, first_user_message) VALUES (?, ?, ?, ?, ?, ?, ?)',
       id,
       workspaceId,
       t,
       creator,
       now,
-      now
+      now,
+      msg
     );
     this.log('thread_created', creator, id, { workspace_id: workspaceId, title: t });
     return {
@@ -2269,6 +2281,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       created_at: now,
       updated_at: now,
       user_message_count: 0,
+      first_user_message: msg,
     };
   }
 
@@ -2298,6 +2311,28 @@ export class OrgDO extends DurableObject<DOEnv> {
       title,
       updated_at: now,
     };
+  }
+
+  /**
+   * Set first user message used for welcome-screen previews.
+   * This intentionally does not modify updated_at to avoid reordering threads.
+   */
+  setThreadFirstUserMessage(id: string, firstUserMessage: string): OrgThread | null {
+    const existing = this.getThread(id);
+    if (!existing) return null;
+
+    const message = firstUserMessage.trim().slice(0, 500);
+    if (!message) {
+      return existing;
+    }
+
+    this.sql.exec(
+      "UPDATE threads SET first_user_message = ? WHERE id = ? AND (first_user_message IS NULL OR first_user_message = '')",
+      message,
+      id
+    );
+
+    return this.getThread(id);
   }
 
   /**

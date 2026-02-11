@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router';
 import { ChevronUp, Plus } from 'lucide-react';
-import type { WorkerScriptWithCreator, Integration } from '@/types';
+import type { WorkerScriptWithCreator, Integration, Thread } from '@/types';
 import type { Attachment } from '@/components/attachment-list';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { PromptInput } from '@/components/prompt-input';
@@ -16,6 +17,7 @@ import { StarterPrompts, type StarterPromptItem } from './starter-prompts';
 import { IntegrationButtons, FEATURED_CONNECTIONS, LOGO_STACK_CONNECTIONS } from './integration-buttons';
 import { ConnectedTools } from './connected-tools';
 import { AppCardsRow } from './app-cards-row';
+import { RecentChatsRow } from './recent-chats-row';
 
 const STARTER_PROMPTS: StarterPromptItem[] = [
   // Strong keepers from before
@@ -182,6 +184,7 @@ interface WelcomeScreenProps {
   userName: string | null;
   allApps: WorkerScriptWithCreator[];
   connections: Integration[];
+  recentThreads: Thread[];
   renderedAt?: number;
   onPromptChange: (prompt: string) => void;
   onSubmit: () => void;
@@ -198,6 +201,7 @@ export function WelcomeScreen({
   userName,
   allApps,
   connections,
+  recentThreads,
   renderedAt,
   onPromptChange,
   onSubmit,
@@ -208,6 +212,7 @@ export function WelcomeScreen({
   onAttachmentRemove,
   isCreatingThread,
 }: WelcomeScreenProps) {
+  const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
 
   const userApps = useMemo(() => {
@@ -223,6 +228,11 @@ export function WelcomeScreen({
   const hasUserApps = userApps.length > 0;
   const hasTeamApps = teamApps.length > 0;
   const hasConnections = connections.length > 0;
+  const hasRecentChats = recentThreads.length > 0;
+
+  const handleOpenThread = useCallback((threadId: string) => {
+    navigate(`/chat/${threadId}`);
+  }, [navigate]);
 
   const showUserAppsSection = hasUserApps;
   const showTeamAppsSection = !hasUserApps && hasTeamApps;
@@ -284,9 +294,20 @@ export function WelcomeScreen({
         )}
       </AnimatedPlaceholder>
 
+      {hasRecentChats && (
+        <section className="space-y-4">
+          <SectionHeader title="Your recent chats" linkHref="/history" />
+          <RecentChatsRow
+            threads={recentThreads.slice(0, 4)}
+            renderedAt={referenceTime}
+            onOpenThread={handleOpenThread}
+          />
+        </section>
+      )}
+
       {showUserAppsSection && (
         <section className="space-y-4">
-          <SectionHeader title="Pick up where you left off" linkHref="/apps" />
+          <SectionHeader title="Continue building an app" linkHref="/apps" />
           <AppCardsRow
             apps={userApps.slice(0, 4)}
             renderedAt={referenceTime}
