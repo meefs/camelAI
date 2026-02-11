@@ -704,10 +704,22 @@ export class WorkspaceContainer {
     console.log(`[Sprite] ensureRunnerSkills: checking version at ${SPRITE_MANAGED_SKILLS_VERSION_PATH}`);
     const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_MANAGED_SKILLS_VERSION_PATH);
     console.log(`[Sprite] ensureRunnerSkills: installedVersion=${installedVersion || 'null'}, expected=${SPRITE_ASSETS.skills.hash}`);
-    if (installedVersion === SPRITE_ASSETS.skills.hash) {
+
+    // Also verify the skills directory actually has content
+    const lsResult = await this.execOnSprite(spriteName, ['ls', '-la', SPRITE_MANAGED_SKILLS_DIR]);
+    console.log(`[Sprite] ensureRunnerSkills: ls ${SPRITE_MANAGED_SKILLS_DIR}: success=${lsResult.success} stdout=${lsResult.stdout?.slice(0, 500) || '(empty)'}`);
+
+    const hasSkillFiles = lsResult.success && lsResult.stdout?.includes('SKILL.md');
+    console.log(`[Sprite] ensureRunnerSkills: hasSkillFiles=${hasSkillFiles}`);
+
+    if (installedVersion === SPRITE_ASSETS.skills.hash && hasSkillFiles) {
       console.log(`[Sprite] bootstrap: skills already at version ${SPRITE_ASSETS.skills.hash}`);
       this.runnerSkillsBootstrapped = true;
       return;
+    }
+
+    if (installedVersion === SPRITE_ASSETS.skills.hash && !hasSkillFiles) {
+      console.log(`[Sprite] ensureRunnerSkills: version marker exists but skill files missing, reinstalling`);
     }
     console.log(`[Sprite] bootstrap: updating skills (${installedVersion || 'none'} → ${SPRITE_ASSETS.skills.hash})`);
 
