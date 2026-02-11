@@ -13,8 +13,7 @@ import {
   getKeyHash,
 } from './openrouter-keys';
 import { waitUntil } from 'cloudflare:workers';
-import { SpritesClient, Sprite } from '@fly/sprites';
-import type { ExecResult } from '@fly/sprites';
+import { SpritesClient } from '@fly/sprites';
 import { SPRITE_ASSETS, SPRITE_BOOTSTRAP_VERSION } from './sprite-assets-manifest';
 import type { OrgDO } from './auth';
 import type { WorkspaceDO } from './workspace';
@@ -260,13 +259,6 @@ export class WorkspaceContainer {
       });
     }
     return this.spritesClient;
-  }
-
-  /**
-   * Get a Sprite instance for executing commands.
-   */
-  private getSprite(name: string): Sprite {
-    return new Sprite(name, this.getSpritesClient());
   }
 
   private getFsWorkingDir(): string {
@@ -1473,8 +1465,9 @@ export class WorkspaceContainer {
   }
 
   /**
-   * Execute a command on a sprite using the official SDK.
-   * Wraps the library's execFile to maintain compatibility with existing code.
+   * Execute a command on a sprite using HTTP POST.
+   * Note: The official SDK uses WebSocket which isn't compatible with CF Workers,
+   * so we use direct HTTP POST to the exec endpoint.
    */
   private async execOnSprite(
     spriteName: string,
@@ -1488,40 +1481,44 @@ export class WorkspaceContainer {
       return { success: false, stdout: '', stderr: 'No command provided', exitCode: 1 };
     }
 
-    const sprite = this.getSprite(spriteName);
-    const [command, ...commandArgs] = args;
+    const url = new URL(`${this.spritesApiBaseUrl}/v1/sprites/${encodeURIComponent(spriteName)}/exec`);
 
-    try {
-      const result = await sprite.execFile(command, commandArgs, {
-        cwd: options.cwd,
-        env: options.env,
-      });
+    for (const arg of args) {
+      url.searchParams.append('cmd', arg);
+    }
 
-      return {
-        success: result.exitCode === 0,
-        stdout: String(result.stdout),
-        stderr: String(result.stderr),
-        exitCode: result.exitCode,
-      };
-    } catch (err) {
-      // ExecError is thrown for non-zero exit codes
-      const execErr = err as { result?: ExecResult; message?: string };
-      if (execErr.result) {
-        return {
-          success: false,
-          stdout: String(execErr.result.stdout),
-          stderr: String(execErr.result.stderr),
-          exitCode: execErr.result.exitCode,
-        };
+    if (options.cwd) {
+      url.searchParams.set('dir', options.cwd);
+    }
+
+    if (options.env && Object.keys(options.env).length > 0) {
+      for (const [key, value] of Object.entries(options.env)) {
+        url.searchParams.append('env', `${key}=${value}`);
       }
-      // Other errors (network, etc.)
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.buildSpritesHeaders(),
+    });
+
+    const body = await response.text();
+
+    if (!response.ok) {
       return {
         success: false,
         stdout: '',
-        stderr: String(execErr.message || err),
-        exitCode: 1,
+        stderr: body,
+        exitCode: response.status,
       };
     }
+
+    return {
+      success: true,
+      stdout: body,
+      stderr: '',
+      exitCode: 0,
+    };
   }
 
   private async execHttpRaw(
