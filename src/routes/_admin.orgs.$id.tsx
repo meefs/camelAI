@@ -103,11 +103,6 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const { id: orgId } = params;
   const authEnv = getAuthEnv(getEnv(context));
 
-  if (intent === 'reset-containers') {
-    await adminDO.resetAdminOrgContainers(context, orgId);
-    return { success: true };
-  }
-
   if (intent === 'addMember') {
     const userId = formData.get('userId') as string;
     const role = formData.get('role') as 'admin' | 'member';
@@ -258,26 +253,6 @@ export default function AdminOrgDetailPage() {
               </CardHeader>
               <CardContent>
                 <OrgEditForm org={org} />
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Workspace Containers</CardTitle>
-                <CardDescription>
-                  Restart all workspace containers to pick up new secrets or code.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-xs text-muted-foreground">
-                  {workspaces.length} {workspaces.length === 1 ? 'workspace' : 'workspaces'} attached
-                </p>
-                <fetcher.Form method="post">
-                  <input type="hidden" name="intent" value="reset-containers" />
-                  <Button variant="outline" type="submit" disabled={fetcher.state !== 'idle'}>
-                    {fetcher.state !== 'idle' ? 'Resetting...' : 'Reset Workspace Containers'}
-                  </Button>
-                </fetcher.Form>
               </CardContent>
             </Card>
 

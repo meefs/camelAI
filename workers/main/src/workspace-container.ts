@@ -1811,30 +1811,6 @@ export class WorkspaceContainer {
     const envVars = await this.fetchIntegrationEnvVars(workspaceId);
     return this.pushIntegrationEnvVars(envVars);
   }
-
-  async destroy(): Promise<void> {
-    try {
-      const spriteName = this.requireSpriteName();
-      const sprite = this.getSprite(spriteName);
-
-      // Use SDK to list sessions
-      const sessions = await sprite.listSessions();
-
-      // Kill active sessions (SDK doesn't have kill, so use manual fetch)
-      await Promise.all(
-        sessions
-          .filter((session) => session.isActive)
-          .map(async (session) => {
-            await this.fetchSprite(`/v1/sprites/${encodeURIComponent(spriteName)}/exec/${session.id}/kill`, {
-              method: 'POST',
-            }).catch(() => {});
-          })
-      );
-    } catch (err) {
-      console.error('[WorkspaceContainer] destroy() failed:', err);
-      throw err;
-    }
-  }
 }
 
 export function getContainerIdForWorkspace(workspaceId: string): string {

@@ -27,10 +27,6 @@ import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import { type AuthEnv, getAuthEnv } from './auth-helpers';
 import * as authDO from './auth-do';
 import { getMessages as getThreadMessages, getThreadPreviewTarget } from './chat-do.server';
-import {
-  getWorkspaceContainer,
-  type WorkspaceContainerEnv,
-} from '../../workers/main/src/workspace-container';
 import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 
 // Helper: Collect all user IDs from KV
@@ -801,49 +797,6 @@ export async function adminGetAppDetail(
   return null;
 }
 
-// Admin container reset functions
-export async function resetAdminOrgContainers(
-  context: AppLoadContext,
-  orgId: string
-): Promise<{ restarted: number; failed: number }> {
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const containerEnv = env as unknown as WorkspaceContainerEnv;
-
-  // Get all workspaces for this org
-  const workspaces = await authDO.listOrgWorkspaces(authEnv, orgId);
-
-  let restarted = 0;
-  let failed = 0;
-
-  // Reset each workspace's container
-  for (const workspace of workspaces) {
-    try {
-      const container = getWorkspaceContainer(containerEnv, workspace.id);
-      await container.destroy();
-      restarted++;
-    } catch (error) {
-      console.error(`Failed to reset container for workspace ${workspace.id}:`, error);
-      failed++;
-    }
-  }
-
-  return { restarted, failed };
-}
-
-export async function resetAdminWorkspaceContainer(
-  context: AppLoadContext,
-  workspaceId: string
-): Promise<{ success: boolean; containerId: string }> {
-  const env = getEnv(context);
-  const containerEnv = env as unknown as WorkspaceContainerEnv;
-
-  const container = getWorkspaceContainer(containerEnv, workspaceId);
-  await container.destroy();
-
-  return { success: true, containerId: workspaceId };
-}
-
 export interface AdminHardDeleteOrgResult {
   deleted_workspaces: number;
   deleted_apps: number;
@@ -862,7 +815,6 @@ export async function hardDeleteAdminOrg(
 ): Promise<AdminHardDeleteOrgResult> {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const containerEnv = env as unknown as WorkspaceContainerEnv;
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
   const warnings: string[] = [];
 
@@ -921,20 +873,6 @@ export async function hardDeleteAdminOrg(
       );
     }
   }
-
-  // Best-effort stop containers before deleting workspace records.
-  await Promise.all(
-    workspaceIds.map(async (workspaceId) => {
-      try {
-        const container = getWorkspaceContainer(containerEnv, workspaceId);
-        await container.destroy();
-      } catch (error) {
-        warnings.push(
-          `Failed to reset container for workspace ${workspaceId.slice(0, 8)}: ${toErrorMessage(error)}`
-        );
-      }
-    })
-  );
 
   // Hard-delete each workspace Durable Object.
   for (const workspaceId of workspaceIds) {

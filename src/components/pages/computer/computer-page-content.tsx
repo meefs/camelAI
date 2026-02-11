@@ -327,7 +327,6 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const [dialogSubmitting, setDialogSubmitting] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [confirmEditOpen, setConfirmEditOpen] = useState(false);
-  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [editingEnabled, setEditingEnabled] = useState(false);
   const [savingPaths, setSavingPaths] = useState<Set<string>>(new Set());
   const [conflictState, setConflictState] = useState<ConflictState | null>(null);
@@ -350,7 +349,6 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const pendingModelsRef = useRef<Map<string, { content: string; language: string }>>(
     new Map()
   );
-  const resetContainerFetcher = useFetcher();
   const activePathRef = useRef<string | null>(null);
   const dragSourcePathRef = useRef<string | null>(null);
   const dragOverPathRef = useRef<string | null>(null);
@@ -2049,30 +2047,6 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                     }}
                   />
                 </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="destructive"
-                  className="h-8"
-                  disabled={resetContainerFetcher.state !== 'idle'}
-                  onClick={() => setResetConfirmOpen(true)}
-                >
-                  {resetContainerFetcher.state !== 'idle' ? 'Resetting...' : 'Reset Container'}
-                </Button>
-                <ConfirmDialog
-                  open={resetConfirmOpen}
-                  onOpenChange={setResetConfirmOpen}
-                  title="Reset sandbox container?"
-                  description="Reset the sandbox container? Active sessions will disconnect and the container will restart on next use."
-                  confirmLabel="Reset container"
-                  variant="destructive"
-                  onConfirm={() => {
-                    resetContainerFetcher.submit(
-                      { intent: 'reset-container' },
-                      { method: 'POST' }
-                    );
-                  }}
-                />
                 <Button
                   size="sm"
                   variant="outline"

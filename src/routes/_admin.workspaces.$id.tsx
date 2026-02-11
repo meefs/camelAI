@@ -74,11 +74,6 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const { id: workspaceId } = params;
   const authEnv = getAuthEnv(getEnv(context));
 
-  if (intent === 'reset-container') {
-    await adminDO.resetAdminWorkspaceContainer(context, workspaceId);
-    return { success: true };
-  }
-
   if (intent === 'updateWorkspace') {
     const name = formData.get('name') as string;
     const description = formData.get('description') as string | null;
@@ -224,25 +219,6 @@ export default function AdminWorkspaceDetailPage() {
               </CardHeader>
               <CardContent>
                 <WorkspaceEditForm workspace={workspace} />
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Sandbox Container</CardTitle>
-                <CardDescription>Restart the workspace container to refresh runtime state</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <p className="text-xs text-muted-foreground">Container ID</p>
-                  <code className="text-sm">{`ws-${workspace.id}`}</code>
-                </div>
-                <fetcher.Form method="post">
-                  <input type="hidden" name="intent" value="reset-container" />
-                  <Button variant="outline" type="submit" disabled={fetcher.state !== 'idle'}>
-                    {fetcher.state !== 'idle' ? 'Resetting...' : 'Reset Container'}
-                  </Button>
-                </fetcher.Form>
               </CardContent>
             </Card>
 
