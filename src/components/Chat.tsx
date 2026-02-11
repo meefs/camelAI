@@ -56,6 +56,7 @@ import {
   applyStreamingEventToMessage,
   attachToolResultsToMessages,
   normalizeToolResultMessages,
+  mergeTeammateMessages,
 } from '@/lib/streaming';
 import { getAppUrl, getVanityDomain, getIframeDomain } from '@/lib/app-url';
 import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
@@ -96,7 +97,7 @@ function safeJsonStringify(value: unknown): string {
 function isContentBlock(value: unknown): value is ContentBlock {
   if (!value || typeof value !== 'object' || !('type' in value)) return false;
   const type = (value as { type?: string }).type;
-  return type === 'text' || type === 'tool_use' || type === 'tool_result' || type === 'thinking';
+  return type === 'text' || type === 'tool_use' || type === 'tool_result' || type === 'thinking' || type === 'teammate_message';
 }
 
 function coerceContentBlocks(value: unknown): ContentBlock[] | null {
@@ -363,7 +364,7 @@ export default function Chat({
   const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const normalizedMessages = useMemo(
-    () => normalizeToolResultMessages(messages),
+    () => mergeTeammateMessages(normalizeToolResultMessages(messages)),
     [messages]
   );
   const visibleMessages = useMemo(

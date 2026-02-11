@@ -16,6 +16,7 @@ import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
 import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
+import { stripTeammateMessageTags } from '@/lib/teammate-message';
 
 // Format timestamp to readable time (e.g., "12:25 PM")
 function formatMessageTime(timestamp: number): string {
@@ -52,30 +53,6 @@ const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
  */
 function stripSystemMessageTags(text: string): string {
   return text.replace(/<chiridion system message>[\s\S]*?<\/chiridion system message>/g, '').trim();
-}
-
-const TEAMMATE_MESSAGE_REGEX = /^<teammate-message\s+teammate_id="([^"]+)">\n?([\s\S]*?)\n?<\/teammate-message>$/;
-
-interface ParsedTeammateMessage {
-  teammateId: string;
-  content: string;
-}
-
-function parseTeammateMessage(rawContent: string): ParsedTeammateMessage | null {
-  const stripped = stripSystemMessageTags(rawContent).trim();
-  const match = stripped.match(TEAMMATE_MESSAGE_REGEX);
-  if (!match) return null;
-  return {
-    teammateId: match[1] ?? '',
-    content: (match[2] ?? '').trim(),
-  };
-}
-
-function stripTeammateMessageTags(text: string): string {
-  return text
-    .replace(/<teammate-message\s+teammate_id="[^"]*">\n?/g, '')
-    .replace(/<\/teammate-message>/g, '')
-    .trim();
 }
 
 function parseMessageAuthor(rawContent: string): ParsedMessage {
@@ -208,6 +185,7 @@ export function contentToString(content: string | ContentBlock[]): string {
       if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
       if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
       if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+      if (block.type === 'teammate_message') return `[Update from ${block.teammateId}]\n${block.content}`;
       return '';
     })
     .filter(Boolean)
@@ -301,6 +279,20 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
         key: `result-${block.tool_use_id || index}`,
         node: <ToolCall result={block} isStreaming={isStreaming} />,
       });
+      return;
+    }
+
+    if (block.type === 'teammate_message') {
+      items.push({
+        kind: 'tool',
+        key: `teammate-${index}`,
+        node: (
+          <TeammateMessage
+            teammateId={block.teammateId}
+            content={block.content}
+          />
+        ),
+      });
     }
   });
 
@@ -377,24 +369,6 @@ export function MessageBubble({
     : message.content.length > 0;
 
   if (message.role === 'user') {
-    // Check for teammate messages first - these render differently from user bubbles
-    const rawTextForTeammate = typeof message.content === 'string'
-      ? message.content
-      : message.content
-          .map(block => (block.type === 'text' ? block.text : ''))
-          .filter(Boolean)
-          .join('\n');
-
-    const teammateMessage = parseTeammateMessage(rawTextForTeammate);
-    if (teammateMessage) {
-      return (
-        <TeammateMessage
-          teammateId={teammateMessage.teammateId}
-          content={teammateMessage.content}
-        />
-      );
-    }
-
     // Parse author attribution from content and strip prefix for display
     let author: ParsedAuthor | null = null;
     let displayContent: string | ContentBlock[];

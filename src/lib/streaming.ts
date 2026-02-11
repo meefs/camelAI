@@ -1,4 +1,5 @@
-import type { ContentBlock, Message, ToolResultBlock, ToolUseBlock } from '@/types';
+import type { ContentBlock, Message, TeammateMessageBlock, ToolResultBlock, ToolUseBlock } from '@/types';
+import { parseTeammateMessage } from '@/lib/teammate-message';
 
 export interface SDKEvent {
   type: string;
@@ -302,4 +303,74 @@ export function normalizeToolResultMessages(messages: Message[]): Message[] {
   });
 
   return changed ? normalized : messages;
+}
+
+/**
+ * Merge teammate messages into the preceding assistant message.
+ *
+ * Teammate messages arrive as `role: "user"` messages containing
+ * `<teammate-message>` XML. This function detects them, removes them
+ * from the message list, and appends a `teammate_message` content block
+ * to the preceding assistant message — so they render inline with the
+ * assistant's tool calls and text, with identical spacing.
+ */
+export function mergeTeammateMessages(messages: Message[]): Message[] {
+  const result: Message[] = [];
+  let changed = false;
+
+  for (const msg of messages) {
+    if (msg.role !== 'user') {
+      result.push(msg);
+      continue;
+    }
+
+    // Extract raw text to check for teammate message
+    const rawText = typeof msg.content === 'string'
+      ? msg.content
+      : msg.content
+          .map(block => (block.type === 'text' ? block.text : ''))
+          .filter(Boolean)
+          .join('\n');
+
+    const parsed = parseTeammateMessage(rawText);
+    if (!parsed) {
+      result.push(msg);
+      continue;
+    }
+
+    // Find the last assistant message to attach to
+    let lastAssistantIndex = -1;
+    for (let i = result.length - 1; i >= 0; i -= 1) {
+      if (result[i].role === 'assistant') {
+        lastAssistantIndex = i;
+        break;
+      }
+    }
+
+    if (lastAssistantIndex === -1) {
+      // No preceding assistant message — keep as-is (fallback)
+      result.push(msg);
+      continue;
+    }
+
+    // Append teammate block to the assistant message's content
+    const assistantMsg = result[lastAssistantIndex];
+    const existingContent: ContentBlock[] = Array.isArray(assistantMsg.content)
+      ? assistantMsg.content
+      : [{ type: 'text' as const, text: assistantMsg.content }];
+
+    const teammateBlock: TeammateMessageBlock = {
+      type: 'teammate_message',
+      teammateId: parsed.teammateId,
+      content: parsed.content,
+    };
+
+    result[lastAssistantIndex] = {
+      ...assistantMsg,
+      content: [...existingContent, teammateBlock],
+    };
+    changed = true;
+  }
+
+  return changed ? result : messages;
 }
