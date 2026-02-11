@@ -1878,6 +1878,11 @@ export default function Chat({
     for (const file of files) {
       const id = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
+      // Create a blob URL for image preview in the input field
+      const previewUrl = file.type.startsWith('image/')
+        ? URL.createObjectURL(file)
+        : undefined;
+
       // Add to state as uploading
       setAttachments(prev => [...prev, {
         id,
@@ -1888,6 +1893,7 @@ export default function Chat({
         originalName: file.name,
         status: 'uploading',
         progress: 0,
+        previewUrl,
       }]);
 
       try {
@@ -1929,7 +1935,13 @@ export default function Chat({
   }, [resolvedWorkspaceId]);
 
   const handleAttachmentRemove = useCallback((id: string) => {
-    setAttachments(prev => prev.filter(a => a.id !== id));
+    setAttachments(prev => {
+      const removed = prev.find(a => a.id === id);
+      if (removed?.previewUrl) {
+        URL.revokeObjectURL(removed.previewUrl);
+      }
+      return prev.filter(a => a.id !== id);
+    });
   }, []);
 
   // Drag-drop handlers for the whole chat area
@@ -2059,8 +2071,11 @@ export default function Chat({
       finalContent = `${userMessage}\n\n${fileRefs}`;
     }
 
-    // Clear attachments
-    setAttachments([]);
+    // Clear attachments (revoke any blob URLs to avoid memory leaks)
+    setAttachments(prev => {
+      for (const a of prev) { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); }
+      return [];
+    });
 
     // Store pending message info for the effect to use after thread creation
     pendingNewChatRef.current = { finalContent };
@@ -2437,8 +2452,11 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       queueManualCompaction();
     }
 
-    // Clear attachments after building message
-    setAttachments([]);
+    // Clear attachments after building message (revoke any blob URLs to avoid memory leaks)
+    setAttachments(prev => {
+      for (const a of prev) { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); }
+      return [];
+    });
 
     // Clear any previous error
     setError(null);
