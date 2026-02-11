@@ -590,7 +590,7 @@ export class WorkspaceContainer {
           'set -euo pipefail',
           `mkdir -p ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
           // Add ngrok-skip-browser-warning header to bypass ngrok's interstitial page
-          `curl -fsSL -H "ngrok-skip-browser-warning: true" ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
+          `curl -fsSL -H "ngrok-skip-browser-warning: true" ${JSON.stringify(assetUrl)} | tar -xf - -C ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
           `chmod +x ${JSON.stringify(DEFAULT_RUNNER_SCRIPT_PATH)}`,
         ].join('; '),
       ]
@@ -727,15 +727,13 @@ export class WorkspaceContainer {
     const assetUrl = this.getAssetUrl(SPRITE_ASSETS.skills.path);
     console.log(`[Sprite] ensureRunnerSkills: downloading from ${assetUrl}`);
     console.log(`[Sprite] ensureRunnerSkills: extracting to ${SPRITE_MANAGED_SKILLS_PARENT_DIR}`);
+    // Use tar -xf (not -xzf) because the file may arrive decompressed if the server
+    // sets Content-Encoding: gzip and curl auto-decompresses it.
     const installCmd = [
       'set -euo pipefail',
       `rm -rf ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)}`,
       `mkdir -p ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
-      // Debug: download to temp file first to inspect what we're getting
-      `curl -fsSL -H "ngrok-skip-browser-warning: 1" -o /tmp/skills.tar.gz ${JSON.stringify(assetUrl)}`,
-      `echo "=== Downloaded file info ===" && file /tmp/skills.tar.gz && ls -la /tmp/skills.tar.gz`,
-      `echo "=== First 200 bytes ===" && head -c 200 /tmp/skills.tar.gz | xxd | head -20`,
-      `tar -xzf /tmp/skills.tar.gz -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
+      `curl -fsSL -H "ngrok-skip-browser-warning: 1" ${JSON.stringify(assetUrl)} | tar -xf - -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
       `echo "=== Skills directory contents ===" && ls -la ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)} || echo "Skills dir does not exist"`,
     ].join('; ');
     console.log(`[Sprite] ensureRunnerSkills: running command: ${installCmd}`);
@@ -805,7 +803,7 @@ export class WorkspaceContainer {
           `rm -rf ${JSON.stringify(SPRITE_CREATE_WORKER_DIR)}`,
           `mkdir -p /usr/local/lib`,
           // Add ngrok-skip-browser-warning header to bypass ngrok's interstitial page
-          `curl -fsSL -H "ngrok-skip-browser-warning: true" ${JSON.stringify(assetUrl)} | tar -xzf - -C /usr/local/lib`,
+          `curl -fsSL -H "ngrok-skip-browser-warning: true" ${JSON.stringify(assetUrl)} | tar -xf - -C /usr/local/lib`,
           `chmod +x ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)}`,
           `ln -sf ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)} ${JSON.stringify(SPRITE_CREATE_WORKER_BIN)}`,
         ].join('; '),
