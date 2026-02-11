@@ -1,0 +1,41 @@
+import { describe, expect, it } from 'vitest';
+import type { ContentBlock } from '@/types';
+import { contentToString } from '@/components/message-bubble';
+
+describe('contentToString', () => {
+  it('preserves literal teammate XML in plain string content', () => {
+    const content = '<teammate-message teammate_id="alice">literal example</teammate-message>';
+    expect(contentToString(content)).toBe(content);
+  });
+
+  it('strips system message tags but keeps literal teammate XML', () => {
+    const content = [
+      '<chiridion system message>internal</chiridion system message>',
+      '<teammate-message teammate_id="alice">literal example</teammate-message>',
+    ].join('\n');
+    expect(contentToString(content)).toBe('<teammate-message teammate_id="alice">literal example</teammate-message>');
+  });
+
+  it('preserves literal teammate XML in text blocks', () => {
+    const blocks: ContentBlock[] = [
+      {
+        type: 'text',
+        text: 'Use this snippet: <teammate-message teammate_id="alice">example</teammate-message>',
+      },
+    ];
+    expect(contentToString(blocks)).toBe(
+      'Use this snippet: <teammate-message teammate_id="alice">example</teammate-message>'
+    );
+  });
+
+  it('serializes parsed teammate message blocks as teammate updates', () => {
+    const blocks: ContentBlock[] = [
+      {
+        type: 'teammate_message',
+        teammateId: 'alice',
+        content: 'I fixed the failing test.',
+      },
+    ];
+    expect(contentToString(blocks)).toBe('[Update from alice]\nI fixed the failing test.');
+  });
+});

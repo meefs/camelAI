@@ -16,7 +16,6 @@ import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
 import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
-import { stripTeammateMessageTags } from '@/lib/teammate-message';
 
 // Format timestamp to readable time (e.g., "12:25 PM")
 function formatMessageTime(timestamp: number): string {
@@ -178,10 +177,10 @@ function hasVisibleContent(content: string | ContentBlock[]): boolean {
 
 // Convert content to string for copy functionality
 export function contentToString(content: string | ContentBlock[]): string {
-  if (typeof content === 'string') return stripTeammateMessageTags(stripSystemMessageTags(content));
+  if (typeof content === 'string') return stripSystemMessageTags(content);
   return content
     .map(block => {
-      if (block.type === 'text') return stripTeammateMessageTags(stripSystemMessageTags(block.text));
+      if (block.type === 'text') return stripSystemMessageTags(block.text);
       if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
       if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
       if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;

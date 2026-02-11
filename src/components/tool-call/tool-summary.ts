@@ -155,6 +155,10 @@ export function getToolSummaryParts(
         if (!teamName) return { action: 'Creating team...' };
         return { action: `Creating team ${teamName}...` };
       }
+      if (status === 'error') {
+        if (!teamName) return { action: 'Failed to create team' };
+        return { action: `Failed to create team ${teamName}` };
+      }
       return { action: `Created team ${teamName || 'team'}` };
     }
     case 'Skill': {
