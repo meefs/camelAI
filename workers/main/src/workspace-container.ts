@@ -176,7 +176,7 @@ const R2_MOUNT_SERVICE_VERSION = '1';
 // Composite version — auto-bumps when any bootstrap component changes.
 // Stored in workspace DO storage to skip all sprite filesystem checks on cold start.
 export const BOOTSTRAP_VERSION = [
-  '4',                            // schema version — bump for structural bootstrap changes
+  '5',                            // schema version — bump for structural bootstrap changes
   RUNNER_DEP_VERSION,             // SDK pinned version
   SPRITE_BOOTSTRAP_VERSION,       // combined asset hashes from manifest
 ].join(':');
@@ -589,8 +589,8 @@ export class WorkspaceContainer {
         [
           'set -euo pipefail',
           `mkdir -p ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
-          // Add ngrok-skip-browser-warning header to bypass ngrok's interstitial page
-          `curl -fsSL -H "ngrok-skip-browser-warning: true" ${JSON.stringify(assetUrl)} | tar -xf - -C ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
+          // Use Accept-Encoding: identity to prevent proxy auto-decompression (e.g. ngrok)
+          `curl -fsSL -H "Accept-Encoding: identity" -H "ngrok-skip-browser-warning: 1" ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
           `chmod +x ${JSON.stringify(DEFAULT_RUNNER_SCRIPT_PATH)}`,
         ].join('; '),
       ]
@@ -716,8 +716,7 @@ export class WorkspaceContainer {
     console.log(`[Sprite] bootstrap: updating skills (${installedVersion || 'none'} → ${SPRITE_ASSETS.skills.hash})`);
 
     const assetUrl = this.getAssetUrl(SPRITE_ASSETS.skills.path);
-    // Use tar -xf (not -xzf) because the file may arrive decompressed if the server
-    // sets Content-Encoding: gzip and curl auto-decompresses it.
+    // Use Accept-Encoding: identity to prevent proxy auto-decompression (e.g. ngrok)
     const installResult = await this.execOnSprite(
       spriteName,
       [
@@ -727,7 +726,7 @@ export class WorkspaceContainer {
           'set -euo pipefail',
           `rm -rf ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)}`,
           `mkdir -p ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
-          `curl -fsSL -H "ngrok-skip-browser-warning: 1" ${JSON.stringify(assetUrl)} | tar -xf - -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
+          `curl -fsSL -H "Accept-Encoding: identity" -H "ngrok-skip-browser-warning: 1" ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
         ].join('; '),
       ]
     );
@@ -775,6 +774,7 @@ export class WorkspaceContainer {
     console.log(`[Sprite] bootstrap: updating create-worker (${installedVersion || 'none'} → ${SPRITE_ASSETS.createWorker.hash})`);
 
     const assetUrl = this.getAssetUrl(SPRITE_ASSETS.createWorker.path);
+    // Use Accept-Encoding: identity to prevent proxy auto-decompression (e.g. ngrok)
     const installResult = await this.execOnSprite(
       spriteName,
       [
@@ -784,8 +784,7 @@ export class WorkspaceContainer {
           'set -euo pipefail',
           `rm -rf ${JSON.stringify(SPRITE_CREATE_WORKER_DIR)}`,
           `mkdir -p /usr/local/lib`,
-          // Add ngrok-skip-browser-warning header to bypass ngrok's interstitial page
-          `curl -fsSL -H "ngrok-skip-browser-warning: true" ${JSON.stringify(assetUrl)} | tar -xf - -C /usr/local/lib`,
+          `curl -fsSL -H "Accept-Encoding: identity" -H "ngrok-skip-browser-warning: 1" ${JSON.stringify(assetUrl)} | tar -xzf - -C /usr/local/lib`,
           `chmod +x ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)}`,
           `ln -sf ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)} ${JSON.stringify(SPRITE_CREATE_WORKER_BIN)}`,
         ].join('; '),
