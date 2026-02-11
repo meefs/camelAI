@@ -149,6 +149,29 @@ export function getToolSummaryParts(
       const summary = description || (isStreaming ? 'working...' : 'task');
       return { action: `Agent: ${summary}` };
     }
+    case 'AskUserQuestion': {
+      const questions = Array.isArray(inputRecord.questions) ? inputRecord.questions : [];
+
+      if (status === 'running' && !result) {
+        return { action: 'Waiting for your input' };
+      }
+
+      if (questions.length === 1) {
+        const first = questions[0];
+        if (first && typeof first === 'object') {
+          const header = (first as { header?: unknown }).header;
+          if (typeof header === 'string' && header.trim()) {
+            return { action: header.trim() };
+          }
+        }
+      }
+
+      if (questions.length > 1) {
+        return { action: `Asked ${questions.length} questions` };
+      }
+
+      return { action: 'Asked a question' };
+    }
     case 'TeamCreate': {
       const teamName = typeof inputRecord.team_name === 'string' ? inputRecord.team_name : '';
       if (status === 'running') {

@@ -116,34 +116,66 @@ interface AskUserQuestionDetailsProps {
 }
 ```
 
-**Data extraction logic:**
+**Data shape (verified from JSONL):**
 
-The tool input contains `questions` (array of `{ question, header, options, multiSelect }`) and after the user answers, the tool result contains `answers` (a `Record<string, string>` keyed by question text). The answers may also appear in the tool input as `updatedInput.answers` depending on how the SDK processes the `handleCanUseTool` return value. The implementation should check both locations:
+The `tool_use` block has structured questions in `input.questions`:
+
+```json
+{
+  "type": "tool_use",
+  "name": "AskUserQuestion",
+  "input": {
+    "questions": [
+      {
+        "question": "If you could only eat one food for the rest of your life, what would it be?",
+        "header": "Life choice",
+        "options": [
+          { "label": "Pizza", "description": "The classic answer..." },
+          { "label": "Tacos", "description": "Endless variety..." }
+        ],
+        "multiSelect": false
+      }
+    ]
+  }
+}
+```
+
+The `tool_result` content is **plain text**, not JSON:
+
+```
+User has answered your questions: "If you could only eat one food for the rest of your life, what would it be?"="Tacos". You can now continue with the user's answers in mind.
+```
+
+The format is: `"question text"="answer"` pairs. For multiple questions these are comma-separated.
+
+The structured `answers` object (`{ "question": "answer" }`) lives on the JSONL event's `toolUseResult` field, but this does **not** make it into the `ToolResultBlock` the client receives — so we must parse from the plain text.
+
+**Data extraction logic:**
 
 ```typescript
 function extractQuestionsAndAnswers(tool?: ToolUseBlock, result?: ToolResultBlock) {
   const input = tool?.input as Record<string, unknown> | undefined;
-  const questions = Array.isArray(input?.questions) ? input.questions : [];
+  const questions = Array.isArray(input?.questions)
+    ? (input.questions as Array<{ question: string; header?: string }>)
+    : [];
 
-  // Answers can come from either the tool input (updatedInput merged) or the result text
-  let answers: Record<string, string> = {};
+  const answers: Record<string, string> = {};
 
-  // Check tool input first (handleCanUseTool merges answers into updatedInput)
-  if (input?.answers && typeof input.answers === 'object') {
-    answers = input.answers as Record<string, string>;
-  }
-
-  // Fallback: try parsing the result text as JSON
-  if (Object.keys(answers).length === 0 && result) {
+  if (result) {
     const resultText = getResultText(result);
-    try {
-      const parsed = JSON.parse(resultText);
-      if (parsed && typeof parsed === 'object') {
-        // Result might be { questions, answers } or just answers directly
-        answers = parsed.answers ?? parsed;
+
+    // Parse answers from the plain-text result.
+    // Format: "question text"="answer value"
+    // Use each known question string as the key to find its answer.
+    for (const q of questions) {
+      // Look for: "question text"="answer"
+      // The answer is everything between ="  and the next "  (or end-of-match)
+      const escaped = q.question.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`"${escaped}"\\s*=\\s*"([^"]*)"`, 's');
+      const match = resultText.match(pattern);
+      if (match?.[1]) {
+        answers[q.question] = match[1];
       }
-    } catch {
-      // Result is not JSON — may be plain text; ignore
     }
   }
 
@@ -206,16 +238,27 @@ No changes to `message-bubble.tsx` — AskUserQuestion tool calls stay collapsed
 
 ---
 
-## Data Flow Verification
+## Data Shape Reference
 
-Before implementing, the coding agent should verify the actual shape of the `tool_use.input` and `tool_result` for an AskUserQuestion call. The easiest way:
+The JSONL data shape has been verified. Here is a condensed reference of the full lifecycle for one AskUserQuestion call:
 
-1. Open an existing thread where AskUserQuestion was used
-2. Check the raw JSONL on the sprite: `sprite exec -s chiridion-ws-{workspaceId} -- cat /home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl`
-3. Look for `tool_use` blocks with `name: "AskUserQuestion"` and the corresponding `tool_result`
-4. Confirm where `questions` and `answers` live in the data
+**1. Assistant message** — contains the `tool_use` block with `input.questions` (structured):
+```
+tool_use.name = "AskUserQuestion"
+tool_use.input.questions = [{ question, header, options, multiSelect }]
+```
 
-If the data shape differs from what's described above, adjust `extractQuestionsAndAnswers()` accordingly. The component should be resilient — always falling back to `GenericDetails` if parsing fails.
+**2. User message** — contains the `tool_result` block with plain-text content:
+```
+tool_result.content = 'User has answered your questions: "question"="answer". You can now continue...'
+tool_result.tool_use_id = <matching tool_use.id>
+```
+
+The JSONL event also carries `toolUseResult.answers` (a structured `Record<string, string>`), but this field is on the event wrapper and does **not** propagate into the `ToolResultBlock` that the rendering code receives. The extraction logic above parses answers from the plain-text result using the known question strings as lookup keys.
+
+If the result text format ever changes, the component falls back gracefully to `GenericDetails`.
+
+**Test JSONL:** A real AskUserQuestion conversation is available at `be677531-2d3b-45c1-ad3e-887c2dabdb8c.jsonl` in the project root for reference/testing.
 
 ---
 
