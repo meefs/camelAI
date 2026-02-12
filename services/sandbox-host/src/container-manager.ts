@@ -9,8 +9,8 @@ import type { ContainerRecord, ExecResult } from './types';
 
 const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/mnt/workspaces';
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'chiridion-sandbox:latest';
-const CONTAINER_MEMORY = process.env.CONTAINER_MEMORY || '4g';
-const CONTAINER_CPUS = process.env.CONTAINER_CPUS || '2';
+const CONTAINER_MEMORY = process.env.CONTAINER_MEMORY || '16g';
+const CONTAINER_CPU_SHARES = process.env.CONTAINER_CPU_SHARES || '2048';
 const CONTAINER_RUNTIME = process.env.CONTAINER_RUNTIME || 'runsc';
 const CONTROL_PLANE_PORT = 8080;
 
@@ -132,7 +132,7 @@ export async function ensureContainer(name: string): Promise<ContainerRecord> {
     `-v`, `${wsPath}:/home/claude`,
     '--network=bridge',
     `--memory=${CONTAINER_MEMORY}`,
-    `--cpus=${CONTAINER_CPUS}`,
+    `--cpu-shares=${CONTAINER_CPU_SHARES}`,
     '-p', `0:${CONTROL_PLANE_PORT}`,
     // FUSE support for rclone R2 mounts
     '--device=/dev/fuse',
