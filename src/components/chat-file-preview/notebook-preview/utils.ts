@@ -99,6 +99,15 @@ function getHtmlOutputDocument(output: NotebookOutput): string | null {
   return buildHtmlDocument(html);
 }
 
+function getVegaLiteSpec(output: NotebookOutput): Record<string, unknown> | null {
+  const data = output.data ?? {};
+  const spec = data['application/vnd.vegalite.v5+json'];
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+    return null;
+  }
+  return spec as Record<string, unknown>;
+}
+
 export function getOutputText(output: NotebookOutput): string {
   if (output.output_type === 'stream') {
     return toText(output.text);
@@ -145,6 +154,11 @@ function getImageDataUrl(output: NotebookOutput): string | null {
 }
 
 export function getOutputRender(output: NotebookOutput): NotebookOutputRender {
+  const vegaLiteSpec = getVegaLiteSpec(output);
+  if (vegaLiteSpec) {
+    return { kind: 'vegalite', spec: vegaLiteSpec };
+  }
+
   const htmlOutput = getHtmlOutputDocument(output);
   if (htmlOutput) {
     return { kind: 'html', html: htmlOutput };
@@ -204,6 +218,7 @@ export function hasVisualOutput(outputs: NotebookOutput[]): boolean {
   return outputs.some((output) => {
     const data = output.data ?? {};
     return (
+      'application/vnd.vegalite.v5+json' in data ||
       'application/vnd.plotly.v1+json' in data ||
       'image/png' in data ||
       'image/jpeg' in data ||

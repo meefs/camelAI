@@ -2,6 +2,7 @@ import { cn } from '@/lib/utils';
 import type { NotebookOutput } from './types';
 import { getOutputRender } from './utils';
 import { NotebookHtmlOutput } from './html-output';
+import { VegaLiteChart } from './vega-lite-chart';
 
 interface OutputRendererProps {
   output: NotebookOutput;
@@ -28,6 +29,10 @@ export function OutputRenderer({
   }
 
   const render = getOutputRender(output);
+
+  if (render.kind === 'vegalite') {
+    return <VegaLiteChart spec={render.spec} title={title} />;
+  }
 
   if (render.kind === 'html') {
     return <NotebookHtmlOutput html={render.html} layout={layout} title={title} />;

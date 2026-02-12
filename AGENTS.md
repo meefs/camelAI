@@ -275,6 +275,7 @@ Runtime startup is now on-demand from chat/API paths; dashboard route loaders no
 - The panel header shows a notebook-only view toggle: `Report` (default) and `Notebook`.
 - Report mode applies editorial rendering: extracted notebook header metadata, table-of-contents sidebar from markdown `##`/`###`, setup-cell filtering heuristics, hidden code (outputs only), and styled inset text-output wells.
 - Notebook mode keeps full cell-by-cell rendering with execution gutters, line-numbered code, and per-cell outputs.
+- Vega-Lite outputs (`application/vnd.vegalite.v5+json`, including Altair inline `values` datasets) render client-side via Vega/Vega-Lite/Vega-Embed CDN loading and are embedded with SVG renderer.
 - Rich notebook outputs (`text/html` and `application/vnd.plotly.v1+json`) are rendered in sandboxed iframes (`allow-scripts`) to support interactive charts while isolating output scripts from the main app UI.
 
 ### SDK Event Types
