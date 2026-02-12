@@ -1,5 +1,6 @@
 import type {
   NotebookCell,
+  NotebookFile,
   NotebookOutput,
   NotebookOutputRender,
   TocEntry,
@@ -19,6 +20,10 @@ export function toText(value: unknown): string {
     }
   }
   return String(value);
+}
+
+export function getNotebookCells(notebook: NotebookFile): NotebookCell[] {
+  return Array.isArray(notebook.cells) ? notebook.cells : [];
 }
 
 function toHtml(value: unknown): string | null {

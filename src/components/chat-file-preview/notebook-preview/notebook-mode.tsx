@@ -1,6 +1,7 @@
 import type { NotebookFile } from './types';
 import { NotebookCodeCell } from './notebook-code-cell';
 import { NotebookMarkdownCell } from './notebook-markdown-cell';
+import { getNotebookCells } from './utils';
 
 interface NotebookModeProps {
   notebook: NotebookFile;
@@ -8,7 +9,7 @@ interface NotebookModeProps {
 }
 
 export function NotebookMode({ notebook, layout }: NotebookModeProps) {
-  const cells = notebook.cells ?? [];
+  const cells = getNotebookCells(notebook);
 
   return (
     <div className="space-y-3 p-3">

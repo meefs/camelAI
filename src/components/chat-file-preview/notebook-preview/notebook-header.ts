@@ -3,13 +3,14 @@ import type {
   NotebookHeader,
 } from './types';
 import {
+  getNotebookCells,
   hasVisualOutput,
   stripMarkdownFormatting,
   toText,
 } from './utils';
 
 export function extractHeader(notebook: NotebookFile): NotebookHeader {
-  const cells = notebook.cells ?? [];
+  const cells = getNotebookCells(notebook);
   let title: string | null = null;
   let subtitle: string | null = null;
   let titleCellIndex: number | null = null;

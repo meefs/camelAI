@@ -7,7 +7,7 @@ import { ReportHeader } from './report-header';
 import { ReportMarkdownCell } from './report-markdown-cell';
 import { ReportSidebar } from './report-sidebar';
 import type { NotebookFile, TocEntry } from './types';
-import { extractTocEntries, toText } from './utils';
+import { extractTocEntries, getNotebookCells, toText } from './utils';
 
 interface ReportModeProps {
   notebook: NotebookFile;
@@ -36,7 +36,7 @@ function removeHeaderContentFromTitleCell(source: string): string {
 }
 
 export function ReportMode({ notebook, layout }: ReportModeProps) {
-  const cells = notebook.cells ?? [];
+  const cells = useMemo(() => getNotebookCells(notebook), [notebook]);
   const header = useMemo(() => extractHeader(notebook), [notebook]);
   const classifiedCells = useMemo(() => classifyCells(cells), [cells]);
   const tocEntries = useMemo(

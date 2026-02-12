@@ -1,11 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import type { NotebookCell, NotebookOutput } from '@/components/chat-file-preview/notebook-preview/types';
+import type {
+  NotebookCell,
+  NotebookFile,
+  NotebookOutput,
+} from '@/components/chat-file-preview/notebook-preview/types';
 import {
   extractTocEntries,
+  getNotebookCells,
   getOutputRender,
 } from '@/components/chat-file-preview/notebook-preview/utils';
 
 describe('notebook preview utils', () => {
+  describe('getNotebookCells', () => {
+    it('returns an empty array when notebook.cells is not an array', () => {
+      const malformedNotebook = {
+        cells: { broken: true },
+      } as unknown as NotebookFile;
+
+      expect(getNotebookCells(malformedNotebook)).toEqual([]);
+    });
+  });
+
   describe('extractTocEntries', () => {
     it('ignores h2/h3 headings inside fenced markdown code blocks', () => {
       const cells: NotebookCell[] = [
