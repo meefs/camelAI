@@ -422,7 +422,7 @@ describe('mapCredentialsToEnvVars', () => {
     });
   });
 
-  it('handles openrouter via default case', () => {
+  it('handles openrouter', () => {
     const env = mapCredentialsToEnvVars(
       'Router',
       'openrouter',
@@ -434,7 +434,7 @@ describe('mapCredentialsToEnvVars', () => {
     });
   });
 
-  it('handles typeform via default case', () => {
+  it('handles typeform', () => {
     const env = mapCredentialsToEnvVars(
       'Forms',
       'typeform',
@@ -443,6 +443,216 @@ describe('mapCredentialsToEnvVars', () => {
     );
     expect(env).toEqual({
       INT_TYPEFORM_FORMS_API_KEY: 'tfp_test_123',
+    });
+  });
+
+  it('handles clickhouse', () => {
+    const env = mapCredentialsToEnvVars(
+      'Analytics',
+      'clickhouse',
+      { username: 'default', password: 'secret' },
+      { host: 'abc123.clickhouse.cloud', port: '8443', database: 'mydb' }
+    );
+    expect(env).toEqual({
+      INT_CLICKHOUSE_ANALYTICS_USERNAME: 'default',
+      INT_CLICKHOUSE_ANALYTICS_PASSWORD: 'secret',
+      INT_CLICKHOUSE_ANALYTICS_HOST: 'abc123.clickhouse.cloud',
+      INT_CLICKHOUSE_ANALYTICS_PORT: '8443',
+      INT_CLICKHOUSE_ANALYTICS_DATABASE: 'mydb',
+    });
+  });
+
+  it('handles snowflake', () => {
+    const env = mapCredentialsToEnvVars(
+      'DW',
+      'snowflake',
+      { username: 'admin', private_key: '-----BEGIN PRIVATE KEY-----\nxyz\n-----END PRIVATE KEY-----' },
+      { account: 'xy12345.us-east-1', warehouse: 'COMPUTE_WH', database: 'PROD', schema: 'PUBLIC' }
+    );
+    expect(env).toEqual({
+      INT_SNOWFLAKE_DW_USERNAME: 'admin',
+      INT_SNOWFLAKE_DW_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nxyz\n-----END PRIVATE KEY-----',
+      INT_SNOWFLAKE_DW_ACCOUNT: 'xy12345.us-east-1',
+      INT_SNOWFLAKE_DW_WAREHOUSE: 'COMPUTE_WH',
+      INT_SNOWFLAKE_DW_DATABASE: 'PROD',
+      INT_SNOWFLAKE_DW_SCHEMA: 'PUBLIC',
+    });
+  });
+
+  it('handles neon', () => {
+    const env = mapCredentialsToEnvVars(
+      'DB',
+      'neon',
+      { api_key: 'neon_123', connection_string: 'postgresql://user:pass@ep-xxx.neon.tech/neondb' },
+      { project_id: 'project-abc123' }
+    );
+    expect(env).toEqual({
+      INT_NEON_DB_API_KEY: 'neon_123',
+      INT_NEON_DB_CONNECTION_STRING: 'postgresql://user:pass@ep-xxx.neon.tech/neondb',
+      INT_NEON_DB_PROJECT_ID: 'project-abc123',
+    });
+  });
+
+  it('handles planetscale', () => {
+    const env = mapCredentialsToEnvVars(
+      'Main',
+      'planetscale',
+      { api_key: 'pscale_tkn_123', api_secret: 'pscale_secret', connection_string: 'mysql://user:pass@aws.connect.psdb.cloud/db' },
+      { organization: 'my-org', database: 'my-db' }
+    );
+    expect(env).toEqual({
+      INT_PLANETSCALE_MAIN_TOKEN_ID: 'pscale_tkn_123',
+      INT_PLANETSCALE_MAIN_TOKEN_SECRET: 'pscale_secret',
+      INT_PLANETSCALE_MAIN_CONNECTION_STRING: 'mysql://user:pass@aws.connect.psdb.cloud/db',
+      INT_PLANETSCALE_MAIN_ORGANIZATION: 'my-org',
+      INT_PLANETSCALE_MAIN_DATABASE: 'my-db',
+    });
+  });
+
+  it('handles turso', () => {
+    const env = mapCredentialsToEnvVars(
+      'Edge DB',
+      'turso',
+      { api_key: 'turso_token_123' },
+      { database_url: 'libsql://db-org.turso.io' }
+    );
+    expect(env).toEqual({
+      INT_TURSO_EDGE_DB_AUTH_TOKEN: 'turso_token_123',
+      INT_TURSO_EDGE_DB_DATABASE_URL: 'libsql://db-org.turso.io',
+    });
+  });
+
+  it('handles jira', () => {
+    const env = mapCredentialsToEnvVars(
+      'Work',
+      'jira',
+      { api_key: 'jira_token_abc', email: 'user@company.com' },
+      { domain: 'company.atlassian.net' }
+    );
+    expect(env).toEqual({
+      INT_JIRA_WORK_API_TOKEN: 'jira_token_abc',
+      INT_JIRA_WORK_EMAIL: 'user@company.com',
+      INT_JIRA_WORK_DOMAIN: 'company.atlassian.net',
+    });
+  });
+
+  it('handles zendesk', () => {
+    const env = mapCredentialsToEnvVars(
+      'Support',
+      'zendesk',
+      { api_key: 'zd_token', email: 'agent@company.com' },
+      { subdomain: 'company' }
+    );
+    expect(env).toEqual({
+      INT_ZENDESK_SUPPORT_API_TOKEN: 'zd_token',
+      INT_ZENDESK_SUPPORT_EMAIL: 'agent@company.com',
+      INT_ZENDESK_SUPPORT_SUBDOMAIN: 'company',
+    });
+  });
+
+  it('handles discord', () => {
+    const env = mapCredentialsToEnvVars(
+      'Bot',
+      'discord',
+      { api_key: 'bot_token_123' },
+      { application_id: 'app_456' }
+    );
+    expect(env).toEqual({
+      INT_DISCORD_BOT_BOT_TOKEN: 'bot_token_123',
+      INT_DISCORD_BOT_APPLICATION_ID: 'app_456',
+    });
+  });
+
+  it('handles teams', () => {
+    const env = mapCredentialsToEnvVars(
+      'Corp',
+      'teams',
+      { client_id: 'app_id', client_secret: 'app_secret' },
+      { tenant_id: 'tenant_123' }
+    );
+    expect(env).toEqual({
+      INT_TEAMS_CORP_CLIENT_ID: 'app_id',
+      INT_TEAMS_CORP_CLIENT_SECRET: 'app_secret',
+      INT_TEAMS_CORP_TENANT_ID: 'tenant_123',
+    });
+  });
+
+  it('handles gcp', () => {
+    const env = mapCredentialsToEnvVars(
+      'Prod',
+      'gcp',
+      { service_account_json: '{"type":"service_account"}' },
+      { project_id: 'my-project-123' }
+    );
+    expect(env).toEqual({
+      INT_GCP_PROD_SERVICE_ACCOUNT_JSON: '{"type":"service_account"}',
+      INT_GCP_PROD_PROJECT_ID: 'my-project-123',
+    });
+  });
+
+  it('handles azure', () => {
+    const env = mapCredentialsToEnvVars(
+      'Cloud',
+      'azure',
+      { client_id: 'app_id', client_secret: 'app_secret' },
+      { tenant_id: 'tenant_abc', subscription_id: 'sub_123' }
+    );
+    expect(env).toEqual({
+      INT_AZURE_CLOUD_CLIENT_ID: 'app_id',
+      INT_AZURE_CLOUD_CLIENT_SECRET: 'app_secret',
+      INT_AZURE_CLOUD_TENANT_ID: 'tenant_abc',
+      INT_AZURE_CLOUD_SUBSCRIPTION_ID: 'sub_123',
+    });
+  });
+
+  it('handles shopify', () => {
+    const env = mapCredentialsToEnvVars(
+      'Store',
+      'shopify',
+      { api_key: 'shpat_123' },
+      { shop_domain: 'my-store.myshopify.com' }
+    );
+    expect(env).toEqual({
+      INT_SHOPIFY_STORE_ACCESS_TOKEN: 'shpat_123',
+      INT_SHOPIFY_STORE_SHOP_DOMAIN: 'my-store.myshopify.com',
+    });
+  });
+
+  it('handles cloudflare', () => {
+    const env = mapCredentialsToEnvVars(
+      'API',
+      'cloudflare',
+      { api_key: 'cf_token_123' },
+      { account_id: 'abc123' }
+    );
+    expect(env).toEqual({
+      INT_CLOUDFLARE_API_API_TOKEN: 'cf_token_123',
+      INT_CLOUDFLARE_API_ACCOUNT_ID: 'abc123',
+    });
+  });
+
+  it('handles mongodb with connection_string', () => {
+    const env = mapCredentialsToEnvVars(
+      'Atlas',
+      'mongodb',
+      { connection_string: 'mongodb+srv://user:pass@cluster0.abc123.mongodb.net/mydb' },
+      { cluster_url: 'cluster0.abc123.mongodb.net', database: 'mydb' }
+    );
+    expect(env).toEqual({
+      INT_MONGODB_ATLAS_URL: 'mongodb+srv://user:pass@cluster0.abc123.mongodb.net/mydb',
+      INT_MONGODB_ATLAS_URI: 'mongodb+srv://user:pass@cluster0.abc123.mongodb.net/mydb',
+    });
+  });
+
+  it('handles redis with connection_string', () => {
+    const env = mapCredentialsToEnvVars(
+      'Cache',
+      'redis',
+      { connection_string: 'rediss://default:pass@redis-12345.c1.us-east-1.ec2.cloud.redislabs.com:6379' },
+      { host: 'redis-12345.c1.us-east-1.ec2.cloud.redislabs.com', port: '6379' }
+    );
+    expect(env).toEqual({
+      INT_REDIS_CACHE_URL: 'rediss://default:pass@redis-12345.c1.us-east-1.ec2.cloud.redislabs.com:6379',
     });
   });
 

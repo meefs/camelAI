@@ -80,6 +80,51 @@ export function getEnvVarSuffixesForType(integrationType: string, dynamicFields?
       return ['URL'];
     case 'bigquery':
       return ['ACCESS_TOKEN', 'PROJECT_ID'];
+    // Database integrations
+    case 'neon':
+      return ['API_KEY', 'CONNECTION_STRING', 'PROJECT_ID'];
+    case 'snowflake':
+      return ['ACCOUNT', 'WAREHOUSE', 'DATABASE', 'SCHEMA', 'USERNAME', 'PRIVATE_KEY', 'PRIVATE_KEY_PASSPHRASE'];
+    case 'clickhouse':
+      return ['HOST', 'PORT', 'DATABASE', 'USERNAME', 'PASSWORD'];
+    case 'planetscale':
+      return ['TOKEN_ID', 'TOKEN_SECRET', 'CONNECTION_STRING', 'ORGANIZATION', 'DATABASE'];
+    case 'turso':
+      return ['DATABASE_URL', 'AUTH_TOKEN'];
+    // SaaS integrations
+    case 'openrouter':
+    case 'typeform':
+    case 'asana':
+    case 'figma':
+    case 'intercom':
+    case 'netlify':
+      return ['API_KEY'];
+    case 'jira':
+      return ['API_TOKEN', 'EMAIL', 'DOMAIN'];
+    case 'zendesk':
+      return ['API_TOKEN', 'EMAIL', 'SUBDOMAIN'];
+    case 'segment':
+      return ['WRITE_KEY'];
+    case 'amplitude':
+      return ['API_KEY', 'SECRET_KEY', 'REGION'];
+    case 'discord':
+      return ['BOT_TOKEN', 'APPLICATION_ID'];
+    case 'teams':
+      return ['TENANT_ID', 'CLIENT_ID', 'CLIENT_SECRET'];
+    // Cloud providers
+    case 'gcp':
+      return ['SERVICE_ACCOUNT_JSON', 'PROJECT_ID'];
+    case 'azure':
+      return ['TENANT_ID', 'SUBSCRIPTION_ID', 'CLIENT_ID', 'CLIENT_SECRET'];
+    case 'vercel':
+      return ['API_KEY', 'TEAM_ID'];
+    case 'cloudflare':
+      return ['API_TOKEN', 'ACCOUNT_ID'];
+    // Commerce
+    case 'shopify':
+      return ['ACCESS_TOKEN', 'SHOP_DOMAIN'];
+    case 'square':
+      return ['ACCESS_TOKEN', 'ENVIRONMENT'];
     case 'other':
       return ['API_KEY', 'API_SECRET', 'CLIENT_ID', 'CLIENT_SECRET', 'BASE_URL'];
     default:
@@ -272,30 +317,43 @@ export function mapCredentialsToEnvVars(
     }
 
     case 'mongodb': {
-      // Build MONGODB_URL from config + credentials
-      const host = str(config.host);
-      const port = str(config.port) || '27017';
-      const database = str(config.database);
-      const user = str(credentials.username);
-      const password = str(credentials.password);
-      if (host && database && user && password) {
-        const url = `mongodb://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
-        set('URL', url);
-        set('URI', url);
+      // Prefer connection_string from credentials (current registry schema)
+      const connStr = str(credentials.connection_string);
+      if (connStr) {
+        set('URL', connStr);
+        set('URI', connStr);
+      } else {
+        // Fallback: build URL from individual fields (legacy schema)
+        const host = str(config.host) || str(config.cluster_url);
+        const port = str(config.port) || '27017';
+        const database = str(config.database);
+        const user = str(credentials.username);
+        const password = str(credentials.password);
+        if (host && database && user && password) {
+          const url = `mongodb://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
+          set('URL', url);
+          set('URI', url);
+        }
       }
       break;
     }
 
     case 'redis': {
-      // Build REDIS_URL from config + credentials
-      const host = str(config.host);
-      const port = str(config.port) || '6379';
-      const password = str(credentials.password);
-      if (host) {
-        const url = password
-          ? `redis://:${encodeURIComponent(password)}@${host}:${port}`
-          : `redis://${host}:${port}`;
-        set('URL', url);
+      // Prefer connection_string from credentials (current registry schema)
+      const connStr = str(credentials.connection_string);
+      if (connStr) {
+        set('URL', connStr);
+      } else {
+        // Fallback: build URL from individual fields (legacy schema)
+        const host = str(config.host);
+        const port = str(config.port) || '6379';
+        const password = str(credentials.password);
+        if (host) {
+          const url = password
+            ? `redis://:${encodeURIComponent(password)}@${host}:${port}`
+            : `redis://${host}:${port}`;
+          set('URL', url);
+        }
       }
       break;
     }
@@ -304,6 +362,129 @@ export function mapCredentialsToEnvVars(
       // BigQuery uses short-lived access tokens minted from service account JSON.
       if (str(credentials.access_token)) set('ACCESS_TOKEN', str(credentials.access_token)!);
       if (str(config.project_id)) set('PROJECT_ID', str(config.project_id)!);
+      break;
+
+    // --- Database integrations ---
+
+    case 'neon': {
+      if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      if (str(credentials.connection_string)) set('CONNECTION_STRING', str(credentials.connection_string)!);
+      if (str(config.project_id)) set('PROJECT_ID', str(config.project_id)!);
+      break;
+    }
+
+    case 'snowflake': {
+      if (str(credentials.username)) set('USERNAME', str(credentials.username)!);
+      if (str(credentials.private_key)) set('PRIVATE_KEY', str(credentials.private_key)!);
+      if (str(credentials.private_key_passphrase)) set('PRIVATE_KEY_PASSPHRASE', str(credentials.private_key_passphrase)!);
+      if (str(config.account)) set('ACCOUNT', str(config.account)!);
+      if (str(config.warehouse)) set('WAREHOUSE', str(config.warehouse)!);
+      if (str(config.database)) set('DATABASE', str(config.database)!);
+      if (str(config.schema)) set('SCHEMA', str(config.schema)!);
+      break;
+    }
+
+    case 'clickhouse': {
+      if (str(credentials.username)) set('USERNAME', str(credentials.username)!);
+      if (str(credentials.password)) set('PASSWORD', str(credentials.password)!);
+      if (str(config.host)) set('HOST', str(config.host)!);
+      if (str(config.port)) set('PORT', str(config.port)!);
+      if (str(config.database)) set('DATABASE', str(config.database)!);
+      break;
+    }
+
+    case 'planetscale': {
+      if (str(credentials.api_key)) set('TOKEN_ID', str(credentials.api_key)!);
+      if (str(credentials.api_secret)) set('TOKEN_SECRET', str(credentials.api_secret)!);
+      if (str(credentials.connection_string)) set('CONNECTION_STRING', str(credentials.connection_string)!);
+      if (str(config.organization)) set('ORGANIZATION', str(config.organization)!);
+      if (str(config.database)) set('DATABASE', str(config.database)!);
+      break;
+    }
+
+    case 'turso':
+      if (str(credentials.api_key)) set('AUTH_TOKEN', str(credentials.api_key)!);
+      if (str(config.database_url)) set('DATABASE_URL', str(config.database_url)!);
+      break;
+
+    // --- SaaS integrations ---
+
+    case 'openrouter':
+    case 'typeform':
+    case 'asana':
+    case 'figma':
+    case 'intercom':
+    case 'netlify':
+      if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'jira':
+      if (str(credentials.api_key)) set('API_TOKEN', str(credentials.api_key)!);
+      if (str(credentials.email)) set('EMAIL', str(credentials.email)!);
+      if (str(config.domain)) set('DOMAIN', str(config.domain)!);
+      break;
+
+    case 'zendesk':
+      if (str(credentials.api_key)) set('API_TOKEN', str(credentials.api_key)!);
+      if (str(credentials.email)) set('EMAIL', str(credentials.email)!);
+      if (str(config.subdomain)) set('SUBDOMAIN', str(config.subdomain)!);
+      break;
+
+    case 'segment':
+      if (str(credentials.api_key)) set('WRITE_KEY', str(credentials.api_key)!);
+      break;
+
+    case 'amplitude':
+      if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      if (str(credentials.api_secret)) set('SECRET_KEY', str(credentials.api_secret)!);
+      if (str(config.region)) set('REGION', str(config.region)!);
+      break;
+
+    case 'discord':
+      if (str(credentials.api_key)) set('BOT_TOKEN', str(credentials.api_key)!);
+      if (str(config.application_id)) set('APPLICATION_ID', str(config.application_id)!);
+      break;
+
+    case 'teams':
+      if (str(credentials.client_id)) set('CLIENT_ID', str(credentials.client_id)!);
+      if (str(credentials.client_secret)) set('CLIENT_SECRET', str(credentials.client_secret)!);
+      if (str(config.tenant_id)) set('TENANT_ID', str(config.tenant_id)!);
+      break;
+
+    // --- Cloud providers ---
+
+    case 'gcp':
+      if (str(credentials.service_account_json)) set('SERVICE_ACCOUNT_JSON', str(credentials.service_account_json)!);
+      if (str(config.project_id)) set('PROJECT_ID', str(config.project_id)!);
+      break;
+
+    case 'azure':
+      if (str(credentials.client_id)) set('CLIENT_ID', str(credentials.client_id)!);
+      if (str(credentials.client_secret)) set('CLIENT_SECRET', str(credentials.client_secret)!);
+      if (str(config.tenant_id)) set('TENANT_ID', str(config.tenant_id)!);
+      if (str(config.subscription_id)) set('SUBSCRIPTION_ID', str(config.subscription_id)!);
+      break;
+
+    case 'vercel':
+      if (str(credentials.api_key)) set('API_KEY', str(credentials.api_key)!);
+      if (str(config.team_id)) set('TEAM_ID', str(config.team_id)!);
+      break;
+
+    case 'cloudflare':
+      if (str(credentials.api_key)) set('API_TOKEN', str(credentials.api_key)!);
+      if (str(config.account_id)) set('ACCOUNT_ID', str(config.account_id)!);
+      break;
+
+    // --- Commerce ---
+
+    case 'shopify':
+      if (str(credentials.api_key)) set('ACCESS_TOKEN', str(credentials.api_key)!);
+      if (str(config.shop_domain)) set('SHOP_DOMAIN', str(config.shop_domain)!);
+      break;
+
+    case 'square':
+      if (str(credentials.api_key)) set('ACCESS_TOKEN', str(credentials.api_key)!);
+      if (str(config.environment)) set('ENVIRONMENT', str(config.environment)!);
       break;
 
     case 'other': {
