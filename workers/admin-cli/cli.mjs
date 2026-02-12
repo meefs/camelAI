@@ -224,9 +224,10 @@ async function main() {
 	// Find free port
 	const port = await findFreePort();
 
-	// Build wrangler command
+	// Build wrangler command (--remote enables real DO RPC access)
 	const wranglerArgs = [
 		'dev',
+		'--remote',
 		'--config', 'workers/admin-cli/wrangler.jsonc',
 		'--port', String(port),
 		'--log-level', 'error',

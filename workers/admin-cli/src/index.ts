@@ -274,11 +274,14 @@ export default {
 			if (path === '/orgs') {
 				const orgs = await getAllOrgs(env);
 
-				// Enrich with member details
+				// Enrich with member details and workspaces
 				const enrichedOrgs = await Promise.all(
 					orgs.map(async (org) => {
 						const orgStub = getOrgStub(env, org.id);
-						const members = await orgStub.getMembers();
+						const [members, workspaces] = await Promise.all([
+							orgStub.getMembers(),
+							orgStub.getWorkspaces(true),
+						]);
 
 						// Get user details for each member
 						const memberDetails = await Promise.all(
@@ -312,6 +315,13 @@ export default {
 							created_at: org.created_at,
 							member_count: org.member_count,
 							members: memberDetails,
+							workspace_count: workspaces.length,
+							workspaces: workspaces.map((ws) => ({
+								id: ws.id,
+								name: ws.name,
+								created_at: ws.created_at,
+								archived: ws.archived,
+							})),
 						};
 					})
 				);

@@ -16,6 +16,7 @@
 		{
 			"binding": "EMAIL_TO_USER",
 			"id": "ab267c4f44b847dda8bdca400a4e1884",
+			"preview_id": "ab267c4f44b847dda8bdca400a4e1884",
 			"remote": true
 		}
 	],
@@ -23,6 +24,7 @@
 		{
 			"binding": "R2",
 			"bucket_name": "chiridion-sandbox",
+			"preview_bucket_name": "chiridion-sandbox",
 			"remote": true
 		}
 	],
@@ -74,6 +76,7 @@
 				{
 					"binding": "EMAIL_TO_USER",
 					"id": "ab267c4f44b847dda8bdca400a4e1884",
+					"preview_id": "ab267c4f44b847dda8bdca400a4e1884",
 					"remote": true
 				}
 			],
@@ -81,6 +84,7 @@
 				{
 					"binding": "R2",
 					"bucket_name": "chiridion-sandbox",
+					"preview_bucket_name": "chiridion-sandbox",
 					"remote": true
 				}
 			],
@@ -102,6 +106,7 @@
 				{
 					"binding": "EMAIL_TO_USER",
 					"id": "ab267c4f44b847dda8bdca400a4e1884",
+					"preview_id": "ab267c4f44b847dda8bdca400a4e1884",
 					"remote": true
 				}
 			],
@@ -109,6 +114,7 @@
 				{
 					"binding": "R2",
 					"bucket_name": "chiridion-sandbox",
+					"preview_bucket_name": "chiridion-sandbox",
 					"remote": true
 				}
 			],
