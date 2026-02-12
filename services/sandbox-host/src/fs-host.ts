@@ -4,7 +4,7 @@
  * All operations use Node fs on /mnt/workspaces/{name}/...
  * Path resolution ensures traversal stays under the workspace root.
  */
-import { readFile, writeFile, readdir, stat, rm, rename, mkdir, access } from 'fs/promises';
+import { writeFile, readdir, stat, rm, rename, mkdir } from 'fs/promises';
 import { resolve, relative, dirname } from 'path';
 import type { FsEntry, FsExistsResult } from './types';
 
@@ -33,9 +33,14 @@ function resolveHostPath(name: string, sandboxPath: string): string {
   return resolved;
 }
 
-export async function fsRead(name: string, path: string): Promise<Uint8Array> {
+/**
+ * Resolve a file path and return its host path + size for streaming.
+ * Throws ENOENT if the file doesn't exist.
+ */
+export async function fsReadInfo(name: string, path: string): Promise<{ hostPath: string; size: number }> {
   const hostPath = resolveHostPath(name, path);
-  return new Uint8Array(await readFile(hostPath));
+  const s = await stat(hostPath);
+  return { hostPath, size: s.size };
 }
 
 export async function fsWrite(name: string, path: string, data: Uint8Array): Promise<void> {

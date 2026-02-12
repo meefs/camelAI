@@ -524,50 +524,9 @@ export class WorkspaceContainer {
     const prefix = workspaceId === orgId ? `${orgId}/` : `${orgId}/${workspaceId}/`;
     envVars.R2_PREFIX = prefix;
 
-    if (this.env.R2_API_TOKEN && this.env.R2_PARENT_ACCESS_KEY_ID && this.env.R2_ACCOUNT_ID && this.env.R2_BUCKET_NAME) {
-      try {
-        const sanitizeName = (s: string) => s.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 20) || 'x';
-        const orgSafe = sanitizeName(orgId);
-        const wsSafe = sanitizeName(workspaceId);
-        const volumeName = `chiridion-${orgSafe}-${wsSafe}`;
-
-        const tempCreds = await getTempR2Credentials(
-          this.env.R2_ACCOUNT_ID,
-          this.env.R2_BUCKET_NAME,
-          this.env.R2_PARENT_ACCESS_KEY_ID,
-          this.env.R2_API_TOKEN,
-          [prefix, `${volumeName}/`],
-          86400
-        );
-        envVars.AWS_ACCESS_KEY_ID = tempCreds.accessKeyId;
-        envVars.AWS_SECRET_ACCESS_KEY = tempCreds.secretAccessKey;
-        envVars.AWS_SESSION_TOKEN = tempCreds.sessionToken;
-
-        const placeholderKey = `${prefix}.keep`;
-        const existing = await this.env.R2_BUCKET.head(placeholderKey);
-        if (!existing) {
-          await this.env.R2_BUCKET.put(placeholderKey, '');
-        }
-      } catch (e) {
-        console.error('[WorkspaceContainer] Failed to get R2 credentials:', e);
-      }
-    }
-
-    envVars.CLOUDFLARE_ACCOUNT_ID = 'chiridion';
-    if (this.env.CF_DISPATCH_NAMESPACE) envVars.CF_DISPATCH_NAMESPACE = this.env.CF_DISPATCH_NAMESPACE;
-    envVars.WRANGLER_SEND_METRICS = 'false';
-    envVars.CI = '1';
-
     if (!this.env.TOKEN_SIGNING_SECRET) {
       throw new Error('TOKEN_SIGNING_SECRET is required for token signing');
     }
-
-    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-    const orgInfo = await orgStub.getInfo();
-    const userId = orgInfo?.created_by || 'system';
-    const orgName = orgInfo?.name || orgId;
-    const orgSlug = orgInfo?.slug || `org-${orgId.slice(0, 3)}`;
-
     if (!this.env.WORKER_BASE_URL) {
       throw new Error('WORKER_BASE_URL is required for Claude API proxy');
     }
@@ -580,92 +539,172 @@ export class WorkspaceContainer {
       );
     }
 
-    const claudeTokenStartedAt = Date.now();
-    const claudeApiToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
-      org_id: orgId,
-      org_slug: orgSlug,
-      user_id: userId,
-      scopes: ['claude_api'],
-      exp: Date.now() + TOKEN_TTL_MS,
-      workspace_id: workspaceId,
-      name: `claude-api-${workspaceId}`,
-    });
-    console.log(`[WorkspaceContainer] buildEnvVars:claude_api_token workspace=${workspaceId} ms=${Date.now() - claudeTokenStartedAt}`);
-    envVars.ANTHROPIC_BASE_URL = `${workerBaseUrl}/api/claude`;
-    envVars.ANTHROPIC_API_KEY = claudeApiToken;
+    // ─── Phase 1: Parallel fetches (no dependencies) ─────────────
+    const phase1StartedAt = Date.now();
+    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
 
-    const openRouterStartedAt = Date.now();
-    const keyRecord = await orgStub.getOpenRouterKeyRecord();
-    if (keyRecord) {
-      try {
-        const openRouterKey = await decryptOpenRouterKey(keyRecord.key_encrypted, this.env.INTEGRATION_SECRET_KEY);
-        envVars.OPENROUTER_API_KEY = openRouterKey;
-        console.log(`[WorkspaceContainer] buildEnvVars:openrouter workspace=${workspaceId} source=existing ms=${Date.now() - openRouterStartedAt}`);
-      } catch (e) {
-        console.error('[WorkspaceContainer] Failed to decrypt org OpenRouter key:', e);
-      }
-    } else if (this.env.OPENROUTER_PROVISIONING_KEY) {
-      try {
-        const keyResponse = await createOpenRouterKey(this.env.OPENROUTER_PROVISIONING_KEY, {
-          name: `Chiridion - ${orgName}`,
-        });
+    const hasR2Config = !!(this.env.R2_API_TOKEN && this.env.R2_PARENT_ACCESS_KEY_ID && this.env.R2_ACCOUNT_ID && this.env.R2_BUCKET_NAME);
+    const sanitizeName = (s: string) => s.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 20) || 'x';
+    const volumeName = hasR2Config ? `chiridion-${sanitizeName(orgId)}-${sanitizeName(workspaceId)}` : '';
 
-        const keyHash = getKeyHash(keyResponse.key);
-        const keyEncrypted = await encryptOpenRouterKey(keyResponse.key, this.env.INTEGRATION_SECRET_KEY);
-        await orgStub.setOpenRouterKey(
-          keyHash,
-          keyEncrypted,
-          `Chiridion - ${orgName}`,
-          keyResponse.data.hash,
-          null
-        );
-        envVars.OPENROUTER_API_KEY = keyResponse.key;
-        console.log(`[WorkspaceContainer] buildEnvVars:openrouter workspace=${workspaceId} source=provisioned ms=${Date.now() - openRouterStartedAt}`);
-      } catch (e) {
-        console.error('[WorkspaceContainer] Failed to create org OpenRouter key:', e);
-      }
-    } else {
-      console.log(`[WorkspaceContainer] buildEnvVars:openrouter workspace=${workspaceId} source=none ms=${Date.now() - openRouterStartedAt}`);
+    const [orgInfo, keyRecord, r2CredsResult] = await Promise.all([
+      orgStub.getInfo(),
+      orgStub.getOpenRouterKeyRecord(),
+      hasR2Config
+        ? getTempR2Credentials(
+            this.env.R2_ACCOUNT_ID!,
+            this.env.R2_BUCKET_NAME!,
+            this.env.R2_PARENT_ACCESS_KEY_ID!,
+            this.env.R2_API_TOKEN!,
+            [prefix, `${volumeName}/`],
+            86400
+          ).catch((e) => {
+            console.error('[WorkspaceContainer] Failed to get R2 credentials:', e);
+            return null;
+          })
+        : Promise.resolve(null),
+    ]);
+    console.log(`[WorkspaceContainer] buildEnvVars:phase1 workspace=${workspaceId} ms=${Date.now() - phase1StartedAt}`);
+
+    // Apply R2 credentials if available
+    if (r2CredsResult) {
+      envVars.AWS_ACCESS_KEY_ID = r2CredsResult.accessKeyId;
+      envVars.AWS_SECRET_ACCESS_KEY = r2CredsResult.secretAccessKey;
+      envVars.AWS_SESSION_TOKEN = r2CredsResult.sessionToken;
     }
 
-    envVars.WORKER_BASE_URL = workerBaseUrl;
-    envVars.CLOUDFLARE_API_BASE_URL = `${workerBaseUrl}/client/v4`;
+    const userId = orgInfo?.created_by || 'system';
+    const orgName = orgInfo?.name || orgId;
+    const orgSlug = orgInfo?.slug || `org-${orgId.slice(0, 3)}`;
 
-    const deployTokenStartedAt = Date.now();
-    const deployToken = await createDeployToken(this.env.TOKEN_SIGNING_SECRET, workspaceId, orgId, orgSlug, userId);
-    console.log(`[WorkspaceContainer] buildEnvVars:deploy_token workspace=${workspaceId} ms=${Date.now() - deployTokenStartedAt}`);
-    envVars.CLOUDFLARE_API_TOKEN = deployToken;
-
-    const dataProxyStartedAt = Date.now();
+    // ─── Phase 2: Parallel operations (depend on phase 1) ────────
+    const phase2StartedAt = Date.now();
     const dataProxyTokenExpiry = Date.now() + TOKEN_TTL_MS;
-    const dataProxyToken = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
-      org_id: orgId,
-      org_slug: orgSlug,
-      user_id: userId,
-      scopes: ['data-proxy'],
-      exp: dataProxyTokenExpiry,
-      workspace_id: workspaceId,
-      name: `data-proxy-${workspaceId}`,
-    });
-    console.log(`[WorkspaceContainer] buildEnvVars:data_proxy_token workspace=${workspaceId} ms=${Date.now() - dataProxyStartedAt}`);
+
+    // R2 placeholder check (fire and forget in background)
+    if (r2CredsResult) {
+      const placeholderKey = `${prefix}.keep`;
+      waitUntil(
+        this.env.R2_BUCKET.head(placeholderKey).then((existing) => {
+          if (!existing) return this.env.R2_BUCKET.put(placeholderKey, '');
+        }).catch((e) => console.error('[WorkspaceContainer] R2 placeholder check failed:', e))
+      );
+    }
+
+    // All token signing in parallel
+    const tokenPromises = Promise.all([
+      createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
+        org_id: orgId,
+        org_slug: orgSlug,
+        user_id: userId,
+        scopes: ['claude_api'],
+        exp: Date.now() + TOKEN_TTL_MS,
+        workspace_id: workspaceId,
+        name: `claude-api-${workspaceId}`,
+      }),
+      createDeployToken(this.env.TOKEN_SIGNING_SECRET, workspaceId, orgId, orgSlug, userId),
+      createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
+        org_id: orgId,
+        org_slug: orgSlug,
+        user_id: userId,
+        scopes: ['data-proxy'],
+        exp: dataProxyTokenExpiry,
+        workspace_id: workspaceId,
+        name: `data-proxy-${workspaceId}`,
+      }),
+    ]);
+
+    // OpenRouter key handling
+    const openRouterPromise = (async (): Promise<string | null> => {
+      if (keyRecord) {
+        try {
+          return await decryptOpenRouterKey(keyRecord.key_encrypted, this.env.INTEGRATION_SECRET_KEY);
+        } catch (e) {
+          console.error('[WorkspaceContainer] Failed to decrypt org OpenRouter key:', e);
+          return null;
+        }
+      } else if (this.env.OPENROUTER_PROVISIONING_KEY) {
+        try {
+          const keyResponse = await createOpenRouterKey(this.env.OPENROUTER_PROVISIONING_KEY, {
+            name: `Chiridion - ${orgName}`,
+          });
+          const keyHash = getKeyHash(keyResponse.key);
+          const keyEncrypted = await encryptOpenRouterKey(keyResponse.key, this.env.INTEGRATION_SECRET_KEY);
+          // Fire and forget the storage write
+          waitUntil(
+            orgStub.setOpenRouterKey(
+              keyHash,
+              keyEncrypted,
+              `Chiridion - ${orgName}`,
+              keyResponse.data.hash,
+              null
+            ).catch((e) => console.error('[WorkspaceContainer] Failed to store OpenRouter key:', e))
+          );
+          return keyResponse.key;
+        } catch (e) {
+          console.error('[WorkspaceContainer] Failed to create org OpenRouter key:', e);
+          return null;
+        }
+      }
+      return null;
+    })();
+
+    const [[claudeApiToken, deployToken, dataProxyToken], openRouterKey] = await Promise.all([
+      tokenPromises,
+      openRouterPromise,
+    ]);
+    console.log(`[WorkspaceContainer] buildEnvVars:phase2 workspace=${workspaceId} ms=${Date.now() - phase2StartedAt}`);
+
+    // Apply tokens
+    envVars.ANTHROPIC_BASE_URL = `${workerBaseUrl}/api/claude`;
+    envVars.ANTHROPIC_API_KEY = claudeApiToken;
+    envVars.CLOUDFLARE_API_TOKEN = deployToken;
     envVars.DATA_PROXY_TOKEN = dataProxyToken;
     envVars.DATA_PROXY_URL = `${workerBaseUrl}/api`;
     this.dataProxyTokenExpiry = dataProxyTokenExpiry;
 
-    envVars.MCP_SERVER_URL = `${workerBaseUrl}/mcp`;
-    console.log(`[WorkspaceContainer] buildEnvVars:done workspace=${workspaceId} org=${orgId} totalMs=${Date.now() - buildStartedAt}`);
+    if (openRouterKey) {
+      envVars.OPENROUTER_API_KEY = openRouterKey;
+    }
 
+    envVars.CLOUDFLARE_ACCOUNT_ID = 'chiridion';
+    if (this.env.CF_DISPATCH_NAMESPACE) envVars.CF_DISPATCH_NAMESPACE = this.env.CF_DISPATCH_NAMESPACE;
+    envVars.WRANGLER_SEND_METRICS = 'false';
+    envVars.CI = '1';
+    envVars.WORKER_BASE_URL = workerBaseUrl;
+    envVars.CLOUDFLARE_API_BASE_URL = `${workerBaseUrl}/client/v4`;
+    envVars.MCP_SERVER_URL = `${workerBaseUrl}/mcp`;
+
+    console.log(`[WorkspaceContainer] buildEnvVars:done workspace=${workspaceId} org=${orgId} totalMs=${Date.now() - buildStartedAt}`);
     return envVars;
   }
 
-  async startForWorkspace(workspaceId: string, orgId: string): Promise<void> {
+  /**
+   * Start the workspace runtime with the given env vars.
+   * Env vars should be pre-built (and cached) by WorkspaceDO.ensureSpriteReady().
+   */
+  async startForWorkspace(
+    workspaceId: string,
+    orgId: string,
+    prebuiltEnvVars?: Record<string, string>
+  ): Promise<void> {
     this.workspaceId = workspaceId;
     this.orgId = orgId;
 
-    if (this.envVars && Object.keys(this.envVars).length > 0) return;
+    // If we already have env vars pushed, skip
+    if (this.envVars && Object.keys(this.envVars).length > 0) {
+      console.log(`[Sandbox] startForWorkspace: already initialized workspace=${workspaceId}`);
+      return;
+    }
 
-    console.log(`[Sandbox] startForWorkspace: building env vars workspace=${workspaceId} org=${orgId}`);
-    this.envVars = await this.buildEnvVars(workspaceId, orgId);
+    // Use prebuilt env vars if provided, otherwise build (fallback for legacy callers)
+    if (prebuiltEnvVars && Object.keys(prebuiltEnvVars).length > 0) {
+      console.log(`[Sandbox] startForWorkspace: using prebuilt env vars workspace=${workspaceId}`);
+      this.envVars = prebuiltEnvVars;
+    } else {
+      console.log(`[Sandbox] startForWorkspace: building env vars (no cache) workspace=${workspaceId} org=${orgId}`);
+      this.envVars = await this.buildEnvVars(workspaceId, orgId);
+    }
 
     // Push workspace env to control plane
     await this.pushEnvToControlPlane(this.envVars);
@@ -1008,6 +1047,29 @@ export class WorkspaceContainer {
     }
 
     return await response.json() as ControlPlaneExistsResponse;
+  }
+
+  /**
+   * Stream a file's raw bytes directly from the sandbox host proxy.
+   * Returns the Response object for pass-through streaming (no buffering/encoding).
+   * Returns null if the file doesn't exist, throws on other errors.
+   */
+  async readFileStream(path: string): Promise<Response | null> {
+    const normalizedPath = this.normalizeFsPath(path);
+    const response = await this.fetchProxy(
+      this.sandboxProxyPath('/fs/read'),
+      { method: 'GET' },
+      { path: normalizedPath }
+    );
+
+    if (response.status === 404) return null;
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Failed reading file ${path}: ${response.status} ${body}`);
+    }
+
+    return response;
   }
 
   async readFile(path: string): Promise<ControlPlaneReadResponse> {

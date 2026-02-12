@@ -60,16 +60,6 @@ function shouldDisplayInline(contentType: string): boolean {
   return INLINE_MIME_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
-function toFileBytes(base64: string): ArrayBuffer {
-  const raw = atob(base64);
-  const buffer = new ArrayBuffer(raw.length);
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < raw.length; i += 1) {
-    bytes[i] = raw.charCodeAt(i);
-  }
-  return buffer;
-}
-
 function decodeWorkspacePath(rawPath: string): string {
   const decoded = decodeURIComponent(rawPath);
   const withLeadingSlash = decoded.startsWith('/') ? decoded : `/${decoded}`;
@@ -93,37 +83,34 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
     const containerPath = toContainerPath(workspacePath);
 
-    let result = await container.readFile(containerPath);
-    if (!result.success && result.code === 'ENOENT') {
+    // Stream raw bytes directly from the sandbox host — no buffering or re-encoding
+    let proxyResponse = await container.readFileStream(containerPath);
+    if (!proxyResponse) {
       const resolvedPath = await resolveContainerPath(container, workspacePath);
       if (resolvedPath && resolvedPath !== containerPath) {
-        result = await container.readFile(resolvedPath);
+        proxyResponse = await container.readFileStream(resolvedPath);
       }
     }
 
-    if (!result.success) {
-      const status = result.code === 'ENOENT' ? 404 : 500;
-      return Response.json({ error: result.error || 'Failed to read file' }, { status });
+    if (!proxyResponse) {
+      return Response.json({ error: 'File not found' }, { status: 404 });
     }
 
     const filename = workspacePath.split('/').filter(Boolean).pop() || 'file';
-    const contentType = result.mimeType || getMimeType(filename);
+    const contentType = getMimeType(filename);
     const displayInline = shouldDisplayInline(contentType);
+    const contentLength = proxyResponse.headers.get('Content-Length');
 
     const headers: Record<string, string> = {
       'Content-Type': contentType,
       'Cache-Control': 'private, no-store',
       'Content-Disposition': `${displayInline ? 'inline' : 'attachment'}; filename="${filename}"`,
     };
+    if (contentLength) {
+      headers['Content-Length'] = contentLength;
+    }
 
-    const body: BodyInit = result.isBinary && result.encoding === 'base64'
-      ? (() => {
-          const buffer = toFileBytes(result.content || '');
-          return new Blob([buffer], { type: contentType });
-        })()
-      : result.content || '';
-
-    return new Response(body, { headers });
+    return new Response(proxyResponse.body, { headers });
   } catch (error) {
     if (error instanceof Response) {
       return error;

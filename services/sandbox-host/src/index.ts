@@ -19,7 +19,7 @@ import {
   removeWebSocket,
 } from './container-manager';
 import {
-  fsRead,
+  fsReadInfo,
   fsWrite,
   fsList,
   fsDelete,
@@ -170,9 +170,13 @@ Bun.serve<WsData>({
         const path = url.searchParams.get('path');
         if (!path) return errorResponse('path query param required', 400);
         try {
-          const data = await fsRead(name, path);
-          return new Response(data.buffer as ArrayBuffer, {
-            headers: { 'Content-Type': 'application/octet-stream' },
+          const { hostPath, size } = await fsReadInfo(name, path);
+          const file = Bun.file(hostPath);
+          return new Response(file.stream(), {
+            headers: {
+              'Content-Type': 'application/octet-stream',
+              'Content-Length': String(size),
+            },
           });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
