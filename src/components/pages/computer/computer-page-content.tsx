@@ -151,7 +151,7 @@ type ConflictState = {
 };
 
 const ROOT_PATH = '/';
-const WORKSPACE_ROOT_PREFIXES = ['/home/sprite', '/workspace', '/root'];
+const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
 const MAX_EDITABLE_BYTES = 1024 * 1024;
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
 

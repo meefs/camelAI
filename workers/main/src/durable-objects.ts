@@ -196,17 +196,12 @@ const HEADER_MCP_TOKEN = 'X-Chiridion-MCP-Token';
 const HEADER_USER_NAME = 'X-Chiridion-User-Name';
 const HEADER_USER_EMAIL = 'X-Chiridion-User-Email';
 
-const STREAM_ID_STDIN = 0;
-const STREAM_ID_STDOUT = 1;
-const STREAM_ID_STDERR = 2;
-const STREAM_ID_EXIT = 3;
-
 const CHIRIDION_SYSTEM_MESSAGE_REGEX =
   /<chiridion system message>([\s\S]*?)<\/chiridion system message>/gi;
 
 /**
  * ChatThreadDO - One per thread, holds preview state + chat websocket bridge.
- * Chat path: client WS <-> ChatThreadDO <-> Sprites exec (Claude runner process)
+ * Chat path: client WS <-> ChatThreadDO <-> sandbox control plane (/chat WS)
  */
 export class ChatThreadDO extends DurableObject<ChatEnv> {
   private static readonly CONNECTION_SETUP_TIMEOUT_MS = 30 * 60 * 1000;
@@ -233,10 +228,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
   private runnerDetachedByUs: boolean = false;
-  private runnerStdoutBuffer = '';
-
-  private readonly textEncoder = new TextEncoder();
-  private readonly textDecoder = new TextDecoder();
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -642,9 +633,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.sendDirect(ws, { type: 'todo_state', todos: this.currentTodos });
     }
 
-    // Ensure we are attached to the sprite exec stream so in-flight output can resume.
+    // Ensure we are connected to the sandbox control plane so in-flight output can resume.
     void this.ensureRunnerConnected().catch((err) => {
-      this.emitChatError(`Failed to connect to sprite runner: ${String(err)}`);
+      this.emitChatError(`Failed to connect to sandbox: ${String(err)}`);
     });
   }
 
@@ -833,9 +824,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         throw new Error('Missing chat context');
       }
 
-      console.log(`[ChatThreadDO] ensureRunnerConnected: starting new runner for thread=${context.threadId}`);
+      console.log(`[ChatThreadDO] ensureRunnerConnected: connecting for thread=${context.threadId}`);
 
-      // Delegate sprite creation + bootstrap to WorkspaceDO (persistent version tracking).
+      // Delegate sandbox creation + bootstrap to WorkspaceDO (persistent version tracking).
       const workspaceStub = this.env.WORKSPACE.get(
         this.env.WORKSPACE.idFromName(context.workspaceId)
       );
@@ -845,28 +836,28 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.runtime = getWorkspaceContainer(this.env, context.workspaceId);
       }
 
-      // Build env vars for the runner process (no bootstrap, just env init).
+      // Push workspace env to the control plane.
       await this.runtime.startForWorkspace(context.workspaceId, context.orgId);
 
-      // Start a new runner process.
+      // Build thread-specific env delta for the chat session.
       const envVars = await this.runtime.buildClaudeRunnerEnv({
         threadId: context.threadId,
         threadDeployToken: context.threadDeployToken,
         mcpToken: context.mcpToken,
       });
 
-      const cmd = this.runtime.runnerExecCommand;
+      // Open WebSocket to the control plane's /chat endpoint.
+      const chatWs = await this.runtime.connectChatWebSocket();
+      this.attachRunnerSocket(chatWs);
 
-      const runnerWs = await this.runtime.connectExecWebSocket({
-        cmd,
+      // Send init message with thread ID and env vars.
+      this.sendRunnerCommand({
+        type: 'init',
+        threadId: context.threadId,
         env: envVars,
-        stdin: true,
-        tty: false,
-        maxRunAfterDisconnect: '30m',
       });
 
-      this.attachRunnerSocket(runnerWs);
-      console.log(`[ChatThreadDO] ensureRunnerConnected: runner attached for thread=${context.threadId}`);
+      console.log(`[ChatThreadDO] ensureRunnerConnected: connected for thread=${context.threadId}`);
     })();
 
     try {
@@ -878,13 +869,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private attachRunnerSocket(ws: WebSocket): void {
     this.runnerSocket = ws;
-    this.runnerStdoutBuffer = '';
 
     ws.addEventListener('message', (event: MessageEvent) => {
+      if (typeof event.data !== 'string') return;
       try {
-        this.handleRunnerSocketMessage(event.data);
-      } catch (err) {
-        console.error('[ChatThreadDO] runner message handling failed', err);
+        const parsed = JSON.parse(event.data) as Record<string, unknown>;
+        this.handleRunnerEvent(parsed);
+      } catch {
+        // Non-JSON messages from the control plane; ignore.
       }
     });
 
@@ -892,7 +884,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const detached = this.runnerDetachedByUs;
       this.runnerDetachedByUs = false;
       this.runnerSocket = null;
-      this.runnerStdoutBuffer = '';
 
       console.log(`[ChatThreadDO] runner websocket closed (code=${event.code}, detached=${detached})`);
     });
@@ -914,89 +905,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // ignore close failures
     }
     this.runnerSocket = null;
-  }
-
-  private handleRunnerSocketMessage(data: unknown): void {
-    if (typeof data === 'string') {
-      this.handleRunnerTextMessage(data);
-      return;
-    }
-
-    if (data instanceof ArrayBuffer) {
-      this.handleRunnerBinaryMessage(new Uint8Array(data));
-      return;
-    }
-
-    if (data instanceof Uint8Array) {
-      this.handleRunnerBinaryMessage(data);
-      return;
-    }
-
-    // Some runtimes may provide Blob for binary payloads.
-    if (typeof Blob !== 'undefined' && data instanceof Blob) {
-      void data.arrayBuffer().then((buffer) => {
-        this.handleRunnerBinaryMessage(new Uint8Array(buffer));
-      }).catch((err) => {
-        console.error('[ChatThreadDO] failed to read runner blob payload', err);
-      });
-    }
-  }
-
-  private handleRunnerTextMessage(_text: string): void {
-    // Text frames from sprite exec are control messages (e.g. session_info).
-    // Currently unused — all runner protocol data arrives as binary frames.
-  }
-
-  private handleRunnerBinaryMessage(payload: Uint8Array): void {
-    if (payload.length === 0) return;
-
-    const streamId = payload[0];
-    const data = payload.subarray(1);
-
-    if (streamId === STREAM_ID_STDOUT) {
-      const chunk = this.textDecoder.decode(data, { stream: true });
-      this.processRunnerStdout(chunk);
-      return;
-    }
-
-    if (streamId === STREAM_ID_STDERR) {
-      const stderrText = this.textDecoder.decode(data, { stream: true }).trim();
-      if (stderrText) {
-        console.error('[ChatThreadDO] runner stderr:', stderrText.slice(0, 4000));
-      }
-      return;
-    }
-
-    if (streamId === STREAM_ID_EXIT) {
-      const exitCode = data.length > 0 ? data[0] : 0;
-      this.handleRunnerExit(exitCode);
-      return;
-    }
-
-    if (streamId === STREAM_ID_STDIN) {
-      // Unexpected server->client stdin frame; ignore.
-    }
-  }
-
-  private processRunnerStdout(chunk: string): void {
-    this.runnerStdoutBuffer += chunk;
-
-    while (true) {
-      const newlineIdx = this.runnerStdoutBuffer.indexOf('\n');
-      if (newlineIdx < 0) break;
-
-      const line = this.runnerStdoutBuffer.slice(0, newlineIdx).trim();
-      this.runnerStdoutBuffer = this.runnerStdoutBuffer.slice(newlineIdx + 1);
-
-      if (!line) continue;
-
-      try {
-        const parsed = JSON.parse(line) as Record<string, unknown>;
-        this.handleRunnerEvent(parsed);
-      } catch {
-        // Runner may print non-JSON logs to stdout; ignore them for protocol handling.
-      }
-    }
   }
 
   private handleRunnerEvent(event: Record<string, unknown>): void {
@@ -1049,28 +957,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.pushChatEvent(event);
   }
 
-  private handleRunnerExit(exitCode: number): void {
-    console.log(`[ChatThreadDO] runner exited with code ${exitCode}`);
-    this.runnerSocket = null;
-    this.runnerStdoutBuffer = '';
-
-    if (exitCode !== 0) {
-      this.emitChatError(`Sprite runner exited with code ${exitCode}`);
-    }
-    // exit code 0 is a graceful shutdown — no error emitted
-  }
-
   private sendRunnerCommand(message: Record<string, unknown>): void {
     if (!this.runnerSocket) {
       throw new Error('Runner websocket is not connected');
     }
-
-    const line = `${JSON.stringify(message)}\n`;
-    const encoded = this.textEncoder.encode(line);
-    const framed = new Uint8Array(encoded.length + 1);
-    framed[0] = STREAM_ID_STDIN;
-    framed.set(encoded, 1);
-    this.runnerSocket.send(framed);
+    this.runnerSocket.send(JSON.stringify(message));
   }
 
   private emitChatError(message: string): void {

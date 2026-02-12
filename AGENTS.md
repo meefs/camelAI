@@ -17,18 +17,18 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────────┐
-│  React Router   │────▶│   Cloudflare Worker  │────▶│       Sprites       │
-│   (SSR + WS)    │◀────│   (Durable Objects)  │◀────│  (exec + fs + SDK)  │
-└─────────────────┘     └──────────────────────┘     └─────────────────────┘
-         │                        │                           │
-         │                        ▼                           │
-         │              ┌──────────────────┐                  │
-         │              │  Dispatcher WfP  │                  │
-         │              │ (User App Hosts) │                  │
-         │              └──────────────────┘                  │
-         │                        │                           │
-         ▼                        ▼                           ▼
+┌─────────────────┐     ┌──────────────────────┐     ┌──────────────────────┐
+│  React Router   │────▶│   Cloudflare Worker  │────▶│   Sandbox Host       │
+│   (SSR + WS)    │◀────│   (Durable Objects)  │◀────│  (Docker + gVisor)   │
+└─────────────────┘     └──────────────────────┘     └──────────────────────┘
+         │                        │                             │
+         │                        ▼                             ▼
+         │              ┌──────────────────┐          ┌─────────────────┐
+         │              │  Dispatcher WfP  │          │  NVMe RAID0     │
+         │              │ (User App Hosts) │          │  + Azure NFS    │
+         │              └──────────────────┘          │  (Persistent FS) │
+         │                        │                   └─────────────────┘
+         ▼                        ▼
 ┌─────────────────┐     ┌──────────────────┐
 │   R2 Storage    │     │    OpenRouter    │
 │  (Files/Assets) │     │   (LLM Access)   │
@@ -51,15 +51,21 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
    - `main/` - Main Chiridion app worker
      - React Router SSR handler
      - Durable Objects for state: `UserDO`, `OrgDO`, `OrgSlugDO`, `WorkspaceDO`, `ChatThreadDO`
-     - Sprites-backed workspace runtime (`workers/main/src/workspace-container.ts`)
-     - WebSocket routing (one sprite runtime per workspace)
+     - Docker + gVisor sandbox-backed workspace runtime (`workers/main/src/workspace-container.ts`)
+     - WebSocket routing (one sandbox runtime per workspace)
      - OAuth flow handling
      - MCP server endpoint (`/mcp`) with API key auth
    - `dispatcher/` - Routes `*.chiridion.app` to user workers (Workers for Platforms)
    - `admin-cli/` - Local-only admin CLI for querying live environments
 
-3. **Sandbox** (`sandbox/`)
-   - `claude-runner.mjs` - Claude SDK runner process executed via sprite exec
+3. **Sandbox Host** (`services/sandbox-host/`)
+   - Bun HTTP server managing Docker + gVisor container lifecycle on Azure VMs
+   - Host FS operations on NVMe RAID0 (backed by Azure Files NFS via lsyncd)
+   - Proxies control plane traffic (health, env, chat WebSocket) to containers
+   - Manages container exec and filesystem operations
+
+4. **Sandbox** (`sandbox/`)
+   - `claude-runner.mjs` - Claude SDK runner process executed via sandbox exec
    - `memory-logger.mjs` - Runner helper for loading user profile context
    - `session-search/` - Session search CLI/daemon used inside workspaces
    - `skills/` - Agent skills (developing-software, file-sharing, frontend-design)
@@ -107,7 +113,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 | `workers/main/src/auth.ts` | `UserDO`, `OrgDO` implementations |
 | `workers/main/src/org-slug-registry.ts` | `OrgSlugDO` slug ownership registry |
 | `workers/main/src/workspace.ts` | `WorkspaceDO` implementation |
-| `workers/main/src/workspace-container.ts` | Sprites workspace runtime + websocket/filesystem proxy |
+| `workers/main/src/workspace-container.ts` | Docker + gVisor sandbox workspace runtime + websocket/filesystem proxy |
 | `workers/main/src/durable-objects.ts` | `ChatThreadDO` for thread state |
 | `workers/main/src/cf-api-proxy.ts` | Cloudflare API proxy for deploys |
 | `workers/main/src/mcp-handler.ts` | MCP server with `ChiridionMcp` |
@@ -214,7 +220,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 1. User types message in `Chat.tsx`
 2. WebSocket connects to `/ws/{workspace}` - Worker validates access and forwards to `ChatThreadDO`
 3. On accepted user messages, `ChatThreadDO` updates thread metadata (`updated_at` and `user_message_count`) via `OrgDO.touchThread`
-4. `ChatThreadDO` opens/attaches a sprite exec session running `claude-runner.mjs`
+4. `ChatThreadDO` opens/attaches a sandbox exec session running `claude-runner.mjs`
 5. `claude-runner.mjs` calls Claude SDK `query()` and streams events over stdout
 6. `ChatThreadDO` multiplexes/replays events to connected chat clients
 7. Claude SDK stores messages in JSONL files on the sprite at `/home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl`
@@ -252,11 +258,13 @@ MCP-driven thread prompts (for example connection setup and bug report capture) 
 - OAuth integrations with expiring tokens (for example Notion) store `token_expires_at` and are refreshed by `WorkspaceDO` alarms.
 - BigQuery integrations now follow the same token lifecycle pattern: the encrypted `service_account_json` is used server-side to mint short-lived Google access tokens.
 - Runtime environments receive `INT_BIGQUERY_*_ACCESS_TOKEN` instead of raw service account JSON whenever a token is available.
-- After token refresh, updated credentials are pushed to both the running workspace sprite runtime and all deployed workspace workers.
+- After token refresh, updated credentials are pushed to both the running workspace sandbox runtime and all deployed workspace workers.
 
 ### Workspace Runtime Provisioning
-Sprites are provisioned eagerly when a workspace is created (`WorkspaceDO.createWorkspace` calls `WorkspaceContainer.provisionSpriteForWorkspace`).
-Runtime startup is now on-demand from chat/API paths; dashboard route loaders no longer trigger warmup.
+Docker + gVisor sandboxes are provisioned eagerly when a workspace is created (`WorkspaceDO.createWorkspace` calls `WorkspaceContainer.provisionSpriteForWorkspace`).
+Each sandbox gets a host directory at `/mnt/workspaces/{sandboxName}` (NVMe RAID0, backed by Azure Files NFS).
+The sandbox host service (`services/sandbox-host/`) manages container lifecycle, exec, filesystem, and control plane proxy.
+Runtime startup is on-demand from chat/API paths; dashboard route loaders no longer trigger warmup.
 
 ### Threads
 - Each thread belongs to a workspace
@@ -396,7 +404,8 @@ Create `.dev.vars`:
 ```
 OPENROUTER_API_KEY=your_openrouter_key_here
 OPENROUTER_PROVISIONING_KEY=your_provisioning_key_here
-SPRITES_TOKEN=your_sprites_api_token_here
+SANDBOX_HOST_URL=http://localhost:4400
+SANDBOX_HOST_TOKEN=your_sandbox_host_token_here
 WORKER_BASE_URL=https://your-ngrok-subdomain.ngrok-free.app
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
@@ -408,11 +417,9 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 |----------|-------------|
 | `OPENROUTER_API_KEY` | Fallback OpenRouter API key for LLM access |
 | `OPENROUTER_PROVISIONING_KEY` | OpenRouter provisioning key for creating per-org API keys |
-| `SPRITES_TOKEN` | Sprites API bearer token for workspace runtime creation/exec |
-| `SPRITES_API_BASE_URL` | Optional Sprites API base URL (default: `https://api.sprites.dev`) |
-| `SPRITES_NAME_PREFIX` | Optional sprite name prefix (default: `chiridion`) |
-| `SPRITES_EAGER_PROVISION_ON_CREATE` | Set to `0` to disable eager sprite creation during workspace creation (default: enabled) |
-| `WORKER_BASE_URL` | Base URL for the main worker (must be publicly reachable from sprites; use ngrok in local dev) |
+| `SANDBOX_HOST_URL` | URL of the sandbox host service (e.g., `http://localhost:4400` for dev via SSH tunnel) |
+| `SANDBOX_HOST_TOKEN` | Bearer token for authenticating with the sandbox host service |
+| `WORKER_BASE_URL` | Base URL for the main worker (must be publicly reachable from sandboxes; use ngrok in local dev) |
 | `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
 | `TOKEN_SIGNING_SECRET` | Secret for signing auth tokens |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
@@ -572,28 +579,24 @@ bun run admin:dev-illiana
 | `/r2/list` | List R2 objects (optional `?prefix=`) |
 | `/workers` | List all user workers in dispatch namespace |
 
-### Sprite CLI
+### Sandbox Host Service
 
-The `sprite` CLI is a globally installed binary for interacting with workspace sprite computers. No installation needed.
+The sandbox host (`services/sandbox-host/`) runs on an Azure VM and manages Docker + gVisor containers. Provides container lifecycle, host filesystem access, exec, and control plane proxy.
 
 ```bash
-# List all sprites
-sprite ls
+# Run locally on the Azure VM
+cd services/sandbox-host && SANDBOX_HOST_TOKEN=<token> bun run start
 
-# Execute a command on a sprite
-sprite exec -s <sprite-name> -- <command>
-
-# Open interactive shell
-sprite console -s <sprite-name>
+# For local dev, use SSH tunnel to the Azure VM:
+ssh -fNL 4400:localhost:4400 chiridion@<vm-ip>
+# Then set SANDBOX_HOST_URL=http://localhost:4400 in .dev.vars
 ```
 
-Sprite names follow the pattern `chiridion-ws-{workspaceId}`. Each workspace has one sprite.
+Sandbox names follow the pattern `chiridion-{workspaceId}`. Each workspace gets a host directory at `/mnt/workspaces/{sandboxName}` mounted into the container at `/home/claude`.
 
-**Pulling chat JSONL from a sprite:**
-```bash
-# JSONL files live at /home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl
-sprite exec -s chiridion-ws-{workspaceId} -- cat /home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl > {threadId}.jsonl
-```
+**Sandbox image:** Ubuntu 24.04 with bun, node 22, git, rclone, fuse, uv, and `claude` user (uid 1001). Containers run with gVisor (`--runtime=runsc`) for isolation.
+
+**Storage:** NVMe RAID0 (hot, ~3.4TB) + Azure Files NFS (durable, 2TB) + lsyncd (near-real-time sync). On VM reboot, RAID0 is rebuilt and data restored from NFS.
 
 ## Project Structure
 
@@ -647,13 +650,20 @@ chiridion-app/
 │   │   ├── auth.ts            # UserDO, OrgDO
 │   │   ├── org-slug-registry.ts # OrgSlugDO uniqueness registry
 │   │   ├── workspace.ts       # WorkspaceDO
-│   │   ├── workspace-container.ts # Sprites workspace runtime
+│   │   ├── workspace-container.ts # Docker + gVisor sandbox workspace runtime
 │   │   ├── durable-objects.ts # ChatThreadDO
 │   │   ├── cf-api-proxy.ts    # Deploy proxy
 │   │   ├── mcp-handler.ts     # MCP server
 │   │   └── openrouter-keys.ts # Per-org API key provisioning
 │   ├── dispatcher/src/        # WfP subdomain router
 │   └── admin-cli/             # Admin CLI tool
+├── services/
+│   └── sandbox-host/          # Docker + gVisor sandbox host (Bun HTTP server on Azure VM)
+│       ├── src/index.ts       # HTTP + WebSocket server
+│       ├── src/container-manager.ts # Docker lifecycle via CLI
+│       ├── src/fs-host.ts     # Direct host filesystem operations
+│       ├── Dockerfile.sandbox # Container image definition
+│       └── scripts/setup-host.sh # Azure VM provisioning
 ├── sandbox/
 │   ├── claude-runner.mjs      # Claude SDK runner executable
 │   ├── memory-logger.mjs      # User profile loader helper
@@ -699,9 +709,10 @@ chiridion-app/
 - Active preview target state (out-of-band, one target at a time: app or file)
 
 ### Workspace Runtime (per workspace)
-- Sprites lifecycle + provisioning
-- Chat WebSocket forwarding to `ChatThreadDO`, which bridges to sprite exec
-- Filesystem and command execution via Sprites exec API
+- Docker + gVisor sandbox lifecycle + provisioning via sandbox-host service
+- Chat WebSocket forwarding to `ChatThreadDO`, which bridges to sandbox exec
+- Filesystem and command execution via sandbox-host REST API
+- Persistent storage via host directories (NVMe RAID0 + Azure Files NFS)
 
 ### ChiridionMcp (MCP Agent)
 - MCP server implementation

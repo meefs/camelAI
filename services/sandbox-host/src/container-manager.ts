@@ -1,0 +1,270 @@
+/**
+ * Docker container lifecycle manager.
+ *
+ * Uses Docker CLI via Bun.spawn — no dockerode dependency.
+ * Containers run with gVisor (--runtime=runsc) and mount host
+ * directories from /mnt/workspaces/{name} → /home/claude inside.
+ */
+import type { ContainerRecord, ExecResult } from './types';
+
+const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/mnt/workspaces';
+const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'chiridion-sandbox:latest';
+const CONTAINER_MEMORY = process.env.CONTAINER_MEMORY || '4g';
+const CONTAINER_CPUS = process.env.CONTAINER_CPUS || '2';
+const CONTAINER_RUNTIME = process.env.CONTAINER_RUNTIME || 'runsc';
+const CONTROL_PLANE_PORT = 8080;
+
+const containers = new Map<string, ContainerRecord>();
+
+async function dockerExec(args: string[], timeoutMs = 30_000): Promise<ExecResult> {
+  const proc = Bun.spawn(['docker', ...args], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  const timer = setTimeout(() => proc.kill(), timeoutMs);
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const exitCode = await proc.exited;
+  clearTimeout(timer);
+
+  return { success: exitCode === 0, stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+}
+
+function workspacePath(name: string): string {
+  return `${WORKSPACES_ROOT}/${name}`;
+}
+
+/**
+ * Get the host port mapped to a container's control plane port.
+ */
+async function getHostPort(name: string): Promise<number | null> {
+  const result = await dockerExec(['port', name, String(CONTROL_PLANE_PORT)]);
+  if (!result.success) return null;
+  // Output: "0.0.0.0:32768" or "[::]:32768"
+  const match = result.stdout.match(/:(\d+)$/m);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/**
+ * Check if a container is running.
+ */
+async function isRunning(name: string): Promise<boolean> {
+  const result = await dockerExec([
+    'inspect', '--format', '{{.State.Running}}', name,
+  ]);
+  return result.success && result.stdout === 'true';
+}
+
+/**
+ * Wait for the control plane health endpoint to respond.
+ */
+async function waitForHealth(port: number, timeoutMs = 30_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (res.ok) return true;
+    } catch {
+      // Not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+/**
+ * Create or reconnect to a container (idempotent).
+ */
+export async function ensureContainer(name: string): Promise<ContainerRecord> {
+  // Check cache first
+  const cached = containers.get(name);
+  if (cached) {
+    cached.lastAccessedAt = Date.now();
+    if (await isRunning(name)) {
+      return cached;
+    }
+    // Container stopped — remove from cache and recreate
+    containers.delete(name);
+  }
+
+  // Check if container already exists and is running
+  if (await isRunning(name)) {
+    const port = await getHostPort(name);
+    if (port) {
+      const record: ContainerRecord = {
+        name,
+        containerId: name,
+        hostPort: port,
+        status: 'running',
+        createdAt: Date.now(),
+        lastAccessedAt: Date.now(),
+      };
+      containers.set(name, record);
+      console.log(`[ContainerManager] reconnected to existing container ${name} (port=${port})`);
+      return record;
+    }
+  }
+
+  // Remove any stopped container with the same name
+  await dockerExec(['rm', '-f', name]).catch(() => {});
+
+  // Ensure workspace directory exists
+  const wsPath = workspacePath(name);
+  const { mkdirSync, chownSync } = await import('fs');
+  try {
+    mkdirSync(wsPath, { recursive: true });
+    chownSync(wsPath, 1001, 1001);
+  } catch {
+    // May fail if already exists with correct permissions
+  }
+
+  console.log(`[ContainerManager] creating container ${name}`);
+
+  const runArgs = [
+    'run', '-d',
+    `--name=${name}`,
+    `--runtime=${CONTAINER_RUNTIME}`,
+    `-v`, `${wsPath}:/home/claude`,
+    '--network=bridge',
+    `--memory=${CONTAINER_MEMORY}`,
+    `--cpus=${CONTAINER_CPUS}`,
+    '-p', `0:${CONTROL_PLANE_PORT}`,
+    // FUSE support for rclone R2 mounts
+    '--device=/dev/fuse',
+    '--cap-add=SYS_ADMIN',
+    '--security-opt', 'apparmor=unconfined',
+    '-e', 'HOME=/home/claude',
+    '-e', 'USER=claude',
+    SANDBOX_IMAGE,
+    'bun', 'run', '/opt/chiridion/control-plane.mjs',
+  ];
+
+  const result = await dockerExec(runArgs, 60_000);
+  if (!result.success) {
+    throw new Error(`Failed to create container ${name}: ${result.stderr}`);
+  }
+
+  const containerId = result.stdout.slice(0, 12);
+  const port = await getHostPort(name);
+  if (!port) {
+    throw new Error(`Container ${name} created but no port mapping found`);
+  }
+
+  // Wait for control plane to be healthy
+  const healthy = await waitForHealth(port);
+  if (!healthy) {
+    console.warn(`[ContainerManager] container ${name} health check timed out, proceeding anyway`);
+  }
+
+  const record: ContainerRecord = {
+    name,
+    containerId,
+    hostPort: port,
+    status: 'running',
+    createdAt: Date.now(),
+    lastAccessedAt: Date.now(),
+  };
+  containers.set(name, record);
+  console.log(`[ContainerManager] created container ${name} (id=${containerId}, port=${port})`);
+  return record;
+}
+
+/**
+ * Get container info.
+ */
+export async function getContainer(name: string): Promise<ContainerRecord | null> {
+  const cached = containers.get(name);
+  if (cached) {
+    cached.lastAccessedAt = Date.now();
+    if (await isRunning(name)) {
+      return cached;
+    }
+    containers.delete(name);
+  }
+
+  // Check if container exists
+  if (await isRunning(name)) {
+    const port = await getHostPort(name);
+    if (port) {
+      const record: ContainerRecord = {
+        name,
+        containerId: name,
+        hostPort: port,
+        status: 'running',
+        createdAt: Date.now(),
+        lastAccessedAt: Date.now(),
+      };
+      containers.set(name, record);
+      return record;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Terminate and remove a container.
+ */
+export async function terminateContainer(name: string): Promise<boolean> {
+  const result = await dockerExec(['rm', '-f', name]);
+  containers.delete(name);
+  if (result.success) {
+    console.log(`[ContainerManager] terminated container ${name}`);
+  }
+  return result.success;
+}
+
+/**
+ * Execute a command inside a container via docker exec.
+ */
+export async function execInContainer(
+  name: string,
+  cmd: string[],
+  options?: { cwd?: string; env?: Record<string, string> }
+): Promise<ExecResult> {
+  const args: string[] = ['exec'];
+
+  if (options?.cwd) {
+    args.push('-w', options.cwd);
+  }
+
+  if (options?.env) {
+    for (const [key, value] of Object.entries(options.env)) {
+      args.push('-e', `${key}=${value}`);
+    }
+  }
+
+  args.push(name, ...cmd);
+  return dockerExec(args, 120_000);
+}
+
+/**
+ * Get the host port for a container's control plane.
+ * Ensures container exists first.
+ */
+export async function getControlPlanePort(name: string): Promise<number> {
+  const record = containers.get(name);
+  if (record) {
+    record.lastAccessedAt = Date.now();
+    return record.hostPort;
+  }
+
+  // Try to reconnect
+  const container = await getContainer(name);
+  if (!container) {
+    throw new Error(`Container ${name} not found`);
+  }
+  return container.hostPort;
+}
+
+/**
+ * List all tracked containers.
+ */
+export function listContainers(): ContainerRecord[] {
+  return Array.from(containers.values());
+}

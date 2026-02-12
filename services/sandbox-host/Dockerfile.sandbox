@@ -1,0 +1,50 @@
+FROM ubuntu:24.04
+
+# Core tools
+RUN apt-get update -qq && \
+    apt-get install -y -qq curl git sudo fuse rclone ca-certificates unzip jq >/dev/null 2>&1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create claude user (uid 1001, passwordless sudo)
+RUN useradd -m -u 1001 -s /bin/bash claude && \
+    echo "claude ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Bun
+RUN curl -fsSL https://bun.sh/install | bash && \
+    mv /root/.bun/bin/bun /usr/local/bin/bun && \
+    ln -s /usr/local/bin/bun /usr/local/bin/bunx
+
+# Node.js 22
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 && \
+    apt-get install -y -qq nodejs >/dev/null 2>&1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# uv (Python package manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh 2>/dev/null
+
+# FUSE config for rclone mounts
+RUN grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null || echo "user_allow_other" >> /etc/fuse.conf
+
+# Directories
+RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /usr/local/lib/create-worker
+
+# Claude Agent SDK
+RUN cd /opt/chiridion && \
+    echo '{"name":"chiridion-sandbox-runner","private":true,"type":"module"}' > package.json && \
+    bun install --no-progress @anthropic-ai/claude-agent-sdk@0.2.37
+
+# Copy sandbox files
+COPY sandbox/control-plane.mjs /opt/chiridion/control-plane.mjs
+COPY sandbox/memory-logger.mjs /opt/chiridion/memory-logger.mjs
+COPY sandbox/skills/ /etc/claude-code/.claude/skills/
+COPY sandbox/create-worker/ /usr/local/lib/create-worker/
+RUN chmod 755 /opt/chiridion/control-plane.mjs && \
+    chmod 644 /opt/chiridion/memory-logger.mjs && \
+    chmod +x /usr/local/lib/create-worker/create-worker.mjs && \
+    ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker
+
+WORKDIR /home/claude
+USER claude
+
+EXPOSE 8080
+CMD ["bun", "run", "/opt/chiridion/control-plane.mjs"]

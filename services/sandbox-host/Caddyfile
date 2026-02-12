@@ -1,0 +1,3 @@
+sandbox.chiridion.ai {
+	reverse_proxy localhost:4400
+}

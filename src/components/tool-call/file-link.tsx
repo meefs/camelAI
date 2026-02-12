@@ -9,7 +9,7 @@ import { FilePreviewPopover } from '@/components/chat-file-preview';
 import { useChatPreviewContext } from '@/components/chat-preview/preview-context';
 import type { PreviewTarget } from '@/types';
 
-const WORKSPACE_ROOT_PREFIXES = ['/home/sprite', '/home/claude', '/workspace', '/root'];
+const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
 
 const TEMP_FILE_PREFIXES = [
   { prefix: '/mnt/user-uploads/', type: 'upload' as const, urlSegment: 'uploads' },

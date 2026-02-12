@@ -18,7 +18,7 @@ export function SkillDetails({ tool, result, skillSheet }: SkillDetailsProps) {
   const input = tool?.input ?? {};
   const skillName = typeof input.skill === 'string' ? input.skill : '';
   const skillPath = skillName
-    ? `/home/sprite/.claude/skills/${skillName}/SKILL.md`
+    ? `/home/claude/.claude/skills/${skillName}/SKILL.md`
     : '';
   const resultText = getResultText(result);
   const sheetText = skillSheet ?? '';

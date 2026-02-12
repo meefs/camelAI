@@ -66,7 +66,7 @@ async function writeOnboardingProfile(
   const env = getEnv(context);
   const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId);
   const writeResult = await container.writeFile(
-    '/home/sprite/.chiridion/profile.md',
+    '/home/claude/.chiridion/profile.md',
     profileMarkdown
   );
   if (!writeResult.success) {

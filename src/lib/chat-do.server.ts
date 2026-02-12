@@ -251,9 +251,9 @@ export async function getMessages(
     const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId);
 
     // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
-    // Sprites runtime uses /home/sprite (-home-sprite).
+    // Modal sandbox uses /home/claude (-home-claude).
     const candidatePaths = [
-      `/home/sprite/.claude/projects/-home-sprite/${threadId}.jsonl`,
+      `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`,
     ];
 
     let jsonlPath: string | null = null;

@@ -87,7 +87,7 @@ export async function requireWorkspaceAuth(
 }
 
 /** Workspace root directory inside sprite runtime */
-const WORKSPACE_ROOT = '/home/sprite';
+const WORKSPACE_ROOT = '/home/claude';
 
 const NORMALIZABLE_WHITESPACE = /[ \u00A0\u2007\u202F]/;
 
@@ -130,7 +130,7 @@ export function normalizeWorkspacePath(input?: string | null): string {
 
 /**
  * Convert a workspace-relative path to an absolute container path.
- * Workspace path '/' maps to '/home/sprite', '/foo' maps to '/home/sprite/foo'.
+ * Workspace path '/' maps to '/home/claude', '/foo' maps to '/home/claude/foo'.
  */
 export function toContainerPath(workspacePath: string): string {
   const normalized = normalizeWorkspacePath(workspacePath);

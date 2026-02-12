@@ -190,7 +190,7 @@ export function getToolSummaryParts(
         if (!skill) return { action: 'Reading skill...' };
         return { action: `Reading skill ${skill}...` };
       }
-      const path = skill ? `/home/sprite/.claude/skills/${skill}/SKILL.md` : '';
+      const path = skill ? `/home/claude/.claude/skills/${skill}/SKILL.md` : '';
       return {
         action: 'Read skill',
         filename: skill || 'skill',

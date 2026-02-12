@@ -1,6 +1,19 @@
 /**
- * Workspace runtime backed by Sprites.
- * Provides filesystem helpers and exec websocket bridging.
+ * Workspace runtime backed by Docker + gVisor sandboxes.
+ *
+ * Architecture:
+ * - Sandbox host (services/sandbox-host/): Manages Docker container lifecycle,
+ *   host filesystem operations, exec, and proxies control plane traffic
+ *   (health, env, chat WebSocket) to containers.
+ * - Control plane (sandbox/control-plane.mjs): Runs inside the container as
+ *   the main entrypoint on port 8080. Handles env push and Claude Agent SDK
+ *   chat sessions.
+ * - This module: Orchestrates sandbox lifecycle via the proxy, pushes env
+ *   vars to the control plane, provides FS/exec APIs for dashboard routes,
+ *   and exposes connectChatWebSocket() for ChatThreadDO.
+ *
+ * All traffic (lifecycle, FS, exec, control plane) routes through the
+ * sandbox host proxy — CF Workers can't reach Docker bridge IPs directly.
  */
 import { getTempR2Credentials } from './r2-credentials';
 import { createSignedToken } from './signed-tokens';
@@ -13,8 +26,6 @@ import {
   getKeyHash,
 } from './openrouter-keys';
 import { waitUntil } from 'cloudflare:workers';
-import { SpritesClient } from '@fly/sprites';
-import { SPRITE_ASSETS, SPRITE_BOOTSTRAP_VERSION } from './sprite-assets-manifest';
 import type { OrgDO } from './auth';
 import type { WorkspaceDO } from './workspace';
 
@@ -47,17 +58,9 @@ export interface WorkspaceContainerEnv {
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC?: string;
   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
 
-  // Sprites runtime config
-  SPRITES_TOKEN?: string;
-  SPRITES_API_BASE_URL?: string;
-  SPRITES_NAME_PREFIX?: string;
-  SPRITES_EAGER_PROVISION_ON_CREATE?: string;
-}
-
-interface ControlPlaneHealthResponse {
-  status: string;
-  version?: string;
-  pid?: number;
+  // Sandbox host runtime config
+  SANDBOX_HOST_URL?: string;
+  SANDBOX_HOST_TOKEN?: string;
 }
 
 interface ControlPlaneExecResponse {
@@ -67,31 +70,6 @@ interface ControlPlaneExecResponse {
   exitCode: number;
   killed?: boolean;
   signal?: string | null;
-}
-
-interface ControlPlaneExistsResponse {
-  exists: boolean;
-  isFile?: boolean;
-  isDirectory?: boolean;
-  size?: number;
-  modifiedAt?: string;
-}
-
-interface ControlPlaneReadResponse {
-  success: boolean;
-  content?: string;
-  size?: number;
-  isBinary?: boolean;
-  encoding?: string;
-  mimeType?: string;
-  error?: string;
-  code?: string;
-}
-
-interface ControlPlaneWriteResponse {
-  success: boolean;
-  error?: string;
-  code?: string;
 }
 
 interface ControlPlaneListResponse {
@@ -108,6 +86,31 @@ interface ControlPlaneListResponse {
   path: string;
   timestamp?: string;
   error?: string;
+}
+
+interface ControlPlaneWriteResponse {
+  success: boolean;
+  error?: string;
+  code?: string;
+}
+
+interface ControlPlaneReadResponse {
+  success: boolean;
+  content?: string;
+  size?: number;
+  isBinary?: boolean;
+  encoding?: string;
+  mimeType?: string;
+  error?: string;
+  code?: string;
+}
+
+interface ControlPlaneExistsResponse {
+  exists: boolean;
+  isFile?: boolean;
+  isDirectory?: boolean;
+  size?: number;
+  modifiedAt?: string;
 }
 
 interface ControlPlaneMkdirResponse {
@@ -131,23 +134,10 @@ interface ControlPlaneDeleteResponse {
   code?: string;
 }
 
-interface SpriteRecord {
+interface SandboxRecord {
   id: string;
   name: string;
-  url: string;
   status: string;
-}
-
-export interface ExecWebSocketParams {
-  cmd?: string[];
-  path?: string;
-  sessionId?: string;
-  tty?: boolean;
-  stdin?: boolean;
-  cols?: number;
-  rows?: number;
-  maxRunAfterDisconnect?: string;
-  env?: Record<string, string>;
 }
 
 export interface ClaudeRunnerEnvOptions {
@@ -158,34 +148,16 @@ export interface ClaudeRunnerEnvOptions {
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const runtimeCache = new Map<string, WorkspaceContainer>();
-const SPRITE_RUNNER_HOME_DIR = '/opt/chiridion';
-const DEFAULT_RUNNER_SCRIPT_PATH = `${SPRITE_RUNNER_HOME_DIR}/claude-runner.mjs`;
-const SPRITE_MANAGED_SKILLS_DIR = '/etc/claude-code/.claude/skills';
-const SPRITE_MANAGED_SKILLS_VERSION_PATH = `${SPRITE_MANAGED_SKILLS_DIR}/.chiridion-version`;
-const SPRITE_MANAGED_SKILLS_PARENT_DIR = '/etc/claude-code/.claude';
-const SPRITE_CREATE_WORKER_DIR = '/usr/local/lib/create-worker';
-const SPRITE_CREATE_WORKER_VERSION_PATH = `${SPRITE_CREATE_WORKER_DIR}/.chiridion-version`;
-const SPRITE_CREATE_WORKER_BIN = '/usr/local/bin/create-worker';
-const RUNNER_DEP_PACKAGE = '@anthropic-ai/claude-agent-sdk';
-const RUNNER_DEP_VERSION = '0.2.37';
-const INTEGRATION_ENV_FILE_PATH = '/home/sprite/.chiridion/integration.env';
+const SANDBOX_HOME_DIR = '/opt/chiridion';
+const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
 
 // Bump this version when changing rclone mount args or configuration.
-// Services will be recreated when this version changes.
 const R2_MOUNT_SERVICE_VERSION = '1';
 
-// Composite version — auto-bumps when any bootstrap component changes.
-// Stored in workspace DO storage to skip all sprite filesystem checks on cold start.
-export const BOOTSTRAP_VERSION = [
-  '5',                            // schema version — bump for structural bootstrap changes
-  RUNNER_DEP_VERSION,             // SDK pinned version
-  SPRITE_BOOTSTRAP_VERSION,       // combined asset hashes from manifest
-].join(':');
-const SPRITES_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504, 524]);
-const SPRITES_MAX_RETRY_ATTEMPTS = 6;
-const SPRITES_MAX_GET_AFTER_CREATE_ATTEMPTS = 12;
-const SPRITES_BASE_RETRY_DELAY_MS = 250;
-const SPRITES_MAX_RETRY_DELAY_MS = 3000;
+const PROXY_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504, 524]);
+const PROXY_MAX_RETRY_ATTEMPTS = 6;
+const PROXY_BASE_RETRY_DELAY_MS = 250;
+const PROXY_MAX_RETRY_DELAY_MS = 3000;
 
 function toIsoTime(ms: number): string {
   return new Date(ms).toISOString();
@@ -217,15 +189,8 @@ export class WorkspaceContainer {
   private workspaceId: string;
   private orgId: string | null = null;
   private envVars: Record<string, string> | null = null;
-  private sprite: SpriteRecord | null = null;
-  private spritesClient: SpritesClient | null = null;
-  private runnerScriptBootstrapped = false;
-  private runnerDependencyBootstrapped = false;
-  private runnerSkillsBootstrapped = false;
-  private createWorkerBootstrapped = false;
-  private uvInstallStarted = false;
-  private runnerBootstrapPromise: Promise<void> | null = null;
-  private spriteKnownToExist = false;
+  private sandbox: SandboxRecord | null = null;
+  private sandboxKnownToExist = false;
   private r2MountServiceCreated = false;
   private dataProxyTokenExpiry: number | null = null;
 
@@ -237,34 +202,41 @@ export class WorkspaceContainer {
     return this.env === env;
   }
 
-  get runnerExecCommand(): string[] {
-    return ['bun', 'run', DEFAULT_RUNNER_SCRIPT_PATH];
+  // ─── Proxy (lifecycle + FS + exec) ──────────────────────
+
+  private get proxyBaseUrl(): string {
+    return (this.env.SANDBOX_HOST_URL || 'http://localhost:4400').replace(/\/$/, '');
   }
 
-  private get spritesApiBaseUrl(): string {
-    return (this.env.SPRITES_API_BASE_URL || 'https://api.sprites.dev').replace(/\/$/, '');
-  }
-
-  private requireSpritesToken(): string {
-    const token = this.env.SPRITES_TOKEN;
+  private requireProxyToken(): string {
+    const token = this.env.SANDBOX_HOST_TOKEN;
     if (!token) {
-      throw new Error('SPRITES_TOKEN is required for workspace runtime');
+      throw new Error('SANDBOX_HOST_TOKEN is required for workspace runtime');
     }
     return token;
   }
 
-  private getSpritesClient(): SpritesClient {
-    if (!this.spritesClient) {
-      this.spritesClient = new SpritesClient(this.requireSpritesToken(), {
-        baseURL: this.spritesApiBaseUrl,
-      });
-    }
-    return this.spritesClient;
+  private buildProxyHeaders(extra: HeadersInit = {}): Headers {
+    const headers = new Headers(extra);
+    headers.set('Authorization', `Bearer ${this.requireProxyToken()}`);
+    return headers;
   }
 
-  private getFsWorkingDir(): string {
-    return '/';
+  private async fetchProxy(
+    path: string,
+    init: RequestInit = {},
+    query: Record<string, string | number | boolean | undefined> = {}
+  ): Promise<Response> {
+    const url = new URL(`${this.proxyBaseUrl}${path.startsWith('/') ? path : `/${path}`}`);
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined || value === null) continue;
+      url.searchParams.set(key, String(value));
+    }
+    const headers = this.buildProxyHeaders(init.headers);
+    return fetch(url.toString(), { ...init, headers });
   }
+
+  // ─── Path Helpers ────────────────────────────────────────
 
   private normalizeFsPath(path: string): string {
     if (!path) return '/';
@@ -293,49 +265,27 @@ export class WorkspaceContainer {
     return idx < 0 ? normalized : normalized.slice(idx + 1);
   }
 
-  private extractStatusCode(err: unknown): number | null {
-    const message = String((err as { message?: unknown })?.message || err || '');
-    const match = message.match(/status\s+(\d{3})/i);
-    return match ? Number(match[1]) : null;
-  }
+  // ─── Retry Helpers ───────────────────────────────────────
 
   private computeRetryDelayMs(attempt: number): number {
     const exponential = Math.min(
-      SPRITES_MAX_RETRY_DELAY_MS,
-      SPRITES_BASE_RETRY_DELAY_MS * Math.pow(2, Math.max(0, attempt - 1))
+      PROXY_MAX_RETRY_DELAY_MS,
+      PROXY_BASE_RETRY_DELAY_MS * Math.pow(2, Math.max(0, attempt - 1))
     );
     const jitter = Math.floor(Math.random() * 120);
     return exponential + jitter;
   }
 
-  private isRetryableSpriteStatus(status: number): boolean {
-    return SPRITES_RETRYABLE_STATUS_CODES.has(status);
+  private isRetryableStatus(status: number): boolean {
+    return PROXY_RETRYABLE_STATUS_CODES.has(status);
   }
 
-  private isComputeNotRespondingMessage(value: unknown): boolean {
-    const message = String(value || '').toLowerCase();
-    return message.includes('compute_not_responding') || message.includes('compute for sprite');
-  }
-
-  private isRetryableSpriteError(err: unknown): boolean {
-    const status = this.extractStatusCode(err);
-    if (status && this.isRetryableSpriteStatus(status)) return true;
-
+  private isRetryableError(err: unknown): boolean {
     const message = String((err as { message?: unknown })?.message || err || '').toLowerCase();
-    return this.isComputeNotRespondingMessage(message)
-      || message.includes('timed out')
+    return message.includes('timed out')
       || message.includes('timeout')
-      || message.includes('network');
-  }
-
-  private isSpriteNotFoundError(err: unknown): boolean {
-    const message = String((err as { message?: unknown })?.message || err || '').toLowerCase();
-    return message.includes('sprite not found') || this.extractStatusCode(err) === 404;
-  }
-
-  private isSpriteAlreadyExistsError(err: unknown): boolean {
-    const message = String((err as { message?: unknown })?.message || err || '').toLowerCase();
-    return message.includes('already exists') || this.extractStatusCode(err) === 409;
+      || message.includes('network')
+      || message.includes('econnrefused');
   }
 
   private isLocalOnlyWorkerBaseUrl(baseUrl: string): boolean {
@@ -351,161 +301,43 @@ export class WorkspaceContainer {
     }
   }
 
-  private async getSpriteWithRetry(
-    client: SpritesClient,
-    name: string,
-    options: { allowNotFound: boolean; attempts: number }
-  ): Promise<{
-    id?: string;
-    name: string;
-    url?: string;
-    status?: string;
-  } | null> {
-    let lastError: unknown = null;
+  // ─── Exec + FS via Proxy ─────────────────────────────────
 
-    for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
-      try {
-        const sprite = await client.getSprite(name);
-        return {
-          id: sprite.id,
-          name: sprite.name,
-          url: (sprite as { url?: string }).url,
-          status: sprite.status,
-        };
-      } catch (err) {
-        lastError = err;
+  private sandboxProxyPath(subpath: string): string {
+    const name = this.getSandboxName();
+    return `/v1/sandboxes/${encodeURIComponent(name)}${subpath}`;
+  }
 
-        if (this.isSpriteNotFoundError(err)) {
-          if (options.allowNotFound) return null;
-          if (attempt < options.attempts) {
-            await delay(this.computeRetryDelayMs(attempt));
-            continue;
-          }
-          throw err;
-        }
-
-        if (this.isRetryableSpriteError(err) && attempt < options.attempts) {
-          await delay(this.computeRetryDelayMs(attempt));
-          continue;
-        }
-
-        throw err;
-      }
+  /**
+   * Execute a command on the sandbox via the proxy POST /exec endpoint.
+   */
+  private async execOnSandbox(
+    args: string[],
+    options: { cwd?: string; env?: Record<string, string> } = {}
+  ): Promise<ControlPlaneExecResponse> {
+    if (args.length === 0) {
+      return { success: false, stdout: '', stderr: 'No command provided', exitCode: 1 };
     }
 
-    if (lastError) throw lastError;
-    throw new Error(`Failed to get sprite ${name}`);
-  }
-
-  private async createSpriteWithRetry(client: SpritesClient, name: string): Promise<boolean> {
-    let lastError: unknown = null;
-
-    for (let attempt = 1; attempt <= SPRITES_MAX_RETRY_ATTEMPTS; attempt += 1) {
-      try {
-        await client.createSprite(name);
-        return true;
-      } catch (err) {
-        lastError = err;
-        if (this.isSpriteAlreadyExistsError(err)) {
-          return false;
-        }
-        if (this.isRetryableSpriteError(err) && attempt < SPRITES_MAX_RETRY_ATTEMPTS) {
-          await delay(this.computeRetryDelayMs(attempt));
-          continue;
-        }
-        throw err;
-      }
-    }
-
-    if (lastError) throw lastError;
-    return false;
-  }
-
-  private toSpriteRecord(sprite: { id?: string; name: string; url?: string; status?: string }): SpriteRecord {
-    return {
-      id: sprite.id || '',
-      name: sprite.name,
-      url: sprite.url || '',
-      status: sprite.status || 'unknown',
-    };
-  }
-
-  private async createAndFetchSpriteRecord(name: string): Promise<{ sprite: SpriteRecord; created: boolean }> {
-    const client = this.getSpritesClient();
-    const didCreate = await this.createSpriteWithRetry(client, name);
-
-    const spriteDetails = await this.getSpriteWithRetry(client, name, {
-      allowNotFound: false,
-      attempts: SPRITES_MAX_GET_AFTER_CREATE_ATTEMPTS,
-    });
-    if (!spriteDetails) {
-      throw new Error(`Sprite not found after creation: ${name}`);
-    }
-
-    return { sprite: this.toSpriteRecord(spriteDetails), created: didCreate };
-  }
-
-  private async clearSpriteUserClaudeDir(spriteName: string): Promise<void> {
-    const response = await this.fetchSpriteFs(spriteName, 'delete', {
-      method: 'DELETE',
+    const response = await this.fetchProxy(this.sandboxProxyPath('/exec'), {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        path: '/home/sprite/.claude',
-        workingDir: this.getFsWorkingDir(),
-        recursive: true,
-        asRoot: false,
-      }),
+      body: JSON.stringify({ cmd: args, cwd: options.cwd, env: options.env }),
     });
 
-    if (!response.ok && response.status !== 404) {
+    if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Failed clearing /home/sprite/.claude: ${response.status} ${body}`);
+      return { success: false, stdout: '', stderr: body, exitCode: response.status };
     }
+
+    return await response.json() as ControlPlaneExecResponse;
   }
 
-  private async fetchSpriteFs(
-    spriteName: string,
-    endpoint: string,
-    init: RequestInit = {},
-    query: Record<string, string | number | boolean | undefined> = {}
-  ): Promise<Response> {
-    const url = new URL(`${this.spritesApiBaseUrl}/v1/sprites/${encodeURIComponent(spriteName)}/fs/${endpoint}`);
-    for (const [key, value] of Object.entries(query)) {
-      if (value === undefined || value === null) continue;
-      url.searchParams.set(key, String(value));
-    }
-    const requestInit: RequestInit = {
-      ...init,
-      headers: this.buildSpritesHeaders(init.headers),
-    };
-
-    let lastResponse: Response | null = null;
-    let lastError: unknown = null;
-
-    for (let attempt = 1; attempt <= SPRITES_MAX_RETRY_ATTEMPTS; attempt += 1) {
-      try {
-        const response = await fetch(url.toString(), requestInit);
-        lastResponse = response;
-
-        if (this.isRetryableSpriteStatus(response.status) && attempt < SPRITES_MAX_RETRY_ATTEMPTS) {
-          await delay(this.computeRetryDelayMs(attempt));
-          continue;
-        }
-
-        return response;
-      } catch (err) {
-        lastError = err;
-        if (this.isRetryableSpriteError(err) && attempt < SPRITES_MAX_RETRY_ATTEMPTS) {
-          await delay(this.computeRetryDelayMs(attempt));
-          continue;
-        }
-        throw err;
-      }
-    }
-
-    if (lastResponse) return lastResponse;
-    throw lastError instanceof Error ? lastError : new Error(`Failed sprite fs request: ${endpoint}`);
+  async exec(command: string, options?: { timeout?: number; cwd?: string }): Promise<ControlPlaneExecResponse> {
+    return this.execOnSandbox(['bash', '-lc', command], { cwd: options?.cwd });
   }
+
+  // ─── FS Helpers ──────────────────────────────────────────
 
   private parseFsListEntries(payload: unknown): Array<{
     name: string;
@@ -550,385 +382,26 @@ export class WorkspaceContainer {
     });
   }
 
-  private async spriteFileExists(spriteName: string, path: string): Promise<boolean> {
-    const response = await this.fetchSpriteFs(
-      spriteName,
-      'read',
+  private async readSandboxTextFile(path: string): Promise<string | null> {
+    const response = await this.fetchProxy(
+      this.sandboxProxyPath('/fs/read'),
       { method: 'GET' },
-      {
-        path: this.normalizeFsPath(path),
-        workingDir: this.getFsWorkingDir(),
-      }
-    );
-
-    if (response.status === 404) return false;
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Failed checking sprite file ${path}: ${response.status} ${body}`);
-    }
-    return true;
-  }
-
-  private getAssetUrl(assetPath: string): string {
-    const baseUrl = this.env.WORKER_BASE_URL;
-    if (!baseUrl) {
-      throw new Error('WORKER_BASE_URL is required for sprite asset downloads');
-    }
-    return `${baseUrl.replace(/\/$/, '')}${assetPath}`;
-  }
-
-  private async ensureRunnerScripts(spriteName: string): Promise<void> {
-    if (this.runnerScriptBootstrapped) return;
-    console.log(`[Sprite] bootstrap: downloading runner scripts (${SPRITE_ASSETS.runner.hash})`);
-
-    const assetUrl = this.getAssetUrl(SPRITE_ASSETS.runner.path);
-    const installResult = await this.execOnSprite(
-      spriteName,
-      [
-        'bash',
-        '-lc',
-        [
-          'set -euo pipefail',
-          `mkdir -p ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
-          // Use Accept-Encoding: identity to prevent proxy auto-decompression (e.g. ngrok)
-          `curl -fsSL -H "Accept-Encoding: identity" -H "ngrok-skip-browser-warning: 1" ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_RUNNER_HOME_DIR)}`,
-          `chmod +x ${JSON.stringify(DEFAULT_RUNNER_SCRIPT_PATH)}`,
-        ].join('; '),
-      ]
-    );
-
-    if (!installResult.success) {
-      throw new Error(
-        `Failed to download runner scripts: ${installResult.stderr || installResult.stdout || 'unknown error'}`
-      );
-    }
-
-    this.runnerScriptBootstrapped = true;
-  }
-
-  private async ensureRunnerDependencies(spriteName: string): Promise<void> {
-    if (this.runnerDependencyBootstrapped) return;
-
-    const installPrefix = SPRITE_RUNNER_HOME_DIR;
-    const dependencyPackageJsonPath = `${installPrefix}/node_modules/@anthropic-ai/claude-agent-sdk/package.json`;
-
-    // Check installed version — skip install if it matches the pinned version.
-    const installedPkgJson = await this.readSpriteTextFile(spriteName, dependencyPackageJsonPath);
-    if (installedPkgJson) {
-      try {
-        const { version } = JSON.parse(installedPkgJson) as { version?: string };
-        if (version === RUNNER_DEP_VERSION) {
-          console.log(`[Sprite] bootstrap: ${RUNNER_DEP_PACKAGE}@${version} already installed`);
-          this.runnerDependencyBootstrapped = true;
-          return;
-        }
-        console.log(`[Sprite] bootstrap: upgrading ${RUNNER_DEP_PACKAGE} ${version} → ${RUNNER_DEP_VERSION}`);
-      } catch {
-        // Corrupt package.json — reinstall.
-      }
-    } else {
-      console.log(`[Sprite] bootstrap: installing ${RUNNER_DEP_PACKAGE}@${RUNNER_DEP_VERSION}`);
-    }
-
-    const packageJsonWrite = await this.fetchSpriteFs(
-      spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
-        body: JSON.stringify({
-          name: 'chiridion-sprite-runner',
-          private: true,
-          type: 'module',
-        }, null, 2),
-      },
-      {
-        path: `${installPrefix}/package.json`,
-        workingDir: this.getFsWorkingDir(),
-        mkdir: true,
-      }
-    );
-    if (!packageJsonWrite.ok) {
-      const body = await packageJsonWrite.text();
-      throw new Error(`Failed writing /app/package.json: ${packageJsonWrite.status} ${body}`);
-    }
-
-    const installResult = await this.execOnSprite(
-      spriteName,
-      [
-        'bash',
-        '-lc',
-        `cd ${installPrefix} && bun install --no-progress ${RUNNER_DEP_PACKAGE}@${RUNNER_DEP_VERSION}`,
-      ]
-    );
-
-    if (!installResult.success) {
-      throw new Error(
-        `Failed to install ${RUNNER_DEP_PACKAGE}: ${installResult.stderr || installResult.stdout || 'unknown error'}`
-      );
-    }
-
-    const installed = await this.spriteFileExists(spriteName, dependencyPackageJsonPath);
-    if (!installed) {
-      const installOutput = `${installResult.stderr || ''}\n${installResult.stdout || ''}`.trim().slice(0, 2000);
-      throw new Error(
-        `Dependency install completed but ${RUNNER_DEP_PACKAGE} was not found in ${dependencyPackageJsonPath}. ` +
-        `Install output: ${installOutput || '<empty>'}`
-      );
-    }
-
-    this.runnerDependencyBootstrapped = true;
-  }
-
-  private async readSpriteTextFile(spriteName: string, path: string): Promise<string | null> {
-    const response = await this.fetchSpriteFs(
-      spriteName,
-      'read',
-      { method: 'GET' },
-      {
-        path: this.normalizeFsPath(path),
-        workingDir: this.getFsWorkingDir(),
-      }
+      { path: this.normalizeFsPath(path) }
     );
 
     if (response.status === 404) return null;
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Failed reading sprite file ${path}: ${response.status} ${body}`);
+      throw new Error(`Failed reading sandbox file ${path}: ${response.status} ${body}`);
     }
 
     return (await response.text()).trim();
   }
 
-  private async ensureRunnerSkills(spriteName: string): Promise<void> {
-    if (this.runnerSkillsBootstrapped) return;
+  // ─── Sandbox Lifecycle ───────────────────────────────────
 
-    // Remove the default "sprites" skill that ships with the sprite image.
-    // Catches sprites created before clearSpriteUserClaudeDir existed.
-    await this.execOnSprite(spriteName, ['rm', '-rf', '/home/sprite/.claude/skills/sprites']);
-
-    const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_MANAGED_SKILLS_VERSION_PATH);
-
-    // Also verify the skills directory actually has content (not just version marker)
-    const lsResult = await this.execOnSprite(spriteName, ['ls', SPRITE_MANAGED_SKILLS_DIR]);
-    const hasSkillFiles = lsResult.success && lsResult.stdout?.includes('SKILL.md');
-
-    if (installedVersion === SPRITE_ASSETS.skills.hash && hasSkillFiles) {
-      console.log(`[Sprite] bootstrap: skills already at version ${SPRITE_ASSETS.skills.hash}`);
-      this.runnerSkillsBootstrapped = true;
-      return;
-    }
-    console.log(`[Sprite] bootstrap: updating skills (${installedVersion || 'none'} → ${SPRITE_ASSETS.skills.hash})`);
-
-    const assetUrl = this.getAssetUrl(SPRITE_ASSETS.skills.path);
-    // Use Accept-Encoding: identity to prevent proxy auto-decompression (e.g. ngrok)
-    const installResult = await this.execOnSprite(
-      spriteName,
-      [
-        'bash',
-        '-lc',
-        [
-          'set -euo pipefail',
-          `rm -rf ${JSON.stringify(SPRITE_MANAGED_SKILLS_DIR)}`,
-          `mkdir -p ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
-          `curl -fsSL -H "Accept-Encoding: identity" -H "ngrok-skip-browser-warning: 1" ${JSON.stringify(assetUrl)} | tar -xzf - -C ${JSON.stringify(SPRITE_MANAGED_SKILLS_PARENT_DIR)}`,
-        ].join('; '),
-      ]
-    );
-    if (!installResult.success) {
-      throw new Error(
-        `Failed downloading/extracting skills: ${installResult.stderr || installResult.stdout || 'unknown error'}`
-      );
-    }
-
-    const versionWrite = await this.fetchSpriteFs(
-      spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: SPRITE_ASSETS.skills.hash,
-      },
-      {
-        path: SPRITE_MANAGED_SKILLS_VERSION_PATH,
-        workingDir: this.getFsWorkingDir(),
-        mode: '0644',
-        mkdir: true,
-      }
-    );
-    if (!versionWrite.ok) {
-      const body = await versionWrite.text();
-      throw new Error(
-        `Failed writing managed skills version marker at ${SPRITE_MANAGED_SKILLS_VERSION_PATH}: ` +
-        `${versionWrite.status} ${body}`
-      );
-    }
-
-    this.runnerSkillsBootstrapped = true;
-  }
-
-  private async ensureCreateWorker(spriteName: string): Promise<void> {
-    if (this.createWorkerBootstrapped) return;
-
-    const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_CREATE_WORKER_VERSION_PATH);
-    if (installedVersion === SPRITE_ASSETS.createWorker.hash) {
-      console.log(`[Sprite] bootstrap: create-worker already at version ${SPRITE_ASSETS.createWorker.hash}`);
-      this.createWorkerBootstrapped = true;
-      return;
-    }
-    console.log(`[Sprite] bootstrap: updating create-worker (${installedVersion || 'none'} → ${SPRITE_ASSETS.createWorker.hash})`);
-
-    const assetUrl = this.getAssetUrl(SPRITE_ASSETS.createWorker.path);
-    // Use Accept-Encoding: identity to prevent proxy auto-decompression (e.g. ngrok)
-    const installResult = await this.execOnSprite(
-      spriteName,
-      [
-        'bash',
-        '-lc',
-        [
-          'set -euo pipefail',
-          `rm -rf ${JSON.stringify(SPRITE_CREATE_WORKER_DIR)}`,
-          `mkdir -p /usr/local/lib`,
-          `curl -fsSL -H "Accept-Encoding: identity" -H "ngrok-skip-browser-warning: 1" ${JSON.stringify(assetUrl)} | tar -xzf - -C /usr/local/lib`,
-          `chmod +x ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)}`,
-          `ln -sf ${JSON.stringify(`${SPRITE_CREATE_WORKER_DIR}/create-worker.mjs`)} ${JSON.stringify(SPRITE_CREATE_WORKER_BIN)}`,
-        ].join('; '),
-      ]
-    );
-    if (!installResult.success) {
-      throw new Error(
-        `Failed downloading/extracting create-worker: ${installResult.stderr || installResult.stdout || 'unknown error'}`
-      );
-    }
-
-    const versionWrite = await this.fetchSpriteFs(
-      spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: SPRITE_ASSETS.createWorker.hash,
-      },
-      {
-        path: SPRITE_CREATE_WORKER_VERSION_PATH,
-        workingDir: this.getFsWorkingDir(),
-        mode: '0644',
-        mkdir: true,
-      }
-    );
-    if (!versionWrite.ok) {
-      const body = await versionWrite.text();
-      throw new Error(
-        `Failed writing create-worker version marker at ${SPRITE_CREATE_WORKER_VERSION_PATH}: ` +
-        `${versionWrite.status} ${body}`
-      );
-    }
-
-    this.createWorkerBootstrapped = true;
-  }
-
-  /**
-   * Install uv (Python package manager) in the background.
-   * Runs async and doesn't block bootstrap - uses waitUntil for fire-and-forget.
-   */
-  private startUvInstallBackground(spriteName: string): void {
-    if (this.uvInstallStarted) return;
-    this.uvInstallStarted = true;
-
-    const installUv = async () => {
-      // Check if uv is already installed
-      const checkResult = await this.execOnSprite(spriteName, [
-        'bash', '-c', 'command -v uv && uv --version',
-      ]);
-
-      if (checkResult.success && checkResult.stdout.includes('uv')) {
-        console.log(`[Sprite] uv already installed: ${checkResult.stdout.trim().split('\n').pop()}`);
-        return;
-      }
-
-      console.log(`[Sprite] installing uv to /usr/local/bin`);
-      const installResult = await this.execOnSprite(spriteName, [
-        'bash',
-        '-lc',
-        [
-          'set -euo pipefail',
-          // Download and install uv to /usr/local/bin (global PATH)
-          'curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin sh',
-        ].join('; '),
-      ]);
-
-      if (!installResult.success) {
-        console.error(`[Sprite] uv install failed: ${installResult.stderr || installResult.stdout || 'unknown error'}`);
-        return;
-      }
-
-      // Verify installation
-      const verifyResult = await this.execOnSprite(spriteName, ['uv', '--version']);
-      if (verifyResult.success) {
-        console.log(`[Sprite] uv installed successfully: ${verifyResult.stdout.trim()}`);
-      } else {
-        console.error(`[Sprite] uv install verification failed: ${verifyResult.stderr || verifyResult.stdout}`);
-      }
-    };
-
-    waitUntil(
-      installUv().catch((err) => console.error('[Sprite] uv background install error:', err))
-    );
-  }
-
-  /**
-   * Mark all bootstrap steps as done if the caller already knows the sprite
-   * is at the current BOOTSTRAP_VERSION (e.g. from workspace DO storage).
-   */
-  setKnownBootstrapVersion(version: string | null | undefined): void {
-    if (!version) return;
-    // Any persisted version means the sprite was successfully created and bootstrapped at
-    // some point. We can skip the Sprites API lookup on cold start.
-    this.spriteKnownToExist = true;
-    if (version === BOOTSTRAP_VERSION) {
-      this.runnerScriptBootstrapped = true;
-      this.runnerDependencyBootstrapped = true;
-      this.runnerSkillsBootstrapped = true;
-      this.createWorkerBootstrapped = true;
-    }
-  }
-
-  private async ensureRunnerBootstrap(spriteName: string): Promise<void> {
-    if (this.runnerScriptBootstrapped && this.runnerDependencyBootstrapped && this.runnerSkillsBootstrapped && this.createWorkerBootstrapped) {
-      console.log(`[Sprite] bootstrap: all components up to date (v=${BOOTSTRAP_VERSION.slice(0, 40)})`);
-      // Still install uv in background even when main bootstrap is skipped
-      this.startUvInstallBackground(spriteName);
-      return;
-    }
-
-    if (this.runnerBootstrapPromise) {
-      await this.runnerBootstrapPromise;
-      return;
-    }
-
-    console.log(`[Sprite] bootstrap: running full bootstrap (v=${BOOTSTRAP_VERSION.slice(0, 40)})`);
-    this.runnerBootstrapPromise = (async () => {
-      await this.ensureRunnerScripts(spriteName);
-      await this.ensureRunnerDependencies(spriteName);
-      await Promise.all([
-        this.ensureRunnerSkills(spriteName),
-        this.ensureCreateWorker(spriteName),
-      ]);
-    })();
-
-    try {
-      await this.runnerBootstrapPromise;
-    } finally {
-      this.runnerBootstrapPromise = null;
-    }
-
-    // Fire-and-forget: install uv in background (doesn't block bootstrap)
-    this.startUvInstallBackground(spriteName);
-  }
-
-  private getSpriteName(workspaceId = this.workspaceId): string {
-    const prefix = (this.env.SPRITES_NAME_PREFIX || 'chiridion').trim().toLowerCase();
-    const raw = `${prefix}-${getContainerIdForWorkspace(workspaceId)}`;
+  private getSandboxName(workspaceId = this.workspaceId): string {
+    const raw = `chiridion-${getContainerIdForWorkspace(workspaceId)}`;
     const normalized = raw
       .toLowerCase()
       .replace(/[^a-z0-9-]/g, '-')
@@ -937,89 +410,89 @@ export class WorkspaceContainer {
     return (normalized || `chiridion-${Date.now()}`).slice(0, 63);
   }
 
-  /**
-   * Return the deterministic sprite name for the current workspace.
-   * Unlike ensureSprite(), this makes no API calls — it computes the name
-   * from the workspaceId alone. Safe for all FS/exec operations since the
-   * sprite is guaranteed to exist (provisioned at workspace creation, with
-   * bootstrap handled by WorkspaceDO).
-   */
-  private requireSpriteName(): string {
-    return this.getSpriteName(this.workspaceId);
-  }
-
-  private buildSpritesHeaders(extra: HeadersInit = {}): Headers {
-    const headers = new Headers(extra);
-    headers.set('Authorization', `Bearer ${this.requireSpritesToken()}`);
-    return headers;
-  }
-
-  private async fetchSprite(path: string, init: RequestInit = {}): Promise<Response> {
-    const url = `${this.spritesApiBaseUrl}${path.startsWith('/') ? path : `/${path}`}`;
-    const headers = this.buildSpritesHeaders(init.headers);
-    return fetch(url, { ...init, headers });
-  }
-
-  async provisionSpriteForWorkspace(workspaceId = this.workspaceId): Promise<SpriteRecord> {
-    this.workspaceId = workspaceId;
-    const name = this.getSpriteName(workspaceId);
-    console.log(`[Sprite] provisioning sprite=${name} workspace=${workspaceId}`);
-    const { sprite, created } = await this.createAndFetchSpriteRecord(name);
-    if (created) {
-      console.log(`[Sprite] created new sprite=${name}, clearing .claude dir`);
-      await this.clearSpriteUserClaudeDir(sprite.name);
-    } else {
-      console.log(`[Sprite] sprite=${name} already exists (status=${sprite.status})`);
-    }
-    this.sprite = sprite;
-    return sprite;
-  }
-
-  private async ensureSprite(): Promise<SpriteRecord> {
-    if (this.sprite) return this.sprite;
-
-    const name = this.getSpriteName(this.workspaceId);
-
-    // If a bootstrap version was ever persisted, the sprite must exist —
-    // skip the API lookup and construct the record from the deterministic name.
-    if (this.spriteKnownToExist) {
-      console.log(`[Sprite] ensureSprite: sprite known to exist, skipping API lookup for sprite=${name}`);
-      this.sprite = { id: name, name, url: '', status: 'warm' };
-      return this.sprite;
+  private async ensureSandboxExists(name: string): Promise<SandboxRecord> {
+    if (this.sandboxKnownToExist && this.sandbox) {
+      return this.sandbox;
     }
 
-    console.log(`[Sprite] ensureSprite: looking up sprite=${name}`);
-    const existing = await this.getSpriteWithRetry(this.getSpritesClient(), name, {
-      allowNotFound: true,
-      attempts: SPRITES_MAX_RETRY_ATTEMPTS,
+    // Create or reconnect via the proxy (idempotent POST)
+    const response = await this.fetchProxy(`/v1/sandboxes/${encodeURIComponent(name)}`, {
+      method: 'POST',
     });
 
-    let sprite: SpriteRecord;
-    if (existing) {
-      sprite = this.toSpriteRecord(existing);
-      console.log(`[Sprite] ensureSprite: found existing sprite=${name} status=${sprite.status}`);
-    } else {
-      console.log(`[Sprite] ensureSprite: sprite=${name} not found, creating (drift repair)`);
-      const created = await this.createAndFetchSpriteRecord(name);
-      sprite = created.sprite;
-      if (created.created) {
-        await this.clearSpriteUserClaudeDir(sprite.name);
-      }
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Failed to ensure sandbox ${name}: ${response.status} ${body}`);
     }
 
-    this.sprite = sprite;
-    return sprite;
+    const data = await response.json() as {
+      id: string;
+      name: string;
+      status: string;
+    };
+    this.sandbox = {
+      id: data.id,
+      name: data.name,
+      status: data.status || 'warm',
+    };
+    this.sandboxKnownToExist = true;
+    return this.sandbox;
+  }
+
+  private async ensureSandbox(): Promise<SandboxRecord> {
+    if (this.sandbox) return this.sandbox;
+    const name = this.getSandboxName(this.workspaceId);
+    return this.ensureSandboxExists(name);
+  }
+
+  private async clearSandboxUserClaudeDir(): Promise<void> {
+    const response = await this.fetchProxy(this.sandboxProxyPath('/fs/delete'), {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/home/claude/.claude', recursive: true }),
+    });
+
+    if (!response.ok && response.status !== 404) {
+      const body = await response.text();
+      throw new Error(`Failed clearing /home/claude/.claude: ${response.status} ${body}`);
+    }
+  }
+
+  async provisionSpriteForWorkspace(workspaceId = this.workspaceId): Promise<SandboxRecord> {
+    this.workspaceId = workspaceId;
+    const name = this.getSandboxName(workspaceId);
+    console.log(`[Sandbox] provisioning sandbox=${name} workspace=${workspaceId}`);
+    const sandbox = await this.ensureSandboxExists(name);
+    await this.clearSandboxUserClaudeDir();
+    console.log(`[Sandbox] sandbox=${name} ready (status=${sandbox.status})`);
+    return sandbox;
   }
 
   /**
-   * Ensure the sprite exists and is fully bootstrapped (runner script,
-   * dependencies, skills, create-worker). Called by WorkspaceDO.ensureSpriteReady()
-   * which owns the persistent bootstrap version tracking.
+   * Ensure the sandbox exists and is ready.
+   * Everything (SDK, skills, create-worker) is baked into the sandbox image,
+   * so this just needs to create/reconnect the sandbox via the proxy.
    */
   async ensureSpriteBootstrapped(workspaceId: string): Promise<void> {
     this.workspaceId = workspaceId;
-    const sprite = await this.ensureSprite();
-    await this.ensureRunnerBootstrap(sprite.name);
+    await this.ensureSandbox();
+  }
+
+  // ─── Env Vars ────────────────────────────────────────────
+
+  /**
+   * Push workspace-level env vars to the control plane via the proxy.
+   */
+  private async pushEnvToControlPlane(envVars: Record<string, string>): Promise<void> {
+    const response = await this.fetchProxy(this.sandboxProxyPath('/env'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(envVars),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Failed to push env to control plane: ${response.status} ${body}`);
+    }
   }
 
   async buildEnvVars(workspaceId: string, orgId: string): Promise<Record<string, string>> {
@@ -1102,7 +575,7 @@ export class WorkspaceContainer {
     const workerBaseUrl = this.env.WORKER_BASE_URL;
     if (this.isLocalOnlyWorkerBaseUrl(workerBaseUrl)) {
       throw new Error(
-        `WORKER_BASE_URL must be publicly reachable from sprites (got ${workerBaseUrl}). ` +
+        `WORKER_BASE_URL must be publicly reachable from sandboxes (got ${workerBaseUrl}). ` +
         'Use an ngrok URL for local development.'
       );
     }
@@ -1185,260 +658,18 @@ export class WorkspaceContainer {
     return envVars;
   }
 
-  /**
-   * Create or update an R2 mount as a sprite service.
-   * Uses sprite-env services for proper process supervision and auto-restart.
-   * Tracks service version to detect when config changes require recreation.
-   */
-  private async ensureR2MountServiceInstance(
-    spriteName: string,
-    serviceName: string,
-    bucketPath: string,
-    mountPoint: string,
-    readOnly: boolean,
-    rcloneConfigPath: string
-  ): Promise<void> {
-    const versionMarkerPath = `${SPRITE_RUNNER_HOME_DIR}/.${serviceName}.version`;
-
-    // Check installed version to detect config changes
-    const installedVersion = await this.readSpriteTextFile(spriteName, versionMarkerPath);
-    const needsUpgrade = installedVersion !== R2_MOUNT_SERVICE_VERSION;
-
-    // Check if service already exists and is running
-    const listResult = await this.execOnSprite(spriteName, [
-      'sprite-env', 'services', 'get', serviceName,
-    ]);
-
-    if (listResult.success && listResult.stdout.includes('"status":"running"')) {
-      if (needsUpgrade) {
-        // Version changed - delete and recreate with new config
-        console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} needs upgrade (${installedVersion} -> ${R2_MOUNT_SERVICE_VERSION})`);
-        await this.execOnSprite(spriteName, ['sprite-env', 'services', 'delete', serviceName]);
-      } else {
-        // Service running with correct version - check if mount is actually healthy
-        const mountCheck = await this.execOnSprite(spriteName, [
-          'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
-        ]);
-        if (mountCheck.success && mountCheck.stdout.trim() === 'ok') {
-          console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} already running and healthy (v${R2_MOUNT_SERVICE_VERSION})`);
-          return;
-        }
-        // Mount is stale - restart the service
-        console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} running but mount stale, restarting`);
-        await this.execOnSprite(spriteName, ['sprite-env', 'services', 'restart', serviceName]);
-        await delay(500);
-        return;
-      }
-    } else if (listResult.success && listResult.stdout.includes('"name"')) {
-      // Service exists but not running - delete and recreate
-      console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} exists but not running, recreating`);
-      await this.execOnSprite(spriteName, ['sprite-env', 'services', 'delete', serviceName]);
-    }
-
-    // Ensure mount point exists with correct ownership
-    await this.execOnSprite(spriteName, [
-      'bash', '-c', `sudo mkdir -p ${mountPoint} && sudo chown sprite:sprite ${mountPoint}`,
-    ]);
-
-    // Build rclone mount command args (comma-separated for sprite-env)
-    // Uses sudo for FUSE access permissions
-    const rcloneArgs = [
-      'rclone',
-      'mount',
-      bucketPath,
-      mountPoint,
-      `--config=${rcloneConfigPath}`,
-      '--allow-other',
-      '--uid=1001',
-      '--gid=1001',
-      '--dir-cache-time=1s',
-    ];
-
-    if (readOnly) {
-      rcloneArgs.push('--read-only', '--vfs-cache-mode=minimal');
-    } else {
-      rcloneArgs.push('--vfs-cache-mode=writes', '--vfs-write-back=0');
-    }
-
-    // Create the service using sprite-env (sudo for FUSE access)
-    console.log(`[Sprite] ensureR2MountServiceInstance: creating service ${serviceName} for ${bucketPath} -> ${mountPoint}`);
-    const createResult = await this.execOnSprite(spriteName, [
-      'sprite-env', 'services', 'create', serviceName,
-      '--cmd', 'sudo',
-      '--args', rcloneArgs.join(','),
-      '--no-stream',
-    ]);
-
-    if (!createResult.success) {
-      throw new Error(
-        `Failed to create ${serviceName} service: ${createResult.stderr || createResult.stdout || 'unknown error'}`
-      );
-    }
-
-    // Verify mount is working
-    await delay(500);
-    const verifyResult = await this.execOnSprite(spriteName, [
-      'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
-    ]);
-    if (!verifyResult.success || verifyResult.stdout.trim() !== 'ok') {
-      console.warn(`[Sprite] ensureR2MountServiceInstance: ${serviceName} created but mount not yet accessible`);
-    } else {
-      console.log(`[Sprite] ensureR2MountServiceInstance: ${serviceName} ready at ${mountPoint} (v${R2_MOUNT_SERVICE_VERSION})`);
-    }
-
-    // Write version marker for future upgrade detection
-    await this.fetchSpriteFs(
-      spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: R2_MOUNT_SERVICE_VERSION,
-      },
-      {
-        path: versionMarkerPath,
-        workingDir: this.getFsWorkingDir(),
-        mode: '0644',
-        mkdir: true,
-      }
-    );
-  }
-
-  /**
-   * Ensure rclone and fuse are installed on the sprite.
-   */
-  private async ensureRcloneInstalled(spriteName: string): Promise<void> {
-    const checkResult = await this.execOnSprite(spriteName, [
-      'bash', '-c', 'command -v rclone && grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null && echo ok',
-    ]);
-
-    if (checkResult.success && checkResult.stdout.trim().endsWith('ok')) {
-      return; // Already installed and configured
-    }
-
-    console.log(`[Sprite] ensureRcloneInstalled: installing rclone + fuse for sprite=${spriteName}`);
-    const installResult = await this.execOnSprite(spriteName, [
-      'bash', '-c', [
-        'sudo apt-get update -qq',
-        'sudo apt-get install -y -qq rclone fuse 2>/dev/null || true',
-        'grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null || echo "user_allow_other" | sudo tee -a /etc/fuse.conf > /dev/null',
-      ].join(' && '),
-    ]);
-
-    if (!installResult.success) {
-      throw new Error(
-        `Failed to install rclone: ${installResult.stderr || installResult.stdout || 'unknown error'}`
-      );
-    }
-  }
-
-  /**
-   * Write rclone configuration file for R2 access.
-   */
-  private async writeRcloneConfig(
-    spriteName: string,
-    configPath: string,
-    accountId: string,
-    accessKeyId: string,
-    secretAccessKey: string,
-    sessionToken: string
-  ): Promise<void> {
-    const rcloneConfig = [
-      '[r2]',
-      'type = s3',
-      'provider = Cloudflare',
-      `access_key_id = ${accessKeyId}`,
-      `secret_access_key = ${secretAccessKey}`,
-      `session_token = ${sessionToken}`,
-      `endpoint = https://${accountId}.r2.cloudflarestorage.com`,
-    ].join('\n');
-
-    const configWrite = await this.fetchSpriteFs(
-      spriteName,
-      'write',
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: rcloneConfig,
-      },
-      {
-        path: configPath,
-        workingDir: this.getFsWorkingDir(),
-        mode: '0600',
-        mkdir: true,
-      }
-    );
-
-    if (!configWrite.ok) {
-      const body = await configWrite.text();
-      throw new Error(`Failed writing rclone.conf: ${configWrite.status} ${body}`);
-    }
-  }
-
-  private async ensureR2MountService(): Promise<void> {
-    if (this.r2MountServiceCreated) return;
-    if (!this.envVars) return;
-
-    const accessKeyId = this.envVars.AWS_ACCESS_KEY_ID;
-    const secretAccessKey = this.envVars.AWS_SECRET_ACCESS_KEY;
-    const sessionToken = this.envVars.AWS_SESSION_TOKEN;
-    const accountId = this.env.R2_ACCOUNT_ID;
-    const bucketName = this.env.R2_BUCKET_NAME;
-    // Always use {orgId}/{workspaceId}/ to match the upload API's buildUploadKey(),
-    // which always includes both — unlike R2_PREFIX which collapses to {orgId}/ for legacy workspaces.
-    const mountPrefix = this.orgId && this.workspaceId
-      ? `${this.orgId}/${this.workspaceId}/`
-      : null;
-
-    if (!accessKeyId || !secretAccessKey || !sessionToken || !accountId || !bucketName || !mountPrefix) {
-      console.log('[Sprite] ensureR2MountService: missing R2 credentials, skipping mount service');
-      return;
-    }
-
-    const spriteName = this.requireSpriteName();
-    console.log(`[Sprite] ensureR2MountService: setting up rclone mounts for sprite=${spriteName}`);
-
-    // Ensure rclone is installed
-    await this.ensureRcloneInstalled(spriteName);
-
-    // Write rclone config file (credentials need to be in a file for sprite-env services)
-    const rcloneConfigPath = `${SPRITE_RUNNER_HOME_DIR}/rclone.conf`;
-    await this.writeRcloneConfig(spriteName, rcloneConfigPath, accountId, accessKeyId, secretAccessKey, sessionToken);
-
-    // Create mount services in parallel
-    await Promise.all([
-      this.ensureR2MountServiceInstance(
-        spriteName,
-        'r2-uploads',
-        `r2:${bucketName}/${mountPrefix}user-uploads`,
-        '/mnt/user-uploads',
-        true, // read-only
-        rcloneConfigPath
-      ),
-      this.ensureR2MountServiceInstance(
-        spriteName,
-        'r2-outputs',
-        `r2:${bucketName}/${mountPrefix}user-outputs`,
-        '/mnt/user-outputs',
-        false, // read-write
-        rcloneConfigPath
-      ),
-    ]);
-
-    this.r2MountServiceCreated = true;
-    console.log(`[Sprite] ensureR2MountService: rclone mount services ready for sprite=${spriteName}`);
-  }
-
   async startForWorkspace(workspaceId: string, orgId: string): Promise<void> {
     this.workspaceId = workspaceId;
     this.orgId = orgId;
 
     if (this.envVars && Object.keys(this.envVars).length > 0) return;
 
-    console.log(`[Sprite] startForWorkspace: building env vars workspace=${workspaceId} org=${orgId}`);
+    console.log(`[Sandbox] startForWorkspace: building env vars workspace=${workspaceId} org=${orgId}`);
     this.envVars = await this.buildEnvVars(workspaceId, orgId);
 
-    // Fire-and-forget: set up R2 FUSE mounts in background
+    // Push workspace env to control plane
+    await this.pushEnvToControlPlane(this.envVars);
+
     waitUntil(
       this.ensureR2MountService().catch((err) =>
         console.error('[WorkspaceContainer] R2 mount service setup failed:', err)
@@ -1456,50 +687,20 @@ export class WorkspaceContainer {
   }
 
   /**
-   * Write integration env vars to a dotenv file on the sprite.
-   * The Claude SDK reads CLAUDE_ENV_FILE each turn, so updates
-   * written here take effect on the next agent turn.
+   * Build thread-specific env vars (delta from workspace env).
+   * Passed to the control plane chat WebSocket init message.
    */
-  private async writeIntegrationEnvFileToSprite(envVars: Record<string, string>): Promise<boolean> {
-    try {
-      const lines: string[] = [];
-      for (const [key, value] of Object.entries(envVars)) {
-        // Escape backslashes, double quotes, and newlines for dotenv format
-        const escaped = value
-          .replace(/\\/g, '\\\\')
-          .replace(/"/g, '\\"')
-          .replace(/\n/g, '\\n');
-        lines.push(`${key}="${escaped}"`);
-      }
-      const content = lines.join('\n') + '\n';
-      const result = await this.writeFile(INTEGRATION_ENV_FILE_PATH, content);
-      if (!result.success) {
-        console.error(`[Sprite] writeIntegrationEnvFileToSprite: write failed: ${result.error}`);
-        return false;
-      }
-      console.log(`[Sprite] writeIntegrationEnvFileToSprite: wrote ${lines.length} vars to ${INTEGRATION_ENV_FILE_PATH}`);
-      return true;
-    } catch (err) {
-      console.error('[Sprite] writeIntegrationEnvFileToSprite: error:', err);
-      return false;
-    }
-  }
-
   async buildClaudeRunnerEnv(options: ClaudeRunnerEnvOptions): Promise<Record<string, string>> {
     if (!this.workspaceId || !this.orgId) {
       throw new Error('WorkspaceContainer not initialized. Call startForWorkspace first.');
     }
 
-    console.log(`[Sprite] buildClaudeRunnerEnv: thread=${options.threadId}`);
-    const baseEnv = this.envVars || (await this.buildEnvVars(this.workspaceId, this.orgId));
+    console.log(`[Sandbox] buildClaudeRunnerEnv: thread=${options.threadId}`);
     const integrationEnv = await this.fetchIntegrationEnvVars(this.workspaceId);
 
-    // Write integration env vars to a file on the sprite so the SDK can
-    // re-read them each turn via CLAUDE_ENV_FILE.
-    await this.writeIntegrationEnvFileToSprite(integrationEnv);
+    await this.writeIntegrationEnvFileToSandbox(integrationEnv);
 
     const env: Record<string, string> = {
-      ...baseEnv,
       ...integrationEnv,
       CHIRIDION_THREAD_ID: options.threadId,
       DEBUG_CLAUDE_AGENT_SDK: '1',
@@ -1512,176 +713,309 @@ export class WorkspaceContainer {
     return env;
   }
 
-  async connectExecWebSocket(params: ExecWebSocketParams): Promise<WebSocket> {
-    return this.connectExecWebSocketForSprite(this.requireSpriteName(), params);
-  }
+  // ─── Chat WebSocket ──────────────────────────────────────
 
-  private async connectExecWebSocketForSprite(spriteName: string, params: ExecWebSocketParams): Promise<WebSocket> {
-    const hasCmd = Array.isArray(params.cmd) && params.cmd.length > 0;
-    const hasSessionId = typeof params.sessionId === 'string' && params.sessionId.length > 0;
+  /**
+   * Open a WebSocket to the control plane's /chat endpoint via the proxy.
+   * ChatThreadDO uses this to bridge chat clients to the Claude Agent SDK
+   * running in-process inside the sandbox.
+   */
+  async connectChatWebSocket(): Promise<WebSocket> {
+    await this.ensureSandbox();
 
-    if (!hasCmd && !hasSessionId) {
-      throw new Error('connectExecWebSocket requires cmd[] or sessionId');
-    }
+    const wsUrl = `${this.proxyBaseUrl}${this.sandboxProxyPath('/chat')}`;
+    console.log(`[Sandbox] connectChatWebSocket: connecting via proxy`);
 
-    console.log(`[Sprite] connectExecWebSocket: sprite=${spriteName} cmd=${hasCmd ? params.cmd!.join(' ') : 'none'} sessionId=${params.sessionId || 'none'} envCount=${params.env ? Object.keys(params.env).length : 0}`);
-
-    const url = new URL(`${this.spritesApiBaseUrl}/v1/sprites/${encodeURIComponent(spriteName)}/exec`);
-
-    if (hasCmd) {
-      for (const arg of params.cmd!) {
-        url.searchParams.append('cmd', arg);
-      }
-      url.searchParams.set('path', params.path || params.cmd![0]);
-    }
-    if (hasSessionId) url.searchParams.set('id', params.sessionId!);
-    if (params.tty) url.searchParams.set('tty', 'true');
-    if (params.stdin !== false) url.searchParams.set('stdin', 'true');
-    if (typeof params.cols === 'number') url.searchParams.set('cols', `${params.cols}`);
-    if (typeof params.rows === 'number') url.searchParams.set('rows', `${params.rows}`);
-    if (params.maxRunAfterDisconnect) {
-      url.searchParams.set('max_run_after_disconnect', params.maxRunAfterDisconnect);
-    }
-
-    if (params.env) {
-      for (const [key, value] of Object.entries(params.env)) {
-        url.searchParams.append('env', `${key}=${value}`);
-      }
-    }
-
-    const urlString = url.toString();
-    console.log(`[Sprite] connectExecWebSocket: URL length=${urlString.length}`);
-
-    const response = await fetch(urlString, {
+    const response = await fetch(wsUrl, {
       headers: {
-        Authorization: `Bearer ${this.requireSpritesToken()}`,
         Upgrade: 'websocket',
-        Connection: 'Upgrade',
+        Authorization: `Bearer ${this.requireProxyToken()}`,
       },
     });
 
     if (response.status !== 101 || !response.webSocket) {
       const body = await response.text();
-      console.error(`[Sprite] connectExecWebSocket: upgrade failed status=${response.status} body=${body.slice(0, 500)}`);
-      throw new Error(`Failed to open exec websocket: ${response.status} ${body}`);
+      console.error(`[Sandbox] connectChatWebSocket: upgrade failed status=${response.status} body=${body.slice(0, 500)}`);
+      throw new Error(`Failed to open chat websocket: ${response.status} ${body}`);
     }
 
-    console.log(`[Sprite] connectExecWebSocket: websocket opened for sprite=${spriteName}`);
+    console.log(`[Sandbox] connectChatWebSocket: websocket opened`);
     return response.webSocket;
   }
 
-  async fetch(_request: Request): Promise<Response> {
-    return new Response('Chat websocket proxy moved to ChatThreadDO sprite exec bridge', { status: 410 });
+  // ─── R2 Mount ────────────────────────────────────────────
+
+  private async ensureR2MountServiceInstance(
+    serviceName: string,
+    bucketPath: string,
+    mountPoint: string,
+    readOnly: boolean,
+    rcloneConfigPath: string
+  ): Promise<void> {
+    const versionMarkerPath = `${SANDBOX_HOME_DIR}/.${serviceName}.version`;
+
+    const installedVersion = await this.readSandboxTextFile(versionMarkerPath);
+    const needsUpgrade = installedVersion !== R2_MOUNT_SERVICE_VERSION;
+
+    // Check if mount is accessible
+    const mountCheck = await this.execOnSandbox([
+      'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
+    ]);
+    if (mountCheck.success && mountCheck.stdout.trim() === 'ok' && !needsUpgrade) {
+      console.log(`[Sandbox] ensureR2MountServiceInstance: ${serviceName} already mounted and healthy (v${R2_MOUNT_SERVICE_VERSION})`);
+      return;
+    }
+
+    // Unmount any stale mount
+    await this.execOnSandbox([
+      'bash', '-c', `fusermount -uz ${mountPoint} 2>/dev/null || true`,
+    ]);
+
+    // Ensure mount point exists
+    await this.execOnSandbox([
+      'bash', '-c', `mkdir -p ${mountPoint}`,
+    ]);
+
+    // Build rclone mount command (no sudo — gVisor doesn't support setuid;
+    // container has CAP_SYS_ADMIN and /dev/fuse for FUSE access)
+    const rcloneArgs = [
+      'rclone', 'mount', '--daemon',
+      bucketPath, mountPoint,
+      `--config=${rcloneConfigPath}`,
+      '--allow-other',
+      '--uid=1001',
+      '--gid=1001',
+      '--dir-cache-time=1s',
+    ];
+
+    if (readOnly) {
+      rcloneArgs.push('--read-only', '--vfs-cache-mode=minimal');
+    } else {
+      rcloneArgs.push('--vfs-cache-mode=writes', '--vfs-write-back=0');
+    }
+
+    console.log(`[Sandbox] ensureR2MountServiceInstance: mounting ${serviceName}: ${bucketPath} -> ${mountPoint}`);
+    const mountResult = await this.execOnSandbox(rcloneArgs);
+
+    if (!mountResult.success) {
+      throw new Error(
+        `Failed to mount ${serviceName}: ${mountResult.stderr || mountResult.stdout || 'unknown error'}`
+      );
+    }
+
+    // Verify mount
+    await delay(500);
+    const verifyResult = await this.execOnSandbox([
+      'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
+    ]);
+    if (!verifyResult.success || verifyResult.stdout.trim() !== 'ok') {
+      console.warn(`[Sandbox] ensureR2MountServiceInstance: ${serviceName} mounted but not yet accessible`);
+    } else {
+      console.log(`[Sandbox] ensureR2MountServiceInstance: ${serviceName} ready at ${mountPoint} (v${R2_MOUNT_SERVICE_VERSION})`);
+    }
+
+    // Write version marker
+    await this.fetchProxy(
+      this.sandboxProxyPath('/fs/write'),
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: R2_MOUNT_SERVICE_VERSION,
+      },
+      { path: versionMarkerPath }
+    );
   }
 
-  async healthCheck(): Promise<ControlPlaneHealthResponse> {
-    const sprite = await this.ensureSprite();
-    return { status: sprite.status || 'unknown' };
+  private async writeRcloneConfig(
+    configPath: string,
+    accountId: string,
+    accessKeyId: string,
+    secretAccessKey: string,
+    sessionToken: string
+  ): Promise<void> {
+    const rcloneConfig = [
+      '[r2]',
+      'type = s3',
+      'provider = Cloudflare',
+      `access_key_id = ${accessKeyId}`,
+      `secret_access_key = ${secretAccessKey}`,
+      `session_token = ${sessionToken}`,
+      `endpoint = https://${accountId}.r2.cloudflarestorage.com`,
+    ].join('\n');
+
+    const configWrite = await this.fetchProxy(
+      this.sandboxProxyPath('/fs/write'),
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: rcloneConfig,
+      },
+      { path: configPath }
+    );
+
+    if (!configWrite.ok) {
+      const body = await configWrite.text();
+      throw new Error(`Failed writing rclone.conf: ${configWrite.status} ${body}`);
+    }
   }
+
+  private async ensureR2MountService(): Promise<void> {
+    if (this.r2MountServiceCreated) return;
+    if (!this.envVars) return;
+
+    const accessKeyId = this.envVars.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = this.envVars.AWS_SECRET_ACCESS_KEY;
+    const sessionToken = this.envVars.AWS_SESSION_TOKEN;
+    const accountId = this.env.R2_ACCOUNT_ID;
+    const bucketName = this.env.R2_BUCKET_NAME;
+    const mountPrefix = this.orgId && this.workspaceId
+      ? `${this.orgId}/${this.workspaceId}/`
+      : null;
+
+    if (!accessKeyId || !secretAccessKey || !sessionToken || !accountId || !bucketName || !mountPrefix) {
+      console.log('[Sandbox] ensureR2MountService: missing R2 credentials, skipping mount service');
+      return;
+    }
+
+    const sandboxName = this.sandbox?.name || 'unknown';
+    console.log(`[Sandbox] ensureR2MountService: setting up rclone mounts for sandbox=${sandboxName}`);
+
+    // rclone and fuse are baked into the sandbox image — no install needed.
+    const rcloneConfigPath = `${SANDBOX_HOME_DIR}/rclone.conf`;
+    await this.writeRcloneConfig(rcloneConfigPath, accountId, accessKeyId, secretAccessKey, sessionToken);
+
+    await Promise.all([
+      this.ensureR2MountServiceInstance(
+        'r2-uploads',
+        `r2:${bucketName}/${mountPrefix}user-uploads`,
+        '/mnt/user-uploads',
+        true,
+        rcloneConfigPath
+      ),
+      this.ensureR2MountServiceInstance(
+        'r2-outputs',
+        `r2:${bucketName}/${mountPrefix}user-outputs`,
+        '/mnt/user-outputs',
+        false,
+        rcloneConfigPath
+      ),
+    ]);
+
+    this.r2MountServiceCreated = true;
+    console.log(`[Sandbox] ensureR2MountService: rclone mount services ready for sandbox=${sandboxName}`);
+  }
+
+  // ─── Integration Env Vars ────────────────────────────────
 
   /**
-   * Execute a command on a sprite using HTTP POST.
-   * Note: The official SDK uses WebSocket which isn't compatible with CF Workers,
-   * so we use direct HTTP POST to the exec endpoint.
+   * Write integration env vars to a dotenv file on the sandbox.
    */
-  private async execOnSprite(
-    spriteName: string,
-    args: string[],
-    options: {
-      cwd?: string;
-      env?: Record<string, string>;
-    } = {}
-  ): Promise<ControlPlaneExecResponse> {
-    if (args.length === 0) {
-      return { success: false, stdout: '', stderr: 'No command provided', exitCode: 1 };
-    }
-
-    const url = new URL(`${this.spritesApiBaseUrl}/v1/sprites/${encodeURIComponent(spriteName)}/exec`);
-
-    for (const arg of args) {
-      url.searchParams.append('cmd', arg);
-    }
-
-    if (options.cwd) {
-      url.searchParams.set('dir', options.cwd);
-    }
-
-    if (options.env && Object.keys(options.env).length > 0) {
-      for (const [key, value] of Object.entries(options.env)) {
-        url.searchParams.append('env', `${key}=${value}`);
+  private async writeIntegrationEnvFileToSandbox(envVars: Record<string, string>): Promise<boolean> {
+    try {
+      const lines: string[] = [];
+      for (const [key, value] of Object.entries(envVars)) {
+        const escaped = value
+          .replace(/\\/g, '\\\\')
+          .replace(/"/g, '\\"')
+          .replace(/\n/g, '\\n');
+        lines.push(`${key}="${escaped}"`);
       }
+      const content = lines.join('\n') + '\n';
+      const result = await this.writeFile(INTEGRATION_ENV_FILE_PATH, content);
+      if (!result.success) {
+        console.error(`[Sandbox] writeIntegrationEnvFileToSandbox: write failed: ${result.error}`);
+        return false;
+      }
+      console.log(`[Sandbox] writeIntegrationEnvFileToSandbox: wrote ${lines.length} vars to ${INTEGRATION_ENV_FILE_PATH}`);
+      return true;
+    } catch (err) {
+      console.error('[Sandbox] writeIntegrationEnvFileToSandbox: error:', err);
+      return false;
+    }
+  }
+
+  async fetchIntegrationEnvVars(workspaceId: string): Promise<Record<string, string>> {
+    const integrationEnvVars: Record<string, string> = {};
+    const startedAt = Date.now();
+    let integrationCount = 0;
+    let getIntegrationsMs = 0;
+    let decryptAndMapMs = 0;
+    let dataProxyMs = 0;
+    try {
+      const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
+      const getIntegrationsStartedAt = Date.now();
+      const records = await workspaceStub.getIntegrations();
+      getIntegrationsMs = Date.now() - getIntegrationsStartedAt;
+      integrationCount = records.length;
+
+      const decryptStartedAt = Date.now();
+      for (const record of records) {
+        const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
+        const config = JSON.parse(record.config) as Record<string, unknown>;
+        Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
+      }
+      decryptAndMapMs = Date.now() - decryptStartedAt;
+
+      const dataProxyStartedAt = Date.now();
+      const dataProxyResult = await workspaceStub.generateDataProxyToken();
+      dataProxyMs = Date.now() - dataProxyStartedAt;
+      if (dataProxyResult) {
+        integrationEnvVars.DATA_PROXY_TOKEN = dataProxyResult.token;
+        this.dataProxyTokenExpiry = dataProxyResult.expiresAt;
+      }
+      console.log(
+        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} dataProxyMs=${dataProxyMs} totalMs=${Date.now() - startedAt}`
+      );
+    } catch (e) {
+      console.error('[WorkspaceContainer] Failed to fetch integration env vars:', e);
+      console.log(
+        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} failed=true integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} dataProxyMs=${dataProxyMs} totalMs=${Date.now() - startedAt}`
+      );
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: this.buildSpritesHeaders(),
-    });
+    return integrationEnvVars;
+  }
 
-    const body = await response.text();
+  async pushIntegrationEnvVars(envVars: Record<string, string>): Promise<boolean> {
+    return this.writeIntegrationEnvFileToSandbox(envVars);
+  }
 
+  async refreshIntegrationEnvVars(workspaceId: string): Promise<boolean> {
+    const envVars = await this.fetchIntegrationEnvVars(workspaceId);
+    return this.pushIntegrationEnvVars(envVars);
+  }
+
+  // ─── Public FS API ───────────────────────────────────────
+
+  async healthCheck(): Promise<{ status: string }> {
+    const response = await this.fetchProxy(this.sandboxProxyPath('/health'), { method: 'GET' });
     if (!response.ok) {
-      return {
-        success: false,
-        stdout: '',
-        stderr: body,
-        exitCode: response.status,
-      };
+      return { status: 'error' };
     }
-
-    return {
-      success: true,
-      stdout: body,
-      stderr: '',
-      exitCode: 0,
-    };
-  }
-
-  private async execHttpRaw(
-    args: string[],
-    options: {
-      cwd?: string;
-      env?: Record<string, string>;
-    } = {}
-  ): Promise<ControlPlaneExecResponse> {
-    return this.execOnSprite(this.requireSpriteName(), args, options);
-  }
-
-  async exec(command: string, options?: { timeout?: number; cwd?: string }): Promise<ControlPlaneExecResponse> {
-    const _timeout = options?.timeout;
-    return this.execHttpRaw(['bash', '-lc', command], { cwd: options?.cwd });
+    return await response.json() as { status: string };
   }
 
   async exists(path: string): Promise<ControlPlaneExistsResponse> {
     const normalizedPath = this.normalizeFsPath(path);
-    if (normalizedPath === '/') {
-      return { exists: true, isDirectory: true, isFile: false, size: 0, modifiedAt: toIsoTime(Date.now()) };
-    }
+    const response = await this.fetchProxy(
+      this.sandboxProxyPath('/fs/exists'),
+      { method: 'GET' },
+      { path: normalizedPath }
+    );
 
-    const dir = this.dirnameFsPath(normalizedPath);
-    const base = this.basenameFsPath(normalizedPath);
-    const listResult = await this.listFiles(dir, { recursive: false, includeHidden: true });
-    const match = listResult.files.find((entry) => entry.name === base);
-    if (!match) {
+    if (!response.ok) {
       return { exists: false };
     }
 
-    return {
-      exists: true,
-      isFile: match.type === 'file',
-      isDirectory: match.type === 'directory',
-      size: match.size,
-      modifiedAt: match.modifiedAt,
-    };
+    return await response.json() as ControlPlaneExistsResponse;
   }
 
   async readFile(path: string): Promise<ControlPlaneReadResponse> {
-    const spriteName = this.requireSpriteName();
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.fetchSpriteFs(
-      spriteName,
-      'read',
+    const response = await this.fetchProxy(
+      this.sandboxProxyPath('/fs/read'),
       { method: 'GET' },
-      { path: normalizedPath, workingDir: this.getFsWorkingDir() }
+      { path: normalizedPath }
     );
 
     if (response.status === 404) {
@@ -1709,21 +1043,15 @@ export class WorkspaceContainer {
   }
 
   async writeFile(path: string, content: string): Promise<ControlPlaneWriteResponse> {
-    const spriteName = this.requireSpriteName();
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.fetchSpriteFs(
-      spriteName,
-      'write',
+    const response = await this.fetchProxy(
+      this.sandboxProxyPath('/fs/write'),
       {
         method: 'PUT',
         headers: { 'Content-Type': 'text/plain; charset=utf-8' },
         body: content,
       },
-      {
-        path: normalizedPath,
-        workingDir: this.getFsWorkingDir(),
-        mkdir: true,
-      }
+      { path: normalizedPath }
     );
 
     if (!response.ok) {
@@ -1735,22 +1063,16 @@ export class WorkspaceContainer {
   }
 
   async writeBinaryFile(path: string, base64Content: string): Promise<ControlPlaneWriteResponse> {
-    const spriteName = this.requireSpriteName();
     const normalizedPath = this.normalizeFsPath(path);
     const binaryBuffer = Buffer.from(base64Content, 'base64');
-    const response = await this.fetchSpriteFs(
-      spriteName,
-      'write',
+    const response = await this.fetchProxy(
+      this.sandboxProxyPath('/fs/write'),
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: binaryBuffer,
       },
-      {
-        path: normalizedPath,
-        workingDir: this.getFsWorkingDir(),
-        mkdir: true,
-      }
+      { path: normalizedPath }
     );
 
     if (!response.ok) {
@@ -1762,18 +1084,16 @@ export class WorkspaceContainer {
   }
 
   async listFiles(path: string, options?: { recursive?: boolean; includeHidden?: boolean }): Promise<ControlPlaneListResponse> {
-    const spriteName = this.requireSpriteName();
     const root = this.normalizeFsPath(path);
     const recursive = options?.recursive === true;
     const includeHidden = options?.includeHidden === true;
     const files: ControlPlaneListResponse['files'] = [];
 
     const walk = async (current: string): Promise<void> => {
-      const response = await this.fetchSpriteFs(
-        spriteName,
-        'list',
+      const response = await this.fetchProxy(
+        this.sandboxProxyPath('/fs/list'),
         { method: 'GET' },
-        { path: current, workingDir: this.getFsWorkingDir() }
+        { path: current }
       );
 
       if (response.status === 404) {
@@ -1832,33 +1152,28 @@ export class WorkspaceContainer {
   }
 
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<ControlPlaneMkdirResponse> {
-    const recursive = options?.recursive !== false;
-    if (!recursive) {
-      return {
-        success: false,
-        error: 'mkdir with recursive=false is not supported by sprites fs API',
-        code: 'ENOTSUP',
-      };
+    const normalizedPath = this.normalizeFsPath(path);
+    const response = await this.fetchProxy(
+      this.sandboxProxyPath('/fs/mkdir'),
+      { method: 'POST' },
+      { path: normalizedPath }
+    );
+
+    if (!response.ok) {
+      const body = await response.text();
+      return { success: false, error: body || 'mkdir failed', code: `HTTP_${response.status}` };
     }
 
-    const keepFilePath = this.joinFsPath(this.normalizeFsPath(path), '.chiridion.keep');
-    const writeResult = await this.writeFile(keepFilePath, '');
-    if (!writeResult.success) {
-      return writeResult;
-    }
-    await this.deleteFile(keepFilePath);
     return { success: true, timestamp: toIsoTime(Date.now()) };
   }
 
   async moveFile(source: string, destination: string): Promise<ControlPlaneMoveResponse> {
-    const response = await this.fetchSpriteFs(this.requireSpriteName(), 'rename', {
+    const response = await this.fetchProxy(this.sandboxProxyPath('/fs/move'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         source: this.normalizeFsPath(source),
         dest: this.normalizeFsPath(destination),
-        workingDir: this.getFsWorkingDir(),
-        asRoot: false,
       }),
     });
 
@@ -1871,14 +1186,12 @@ export class WorkspaceContainer {
   }
 
   async deleteFile(path: string): Promise<ControlPlaneDeleteResponse> {
-    const response = await this.fetchSpriteFs(this.requireSpriteName(), 'delete', {
+    const response = await this.fetchProxy(this.sandboxProxyPath('/fs/delete'), {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         path: this.normalizeFsPath(path),
-        workingDir: this.getFsWorkingDir(),
         recursive: true,
-        asRoot: false,
       }),
     });
 
@@ -1888,57 +1201,6 @@ export class WorkspaceContainer {
     }
 
     return { success: true, timestamp: toIsoTime(Date.now()) };
-  }
-
-  async fetchIntegrationEnvVars(workspaceId: string): Promise<Record<string, string>> {
-    const integrationEnvVars: Record<string, string> = {};
-    const startedAt = Date.now();
-    let integrationCount = 0;
-    let getIntegrationsMs = 0;
-    let decryptAndMapMs = 0;
-    let dataProxyMs = 0;
-    try {
-      const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
-      const getIntegrationsStartedAt = Date.now();
-      const records = await workspaceStub.getIntegrations();
-      getIntegrationsMs = Date.now() - getIntegrationsStartedAt;
-      integrationCount = records.length;
-
-      const decryptStartedAt = Date.now();
-      for (const record of records) {
-        const credentials = await decryptCredentials(record.credentials_encrypted, this.env.INTEGRATION_SECRET_KEY);
-        const config = JSON.parse(record.config) as Record<string, unknown>;
-        Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
-      }
-      decryptAndMapMs = Date.now() - decryptStartedAt;
-
-      const dataProxyStartedAt = Date.now();
-      const dataProxyResult = await workspaceStub.generateDataProxyToken();
-      dataProxyMs = Date.now() - dataProxyStartedAt;
-      if (dataProxyResult) {
-        integrationEnvVars.DATA_PROXY_TOKEN = dataProxyResult.token;
-        this.dataProxyTokenExpiry = dataProxyResult.expiresAt;
-      }
-      console.log(
-        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} dataProxyMs=${dataProxyMs} totalMs=${Date.now() - startedAt}`
-      );
-    } catch (e) {
-      console.error('[WorkspaceContainer] Failed to fetch integration env vars:', e);
-      console.log(
-        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} failed=true integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} dataProxyMs=${dataProxyMs} totalMs=${Date.now() - startedAt}`
-      );
-    }
-
-    return integrationEnvVars;
-  }
-
-  async pushIntegrationEnvVars(envVars: Record<string, string>): Promise<boolean> {
-    return this.writeIntegrationEnvFileToSprite(envVars);
-  }
-
-  async refreshIntegrationEnvVars(workspaceId: string): Promise<boolean> {
-    const envVars = await this.fetchIntegrationEnvVars(workspaceId);
-    return this.pushIntegrationEnvVars(envVars);
   }
 }
 
@@ -1960,23 +1222,4 @@ export function getWorkspaceContainer(
   const runtime = new WorkspaceContainer(env, workspaceId);
   runtimeCache.set(cacheKey, runtime);
   return runtime;
-}
-
-export async function handleWebSocketUpgrade(
-  _request: Request,
-  _env: WorkspaceContainerEnv,
-  workspaceId: string,
-  _orgId: string
-): Promise<Response> {
-  return new Response(
-    JSON.stringify({
-      error: 'Chat websocket proxy moved to ChatThreadDO sprite exec bridge',
-      workspaceId,
-      at: toIsoTime(Date.now()),
-    }),
-    {
-      status: 410,
-      headers: { 'Content-Type': 'application/json' },
-    }
-  );
 }

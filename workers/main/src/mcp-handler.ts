@@ -47,7 +47,7 @@ const AUTH_HEADER_USER_ID = 'x-chiridion-user-id';
 const AUTH_HEADER_WORKSPACE_ID = 'x-chiridion-workspace-id';
 const AUTH_HEADER_THREAD_ID = 'x-chiridion-thread-id';
 
-const WORKSPACE_ROOT_PREFIXES = ['/home/sprite', '/home/claude', '/workspace', '/root'];
+const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
 const TEMP_PREVIEW_PREFIXES = [
   { prefix: '/mnt/user-uploads/', source: 'upload' as const },
   { prefix: '/mnt/user-outputs/', source: 'output' as const },
@@ -437,7 +437,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
       {
         path: z
           .string()
-          .describe('Path to preview. Examples: "/home/sprite/README.md", "src/app.tsx", "/mnt/user-outputs/plot.png", "/mnt/user-uploads/notebook.ipynb"'),
+          .describe('Path to preview. Examples: "/home/claude/README.md", "src/app.tsx", "/mnt/user-outputs/plot.png", "/mnt/user-uploads/notebook.ipynb"'),
         content_type: z
           .string()
           .optional()

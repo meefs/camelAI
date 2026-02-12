@@ -11,7 +11,7 @@
 
 import { mkdir, readFile, readdir } from 'fs/promises';
 
-const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/sprite';
+const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 export const MEMORY_DIR = `${SYNC_DIR}/.chiridion/memory`;
 export const PROFILE_PATH = `${SYNC_DIR}/.chiridion/profile.md`;
 

@@ -8,7 +8,7 @@
 		"OPENROUTER_PROVISIONING_KEY": "test-openrouter-provisioning-key",
 		"TOKEN_SIGNING_SECRET": "test-signing-secret-for-unit-tests-only",
 		"INTEGRATION_SECRET_KEY": "test-secret-key-for-integration-tests",
-		"SPRITES_EAGER_PROVISION_ON_CREATE": "0"
+		"SANDBOX_HOST_URL": ""
 	},
 	"kv_namespaces": [
 		{

@@ -4,7 +4,7 @@ import { createInterface } from 'readline';
 import { homedir } from 'os';
 import { loadUserProfile, MEMORY_DIR, PROFILE_PATH } from './memory-logger.mjs';
 
-const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/sprite';
+const SYNC_DIR = process.env.R2_MOUNT_DIR || '/home/claude';
 const THREAD_ID = process.env.CHIRIDION_THREAD_ID || process.env.THREAD_ID || '';
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL;
 const THREAD_DEPLOY_TOKEN = process.env.CHIRIDION_THREAD_DEPLOY_TOKEN || '';

@@ -513,8 +513,8 @@ const ChatMessagesView = memo(function ChatMessagesView({
         </div>
       )}
 
-      {/* Loading indicator when waiting for assistant response */}
-      {loading && !isStreaming && !hasStreamingMessage && !isCompacting && (
+      {/* Loading indicator when assistant is running but no message shows its own streaming dots */}
+      {(loading || isStreaming) && !hasStreamingMessage && !isCompacting && (
         <div ref={assistantPendingMeasureRef}>
           <LoadingDots />
         </div>

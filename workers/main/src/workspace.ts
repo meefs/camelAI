@@ -8,7 +8,6 @@ import { mintBigQueryAccessTokenFromServiceAccount } from './google-service-acco
 import { createSignedToken } from './signed-tokens';
 import {
   getWorkspaceContainer,
-  BOOTSTRAP_VERSION,
   type WorkspaceContainerEnv,
 } from './workspace-container';
 
@@ -202,21 +201,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
   /**
    * Ensure the workspace sprite is created and bootstrapped.
-   * Single entry point for all callers that need a ready sprite.
-   * Persists bootstrap version in sync KV so cold starts skip filesystem checks.
+   * Single entry point for all callers that need a ready sandbox.
+   * Everything is baked into the sandbox image — this just ensures the
+   * sandbox exists and is reachable.
    */
-  async ensureSpriteReady(workspaceId: string, orgId: string): Promise<void> {
+  async ensureSpriteReady(workspaceId: string, _orgId: string): Promise<void> {
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
     const container = getWorkspaceContainer(runtimeEnv, workspaceId);
-
-    const storedVersion = this.ctx.storage.kv.get<string>('bootstrapVersion');
-    container.setKnownBootstrapVersion(storedVersion);
-
     await container.ensureSpriteBootstrapped(workspaceId);
-
-    if (storedVersion !== BOOTSTRAP_VERSION) {
-      this.ctx.storage.kv.put('bootstrapVersion', BOOTSTRAP_VERSION);
-    }
   }
 
   private log(
@@ -303,13 +295,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     // Eagerly provision sprite and run bootstrap at workspace creation so runtime
     // paths usually avoid first-touch create races and bootstrap latency.
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
-    const shouldEagerProvision =
-      runtimeEnv.SPRITES_TOKEN && runtimeEnv.SPRITES_EAGER_PROVISION_ON_CREATE !== '0';
+    const shouldEagerProvision = !!runtimeEnv.SANDBOX_HOST_URL;
     if (shouldEagerProvision) {
       const runtime = getWorkspaceContainer(runtimeEnv, id);
       await runtime.provisionSpriteForWorkspace(id);
       await runtime.ensureSpriteBootstrapped(id);
-      this.ctx.storage.kv.put('bootstrapVersion', BOOTSTRAP_VERSION);
     }
 
     return info;

@@ -27,5 +27,5 @@
 		"**/*.tsx",
 		".react-router/types/**/*"
 	],
-	"exclude": ["node_modules", "chat-do", "scripts", "workers", "sandbox", "packages", "packages/**/*", "build", "dist"]
+	"exclude": ["node_modules", "chat-do", "scripts", "workers", "sandbox", "services", "packages", "packages/**/*", "build", "dist"]
 }
