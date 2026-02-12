@@ -703,6 +703,10 @@ export class WorkspaceContainer {
   private async ensureRunnerSkills(spriteName: string): Promise<void> {
     if (this.runnerSkillsBootstrapped) return;
 
+    // Remove the default "sprites" skill that ships with the sprite image.
+    // Catches sprites created before clearSpriteUserClaudeDir existed.
+    await this.execOnSprite(spriteName, ['rm', '-rf', '/home/sprite/.claude/skills/sprites']);
+
     const installedVersion = await this.readSpriteTextFile(spriteName, SPRITE_MANAGED_SKILLS_VERSION_PATH);
 
     // Also verify the skills directory actually has content (not just version marker)
