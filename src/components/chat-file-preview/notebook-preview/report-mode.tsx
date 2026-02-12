@@ -69,7 +69,7 @@ export function ReportMode({ notebook, layout }: ReportModeProps) {
       <div className="min-w-0 max-w-3xl flex-1">
         <ReportHeader header={header} />
 
-        <div className="space-y-6">
+        <div className="space-y-8">
           {visibleCells.map(({ cell, index }) => {
             if (cell.cell_type === 'markdown') {
               let source = toText(cell.source);
@@ -91,7 +91,7 @@ export function ReportMode({ notebook, layout }: ReportModeProps) {
             if (outputs.length === 0) return null;
 
             return (
-              <div key={`cell-${index}`} className="min-w-0 space-y-4">
+              <div key={`cell-${index}`} className="min-w-0 space-y-8">
                 {outputs.map((output, outputIndex) => (
                   <OutputRenderer
                     key={`output-${index}-${outputIndex}`}

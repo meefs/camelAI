@@ -151,6 +151,13 @@ function buildThemedSpec(
   // Force responsive sizing regardless of python-side fixed width.
   nextSpec.width = 'container';
 
+  const sourceWidth = typeof sourceSpec.width === 'number' ? sourceSpec.width : null;
+  const sourceHeight = typeof sourceSpec.height === 'number' ? sourceSpec.height : null;
+  if (sourceWidth !== null && sourceHeight !== null && sourceWidth === sourceHeight) {
+    // For square charts (donut/pie), remove fixed height when width becomes container.
+    delete nextSpec.height;
+  }
+
   if (nextSpec.padding == null) {
     nextSpec.padding = 0;
   }
@@ -204,11 +211,27 @@ function buildThemedSpec(
     },
     title: {
       color: dark ? '#f4f4f5' : '#111827',
+      subtitleColor: dark ? '#a1a1aa' : '#6b7280',
       ...existingTitle,
     },
   };
 
   return nextSpec;
+}
+
+function hasArcMark(spec: Record<string, unknown>): boolean {
+  if (spec.mark === 'arc') return true;
+
+  const markRecord = asRecord(spec.mark);
+  if (markRecord.type === 'arc') return true;
+
+  if (!Array.isArray(spec.layer)) return false;
+  return spec.layer.some((layer) => {
+    const layerRecord = asRecord(layer);
+    if (layerRecord.mark === 'arc') return true;
+    const layerMark = asRecord(layerRecord.mark);
+    return layerMark.type === 'arc';
+  });
 }
 
 export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
@@ -220,6 +243,8 @@ export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeMode>(() => getCurrentTheme());
+  const isArcChart = hasArcMark(spec);
+  const containerMinHeight = isArcChart ? 380 : 320;
 
   const scheduleViewResize = () => {
     if (resizeRafRef.current !== null) {
@@ -357,10 +382,10 @@ export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
       <div
         ref={containerRef}
         aria-label={title}
-        style={{ width: '100%', minHeight: 280 }}
+        style={{ width: '100%', minHeight: containerMinHeight }}
         className={cn(
           'w-full min-w-0 overflow-hidden',
-          isLoading ? 'min-h-[280px] opacity-0' : 'opacity-100'
+          isLoading ? 'opacity-0' : 'opacity-100'
         )}
       />
       {error ? (

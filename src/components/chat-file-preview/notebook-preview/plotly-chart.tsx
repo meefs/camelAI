@@ -226,6 +226,17 @@ function buildThemedPlotlyFigure(
     layout.title = { ...title, font: titleFont };
   }
 
+  // Subtitles/callouts are often represented as annotations in plotly layouts.
+  if (Array.isArray(layout.annotations)) {
+    layout.annotations = layout.annotations.map((annotation) => {
+      const next = { ...asRecord(annotation) };
+      const annotationFont = asRecord(next.font);
+      if (annotationFont.color == null) annotationFont.color = textColor;
+      next.font = annotationFont;
+      return next;
+    });
+  }
+
   return {
     traces,
     layout,
