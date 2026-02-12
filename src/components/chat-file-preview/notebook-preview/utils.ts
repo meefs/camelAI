@@ -381,6 +381,88 @@ function getPlotlyPayloadFromHtml(html: string): Record<string, unknown> | null 
   return null;
 }
 
+function isVegaSpec(
+  spec: Record<string, unknown>,
+  embedOpt: Record<string, unknown> | null
+): boolean {
+  const mode = typeof embedOpt?.mode === 'string' ? embedOpt.mode : '';
+  const schema = typeof spec.$schema === 'string' ? spec.$schema : '';
+  const looksLikeVegaSpec = /\/schema\/vega(?:-lite)?\//i.test(schema);
+  const looksLikeVegaMode = mode === 'vega-lite' || mode === 'vega';
+
+  return looksLikeVegaSpec || looksLikeVegaMode;
+}
+
+function getVegaSpecFromEmbedCalls(source: string): Record<string, unknown> | null {
+  const callRegex = /\b(?:window\.)?vegaEmbed\s*\(/g;
+  let callMatch: RegExpExecArray | null = callRegex.exec(source);
+
+  while (callMatch) {
+    const openParenOffset = callMatch[0].lastIndexOf('(');
+    if (openParenOffset === -1) {
+      callMatch = callRegex.exec(source);
+      continue;
+    }
+
+    const args = splitCallArguments(source, callMatch.index + openParenOffset);
+    if (!args || args.length < 2) {
+      callMatch = callRegex.exec(source);
+      continue;
+    }
+
+    const spec = toRecord(resolveJsArgValue(args[1], source));
+    if (!spec) {
+      callMatch = callRegex.exec(source);
+      continue;
+    }
+
+    const embedOpt =
+      args.length > 2 ? toRecord(resolveJsArgValue(args[2], source)) : null;
+    if (isVegaSpec(spec, embedOpt)) {
+      return spec;
+    }
+
+    callMatch = callRegex.exec(source);
+  }
+
+  return null;
+}
+
+function getVegaSpecFromWrappedInvocation(source: string): Record<string, unknown> | null {
+  const invocationRegex = /\}\)\s*\(/g;
+  let match: RegExpExecArray | null = invocationRegex.exec(source);
+
+  while (match) {
+    const openParenOffset = match[0].lastIndexOf('(');
+    if (openParenOffset === -1) {
+      match = invocationRegex.exec(source);
+      continue;
+    }
+
+    const args = splitCallArguments(source, match.index + openParenOffset);
+    if (!args || args.length < 1) {
+      match = invocationRegex.exec(source);
+      continue;
+    }
+
+    const spec = toRecord(resolveJsArgValue(args[0], source));
+    if (!spec) {
+      match = invocationRegex.exec(source);
+      continue;
+    }
+
+    const embedOpt =
+      args.length > 1 ? toRecord(resolveJsArgValue(args[1], source)) : null;
+    if (isVegaSpec(spec, embedOpt)) {
+      return spec;
+    }
+
+    match = invocationRegex.exec(source);
+  }
+
+  return null;
+}
+
 function getVegaSpecFromHtml(html: string): Record<string, unknown> | null {
   if (!/vegaEmbed\s*\(/.test(html)) return null;
 
@@ -390,41 +472,14 @@ function getVegaSpecFromHtml(html: string): Record<string, unknown> | null {
   for (const source of sources) {
     if (!/vegaEmbed\s*\(/.test(source)) continue;
 
-    const invocationRegex = /\}\)\s*\(/g;
-    let match: RegExpExecArray | null = invocationRegex.exec(source);
+    const directCallSpec = getVegaSpecFromEmbedCalls(source);
+    if (directCallSpec) {
+      return directCallSpec;
+    }
 
-    while (match) {
-      const openParenIndex = source.indexOf('(', match.index);
-      if (openParenIndex === -1) {
-        match = invocationRegex.exec(source);
-        continue;
-      }
-
-      const args = splitCallArguments(source, openParenIndex);
-      if (!args || args.length < 1) {
-        match = invocationRegex.exec(source);
-        continue;
-      }
-
-      const specValue = resolveJsArgValue(args[0], source);
-      const spec = toRecord(specValue);
-      if (!spec) {
-        match = invocationRegex.exec(source);
-        continue;
-      }
-
-      const embedOpt =
-        args.length > 1 ? toRecord(resolveJsArgValue(args[1], source)) : null;
-      const mode = typeof embedOpt?.mode === 'string' ? embedOpt.mode : '';
-      const schema = typeof spec.$schema === 'string' ? spec.$schema : '';
-      const looksLikeVegaSpec = /\/schema\/vega(?:-lite)?\//i.test(schema);
-      const looksLikeVegaMode = mode === 'vega-lite' || mode === 'vega';
-
-      if (looksLikeVegaSpec || looksLikeVegaMode) {
-        return spec;
-      }
-
-      match = invocationRegex.exec(source);
+    const wrappedInvocationSpec = getVegaSpecFromWrappedInvocation(source);
+    if (wrappedInvocationSpec) {
+      return wrappedInvocationSpec;
     }
   }
 
@@ -608,6 +663,31 @@ export function hasVisualOutput(outputs: NotebookOutput[]): boolean {
   });
 }
 
+interface MarkdownFenceState {
+  marker: '`' | '~';
+  length: number;
+}
+
+function getMarkdownFenceState(line: string): MarkdownFenceState | null {
+  const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
+  if (!fenceMatch) {
+    return null;
+  }
+
+  const marker = fenceMatch[1][0] as '`' | '~';
+  return { marker, length: fenceMatch[1].length };
+}
+
+function isFenceClose(line: string, fence: MarkdownFenceState): boolean {
+  const closeMatch = line.match(/^\s{0,3}(`{3,}|~{3,})\s*$/);
+  if (!closeMatch) {
+    return false;
+  }
+
+  const marker = closeMatch[1][0] as '`' | '~';
+  return marker === fence.marker && closeMatch[1].length >= fence.length;
+}
+
 export function extractTocEntries(
   cells: NotebookCell[],
   _titleCellIndex: number | null
@@ -620,7 +700,21 @@ export function extractTocEntries(
     if (cell.cell_type !== 'markdown') continue;
 
     const lines = toText(cell.source).split('\n');
+    let activeFence: MarkdownFenceState | null = null;
     for (const rawLine of lines) {
+      const fenceState = getMarkdownFenceState(rawLine);
+      if (activeFence) {
+        if (fenceState && isFenceClose(rawLine, activeFence)) {
+          activeFence = null;
+        }
+        continue;
+      }
+
+      if (fenceState) {
+        activeFence = fenceState;
+        continue;
+      }
+
       const line = rawLine.trim();
       const h2Match = line.match(/^##\s+(.+)/);
       const h3Match = line.match(/^###\s+(.+)/);
