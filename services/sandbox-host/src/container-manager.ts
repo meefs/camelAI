@@ -9,6 +9,7 @@
  * and no recent HTTP requests after IDLE_TIMEOUT_MS.
  */
 import type { ContainerRecord, ExecResult } from './types';
+import { ensureOverlay, removeOverlay } from './overlay';
 
 const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/mnt/workspaces';
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'chiridion-sandbox:latest';
@@ -151,15 +152,9 @@ export async function ensureContainer(name: string): Promise<ContainerRecord> {
   // Remove any stopped container with the same name
   await dockerExec(['rm', '-f', name]).catch(() => {});
 
-  // Ensure workspace directory exists
+  // Set up overlayfs mount: NFS (lower) + NVMe (upper) → merged workspace dir
+  await ensureOverlay(name);
   const wsPath = workspacePath(name);
-  const { mkdirSync, chownSync } = await import('fs');
-  try {
-    mkdirSync(wsPath, { recursive: true });
-    chownSync(wsPath, 1001, 1001);
-  } catch {
-    // May fail if already exists with correct permissions
-  }
 
   console.log(`[ContainerManager] creating container ${name}`);
 
@@ -256,6 +251,8 @@ export async function terminateContainer(name: string): Promise<boolean> {
   if (result.success) {
     console.log(`[ContainerManager] terminated container ${name}`);
   }
+  // Sync upper → NFS, unmount overlay, clean up NVMe
+  await removeOverlay(name);
   return result.success;
 }
 

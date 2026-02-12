@@ -3,6 +3,7 @@
 # dependencies
 /node_modules
 /sandbox/node_modules
+/services/**/node_modules
 /.pnp
 .pnp.*
 .bun
