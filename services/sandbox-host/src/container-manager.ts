@@ -4,6 +4,9 @@
  * Uses Docker CLI via Bun.spawn — no dockerode dependency.
  * Containers run with gVisor (--runtime=runsc) and mount host
  * directories from /mnt/workspaces/{name} → /home/claude inside.
+ *
+ * Idle reaper terminates containers with no active WebSocket connections
+ * and no recent HTTP requests after IDLE_TIMEOUT_MS.
  */
 import type { ContainerRecord, ExecResult } from './types';
 
@@ -13,6 +16,8 @@ const CONTAINER_MEMORY = process.env.CONTAINER_MEMORY || '16g';
 const CONTAINER_CPU_SHARES = process.env.CONTAINER_CPU_SHARES || '2048';
 const CONTAINER_RUNTIME = process.env.CONTAINER_RUNTIME || 'runsc';
 const CONTROL_PLANE_PORT = 8080;
+const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || String(30 * 1000), 10);
+const REAPER_INTERVAL_MS = 10_000;
 
 const containers = new Map<string, ContainerRecord>();
 
@@ -78,6 +83,38 @@ async function waitForHealth(port: number, timeoutMs = 30_000): Promise<boolean>
 }
 
 /**
+ * Touch a container's lastAccessedAt timestamp.
+ */
+export function touchContainer(name: string): void {
+  const record = containers.get(name);
+  if (record) {
+    record.lastAccessedAt = Date.now();
+  }
+}
+
+/**
+ * Increment active WebSocket count for a container.
+ */
+export function addWebSocket(name: string): void {
+  const record = containers.get(name);
+  if (record) {
+    record.activeWebSockets++;
+    record.lastAccessedAt = Date.now();
+  }
+}
+
+/**
+ * Decrement active WebSocket count for a container.
+ */
+export function removeWebSocket(name: string): void {
+  const record = containers.get(name);
+  if (record) {
+    record.activeWebSockets = Math.max(0, record.activeWebSockets - 1);
+    record.lastAccessedAt = Date.now();
+  }
+}
+
+/**
  * Create or reconnect to a container (idempotent).
  */
 export async function ensureContainer(name: string): Promise<ContainerRecord> {
@@ -103,6 +140,7 @@ export async function ensureContainer(name: string): Promise<ContainerRecord> {
         status: 'running',
         createdAt: Date.now(),
         lastAccessedAt: Date.now(),
+        activeWebSockets: 0,
       };
       containers.set(name, record);
       console.log(`[ContainerManager] reconnected to existing container ${name} (port=${port})`);
@@ -168,6 +206,7 @@ export async function ensureContainer(name: string): Promise<ContainerRecord> {
     status: 'running',
     createdAt: Date.now(),
     lastAccessedAt: Date.now(),
+    activeWebSockets: 0,
   };
   containers.set(name, record);
   console.log(`[ContainerManager] created container ${name} (id=${containerId}, port=${port})`);
@@ -198,6 +237,7 @@ export async function getContainer(name: string): Promise<ContainerRecord | null
         status: 'running',
         createdAt: Date.now(),
         lastAccessedAt: Date.now(),
+        activeWebSockets: 0,
       };
       containers.set(name, record);
       return record;
@@ -268,3 +308,29 @@ export async function getControlPlanePort(name: string): Promise<number> {
 export function listContainers(): ContainerRecord[] {
   return Array.from(containers.values());
 }
+
+// ─── Idle Reaper ──────────────────────────────────────────────
+
+async function reapIdleContainers(): Promise<void> {
+  const now = Date.now();
+  for (const [name, record] of containers) {
+    if (record.activeWebSockets > 0) continue;
+    const idleMs = now - record.lastAccessedAt;
+    if (idleMs >= IDLE_TIMEOUT_MS) {
+      console.log(
+        `[ContainerManager] reaping idle container ${name} (idle=${Math.round(idleMs / 1000)}s)`
+      );
+      await terminateContainer(name);
+    }
+  }
+}
+
+setInterval(() => {
+  reapIdleContainers().catch((err) =>
+    console.error('[ContainerManager] reaper error:', err)
+  );
+}, REAPER_INTERVAL_MS);
+
+console.log(
+  `[ContainerManager] idle reaper started (timeout=${IDLE_TIMEOUT_MS / 1000}s, interval=${REAPER_INTERVAL_MS / 1000}s)`
+);

@@ -14,6 +14,9 @@ import {
   terminateContainer,
   execInContainer,
   getControlPlanePort,
+  touchContainer,
+  addWebSocket,
+  removeWebSocket,
 } from './container-manager';
 import {
   fsRead,
@@ -121,6 +124,9 @@ Bun.serve<WsData>({
     }
 
     const { name, subpath } = route;
+
+    // Keep container alive while it's receiving requests
+    touchContainer(name);
 
     try {
       // ─── Lifecycle ───────────────────────────────────────
@@ -333,7 +339,10 @@ Bun.serve<WsData>({
 
   websocket: {
     open(ws: ServerWebSocket<WsData>) {
-      const { targetWsUrl } = ws.data;
+      const { name, targetWsUrl } = ws.data;
+
+      // Track active WS to prevent idle reaping
+      addWebSocket(name);
 
       // Open upstream WebSocket to the container's control plane
       const upstream = new WebSocket(targetWsUrl);
@@ -382,6 +391,7 @@ Bun.serve<WsData>({
     },
 
     close(ws: ServerWebSocket<WsData>) {
+      removeWebSocket(ws.data.name);
       if (ws.data.upstream && ws.data.upstream.readyState === WebSocket.OPEN) {
         ws.data.upstream.close();
       }

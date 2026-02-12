@@ -5,6 +5,7 @@ export interface ContainerRecord {
   status: 'running' | 'stopped' | 'unknown';
   createdAt: number;
   lastAccessedAt: number;
+  activeWebSockets: number;
 }
 
 export interface ExecResult {
