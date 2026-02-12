@@ -4,43 +4,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getPreviewType } from './file-type-utils';
-import { MarkdownRenderer } from '@/components/markdown-renderer';
+import { NotebookPreview } from './notebook-preview';
+import type { NotebookFile } from './notebook-preview';
 
 const MAX_TEXT_LINES = 500;
 
 type PreviewLayout = 'dialog' | 'panel';
 
 type TextStatus = 'idle' | 'loading' | 'ready' | 'error';
-
-interface NotebookOutput {
-  output_type?: string;
-  name?: string;
-  text?: string | string[];
-  traceback?: string[];
-  ename?: string;
-  evalue?: string;
-  data?: Record<string, unknown>;
-}
-
-interface NotebookCell {
-  cell_type?: string;
-  source?: string | string[];
-  outputs?: NotebookOutput[];
-  execution_count?: number | null;
-}
-
-interface NotebookFile {
-  nbformat?: number;
-  nbformat_minor?: number;
-  metadata?: Record<string, unknown>;
-  cells?: NotebookCell[];
-}
-
-type NotebookOutputRender =
-  | { kind: 'html'; html: string }
-  | { kind: 'image'; src: string }
-  | { kind: 'text'; text: string }
-  | { kind: 'unsupported' };
 
 function truncateTextLines(text: string, maxLines = MAX_TEXT_LINES) {
   const lines = text.split('\n');
@@ -55,265 +26,8 @@ function truncateTextLines(text: string, maxLines = MAX_TEXT_LINES) {
   };
 }
 
-function toText(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map((item) => (typeof item === 'string' ? item : String(item))).join('');
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'object') {
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch {
-      return String(value);
-    }
-  }
-  return String(value);
-}
-
 function getFilenameFromPath(path: string): string {
   return path.split('/').filter(Boolean).pop() || path;
-}
-
-function toHtml(value: unknown): string | null {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) {
-    const html = value
-      .map((item) => (typeof item === 'string' ? item : String(item)))
-      .join('');
-    return html || null;
-  }
-  return null;
-}
-
-function buildPlotlyHtmlDocument(payload: unknown): string {
-  // Escape to keep the payload safe inside an inline script.
-  const serializedPayload = JSON.stringify(payload ?? {}).replace(/</g, '\\u003c');
-
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; }
-      #plotly-root { width: 100%; min-height: 320px; height: 100%; }
-      .plotly-error { padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #b91c1c; }
-    </style>
-    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  </head>
-  <body>
-    <div id="plotly-root"></div>
-    <script>
-      try {
-        const payload = ${serializedPayload};
-        const figure = payload?.data ? payload : (payload?.figure ?? {});
-        const traces = Array.isArray(figure?.data) ? figure.data : [];
-        const layout = typeof figure?.layout === 'object' && figure.layout ? figure.layout : {};
-        const config = typeof payload?.config === 'object' && payload.config ? payload.config : { responsive: true };
-        Plotly.newPlot('plotly-root', traces, layout, config);
-      } catch (error) {
-        const el = document.createElement('pre');
-        el.className = 'plotly-error';
-        el.textContent = 'Failed to render Plotly output: ' + (error?.message || String(error));
-        document.body.appendChild(el);
-      }
-    </script>
-  </body>
-</html>`;
-}
-
-function buildHtmlDocument(fragmentOrDocument: string): string {
-  const trimmed = fragmentOrDocument.trim();
-  if (trimmed.startsWith('<!doctype') || /<html[\s>]/i.test(trimmed)) {
-    return fragmentOrDocument;
-  }
-
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      body { margin: 0; padding: 0.5rem; font: 13px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-      pre, code { white-space: pre-wrap; }
-      img, svg, canvas { max-width: 100%; }
-    </style>
-  </head>
-  <body>${fragmentOrDocument}</body>
-</html>`;
-}
-
-function getHtmlOutputDocument(output: NotebookOutput): string | null {
-  const data = output.data ?? {};
-  const plotly = data['application/vnd.plotly.v1+json'];
-  if (typeof plotly !== 'undefined') {
-    return buildPlotlyHtmlDocument(plotly);
-  }
-
-  const html = toHtml(data['text/html']);
-  if (!html) return null;
-  return buildHtmlDocument(html);
-}
-
-function getOutputText(output: NotebookOutput): string {
-  if (output.output_type === 'stream') {
-    return toText(output.text);
-  }
-
-  if (output.output_type === 'error') {
-    const trace = Array.isArray(output.traceback) ? output.traceback.join('\n') : '';
-    const errorLine = [output.ename, output.evalue].filter(Boolean).join(': ');
-    return [errorLine, trace].filter(Boolean).join('\n');
-  }
-
-  const data = output.data ?? {};
-  if (typeof data['text/plain'] !== 'undefined') {
-    return toText(data['text/plain']);
-  }
-  if (typeof data['application/json'] !== 'undefined') {
-    return toText(data['application/json']);
-  }
-
-  return '';
-}
-
-function getImageDataUrl(output: NotebookOutput): string | null {
-  const data = output.data ?? {};
-  const png = data['image/png'];
-  const jpeg = data['image/jpeg'];
-
-  if (typeof png === 'string' && png.length > 0) {
-    return `data:image/png;base64,${png}`;
-  }
-  if (typeof jpeg === 'string' && jpeg.length > 0) {
-    return `data:image/jpeg;base64,${jpeg}`;
-  }
-
-  return null;
-}
-
-function getOutputRender(output: NotebookOutput): NotebookOutputRender {
-  const htmlOutput = getHtmlOutputDocument(output);
-  if (htmlOutput) {
-    return { kind: 'html', html: htmlOutput };
-  }
-
-  const imageOutput = getImageDataUrl(output);
-  if (imageOutput) {
-    return { kind: 'image', src: imageOutput };
-  }
-
-  const textOutput = getOutputText(output);
-  if (textOutput) {
-    return { kind: 'text', text: textOutput };
-  }
-
-  return { kind: 'unsupported' };
-}
-
-function NotebookHtmlOutput({
-  html,
-  layout,
-  title,
-}: {
-  html: string;
-  layout: PreviewLayout;
-  title: string;
-}) {
-  return (
-    <iframe
-      title={title}
-      srcDoc={html}
-      sandbox="allow-scripts allow-downloads"
-      referrerPolicy="no-referrer"
-      className={cn(
-        'w-full rounded border bg-background',
-        layout === 'panel' ? 'h-[420px]' : 'h-[360px]'
-      )}
-    />
-  );
-}
-
-interface NotebookPreviewProps {
-  notebook: NotebookFile;
-  layout: PreviewLayout;
-}
-
-function NotebookPreview({ notebook, layout }: NotebookPreviewProps) {
-  const cells = Array.isArray(notebook.cells) ? notebook.cells : [];
-  const notebookLabel = typeof notebook.nbformat === 'number'
-    ? `Notebook v${notebook.nbformat}${typeof notebook.nbformat_minor === 'number' ? `.${notebook.nbformat_minor}` : ''}`
-    : 'Notebook';
-
-  return (
-    <div
-      className={cn(
-        'overflow-auto rounded-md border bg-muted/20 p-3',
-        layout === 'panel' ? 'h-full max-h-full' : 'max-h-[60vh]'
-      )}
-    >
-      <div className="mb-3 text-xs text-muted-foreground">
-        {notebookLabel} · {cells.length} {cells.length === 1 ? 'cell' : 'cells'}
-      </div>
-      <div className="space-y-3">
-        {cells.map((cell, index) => {
-          const source = toText(cell.source);
-          const outputs = Array.isArray(cell.outputs) ? cell.outputs : [];
-          const cellType = cell.cell_type === 'markdown' ? 'Markdown' : 'Code';
-          const codePrompt = typeof cell.execution_count === 'number' ? `In [${cell.execution_count}]` : 'In [ ]';
-
-          return (
-            <div key={`cell-${index}`} className="rounded-md border bg-background p-3">
-              <div className="mb-2 text-xs font-medium text-muted-foreground">
-                {cellType} cell {cell.cell_type === 'code' ? `· ${codePrompt}` : ''}
-              </div>
-
-              {cell.cell_type === 'markdown' ? (
-                <div className="rounded bg-muted/40 p-2">
-                  <MarkdownRenderer content={source || '_Empty cell_'} />
-                </div>
-              ) : (
-                <pre className="overflow-auto rounded bg-muted/40 p-2 text-xs whitespace-pre-wrap">
-                  {source || '# Empty cell'}
-                </pre>
-              )}
-
-              {outputs.length > 0 && (
-                <div className="mt-3 space-y-2 border-t pt-3">
-                  <div className="text-xs font-medium text-muted-foreground">
-                    {outputs.length} {outputs.length === 1 ? 'output' : 'outputs'}
-                  </div>
-                  {outputs.map((output, outputIndex) => {
-                    const renderOutput = getOutputRender(output);
-                    return (
-                      <div key={`output-${index}-${outputIndex}`} className="rounded border bg-muted/20 p-2">
-                        {renderOutput.kind === 'html' ? (
-                          <NotebookHtmlOutput
-                            title={`Notebook output ${outputIndex + 1}`}
-                            html={renderOutput.html}
-                            layout={layout}
-                          />
-                        ) : renderOutput.kind === 'image' ? (
-                          <img
-                            src={renderOutput.src}
-                            alt={`Notebook output ${outputIndex + 1}`}
-                            className="max-h-[320px] w-auto max-w-full rounded"
-                          />
-                        ) : renderOutput.kind === 'text' ? (
-                          <pre className="overflow-auto text-xs whitespace-pre-wrap">{renderOutput.text}</pre>
-                        ) : (
-                          <div className="text-xs text-muted-foreground">Output type is not supported in preview.</div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 function ImagePreview({
@@ -365,6 +79,7 @@ export interface FilePreviewContentProps {
   previewUrl: string;
   contentType?: string;
   layout?: PreviewLayout;
+  notebookViewMode?: 'report' | 'notebook';
 }
 
 export function FilePreviewContent({
@@ -372,6 +87,7 @@ export function FilePreviewContent({
   previewUrl,
   contentType,
   layout = 'dialog',
+  notebookViewMode,
 }: FilePreviewContentProps) {
   const previewType = useMemo(
     () => getPreviewType(filename, contentType),
@@ -565,7 +281,11 @@ export function FilePreviewContent({
             <p className="text-sm text-muted-foreground">Unable to preview this notebook.</p>
           )}
           {textStatus === 'ready' && notebook && (
-            <NotebookPreview notebook={notebook} layout={layout} />
+            <NotebookPreview
+              notebook={notebook}
+              layout={layout}
+              viewMode={notebookViewMode ?? (layout === 'panel' ? 'report' : 'notebook')}
+            />
           )}
         </div>
       )}

@@ -272,6 +272,9 @@ Runtime startup is now on-demand from chat/API paths; dashboard route loaders no
 
 ### Notebook File Previews
 - Notebook previews are read-only and render cells in the chat preview panel.
+- The panel header shows a notebook-only view toggle: `Report` (default) and `Notebook`.
+- Report mode applies editorial rendering: extracted notebook header metadata, table-of-contents sidebar from markdown `##`/`###`, setup-cell filtering heuristics, hidden code (outputs only), and styled inset text-output wells.
+- Notebook mode keeps full cell-by-cell rendering with execution gutters, line-numbered code, and per-cell outputs.
 - Rich notebook outputs (`text/html` and `application/vnd.plotly.v1+json`) are rendered in sandboxed iframes (`allow-scripts`) to support interactive charts while isolating output scripts from the main app UI.
 
 ### SDK Event Types
@@ -616,6 +619,7 @@ chiridion-app/
 │   │   ├── Chat.tsx           # Chat with WebSocket
 │   │   ├── onboarding/        # Onboarding UI components
 │   │   ├── bug-report-preview/ # Bug report card + detail dialog
+│   │   ├── chat-file-preview/  # File/notebook preview renderers (report + notebook modes)
 │   │   ├── sidebar/           # Navigation
 │   │   ├── settings/          # Settings components
 │   │   ├── admin/             # Admin components
