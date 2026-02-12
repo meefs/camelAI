@@ -15,7 +15,7 @@ export interface SignedTokenPayload {
   org_slug: string;
   /** User ID (optional for service tokens like MSSQL) */
   user_id?: string;
-  /** Permission scopes (e.g., ['proxy'], ['mcp']) */
+  /** Permission scopes (e.g., ['proxy'], ['mcp'], ['tail']) */
   scopes: string[];
   /** Issued at timestamp (ms) */
   iat: number;
@@ -27,6 +27,10 @@ export interface SignedTokenPayload {
   thread_id?: string;
   /** Optional token name/purpose */
   name?: string;
+  /** Script name (user-facing) for tail tokens */
+  script_name?: string;
+  /** Dispatch script name ({script}--{org-slug}) for tail tokens */
+  dispatch_script_name?: string;
 }
 
 const TOKEN_PREFIX = 'st_';

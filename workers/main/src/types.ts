@@ -9,11 +9,13 @@ import type { DataProxyEnv } from './data-proxy.js';
 import type { CfApiProxyEnv } from './cf-api-proxy.js';
 import type { McpEnv } from './mcp-handler.js';
 import type { WorkspaceDO } from './workspace.js';
+import type { WorkerLogsDO } from './worker-logs-do.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
 
 export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv, CfApiProxyEnv, McpEnv {
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
   SESSIONS: KVNamespace;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;

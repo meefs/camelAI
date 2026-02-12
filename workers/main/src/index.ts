@@ -29,6 +29,7 @@ import {
   handleSalesforceOAuthCallback,
 } from './routes/integrations.js';
 import { handleChatWebSocket } from './routes/websocket.js';
+import { handleLogsWebSocket } from './routes/logs-websocket.js';
 import { handleClaudeProxy, handleCountTokens } from './routes/claude-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 import { handleMssqlQuery, handleDataProxyHealth } from './routes/data-proxy.js';
@@ -40,6 +41,7 @@ export { ChatThreadDO } from './durable-objects.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
 export { WorkspaceDO } from './workspace.js';
+export { WorkerLogsDO } from './worker-logs-do.js';
 export { R2VirtualBucket } from './r2-virtual-bucket.js';
 
 // Extend React Router's AppLoadContext
@@ -87,6 +89,7 @@ const routes: Route[] = [
   { method: 'GET', path: /^\/api\/data-proxy\/health$/, handler: handleDataProxyHealth },
 
   // WebSocket routes
+  { method: 'GET', path: /^\/ws\/logs$/, handler: handleLogsWebSocket, websocket: true },
   { method: 'GET', path: /^\/ws\/[^/]+$/, handler: handleChatWebSocket, websocket: true },
 ];
 

@@ -343,6 +343,7 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 | Route | Purpose |
 |-------|---------|
 | `/ws/{workspace}` | Real-time chat streaming |
+| `/ws/logs?scriptName={name}` | Real-time log streaming for deployed workers |
 
 ### OAuth Routes (Main Worker)
 | Route | Method | Purpose |
@@ -528,6 +529,10 @@ bun run deploy:main:dev-miguel
 # Deploy dispatcher worker
 bun run deploy:dispatcher:prod
 bun run deploy:dispatcher:staging
+
+# Deploy tail worker (for user worker logs)
+bun run deploy:tail:prod
+bun run deploy:tail:staging
 ```
 
 ### Admin CLI
@@ -696,6 +701,13 @@ chiridion-app/
 - Deployment management tools
 - Thread-scoped preview controls (for example `set_file_preview` and `set_app_preview` to set the active preview target)
 - Context-aware operations
+
+### WorkerLogsDO (per deployed script)
+- Stores logs from user-deployed workers (up to 10,000 entries per script)
+- Receives logs from tail worker via RPC
+- Provides log retrieval API with pagination (`getLogs`, `getStats`)
+- WebSocket support for real-time streaming (replays recent logs on connect)
+- Compatible with `wrangler tail` via CF API proxy interception
 
 ### Storage APIs
 

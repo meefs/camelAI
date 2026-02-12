@@ -109,7 +109,8 @@
 			{ "name": "ORG", "class_name": "OrgDO" },
 			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" }
+			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
+			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" }
 		]
 	},
 	"migrations": [
@@ -125,7 +126,8 @@
 		{ "tag": "v10", "new_sqlite_classes": ["OrgSlugDO"] },
 		{ "tag": "v11", "new_sqlite_classes": ["MssqlProxy"] },
 		{ "tag": "v12", "deleted_classes": ["MssqlProxy"], "new_sqlite_classes": ["DataProxy"] },
-		{ "tag": "v13", "deleted_classes": ["ThreadSandbox"] }
+		{ "tag": "v13", "deleted_classes": ["ThreadSandbox"] },
+		{ "tag": "v14", "new_sqlite_classes": ["WorkerLogsDO"] }
 	],
 	"env": {
 		"prod": {
@@ -142,6 +144,7 @@
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform",
 				"CF_WORKER_NAME": "chiridion-app",
+				"TAIL_WORKER_NAME": "chiridion-user-logs-tail",
 				"WORKER_BASE_URL": "https://chiridion.ai",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
@@ -218,7 +221,8 @@
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" }
+					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
+					{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" }
 				]
 			}
 		},
@@ -235,6 +239,7 @@
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
 				"CF_WORKER_NAME": "chiridion-app-staging",
+				"TAIL_WORKER_NAME": "chiridion-user-logs-tail-staging",
 				"WORKER_BASE_URL": "https://staging.chiridion.ai",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
@@ -314,7 +319,8 @@
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" }
+					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
+					{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" }
 				]
 			}
 		},
@@ -331,6 +337,7 @@
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
 				"CF_WORKER_NAME": "chiridion-app-dev-miguel",
+				"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-miguel",
 				"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
@@ -411,7 +418,8 @@
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" }
+					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
+					{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" }
 				]
 			}
 		},
@@ -428,6 +436,7 @@
 				"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
 				"CF_WORKER_NAME": "chiridion-app-dev-illiana",
+				"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-illiana",
 				"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
@@ -508,7 +517,8 @@
 					{ "name": "ORG", "class_name": "OrgDO" },
 					{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 					{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" }
+					{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
+					{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" }
 				]
 			}
 		}

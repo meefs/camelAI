@@ -162,6 +162,7 @@ export interface CfApiProxyEnv {
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
   CF_WORKER_NAME?: string;
+  TAIL_WORKER_NAME?: string;
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
   EMAIL_TO_USER: KVNamespace;
@@ -288,6 +289,9 @@ async function getScriptAccessInfo(
   }
 }
 
+// Pattern for tail creation (wrangler tail)
+const DISPATCH_SCRIPT_TAILS = /^\/client\/v4\/accounts\/[^/]+\/workers\/dispatch\/namespaces\/[^/]+\/scripts\/([^/]+)\/tails$/;
+
 function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): boolean {
   const m = method.toUpperCase();
   // All paths are rewritten to WFP dispatch namespace format
@@ -316,6 +320,7 @@ function isAllowedCloudflareApiProxyRequest(pathname: string, method: string): b
     case 'POST':
       return dispatchAssetsUploadSession.test(pathname) ||
         dispatchScriptVersions.test(pathname) ||
+        DISPATCH_SCRIPT_TAILS.test(pathname) ||
         ASSETS_UPLOAD.test(pathname);
     case 'DELETE':
       return dispatchScriptSecretBinding.test(pathname);
@@ -613,6 +618,50 @@ async function deleteDispatchScriptSecret(
     { method: 'DELETE', headers },
     `delete script secret ${name}`
   );
+}
+
+/**
+ * Configure tail_consumers for a dispatch script to enable log capture.
+ * This attaches the tail worker to the user's deployed script.
+ */
+async function syncDispatchScriptSettings(
+  accountId: string,
+  dispatchNamespace: string,
+  scriptName: string,
+  apiToken: string,
+  tailWorkerName: string
+): Promise<void> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+    `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
+    `/scripts/${encodeURIComponent(scriptName)}/script-settings`;
+
+  const headers = {
+    Authorization: `Bearer ${apiToken}`,
+    'Content-Type': 'application/json',
+  };
+
+  const body = {
+    tail_consumers: [
+      { service: tailWorkerName }
+    ]
+  };
+
+  const resp = await fetch(url, { method: 'PATCH', headers, body: JSON.stringify(body) });
+  if (!resp.ok) {
+    const text = await resp.text();
+    console.error('[cf-api-proxy] failed to set tail_consumers', {
+      status: resp.status,
+      scriptName,
+      tailWorkerName,
+      body: text.slice(0, 500),
+    });
+    throw new Error(`Failed to set tail_consumers: ${resp.status}`);
+  }
+
+  console.log('[cf-api-proxy] configured tail_consumers', {
+    scriptName,
+    tailWorkerName,
+  });
 }
 
 /**
@@ -1025,6 +1074,47 @@ export async function proxyCloudflareApi(
   // The org-slug in the token is verified, so the script name prefix is trusted.
   const dispatchScriptName = originalScriptName ? `${originalScriptName}--${orgSlug}` : null;
 
+  // Intercept tail creation requests (wrangler tail) and return our WebSocket URL
+  const tailMatch = pathname.match(DISPATCH_SCRIPT_TAILS);
+  if (tailMatch && request.method.toUpperCase() === 'POST' && originalScriptName && dispatchScriptName) {
+    // Generate a tail token for WebSocket auth
+    const tailToken = await createSignedToken(env.TOKEN_SIGNING_SECRET, {
+      org_id: orgId,
+      org_slug: orgSlug,
+      scopes: ['tail'],
+      exp: Date.now() + 60 * 60 * 1000, // 1 hour
+      workspace_id: workspaceId,
+      script_name: originalScriptName,
+      dispatch_script_name: dispatchScriptName,
+      name: `tail-${dispatchScriptName}`,
+    });
+
+    // Build WebSocket URL - use WORKER_BASE_URL or derive from request
+    const baseUrl = env.WORKER_BASE_URL || `https://${url.hostname}`;
+    const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/ws/logs?scriptName=${encodeURIComponent(originalScriptName)}&token=${encodeURIComponent(tailToken)}`;
+
+    console.log('[cf-api-proxy] intercepted tail request', {
+      scriptName: originalScriptName,
+      dispatchScriptName,
+      orgId,
+    });
+
+    // Return Cloudflare-compatible tail response
+    return new Response(JSON.stringify({
+      success: true,
+      errors: [],
+      messages: [],
+      result: {
+        id: crypto.randomUUID(),
+        url: wsUrl,
+        expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   const upstreamUrl = new URL(`https://api.cloudflare.com${pathname}${url.search}`);
   const headers = new Headers(request.headers);
 
@@ -1255,6 +1345,22 @@ export async function proxyCloudflareApi(
             });
           })
       );
+
+      // Attach tail worker for log capture
+      if (env.TAIL_WORKER_NAME) {
+        waitUntil(
+          syncDispatchScriptSettings(account, dispatchNs, dispatchScriptName, upstreamApiToken, env.TAIL_WORKER_NAME)
+            .catch(err => {
+              console.error('[cf-api-proxy] failed to configure tail worker', {
+                account,
+                dispatchNamespace: dispatchNs,
+                dispatchScriptName,
+                tailWorkerName: env.TAIL_WORKER_NAME,
+                error: String(err),
+              });
+            })
+        );
+      }
 
       // Auto-set preview if threadId is in the deploy token
       if (threadId) {
