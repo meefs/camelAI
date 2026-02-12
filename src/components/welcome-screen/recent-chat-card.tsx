@@ -29,7 +29,7 @@ export function RecentChatCard({ thread, renderedAt, onClick }: RecentChatCardPr
       className={cn(
         'group relative flex flex-col gap-2 p-4 rounded-xl cursor-pointer',
         'border border-border bg-card',
-        'text-left transition-all duration-[250ms] ease-in-out',
+        'text-left transition-all duration-200 ease-out',
         'hover:border-ring hover:shadow-md',
         'w-[260px] shrink-0'
       )}

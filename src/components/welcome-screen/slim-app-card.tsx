@@ -44,8 +44,8 @@ export function SlimAppCard({ app, renderedAt, onStartChat }: SlimAppCardProps) 
       onClick={() => onStartChat(app)}
       className={cn(
         'group relative aspect-video overflow-hidden rounded-xl',
-        'border border-border cursor-pointer shadow-sm',
-        'transition-all duration-[250ms] ease-in-out',
+        'border border-border cursor-pointer',
+        'transition-all duration-200 ease-out',
         'hover:border-ring',
         'hover:shadow-md',
         'w-[260px] shrink-0'
@@ -72,7 +72,6 @@ export function SlimAppCard({ app, renderedAt, onStartChat }: SlimAppCardProps) 
           'absolute bottom-3 left-3 right-3',
           'bg-background/65 backdrop-blur-md border border-white/10',
           'rounded-lg px-3 py-2 flex items-center justify-between',
-          'shadow-[0_10px_25px_rgba(0,0,0,0.28)]',
           'transition-colors duration-[250ms] ease-in-out',
           'group-hover:bg-background/75'
         )}

@@ -228,7 +228,7 @@ function PromptSlot({ index, item, phase, onClick }: PromptSlotProps) {
       className={cn(
         'group relative flex flex-col gap-2 p-3 rounded-xl cursor-pointer',
         'border border-border bg-card hover:bg-accent/50',
-        'text-left transition-colors duration-200 ease-out',
+        'text-left transition-all duration-200 ease-out',
         'hover:border-ring hover:shadow-md'
       )}
     >
