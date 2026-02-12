@@ -2,6 +2,7 @@ import { cn } from '@/lib/utils';
 import type { NotebookOutput } from './types';
 import { getOutputRender } from './utils';
 import { NotebookHtmlOutput } from './html-output';
+import { PlotlyChart } from './plotly-chart';
 import { VegaLiteChart } from './vega-lite-chart';
 
 interface OutputRendererProps {
@@ -31,11 +32,27 @@ export function OutputRenderer({
   const render = getOutputRender(output);
 
   if (render.kind === 'vegalite') {
-    return <VegaLiteChart spec={render.spec} title={title} />;
+    return (
+      <div className="w-full min-w-0">
+        <VegaLiteChart spec={render.spec} title={title} />
+      </div>
+    );
+  }
+
+  if (render.kind === 'plotly') {
+    return (
+      <div className="w-full min-w-0">
+        <PlotlyChart payload={render.payload} title={title} />
+      </div>
+    );
   }
 
   if (render.kind === 'html') {
-    return <NotebookHtmlOutput html={render.html} layout={layout} title={title} />;
+    return (
+      <div className="w-full min-w-0">
+        <NotebookHtmlOutput html={render.html} layout={layout} title={title} />
+      </div>
+    );
   }
 
   if (render.kind === 'image') {

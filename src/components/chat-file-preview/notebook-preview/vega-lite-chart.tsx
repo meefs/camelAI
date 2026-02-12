@@ -1,11 +1,12 @@
 'use client';
 
+import { cn } from '@/lib/utils';
 import { useEffect, useRef, useState } from 'react';
 import { PlotlyPlaceholder } from './plotly-placeholder';
 
-const VEGA_CDN_URL = 'https://cdn.jsdelivr.net/npm/vega@5';
-const VEGA_LITE_CDN_URL = 'https://cdn.jsdelivr.net/npm/vega-lite@5';
-const VEGA_EMBED_CDN_URL = 'https://cdn.jsdelivr.net/npm/vega-embed@6';
+const VEGA_CDN_URL = 'https://cdn.jsdelivr.net/npm/vega@6';
+const VEGA_LITE_CDN_URL = 'https://cdn.jsdelivr.net/npm/vega-lite@6';
+const VEGA_EMBED_CDN_URL = 'https://cdn.jsdelivr.net/npm/vega-embed@7';
 
 interface VegaLiteWindow extends Window {
   vega?: unknown;
@@ -14,7 +15,17 @@ interface VegaLiteWindow extends Window {
     element: HTMLElement,
     spec: Record<string, unknown>,
     options?: Record<string, unknown>
-  ) => Promise<unknown>;
+  ) => Promise<VegaEmbedResult>;
+}
+
+interface VegaView {
+  resize: () => VegaView | void;
+  runAsync?: () => Promise<unknown>;
+  finalize?: () => void;
+}
+
+interface VegaEmbedResult {
+  view?: VegaView;
 }
 
 let vegaLibrariesLoadPromise: Promise<void> | null = null;
@@ -105,10 +116,140 @@ interface VegaLiteChartProps {
   title: string;
 }
 
+type ThemeMode = 'light' | 'dark';
+
+function getCurrentTheme(): ThemeMode {
+  if (typeof document === 'undefined') return 'light';
+  return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+}
+
+function cloneSpec<T>(value: T): T {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function buildThemedSpec(
+  sourceSpec: Record<string, unknown>,
+  theme: ThemeMode
+): Record<string, unknown> {
+  const nextSpec = cloneSpec(sourceSpec);
+  const dark = theme === 'dark';
+
+  if (nextSpec.background == null) {
+    nextSpec.background = 'transparent';
+  }
+
+  // Force responsive sizing regardless of python-side fixed width.
+  nextSpec.width = 'container';
+
+  if (nextSpec.padding == null) {
+    nextSpec.padding = 0;
+  }
+
+  const autosize = asRecord(nextSpec.autosize);
+  nextSpec.autosize = {
+    ...autosize,
+    type: 'fit',
+    contains: 'padding',
+    resize: true,
+  };
+
+  const existingConfig = asRecord(nextSpec.config);
+  const existingAxis = asRecord(existingConfig.axis);
+  const existingAxisX = asRecord(existingConfig.axisX);
+  const existingAxisY = asRecord(existingConfig.axisY);
+  const existingLegend = asRecord(existingConfig.legend);
+  const existingView = asRecord(existingConfig.view);
+  const existingTitle = asRecord(existingConfig.title);
+
+  const axisDefaults: Record<string, unknown> = dark
+    ? {
+        labelColor: '#a1a1aa',
+        titleColor: '#e4e4e7',
+        domainColor: 'rgba(161,161,170,0.4)',
+        tickColor: 'rgba(161,161,170,0.5)',
+        gridColor: 'rgba(113,113,122,0.35)',
+      }
+    : {
+        labelColor: '#475569',
+        titleColor: '#1f2937',
+        domainColor: 'rgba(100,116,139,0.45)',
+        tickColor: 'rgba(100,116,139,0.55)',
+        gridColor: 'rgba(148,163,184,0.35)',
+      };
+
+  nextSpec.config = {
+    ...existingConfig,
+    axis: { ...axisDefaults, ...existingAxis },
+    axisX: { ...axisDefaults, ...existingAxisX },
+    axisY: { ...axisDefaults, ...existingAxisY },
+    legend: {
+      labelColor: dark ? '#e4e4e7' : '#1f2937',
+      titleColor: dark ? '#e4e4e7' : '#1f2937',
+      ...existingLegend,
+    },
+    view: {
+      fill: 'transparent',
+      stroke: null,
+      ...existingView,
+    },
+    title: {
+      color: dark ? '#f4f4f5' : '#111827',
+      ...existingTitle,
+    },
+  };
+
+  return nextSpec;
+}
+
 export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<VegaView | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const resizeRafRef = useRef<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<ThemeMode>(() => getCurrentTheme());
+
+  const scheduleViewResize = () => {
+    if (resizeRafRef.current !== null) {
+      cancelAnimationFrame(resizeRafRef.current);
+      resizeRafRef.current = null;
+    }
+    resizeRafRef.current = requestAnimationFrame(() => {
+      resizeRafRef.current = null;
+      const view = viewRef.current;
+      if (!view) return;
+      try {
+        view.resize();
+        void view.runAsync?.();
+      } catch {
+        // Ignore transient resize errors while container is relayouting.
+      }
+    });
+  };
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+
+    const root = document.documentElement;
+    const syncTheme = () => setTheme(root.classList.contains('dark') ? 'dark' : 'light');
+    syncTheme();
+
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,11 +272,34 @@ export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
         if (!container) return;
 
         container.innerHTML = '';
-        await embed(container, spec, {
+        const themedSpec = buildThemedSpec(spec, theme);
+        // Wait one frame so flex/layout sizing resolves before embed reads container width.
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        const result = await embed(container, themedSpec, {
           actions: false,
           renderer: 'svg',
-          mode: 'vega-lite',
         });
+        viewRef.current = result?.view ?? null;
+
+        // Trigger post-mount resize in case the panel finished layout after embed.
+        requestAnimationFrame(() => {
+          scheduleViewResize();
+        });
+
+        // vega-embed adds wrapper divs; flatten visual chrome so it feels inline/native.
+        for (const element of Array.from(container.querySelectorAll('div'))) {
+          const node = element as HTMLDivElement;
+          node.style.background = 'transparent';
+          node.style.width = '100%';
+          node.style.minWidth = '0';
+        }
+        for (const svg of Array.from(container.querySelectorAll('svg'))) {
+          svg.style.background = 'transparent';
+          svg.style.display = 'block';
+          svg.style.maxWidth = '100%';
+          svg.style.height = 'auto';
+          svg.style.width = '100%';
+        }
 
         if (!cancelled) {
           setIsLoading(false);
@@ -152,28 +316,58 @@ export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
 
     return () => {
       cancelled = true;
+      if (resizeRafRef.current !== null) {
+        cancelAnimationFrame(resizeRafRef.current);
+        resizeRafRef.current = null;
+      }
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
+      viewRef.current?.finalize?.();
+      viewRef.current = null;
     };
-  }, [spec]);
+  }, [spec, theme]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    if (typeof ResizeObserver === 'undefined') return;
+
+    resizeObserverRef.current?.disconnect();
+    const observer = new ResizeObserver(() => {
+      scheduleViewResize();
+    });
+    observer.observe(root);
+    resizeObserverRef.current = observer;
+
+    return () => {
+      observer.disconnect();
+      if (resizeObserverRef.current === observer) {
+        resizeObserverRef.current = null;
+      }
+    };
+  }, [spec, theme]);
 
   return (
-    <div className="relative">
+    <div ref={rootRef} className="relative w-full min-w-0">
       {isLoading ? (
         <div className="absolute inset-0">
           <PlotlyPlaceholder />
         </div>
       ) : null}
-      <div className="min-h-[280px] w-full rounded border bg-background p-2">
-        <div
-          ref={containerRef}
-          aria-label={title}
-          className={isLoading ? 'opacity-0' : 'opacity-100'}
-        />
-        {error ? (
-          <pre className="overflow-auto rounded border border-red-200 bg-red-50 p-3 font-mono text-xs whitespace-pre-wrap text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
-            {error}
-          </pre>
-        ) : null}
-      </div>
+      <div
+        ref={containerRef}
+        aria-label={title}
+        style={{ width: '100%', minHeight: 280 }}
+        className={cn(
+          'w-full min-w-0 overflow-hidden',
+          isLoading ? 'min-h-[280px] opacity-0' : 'opacity-100'
+        )}
+      />
+      {error ? (
+        <pre className="overflow-auto rounded border border-red-200 bg-red-50 p-3 font-mono text-xs whitespace-pre-wrap text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+          {error}
+        </pre>
+      ) : null}
     </div>
   );
 }

@@ -30,42 +30,6 @@ function toHtml(value: unknown): string | null {
   return null;
 }
 
-function buildPlotlyHtmlDocument(payload: unknown): string {
-  const serializedPayload = JSON.stringify(payload ?? {}).replace(/</g, '\\u003c');
-
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; }
-      #plotly-root { width: 100%; min-height: 320px; height: 100%; }
-      .plotly-error { padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #b91c1c; }
-    </style>
-    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  </head>
-  <body>
-    <div id="plotly-root"></div>
-    <script>
-      try {
-        const payload = ${serializedPayload};
-        const figure = payload?.data ? payload : (payload?.figure ?? {});
-        const traces = Array.isArray(figure?.data) ? figure.data : [];
-        const layout = typeof figure?.layout === 'object' && figure.layout ? figure.layout : {};
-        const config = typeof payload?.config === 'object' && payload.config ? payload.config : { responsive: true };
-        Plotly.newPlot('plotly-root', traces, layout, config);
-      } catch (error) {
-        const el = document.createElement('pre');
-        el.className = 'plotly-error';
-        el.textContent = 'Failed to render Plotly output: ' + (error?.message || String(error));
-        document.body.appendChild(el);
-      }
-    </script>
-  </body>
-</html>`;
-}
-
 function buildHtmlDocument(fragmentOrDocument: string): string {
   const trimmed = fragmentOrDocument.trim();
   if (trimmed.startsWith('<!doctype') || /<html[\s>]/i.test(trimmed)) {
@@ -87,13 +51,404 @@ function buildHtmlDocument(fragmentOrDocument: string): string {
 </html>`;
 }
 
-function getHtmlOutputDocument(output: NotebookOutput): string | null {
-  const data = output.data ?? {};
-  const plotly = data['application/vnd.plotly.v1+json'];
-  if (typeof plotly !== 'undefined') {
-    return buildPlotlyHtmlDocument(plotly);
+function isIdentifierChar(char: string | undefined): boolean {
+  return Boolean(char && /[A-Za-z0-9_$]/.test(char));
+}
+
+function hasTokenBoundary(input: string, start: number, tokenLength: number): boolean {
+  const before = input[start - 1];
+  const after = input[start + tokenLength];
+  return !isIdentifierChar(before) && !isIdentifierChar(after);
+}
+
+function normalizeNonJsonLiterals(input: string): string {
+  let result = '';
+  let inString: '"' | "'" | '`' | null = null;
+  let escaping = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+
+    if (inString) {
+      result += char;
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaping = true;
+        continue;
+      }
+      if (char === inString) {
+        inString = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      inString = char;
+      result += char;
+      continue;
+    }
+
+    if (input.startsWith('-Infinity', i) && hasTokenBoundary(input, i, '-Infinity'.length)) {
+      result += 'null';
+      i += '-Infinity'.length - 1;
+      continue;
+    }
+
+    if (input.startsWith('Infinity', i) && hasTokenBoundary(input, i, 'Infinity'.length)) {
+      result += 'null';
+      i += 'Infinity'.length - 1;
+      continue;
+    }
+
+    if (input.startsWith('NaN', i) && hasTokenBoundary(input, i, 'NaN'.length)) {
+      result += 'null';
+      i += 'NaN'.length - 1;
+      continue;
+    }
+
+    if (input.startsWith('undefined', i) && hasTokenBoundary(input, i, 'undefined'.length)) {
+      result += 'null';
+      i += 'undefined'.length - 1;
+      continue;
+    }
+
+    result += char;
   }
 
+  return result;
+}
+
+function parseJsonExpression(value: string): unknown {
+  const trimmed = value.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const normalized = normalizeNonJsonLiterals(trimmed);
+    if (normalized !== trimmed) {
+      try {
+        return JSON.parse(normalized);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractScriptBlocks(html: string): string[] {
+  const scripts: string[] = [];
+  const scriptRegex = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null = scriptRegex.exec(html);
+  while (match) {
+    scripts.push(match[1]);
+    match = scriptRegex.exec(html);
+  }
+  return scripts;
+}
+
+function parseExpressionAt(source: string, startIndex: number): string | null {
+  let i = startIndex;
+  while (i < source.length && /\s/.test(source[i])) {
+    i += 1;
+  }
+  if (i >= source.length) return null;
+
+  let current = '';
+  let depth = 0;
+  let inString: '"' | "'" | '`' | null = null;
+  let escaping = false;
+
+  for (; i < source.length; i += 1) {
+    const char = source[i];
+
+    if (inString) {
+      current += char;
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaping = true;
+        continue;
+      }
+      if (char === inString) {
+        inString = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      inString = char;
+      current += char;
+      continue;
+    }
+
+    if (char === '(' || char === '[' || char === '{') {
+      depth += 1;
+      current += char;
+      continue;
+    }
+
+    if (char === ')' || char === ']' || char === '}') {
+      if (depth > 0) {
+        depth -= 1;
+      }
+      current += char;
+      continue;
+    }
+
+    if ((char === ';' || char === '\n') && depth === 0) {
+      return current.trim();
+    }
+
+    current += char;
+  }
+
+  const trimmed = current.trim();
+  return trimmed || null;
+}
+
+function splitCallArguments(source: string, openParenIndex: number): string[] | null {
+  if (openParenIndex < 0 || openParenIndex >= source.length) return null;
+  const args: string[] = [];
+  let current = '';
+  let depth = 0;
+  let inString: '"' | "'" | '`' | null = null;
+  let escaping = false;
+
+  for (let i = openParenIndex + 1; i < source.length; i += 1) {
+    const char = source[i];
+
+    if (inString) {
+      current += char;
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaping = true;
+        continue;
+      }
+      if (char === inString) {
+        inString = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      inString = char;
+      current += char;
+      continue;
+    }
+
+    if (char === '(' || char === '[' || char === '{') {
+      depth += 1;
+      current += char;
+      continue;
+    }
+
+    if (char === ')' || char === ']' || char === '}') {
+      if (char === ')' && depth === 0) {
+        args.push(current.trim());
+        return args;
+      }
+      if (depth > 0) {
+        depth -= 1;
+      }
+      current += char;
+      continue;
+    }
+
+    if (char === ',' && depth === 0) {
+      args.push(current.trim());
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  return null;
+}
+
+function splitPlotlyCallArgs(source: string): string[] | null {
+  const callMatch = /(?:window\.)?Plotly\.(?:newPlot|react)\s*\(/.exec(source);
+  if (!callMatch) return null;
+
+  const openParenOffset = callMatch[0].lastIndexOf('(');
+  if (openParenOffset === -1) return null;
+  return splitCallArguments(source, callMatch.index + openParenOffset);
+}
+
+function resolveJsArgValue(expr: string, script: string): unknown {
+  const parsedDirect = parseJsonExpression(expr);
+  if (parsedDirect !== null) return parsedDirect;
+
+  const trimmed = expr.trim();
+  const identifierMatch = trimmed.match(/^(?:window\.)?([A-Za-z_$][\w$]*)$/);
+  if (!identifierMatch) return null;
+  const identifier = identifierMatch[1];
+
+  const assignmentRegex = new RegExp(
+    `(?:\\b(?:var|let|const)\\s+)?${escapeRegExp(identifier)}\\s*=`,
+    'g'
+  );
+  let assignmentMatch: RegExpExecArray | null = assignmentRegex.exec(script);
+  while (assignmentMatch) {
+    const valueStart = assignmentMatch.index + assignmentMatch[0].length;
+    const expression = parseExpressionAt(script, valueStart);
+    if (expression) {
+      const parsedAssigned = parseJsonExpression(expression);
+      if (parsedAssigned !== null) return parsedAssigned;
+    }
+    assignmentMatch = assignmentRegex.exec(script);
+  }
+
+  return null;
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function getRecordFromMimeData(
+  data: Record<string, unknown>,
+  mimePattern: RegExp
+): Record<string, unknown> | null {
+  for (const [mimeType, value] of Object.entries(data)) {
+    if (!mimePattern.test(mimeType)) {
+      continue;
+    }
+
+    const parsed = typeof value === 'string' ? parseJsonExpression(value) : value;
+    const record = toRecord(parsed);
+    if (record) {
+      return record;
+    }
+  }
+  return null;
+}
+
+function getPlotlyPayloadFromHtml(html: string): Record<string, unknown> | null {
+  if (!/(?:window\.)?Plotly\.(?:newPlot|react)/.test(html)) return null;
+
+  const scriptBlocks = extractScriptBlocks(html);
+  const sources = scriptBlocks.length > 0 ? scriptBlocks : [html];
+
+  for (const source of sources) {
+    const args = splitPlotlyCallArgs(source);
+    if (!args || args.length < 3) continue;
+
+    const dataArg = resolveJsArgValue(args[1], source);
+    if (!Array.isArray(dataArg)) continue;
+
+    const layoutArg = resolveJsArgValue(args[2], source);
+    if (
+      layoutArg !== null &&
+      (typeof layoutArg !== 'object' || layoutArg === null || Array.isArray(layoutArg))
+    ) {
+      continue;
+    }
+
+    const configArg = args.length > 3 ? resolveJsArgValue(args[3], source) : null;
+    if (
+      configArg !== null &&
+      (typeof configArg !== 'object' || configArg === null || Array.isArray(configArg))
+    ) {
+      continue;
+    }
+
+    const payload: Record<string, unknown> = { data: dataArg };
+    if (layoutArg && typeof layoutArg === 'object') {
+      payload.layout = layoutArg as Record<string, unknown>;
+    }
+    if (configArg && typeof configArg === 'object') {
+      payload.config = configArg as Record<string, unknown>;
+    }
+    return payload;
+  }
+
+  return null;
+}
+
+function getVegaSpecFromHtml(html: string): Record<string, unknown> | null {
+  if (!/vegaEmbed\s*\(/.test(html)) return null;
+
+  const scriptBlocks = extractScriptBlocks(html);
+  const sources = scriptBlocks.length > 0 ? scriptBlocks : [html];
+
+  for (const source of sources) {
+    if (!/vegaEmbed\s*\(/.test(source)) continue;
+
+    const invocationRegex = /\}\)\s*\(/g;
+    let match: RegExpExecArray | null = invocationRegex.exec(source);
+
+    while (match) {
+      const openParenIndex = source.indexOf('(', match.index);
+      if (openParenIndex === -1) {
+        match = invocationRegex.exec(source);
+        continue;
+      }
+
+      const args = splitCallArguments(source, openParenIndex);
+      if (!args || args.length < 1) {
+        match = invocationRegex.exec(source);
+        continue;
+      }
+
+      const specValue = resolveJsArgValue(args[0], source);
+      const spec = toRecord(specValue);
+      if (!spec) {
+        match = invocationRegex.exec(source);
+        continue;
+      }
+
+      const embedOpt =
+        args.length > 1 ? toRecord(resolveJsArgValue(args[1], source)) : null;
+      const mode = typeof embedOpt?.mode === 'string' ? embedOpt.mode : '';
+      const schema = typeof spec.$schema === 'string' ? spec.$schema : '';
+      const looksLikeVegaSpec = /\/schema\/vega(?:-lite)?\//i.test(schema);
+      const looksLikeVegaMode = mode === 'vega-lite' || mode === 'vega';
+
+      if (looksLikeVegaSpec || looksLikeVegaMode) {
+        return spec;
+      }
+
+      match = invocationRegex.exec(source);
+    }
+  }
+
+  return null;
+}
+
+function getPlotlyPayload(output: NotebookOutput): Record<string, unknown> | null {
+  const data = output.data ?? {};
+  const directPayload = getRecordFromMimeData(data, /^application\/vnd\.plotly\.v\d+\+json$/i);
+  if (directPayload) {
+    return directPayload;
+  }
+
+  const html = toHtml(data['text/html']);
+  if (html) {
+    const extracted = getPlotlyPayloadFromHtml(html);
+    if (extracted) return extracted;
+  }
+
+  return null;
+}
+
+function getHtmlOutputDocument(output: NotebookOutput): string | null {
+  const data = output.data ?? {};
   const html = toHtml(data['text/html']);
   if (!html) return null;
   return buildHtmlDocument(html);
@@ -101,11 +456,23 @@ function getHtmlOutputDocument(output: NotebookOutput): string | null {
 
 function getVegaLiteSpec(output: NotebookOutput): Record<string, unknown> | null {
   const data = output.data ?? {};
-  const spec = data['application/vnd.vegalite.v5+json'];
-  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
-    return null;
+  const directVegaLite = getRecordFromMimeData(data, /^application\/vnd\.vegalite\.v\d+\+json$/i);
+  if (directVegaLite) {
+    return directVegaLite;
   }
-  return spec as Record<string, unknown>;
+
+  const directVega = getRecordFromMimeData(data, /^application\/vnd\.vega\.v\d+\+json$/i);
+  if (directVega) {
+    return directVega;
+  }
+
+  const html = toHtml(data['text/html']);
+  if (html) {
+    const extracted = getVegaSpecFromHtml(html);
+    if (extracted) return extracted;
+  }
+
+  return null;
 }
 
 export function getOutputText(output: NotebookOutput): string {
@@ -157,6 +524,11 @@ export function getOutputRender(output: NotebookOutput): NotebookOutputRender {
   const vegaLiteSpec = getVegaLiteSpec(output);
   if (vegaLiteSpec) {
     return { kind: 'vegalite', spec: vegaLiteSpec };
+  }
+
+  const plotlyPayload = getPlotlyPayload(output);
+  if (plotlyPayload) {
+    return { kind: 'plotly', payload: plotlyPayload };
   }
 
   const htmlOutput = getHtmlOutputDocument(output);
@@ -217,9 +589,17 @@ export function formatNotebookDate(date: Date): string {
 export function hasVisualOutput(outputs: NotebookOutput[]): boolean {
   return outputs.some((output) => {
     const data = output.data ?? {};
+    const mimeTypes = Object.keys(data);
+    const hasVegaMime = mimeTypes.some((mimeType) =>
+      /^application\/vnd\.vega(?:lite)?\.v\d+\+json$/i.test(mimeType)
+    );
+    const hasPlotlyMime = mimeTypes.some((mimeType) =>
+      /^application\/vnd\.plotly\.v\d+\+json$/i.test(mimeType)
+    );
+
     return (
-      'application/vnd.vegalite.v5+json' in data ||
-      'application/vnd.plotly.v1+json' in data ||
+      hasVegaMime ||
+      hasPlotlyMime ||
       'image/png' in data ||
       'image/jpeg' in data ||
       'image/svg+xml' in data ||

@@ -40,7 +40,7 @@ export function NotebookCodeCell({
         </div>
       </div>
 
-      <div className="space-y-2 border-t border-border bg-muted/10 p-3">
+      <div className="min-w-0 space-y-2 border-t border-border bg-muted/10 p-3">
         {outputs.length === 0 ? (
           <div className="font-mono text-xs text-muted-foreground">(no output)</div>
         ) : (

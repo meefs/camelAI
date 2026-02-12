@@ -74,6 +74,7 @@ export interface NotebookHeader {
 
 export type NotebookOutputRender =
   | { kind: 'vegalite'; spec: Record<string, unknown> }
+  | { kind: 'plotly'; payload: Record<string, unknown> }
   | { kind: 'html'; html: string }
   | { kind: 'image'; src: string }
   | { kind: 'text'; text: string }

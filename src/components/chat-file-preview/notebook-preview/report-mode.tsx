@@ -91,7 +91,7 @@ export function ReportMode({ notebook, layout }: ReportModeProps) {
             if (outputs.length === 0) return null;
 
             return (
-              <div key={`cell-${index}`} className="space-y-4">
+              <div key={`cell-${index}`} className="min-w-0 space-y-4">
                 {outputs.map((output, outputIndex) => (
                   <OutputRenderer
                     key={`output-${index}-${outputIndex}`}
