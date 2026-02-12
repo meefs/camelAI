@@ -168,6 +168,7 @@ const SPRITE_CREATE_WORKER_VERSION_PATH = `${SPRITE_CREATE_WORKER_DIR}/.chiridio
 const SPRITE_CREATE_WORKER_BIN = '/usr/local/bin/create-worker';
 const RUNNER_DEP_PACKAGE = '@anthropic-ai/claude-agent-sdk';
 const RUNNER_DEP_VERSION = '0.2.37';
+const INTEGRATION_ENV_FILE_PATH = '/home/sprite/.chiridion/integration.env';
 
 // Bump this version when changing rclone mount args or configuration.
 // Services will be recreated when this version changes.
@@ -227,7 +228,6 @@ export class WorkspaceContainer {
   private spriteKnownToExist = false;
   private r2MountServiceCreated = false;
   private dataProxyTokenExpiry: number | null = null;
-  private integrationEnvCache: Record<string, string> = {};
 
   constructor(private env: WorkspaceContainerEnv, workspaceId: string) {
     this.workspaceId = workspaceId;
@@ -1451,6 +1451,36 @@ export class WorkspaceContainer {
     }
   }
 
+  /**
+   * Write integration env vars to a dotenv file on the sprite.
+   * The Claude SDK reads CLAUDE_ENV_FILE each turn, so updates
+   * written here take effect on the next agent turn.
+   */
+  private async writeIntegrationEnvFileToSprite(envVars: Record<string, string>): Promise<boolean> {
+    try {
+      const lines: string[] = [];
+      for (const [key, value] of Object.entries(envVars)) {
+        // Escape backslashes, double quotes, and newlines for dotenv format
+        const escaped = value
+          .replace(/\\/g, '\\\\')
+          .replace(/"/g, '\\"')
+          .replace(/\n/g, '\\n');
+        lines.push(`${key}="${escaped}"`);
+      }
+      const content = lines.join('\n') + '\n';
+      const result = await this.writeFile(INTEGRATION_ENV_FILE_PATH, content);
+      if (!result.success) {
+        console.error(`[Sprite] writeIntegrationEnvFileToSprite: write failed: ${result.error}`);
+        return false;
+      }
+      console.log(`[Sprite] writeIntegrationEnvFileToSprite: wrote ${lines.length} vars to ${INTEGRATION_ENV_FILE_PATH}`);
+      return true;
+    } catch (err) {
+      console.error('[Sprite] writeIntegrationEnvFileToSprite: error:', err);
+      return false;
+    }
+  }
+
   async buildClaudeRunnerEnv(options: ClaudeRunnerEnvOptions): Promise<Record<string, string>> {
     if (!this.workspaceId || !this.orgId) {
       throw new Error('WorkspaceContainer not initialized. Call startForWorkspace first.');
@@ -1459,13 +1489,17 @@ export class WorkspaceContainer {
     console.log(`[Sprite] buildClaudeRunnerEnv: thread=${options.threadId}`);
     const baseEnv = this.envVars || (await this.buildEnvVars(this.workspaceId, this.orgId));
     const integrationEnv = await this.fetchIntegrationEnvVars(this.workspaceId);
-    this.integrationEnvCache = { ...integrationEnv };
+
+    // Write integration env vars to a file on the sprite so the SDK can
+    // re-read them each turn via CLAUDE_ENV_FILE.
+    await this.writeIntegrationEnvFileToSprite(integrationEnv);
 
     const env: Record<string, string> = {
       ...baseEnv,
       ...integrationEnv,
       CHIRIDION_THREAD_ID: options.threadId,
       DEBUG_CLAUDE_AGENT_SDK: '1',
+      CLAUDE_ENV_FILE: INTEGRATION_ENV_FILE_PATH,
     };
 
     if (options.threadDeployToken) env.CHIRIDION_THREAD_DEPLOY_TOKEN = options.threadDeployToken;
@@ -1895,8 +1929,7 @@ export class WorkspaceContainer {
   }
 
   async pushIntegrationEnvVars(envVars: Record<string, string>): Promise<boolean> {
-    this.integrationEnvCache = { ...envVars };
-    return true;
+    return this.writeIntegrationEnvFileToSprite(envVars);
   }
 
   async refreshIntegrationEnvVars(workspaceId: string): Promise<boolean> {
