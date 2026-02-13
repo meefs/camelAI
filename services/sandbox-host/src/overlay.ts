@@ -2,21 +2,23 @@
  * OverlayFS mount manager for tiered workspace storage.
  *
  * Each workspace gets an overlay mount:
- *   lower  = /mnt/nfs/{name}     (Azure Blob NFS v3, durable canonical data)
- *   upper  = /mnt/nvme/{name}    (NVMe RAID0, fast ephemeral writes)
- *   work   = /mnt/nvme/.work/{name}  (overlayfs workdir)
- *   merged = /mnt/workspaces/{name}  (what containers see)
+ *   lower  = /mnt/juicefs/{name}    (JuiceFS, durable canonical data)
+ *   upper  = /mnt/nvme/{name}       (NVMe RAID0, fast ephemeral writes)
+ *   work   = /mnt/nvme/.work/{name} (overlayfs workdir)
+ *   merged = /mnt/workspaces/{name} (what containers see)
  *
- * New/modified files land on NVMe (fast), unchanged files read from NFS
- * (kernel-native, no FUSE). Background sync copies upper → NFS for durability.
+ * New/modified files land on NVMe (fast), unchanged files read from JuiceFS.
+ * Background sync flushes upper → JuiceFS and clears the NVMe layer,
+ * so NVMe acts as a write buffer rather than accumulating data.
  */
 import { mkdir } from 'fs/promises';
-import { execSync } from 'child_process';
+import { exec, execSync } from 'child_process';
 
-const NFS_ROOT = process.env.NFS_ROOT || '/mnt/nfs';
+const JFS_ROOT = process.env.JFS_ROOT || '/mnt/juicefs';
 const NVME_ROOT = process.env.NVME_ROOT || '/mnt/nvme';
 const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/mnt/workspaces';
 const SYNC_INTERVAL_MS = parseInt(process.env.OVERLAY_SYNC_INTERVAL_MS || String(60_000), 10);
+const RSYNC_TIMEOUT_MS = 5 * 60_000; // 5 minutes for large workspaces
 
 interface OverlayMount {
   name: string;
@@ -26,12 +28,27 @@ interface OverlayMount {
   mergedDir: string;
   mountedAt: number;
   lastSyncedAt: number;
+  syncing: boolean;
 }
 
 const mounts = new Map<string, OverlayMount>();
 
+/** Synchronous exec for fast commands (mount, umount, mkdir, chown). */
 function run(cmd: string): string {
   return execSync(cmd, { encoding: 'utf-8', timeout: 30_000 }).trim();
+}
+
+/** Async exec for long-running commands (rsync). */
+function runAsync(cmd: string, timeoutMs = RSYNC_TIMEOUT_MS): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = exec(cmd, { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(`${cmd.split(' ')[0]} failed: ${stderr || err.message}`));
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+  });
 }
 
 function isMounted(path: string): boolean {
@@ -45,7 +62,7 @@ function isMounted(path: string): boolean {
 
 /**
  * Ensure overlay mount exists for a workspace.
- * Creates NFS lower dir, NVMe upper/work dirs, and mounts overlayfs.
+ * Creates JuiceFS lower dir, NVMe upper/work dirs, and mounts overlayfs.
  */
 export async function ensureOverlay(name: string): Promise<string> {
   const existing = mounts.get(name);
@@ -53,7 +70,7 @@ export async function ensureOverlay(name: string): Promise<string> {
     return existing.mergedDir;
   }
 
-  const lowerDir = `${NFS_ROOT}/${name}`;
+  const lowerDir = `${JFS_ROOT}/${name}`;
   const upperDir = `${NVME_ROOT}/${name}`;
   const workDir = `${NVME_ROOT}/.work/${name}`;
   const mergedDir = `${WORKSPACES_ROOT}/${name}`;
@@ -92,50 +109,77 @@ export async function ensureOverlay(name: string): Promise<string> {
     mergedDir,
     mountedAt: now,
     lastSyncedAt: now,
+    syncing: false,
   });
 
   return mergedDir;
 }
 
 /**
- * Sync a workspace's upper layer (NVMe) to the lower layer (NFS).
- * Uses rsync from the merged view to NFS for correct handling of deletions.
+ * Sync workspace data from NVMe to JuiceFS (non-disruptive).
+ *
+ * Just copies data — no unmount, no NVMe clear. The overlay stays up
+ * and the container keeps running without interruption. NVMe upper layer
+ * accumulates until the sandbox is reaped (removeOverlay flushes + clears).
  */
 export async function syncOverlay(name: string): Promise<void> {
   const mount = mounts.get(name);
   if (!mount) return;
 
+  if (mount.syncing) {
+    console.log(`[Overlay] ${name}: sync already in progress, skipping`);
+    return;
+  }
+  mount.syncing = true;
+
   try {
-    run(`rsync -a --delete --whole-file "${mount.mergedDir}/" "${mount.lowerDir}/"`);
+    const start = Date.now();
+    await runAsync(`juicefs sync --delete-dst "${mount.mergedDir}/" "${mount.lowerDir}/"`);
     mount.lastSyncedAt = Date.now();
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    console.log(`[Overlay] ${name}: synced to JuiceFS (${elapsed}s)`);
   } catch (err) {
     console.error(`[Overlay] sync failed for ${name}:`, err);
+  } finally {
+    mount.syncing = false;
   }
 }
 
 /**
- * Unmount overlay, sync to NFS, clean up NVMe upper layer.
+ * Full flush on teardown: sync to JuiceFS, unmount overlay, clear NVMe.
+ * Called when the sandbox is reaped (idle timeout) or explicitly terminated.
  */
 export async function removeOverlay(name: string): Promise<void> {
   const mount = mounts.get(name);
   if (!mount) return;
 
-  // Final sync before teardown
-  await syncOverlay(name);
+  const start = Date.now();
 
-  // Unmount
+  // Final sync: merged → JuiceFS
+  try {
+    await runAsync(`juicefs sync --delete-dst "${mount.mergedDir}/" "${mount.lowerDir}/"`);
+    console.log(`[Overlay] ${name}: final sync completed`);
+  } catch (err) {
+    console.error(`[Overlay] ${name}: final sync failed:`, err);
+  }
+
+  // Unmount overlay
   if (isMounted(mount.mergedDir)) {
     try {
       run(`umount "${mount.mergedDir}"`);
-      console.log(`[Overlay] unmounted ${name}`);
-    } catch (err) {
-      console.error(`[Overlay] unmount failed for ${name}:`, err);
-      // Force unmount
+    } catch {
       try { run(`umount -l "${mount.mergedDir}"`); } catch { /* best effort */ }
     }
   }
 
-  // Clean up NVMe upper+work dirs (data is on NFS now)
+  // Catch any stragglers written between sync and umount
+  try {
+    await runAsync(`juicefs sync "${mount.upperDir}/" "${mount.lowerDir}/"`);
+  } catch {
+    // Best effort — upper may already be empty
+  }
+
+  // Clear NVMe upper + work dirs (data is on JuiceFS now)
   try {
     run(`rm -rf "${mount.upperDir}" "${mount.workDir}"`);
   } catch {
@@ -143,6 +187,8 @@ export async function removeOverlay(name: string): Promise<void> {
   }
 
   mounts.delete(name);
+  const elapsed = Math.round((Date.now() - start) / 1000);
+  console.log(`[Overlay] ${name}: removed (flushed + cleared NVMe in ${elapsed}s)`);
 }
 
 /**

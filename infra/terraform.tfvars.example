@@ -1,6 +1,6 @@
 environment          = "prod"
-location             = "eastus"
-vm_size              = "Standard_E64ds_v5"
+location             = "centralus"
+vm_size              = "Standard_E64ads_v7"
 admin_username       = "chiridion"
 ssh_public_key       = "ssh-ed25519 AAAA... user@host"
 storage_account_name = "chiridionsandbox"
@@ -9,7 +9,3 @@ os_disk_size_gb      = 128
 
 # Restrict SSH to your IP in production
 ssh_allowed_cidr          = "*"
-sandbox_host_allowed_cidr = "0.0.0.0/0"
-
-# Auto-generated if left empty
-# sandbox_host_token = ""

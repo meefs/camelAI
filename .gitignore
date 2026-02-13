@@ -46,6 +46,11 @@ next-env.d.ts
 # OpenNext
 /.open-next
 
+# terraform
+infra/*.tfvars
+infra/.terraform/
+infra/*.tfstate*
+
 # wrangler files
 .wrangler
 .dev.vars*

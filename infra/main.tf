@@ -129,6 +129,54 @@ resource "azurerm_storage_container" "workspaces" {
   storage_account_id = azurerm_storage_account.blob.id
 }
 
+resource "azurerm_storage_container" "juicefs" {
+  name               = "juicefs"
+  storage_account_id = azurerm_storage_account.blob.id
+}
+
+# ─── PostgreSQL (JuiceFS metadata engine) ────────────────────
+
+resource "random_password" "pg" {
+  length  = 32
+  special = false
+}
+
+resource "azurerm_postgresql_flexible_server" "metadata" {
+  name                          = "pg-chiridion-${var.environment}"
+  resource_group_name           = azurerm_resource_group.sandbox.name
+  location                      = azurerm_resource_group.sandbox.location
+  version                       = "16"
+  administrator_login           = "chiridion"
+  administrator_password        = random_password.pg.result
+  sku_name                      = "B_Standard_B1ms"
+  storage_mb                    = 32768
+  zone                          = "1"
+  public_network_access_enabled = true
+  tags                          = local.tags
+}
+
+resource "azurerm_postgresql_flexible_server_database" "juicefs" {
+  name      = "juicefs"
+  server_id = azurerm_postgresql_flexible_server.metadata.id
+}
+
+resource "azurerm_postgresql_flexible_server_firewall_rule" "vm" {
+  name             = "allow-sandbox-vm"
+  server_id        = azurerm_postgresql_flexible_server.metadata.id
+  start_ip_address = azurerm_public_ip.sandbox.ip_address
+  end_ip_address   = azurerm_public_ip.sandbox.ip_address
+}
+
+# ─── Container Registry ───────────────────────────────────────
+
+resource "azurerm_container_registry" "sandbox" {
+  name                = "crchiridion${var.environment}"
+  resource_group_name = azurerm_resource_group.sandbox.name
+  location            = azurerm_resource_group.sandbox.location
+  sku                 = "Basic"
+  tags                = local.tags
+}
+
 # ─── VM ────────────────────────────────────────────────────────
 
 resource "azurerm_linux_virtual_machine" "sandbox" {
@@ -163,12 +211,32 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
   }
 
   custom_data = base64encode(templatefile("${path.module}/cloud-init.yaml.tpl", {
-    setup_script    = file("${path.module}/../services/sandbox-host/scripts/setup-host.sh")
-    storage_account = var.storage_account_name
-    blob_container  = var.blob_container_name
+    setup_script      = file("${path.module}/../services/sandbox-host/scripts/setup-host.sh")
+    storage_account   = var.storage_account_name
+    storage_key       = azurerm_storage_account.blob.primary_access_key
+    blob_container    = var.blob_container_name
+    juicefs_container = azurerm_storage_container.juicefs.name
+    pg_host                  = azurerm_postgresql_flexible_server.metadata.fqdn
+    pg_password              = random_password.pg.result
+    cloudflared_tunnel_token = var.cloudflared_tunnel_token
+    acr_login_server         = azurerm_container_registry.sandbox.login_server
   }))
 
   identity {
     type = "SystemAssigned"
   }
+}
+
+# VM managed identity → AcrPull on the container registry
+resource "azurerm_role_assignment" "vm_acr_pull" {
+  scope                = azurerm_container_registry.sandbox.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_linux_virtual_machine.sandbox.identity[0].principal_id
+}
+
+# Also grant AcrPush so we can build+push from the VM itself
+resource "azurerm_role_assignment" "vm_acr_push" {
+  scope                = azurerm_container_registry.sandbox.id
+  role_definition_name = "AcrPush"
+  principal_id         = azurerm_linux_virtual_machine.sandbox.identity[0].principal_id
 }

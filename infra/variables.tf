@@ -51,3 +51,9 @@ variable "os_disk_size_gb" {
   type        = number
   default     = 128
 }
+
+variable "cloudflared_tunnel_token" {
+  description = "Cloudflare Tunnel token for VPC connectivity"
+  type        = string
+  sensitive   = true
+}
