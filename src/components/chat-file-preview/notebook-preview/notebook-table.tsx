@@ -2,7 +2,7 @@
 
 import { cn } from '@/lib/utils';
 import { Download } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   TableBody,
   TableCell,
@@ -27,11 +27,24 @@ function isNumeric(value: string): boolean {
   return /^-?[\d,]+(?:\.\d+)?(?:[eE][+-]?\d+)?%?$/.test(normalized);
 }
 
+function getMaxRowLength(rows: readonly string[][]): number {
+  let max = 0;
+  for (const row of rows) {
+    if (row.length > max) {
+      max = row.length;
+    }
+  }
+  return max;
+}
+
 export function NotebookTable({ table, mode }: NotebookTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showOverflowFade, setShowOverflowFade] = useState(false);
   const isReport = mode === 'report';
-  const columnCount = Math.max(0, table.headers.length, ...table.rows.map((row) => row.length));
+  const columnCount = useMemo(
+    () => Math.max(table.headers.length, getMaxRowLength(table.rows)),
+    [table.headers, table.rows]
+  );
   const totalRows = table.rows.length;
   const isTruncated = totalRows > MAX_DISPLAY_ROWS;
   const displayRows = isTruncated ? table.rows.slice(0, MAX_DISPLAY_ROWS) : table.rows;
@@ -87,11 +100,7 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
       return value;
     };
 
-    const csvColumnCount = Math.max(
-      0,
-      table.headers.length,
-      ...table.rows.map((row) => row.length)
-    );
+    const csvColumnCount = columnCount;
     const lines: string[] = [];
 
     if (table.headers.length > 0) {
@@ -124,7 +133,7 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
     setTimeout(() => {
       URL.revokeObjectURL(url);
     }, 0);
-  }, [hasCsvData, table.headers, table.rows]);
+  }, [columnCount, hasCsvData, table.headers, table.rows]);
 
   return (
     <div className="relative w-full min-w-0">

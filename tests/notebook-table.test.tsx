@@ -40,4 +40,22 @@ describe('NotebookTable', () => {
     const renderedRows = container.querySelectorAll('tbody tr');
     expect(renderedRows).toHaveLength(100);
   });
+
+  it('handles large tables without spread-based argument overflow', () => {
+    const rowCount = 140000;
+    const table: ParsedTable = {
+      headers: ['Value'],
+      rows: Array.from({ length: rowCount }, (_, index) => [`${index}`]),
+      indexColumns: 0,
+      caption: `${rowCount} rows × 1 column`,
+    };
+
+    expect(() => {
+      render(<NotebookTable table={table} mode="report" />);
+    }).not.toThrow();
+
+    expect(
+      screen.getByText(`Showing 100 of ${rowCount.toLocaleString()} rows × 1 columns`)
+    ).toBeInTheDocument();
+  });
 });
