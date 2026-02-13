@@ -227,6 +227,7 @@ Environment=JFS_ROOT=${JUICEFS_DIR}
 Environment=NVME_ROOT=${NVME_DIR}
 Environment=SANDBOX_IMAGE=${SANDBOX_IMAGE}
 Environment=CONTAINER_RUNTIME=runsc
+Environment=JFS_VOLUME_NAME=chiridion_workspaces
 EnvironmentFile=-/etc/chiridion/sandbox-host.env
 
 [Install]

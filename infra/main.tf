@@ -148,7 +148,7 @@ resource "azurerm_postgresql_flexible_server" "metadata" {
   version                       = "16"
   administrator_login           = "chiridion"
   administrator_password        = random_password.pg.result
-  sku_name                      = "B_Standard_B1ms"
+  sku_name                      = "GP_Standard_D2ds_v5"
   storage_mb                    = 32768
   zone                          = "1"
   public_network_access_enabled = true
@@ -158,6 +158,39 @@ resource "azurerm_postgresql_flexible_server" "metadata" {
 resource "azurerm_postgresql_flexible_server_database" "juicefs" {
   name      = "juicefs"
   server_id = azurerm_postgresql_flexible_server.metadata.id
+}
+
+# Kill connections idle in a transaction after 5 minutes (prevents leaked connections)
+resource "azurerm_postgresql_flexible_server_configuration" "idle_in_transaction_timeout" {
+  name      = "idle_in_transaction_session_timeout"
+  server_id = azurerm_postgresql_flexible_server.metadata.id
+  value     = "300000" # 5 minutes in ms
+}
+
+# TCP keepalive: detect dead connections faster
+resource "azurerm_postgresql_flexible_server_configuration" "tcp_keepalives_idle" {
+  name      = "tcp_keepalives_idle"
+  server_id = azurerm_postgresql_flexible_server.metadata.id
+  value     = "60" # seconds before sending first keepalive
+}
+
+resource "azurerm_postgresql_flexible_server_configuration" "tcp_keepalives_interval" {
+  name      = "tcp_keepalives_interval"
+  server_id = azurerm_postgresql_flexible_server.metadata.id
+  value     = "10" # seconds between keepalive retries
+}
+
+resource "azurerm_postgresql_flexible_server_configuration" "tcp_keepalives_count" {
+  name      = "tcp_keepalives_count"
+  server_id = azurerm_postgresql_flexible_server.metadata.id
+  value     = "3" # failed keepalives before declaring connection dead
+}
+
+# GP_Standard_D2ds_v5 supports up to 859; set explicitly since B1ms had 50
+resource "azurerm_postgresql_flexible_server_configuration" "max_connections" {
+  name      = "max_connections"
+  server_id = azurerm_postgresql_flexible_server.metadata.id
+  value     = "200"
 }
 
 resource "azurerm_postgresql_flexible_server_firewall_rule" "vm" {

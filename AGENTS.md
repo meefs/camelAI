@@ -580,13 +580,28 @@ bun run admin:dev-illiana
 
 The sandbox host (`services/sandbox-host/`) runs on an Azure VM and manages Docker + gVisor containers. Workers access it via a **Workers VPC binding** (`env.SANDBOX_HOST`) through a Cloudflare Tunnel — not exposed to the public internet.
 
+**Deploying code updates:**
 ```bash
-# Run on the Azure VM (systemd service)
-sudo systemctl enable --now chiridion-sandbox-host
+# 1. Rsync sandbox-host code to VM (exclude node_modules/.git)
+rsync -avz --exclude='node_modules' --exclude='.git' \
+  services/sandbox-host/ chiridion-vm:/tmp/sandbox-host-update/
 
-# Deploy code updates
-rsync -avz services/sandbox-host/ chiridion@<vm-ip>:/opt/chiridion/sandbox-host/
+# 2. SSH in and copy to service directory + restart
+ssh chiridion-vm "sudo rsync -av /tmp/sandbox-host-update/ /opt/chiridion/sandbox-host/ \
+  && sudo systemctl restart chiridion-sandbox-host"
+
+# 3. Verify service is running
+ssh chiridion-vm "sudo systemctl status chiridion-sandbox-host --no-pager"
 ```
+
+**Rebuilding the sandbox Docker image:**
+```bash
+# Build on VM (not cross-compile), push to ACR
+ssh chiridion-vm "cd /opt/chiridion/sandbox-host && sudo docker build -t chiridion-sandbox:latest -f Dockerfile.sandbox ."
+ssh chiridion-vm "sudo az acr login --name crchiridionprod && sudo docker tag chiridion-sandbox:latest crchiridionprod.azurecr.io/chiridion-sandbox:latest && sudo docker push crchiridionprod.azurecr.io/chiridion-sandbox:latest"
+```
+
+**VM SSH:** `ssh chiridion-vm` (host alias, user `chiridion`, IP `172.173.64.214`)
 
 Sandbox names follow the pattern `chiridion-{workspaceId}`. Each workspace gets a host directory at `/mnt/workspaces/{sandboxName}` mounted into the container at `/home/claude`.
 
@@ -594,7 +609,7 @@ Sandbox names follow the pattern `chiridion-{workspaceId}`. Each workspace gets 
 
 **R2 FUSE mounts:** Sandbox-host sets up R2 FUSE mounts automatically when env vars are pushed (`POST /v1/sandboxes/{name}/env` with `ORG_ID` + `WORKSPACE_ID`). Uses permanent R2 credentials from sandbox-host env vars (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`). Writes rclone config to host workspace dir, runs rclone inside the container via docker exec. No temp credentials or worker-side mount logic needed.
 
-**Storage:** NVMe RAID0 (hot, ~3.4TB) + Azure Blob NFS v3 (durable) via overlayfs. On VM reboot, RAID0 is rebuilt empty; NFS has all canonical data.
+**Storage:** NVMe RAID0 (hot, ~3.4TB) + JuiceFS (durable canonical) via overlayfs. On VM reboot, RAID0 is rebuilt empty; JuiceFS has all canonical data. Background sync flushes NVMe upper layer → JuiceFS via `jfs://` protocol (bypasses FUSE for speed).
 
 ## Project Structure
 
