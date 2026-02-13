@@ -717,6 +717,7 @@ export default function Chat({
   const previewTargetRef = useRef<PreviewTarget | null>(initialPreviewTarget ?? null);
   const [iframeKey, setIframeKey] = useState(0);
   const [filePreviewKey, setFilePreviewKey] = useState(0);
+  const [notebookViewMode, setNotebookViewMode] = useState<'report' | 'notebook'>('report');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
@@ -2544,6 +2545,18 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     return previewTarget.path.split('/').filter(Boolean).pop() || 'file';
   }, [previewTarget]);
 
+  const notebookPreviewKey = useMemo(() => {
+    if (previewTarget?.kind !== 'file') return null;
+    return `${previewTarget.workspaceId}:${previewTarget.source}:${previewTarget.path}`;
+  }, [previewTarget]);
+
+  useEffect(() => {
+    setNotebookViewMode('report');
+  }, [notebookPreviewKey]);
+
+  const isNotebookPreview = previewTarget?.kind === 'file'
+    && previewFileName.toLowerCase().endsWith('.ipynb');
+
   const previewDomains = useMemo(() => {
     if (previewTarget?.kind !== 'app') {
       return { iframeHost: '', vanityHost: '' };
@@ -2684,8 +2697,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       </>
     ) : (
       <>
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-          <div className="min-w-0 flex items-center gap-2">
+        <div className="flex items-center gap-3 border-b border-border px-4 py-2">
+          <div className="min-w-0 flex flex-1 items-center gap-2">
             <div className="w-2 h-2 bg-blue-500 rounded-full shrink-0" />
             <div className="min-w-0">
               <div className="text-sm font-medium truncate">{previewFileName}</div>
@@ -2694,7 +2707,27 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          {isNotebookPreview ? (
+            <Tabs
+              value={notebookViewMode}
+              onValueChange={(value) => {
+                if (value === 'report' || value === 'notebook') {
+                  setNotebookViewMode(value);
+                }
+              }}
+              className="shrink-0 gap-0"
+            >
+              <TabsList variant="outline" className="h-7">
+                <TabsTrigger value="report" className="h-6 px-3 text-xs">
+                  Report
+                </TabsTrigger>
+                <TabsTrigger value="notebook" className="h-6 px-3 text-xs">
+                  Notebook
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          ) : null}
+          <div className="flex shrink-0 items-center gap-2">
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -2739,12 +2772,13 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             </Tooltip>
           </div>
         </div>
-        <div className="flex-1 min-h-0 overflow-hidden p-3">
+        <div className={cn('flex-1 min-h-0 overflow-hidden', !isNotebookPreview && 'p-3')}>
           <FilePreviewContent
             filename={previewFileName}
             previewUrl={filePreviewUrl}
             contentType={previewTarget.contentType}
             layout="panel"
+            notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
           />
         </div>
       </>

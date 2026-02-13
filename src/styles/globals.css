@@ -77,6 +77,7 @@
 	--color-foreground: var(--foreground);
 	--font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
 	--font-mono: var(--font-geist-mono);
+	--font-display: "Source Serif 4", ui-serif, Georgia, "Times New Roman", serif;
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -209,6 +210,39 @@
   /* Ensure proper word wrapping */
   word-wrap: break-word;
   overflow-wrap: break-word;
+}
+
+.notebook-report .markdown-content h1,
+.notebook-report .markdown-content h2,
+.notebook-report .markdown-content h3 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.notebook-report .markdown-content h2 {
+  font-size: 1.25rem;
+  margin-top: 2.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.notebook-report .markdown-content h3 {
+  font-size: 1.125rem;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.notebook-report .markdown-content p {
+  color: var(--color-muted-foreground);
+  line-height: 1.7;
+}
+
+.notebook-report .markdown-content code:not(pre code) {
+  background: color-mix(in oklab, var(--color-muted) 60%, transparent);
+  border-radius: 0.375rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  padding: 0.125rem 0.375rem;
 }
 
 /* User message variant - inverted colors for readability in bubbles */

@@ -272,7 +272,13 @@ Runtime startup is now on-demand from chat/API paths; dashboard route loaders no
 
 ### Notebook File Previews
 - Notebook previews are read-only and render cells in the chat preview panel.
-- Rich notebook outputs (`text/html` and `application/vnd.plotly.v1+json`) are rendered in sandboxed iframes (`allow-scripts`) to support interactive charts while isolating output scripts from the main app UI.
+- The panel header shows a notebook-only view toggle: `Report` (default) and `Notebook`.
+- Report mode applies editorial rendering: extracted notebook header metadata, table-of-contents sidebar from markdown `##`/`###`, setup-cell filtering heuristics, hidden code (outputs only), and styled inset text-output wells.
+- Notebook mode keeps full cell-by-cell rendering with execution gutters, line-numbered code, and per-cell outputs.
+- Vega/Vega-Lite chart outputs render client-side via Vega/Vega-Lite/Vega-Embed CDN loading and are embedded with SVG renderer.
+- Supported Vega chart payloads include both direct mime types (`application/vnd.vegalite.v*+json`, `application/vnd.vega.v*+json`) and Altair `text/html` `vegaEmbed(...)` wrappers (spec extraction path, including `NaN` literal normalization).
+- Plotly outputs (`application/vnd.plotly.v1+json`) render client-side via Plotly CDN loading directly in the notebook DOM (no iframe wrapper), with responsive sizing and light/dark-aware theming.
+- Non-chart `text/html` outputs still render in sandboxed iframes (`allow-scripts allow-downloads`) for generic HTML preview.
 
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization
@@ -621,6 +627,7 @@ chiridion-app/
 │   │   ├── Chat.tsx           # Chat with WebSocket
 │   │   ├── onboarding/        # Onboarding UI components
 │   │   ├── bug-report-preview/ # Bug report card + detail dialog
+│   │   ├── chat-file-preview/  # File/notebook preview renderers (report + notebook modes)
 │   │   ├── sidebar/           # Navigation
 │   │   ├── settings/          # Settings components
 │   │   ├── admin/             # Admin components
