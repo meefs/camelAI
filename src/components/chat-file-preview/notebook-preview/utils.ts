@@ -586,6 +586,16 @@ function parseRowCellTexts(trInnerHtml: string): string[] {
   return parseRowCells(trInnerHtml).map((cell) => cell.text);
 }
 
+function getMaxRowLength(rows: readonly string[][]): number {
+  let max = 0;
+  for (const row of rows) {
+    if (row.length > max) {
+      max = row.length;
+    }
+  }
+  return max;
+}
+
 function flattenHeaderRows(theadHtml: string): string[] | null {
   const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
   const headerRows: string[][] = [];
@@ -602,7 +612,7 @@ function flattenHeaderRows(theadHtml: string): string[] | null {
   if (headerRows.length === 0) return [];
   if (headerRows.length === 1) return headerRows[0];
 
-  const maxLen = Math.max(...headerRows.map((row) => row.length));
+  const maxLen = getMaxRowLength(headerRows);
   const merged: string[] = [];
   for (let i = 0; i < maxLen; i += 1) {
     let value = '';
@@ -619,21 +629,27 @@ function flattenHeaderRows(theadHtml: string): string[] | null {
   return merged;
 }
 
-function parseBodyRows(tbodyHtml: string): {
+function parseBodyRows(
+  tbodyHtml: string,
+  options?: { inferHeaderFromLeadingThRow?: boolean }
+): {
   rows: string[][];
   indexColumns: number;
   unsupportedSpanLayout: boolean;
+  inferredHeaders: string[] | null;
 } {
+  const inferHeaderFromLeadingThRow = options?.inferHeaderFromLeadingThRow ?? false;
   const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
   const rows: string[][] = [];
   let indexColumns = 0;
   let indexColumnsDetected = false;
+  let inferredHeaders: string[] | null = null;
   let trMatch: RegExpExecArray | null = trRegex.exec(tbodyHtml);
 
   while (trMatch) {
     const parsedCells = parseRowCells(trMatch[1]);
     if (parsedCells.some((cell) => cell.hasSpan)) {
-      return { rows: [], indexColumns: 0, unsupportedSpanLayout: true };
+      return { rows: [], indexColumns: 0, unsupportedSpanLayout: true, inferredHeaders: null };
     }
 
     if (parsedCells.length === 0) {
@@ -653,6 +669,14 @@ function parseBodyRows(tbodyHtml: string): {
       }
     }
 
+    const isImplicitHeaderCandidate =
+      inferHeaderFromLeadingThRow && inferredHeaders === null && rows.length === 0 && !indexColumnsDetected && !seenTd;
+    if (isImplicitHeaderCandidate) {
+      inferredHeaders = rowValues;
+      trMatch = trRegex.exec(tbodyHtml);
+      continue;
+    }
+
     if (!indexColumnsDetected) {
       indexColumns = leadingThCount;
       indexColumnsDetected = true;
@@ -662,7 +686,7 @@ function parseBodyRows(tbodyHtml: string): {
     trMatch = trRegex.exec(tbodyHtml);
   }
 
-  return { rows, indexColumns, unsupportedSpanLayout: false };
+  return { rows, indexColumns, unsupportedSpanLayout: false, inferredHeaders };
 }
 
 function extractTableCaption(tableHtml: string): string | null {
@@ -715,13 +739,14 @@ function getTableData(output: NotebookOutput): ParsedTable | null {
         .replace(/<tfoot[^>]*>[\s\S]*?<\/tfoot>/gi, '')
         .replace(/<caption[^>]*>[\s\S]*?<\/caption>/gi, '');
 
-  const body = parseBodyRows(bodySource);
+  const body = parseBodyRows(bodySource, { inferHeaderFromLeadingThRow: !theadMatch });
   if (body.unsupportedSpanLayout || body.rows.length === 0) return null;
 
-  const maxRowWidth = Math.max(...body.rows.map((row) => row.length));
-  const columnCount = Math.max(flattenedHeaders.length, maxRowWidth);
-  const headers = flattenedHeaders.length
-    ? [...flattenedHeaders]
+  const maxRowWidth = getMaxRowLength(body.rows);
+  const resolvedHeaders = flattenedHeaders.length ? flattenedHeaders : (body.inferredHeaders ?? []);
+  const columnCount = Math.max(resolvedHeaders.length, maxRowWidth);
+  const headers = resolvedHeaders.length
+    ? [...resolvedHeaders]
     : Array.from({ length: columnCount }, () => '');
   while (headers.length < columnCount) {
     headers.push('');

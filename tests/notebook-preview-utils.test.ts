@@ -179,6 +179,72 @@ describe('notebook preview utils', () => {
       expect(render.table.caption).toBe('2 rows × 3 columns');
     });
 
+    it('treats an all-th first row as headers when no thead is present', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `
+            <table class="dataframe">
+              <tr>
+                <th></th>
+                <th>Name</th>
+                <th>Score</th>
+              </tr>
+              <tr>
+                <th>0</th>
+                <td>Alice</td>
+                <td>10</td>
+              </tr>
+              <tr>
+                <th>1</th>
+                <td>Bob</td>
+                <td>9</td>
+              </tr>
+            </table>
+          `,
+        },
+      };
+
+      const render = getOutputRender(output);
+
+      expect(render.kind).toBe('table');
+      if (render.kind !== 'table') {
+        throw new Error(`Expected table output, got ${render.kind}`);
+      }
+
+      expect(render.table.headers).toEqual(['', 'Name', 'Score']);
+      expect(render.table.rows).toEqual([
+        ['0', 'Alice', '10'],
+        ['1', 'Bob', '9'],
+      ]);
+      expect(render.table.indexColumns).toBe(1);
+      expect(render.table.caption).toBe('2 rows × 2 columns');
+    });
+
+    it('parses large html tables without spread-based max width failures', () => {
+      const rowCount = 140000;
+      const rowsHtml = Array.from({ length: rowCount }, (_, index) => `<tr><td>${index}</td></tr>`).join('');
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `<table><tbody>${rowsHtml}</tbody></table>`,
+        },
+      };
+
+      let render: ReturnType<typeof getOutputRender> | null = null;
+      expect(() => {
+        render = getOutputRender(output);
+      }).not.toThrow();
+
+      expect(render?.kind).toBe('table');
+      if (!render || render.kind !== 'table') {
+        throw new Error(`Expected table output, got ${render?.kind ?? 'unknown'}`);
+      }
+
+      expect(render.table.rows.length).toBe(rowCount);
+      expect(render.table.caption).toBe('140000 rows × 1 column');
+    });
+
     it('keeps pandas styler html in iframe-compatible html mode', () => {
       const output: NotebookOutput = {
         output_type: 'display_data',
