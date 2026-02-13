@@ -517,6 +517,59 @@ const HTML_NAMED_ENTITIES: Record<string, string> = {
   quot: '"',
 };
 
+const HTML_NAMED_ENTITY_CACHE = new Map<string, string | null>();
+let htmlNamedEntityDecoder:
+  | {
+      innerHTML: string;
+      value: string;
+    }
+  | null
+  | undefined;
+
+function getHtmlNamedEntityDecoder():
+  | {
+      innerHTML: string;
+      value: string;
+    }
+  | null {
+  if (typeof htmlNamedEntityDecoder !== 'undefined') {
+    return htmlNamedEntityDecoder;
+  }
+
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    htmlNamedEntityDecoder = null;
+    return null;
+  }
+
+  htmlNamedEntityDecoder = document.createElement('textarea');
+  return htmlNamedEntityDecoder;
+}
+
+function decodeNamedHtmlEntity(entity: string): string | null {
+  if (entity in HTML_NAMED_ENTITIES) {
+    return HTML_NAMED_ENTITIES[entity];
+  }
+
+  if (HTML_NAMED_ENTITY_CACHE.has(entity)) {
+    return HTML_NAMED_ENTITY_CACHE.get(entity) ?? null;
+  }
+
+  const decoder = getHtmlNamedEntityDecoder();
+  if (!decoder) {
+    HTML_NAMED_ENTITY_CACHE.set(entity, null);
+    return null;
+  }
+
+  const token = `&${entity};`;
+  decoder.innerHTML = token;
+  const decoded = decoder.value;
+  const hasUnresolvedSuffix = decoded !== ';' && /[A-Za-z0-9_]+;$/.test(decoded);
+  const resolved = decoded === token || hasUnresolvedSuffix ? null : decoded;
+
+  HTML_NAMED_ENTITY_CACHE.set(entity, resolved);
+  return resolved;
+}
+
 function fromCodePointSafe(codePoint: number, fallback: string): string {
   if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) {
     return fallback;
@@ -533,10 +586,6 @@ function decodeHtmlEntities(value: string): string {
     /&(#\d+|#x[0-9a-f]+|[a-z]+);/gi,
     (match: string, entityRaw: string): string => {
       const entity = entityRaw.toLowerCase();
-      if (entity in HTML_NAMED_ENTITIES) {
-        return HTML_NAMED_ENTITIES[entity];
-      }
-
       if (entity.startsWith('#x')) {
         const codePoint = Number.parseInt(entity.slice(2), 16);
         return Number.isFinite(codePoint) ? fromCodePointSafe(codePoint, match) : match;
@@ -547,7 +596,8 @@ function decodeHtmlEntities(value: string): string {
         return Number.isFinite(codePoint) ? fromCodePointSafe(codePoint, match) : match;
       }
 
-      return match;
+      const decodedNamedEntity = decodeNamedHtmlEntity(entity);
+      return decodedNamedEntity ?? match;
     }
   );
 }
@@ -689,6 +739,19 @@ function parseBodyRows(
   return { rows, indexColumns, unsupportedSpanLayout: false, inferredHeaders };
 }
 
+function getTbodySections(tableInnerHtml: string): string[] {
+  const sections: string[] = [];
+  const tbodyRegex = /<tbody[^>]*>([\s\S]*?)<\/tbody>/gi;
+  let tbodyMatch: RegExpExecArray | null = tbodyRegex.exec(tableInnerHtml);
+
+  while (tbodyMatch) {
+    sections.push(tbodyMatch[1]);
+    tbodyMatch = tbodyRegex.exec(tableInnerHtml);
+  }
+
+  return sections;
+}
+
 function extractTableCaption(tableHtml: string): string | null {
   const captionMatch = tableHtml.match(/<caption[^>]*>([\s\S]*?)<\/caption>/i);
   if (!captionMatch) return null;
@@ -731,9 +794,9 @@ function getTableData(output: NotebookOutput): ParsedTable | null {
   const flattenedHeaders = flattenHeaderRows(theadMatch?.[1] ?? '');
   if (flattenedHeaders === null) return null;
 
-  const tbodyMatch = tableInnerHtml.match(/<tbody[^>]*>([\s\S]*?)<\/tbody>/i);
-  const bodySource = tbodyMatch
-    ? tbodyMatch[1]
+  const tbodySections = getTbodySections(tableInnerHtml);
+  const bodySource = tbodySections.length > 0
+    ? tbodySections.join('\n')
     : tableInnerHtml
         .replace(/<thead[^>]*>[\s\S]*?<\/thead>/gi, '')
         .replace(/<tfoot[^>]*>[\s\S]*?<\/tfoot>/gi, '')

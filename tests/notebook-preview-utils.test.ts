@@ -179,6 +179,67 @@ describe('notebook preview utils', () => {
       expect(render.table.caption).toBe('2 rows × 3 columns');
     });
 
+    it('parses rows across multiple tbody sections', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `
+            <table>
+              <thead>
+                <tr><th>ID</th><th>Value</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>1</td><td>A</td></tr>
+              </tbody>
+              <tbody>
+                <tr><td>2</td><td>B</td></tr>
+                <tr><td>3</td><td>C</td></tr>
+              </tbody>
+            </table>
+          `,
+        },
+      };
+
+      const render = getOutputRender(output);
+
+      expect(render.kind).toBe('table');
+      if (render.kind !== 'table') {
+        throw new Error(`Expected table output, got ${render.kind}`);
+      }
+
+      expect(render.table.headers).toEqual(['ID', 'Value']);
+      expect(render.table.rows).toEqual([
+        ['1', 'A'],
+        ['2', 'B'],
+        ['3', 'C'],
+      ]);
+      expect(render.table.caption).toBe('3 rows × 2 columns');
+    });
+
+    it('decodes standard named html entities in native tables', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `
+            <table>
+              <tr><th>Symbol</th><th>Note</th></tr>
+              <tr><td>&euro;</td><td>&copy; 2026</td></tr>
+            </table>
+          `,
+        },
+      };
+
+      const render = getOutputRender(output);
+
+      expect(render.kind).toBe('table');
+      if (render.kind !== 'table') {
+        throw new Error(`Expected table output, got ${render.kind}`);
+      }
+
+      expect(render.table.headers).toEqual(['Symbol', 'Note']);
+      expect(render.table.rows).toEqual([['€', '© 2026']]);
+    });
+
     it('treats an all-th first row as headers when no thead is present', () => {
       const output: NotebookOutput = {
         output_type: 'display_data',
