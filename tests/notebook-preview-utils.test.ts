@@ -347,5 +347,46 @@ describe('notebook preview utils', () => {
       const render = getOutputRender(output);
       expect(render.kind).toBe('html');
     });
+
+    it('falls back to html mode when table output includes surrounding prose', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `
+            <div>
+              <p>Summary of results:</p>
+              <table>
+                <tr><th>Metric</th><th>Value</th></tr>
+                <tr><td>Accuracy</td><td>0.92</td></tr>
+              </table>
+            </div>
+          `,
+        },
+      };
+
+      const render = getOutputRender(output);
+      expect(render.kind).toBe('html');
+    });
+
+    it('falls back to html mode when html output contains multiple tables', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `
+            <table>
+              <tr><th>A</th></tr>
+              <tr><td>1</td></tr>
+            </table>
+            <table>
+              <tr><th>B</th></tr>
+              <tr><td>2</td></tr>
+            </table>
+          `,
+        },
+      };
+
+      const render = getOutputRender(output);
+      expect(render.kind).toBe('html');
+    });
   });
 });

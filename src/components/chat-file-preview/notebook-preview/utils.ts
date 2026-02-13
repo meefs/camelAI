@@ -759,6 +759,34 @@ function extractTableCaption(tableHtml: string): string | null {
   return captionText || null;
 }
 
+function hasSignificantContentOutsidePrimaryTable(html: string, primaryTableHtml: string): boolean {
+  const remaining = html.replace(primaryTableHtml, '');
+  if (remaining.trim().length === 0) {
+    return false;
+  }
+
+  const withoutNonRenderedBlocks = remaining
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
+    .trim();
+
+  if (withoutNonRenderedBlocks.length === 0) {
+    return false;
+  }
+
+  // Preserve surrounding tables/media by keeping iframe rendering for mixed HTML payloads.
+  if (/<table\b/i.test(withoutNonRenderedBlocks)) {
+    return true;
+  }
+  if (/<(?:img|svg|canvas|video|audio|iframe|object|embed|picture|math)\b/i.test(withoutNonRenderedBlocks)) {
+    return true;
+  }
+
+  return stripHtmlTags(withoutNonRenderedBlocks).length > 0;
+}
+
 function formatTableDimensions(rowCount: number, columnCount: number): string {
   const rowLabel = rowCount === 1 ? 'row' : 'rows';
   const columnLabel = columnCount === 1 ? 'column' : 'columns';
@@ -785,6 +813,7 @@ function getTableData(output: NotebookOutput): ParsedTable | null {
   if (!tableMatch) return null;
   const tableHtml = tableMatch[0];
   const tableInnerHtml = tableMatch[1];
+  if (hasSignificantContentOutsidePrimaryTable(html, tableHtml)) return null;
   if (!/<tr[\s>]/i.test(tableInnerHtml)) return null;
 
   // Multi-index headers (colspan/rowspan) are intentionally left to iframe for now.
