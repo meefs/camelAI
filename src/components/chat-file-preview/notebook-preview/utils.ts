@@ -3,6 +3,7 @@ import type {
   NotebookFile,
   NotebookOutput,
   NotebookOutputRender,
+  ParsedTable,
   TocEntry,
 } from './types';
 
@@ -507,6 +508,236 @@ function getPlotlyPayload(output: NotebookOutput): Record<string, unknown> | nul
   return null;
 }
 
+const HTML_NAMED_ENTITIES: Record<string, string> = {
+  amp: '&',
+  apos: "'",
+  gt: '>',
+  lt: '<',
+  nbsp: ' ',
+  quot: '"',
+};
+
+function fromCodePointSafe(codePoint: number, fallback: string): string {
+  if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) {
+    return fallback;
+  }
+  try {
+    return String.fromCodePoint(codePoint);
+  } catch {
+    return fallback;
+  }
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value.replace(
+    /&(#\d+|#x[0-9a-f]+|[a-z]+);/gi,
+    (match: string, entityRaw: string): string => {
+      const entity = entityRaw.toLowerCase();
+      if (entity in HTML_NAMED_ENTITIES) {
+        return HTML_NAMED_ENTITIES[entity];
+      }
+
+      if (entity.startsWith('#x')) {
+        const codePoint = Number.parseInt(entity.slice(2), 16);
+        return Number.isFinite(codePoint) ? fromCodePointSafe(codePoint, match) : match;
+      }
+
+      if (entity.startsWith('#')) {
+        const codePoint = Number.parseInt(entity.slice(1), 10);
+        return Number.isFinite(codePoint) ? fromCodePointSafe(codePoint, match) : match;
+      }
+
+      return match;
+    }
+  );
+}
+
+function stripHtmlTags(html: string): string {
+  const withoutLineBreakTags = html.replace(/<br\s*\/?>/gi, '\n');
+  const withoutTags = withoutLineBreakTags.replace(/<[^>]*>/g, '');
+  const decoded = decodeHtmlEntities(withoutTags).replace(/\u00a0/g, ' ');
+  return decoded.replace(/\s+/g, ' ').trim();
+}
+
+interface ParsedHtmlTableCell {
+  tag: 'th' | 'td';
+  text: string;
+  hasSpan: boolean;
+}
+
+function parseRowCells(trInnerHtml: string): ParsedHtmlTableCell[] {
+  const cells: ParsedHtmlTableCell[] = [];
+  const cellRegex = /<(th|td)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
+  let match: RegExpExecArray | null = cellRegex.exec(trInnerHtml);
+
+  while (match) {
+    const tag = match[1].toLowerCase() as 'th' | 'td';
+    const attrs = match[2] ?? '';
+    const text = stripHtmlTags(match[3]);
+    const hasSpan = /\b(?:rowspan|colspan)\s*=/i.test(attrs);
+    cells.push({ tag, text, hasSpan });
+    match = cellRegex.exec(trInnerHtml);
+  }
+
+  return cells;
+}
+
+function parseRowCellTexts(trInnerHtml: string): string[] {
+  return parseRowCells(trInnerHtml).map((cell) => cell.text);
+}
+
+function flattenHeaderRows(theadHtml: string): string[] | null {
+  const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  const headerRows: string[][] = [];
+  let trMatch: RegExpExecArray | null = trRegex.exec(theadHtml);
+
+  while (trMatch) {
+    if (/\b(?:rowspan|colspan)\s*=/i.test(trMatch[1])) {
+      return null;
+    }
+    headerRows.push(parseRowCellTexts(trMatch[1]));
+    trMatch = trRegex.exec(theadHtml);
+  }
+
+  if (headerRows.length === 0) return [];
+  if (headerRows.length === 1) return headerRows[0];
+
+  const maxLen = Math.max(...headerRows.map((row) => row.length));
+  const merged: string[] = [];
+  for (let i = 0; i < maxLen; i += 1) {
+    let value = '';
+    for (let rowIndex = headerRows.length - 1; rowIndex >= 0; rowIndex -= 1) {
+      const candidate = (headerRows[rowIndex]?.[i] ?? '').trim();
+      if (candidate.length > 0) {
+        value = candidate;
+        break;
+      }
+    }
+    merged.push(value);
+  }
+
+  return merged;
+}
+
+function parseBodyRows(tbodyHtml: string): {
+  rows: string[][];
+  indexColumns: number;
+  unsupportedSpanLayout: boolean;
+} {
+  const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  const rows: string[][] = [];
+  let indexColumns = 0;
+  let indexColumnsDetected = false;
+  let trMatch: RegExpExecArray | null = trRegex.exec(tbodyHtml);
+
+  while (trMatch) {
+    const parsedCells = parseRowCells(trMatch[1]);
+    if (parsedCells.some((cell) => cell.hasSpan)) {
+      return { rows: [], indexColumns: 0, unsupportedSpanLayout: true };
+    }
+
+    if (parsedCells.length === 0) {
+      trMatch = trRegex.exec(tbodyHtml);
+      continue;
+    }
+
+    let leadingThCount = 0;
+    let seenTd = false;
+    const rowValues: string[] = [];
+    for (const cell of parsedCells) {
+      rowValues.push(cell.text);
+      if (!seenTd && cell.tag === 'th') {
+        leadingThCount += 1;
+      } else if (cell.tag === 'td') {
+        seenTd = true;
+      }
+    }
+
+    if (!indexColumnsDetected) {
+      indexColumns = leadingThCount;
+      indexColumnsDetected = true;
+    }
+
+    rows.push(rowValues);
+    trMatch = trRegex.exec(tbodyHtml);
+  }
+
+  return { rows, indexColumns, unsupportedSpanLayout: false };
+}
+
+function extractTableCaption(tableHtml: string): string | null {
+  const captionMatch = tableHtml.match(/<caption[^>]*>([\s\S]*?)<\/caption>/i);
+  if (!captionMatch) return null;
+  const captionText = stripHtmlTags(captionMatch[1]);
+  return captionText || null;
+}
+
+function formatTableDimensions(rowCount: number, columnCount: number): string {
+  const rowLabel = rowCount === 1 ? 'row' : 'rows';
+  const columnLabel = columnCount === 1 ? 'column' : 'columns';
+  return `${rowCount} ${rowLabel} × ${columnCount} ${columnLabel}`;
+}
+
+function getTableData(output: NotebookOutput): ParsedTable | null {
+  const data = output.data ?? {};
+  const html = toHtml(data['text/html']);
+  if (!html) return null;
+
+  if (!/<table[\s>]/i.test(html)) return null;
+  if (!/<tr[\s>]/i.test(html)) return null;
+
+  // Chart outputs are already handled via dedicated parsers.
+  if (/vegaEmbed\s*\(/i.test(html)) return null;
+  if (/(?:window\.)?Plotly\s*\.\s*(?:newPlot|react)\s*\(/i.test(html)) return null;
+
+  // Keep pandas styler outputs in the iframe path so custom CSS still applies.
+  if (/id=(["'])T_[^"']+\1/i.test(html)) return null;
+  if (/class=(["'])[^"']*\bStyler\b[^"']*\1/i.test(html)) return null;
+
+  const tableMatch = html.match(/<table\b[^>]*>([\s\S]*?)<\/table>/i);
+  if (!tableMatch) return null;
+  const tableHtml = tableMatch[0];
+  const tableInnerHtml = tableMatch[1];
+  if (!/<tr[\s>]/i.test(tableInnerHtml)) return null;
+
+  // Multi-index headers (colspan/rowspan) are intentionally left to iframe for now.
+  if (/\b(?:rowspan|colspan)\s*=/i.test(tableInnerHtml)) return null;
+
+  const theadMatch = tableInnerHtml.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i);
+  const flattenedHeaders = flattenHeaderRows(theadMatch?.[1] ?? '');
+  if (flattenedHeaders === null) return null;
+
+  const tbodyMatch = tableInnerHtml.match(/<tbody[^>]*>([\s\S]*?)<\/tbody>/i);
+  const bodySource = tbodyMatch
+    ? tbodyMatch[1]
+    : tableInnerHtml
+        .replace(/<thead[^>]*>[\s\S]*?<\/thead>/gi, '')
+        .replace(/<tfoot[^>]*>[\s\S]*?<\/tfoot>/gi, '')
+        .replace(/<caption[^>]*>[\s\S]*?<\/caption>/gi, '');
+
+  const body = parseBodyRows(bodySource);
+  if (body.unsupportedSpanLayout || body.rows.length === 0) return null;
+
+  const maxRowWidth = Math.max(...body.rows.map((row) => row.length));
+  const columnCount = Math.max(flattenedHeaders.length, maxRowWidth);
+  const headers = flattenedHeaders.length
+    ? [...flattenedHeaders]
+    : Array.from({ length: columnCount }, () => '');
+  while (headers.length < columnCount) {
+    headers.push('');
+  }
+
+  const dataColumns = Math.max(0, columnCount - body.indexColumns);
+  const caption = extractTableCaption(tableHtml) ?? formatTableDimensions(body.rows.length, dataColumns);
+
+  return {
+    headers,
+    rows: body.rows,
+    indexColumns: body.indexColumns,
+    caption,
+  };
+}
+
 function getHtmlOutputDocument(output: NotebookOutput): string | null {
   const data = output.data ?? {};
   const html = toHtml(data['text/html']);
@@ -589,6 +820,11 @@ export function getOutputRender(output: NotebookOutput): NotebookOutputRender {
   const plotlyPayload = getPlotlyPayload(output);
   if (plotlyPayload) {
     return { kind: 'plotly', payload: plotlyPayload };
+  }
+
+  const tableData = getTableData(output);
+  if (tableData) {
+    return { kind: 'table', table: tableData };
   }
 
   const htmlOutput = getHtmlOutputDocument(output);

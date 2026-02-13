@@ -4,6 +4,7 @@ import { getOutputRender } from './utils';
 import { NotebookHtmlOutput } from './html-output';
 import { PlotlyChart } from './plotly-chart';
 import { VegaLiteChart } from './vega-lite-chart';
+import { NotebookTable } from './notebook-table';
 
 interface OutputRendererProps {
   output: NotebookOutput;
@@ -43,6 +44,14 @@ export function OutputRenderer({
     return (
       <div className="w-full min-w-0">
         <PlotlyChart payload={render.payload} title={title} />
+      </div>
+    );
+  }
+
+  if (render.kind === 'table') {
+    return (
+      <div className="w-full min-w-0">
+        <NotebookTable table={render.table} mode={mode} />
       </div>
     );
   }

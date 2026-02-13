@@ -118,5 +118,107 @@ describe('notebook preview utils', () => {
       }
       expect(render.spec.mark).toBe('line');
     });
+
+    it('parses pandas-style html tables as native table output', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `
+            <div>
+              <style scoped>
+                .dataframe tbody tr th:only-of-type { vertical-align: middle; }
+              </style>
+              <table border="1" class="dataframe">
+                <thead>
+                  <tr style="text-align: right;">
+                    <th></th>
+                    <th>First Name</th>
+                    <th>Last Name</th>
+                    <th>Score</th>
+                  </tr>
+                  <tr>
+                    <th>Rank</th>
+                    <th></th>
+                    <th></th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th>1</th>
+                    <td>Philippe</td>
+                    <td>SALLE</td>
+                    <td>16</td>
+                  </tr>
+                  <tr>
+                    <th>2</th>
+                    <td>Maryse</td>
+                    <td>AULAGNON</td>
+                    <td>12</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          `,
+        },
+      };
+
+      const render = getOutputRender(output);
+
+      expect(render.kind).toBe('table');
+      if (render.kind !== 'table') {
+        throw new Error(`Expected table output, got ${render.kind}`);
+      }
+
+      expect(render.table.headers).toEqual(['Rank', 'First Name', 'Last Name', 'Score']);
+      expect(render.table.rows).toEqual([
+        ['1', 'Philippe', 'SALLE', '16'],
+        ['2', 'Maryse', 'AULAGNON', '12'],
+      ]);
+      expect(render.table.indexColumns).toBe(1);
+      expect(render.table.caption).toBe('2 rows × 3 columns');
+    });
+
+    it('keeps pandas styler html in iframe-compatible html mode', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `
+            <style type="text/css">
+              #T_abcd1234_row0_col0 { background-color: #fef08a; }
+            </style>
+            <table id="T_abcd1234" class="Styler">
+              <thead><tr><th>value</th></tr></thead>
+              <tbody><tr><td>42</td></tr></tbody>
+            </table>
+          `,
+        },
+      };
+
+      const render = getOutputRender(output);
+      expect(render.kind).toBe('html');
+    });
+
+    it('falls back to html mode for span-based table layouts', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `
+            <table>
+              <thead>
+                <tr><th colspan="2">Summary</th></tr>
+                <tr><th>Metric</th><th>Value</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Headcount</td><td>120</td></tr>
+              </tbody>
+            </table>
+          `,
+        },
+      };
+
+      const render = getOutputRender(output);
+      expect(render.kind).toBe('html');
+    });
   });
 });
