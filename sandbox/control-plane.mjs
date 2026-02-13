@@ -26,7 +26,6 @@ let workspaceEnv = {};
 
 // ─── Chat Sessions ─────────────────────────────────────────
 const chatSessions = new Map();
-const SESSION_IDLE_MS = 5 * 60_000; // Clean up idle sessions after 5 min
 const DISCONNECT_IDLE_MS = 60_000;  // Close client WebSockets after 1 min of post-result inactivity
 
 // ─── System Prompt ─────────────────────────────────────────
@@ -279,7 +278,6 @@ class ChatSession {
     this.pendingQuestions = new Map();
     this.userProfile = null;
     this.lastForwardedCompactSummaryKey = null;
-    this.idleTimer = null;
     this.disconnectTimer = null;
     this.clients = new Set();
     this.shuttingDown = false;
@@ -287,14 +285,10 @@ class ChatSession {
 
   addClient(ws) {
     this.clients.add(ws);
-    this.clearIdleCleanup();
   }
 
   removeClient(ws) {
     this.clients.delete(ws);
-    if (this.clients.size === 0) {
-      this.scheduleIdleCleanup();
-    }
   }
 
   broadcast(payload) {
@@ -302,23 +296,6 @@ class ChatSession {
     for (const ws of this.clients) {
       try { ws.send(json); } catch { /* closed */ }
     }
-  }
-
-  clearIdleCleanup() {
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
-  }
-
-  scheduleIdleCleanup() {
-    this.clearIdleCleanup();
-    this.idleTimer = setTimeout(() => {
-      if (this.clients.size > 0) return;
-      console.log(`[ControlPlane] cleaning up idle session thread=${this.threadId}`);
-      this.shutdown();
-      chatSessions.delete(this.threadId);
-    }, SESSION_IDLE_MS);
   }
 
   /**
@@ -346,7 +323,6 @@ class ChatSession {
 
   shutdown() {
     this.shuttingDown = true;
-    this.clearIdleCleanup();
     this.clearDisconnect();
     if (this.messageResolver) {
       const r = this.messageResolver;
