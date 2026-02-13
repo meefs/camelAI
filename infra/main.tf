@@ -186,11 +186,12 @@ resource "azurerm_postgresql_flexible_server_configuration" "tcp_keepalives_coun
   value     = "3" # failed keepalives before declaring connection dead
 }
 
-# GP_Standard_D2ds_v5 supports up to 859; set explicitly since B1ms had 50
+# GP_Standard_D2ds_v5 supports up to 859; set high to allow concurrent juicefs sync
+# processes (each sync uses --threads 100, multiple workspaces can sync at once)
 resource "azurerm_postgresql_flexible_server_configuration" "max_connections" {
   name      = "max_connections"
   server_id = azurerm_postgresql_flexible_server.metadata.id
-  value     = "200"
+  value     = "859"
 }
 
 resource "azurerm_postgresql_flexible_server_firewall_rule" "vm" {

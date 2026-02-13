@@ -8,12 +8,17 @@
  *   merged = /mnt/workspaces/{name} (what containers see)
  *
  * New/modified files land on NVMe (fast), unchanged files read from JuiceFS.
- * Background sync flushes upper → JuiceFS and clears the NVMe layer,
- * so NVMe acts as a write buffer rather than accumulating data.
+ * Background sync flushes merged → JuiceFS via jfs:// protocol (bypasses FUSE).
+ * NVMe is only cleared on teardown AFTER the final sync completes, so
+ * reconnecting during a sync always sees complete data from NVMe.
  *
  * Sync uses `juicefs sync` with the `jfs://` protocol to write directly to
  * the JuiceFS backend (bypassing FUSE). The volume name is resolved via an
  * env var: JFS_VOLUME_NAME=<meta-url> → jfs://JFS_VOLUME_NAME/path.
+ *
+ * IMPORTANT: OverlayFS is required for write performance. JuiceFS FUSE direct
+ * mounts (even with --writeback) are too slow for bulk file creation (bun install,
+ * git clone, etc). Do not replace this with JuiceFS-direct mounts.
  */
 import { mkdir } from 'fs/promises';
 import { exec, execSync } from 'child_process';
@@ -23,6 +28,7 @@ const NVME_ROOT = process.env.NVME_ROOT || '/mnt/nvme';
 const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/mnt/workspaces';
 const SYNC_INTERVAL_MS = parseInt(process.env.OVERLAY_SYNC_INTERVAL_MS || String(60_000), 10);
 const SYNC_TIMEOUT_MS = 5 * 60_000; // 5 minutes for large workspaces
+const SYNC_THREADS = parseInt(process.env.OVERLAY_SYNC_THREADS || '100', 10);
 
 // JuiceFS volume name for jfs:// protocol sync (env var holds the metadata URL).
 // The env var name must match the volume name used in jfs:// URIs.
@@ -41,7 +47,8 @@ interface OverlayMount {
   mergedDir: string;
   mountedAt: number;
   lastSyncedAt: number;
-  syncing: boolean;
+  /** Promise-based sync lock. Only one sync runs at a time per workspace. */
+  syncLock: Promise<void> | null;
 }
 
 const mounts = new Map<string, OverlayMount>();
@@ -71,6 +78,28 @@ function isMounted(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Acquire the sync lock for a workspace. Returns a release function.
+ * If a sync is already in progress, waits for it to finish first.
+ */
+async function acquireSyncLock(mount: OverlayMount): Promise<() => void> {
+  // Wait for any in-progress sync to complete
+  while (mount.syncLock) {
+    await mount.syncLock;
+  }
+
+  // Create a new lock with an externally-resolvable promise
+  let release!: () => void;
+  mount.syncLock = new Promise<void>((resolve) => {
+    release = () => {
+      mount.syncLock = null;
+      resolve();
+    };
+  });
+
+  return release;
 }
 
 /**
@@ -122,33 +151,41 @@ export async function ensureOverlay(name: string): Promise<string> {
     mergedDir,
     mountedAt: now,
     lastSyncedAt: now,
-    syncing: false,
+    syncLock: null,
   });
 
   return mergedDir;
 }
 
 /**
- * Sync workspace data from NVMe to JuiceFS (non-disruptive).
+ * Sync workspace data from merged overlay to JuiceFS (non-disruptive).
  *
+ * Acquires the per-workspace sync lock so only one sync runs at a time.
  * Uses `juicefs sync` with jfs:// protocol to write directly to the JuiceFS
  * backend (bypassing FUSE). Reads from the merged overlayfs view so deletions
- * are handled correctly.
+ * are handled correctly (--delete-dst removes files from JuiceFS that were
+ * deleted in the overlay).
+ *
+ * Does NOT clear NVMe — the overlay stays intact so the sandbox keeps
+ * its full view of files even during/after sync.
  */
 export async function syncOverlay(name: string): Promise<void> {
   const mount = mounts.get(name);
   if (!mount) return;
 
-  if (mount.syncing) {
+  // If a sync is already running, skip (background sync will retry next interval)
+  if (mount.syncLock) {
     console.log(`[Overlay] ${name}: sync already in progress, skipping`);
     return;
   }
-  mount.syncing = true;
+
+  const release = await acquireSyncLock(mount);
+
 
   try {
     const start = Date.now();
     await runAsync(
-      `juicefs sync --perms --delete-dst --dirs "${mount.mergedDir}/" ${jfsDst(name)}`
+      `juicefs sync --perms --delete-dst --dirs --threads ${SYNC_THREADS} "${mount.mergedDir}/" ${jfsDst(name)}`
     );
     mount.lastSyncedAt = Date.now();
     const elapsed = Math.round((Date.now() - start) / 1000);
@@ -156,13 +193,17 @@ export async function syncOverlay(name: string): Promise<void> {
   } catch (err) {
     console.error(`[Overlay] sync failed for ${name}:`, err);
   } finally {
-    mount.syncing = false;
+    release();
   }
 }
 
 /**
- * Full flush on teardown: sync to JuiceFS, unmount overlay, clear NVMe.
+ * Full flush on teardown: wait for any in-progress sync, run final sync,
+ * unmount overlay, then clear NVMe.
+ *
  * Called when the sandbox is reaped (idle timeout) or explicitly terminated.
+ * NVMe is only cleared AFTER the final sync completes successfully, so
+ * reconnecting during a sync always sees complete data from the NVMe layer.
  */
 export async function removeOverlay(name: string): Promise<void> {
   const mount = mounts.get(name);
@@ -170,39 +211,47 @@ export async function removeOverlay(name: string): Promise<void> {
 
   const start = Date.now();
 
-  // Final sync: merged → JuiceFS (via jfs:// protocol, bypasses FUSE)
-  try {
-    await runAsync(
-      `juicefs sync --perms --delete-dst --dirs "${mount.mergedDir}/" ${jfsDst(name)}`
-    );
-    console.log(`[Overlay] ${name}: final sync completed`);
-  } catch (err) {
-    console.error(`[Overlay] ${name}: final sync failed:`, err);
-  }
+  // Acquire the sync lock — waits for any in-progress background sync to finish
+  const release = await acquireSyncLock(mount);
 
-  // Unmount overlay
-  if (isMounted(mount.mergedDir)) {
+
+  try {
+    // Final sync: merged → JuiceFS (via jfs:// protocol, bypasses FUSE)
     try {
-      run(`umount "${mount.mergedDir}"`);
-    } catch {
-      try { run(`umount -l "${mount.mergedDir}"`); } catch { /* best effort */ }
+      await runAsync(
+        `juicefs sync --perms --delete-dst --dirs --threads ${SYNC_THREADS} "${mount.mergedDir}/" ${jfsDst(name)}`
+      );
+      console.log(`[Overlay] ${name}: final sync completed`);
+    } catch (err) {
+      console.error(`[Overlay] ${name}: final sync failed:`, err);
     }
-  }
 
-  // Catch any stragglers written between sync and umount
-  try {
-    await runAsync(
-      `juicefs sync --perms --dirs "${mount.upperDir}/" ${jfsDst(name)}`
-    );
-  } catch {
-    // Best effort — upper may already be empty
-  }
+    // Unmount overlay
+    if (isMounted(mount.mergedDir)) {
+      try {
+        run(`umount "${mount.mergedDir}"`);
+      } catch {
+        try { run(`umount -l "${mount.mergedDir}"`); } catch { /* best effort */ }
+      }
+    }
 
-  // Clear NVMe upper + work dirs (data is on JuiceFS now)
-  try {
-    run(`rm -rf "${mount.upperDir}" "${mount.workDir}"`);
-  } catch {
-    // Best effort
+    // Catch any stragglers written between sync and umount
+    try {
+      await runAsync(
+        `juicefs sync --perms --dirs --threads ${SYNC_THREADS} "${mount.upperDir}/" ${jfsDst(name)}`
+      );
+    } catch {
+      // Best effort — upper may already be empty
+    }
+
+    // Clear NVMe upper + work dirs (data is on JuiceFS now)
+    try {
+      run(`rm -rf "${mount.upperDir}" "${mount.workDir}"`);
+    } catch {
+      // Best effort
+    }
+  } finally {
+    release();
   }
 
   mounts.delete(name);
