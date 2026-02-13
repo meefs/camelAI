@@ -21,14 +21,19 @@ describe('PlotlyChart script loading', () => {
       <PlotlyChart payload={{ data: [], layout: {}, config: {} }} title="Example chart" />
     );
 
-    let firstScript: HTMLScriptElement | null = null;
     await waitFor(() => {
-      firstScript = document.querySelector<HTMLScriptElement>(
+      const firstScript = document.querySelector<HTMLScriptElement>(
         `script[data-chiridion-notebook-script="${PLOTLY_CDN_URL}"]`
       );
       expect(firstScript).not.toBeNull();
     });
-    firstScript?.dispatchEvent(new Event('error'));
+    const initialScript = document.querySelector<HTMLScriptElement>(
+      `script[data-chiridion-notebook-script="${PLOTLY_CDN_URL}"]`
+    );
+    if (!initialScript) {
+      throw new Error(`Expected script tag for ${PLOTLY_CDN_URL}`);
+    }
+    initialScript.dispatchEvent(new Event('error'));
 
     await waitFor(() => {
       expect(screen.getByText(`Failed to load ${PLOTLY_CDN_URL}.`)).toBeInTheDocument();
@@ -48,7 +53,7 @@ describe('PlotlyChart script loading', () => {
         )
       );
       expect(scripts).toHaveLength(1);
-      expect(scripts[0]).not.toBe(firstScript as HTMLScriptElement);
+      expect(scripts[0]).not.toBe(initialScript);
     });
   });
 });

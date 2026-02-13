@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { classifyCells } from './cell-classifier';
 import { extractHeader } from './notebook-header';
 import { OutputRenderer } from './output-renderers';
@@ -35,7 +35,7 @@ function removeHeaderContentFromTitleCell(source: string): string {
   return [...lines.slice(0, h1Index), ...lines.slice(cursor)].join('\n').trim();
 }
 
-export function ReportMode({ notebook, layout }: ReportModeProps) {
+function ReportModeComponent({ notebook, layout }: ReportModeProps) {
   const cells = useMemo(() => getNotebookCells(notebook), [notebook]);
   const header = useMemo(() => extractHeader(notebook), [notebook]);
   const classifiedCells = useMemo(() => classifyCells(cells), [cells]);
@@ -111,3 +111,9 @@ export function ReportMode({ notebook, layout }: ReportModeProps) {
     </div>
   );
 }
+
+function areReportModePropsEqual(prev: ReportModeProps, next: ReportModeProps): boolean {
+  return prev.notebook === next.notebook && prev.layout === next.layout;
+}
+
+export const ReportMode = memo(ReportModeComponent, areReportModePropsEqual);

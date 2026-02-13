@@ -36,14 +36,19 @@ describe('VegaLiteChart script loading', () => {
   it('replaces a previously failed vega script tag on retry', async () => {
     const { rerender } = render(<VegaLiteChart spec={BASE_SPEC} title="Example chart" />);
 
-    let firstScript: HTMLScriptElement | null = null;
     await waitFor(() => {
-      firstScript = document.querySelector<HTMLScriptElement>(
+      const firstScript = document.querySelector<HTMLScriptElement>(
         `script[data-chiridion-notebook-script="${VEGA_CDN_URL}"]`
       );
       expect(firstScript).not.toBeNull();
     });
-    firstScript?.dispatchEvent(new Event('error'));
+    const initialScript = document.querySelector<HTMLScriptElement>(
+      `script[data-chiridion-notebook-script="${VEGA_CDN_URL}"]`
+    );
+    if (!initialScript) {
+      throw new Error(`Expected script tag for ${VEGA_CDN_URL}`);
+    }
+    initialScript.dispatchEvent(new Event('error'));
 
     await waitFor(() => {
       expect(screen.getByText(`Failed to load ${VEGA_CDN_URL}.`)).toBeInTheDocument();
@@ -63,7 +68,7 @@ describe('VegaLiteChart script loading', () => {
         )
       );
       expect(scripts).toHaveLength(1);
-      expect(scripts[0]).not.toBe(firstScript as HTMLScriptElement);
+      expect(scripts[0]).not.toBe(initialScript);
     });
   });
 });

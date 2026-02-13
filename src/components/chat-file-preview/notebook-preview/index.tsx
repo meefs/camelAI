@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { cn } from '@/lib/utils';
 import { NotebookMode } from './notebook-mode';
 import { ReportMode } from './report-mode';
@@ -11,7 +12,7 @@ interface NotebookPreviewProps {
   viewMode: 'report' | 'notebook';
 }
 
-export function NotebookPreview({
+function NotebookPreviewComponent({
   notebook,
   layout,
   viewMode,
@@ -32,5 +33,18 @@ export function NotebookPreview({
     </div>
   );
 }
+
+function areNotebookPreviewPropsEqual(
+  prev: NotebookPreviewProps,
+  next: NotebookPreviewProps
+): boolean {
+  return (
+    prev.notebook === next.notebook &&
+    prev.layout === next.layout &&
+    prev.viewMode === next.viewMode
+  );
+}
+
+export const NotebookPreview = memo(NotebookPreviewComponent, areNotebookPreviewPropsEqual);
 
 export type { NotebookCell, NotebookFile } from './types';

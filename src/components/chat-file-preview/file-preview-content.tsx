@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getPreviewType } from './file-type-utils';
@@ -82,7 +82,7 @@ export interface FilePreviewContentProps {
   notebookViewMode?: 'report' | 'notebook';
 }
 
-export function FilePreviewContent({
+function FilePreviewContentComponent({
   filename,
   previewUrl,
   contentType,
@@ -298,3 +298,21 @@ export function FilePreviewContent({
     </div>
   );
 }
+
+function areFilePreviewContentPropsEqual(
+  prev: FilePreviewContentProps,
+  next: FilePreviewContentProps
+): boolean {
+  return (
+    prev.filename === next.filename &&
+    prev.previewUrl === next.previewUrl &&
+    prev.contentType === next.contentType &&
+    prev.layout === next.layout &&
+    prev.notebookViewMode === next.notebookViewMode
+  );
+}
+
+export const FilePreviewContent = memo(
+  FilePreviewContentComponent,
+  areFilePreviewContentPropsEqual
+);
