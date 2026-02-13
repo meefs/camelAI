@@ -430,7 +430,7 @@ export class WorkspaceContainer {
     }
   }
 
-  async provisionSpriteForWorkspace(): Promise<SandboxRecord> {
+  async provisionSandbox(): Promise<SandboxRecord> {
     const name = this.getSandboxName();
     console.log(`[Sandbox] provisioning sandbox=${name} workspace=${this.workspaceId}`);
     const sandbox = await this.ensureSandboxExists(name);
@@ -444,7 +444,7 @@ export class WorkspaceContainer {
    * Everything (SDK, skills, create-worker) is baked into the sandbox image,
    * so this just needs to create/reconnect the sandbox via the proxy.
    */
-  async ensureSpriteBootstrapped(): Promise<void> {
+  async ensureSandboxReady(): Promise<void> {
     await this.ensureSandbox();
   }
 
@@ -621,7 +621,7 @@ export class WorkspaceContainer {
 
   /**
    * Start the workspace runtime with the given env vars.
-   * Env vars should be pre-built (and cached) by WorkspaceDO.ensureSpriteReady().
+   * Env vars should be pre-built (and cached) by WorkspaceDO.ensureSandboxReady().
    */
   async startForWorkspace(prebuiltEnvVars?: Record<string, string>): Promise<void> {
     // If we already have env vars pushed, skip

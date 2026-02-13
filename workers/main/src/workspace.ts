@@ -206,18 +206,18 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   }
 
   // ---------------------------------------------------------------------------
-  // Sprite Bootstrap + Env Caching
+  // Sandbox Bootstrap + Env Caching
   // ---------------------------------------------------------------------------
 
   /**
-   * Ensure the workspace sprite is created and bootstrapped, and return
+   * Ensure the workspace sandbox is created and bootstrapped, and return
    * cached workspace-level env vars (building them if needed).
    *
    * This is the single entry point for all callers that need a ready sandbox.
    * Env vars are cached in DO storage to avoid expensive operations (R2 temp
    * credentials, OpenRouter key provisioning) on every new chat.
    */
-  async ensureSpriteReady(
+  async ensureSandboxReady(
     workspaceId: string,
     orgId: string
   ): Promise<{ envVars: Record<string, string>; fromCache: boolean }> {
@@ -225,7 +225,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const container = getWorkspaceContainer(runtimeEnv, workspaceId, orgId);
 
     // Ensure sandbox exists
-    await container.ensureSpriteBootstrapped();
+    await container.ensureSandboxReady();
 
     // Check for cached env vars
     const cached = this.ctx.storage.kv.get<WorkspaceEnvCache>(WORKSPACE_ENV_CACHE_KEY);
@@ -233,7 +233,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
     if (cached && cached.expiresAt > now + ENV_CACHE_REFRESH_BUFFER_MS) {
       console.log(
-        `[WorkspaceDO] ensureSpriteReady: using cached env vars workspace=${workspaceId} ` +
+        `[WorkspaceDO] ensureSandboxReady: using cached env vars workspace=${workspaceId} ` +
         `age=${Math.round((now - cached.builtAt) / 1000)}s expiresIn=${Math.round((cached.expiresAt - now) / 1000)}s`
       );
       return { envVars: cached.envVars, fromCache: true };
@@ -241,7 +241,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
     // Build fresh env vars
     console.log(
-      `[WorkspaceDO] ensureSpriteReady: building env vars workspace=${workspaceId} ` +
+      `[WorkspaceDO] ensureSandboxReady: building env vars workspace=${workspaceId} ` +
       `reason=${cached ? 'expiring' : 'no_cache'}`
     );
     const envVars = await container.buildEnvVars();
@@ -290,7 +290,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const container = getWorkspaceContainer(runtimeEnv, workspaceId, orgId);
 
     // Ensure sandbox exists first
-    await container.ensureSpriteBootstrapped();
+    await container.ensureSandboxReady();
 
     // Build and cache env vars
     const envVars = await container.buildEnvVars();
@@ -387,14 +387,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     ) as unknown as OrgDO;
     await orgStub.addWorkspace(id, name, now, createdBy);
 
-    // Eagerly provision sprite, bootstrap, and prewarm env vars at workspace creation
+    // Eagerly provision sandbox, bootstrap, and prewarm env vars at workspace creation
     // so runtime paths avoid first-touch latency.
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
     const shouldEagerProvision = !!(runtimeEnv.SANDBOX_HOST || runtimeEnv.SANDBOX_HOST_URL);
     if (shouldEagerProvision) {
       const runtime = getWorkspaceContainer(runtimeEnv, id, orgId);
-      await runtime.provisionSpriteForWorkspace();
-      await runtime.ensureSpriteBootstrapped();
+      await runtime.provisionSandbox();
+      await runtime.ensureSandboxReady();
 
       // Prewarm env vars in background (don't block workspace creation)
       waitUntil(

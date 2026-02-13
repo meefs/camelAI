@@ -170,7 +170,7 @@ After creating or updating a notebook, set the active chat preview to the notebo
 
 ```text
 set_file_preview(
-  path="/home/sprite/analysis.ipynb",
+  path="/home/claude/analysis.ipynb",
   content_type="application/x-ipynb+json"
 )
 ```

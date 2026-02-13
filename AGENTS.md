@@ -262,7 +262,7 @@ MCP-driven thread prompts (for example connection setup and bug report capture) 
 - After token refresh, updated credentials are pushed to both the running workspace sandbox runtime and all deployed workspace workers.
 
 ### Workspace Runtime Provisioning
-Docker + gVisor sandboxes are provisioned eagerly when a workspace is created (`WorkspaceDO.createWorkspace` calls `WorkspaceContainer.provisionSpriteForWorkspace`).
+Docker + gVisor sandboxes are provisioned eagerly when a workspace is created (`WorkspaceDO.createWorkspace` calls `WorkspaceContainer.provisionSandbox`).
 Each sandbox gets a host directory at `/mnt/workspaces/{sandboxName}` (NVMe RAID0 + Azure Blob NFS v3 overlayfs).
 Workers reach the sandbox host via a **VPC service binding** (`env.SANDBOX_HOST`) that routes through a Cloudflare Tunnel to the Azure VM. No public internet exposure.
 Runtime startup is on-demand from chat/API paths; dashboard route loaders no longer trigger warmup.

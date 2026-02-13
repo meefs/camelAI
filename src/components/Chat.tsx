@@ -532,6 +532,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
 });
 
 
+
 export default function Chat({
   threadId,
   workspaceId,
@@ -1016,7 +1017,7 @@ export default function Chat({
     }
 
     // WebSocket connects at /ws/{workspace}?threadId={id}
-    // Worker validates thread scope and forwards to ChatThreadDO for sprite-exec chat transport.
+    // Worker validates thread scope and forwards to ChatThreadDO for sandbox chat transport.
     const wsHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const workspaceIdForConnection = resolvedWorkspaceId;

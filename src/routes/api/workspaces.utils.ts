@@ -86,7 +86,7 @@ export async function requireWorkspaceAuth(
   };
 }
 
-/** Workspace root directory inside sprite runtime */
+/** Workspace root directory inside sandbox */
 const WORKSPACE_ROOT = '/home/claude';
 
 const NORMALIZABLE_WHITESPACE = /[ \u00A0\u2007\u202F]/;

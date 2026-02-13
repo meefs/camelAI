@@ -222,7 +222,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private runtime: WorkspaceContainer | null = null;
   private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
-  private runnerDetachedByUs: boolean = false;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
@@ -466,10 +465,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   webSocketClose(): void {
-    // Detach runner transport when no chat clients are connected.
-    if (this.getChatSockets().length === 0) {
-      this.detachRunnerSocket();
-    }
+    // Intentional no-op: we never detach the runner from the DO side.
+    // The sandbox control-plane owns the disconnect lifecycle and will
+    // close the WebSocket after 1 minute of idle following a result event.
+    // Keeping the runner alive means reconnecting chat clients can
+    // immediately resume without re-provisioning the sandbox connection.
   }
 
   getPreviewTarget(): PreviewTarget | null {
@@ -825,7 +825,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const workspaceStub = this.env.WORKSPACE.get(
         this.env.WORKSPACE.idFromName(context.workspaceId)
       );
-      const { envVars: workspaceEnvVars, fromCache } = await workspaceStub.ensureSpriteReady(
+      const { envVars: workspaceEnvVars, fromCache } = await workspaceStub.ensureSandboxReady(
         context.workspaceId,
         context.orgId
       );
@@ -880,11 +880,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
 
     ws.addEventListener('close', (event) => {
-      const detached = this.runnerDetachedByUs;
-      this.runnerDetachedByUs = false;
       this.runnerSocket = null;
+      console.log(`[ChatThreadDO] runner websocket closed (code=${event.code})`);
 
-      console.log(`[ChatThreadDO] runner websocket closed (code=${event.code}, detached=${detached})`);
+      // The sandbox control-plane owns the disconnect lifecycle. Any close
+      // while chat clients are still connected means the runner went away
+      // (idle timeout, crash, reaper). Push a synthetic result so clients
+      // can clear their loading indicator instead of spinning forever.
+      if (this.getChatSockets().length > 0) {
+        this.pushChatEvent({
+          type: 'sdk_event',
+          event: { type: 'result', subtype: 'runner_disconnected' },
+        });
+      }
     });
 
     ws.addEventListener('error', (err) => {
@@ -893,17 +901,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // Accept after handlers are attached so no early messages are lost.
     ws.accept();
-  }
-
-  private detachRunnerSocket(): void {
-    if (!this.runnerSocket) return;
-    this.runnerDetachedByUs = true;
-    try {
-      this.runnerSocket.close(1000, 'detach');
-    } catch {
-      // ignore close failures
-    }
-    this.runnerSocket = null;
   }
 
   private handleRunnerEvent(event: Record<string, unknown>): void {

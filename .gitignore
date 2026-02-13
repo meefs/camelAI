@@ -77,7 +77,3 @@ package-lock.json
 workers/main/src/embedded-create-worker.ts
 workers/main/src/embedded-skills.ts
 
-# Generated sprite assets (built at build time)
-public/assets/sprite/
-workers/main/src/sprite-assets-manifest.ts
-.sprite

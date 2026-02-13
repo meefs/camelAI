@@ -55,7 +55,7 @@ Teammate messages arrive as `role: "user"` messages with content like:
 ```
 <teammate-message teammate_id="team-lead">
 I've completed the `pixelDissolve` improvement in
-`/home/sprite/svg-animator/app/lib/animations.ts` (lines 657-703).
+`/home/claude/svg-animator/app/lib/animations.ts` (lines 657-703).
 Here's a summary of what changed:
 ...
 TypeScript compiles cleanly with no errors.
@@ -106,7 +106,7 @@ FULLY EXPANDED (click "Message" sub-row):
   ┊  ▾ Message
   ┊     ┌────────────────────────────────────────────────────┐
   ┊     │  I've completed the `pixelDissolve` improvement    │
-  ┊     │  in `/home/sprite/svg-animator/app/lib/            │
+  ┊     │  in `/home/claude/svg-animator/app/lib/            │
   ┊     │  animations.ts` (lines 657-703). Here's a         │
   ┊     │  summary of what changed:                          │
   ┊     │                                                    │

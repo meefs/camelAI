@@ -39,7 +39,7 @@ function buildEnvVarsForTest(workspaceId: string, orgId: string) {
   return runtime.buildEnvVars();
 }
 
-describe('sprite runtime', () => {
+describe('sandbox runtime', () => {
   it('derives runtime ID from workspace ID', () => {
     const id = getContainerIdForWorkspace('workspace-123');
     expect(id).toBe('ws-workspace-123');
