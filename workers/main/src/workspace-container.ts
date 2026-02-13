@@ -486,7 +486,7 @@ export class WorkspaceContainer {
     if (this.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) envVars.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = this.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
     if (this.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) envVars.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = this.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS;
 
-    const prefix = workspaceId === orgId ? `${orgId}/` : `${orgId}/${workspaceId}/`;
+    const prefix = `${orgId}/${workspaceId}/`;
 
     if (!this.env.TOKEN_SIGNING_SECRET) {
       throw new Error('TOKEN_SIGNING_SECRET is required for token signing');

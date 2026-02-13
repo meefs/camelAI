@@ -1,6 +1,7 @@
 import type { Route } from './+types/workspaces.$id.upload';
 import { requireWorkspaceAccess } from './workspaces.utils';
 import { getEnv } from '@/lib/cloudflare.server';
+import { buildWorkspaceScopedR2Key } from '@/lib/workspace-r2-paths';
 
 function generateUniqueFilename(originalName: string): string {
   const timestamp = Date.now();
@@ -30,7 +31,7 @@ function toMountPath(filename: string): string {
 }
 
 function buildUploadKey(orgId: string, workspaceId: string, filename: string): string {
-  return `${orgId}/${workspaceId}/user-uploads/${filename}`;
+  return buildWorkspaceScopedR2Key(orgId, workspaceId, `user-uploads/${filename}`);
 }
 
 function parseStoredFilename(value: string | null): string | null {

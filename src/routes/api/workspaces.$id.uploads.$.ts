@@ -3,6 +3,7 @@ import { getSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getWorkspace, getWorkspaceAccess } from '@/lib/auth-do';
 import type { AuthEnv } from '@/lib/auth-helpers';
+import { buildWorkspaceScopedR2Key } from '@/lib/workspace-r2-paths';
 
 // Common MIME types for file serving
 const MIME_TYPES: Record<string, string> = {
@@ -134,9 +135,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
     // Construct R2 key
     const orgId = sessionContext.session.org_id;
-    const r2Key = `${orgId}/${workspaceId}/user-uploads/${filePath}`;
-
-    // Get the object from R2
+    const r2Key = buildWorkspaceScopedR2Key(
+      orgId,
+      workspaceId,
+      `user-uploads/${filePath}`
+    );
     const object = await env.R2_BUCKET.get(r2Key);
     if (!object) {
       return Response.json({ error: 'File not found' }, { status: 404 });

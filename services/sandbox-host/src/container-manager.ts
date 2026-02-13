@@ -126,7 +126,7 @@ export function removeWebSocket(name: string): void {
  * Same logic as workspace-container.ts buildEnvVars.
  */
 function r2MountPrefix(orgId: string, workspaceId: string): string {
-  return orgId === workspaceId ? orgId : `${orgId}/${workspaceId}`;
+  return `${orgId}/${workspaceId}`;
 }
 
 /**
