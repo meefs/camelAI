@@ -427,40 +427,45 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
-    if (data.type === 'connection_setup_response') {
-      await this.handleConnectionSetupResponse(data as unknown as ConnectionSetupResponse);
-      return;
-    }
+    try {
+      if (data.type === 'connection_setup_response') {
+        await this.handleConnectionSetupResponse(data as unknown as ConnectionSetupResponse);
+        return;
+      }
 
-    if (data.type === 'bug_report_response') {
-      await this.handleBugReportResponse(data as unknown as BugReportCaptureResponse);
-      return;
-    }
+      if (data.type === 'bug_report_response') {
+        await this.handleBugReportResponse(data as unknown as BugReportCaptureResponse);
+        return;
+      }
 
-    // Chat transport messages
-    if (data.type === 'init') {
-      await this.handleChatInit(ws, data as unknown as ChatClientInitMessage);
-      return;
-    }
+      // Chat transport messages
+      if (data.type === 'init') {
+        await this.handleChatInit(ws, data as unknown as ChatClientInitMessage);
+        return;
+      }
 
-    if (data.type === 'message') {
-      await this.handleChatMessage(data as unknown as ChatClientMessage);
-      return;
-    }
+      if (data.type === 'message') {
+        await this.handleChatMessage(data as unknown as ChatClientMessage);
+        return;
+      }
 
-    if (data.type === 'stop') {
-      await this.handleChatStop();
-      return;
-    }
+      if (data.type === 'stop') {
+        await this.handleChatStop();
+        return;
+      }
 
-    if (data.type === 'question_response') {
-      await this.handleQuestionResponse(data as unknown as ChatClientQuestionResponse);
-      return;
-    }
+      if (data.type === 'question_response') {
+        await this.handleQuestionResponse(data as unknown as ChatClientQuestionResponse);
+        return;
+      }
 
-    if (data.type === 'set_preview_target') {
-      await this.handleSetPreviewTarget(data as unknown as ChatClientSetPreviewTarget);
-      return;
+      if (data.type === 'set_preview_target') {
+        await this.handleSetPreviewTarget(data as unknown as ChatClientSetPreviewTarget);
+        return;
+      }
+    } catch (err) {
+      console.error(`[ChatThreadDO] webSocketMessage error (type=${data.type}):`, err);
+      this.emitChatError(`Internal error handling ${data.type}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -645,10 +650,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (!attributedContent) return;
 
     await this.ensureRunnerConnected();
-    this.sendRunnerCommand({
-      type: 'message',
-      content: attributedContent,
-    });
+    if (!this.sendRunnerCommand({ type: 'message', content: attributedContent })) {
+      this.emitChatError('Failed to send message to sandbox');
+      return;
+    }
 
     this.ctx.waitUntil(
       this.touchThreadForUserMessage().catch((err) => {
@@ -658,26 +663,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private async handleChatStop(): Promise<void> {
-    if (!this.runnerSocket) return;
     this.sendRunnerCommand({ type: 'stop' });
   }
 
   private async handleQuestionResponse(data: ChatClientQuestionResponse): Promise<void> {
-    if (!this.runnerSocket) {
-      this.emitChatError('No session');
-      return;
-    }
-
     if (!data.questionId || !data.answers || typeof data.answers !== 'object') {
       this.emitChatError('Missing questionId or answers');
       return;
     }
 
-    this.sendRunnerCommand({
+    if (!this.sendRunnerCommand({
       type: 'question_response',
       questionId: data.questionId,
       answers: data.answers,
-    });
+    })) {
+      this.emitChatError('Sandbox is not connected');
+    }
   }
 
   private static readonly SLASH_COMMANDS = new Set<string>(SUPPORTED_SLASH_COMMANDS);
@@ -850,11 +851,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.attachRunnerSocket(chatWs);
 
       // Send init message with thread ID and env vars.
-      this.sendRunnerCommand({
+      if (!this.sendRunnerCommand({
         type: 'init',
         threadId: context.threadId,
         env: envVars,
-      });
+      })) {
+        throw new Error('Failed to send init command - connection broken');
+      }
 
       console.log(`[ChatThreadDO] ensureRunnerConnected: connected for thread=${context.threadId}`);
     })();
@@ -887,12 +890,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // while chat clients are still connected means the runner went away
       // (idle timeout, crash, reaper). Push a synthetic result so clients
       // can clear their loading indicator instead of spinning forever.
-      if (this.getChatSockets().length > 0) {
-        this.pushChatEvent({
-          type: 'sdk_event',
-          event: { type: 'result', subtype: 'runner_disconnected' },
-        });
-      }
+      //
+      // Defer via setTimeout(0) so any in-flight message events that were
+      // queued before the close event can drain first — otherwise the
+      // synthetic result can arrive before final real content.
+      setTimeout(() => {
+        if (this.getChatSockets().length > 0) {
+          this.pushChatEvent({
+            type: 'sdk_event',
+            event: { type: 'result', subtype: 'runner_disconnected' },
+          });
+        }
+      }, 0);
     });
 
     ws.addEventListener('error', (err) => {
@@ -953,11 +962,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.pushChatEvent(event);
   }
 
-  private sendRunnerCommand(message: Record<string, unknown>): void {
-    if (!this.runnerSocket) {
-      throw new Error('Runner websocket is not connected');
+  private sendRunnerCommand(message: Record<string, unknown>): boolean {
+    if (!this.runnerSocket) return false;
+    try {
+      this.runnerSocket.send(JSON.stringify(message));
+      return true;
+    } catch {
+      this.runnerSocket = null;
+      return false;
     }
-    this.runnerSocket.send(JSON.stringify(message));
   }
 
   private emitChatError(message: string): void {
