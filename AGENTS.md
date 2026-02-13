@@ -279,6 +279,7 @@ Runtime startup is now on-demand from chat/API paths; dashboard route loaders no
 - Supported Vega chart payloads include both direct mime types (`application/vnd.vegalite.v*+json`, `application/vnd.vega.v*+json`) and Altair `text/html` `vegaEmbed(...)` wrappers (spec extraction path, including `NaN` literal normalization).
 - Plotly outputs (`application/vnd.plotly.v1+json`) render client-side via Plotly CDN loading directly in the notebook DOM (no iframe wrapper), with responsive sizing and light/dark-aware theming.
 - DataFrame-style HTML tables (`text/html` with `<table>`) are parsed and rendered natively in React with theme-aware styling, index-column support, and horizontal overflow handling.
+- Native table rendering caps in-UI row display at 100 rows for performance and provides a footer CSV download action (full parsed dataset, including rows beyond the display cap).
 - Pandas Styler and complex span-based tables (`rowspan`/`colspan`, e.g. MultiIndex columns) intentionally fall back to sandboxed iframe rendering.
 - Non-chart `text/html` outputs still render in sandboxed iframes (`allow-scripts allow-downloads`) for generic HTML preview.
 

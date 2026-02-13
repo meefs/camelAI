@@ -1,6 +1,7 @@
 'use client';
 
 import { cn } from '@/lib/utils';
+import { Download } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   TableBody,
@@ -16,6 +17,8 @@ interface NotebookTableProps {
   mode: 'report' | 'notebook';
 }
 
+const MAX_DISPLAY_ROWS = 100;
+
 function isNumeric(value: string): boolean {
   const normalized = value.trim();
   if (!normalized || normalized === '...' || normalized === 'NaN' || normalized === 'None') {
@@ -29,7 +32,16 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
   const [showOverflowFade, setShowOverflowFade] = useState(false);
   const isReport = mode === 'report';
   const columnCount = Math.max(0, table.headers.length, ...table.rows.map((row) => row.length));
-  const rowCount = table.rows.length;
+  const totalRows = table.rows.length;
+  const isTruncated = totalRows > MAX_DISPLAY_ROWS;
+  const displayRows = isTruncated ? table.rows.slice(0, MAX_DISPLAY_ROWS) : table.rows;
+  const dataColumns = Math.max(0, columnCount - table.indexColumns);
+  const fallbackCaption = `${totalRows.toLocaleString()} row${totalRows === 1 ? '' : 's'} × ${dataColumns.toLocaleString()} column${dataColumns === 1 ? '' : 's'}`;
+  const captionText = isTruncated
+    ? `Showing ${MAX_DISPLAY_ROWS.toLocaleString()} of ${totalRows.toLocaleString()} rows × ${dataColumns.toLocaleString()} columns`
+    : (table.caption ?? fallbackCaption);
+  const downloadLabel = isTruncated ? 'Download all rows as CSV' : 'Download as CSV';
+  const hasCsvData = table.headers.length > 0 || table.rows.some((row) => row.length > 0);
 
   const updateOverflowFade = useCallback(() => {
     const el = scrollRef.current;
@@ -61,7 +73,58 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
   useEffect(() => {
     const raf = requestAnimationFrame(updateOverflowFade);
     return () => cancelAnimationFrame(raf);
-  }, [updateOverflowFade, columnCount, rowCount]);
+  }, [updateOverflowFade, columnCount, totalRows]);
+
+  const downloadCsv = useCallback(() => {
+    if (!hasCsvData || typeof document === 'undefined') {
+      return;
+    }
+
+    const escapeCell = (value: string): string => {
+      if (/[",\n\r]/.test(value)) {
+        return `"${value.replace(/"/g, '""')}"`;
+      }
+      return value;
+    };
+
+    const csvColumnCount = Math.max(
+      0,
+      table.headers.length,
+      ...table.rows.map((row) => row.length)
+    );
+    const lines: string[] = [];
+
+    if (table.headers.length > 0) {
+      const paddedHeaders = Array.from(
+        { length: csvColumnCount },
+        (_, columnIndex) => table.headers[columnIndex] ?? ''
+      );
+      lines.push(paddedHeaders.map(escapeCell).join(','));
+    }
+
+    for (const row of table.rows) {
+      const paddedRow = Array.from(
+        { length: csvColumnCount },
+        (_, columnIndex) => row[columnIndex] ?? ''
+      );
+      lines.push(paddedRow.map(escapeCell).join(','));
+    }
+
+    const csvContent = lines.join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'table-data.csv';
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 0);
+  }, [hasCsvData, table.headers, table.rows]);
 
   return (
     <div className="relative w-full min-w-0">
@@ -99,7 +162,7 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
             ) : null}
 
             <TableBody className="[&_tr:last-child]:border-b-0">
-              {table.rows.map((row, rowIndex) => (
+              {displayRows.map((row, rowIndex) => (
                 <TableRow
                   key={`row-${rowIndex}`}
                   className={cn(
@@ -153,9 +216,23 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
         ) : null}
       </div>
 
-      {table.caption ? (
-        <p className="mt-1.5 text-xs text-muted-foreground/60">{table.caption}</p>
-      ) : null}
+      <div className="mt-1.5 flex items-center justify-between gap-4 text-xs text-muted-foreground/60">
+        <span>{captionText}</span>
+        <button
+          type="button"
+          onClick={downloadCsv}
+          disabled={!hasCsvData}
+          className={cn(
+            'inline-flex shrink-0 items-center gap-1 text-xs transition-colors',
+            hasCsvData
+              ? 'text-muted-foreground/70 hover:text-foreground'
+              : 'cursor-not-allowed text-muted-foreground/40'
+          )}
+        >
+          <Download className="size-3" />
+          {downloadLabel}
+        </button>
+      </div>
     </div>
   );
 }
