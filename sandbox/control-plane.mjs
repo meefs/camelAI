@@ -27,6 +27,7 @@ let workspaceEnv = {};
 // ─── Chat Sessions ─────────────────────────────────────────
 const chatSessions = new Map();
 const SESSION_IDLE_MS = 5 * 60_000; // Clean up idle sessions after 5 min
+const DISCONNECT_IDLE_MS = 60_000;  // Close client WebSockets after 1 min of post-result inactivity
 
 // ─── System Prompt ─────────────────────────────────────────
 function buildSystemPromptAppend() {
@@ -279,6 +280,7 @@ class ChatSession {
     this.userProfile = null;
     this.lastForwardedCompactSummaryKey = null;
     this.idleTimer = null;
+    this.disconnectTimer = null;
     this.clients = new Set();
     this.shuttingDown = false;
   }
@@ -319,9 +321,33 @@ class ChatSession {
     }, SESSION_IDLE_MS);
   }
 
+  /**
+   * Start the post-result disconnect timer. After 1 minute of no new
+   * messages following a result/stop, close all client WebSockets so
+   * the sandbox-host reaper can eventually reclaim the container.
+   */
+  scheduleDisconnect() {
+    this.clearDisconnect();
+    this.disconnectTimer = setTimeout(() => {
+      if (this.activeQuery || this.eventLoopRunning) return; // still active
+      console.log(`[ControlPlane] disconnecting idle clients thread=${this.threadId}`);
+      for (const ws of this.clients) {
+        try { ws.close(1000, 'idle'); } catch { /* already closed */ }
+      }
+    }, DISCONNECT_IDLE_MS);
+  }
+
+  clearDisconnect() {
+    if (this.disconnectTimer) {
+      clearTimeout(this.disconnectTimer);
+      this.disconnectTimer = null;
+    }
+  }
+
   shutdown() {
     this.shuttingDown = true;
     this.clearIdleCleanup();
+    this.clearDisconnect();
     if (this.messageResolver) {
       const r = this.messageResolver;
       this.messageResolver = null;
@@ -549,10 +575,6 @@ class ChatSession {
           const todos = this.extractTodos(event);
           if (todos) this.broadcast({ type: 'todo_state', todos });
 
-          // Signal turn completion
-          if (event?.type === 'result') {
-            this.broadcast({ type: 'turn_complete' });
-          }
         }
       } catch (error) {
         console.error(`[ControlPlane] event loop error thread=${this.threadId}:`, error);
@@ -561,12 +583,16 @@ class ChatSession {
         this.activeQuery = null;
         this.queryIterator = null;
         this.eventLoopRunning = false;
+        // Start disconnect countdown — a new message will cancel it.
+        this.scheduleDisconnect();
       }
     })();
   }
 
   async handleMessage(content) {
     if (typeof content !== 'string' || !content.trim()) return;
+    // New message resets the post-result disconnect timer.
+    this.clearDisconnect();
     await this.init();
     this.startEventLoop();
 
