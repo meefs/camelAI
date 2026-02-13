@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 #
 # Azure VM provisioning script for Chiridion sandbox host.
-# Sets up: NVMe RAID0 (cache), Azure Files NFS (durable canonical),
-# overlayfs (per-workspace tiered mounts), Docker + gVisor, Caddy, Bun.
+# Sets up: NVMe RAID0 (cache), Azure Blob NFS v3 (durable canonical),
+# overlayfs (per-workspace tiered mounts), Docker + gVisor, Bun.
 #
 # Storage layout:
 #   /mnt/nvme        - NVMe RAID0 (fast ephemeral, overlay upper layers)
-#   /mnt/nfs         - Azure Files NFS (durable canonical, overlay lower layers)
+#   /mnt/nfs         - Azure Blob NFS v3 (durable canonical, overlay lower layers)
 #   /mnt/workspaces  - Per-workspace overlayfs merged mount points
 #   /mnt/nvme/.docker - Docker data root
+#
+# Required environment variables (from /etc/chiridion/storage.env):
+#   STORAGE_ACCOUNT - Azure Blob storage account name
+#   BLOB_CONTAINER  - Blob container name for workspace data
 #
 # Usage: sudo bash setup-host.sh
 #
@@ -20,12 +24,9 @@ echo "=== Chiridion Sandbox Host Setup ==="
 NVME_DIR="/mnt/nvme"
 NFS_DIR="/mnt/nfs"
 WORKSPACES_DIR="/mnt/workspaces"
-STORAGE_ACCOUNT="${AZURE_STORAGE_ACCOUNT:-chiridionstoragefiles}"
-NFS_SHARE="${AZURE_NFS_SHARE:-workspaces}"
-STORAGE_ACCOUNT_URL="${STORAGE_ACCOUNT}.file.core.windows.net:/${STORAGE_ACCOUNT}/${NFS_SHARE}"
 
 # ─── 1. NVMe RAID0 ──────────────────────────────────────────
-echo "[1/9] Setting up NVMe RAID0..."
+echo "[1/7] Setting up NVMe RAID0..."
 NVME_DISKS=($(lsblk -d -n -o NAME,TYPE | awk '$2=="disk" && $1~/^nvme/ && $1!~/nvme0/' | awk '{print "/dev/"$1}'))
 
 if [ ${#NVME_DISKS[@]} -eq 0 ]; then
@@ -67,28 +68,38 @@ fi
 mkdir -p "$NVME_DIR/.work"
 mkdir -p "$NVME_DIR/.docker"
 
-# ─── 2. Azure Files NFS Mount ────────────────────────────────
-echo "[2/9] Setting up Azure Files NFS mount..."
+# ─── 2. Azure Blob NFS v3 Mount ─────────────────────────────
+echo "[2/7] Setting up Azure Blob NFS v3 mount..."
+
+# Validate required env vars
+if [ -z "${STORAGE_ACCOUNT:-}" ] || [ -z "${BLOB_CONTAINER:-}" ]; then
+  echo "  ERROR: STORAGE_ACCOUNT and BLOB_CONTAINER must be set."
+  echo "  Source /etc/chiridion/storage.env before running this script."
+  exit 1
+fi
+
 apt-get update -qq && apt-get install -y -qq nfs-common >/dev/null 2>&1
 mkdir -p "$NFS_DIR"
+
+NFS_MOUNT_TARGET="${STORAGE_ACCOUNT}.blob.core.windows.net:/${STORAGE_ACCOUNT}/${BLOB_CONTAINER}"
 
 if mountpoint -q "$NFS_DIR" 2>/dev/null; then
   echo "  $NFS_DIR already mounted."
 else
-  mount -t nfs "${STORAGE_ACCOUNT_URL}" "$NFS_DIR" -o vers=4,minorversion=1,sec=sys,nconnect=4
-  echo "  NFS mounted at $NFS_DIR"
+  mount -t nfs -o sec=sys,vers=3,nolock,proto=tcp "$NFS_MOUNT_TARGET" "$NFS_DIR"
+  echo "  NFS v3 mounted at $NFS_DIR"
 fi
 
 # Persist in fstab
-grep -q "$STORAGE_ACCOUNT_URL" /etc/fstab || \
-  echo "${STORAGE_ACCOUNT_URL} ${NFS_DIR} nfs vers=4,minorversion=1,sec=sys,nconnect=4,nofail 0 0" >> /etc/fstab
+grep -q "$NFS_MOUNT_TARGET" /etc/fstab || \
+  echo "${NFS_MOUNT_TARGET} ${NFS_DIR} nfs sec=sys,vers=3,nolock,proto=tcp,nofail 0 0" >> /etc/fstab
 
 # ─── 3. Workspace mount point directory ───────────────────────
-echo "[3/9] Creating workspace mount point directory..."
+echo "[3/7] Creating workspace mount point directory..."
 mkdir -p "$WORKSPACES_DIR"
 
 # ─── 4. Docker CE ────────────────────────────────────────────
-echo "[4/9] Installing Docker CE..."
+echo "[4/7] Installing Docker CE..."
 if ! command -v docker &>/dev/null; then
   curl -fsSL https://get.docker.com | sh
   systemctl enable --now docker
@@ -97,7 +108,7 @@ else
 fi
 
 # ─── 5. gVisor (runsc) ──────────────────────────────────────
-echo "[5/9] Installing gVisor..."
+echo "[5/7] Installing gVisor..."
 if ! command -v runsc &>/dev/null; then
   curl -fsSL https://gvisor.dev/archive.key | gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" \
@@ -108,7 +119,7 @@ else
 fi
 
 # ─── 6. Configure Docker with gVisor ─────────────────────────
-echo "[6/9] Configuring Docker runtime..."
+echo "[6/7] Configuring Docker runtime..."
 cat > /etc/docker/daemon.json << DEOF
 {
   "runtimes": {
@@ -121,21 +132,11 @@ cat > /etc/docker/daemon.json << DEOF
 DEOF
 systemctl restart docker
 
-# ─── 7. Caddy (TLS termination) ─────────────────────────────
-echo "[7/9] Installing Caddy..."
-if ! command -v caddy &>/dev/null; then
-  apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https >/dev/null 2>&1
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -qq && apt-get install -y -qq caddy
-else
-  echo "  Caddy already installed."
-fi
-
-# ─── 8. Bun runtime ─────────────────────────────────────────
-echo "[8/9] Installing Bun..."
+# ─── 7. Bun runtime + systemd services ──────────────────────
+echo "[7/7] Installing Bun and setting up services..."
 if ! command -v bun &>/dev/null; then
   apt-get install -y -qq unzip >/dev/null 2>&1
+  export HOME="${HOME:-/root}"
   curl -fsSL https://bun.sh/install | bash
   cp /root/.bun/bin/bun /usr/local/bin/bun
   chmod 755 /usr/local/bin/bun
@@ -143,8 +144,6 @@ else
   echo "  Bun already installed."
 fi
 
-# ─── 9. Systemd services ───────────────────────────────────
-echo "[9/9] Setting up systemd services..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -161,7 +160,7 @@ WorkingDirectory=${SERVICE_DIR}
 ExecStart=/usr/local/bin/bun run src/index.ts
 Restart=always
 RestartSec=5
-Environment=PORT=4400
+Environment=PORT=80
 Environment=WORKSPACES_ROOT=${WORKSPACES_DIR}
 Environment=NFS_ROOT=${NFS_DIR}
 Environment=NVME_ROOT=${NVME_DIR}
@@ -231,10 +230,6 @@ echo "[RAID] RAID0 rebuilt at $NVME_DIR. Overlay upper layers start empty (NFS h
 REOF
 chmod +x /usr/local/bin/chiridion-rebuild-raid.sh
 
-# Copy Caddyfile
-cp "${SCRIPT_DIR}/../Caddyfile" /etc/caddy/Caddyfile
-systemctl reload caddy 2>/dev/null || systemctl restart caddy
-
 systemctl daemon-reload
 systemctl enable chiridion-nvme-raid 2>/dev/null || true
 
@@ -243,7 +238,7 @@ echo "=== Setup complete ==="
 echo ""
 echo "Storage layout (overlayfs tiered):"
 echo "  /mnt/nvme        - NVMe RAID0 cache (overlay upper layers, ~3.5TB)"
-echo "  /mnt/nfs         - Azure Files NFS (overlay lower layers, canonical data)"
+echo "  /mnt/nfs         - Azure Blob NFS v3 (overlay lower layers, canonical data)"
 echo "  /mnt/workspaces  - Per-workspace overlayfs merged mounts"
 echo "  /mnt/nvme/.docker - Docker data root"
 echo ""
@@ -251,14 +246,10 @@ echo "On reboot: NVMe RAID0 is rebuilt (empty cache). NFS has all canonical data
 echo "Per-workspace overlayfs mounts are created on-demand by sandbox-host."
 echo ""
 echo "To build sandbox image:"
-echo "  docker build -t chiridion-sandbox:latest -f Dockerfile.sandbox ../../"
+echo "  docker build -t chiridion-sandbox:latest -f Dockerfile.sandbox /opt/chiridion/"
 echo ""
 echo "To start the service:"
 echo "  sudo systemctl enable --now chiridion-sandbox-host"
 echo ""
-echo "To configure auth token:"
-echo "  mkdir -p /etc/chiridion"
-echo '  echo "SANDBOX_HOST_TOKEN=your-secret-token" > /etc/chiridion/sandbox-host.env'
-echo ""
 echo "To verify:"
-echo "  curl http://localhost:4400/health"
+echo "  curl http://localhost/health"

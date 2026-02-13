@@ -2,7 +2,7 @@
  * OverlayFS mount manager for tiered workspace storage.
  *
  * Each workspace gets an overlay mount:
- *   lower  = /mnt/nfs/{name}     (Azure Files NFS, durable canonical data)
+ *   lower  = /mnt/nfs/{name}     (Azure Blob NFS v3, durable canonical data)
  *   upper  = /mnt/nvme/{name}    (NVMe RAID0, fast ephemeral writes)
  *   work   = /mnt/nvme/.work/{name}  (overlayfs workdir)
  *   merged = /mnt/workspaces/{name}  (what containers see)

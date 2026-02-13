@@ -7,13 +7,13 @@ variable "environment" {
 variable "location" {
   description = "Azure region"
   type        = string
-  default     = "eastus"
+  default     = "centralus"
 }
 
 variable "vm_size" {
   description = "VM SKU"
   type        = string
-  default     = "Standard_E64ds_v5"
+  default     = "Standard_E64ads_v7"
 }
 
 variable "admin_username" {
@@ -28,28 +28,15 @@ variable "ssh_public_key" {
 }
 
 variable "storage_account_name" {
-  description = "Azure Files storage account name (globally unique)"
+  description = "Azure Blob storage account name (globally unique)"
   type        = string
-  default     = "chiridionstoragefiles"
+  default     = "chiridionsandbox"
 }
 
-variable "nfs_share_name" {
-  description = "Azure Files NFS share name"
+variable "blob_container_name" {
+  description = "Blob container name for workspace data"
   type        = string
   default     = "workspaces"
-}
-
-variable "nfs_share_quota_gb" {
-  description = "NFS share size in GB"
-  type        = number
-  default     = 2048
-}
-
-variable "sandbox_host_token" {
-  description = "Auth token for sandbox host API. Auto-generated if empty."
-  type        = string
-  default     = ""
-  sensitive   = true
 }
 
 variable "ssh_allowed_cidr" {
@@ -58,11 +45,6 @@ variable "ssh_allowed_cidr" {
   default     = "*"
 }
 
-variable "sandbox_host_allowed_cidr" {
-  description = "CIDR block allowed for sandbox host port (4400)"
-  type        = string
-  default     = "0.0.0.0/0"
-}
 
 variable "os_disk_size_gb" {
   description = "OS disk size in GB"

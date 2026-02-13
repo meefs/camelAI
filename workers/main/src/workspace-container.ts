@@ -58,9 +58,9 @@ export interface WorkspaceContainerEnv {
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC?: string;
   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
 
-  // Sandbox host runtime config
+  // Sandbox host — VPC binding (deployed) or URL fallback (local dev)
+  SANDBOX_HOST?: Fetcher;
   SANDBOX_HOST_URL?: string;
-  SANDBOX_HOST_TOKEN?: string;
 }
 
 interface ControlPlaneExecResponse {
@@ -204,36 +204,36 @@ export class WorkspaceContainer {
 
   // ─── Proxy (lifecycle + FS + exec) ──────────────────────
 
-  private get proxyBaseUrl(): string {
-    return (this.env.SANDBOX_HOST_URL || 'http://localhost:4400').replace(/\/$/, '');
-  }
-
-  private requireProxyToken(): string {
-    const token = this.env.SANDBOX_HOST_TOKEN;
-    if (!token) {
-      throw new Error('SANDBOX_HOST_TOKEN is required for workspace runtime');
-    }
-    return token;
-  }
-
-  private buildProxyHeaders(extra: HeadersInit = {}): Headers {
-    const headers = new Headers(extra);
-    headers.set('Authorization', `Bearer ${this.requireProxyToken()}`);
-    return headers;
-  }
-
+  /**
+   * Fetch via the sandbox host — uses Workers VPC binding when available
+   * (deployed envs), falls back to direct HTTP for local dev.
+   */
   private async fetchProxy(
     path: string,
     init: RequestInit = {},
     query: Record<string, string | number | boolean | undefined> = {}
   ): Promise<Response> {
-    const url = new URL(`${this.proxyBaseUrl}${path.startsWith('/') ? path : `/${path}`}`);
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    const url = new URL(`http://localhost${normalizedPath}`);
     for (const [key, value] of Object.entries(query)) {
       if (value === undefined || value === null) continue;
       url.searchParams.set(key, String(value));
     }
-    const headers = this.buildProxyHeaders(init.headers);
-    return fetch(url.toString(), { ...init, headers });
+
+    const headers = new Headers(init.headers);
+
+    // Use VPC binding when available (deployed envs), otherwise fall back to direct HTTP (local dev)
+    if (this.env.SANDBOX_HOST) {
+      return this.env.SANDBOX_HOST.fetch(url.toString(), { ...init, headers });
+    }
+
+    // Local dev fallback — use SANDBOX_HOST_URL or default
+    const baseUrl = (this.env.SANDBOX_HOST_URL || 'http://localhost:4400').replace(/\/$/, '');
+    const fallbackUrl = new URL(`${baseUrl}${normalizedPath}`);
+    for (const [key, value] of url.searchParams.entries()) {
+      fallbackUrl.searchParams.set(key, value);
+    }
+    return fetch(fallbackUrl.toString(), { ...init, headers });
   }
 
   // ─── Path Helpers ────────────────────────────────────────
@@ -762,15 +762,20 @@ export class WorkspaceContainer {
   async connectChatWebSocket(): Promise<WebSocket> {
     await this.ensureSandbox();
 
-    const wsUrl = `${this.proxyBaseUrl}${this.sandboxProxyPath('/chat')}`;
+    const wsPath = this.sandboxProxyPath('/chat');
     console.log(`[Sandbox] connectChatWebSocket: connecting via proxy`);
 
-    const response = await fetch(wsUrl, {
-      headers: {
-        Upgrade: 'websocket',
-        Authorization: `Bearer ${this.requireProxyToken()}`,
-      },
-    });
+    const headers: Record<string, string> = { Upgrade: 'websocket' };
+    let response: Response;
+
+    if (this.env.SANDBOX_HOST) {
+      // VPC binding — use absolute URL with http:// (tunnel handles transport)
+      response = await this.env.SANDBOX_HOST.fetch(`http://localhost${wsPath}`, { headers });
+    } else {
+      // Local dev fallback
+      const baseUrl = (this.env.SANDBOX_HOST_URL || 'http://localhost:4400').replace(/\/$/, '');
+      response = await fetch(`${baseUrl}${wsPath}`, { headers });
+    }
 
     if (response.status !== 101 || !response.webSocket) {
       const body = await response.text();

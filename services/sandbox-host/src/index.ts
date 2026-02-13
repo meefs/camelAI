@@ -28,8 +28,7 @@ import {
   fsExists,
 } from './fs-host';
 
-const PORT = parseInt(process.env.PORT || '4400', 10);
-const AUTH_TOKEN = process.env.SANDBOX_HOST_TOKEN;
+const PORT = parseInt(process.env.PORT || '80', 10);
 
 interface WsData {
   name: string;
@@ -37,12 +36,6 @@ interface WsData {
   upstream: WebSocket | null;
   upstreamReady: boolean;
   pendingMessages: string[];
-}
-
-function checkAuth(req: Request): boolean {
-  if (!AUTH_TOKEN) return true;
-  const header = req.headers.get('Authorization');
-  return header === `Bearer ${AUTH_TOKEN}`;
 }
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -107,9 +100,6 @@ Bun.serve<WsData>({
   port: PORT,
 
   async fetch(req: Request, server) {
-    if (!checkAuth(req)) {
-      return errorResponse('Unauthorized', 401);
-    }
 
     const url = new URL(req.url);
 

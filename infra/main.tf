@@ -18,20 +18,11 @@ provider "azurerm" {
 }
 
 locals {
-  sandbox_host_token = var.sandbox_host_token != "" ? var.sandbox_host_token : random_password.sandbox_host_token.result
-
   tags = {
     project     = "chiridion"
     environment = var.environment
     managed_by  = "terraform"
   }
-}
-
-# ─── Auth Token ────────────────────────────────────────────────
-
-resource "random_password" "sandbox_host_token" {
-  length  = 64
-  special = false
 }
 
 # ─── Resource Group ────────────────────────────────────────────
@@ -57,13 +48,7 @@ resource "azurerm_subnet" "sandbox" {
   resource_group_name  = azurerm_resource_group.sandbox.name
   virtual_network_name = azurerm_virtual_network.sandbox.name
   address_prefixes     = ["10.0.1.0/24"]
-}
-
-resource "azurerm_subnet" "storage" {
-  name                 = "snet-storage"
-  resource_group_name  = azurerm_resource_group.sandbox.name
-  virtual_network_name = azurerm_virtual_network.sandbox.name
-  address_prefixes     = ["10.0.2.0/24"]
+  service_endpoints    = ["Microsoft.Storage"]
 }
 
 resource "azurerm_network_security_group" "sandbox" {
@@ -82,48 +67,6 @@ resource "azurerm_network_security_rule" "ssh" {
   source_port_range           = "*"
   destination_port_range      = "22"
   source_address_prefix       = var.ssh_allowed_cidr
-  destination_address_prefix  = "*"
-  resource_group_name         = azurerm_resource_group.sandbox.name
-  network_security_group_name = azurerm_network_security_group.sandbox.name
-}
-
-resource "azurerm_network_security_rule" "https" {
-  name                        = "AllowHTTPS"
-  priority                    = 110
-  direction                   = "Inbound"
-  access                      = "Allow"
-  protocol                    = "Tcp"
-  source_port_range           = "*"
-  destination_port_range      = "443"
-  source_address_prefix       = "*"
-  destination_address_prefix  = "*"
-  resource_group_name         = azurerm_resource_group.sandbox.name
-  network_security_group_name = azurerm_network_security_group.sandbox.name
-}
-
-resource "azurerm_network_security_rule" "http" {
-  name                        = "AllowHTTP"
-  priority                    = 115
-  direction                   = "Inbound"
-  access                      = "Allow"
-  protocol                    = "Tcp"
-  source_port_range           = "*"
-  destination_port_range      = "80"
-  source_address_prefix       = "*"
-  destination_address_prefix  = "*"
-  resource_group_name         = azurerm_resource_group.sandbox.name
-  network_security_group_name = azurerm_network_security_group.sandbox.name
-}
-
-resource "azurerm_network_security_rule" "sandbox_host" {
-  name                        = "AllowSandboxHost"
-  priority                    = 120
-  direction                   = "Inbound"
-  access                      = "Allow"
-  protocol                    = "Tcp"
-  source_port_range           = "*"
-  destination_port_range      = "4400"
-  source_address_prefix       = var.sandbox_host_allowed_cidr
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.sandbox.name
   network_security_group_name = azurerm_network_security_group.sandbox.name
@@ -157,66 +100,33 @@ resource "azurerm_network_interface" "sandbox" {
   }
 }
 
-# ─── Storage (Azure Files NFS) ─────────────────────────────────
+# ─── Storage (Azure Blob with NFS v3) ─────────────────────────
 
-resource "azurerm_storage_account" "files" {
-  name                          = var.storage_account_name
-  resource_group_name           = azurerm_resource_group.sandbox.name
-  location                      = azurerm_resource_group.sandbox.location
-  account_tier                  = "Premium"
-  account_kind                  = "FileStorage"
-  account_replication_type      = "LRS"
-  public_network_access_enabled = false
-  tags                          = local.tags
+resource "azurerm_storage_account" "blob" {
+  name                       = var.storage_account_name
+  resource_group_name        = azurerm_resource_group.sandbox.name
+  location                   = azurerm_resource_group.sandbox.location
+  account_tier               = "Standard"
+  account_kind               = "StorageV2"
+  account_replication_type   = "LRS"
+  is_hns_enabled             = true
+  nfsv3_enabled              = true
+  https_traffic_only_enabled = false
+  tags                       = local.tags
+
+  network_rules {
+    default_action             = "Deny"
+    virtual_network_subnet_ids = [azurerm_subnet.sandbox.id]
+  }
 
   lifecycle {
     prevent_destroy = true
   }
 }
 
-resource "azurerm_storage_share" "workspaces" {
-  name               = var.nfs_share_name
-  storage_account_id = azurerm_storage_account.files.id
-  access_tier        = "Premium"
-  enabled_protocol   = "NFS"
-  quota              = var.nfs_share_quota_gb
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-resource "azurerm_private_endpoint" "storage" {
-  name                = "pe-chiridion-storage-${var.environment}"
-  resource_group_name = azurerm_resource_group.sandbox.name
-  location            = azurerm_resource_group.sandbox.location
-  subnet_id           = azurerm_subnet.storage.id
-  tags                = local.tags
-
-  private_service_connection {
-    name                           = "psc-chiridion-storage"
-    private_connection_resource_id = azurerm_storage_account.files.id
-    subresource_names              = ["file"]
-    is_manual_connection           = false
-  }
-
-  private_dns_zone_group {
-    name                 = "default"
-    private_dns_zone_ids = [azurerm_private_dns_zone.storage.id]
-  }
-}
-
-resource "azurerm_private_dns_zone" "storage" {
-  name                = "privatelink.file.core.windows.net"
-  resource_group_name = azurerm_resource_group.sandbox.name
-  tags                = local.tags
-}
-
-resource "azurerm_private_dns_zone_virtual_network_link" "storage" {
-  name                  = "link-chiridion-storage"
-  resource_group_name   = azurerm_resource_group.sandbox.name
-  private_dns_zone_name = azurerm_private_dns_zone.storage.name
-  virtual_network_id    = azurerm_virtual_network.sandbox.id
+resource "azurerm_storage_container" "workspaces" {
+  name               = var.blob_container_name
+  storage_account_id = azurerm_storage_account.blob.id
 }
 
 # ─── VM ────────────────────────────────────────────────────────
@@ -253,20 +163,12 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
   }
 
   custom_data = base64encode(templatefile("${path.module}/cloud-init.yaml.tpl", {
-    setup_script       = file("${path.module}/../services/sandbox-host/scripts/setup-host.sh")
-    caddyfile          = file("${path.module}/../services/sandbox-host/Caddyfile")
-    sandbox_host_token = local.sandbox_host_token
-    storage_account    = var.storage_account_name
-    nfs_share          = var.nfs_share_name
+    setup_script    = file("${path.module}/../services/sandbox-host/scripts/setup-host.sh")
+    storage_account = var.storage_account_name
+    blob_container  = var.blob_container_name
   }))
 
   identity {
     type = "SystemAssigned"
   }
-
-  # NFS must be reachable before cloud-init tries to mount
-  depends_on = [
-    azurerm_private_endpoint.storage,
-    azurerm_private_dns_zone_virtual_network_link.storage,
-  ]
 }

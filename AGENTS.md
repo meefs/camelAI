@@ -17,17 +17,17 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────────┐     ┌──────────────────────┐
-│  React Router   │────▶│   Cloudflare Worker  │────▶│   Sandbox Host       │
-│   (SSR + WS)    │◀────│   (Durable Objects)  │◀────│  (Docker + gVisor)   │
-└─────────────────┘     └──────────────────────┘     └──────────────────────┘
-         │                        │                             │
-         │                        ▼                             ▼
-         │              ┌──────────────────┐          ┌─────────────────┐
-         │              │  Dispatcher WfP  │          │  NVMe RAID0     │
-         │              │ (User App Hosts) │          │  + Azure NFS    │
-         │              └──────────────────┘          │  (Persistent FS) │
-         │                        │                   └─────────────────┘
+┌─────────────────┐     ┌──────────────────────┐  VPC Tunnel  ┌──────────────────────┐
+│  React Router   │────▶│   Cloudflare Worker  │─────────────▶│   Sandbox Host       │
+│   (SSR + WS)    │◀────│   (Durable Objects)  │◀─────────────│  (Docker + gVisor)   │
+└─────────────────┘     └──────────────────────┘              └──────────────────────┘
+         │                        │                                      │
+         │                        ▼                                      ▼
+         │              ┌──────────────────┐                   ┌─────────────────┐
+         │              │  Dispatcher WfP  │                   │  NVMe RAID0     │
+         │              │ (User App Hosts) │                   │  + Azure NFS    │
+         │              └──────────────────┘                   │  (Persistent FS) │
+         │                        │                            └─────────────────┘
          ▼                        ▼
 ┌─────────────────┐     ┌──────────────────┐
 │   R2 Storage    │     │    OpenRouter    │
@@ -59,8 +59,9 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
    - `admin-cli/` - Local-only admin CLI for querying live environments
 
 3. **Sandbox Host** (`services/sandbox-host/`)
-   - Bun HTTP server managing Docker + gVisor container lifecycle on Azure VMs
-   - Host FS operations on NVMe RAID0 (backed by Azure Files NFS via lsyncd)
+   - Bun HTTP server managing Docker + gVisor container lifecycle on Azure VM
+   - Accessed via Workers VPC binding (Cloudflare Tunnel) — not exposed to public internet
+   - Host FS operations on NVMe RAID0 + Azure Blob NFS v3 overlayfs
    - Proxies control plane traffic (health, env, chat WebSocket) to containers
    - Manages container exec and filesystem operations
 
@@ -262,8 +263,8 @@ MCP-driven thread prompts (for example connection setup and bug report capture) 
 
 ### Workspace Runtime Provisioning
 Docker + gVisor sandboxes are provisioned eagerly when a workspace is created (`WorkspaceDO.createWorkspace` calls `WorkspaceContainer.provisionSpriteForWorkspace`).
-Each sandbox gets a host directory at `/mnt/workspaces/{sandboxName}` (NVMe RAID0, backed by Azure Files NFS).
-The sandbox host service (`services/sandbox-host/`) manages container lifecycle, exec, filesystem, and control plane proxy.
+Each sandbox gets a host directory at `/mnt/workspaces/{sandboxName}` (NVMe RAID0 + Azure Blob NFS v3 overlayfs).
+Workers reach the sandbox host via a **VPC service binding** (`env.SANDBOX_HOST`) that routes through a Cloudflare Tunnel to the Azure VM. No public internet exposure.
 Runtime startup is on-demand from chat/API paths; dashboard route loaders no longer trigger warmup.
 
 ### Threads
@@ -404,8 +405,6 @@ Create `.dev.vars`:
 ```
 OPENROUTER_API_KEY=your_openrouter_key_here
 OPENROUTER_PROVISIONING_KEY=your_provisioning_key_here
-SANDBOX_HOST_URL=http://localhost:4400
-SANDBOX_HOST_TOKEN=your_sandbox_host_token_here
 WORKER_BASE_URL=https://your-ngrok-subdomain.ngrok-free.app
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
@@ -417,8 +416,6 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 |----------|-------------|
 | `OPENROUTER_API_KEY` | Fallback OpenRouter API key for LLM access |
 | `OPENROUTER_PROVISIONING_KEY` | OpenRouter provisioning key for creating per-org API keys |
-| `SANDBOX_HOST_URL` | URL of the sandbox host service (e.g., `http://localhost:4400` for dev via SSH tunnel) |
-| `SANDBOX_HOST_TOKEN` | Bearer token for authenticating with the sandbox host service |
 | `WORKER_BASE_URL` | Base URL for the main worker (must be publicly reachable from sandboxes; use ngrok in local dev) |
 | `INTEGRATION_SECRET_KEY` | 256-bit key for encrypting integration credentials |
 | `TOKEN_SIGNING_SECRET` | Secret for signing auth tokens |
@@ -581,22 +578,21 @@ bun run admin:dev-illiana
 
 ### Sandbox Host Service
 
-The sandbox host (`services/sandbox-host/`) runs on an Azure VM and manages Docker + gVisor containers. Provides container lifecycle, host filesystem access, exec, and control plane proxy.
+The sandbox host (`services/sandbox-host/`) runs on an Azure VM and manages Docker + gVisor containers. Workers access it via a **Workers VPC binding** (`env.SANDBOX_HOST`) through a Cloudflare Tunnel — not exposed to the public internet.
 
 ```bash
-# Run locally on the Azure VM
-cd services/sandbox-host && SANDBOX_HOST_TOKEN=<token> bun run start
+# Run on the Azure VM (systemd service)
+sudo systemctl enable --now chiridion-sandbox-host
 
-# For local dev, use SSH tunnel to the Azure VM:
-ssh -fNL 4400:localhost:4400 chiridion@<vm-ip>
-# Then set SANDBOX_HOST_URL=http://localhost:4400 in .dev.vars
+# Deploy code updates
+rsync -avz services/sandbox-host/ chiridion@<vm-ip>:/opt/chiridion/sandbox-host/
 ```
 
 Sandbox names follow the pattern `chiridion-{workspaceId}`. Each workspace gets a host directory at `/mnt/workspaces/{sandboxName}` mounted into the container at `/home/claude`.
 
 **Sandbox image:** Ubuntu 24.04 with bun, node 22, git, rclone, fuse, uv, and `claude` user (uid 1001). Containers run with gVisor (`--runtime=runsc`) for isolation.
 
-**Storage:** NVMe RAID0 (hot, ~3.4TB) + Azure Files NFS (durable, 2TB) + lsyncd (near-real-time sync). On VM reboot, RAID0 is rebuilt and data restored from NFS.
+**Storage:** NVMe RAID0 (hot, ~3.4TB) + Azure Blob NFS v3 (durable) via overlayfs. On VM reboot, RAID0 is rebuilt empty; NFS has all canonical data.
 
 ## Project Structure
 
@@ -658,7 +654,7 @@ chiridion-app/
 │   ├── dispatcher/src/        # WfP subdomain router
 │   └── admin-cli/             # Admin CLI tool
 ├── services/
-│   └── sandbox-host/          # Docker + gVisor sandbox host (Bun HTTP server on Azure VM)
+│   └── sandbox-host/          # Docker + gVisor sandbox host (Bun HTTP, Azure VM, VPC tunnel)
 │       ├── src/index.ts       # HTTP + WebSocket server
 │       ├── src/container-manager.ts # Docker lifecycle via CLI
 │       ├── src/fs-host.ts     # Direct host filesystem operations
@@ -709,10 +705,10 @@ chiridion-app/
 - Active preview target state (out-of-band, one target at a time: app or file)
 
 ### Workspace Runtime (per workspace)
-- Docker + gVisor sandbox lifecycle + provisioning via sandbox-host service
+- Docker + gVisor sandbox lifecycle + provisioning via sandbox-host (Workers VPC binding)
 - Chat WebSocket forwarding to `ChatThreadDO`, which bridges to sandbox exec
 - Filesystem and command execution via sandbox-host REST API
-- Persistent storage via host directories (NVMe RAID0 + Azure Files NFS)
+- Persistent storage via host directories (NVMe RAID0 + Azure Blob NFS v3 overlayfs)
 
 ### ChiridionMcp (MCP Agent)
 - MCP server implementation

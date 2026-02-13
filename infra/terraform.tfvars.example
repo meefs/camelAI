@@ -3,9 +3,8 @@ location             = "eastus"
 vm_size              = "Standard_E64ds_v5"
 admin_username       = "chiridion"
 ssh_public_key       = "ssh-ed25519 AAAA... user@host"
-storage_account_name = "chiridionstoragefiles"
-nfs_share_name       = "workspaces"
-nfs_share_quota_gb   = 2048
+storage_account_name = "chiridionsandbox"
+blob_container_name  = "workspaces"
 os_disk_size_gb      = 128
 
 # Restrict SSH to your IP in production

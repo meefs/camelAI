@@ -826,18 +826,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       console.log(`[ChatThreadDO] ensureRunnerConnected: connecting for thread=${context.threadId}`);
 
-      // Delegate sandbox creation + bootstrap to WorkspaceDO (persistent version tracking).
+      // Delegate sandbox creation + env var building to WorkspaceDO (with caching).
       const workspaceStub = this.env.WORKSPACE.get(
         this.env.WORKSPACE.idFromName(context.workspaceId)
       );
-      await workspaceStub.ensureSpriteReady(context.workspaceId, context.orgId);
+      const { envVars: workspaceEnvVars, fromCache } = await workspaceStub.ensureSpriteReady(
+        context.workspaceId,
+        context.orgId
+      );
+      console.log(`[ChatThreadDO] ensureRunnerConnected: got workspace env fromCache=${fromCache}`);
 
       if (!this.runtime) {
         this.runtime = getWorkspaceContainer(this.env, context.workspaceId);
       }
 
-      // Push workspace env to the control plane.
-      await this.runtime.startForWorkspace(context.workspaceId, context.orgId);
+      // Push workspace env to the control plane (using cached env vars).
+      await this.runtime.startForWorkspace(context.workspaceId, context.orgId, workspaceEnvVars);
 
       // Build thread-specific env delta for the chat session.
       const envVars = await this.runtime.buildClaudeRunnerEnv({

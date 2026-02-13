@@ -11,6 +11,12 @@
 	"routes": [
 		{ "pattern": "staging.chiridion.ai/*", "zone_name": "chiridion.ai" }
 	],
+	"vpc_services": [
+		{
+			"binding": "SANDBOX_HOST",
+			"service_id": "019c54ff-d555-7741-8464-3b68f8a18edf"
+		}
+	],
 	"vars": {
 		"R2_BUCKET_NAME": "chiridion-sandbox",
 		"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
