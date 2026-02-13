@@ -328,7 +328,7 @@ if [ -n "${ACR_LOGIN_SERVER:-}" ]; then
   fi
 
   # Login to ACR using VM managed identity
-  az acr login --name "${ACR_LOGIN_SERVER%%.*}" --identity 2>/dev/null || true
+  az acr login --name "${ACR_LOGIN_SERVER%%.*}" 2>/dev/null || true
   echo "  Logged into ACR: ${ACR_LOGIN_SERVER}"
 
   # Pull the sandbox image
