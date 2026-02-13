@@ -3,6 +3,7 @@ import type {
   NotebookFile,
   NotebookOutput,
   NotebookOutputRender,
+  ParsedTable,
   TocEntry,
 } from './types';
 
@@ -507,6 +508,357 @@ function getPlotlyPayload(output: NotebookOutput): Record<string, unknown> | nul
   return null;
 }
 
+const HTML_NAMED_ENTITIES: Record<string, string> = {
+  amp: '&',
+  apos: "'",
+  gt: '>',
+  lt: '<',
+  nbsp: ' ',
+  quot: '"',
+};
+
+const HTML_NAMED_ENTITY_CACHE = new Map<string, string | null>();
+let htmlNamedEntityDecoder:
+  | {
+      innerHTML: string;
+      value: string;
+    }
+  | null
+  | undefined;
+
+function getHtmlNamedEntityDecoder():
+  | {
+      innerHTML: string;
+      value: string;
+    }
+  | null {
+  if (typeof htmlNamedEntityDecoder !== 'undefined') {
+    return htmlNamedEntityDecoder;
+  }
+
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    htmlNamedEntityDecoder = null;
+    return null;
+  }
+
+  htmlNamedEntityDecoder = document.createElement('textarea');
+  return htmlNamedEntityDecoder;
+}
+
+function decodeNamedHtmlEntity(entity: string): string | null {
+  if (entity in HTML_NAMED_ENTITIES) {
+    return HTML_NAMED_ENTITIES[entity];
+  }
+
+  if (HTML_NAMED_ENTITY_CACHE.has(entity)) {
+    return HTML_NAMED_ENTITY_CACHE.get(entity) ?? null;
+  }
+
+  const decoder = getHtmlNamedEntityDecoder();
+  if (!decoder) {
+    HTML_NAMED_ENTITY_CACHE.set(entity, null);
+    return null;
+  }
+
+  const token = `&${entity};`;
+  decoder.innerHTML = token;
+  const decoded = decoder.value;
+  const hasUnresolvedSuffix = decoded !== ';' && /[A-Za-z0-9_]+;$/.test(decoded);
+  const resolved = decoded === token || hasUnresolvedSuffix ? null : decoded;
+
+  HTML_NAMED_ENTITY_CACHE.set(entity, resolved);
+  return resolved;
+}
+
+function fromCodePointSafe(codePoint: number, fallback: string): string {
+  if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) {
+    return fallback;
+  }
+  try {
+    return String.fromCodePoint(codePoint);
+  } catch {
+    return fallback;
+  }
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value.replace(
+    /&(#\d+|#x[0-9a-f]+|[a-z]+);/gi,
+    (match: string, entityRaw: string): string => {
+      const entity = entityRaw.toLowerCase();
+      if (entity.startsWith('#x')) {
+        const codePoint = Number.parseInt(entity.slice(2), 16);
+        return Number.isFinite(codePoint) ? fromCodePointSafe(codePoint, match) : match;
+      }
+
+      if (entity.startsWith('#')) {
+        const codePoint = Number.parseInt(entity.slice(1), 10);
+        return Number.isFinite(codePoint) ? fromCodePointSafe(codePoint, match) : match;
+      }
+
+      const decodedNamedEntity = decodeNamedHtmlEntity(entity);
+      return decodedNamedEntity ?? match;
+    }
+  );
+}
+
+function stripHtmlTags(html: string): string {
+  const withoutLineBreakTags = html.replace(/<br\s*\/?>/gi, '\n');
+  const withoutTags = withoutLineBreakTags.replace(/<[^>]*>/g, '');
+  const decoded = decodeHtmlEntities(withoutTags).replace(/\u00a0/g, ' ');
+  return decoded.replace(/\s+/g, ' ').trim();
+}
+
+interface ParsedHtmlTableCell {
+  tag: 'th' | 'td';
+  text: string;
+  hasSpan: boolean;
+}
+
+function parseRowCells(trInnerHtml: string): ParsedHtmlTableCell[] {
+  const cells: ParsedHtmlTableCell[] = [];
+  const cellRegex = /<(th|td)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
+  let match: RegExpExecArray | null = cellRegex.exec(trInnerHtml);
+
+  while (match) {
+    const tag = match[1].toLowerCase() as 'th' | 'td';
+    const attrs = match[2] ?? '';
+    const text = stripHtmlTags(match[3]);
+    const hasSpan = /\b(?:rowspan|colspan)\s*=/i.test(attrs);
+    cells.push({ tag, text, hasSpan });
+    match = cellRegex.exec(trInnerHtml);
+  }
+
+  return cells;
+}
+
+function parseRowCellTexts(trInnerHtml: string): string[] {
+  return parseRowCells(trInnerHtml).map((cell) => cell.text);
+}
+
+function getMaxRowLength(rows: readonly string[][]): number {
+  let max = 0;
+  for (const row of rows) {
+    if (row.length > max) {
+      max = row.length;
+    }
+  }
+  return max;
+}
+
+function flattenHeaderRows(theadHtml: string): string[] | null {
+  const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  const headerRows: string[][] = [];
+  let trMatch: RegExpExecArray | null = trRegex.exec(theadHtml);
+
+  while (trMatch) {
+    if (/\b(?:rowspan|colspan)\s*=/i.test(trMatch[1])) {
+      return null;
+    }
+    headerRows.push(parseRowCellTexts(trMatch[1]));
+    trMatch = trRegex.exec(theadHtml);
+  }
+
+  if (headerRows.length === 0) return [];
+  if (headerRows.length === 1) return headerRows[0];
+
+  const maxLen = getMaxRowLength(headerRows);
+  const merged: string[] = [];
+  for (let i = 0; i < maxLen; i += 1) {
+    let value = '';
+    for (let rowIndex = headerRows.length - 1; rowIndex >= 0; rowIndex -= 1) {
+      const candidate = (headerRows[rowIndex]?.[i] ?? '').trim();
+      if (candidate.length > 0) {
+        value = candidate;
+        break;
+      }
+    }
+    merged.push(value);
+  }
+
+  return merged;
+}
+
+function parseBodyRows(
+  tbodyHtml: string,
+  options?: { inferHeaderFromLeadingThRow?: boolean }
+): {
+  rows: string[][];
+  indexColumns: number;
+  unsupportedSpanLayout: boolean;
+  inferredHeaders: string[] | null;
+} {
+  const inferHeaderFromLeadingThRow = options?.inferHeaderFromLeadingThRow ?? false;
+  const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  const rows: string[][] = [];
+  let indexColumns = 0;
+  let indexColumnsDetected = false;
+  let inferredHeaders: string[] | null = null;
+  let trMatch: RegExpExecArray | null = trRegex.exec(tbodyHtml);
+
+  while (trMatch) {
+    const parsedCells = parseRowCells(trMatch[1]);
+    if (parsedCells.some((cell) => cell.hasSpan)) {
+      return { rows: [], indexColumns: 0, unsupportedSpanLayout: true, inferredHeaders: null };
+    }
+
+    if (parsedCells.length === 0) {
+      trMatch = trRegex.exec(tbodyHtml);
+      continue;
+    }
+
+    let leadingThCount = 0;
+    let seenTd = false;
+    const rowValues: string[] = [];
+    for (const cell of parsedCells) {
+      rowValues.push(cell.text);
+      if (!seenTd && cell.tag === 'th') {
+        leadingThCount += 1;
+      } else if (cell.tag === 'td') {
+        seenTd = true;
+      }
+    }
+
+    const isImplicitHeaderCandidate =
+      inferHeaderFromLeadingThRow && inferredHeaders === null && rows.length === 0 && !indexColumnsDetected && !seenTd;
+    if (isImplicitHeaderCandidate) {
+      inferredHeaders = rowValues;
+      trMatch = trRegex.exec(tbodyHtml);
+      continue;
+    }
+
+    if (!indexColumnsDetected) {
+      indexColumns = leadingThCount;
+      indexColumnsDetected = true;
+    }
+
+    rows.push(rowValues);
+    trMatch = trRegex.exec(tbodyHtml);
+  }
+
+  return { rows, indexColumns, unsupportedSpanLayout: false, inferredHeaders };
+}
+
+function getTbodySections(tableInnerHtml: string): string[] {
+  const sections: string[] = [];
+  const tbodyRegex = /<tbody[^>]*>([\s\S]*?)<\/tbody>/gi;
+  let tbodyMatch: RegExpExecArray | null = tbodyRegex.exec(tableInnerHtml);
+
+  while (tbodyMatch) {
+    sections.push(tbodyMatch[1]);
+    tbodyMatch = tbodyRegex.exec(tableInnerHtml);
+  }
+
+  return sections;
+}
+
+function extractTableCaption(tableHtml: string): string | null {
+  const captionMatch = tableHtml.match(/<caption[^>]*>([\s\S]*?)<\/caption>/i);
+  if (!captionMatch) return null;
+  const captionText = stripHtmlTags(captionMatch[1]);
+  return captionText || null;
+}
+
+function stripNonRenderedHtmlBlocks(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+}
+
+function hasSignificantContentOutsidePrimaryTable(html: string, primaryTableHtml: string): boolean {
+  const remaining = html.replace(primaryTableHtml, '');
+  if (remaining.trim().length === 0) {
+    return false;
+  }
+
+  const withoutNonRenderedBlocks = stripNonRenderedHtmlBlocks(remaining).trim();
+
+  if (withoutNonRenderedBlocks.length === 0) {
+    return false;
+  }
+
+  // Preserve surrounding tables/media by keeping iframe rendering for mixed HTML payloads.
+  if (/<table\b/i.test(withoutNonRenderedBlocks)) {
+    return true;
+  }
+  if (/<(?:img|svg|canvas|video|audio|iframe|object|embed|picture|math)\b/i.test(withoutNonRenderedBlocks)) {
+    return true;
+  }
+
+  return stripHtmlTags(withoutNonRenderedBlocks).length > 0;
+}
+
+function formatTableDimensions(rowCount: number, columnCount: number): string {
+  const rowLabel = rowCount === 1 ? 'row' : 'rows';
+  const columnLabel = columnCount === 1 ? 'column' : 'columns';
+  return `${rowCount} ${rowLabel} × ${columnCount} ${columnLabel}`;
+}
+
+function getTableData(output: NotebookOutput): ParsedTable | null {
+  const data = output.data ?? {};
+  const html = toHtml(data['text/html']);
+  if (!html) return null;
+  const htmlWithoutNonRenderedBlocks = stripNonRenderedHtmlBlocks(html);
+
+  if (!/<table[\s>]/i.test(htmlWithoutNonRenderedBlocks)) return null;
+  if (!/<tr[\s>]/i.test(htmlWithoutNonRenderedBlocks)) return null;
+
+  // Chart outputs are already handled via dedicated parsers.
+  if (/vegaEmbed\s*\(/i.test(html)) return null;
+  if (/(?:window\.)?Plotly\s*\.\s*(?:newPlot|react)\s*\(/i.test(html)) return null;
+
+  // Keep pandas styler outputs in the iframe path so custom CSS still applies.
+  if (/id=(["'])T_[^"']+\1/i.test(html)) return null;
+  if (/class=(["'])[^"']*\bStyler\b[^"']*\1/i.test(html)) return null;
+
+  const tableMatch = htmlWithoutNonRenderedBlocks.match(/<table\b[^>]*>([\s\S]*?)<\/table>/i);
+  if (!tableMatch) return null;
+  const tableHtml = tableMatch[0];
+  const tableInnerHtml = tableMatch[1];
+  if (hasSignificantContentOutsidePrimaryTable(html, tableHtml)) return null;
+  if (!/<tr[\s>]/i.test(tableInnerHtml)) return null;
+
+  // Multi-index headers (colspan/rowspan) are intentionally left to iframe for now.
+  if (/\b(?:rowspan|colspan)\s*=/i.test(tableInnerHtml)) return null;
+
+  const theadMatch = tableInnerHtml.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i);
+  const flattenedHeaders = flattenHeaderRows(theadMatch?.[1] ?? '');
+  if (flattenedHeaders === null) return null;
+
+  const tbodySections = getTbodySections(tableInnerHtml);
+  const bodySource = tbodySections.length > 0
+    ? tbodySections.join('\n')
+    : tableInnerHtml
+        .replace(/<thead[^>]*>[\s\S]*?<\/thead>/gi, '')
+        .replace(/<tfoot[^>]*>[\s\S]*?<\/tfoot>/gi, '')
+        .replace(/<caption[^>]*>[\s\S]*?<\/caption>/gi, '');
+
+  const body = parseBodyRows(bodySource, { inferHeaderFromLeadingThRow: !theadMatch });
+  if (body.unsupportedSpanLayout || body.rows.length === 0) return null;
+
+  const maxRowWidth = getMaxRowLength(body.rows);
+  const resolvedHeaders = flattenedHeaders.length ? flattenedHeaders : (body.inferredHeaders ?? []);
+  const columnCount = Math.max(resolvedHeaders.length, maxRowWidth);
+  const headers = resolvedHeaders.length
+    ? [...resolvedHeaders]
+    : Array.from({ length: columnCount }, () => '');
+  while (headers.length < columnCount) {
+    headers.push('');
+  }
+
+  const dataColumns = Math.max(0, columnCount - body.indexColumns);
+  const caption = extractTableCaption(tableHtml) ?? formatTableDimensions(body.rows.length, dataColumns);
+
+  return {
+    headers,
+    rows: body.rows,
+    indexColumns: body.indexColumns,
+    caption,
+  };
+}
+
 function getHtmlOutputDocument(output: NotebookOutput): string | null {
   const data = output.data ?? {};
   const html = toHtml(data['text/html']);
@@ -589,6 +941,11 @@ export function getOutputRender(output: NotebookOutput): NotebookOutputRender {
   const plotlyPayload = getPlotlyPayload(output);
   if (plotlyPayload) {
     return { kind: 'plotly', payload: plotlyPayload };
+  }
+
+  const tableData = getTableData(output);
+  if (tableData) {
+    return { kind: 'table', table: tableData };
   }
 
   const htmlOutput = getHtmlOutputDocument(output);

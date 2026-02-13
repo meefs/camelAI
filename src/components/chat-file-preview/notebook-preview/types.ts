@@ -72,9 +72,17 @@ export interface NotebookHeader {
   titleCellIndex: number | null;
 }
 
+export interface ParsedTable {
+  headers: string[];
+  rows: string[][];
+  indexColumns: number;
+  caption: string | null;
+}
+
 export type NotebookOutputRender =
   | { kind: 'vegalite'; spec: Record<string, unknown> }
   | { kind: 'plotly'; payload: Record<string, unknown> }
+  | { kind: 'table'; table: ParsedTable }
   | { kind: 'html'; html: string }
   | { kind: 'image'; src: string }
   | { kind: 'text'; text: string }
