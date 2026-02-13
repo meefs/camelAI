@@ -96,8 +96,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       );
       // Push updated env vars to running container (background, kept alive via waitUntil)
       waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId)
-          .refreshIntegrationEnvVars(workspaceId)
+        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
+          .refreshIntegrationEnvVars()
           .catch(() => {})
       );
       return { success: true };
@@ -133,8 +133,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       await stub.updateIntegration(integrationId, updates, authContext.user.id);
       // Push updated env vars to running container (background, kept alive via waitUntil)
       waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId)
-          .refreshIntegrationEnvVars(workspaceId)
+        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
+          .refreshIntegrationEnvVars()
           .catch(() => {})
       );
       return { success: true };
@@ -154,8 +154,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       await stub.deleteIntegration(integrationId, authContext.user.id);
       // Push updated env vars to running container (background, kept alive via waitUntil)
       waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId)
-          .refreshIntegrationEnvVars(workspaceId)
+        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
+          .refreshIntegrationEnvVars()
           .catch(() => {})
       );
       return { success: true };
@@ -217,8 +217,8 @@ export async function action({ request, context }: Route.ActionArgs) {
 
       // Push updated env vars to target workspace container
       waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, targetWorkspaceId)
-          .refreshIntegrationEnvVars(targetWorkspaceId)
+        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, targetWorkspaceId, authContext.currentOrg.id)
+          .refreshIntegrationEnvVars()
           .catch(() => {})
       );
       return { success: true };

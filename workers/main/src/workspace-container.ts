@@ -15,7 +15,6 @@
  * All traffic (lifecycle, FS, exec, control plane) routes through the
  * sandbox host proxy — CF Workers can't reach Docker bridge IPs directly.
  */
-import { getTempR2Credentials } from './r2-credentials';
 import { createSignedToken } from './signed-tokens';
 import { mapCredentialsToEnvVars } from './integration-env';
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
@@ -39,12 +38,6 @@ export interface WorkspaceContainerEnv {
   INTEGRATION_SECRET_KEY: string;
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
-  R2_BUCKET_NAME?: string;
-  R2_ACCOUNT_ID?: string;
-  R2_MOUNT_DIR?: string;
-  R2_MOUNT_READONLY?: string;
-  R2_API_TOKEN?: string;
-  R2_PARENT_ACCESS_KEY_ID?: string;
   WORKER_BASE_URL?: string;
   OPENROUTER_PROVISIONING_KEY?: string;
   CHIRIDION_TRACE_EVENTS?: string;
@@ -148,11 +141,7 @@ export interface ClaudeRunnerEnvOptions {
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const runtimeCache = new Map<string, WorkspaceContainer>();
-const SANDBOX_HOME_DIR = '/opt/chiridion';
 const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
-
-// Bump this version when changing rclone mount args or configuration.
-const R2_MOUNT_SERVICE_VERSION = '1';
 
 const PROXY_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504, 524]);
 const PROXY_MAX_RETRY_ATTEMPTS = 6;
@@ -161,10 +150,6 @@ const PROXY_MAX_RETRY_DELAY_MS = 3000;
 
 function toIsoTime(ms: number): string {
   return new Date(ms).toISOString();
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function createDeployToken(
@@ -187,15 +172,15 @@ async function createDeployToken(
 
 export class WorkspaceContainer {
   private workspaceId: string;
-  private orgId: string | null = null;
+  private orgId: string;
   private envVars: Record<string, string> | null = null;
   private sandbox: SandboxRecord | null = null;
   private sandboxKnownToExist = false;
-  private r2MountServiceCreated = false;
   private dataProxyTokenExpiry: number | null = null;
 
-  constructor(private env: WorkspaceContainerEnv, workspaceId: string) {
+  constructor(private env: WorkspaceContainerEnv, workspaceId: string, orgId: string) {
     this.workspaceId = workspaceId;
+    this.orgId = orgId;
   }
 
   matchesEnv(env: WorkspaceContainerEnv): boolean {
@@ -382,26 +367,11 @@ export class WorkspaceContainer {
     });
   }
 
-  private async readSandboxTextFile(path: string): Promise<string | null> {
-    const response = await this.fetchProxy(
-      this.sandboxProxyPath('/fs/read'),
-      { method: 'GET' },
-      { path: this.normalizeFsPath(path) }
-    );
-
-    if (response.status === 404) return null;
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Failed reading sandbox file ${path}: ${response.status} ${body}`);
-    }
-
-    return (await response.text()).trim();
-  }
 
   // ─── Sandbox Lifecycle ───────────────────────────────────
 
-  private getSandboxName(workspaceId = this.workspaceId): string {
-    const raw = `chiridion-${getContainerIdForWorkspace(workspaceId)}`;
+  private getSandboxName(): string {
+    const raw = `chiridion-${getContainerIdForWorkspace(this.workspaceId)}`;
     const normalized = raw
       .toLowerCase()
       .replace(/[^a-z0-9-]/g, '-')
@@ -416,8 +386,11 @@ export class WorkspaceContainer {
     }
 
     // Create or reconnect via the proxy (idempotent POST)
+    // Pass orgId + workspaceId so sandbox-host can set up R2 bind mounts at creation time.
     const response = await this.fetchProxy(`/v1/sandboxes/${encodeURIComponent(name)}`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: this.orgId, workspaceId: this.workspaceId }),
     });
 
     if (!response.ok) {
@@ -441,8 +414,7 @@ export class WorkspaceContainer {
 
   private async ensureSandbox(): Promise<SandboxRecord> {
     if (this.sandbox) return this.sandbox;
-    const name = this.getSandboxName(this.workspaceId);
-    return this.ensureSandboxExists(name);
+    return this.ensureSandboxExists(this.getSandboxName());
   }
 
   private async clearSandboxUserClaudeDir(): Promise<void> {
@@ -458,10 +430,9 @@ export class WorkspaceContainer {
     }
   }
 
-  async provisionSpriteForWorkspace(workspaceId = this.workspaceId): Promise<SandboxRecord> {
-    this.workspaceId = workspaceId;
-    const name = this.getSandboxName(workspaceId);
-    console.log(`[Sandbox] provisioning sandbox=${name} workspace=${workspaceId}`);
+  async provisionSpriteForWorkspace(): Promise<SandboxRecord> {
+    const name = this.getSandboxName();
+    console.log(`[Sandbox] provisioning sandbox=${name} workspace=${this.workspaceId}`);
     const sandbox = await this.ensureSandboxExists(name);
     await this.clearSandboxUserClaudeDir();
     console.log(`[Sandbox] sandbox=${name} ready (status=${sandbox.status})`);
@@ -473,8 +444,7 @@ export class WorkspaceContainer {
    * Everything (SDK, skills, create-worker) is baked into the sandbox image,
    * so this just needs to create/reconnect the sandbox via the proxy.
    */
-  async ensureSpriteBootstrapped(workspaceId: string): Promise<void> {
-    this.workspaceId = workspaceId;
+  async ensureSpriteBootstrapped(): Promise<void> {
     await this.ensureSandbox();
   }
 
@@ -495,21 +465,16 @@ export class WorkspaceContainer {
     }
   }
 
-  async buildEnvVars(workspaceId: string, orgId: string): Promise<Record<string, string>> {
+  async buildEnvVars(): Promise<Record<string, string>> {
+    const { workspaceId, orgId } = this;
     const buildStartedAt = Date.now();
     console.log(`[WorkspaceContainer] buildEnvVars:start workspace=${workspaceId} org=${orgId}`);
-    this.workspaceId = workspaceId;
-    this.orgId = orgId;
 
     const envVars: Record<string, string> = {
       ORG_ID: orgId,
       WORKSPACE_ID: workspaceId,
     };
 
-    if (this.env.R2_BUCKET_NAME) envVars.R2_BUCKET_NAME = this.env.R2_BUCKET_NAME;
-    if (this.env.R2_ACCOUNT_ID) envVars.R2_ACCOUNT_ID = this.env.R2_ACCOUNT_ID;
-    if (this.env.R2_MOUNT_DIR) envVars.R2_MOUNT_DIR = this.env.R2_MOUNT_DIR;
-    if (this.env.R2_MOUNT_READONLY) envVars.R2_MOUNT_READONLY = this.env.R2_MOUNT_READONLY;
     if (this.env.CHIRIDION_TRACE_EVENTS) envVars.CHIRIDION_TRACE_EVENTS = this.env.CHIRIDION_TRACE_EVENTS;
     if (this.env.CHIRIDION_DEBUG_STARTUP) envVars.CHIRIDION_DEBUG_STARTUP = this.env.CHIRIDION_DEBUG_STARTUP;
     if (this.env.CHIRIDION_DEBUG_SDK) envVars.CHIRIDION_DEBUG_SDK = this.env.CHIRIDION_DEBUG_SDK;
@@ -522,7 +487,6 @@ export class WorkspaceContainer {
     if (this.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) envVars.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = this.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS;
 
     const prefix = workspaceId === orgId ? `${orgId}/` : `${orgId}/${workspaceId}/`;
-    envVars.R2_PREFIX = prefix;
 
     if (!this.env.TOKEN_SIGNING_SECRET) {
       throw new Error('TOKEN_SIGNING_SECRET is required for token signing');
@@ -543,35 +507,11 @@ export class WorkspaceContainer {
     const phase1StartedAt = Date.now();
     const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
 
-    const hasR2Config = !!(this.env.R2_API_TOKEN && this.env.R2_PARENT_ACCESS_KEY_ID && this.env.R2_ACCOUNT_ID && this.env.R2_BUCKET_NAME);
-    const sanitizeName = (s: string) => s.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 20) || 'x';
-    const volumeName = hasR2Config ? `chiridion-${sanitizeName(orgId)}-${sanitizeName(workspaceId)}` : '';
-
-    const [orgInfo, keyRecord, r2CredsResult] = await Promise.all([
+    const [orgInfo, keyRecord] = await Promise.all([
       orgStub.getInfo(),
       orgStub.getOpenRouterKeyRecord(),
-      hasR2Config
-        ? getTempR2Credentials(
-            this.env.R2_ACCOUNT_ID!,
-            this.env.R2_BUCKET_NAME!,
-            this.env.R2_PARENT_ACCESS_KEY_ID!,
-            this.env.R2_API_TOKEN!,
-            [prefix, `${volumeName}/`],
-            86400
-          ).catch((e) => {
-            console.error('[WorkspaceContainer] Failed to get R2 credentials:', e);
-            return null;
-          })
-        : Promise.resolve(null),
     ]);
     console.log(`[WorkspaceContainer] buildEnvVars:phase1 workspace=${workspaceId} ms=${Date.now() - phase1StartedAt}`);
-
-    // Apply R2 credentials if available
-    if (r2CredsResult) {
-      envVars.AWS_ACCESS_KEY_ID = r2CredsResult.accessKeyId;
-      envVars.AWS_SECRET_ACCESS_KEY = r2CredsResult.secretAccessKey;
-      envVars.AWS_SESSION_TOKEN = r2CredsResult.sessionToken;
-    }
 
     const userId = orgInfo?.created_by || 'system';
     const orgName = orgInfo?.name || orgId;
@@ -582,7 +522,7 @@ export class WorkspaceContainer {
     const dataProxyTokenExpiry = Date.now() + TOKEN_TTL_MS;
 
     // R2 placeholder check (fire and forget in background)
-    if (r2CredsResult) {
+    if (this.env.R2_BUCKET) {
       const placeholderKey = `${prefix}.keep`;
       waitUntil(
         this.env.R2_BUCKET.head(placeholderKey).then((existing) => {
@@ -683,41 +623,28 @@ export class WorkspaceContainer {
    * Start the workspace runtime with the given env vars.
    * Env vars should be pre-built (and cached) by WorkspaceDO.ensureSpriteReady().
    */
-  async startForWorkspace(
-    workspaceId: string,
-    orgId: string,
-    prebuiltEnvVars?: Record<string, string>
-  ): Promise<void> {
-    this.workspaceId = workspaceId;
-    this.orgId = orgId;
-
+  async startForWorkspace(prebuiltEnvVars?: Record<string, string>): Promise<void> {
     // If we already have env vars pushed, skip
     if (this.envVars && Object.keys(this.envVars).length > 0) {
-      console.log(`[Sandbox] startForWorkspace: already initialized workspace=${workspaceId}`);
+      console.log(`[Sandbox] startForWorkspace: already initialized workspace=${this.workspaceId}`);
       return;
     }
 
     // Use prebuilt env vars if provided, otherwise build (fallback for legacy callers)
     if (prebuiltEnvVars && Object.keys(prebuiltEnvVars).length > 0) {
-      console.log(`[Sandbox] startForWorkspace: using prebuilt env vars workspace=${workspaceId}`);
+      console.log(`[Sandbox] startForWorkspace: using prebuilt env vars workspace=${this.workspaceId}`);
       this.envVars = prebuiltEnvVars;
     } else {
-      console.log(`[Sandbox] startForWorkspace: building env vars (no cache) workspace=${workspaceId} org=${orgId}`);
-      this.envVars = await this.buildEnvVars(workspaceId, orgId);
+      console.log(`[Sandbox] startForWorkspace: building env vars (no cache) workspace=${this.workspaceId} org=${this.orgId}`);
+      this.envVars = await this.buildEnvVars();
     }
 
     // Push workspace env to control plane
     await this.pushEnvToControlPlane(this.envVars);
 
-    waitUntil(
-      this.ensureR2MountService().catch((err) =>
-        console.error('[WorkspaceContainer] R2 mount service setup failed:', err)
-      )
-    );
-
     if (this.dataProxyTokenExpiry) {
       try {
-        const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
+        const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(this.workspaceId));
         await workspaceStub.registerDataProxyTokenExpiry(this.dataProxyTokenExpiry);
       } catch (err) {
         console.error('[WorkspaceContainer] Failed to register data proxy token expiry:', err);
@@ -730,12 +657,12 @@ export class WorkspaceContainer {
    * Passed to the control plane chat WebSocket init message.
    */
   async buildClaudeRunnerEnv(options: ClaudeRunnerEnvOptions): Promise<Record<string, string>> {
-    if (!this.workspaceId || !this.orgId) {
-      throw new Error('WorkspaceContainer not initialized. Call startForWorkspace first.');
+    if (!this.workspaceId) {
+      throw new Error('WorkspaceContainer not initialized');
     }
 
     console.log(`[Sandbox] buildClaudeRunnerEnv: thread=${options.threadId}`);
-    const integrationEnv = await this.fetchIntegrationEnvVars(this.workspaceId);
+    const integrationEnv = await this.fetchIntegrationEnvVars();
 
     await this.writeIntegrationEnvFileToSandbox(integrationEnv);
 
@@ -787,168 +714,6 @@ export class WorkspaceContainer {
     return response.webSocket;
   }
 
-  // ─── R2 Mount ────────────────────────────────────────────
-
-  private async ensureR2MountServiceInstance(
-    serviceName: string,
-    bucketPath: string,
-    mountPoint: string,
-    readOnly: boolean,
-    rcloneConfigPath: string
-  ): Promise<void> {
-    const versionMarkerPath = `${SANDBOX_HOME_DIR}/.${serviceName}.version`;
-
-    const installedVersion = await this.readSandboxTextFile(versionMarkerPath);
-    const needsUpgrade = installedVersion !== R2_MOUNT_SERVICE_VERSION;
-
-    // Check if mount is accessible
-    const mountCheck = await this.execOnSandbox([
-      'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
-    ]);
-    if (mountCheck.success && mountCheck.stdout.trim() === 'ok' && !needsUpgrade) {
-      console.log(`[Sandbox] ensureR2MountServiceInstance: ${serviceName} already mounted and healthy (v${R2_MOUNT_SERVICE_VERSION})`);
-      return;
-    }
-
-    // Unmount any stale mount
-    await this.execOnSandbox([
-      'bash', '-c', `fusermount -uz ${mountPoint} 2>/dev/null || true`,
-    ]);
-
-    // Ensure mount point exists
-    await this.execOnSandbox([
-      'bash', '-c', `mkdir -p ${mountPoint}`,
-    ]);
-
-    // Build rclone mount command (no sudo — gVisor doesn't support setuid;
-    // container has CAP_SYS_ADMIN and /dev/fuse for FUSE access)
-    const rcloneArgs = [
-      'rclone', 'mount', '--daemon',
-      bucketPath, mountPoint,
-      `--config=${rcloneConfigPath}`,
-      '--allow-other',
-      '--uid=1001',
-      '--gid=1001',
-      '--dir-cache-time=1s',
-    ];
-
-    if (readOnly) {
-      rcloneArgs.push('--read-only', '--vfs-cache-mode=minimal');
-    } else {
-      rcloneArgs.push('--vfs-cache-mode=writes', '--vfs-write-back=0');
-    }
-
-    console.log(`[Sandbox] ensureR2MountServiceInstance: mounting ${serviceName}: ${bucketPath} -> ${mountPoint}`);
-    const mountResult = await this.execOnSandbox(rcloneArgs);
-
-    if (!mountResult.success) {
-      throw new Error(
-        `Failed to mount ${serviceName}: ${mountResult.stderr || mountResult.stdout || 'unknown error'}`
-      );
-    }
-
-    // Verify mount
-    await delay(500);
-    const verifyResult = await this.execOnSandbox([
-      'bash', '-c', `ls ${mountPoint}/ >/dev/null 2>&1 && echo ok`,
-    ]);
-    if (!verifyResult.success || verifyResult.stdout.trim() !== 'ok') {
-      console.warn(`[Sandbox] ensureR2MountServiceInstance: ${serviceName} mounted but not yet accessible`);
-    } else {
-      console.log(`[Sandbox] ensureR2MountServiceInstance: ${serviceName} ready at ${mountPoint} (v${R2_MOUNT_SERVICE_VERSION})`);
-    }
-
-    // Write version marker
-    await this.fetchProxy(
-      this.sandboxProxyPath('/fs/write'),
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: R2_MOUNT_SERVICE_VERSION,
-      },
-      { path: versionMarkerPath }
-    );
-  }
-
-  private async writeRcloneConfig(
-    configPath: string,
-    accountId: string,
-    accessKeyId: string,
-    secretAccessKey: string,
-    sessionToken: string
-  ): Promise<void> {
-    const rcloneConfig = [
-      '[r2]',
-      'type = s3',
-      'provider = Cloudflare',
-      `access_key_id = ${accessKeyId}`,
-      `secret_access_key = ${secretAccessKey}`,
-      `session_token = ${sessionToken}`,
-      `endpoint = https://${accountId}.r2.cloudflarestorage.com`,
-    ].join('\n');
-
-    const configWrite = await this.fetchProxy(
-      this.sandboxProxyPath('/fs/write'),
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-        body: rcloneConfig,
-      },
-      { path: configPath }
-    );
-
-    if (!configWrite.ok) {
-      const body = await configWrite.text();
-      throw new Error(`Failed writing rclone.conf: ${configWrite.status} ${body}`);
-    }
-  }
-
-  private async ensureR2MountService(): Promise<void> {
-    if (this.r2MountServiceCreated) return;
-    if (!this.envVars) return;
-
-    const accessKeyId = this.envVars.AWS_ACCESS_KEY_ID;
-    const secretAccessKey = this.envVars.AWS_SECRET_ACCESS_KEY;
-    const sessionToken = this.envVars.AWS_SESSION_TOKEN;
-    const accountId = this.env.R2_ACCOUNT_ID;
-    const bucketName = this.env.R2_BUCKET_NAME;
-    const mountPrefix = this.orgId && this.workspaceId
-      ? `${this.orgId}/${this.workspaceId}/`
-      : null;
-
-    if (!accessKeyId || !secretAccessKey || !sessionToken || !accountId || !bucketName || !mountPrefix) {
-      console.log('[Sandbox] ensureR2MountService: missing R2 credentials, skipping mount service');
-      return;
-    }
-
-    const sandboxName = this.sandbox?.name || 'unknown';
-    console.log(`[Sandbox] ensureR2MountService: setting up rclone mounts for sandbox=${sandboxName}`);
-
-    // rclone and fuse are baked into the sandbox image — no install needed.
-    const rcloneConfigPath = `${SANDBOX_HOME_DIR}/rclone.conf`;
-    await this.writeRcloneConfig(rcloneConfigPath, accountId, accessKeyId, secretAccessKey, sessionToken);
-
-    await Promise.all([
-      this.ensureR2MountServiceInstance(
-        'r2-uploads',
-        `r2:${bucketName}/${mountPrefix}user-uploads`,
-        '/mnt/user-uploads',
-        true,
-        rcloneConfigPath
-      ),
-      this.ensureR2MountServiceInstance(
-        'r2-outputs',
-        `r2:${bucketName}/${mountPrefix}user-outputs`,
-        '/mnt/user-outputs',
-        false,
-        rcloneConfigPath
-      ),
-    ]);
-
-    this.r2MountServiceCreated = true;
-    console.log(`[Sandbox] ensureR2MountService: rclone mount services ready for sandbox=${sandboxName}`);
-  }
-
   // ─── Integration Env Vars ────────────────────────────────
 
   /**
@@ -978,7 +743,8 @@ export class WorkspaceContainer {
     }
   }
 
-  async fetchIntegrationEnvVars(workspaceId: string): Promise<Record<string, string>> {
+  async fetchIntegrationEnvVars(): Promise<Record<string, string>> {
+    const workspaceId = this.workspaceId;
     const integrationEnvVars: Record<string, string> = {};
     const startedAt = Date.now();
     let integrationCount = 0;
@@ -1024,8 +790,8 @@ export class WorkspaceContainer {
     return this.writeIntegrationEnvFileToSandbox(envVars);
   }
 
-  async refreshIntegrationEnvVars(workspaceId: string): Promise<boolean> {
-    const envVars = await this.fetchIntegrationEnvVars(workspaceId);
+  async refreshIntegrationEnvVars(): Promise<boolean> {
+    const envVars = await this.fetchIntegrationEnvVars();
     return this.pushIntegrationEnvVars(envVars);
   }
 
@@ -1278,15 +1044,16 @@ export function getContainerIdForWorkspace(workspaceId: string): string {
 
 export function getWorkspaceContainer(
   env: WorkspaceContainerEnv,
-  workspaceId: string
+  workspaceId: string,
+  orgId: string
 ): WorkspaceContainer {
-  const cacheKey = `${workspaceId}`;
+  const cacheKey = `${workspaceId}:${orgId}`;
   const cached = runtimeCache.get(cacheKey);
   if (cached && cached.matchesEnv(env)) {
     return cached;
   }
 
-  const runtime = new WorkspaceContainer(env, workspaceId);
+  const runtime = new WorkspaceContainer(env, workspaceId, orgId);
   runtimeCache.set(cacheKey, runtime);
   return runtime;
 }

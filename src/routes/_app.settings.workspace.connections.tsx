@@ -89,8 +89,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       const stub = getWorkspaceStub(env, workspaceId);
       await stub.deleteIntegration(integrationId, authContext.user.id);
       waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId)
-          .refreshIntegrationEnvVars(workspaceId)
+        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
+          .refreshIntegrationEnvVars()
           .catch(() => {})
       );
       return { success: true };

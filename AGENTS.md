@@ -66,7 +66,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
    - Manages container exec and filesystem operations
 
 4. **Sandbox** (`sandbox/`)
-   - `claude-runner.mjs` - Claude SDK runner process executed via sandbox exec
+   - `control-plane.mjs` - In-sandbox control plane server + Claude Agent SDK session runner
    - `memory-logger.mjs` - Runner helper for loading user profile context
    - `session-search/` - Session search CLI/daemon used inside workspaces
    - `skills/` - Agent skills (developing-software, file-sharing, frontend-design)
@@ -123,7 +123,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 ### Sandbox
 | File | Purpose |
 |------|---------|
-| `sandbox/claude-runner.mjs` | Claude SDK runner executable (stdin/stdout NDJSON) |
+| `sandbox/control-plane.mjs` | In-sandbox control plane server + Claude Agent SDK runner |
 | `sandbox/memory-logger.mjs` | Runner helper utilities |
 | `sandbox/session-search/src/cli.mjs` | Session search CLI entrypoint |
 | `sandbox/skills/developing-software/SKILL.md` | Software development skill documentation |
@@ -221,10 +221,10 @@ export async function action({ request, context }: Route.ActionArgs) {
 1. User types message in `Chat.tsx`
 2. WebSocket connects to `/ws/{workspace}` - Worker validates access and forwards to `ChatThreadDO`
 3. On accepted user messages, `ChatThreadDO` updates thread metadata (`updated_at` and `user_message_count`) via `OrgDO.touchThread`
-4. `ChatThreadDO` opens/attaches a sandbox exec session running `claude-runner.mjs`
-5. `claude-runner.mjs` calls Claude SDK `query()` and streams events over stdout
+4. `ChatThreadDO` opens a WebSocket to the sandbox control plane (`control-plane.mjs`)
+5. `control-plane.mjs` calls Claude SDK `query()` and streams events over the WebSocket
 6. `ChatThreadDO` multiplexes/replays events to connected chat clients
-7. Claude SDK stores messages in JSONL files on the sprite at `/home/sprite/.claude/projects/-home-sprite/{threadId}.jsonl`
+7. Claude SDK stores messages in JSONL files at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`
 
 ### Slash Commands
 Users can send Claude SDK slash commands by typing the command as their entire message (nothing else). `ChatThreadDO.formatAttributedUserMessage()` detects these and strips the author prefix so the SDK receives the bare command. Supported commands:
@@ -245,7 +245,7 @@ The allowlist is maintained in `ChatThreadDO.SLASH_COMMANDS` (`workers/main/src/
 
 ### Todo State Persistence
 The floating todo list state persists across reconnections:
-1. When `claude-runner.mjs` sees a `TodoWrite` tool call, it emits a `todo_state` event
+1. When `control-plane.mjs` sees a `TodoWrite` tool call, it emits a `todo_state` event
 2. `ChatThreadDO` stores the latest todo state in DO storage (`chatTodos`) and replays it on chat WebSocket init
 3. On turn completion (`result` event), `ChatThreadDO` clears persisted todo state
 
@@ -458,7 +458,7 @@ Falls back to Cloudflare's `send_email` binding if Gmail is not configured. Note
 
 | Variable | Description |
 |----------|-------------|
-| `CHIRIDION_TRACE_EVENTS` | Set to `0` to disable claude-runner trace writes |
+| `CHIRIDION_TRACE_EVENTS` | Set to `0` to disable control-plane trace writes |
 | `CHIRIDION_DEBUG_STARTUP` | Log startup env snapshot (`1` to enable) |
 | `CHIRIDION_DEBUG_SDK` | Log query options (`1` to enable) |
 | `CHIRIDION_DEBUG_FS` | Run filesystem probes at startup (`1` to enable) |
@@ -592,6 +592,8 @@ Sandbox names follow the pattern `chiridion-{workspaceId}`. Each workspace gets 
 
 **Sandbox image:** Ubuntu 24.04 with bun, node 22, git, rclone, fuse, uv, and `claude` user (uid 1001). Containers run with gVisor (`--runtime=runsc`) for isolation.
 
+**R2 FUSE mounts:** Sandbox-host sets up R2 FUSE mounts automatically when env vars are pushed (`POST /v1/sandboxes/{name}/env` with `ORG_ID` + `WORKSPACE_ID`). Uses permanent R2 credentials from sandbox-host env vars (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`). Writes rclone config to host workspace dir, runs rclone inside the container via docker exec. No temp credentials or worker-side mount logic needed.
+
 **Storage:** NVMe RAID0 (hot, ~3.4TB) + Azure Blob NFS v3 (durable) via overlayfs. On VM reboot, RAID0 is rebuilt empty; NFS has all canonical data.
 
 ## Project Structure
@@ -661,7 +663,7 @@ chiridion-app/
 │       ├── Dockerfile.sandbox # Container image definition
 │       └── scripts/setup-host.sh # Azure VM provisioning
 ├── sandbox/
-│   ├── claude-runner.mjs      # Claude SDK runner executable
+│   ├── control-plane.mjs      # In-sandbox control plane + SDK runner
 │   ├── memory-logger.mjs      # User profile loader helper
 │   ├── session-search/        # Session search CLI/daemon
 │   └── skills/                # Agent skills
@@ -765,7 +767,7 @@ See repository history/PR context for legacy streaming bug investigations and fi
 ### Common Issues
 
 1. **Durable Objects not working locally**: Use `bun run dev` (wrangler-based dev)
-2. **Streaming not working**: Ensure `includePartialMessages: true` in `sandbox/claude-runner.mjs`
+2. **Streaming not working**: Ensure `includePartialMessages: true` in `sandbox/control-plane.mjs`
 3. **API key not found**: Check `.dev.vars` has `OPENROUTER_API_KEY`
 4. **Session not persisting**: Check cookies and DO worker is running
 5. **Type errors after route changes**: Run `bun run typecheck` to regenerate types

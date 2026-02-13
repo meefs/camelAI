@@ -397,6 +397,7 @@ class ChatSession {
       (this.userProfile ? `\n\n## User Profile\n\nHere's what you know about this user:\n\n${this.userProfile}` : '');
 
     const options = {
+      // Force Node as the runtime executable — Bun has a bug that breaks the SDK.
       executable: 'node',
       model: 'opus',
       fallbackModel: 'sonnet',

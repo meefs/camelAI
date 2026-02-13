@@ -19,6 +19,12 @@ const CONTAINER_RUNTIME = process.env.CONTAINER_RUNTIME || 'runsc';
 const CONTROL_PLANE_PORT = 8080;
 const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || String(30 * 1000), 10);
 const REAPER_INTERVAL_MS = 10_000;
+const R2_MOUNT_ROOT = process.env.R2_MOUNT_ROOT || '/mnt/r2';
+
+export interface EnsureContainerOptions {
+  orgId?: string;
+  workspaceId?: string;
+}
 
 const containers = new Map<string, ContainerRecord>();
 
@@ -116,9 +122,19 @@ export function removeWebSocket(name: string): void {
 }
 
 /**
- * Create or reconnect to a container (idempotent).
+ * Compute the R2 bind mount prefix for a workspace.
+ * Same logic as workspace-container.ts buildEnvVars.
  */
-export async function ensureContainer(name: string): Promise<ContainerRecord> {
+function r2MountPrefix(orgId: string, workspaceId: string): string {
+  return orgId === workspaceId ? orgId : `${orgId}/${workspaceId}`;
+}
+
+/**
+ * Create or reconnect to a container (idempotent).
+ * When orgId + workspaceId are provided, R2 bind mounts are added
+ * at container creation time (host-level rclone mount at R2_MOUNT_ROOT).
+ */
+export async function ensureContainer(name: string, opts?: EnsureContainerOptions): Promise<ContainerRecord> {
   // Check cache first
   const cached = containers.get(name);
   if (cached) {
@@ -142,6 +158,8 @@ export async function ensureContainer(name: string): Promise<ContainerRecord> {
         createdAt: Date.now(),
         lastAccessedAt: Date.now(),
         activeWebSockets: 0,
+        orgId: opts?.orgId,
+        workspaceId: opts?.workspaceId,
       };
       containers.set(name, record);
       console.log(`[ContainerManager] reconnected to existing container ${name} (port=${port})`);
@@ -167,15 +185,30 @@ export async function ensureContainer(name: string): Promise<ContainerRecord> {
     `--memory=${CONTAINER_MEMORY}`,
     `--cpu-shares=${CONTAINER_CPU_SHARES}`,
     '-p', `0:${CONTROL_PLANE_PORT}`,
-    // FUSE support for rclone R2 mounts
-    '--device=/dev/fuse',
-    '--cap-add=SYS_ADMIN',
-    '--security-opt', 'apparmor=unconfined',
     '-e', 'HOME=/home/claude',
     '-e', 'USER=claude',
+  ];
+
+  // Add R2 bind mounts if orgId + workspaceId are available and host mount exists
+  if (opts?.orgId && opts?.workspaceId) {
+    const prefix = r2MountPrefix(opts.orgId, opts.workspaceId);
+    const uploadsHost = `${R2_MOUNT_ROOT}/${prefix}/user-uploads`;
+    const outputsHost = `${R2_MOUNT_ROOT}/${prefix}/user-outputs`;
+
+    // Ensure host directories exist (mkdir -p is safe even if R2 mount populates them)
+    const { mkdirSync } = await import('fs');
+    try { mkdirSync(uploadsHost, { recursive: true }); } catch {}
+    try { mkdirSync(outputsHost, { recursive: true }); } catch {}
+
+    runArgs.push('-v', `${uploadsHost}:/mnt/user-uploads:ro`);
+    runArgs.push('-v', `${outputsHost}:/mnt/user-outputs`);
+    console.log(`[ContainerManager] R2 bind mounts: ${prefix}`);
+  }
+
+  runArgs.push(
     SANDBOX_IMAGE,
     'bun', 'run', '/opt/chiridion/control-plane.mjs',
-  ];
+  );
 
   const result = await dockerExec(runArgs, 60_000);
   if (!result.success) {
@@ -202,6 +235,8 @@ export async function ensureContainer(name: string): Promise<ContainerRecord> {
     createdAt: Date.now(),
     lastAccessedAt: Date.now(),
     activeWebSockets: 0,
+    orgId: opts?.orgId,
+    workspaceId: opts?.workspaceId,
   };
   containers.set(name, record);
   console.log(`[ContainerManager] created container ${name} (id=${containerId}, port=${port})`);

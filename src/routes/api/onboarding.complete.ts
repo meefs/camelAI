@@ -64,7 +64,7 @@ async function writeOnboardingProfile(
   profileMarkdown: string
 ): Promise<void> {
   const env = getEnv(context);
-  const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId);
+  const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, orgId);
   const writeResult = await container.writeFile(
     '/home/claude/.chiridion/profile.md',
     profileMarkdown

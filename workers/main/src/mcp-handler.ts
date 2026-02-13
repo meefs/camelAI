@@ -837,8 +837,8 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           );
 
           // Push updated env vars to running container (fire-and-forget)
-          getWorkspaceContainer(this.env, workspaceId)
-            .refreshIntegrationEnvVars(workspaceId)
+          getWorkspaceContainer(this.env, workspaceId, orgId)
+            .refreshIntegrationEnvVars()
             .catch(() => {});
 
           // Sync secrets to all deployed workers in this workspace (fire-and-forget)
@@ -1073,8 +1073,8 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           );
 
           // Push updated env vars to running container (fire-and-forget)
-          getWorkspaceContainer(this.env, workspaceId)
-            .refreshIntegrationEnvVars(workspaceId)
+          getWorkspaceContainer(this.env, workspaceId, orgId)
+            .refreshIntegrationEnvVars()
             .catch(() => {});
 
           // Sync secrets to all deployed workers in this workspace (fire-and-forget)

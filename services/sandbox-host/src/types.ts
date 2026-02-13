@@ -6,6 +6,8 @@ export interface ContainerRecord {
   createdAt: number;
   lastAccessedAt: number;
   activeWebSockets: number;
+  orgId?: string;
+  workspaceId?: string;
 }
 
 export interface ExecResult {

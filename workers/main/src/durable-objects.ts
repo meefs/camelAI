@@ -118,12 +118,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   CF_ACCOUNT_ID?: string;
   CF_DISPATCH_NAMESPACE?: string;
   EMAIL_TO_USER: KVNamespace;
-  R2_BUCKET_NAME?: string;
-  R2_ACCOUNT_ID?: string;
   R2_MOUNT_DIR?: string;
-  R2_MOUNT_READONLY?: string;
-  R2_API_TOKEN?: string;
-  R2_PARENT_ACCESS_KEY_ID?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   DEBUG_CLAUDE_AGENT_SDK?: string;
 }
@@ -837,11 +832,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       console.log(`[ChatThreadDO] ensureRunnerConnected: got workspace env fromCache=${fromCache}`);
 
       if (!this.runtime) {
-        this.runtime = getWorkspaceContainer(this.env, context.workspaceId);
+        this.runtime = getWorkspaceContainer(this.env, context.workspaceId, context.orgId);
       }
 
       // Push workspace env to the control plane (using cached env vars).
-      await this.runtime.startForWorkspace(context.workspaceId, context.orgId, workspaceEnvVars);
+      await this.runtime.startForWorkspace(workspaceEnvVars);
 
       // Build thread-specific env delta for the chat session.
       const envVars = await this.runtime.buildClaudeRunnerEnv({

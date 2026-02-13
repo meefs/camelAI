@@ -35,8 +35,8 @@ function buildEnvVarsForTest(workspaceId: string, orgId: string) {
     } as unknown as DurableObjectNamespace<WorkspaceDO>,
   } as unknown as WorkspaceContainerEnv;
 
-  const runtime = new WorkspaceContainer(fakeEnv, workspaceId);
-  return runtime.buildEnvVars(workspaceId, orgId);
+  const runtime = new WorkspaceContainer(fakeEnv, workspaceId, orgId);
+  return runtime.buildEnvVars();
 }
 
 describe('sprite runtime', () => {
@@ -67,20 +67,10 @@ describe('sprite runtime', () => {
     expect(envVars.ORG_ID).toBe('org-1');
   });
 
-  it('sets R2 prefix to {orgId}/{workspaceId}/', async () => {
-    const envVars = await buildEnvVarsForTest('ws-1', 'org-1');
-    expect(envVars.R2_PREFIX).toBe('org-1/ws-1/');
-  });
-
-  it('keeps legacy R2 prefix for org-id workspaces', async () => {
-    const envVars = await buildEnvVarsForTest('org-legacy', 'org-legacy');
-    expect(envVars.R2_PREFIX).toBe('org-legacy/');
-  });
-
   it('reuses cached runtime per workspace for same env object', () => {
     const env = {} as WorkspaceContainerEnv;
-    const a = getWorkspaceContainer(env, 'ws-1');
-    const b = getWorkspaceContainer(env, 'ws-1');
+    const a = getWorkspaceContainer(env, 'ws-1', 'org-1');
+    const b = getWorkspaceContainer(env, 'ws-1', 'org-1');
     expect(a).toBe(b);
   });
 });

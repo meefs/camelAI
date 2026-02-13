@@ -1,13 +1,12 @@
 # Chiridion App
 
-Chiridion is an AI coding assistant platform built on Cloudflare Workers + Durable Objects with per-workspace Fly Sprites runtimes.
+Chiridion is an AI coding assistant platform built on Cloudflare Workers + Durable Objects with Docker + gVisor sandbox runtimes on Azure VMs.
 
 ## Prerequisites
 
 - Node.js 22+
 - Bun
 - Cloudflare account
-- Fly Sprites token (`SPRITES_TOKEN`)
 
 ## Local Development
 
@@ -49,26 +48,4 @@ bun run deploy:dispatcher:prod
 bun run deploy:dispatcher:staging
 ```
 
-## Sprites Runtime Notes
-
-- The workspace runtime is implemented in `workers/main/src/workspace-container.ts`.
-- The runner source at `sandbox/claude-runner.mjs` is embedded into the worker via:
-
-```bash
-bun run gen:embedded-runner
-```
-
-This generation step is already included in `dev`, `build`, `typecheck`, and worker test scripts.
-
-## Core Environment Variables
-
-Set in `.dev.vars` (and secrets/vars for deployed environments):
-
-- `SPRITES_TOKEN`
-- `SPRITES_API_BASE_URL` (optional)
-- `SPRITES_NAME_PREFIX` (optional)
-- `WORKER_BASE_URL` (must be publicly reachable from sprites)
-- `OPENROUTER_API_KEY`
-- `OPENROUTER_PROVISIONING_KEY`
-- `TOKEN_SIGNING_SECRET`
-- `INTEGRATION_SECRET_KEY`
+See `AGENTS.md` for full architecture documentation.

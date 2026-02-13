@@ -463,7 +463,7 @@ describe('Chat compaction event lifecycle', () => {
 
     expect(screen.getByTestId('compact-summary')).toBeInTheDocument();
 
-    // Emit full compact summary (forwarded by claude-runner from JSONL)
+    // Emit full compact summary (forwarded by control plane from JSONL)
     await act(async () => {
       socket.emitMessage({
         type: 'sdk_event',
@@ -578,7 +578,7 @@ describe('Chat compaction event lifecycle', () => {
     // Placeholder compact card appears immediately
     expect(screen.getByTestId('compact-summary')).toBeInTheDocument();
 
-    // Full summary forwarded by claude-runner from JSONL
+    // Full summary forwarded by control plane from JSONL
     await act(async () => {
       socket.emitMessage({
         type: 'sdk_event',

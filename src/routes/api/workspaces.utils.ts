@@ -78,7 +78,7 @@ export async function requireWorkspaceAuth(
 ): Promise<WorkspaceAuth> {
   const accessAuth = await requireWorkspaceAccess(request, context, workspaceId, options);
   const env = getEnv(context);
-  const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, accessAuth.workspaceId);
+  const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, accessAuth.workspaceId, accessAuth.orgId);
 
   return {
     ...accessAuth,

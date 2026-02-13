@@ -248,7 +248,7 @@ export async function getMessages(
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return [];
 
-    const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId);
+    const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, wsInfo.org_id);
 
     // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
     // Modal sandbox uses /home/claude (-home-claude).

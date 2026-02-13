@@ -29,6 +29,7 @@ import {
 } from './fs-host';
 
 const PORT = parseInt(process.env.PORT || '80', 10);
+const R2_MOUNT_ROOT = process.env.R2_MOUNT_ROOT || '/mnt/r2';
 
 interface WsData {
   name: string;
@@ -124,7 +125,20 @@ Bun.serve<WsData>({
       if (!subpath) {
         // POST /v1/sandboxes/{name} — Create or reconnect (idempotent)
         if (req.method === 'POST') {
-          const record = await ensureContainer(name);
+          // Parse optional JSON body with orgId + workspaceId for R2 bind mounts
+          let opts: { orgId?: string; workspaceId?: string } | undefined;
+          try {
+            const contentType = req.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+              const body = (await req.json()) as { orgId?: string; workspaceId?: string };
+              if (body.orgId && body.workspaceId) {
+                opts = { orgId: body.orgId, workspaceId: body.workspaceId };
+              }
+            }
+          } catch {
+            // Ignore parse errors — body is optional
+          }
+          const record = await ensureContainer(name, opts);
           return jsonResponse({
             id: record.containerId,
             name: record.name,
@@ -291,7 +305,14 @@ Bun.serve<WsData>({
 
       // POST /v1/sandboxes/{name}/env → container :8080/env
       if (subpath === '/env' && req.method === 'POST') {
-        return proxyToControlPlane(name, '/env', req);
+        const body = (await req.json()) as Record<string, string>;
+
+        // Proxy to control plane
+        return proxyToControlPlane(name, '/env', new Request(req.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }));
       }
 
       // GET /v1/sandboxes/{name}/health → container :8080/health
@@ -392,5 +413,73 @@ Bun.serve<WsData>({
     },
   },
 });
+
+// ─── Host-level R2 mount (one-time at startup) ──────────────────────
+//
+// Mount the entire R2 bucket to R2_MOUNT_ROOT via rclone. Individual
+// containers then get per-workspace subdirectories via Docker -v bind mounts,
+// avoiding FUSE/rclone inside gVisor containers entirely.
+
+const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
+const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
+const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
+const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
+
+async function mountR2OnHost(): Promise<void> {
+  if (!R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_ACCOUNT_ID || !R2_BUCKET_NAME) {
+    console.log('[SandboxHost] R2 credentials not configured, skipping host mount');
+    return;
+  }
+
+  // Check if already mounted
+  const { existsSync, mkdirSync, writeFileSync } = await import('fs');
+  try {
+    const { execSync } = await import('child_process');
+    const mounts = execSync('mount', { encoding: 'utf8' });
+    if (mounts.includes(R2_MOUNT_ROOT)) {
+      console.log(`[SandboxHost] R2 already mounted at ${R2_MOUNT_ROOT}`);
+      return;
+    }
+  } catch {}
+
+  // Ensure mount point exists
+  mkdirSync(R2_MOUNT_ROOT, { recursive: true });
+
+  // Write rclone config
+  const configPath = '/tmp/rclone-r2.conf';
+  const rcloneConfig = [
+    '[r2]',
+    'type = s3',
+    'provider = Cloudflare',
+    `access_key_id = ${R2_ACCESS_KEY_ID}`,
+    `secret_access_key = ${R2_SECRET_ACCESS_KEY}`,
+    `endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+  ].join('\n');
+  writeFileSync(configPath, rcloneConfig);
+
+  // Mount via rclone (daemon mode so it runs in background)
+  const { execSync } = await import('child_process');
+  try {
+    execSync(
+      `rclone mount --daemon r2:${R2_BUCKET_NAME} ${R2_MOUNT_ROOT} --config=${configPath} --allow-other --dir-cache-time=5s --vfs-cache-mode=writes --vfs-write-back=0`,
+      { stdio: 'pipe', timeout: 10_000 }
+    );
+    console.log(`[SandboxHost] R2 bucket mounted at ${R2_MOUNT_ROOT}`);
+  } catch (err) {
+    console.error(`[SandboxHost] Failed to mount R2 bucket:`, err);
+  }
+
+  // Verify mount
+  await new Promise((r) => setTimeout(r, 1000));
+  if (existsSync(R2_MOUNT_ROOT)) {
+    console.log(`[SandboxHost] R2 mount verified at ${R2_MOUNT_ROOT}`);
+  } else {
+    console.warn(`[SandboxHost] R2 mount point not accessible after mount`);
+  }
+}
+
+mountR2OnHost().catch((err) =>
+  console.error('[SandboxHost] Host R2 mount startup error:', err)
+);
 
 console.log(`[SandboxHost] listening on port ${PORT}`);

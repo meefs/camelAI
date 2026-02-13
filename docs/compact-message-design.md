@@ -35,7 +35,7 @@ Two JSONL events mark compaction:
 }
 ```
 
-Both flow through `claude-runner.mjs` → `ChatThreadDO` → client WebSocket as `sdk_event` wrappers. No special handling exists for either today.
+Both flow through `control-plane.mjs` → `ChatThreadDO` → client WebSocket as `sdk_event` wrappers. No special handling exists for either today.
 
 ---
 

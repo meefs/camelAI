@@ -1269,7 +1269,7 @@ export default function Chat({
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
           // Compaction is complete — the compact_boundary event arrives AFTER the
           // SDK finishes generating the summary (not before). Insert a compact
-          // summary card immediately. If claude-runner later forwards the full
+          // summary card immediately. If the control plane later forwards the full
           // summary (isCompactSummary user event), it will replace this placeholder.
           completeActiveManualCompaction();
           if (hasCapturedCompactionSummaryRef.current) {

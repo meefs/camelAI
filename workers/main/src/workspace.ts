@@ -222,10 +222,10 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     orgId: string
   ): Promise<{ envVars: Record<string, string>; fromCache: boolean }> {
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
-    const container = getWorkspaceContainer(runtimeEnv, workspaceId);
+    const container = getWorkspaceContainer(runtimeEnv, workspaceId, orgId);
 
     // Ensure sandbox exists
-    await container.ensureSpriteBootstrapped(workspaceId);
+    await container.ensureSpriteBootstrapped();
 
     // Check for cached env vars
     const cached = this.ctx.storage.kv.get<WorkspaceEnvCache>(WORKSPACE_ENV_CACHE_KEY);
@@ -244,7 +244,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       `[WorkspaceDO] ensureSpriteReady: building env vars workspace=${workspaceId} ` +
       `reason=${cached ? 'expiring' : 'no_cache'}`
     );
-    const envVars = await container.buildEnvVars(workspaceId, orgId);
+    const envVars = await container.buildEnvVars();
 
     // Calculate expiry based on token TTLs (24 hours minus buffer)
     const expiresAt = now + DATA_PROXY_TOKEN_TTL_MS - ENV_CACHE_REFRESH_BUFFER_MS;
@@ -287,13 +287,13 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
     console.log(`[WorkspaceDO] prewarmEnvVars: building cache workspace=${workspaceId}`);
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
-    const container = getWorkspaceContainer(runtimeEnv, workspaceId);
+    const container = getWorkspaceContainer(runtimeEnv, workspaceId, orgId);
 
     // Ensure sandbox exists first
-    await container.ensureSpriteBootstrapped(workspaceId);
+    await container.ensureSpriteBootstrapped();
 
     // Build and cache env vars
-    const envVars = await container.buildEnvVars(workspaceId, orgId);
+    const envVars = await container.buildEnvVars();
     const expiresAt = now + DATA_PROXY_TOKEN_TTL_MS - ENV_CACHE_REFRESH_BUFFER_MS;
 
     this.ctx.storage.kv.put<WorkspaceEnvCache>(WORKSPACE_ENV_CACHE_KEY, {
@@ -392,9 +392,9 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
     const shouldEagerProvision = !!(runtimeEnv.SANDBOX_HOST || runtimeEnv.SANDBOX_HOST_URL);
     if (shouldEagerProvision) {
-      const runtime = getWorkspaceContainer(runtimeEnv, id);
-      await runtime.provisionSpriteForWorkspace(id);
-      await runtime.ensureSpriteBootstrapped(id);
+      const runtime = getWorkspaceContainer(runtimeEnv, id, orgId);
+      await runtime.provisionSpriteForWorkspace();
+      await runtime.ensureSpriteBootstrapped();
 
       // Prewarm env vars in background (don't block workspace creation)
       waitUntil(
@@ -948,9 +948,10 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     try {
       const container = getWorkspaceContainer(
         this.env as unknown as WorkspaceContainerEnv,
-        info.id
+        info.id,
+        info.org_id
       );
-      const success = await container.refreshIntegrationEnvVars(info.id);
+      const success = await container.refreshIntegrationEnvVars();
       if (!success) {
         console.warn('[WorkspaceDO] Container env refresh skipped or failed', { workspaceId: info.id });
       }

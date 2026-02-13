@@ -214,8 +214,8 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
 
     // Push secrets to running container
     ctx.waitUntil(
-      getWorkspaceContainer(env, stateData.workspace_id)
-        .refreshIntegrationEnvVars(stateData.workspace_id)
+      getWorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
+        .refreshIntegrationEnvVars()
         .catch(() => {})
     );
 
@@ -399,8 +399,8 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
 
     // Push secrets to running container
     ctx.waitUntil(
-      getWorkspaceContainer(env, stateData.workspace_id)
-        .refreshIntegrationEnvVars(stateData.workspace_id)
+      getWorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
+        .refreshIntegrationEnvVars()
         .catch(() => {})
     );
 
@@ -569,8 +569,8 @@ export async function handleSalesforceOAuthCallback({ env, url, ctx }: RouteCont
 
     // Push secrets to running container
     ctx.waitUntil(
-      getWorkspaceContainer(env, stateData.workspace_id)
-        .refreshIntegrationEnvVars(stateData.workspace_id)
+      getWorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
+        .refreshIntegrationEnvVars()
         .catch(() => {})
     );
 

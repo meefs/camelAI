@@ -53,7 +53,7 @@ function suppressUndiciTerminatedErrors(): Plugin {
  */
 function spriteAssetWatcher(): Plugin {
   const watchPaths = [
-    'sandbox/claude-runner.mjs',
+    'sandbox/control-plane.mjs',
     'sandbox/memory-logger.mjs',
     'sandbox/skills/',
     'sandbox/create-worker/',
