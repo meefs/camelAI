@@ -388,5 +388,40 @@ describe('notebook preview utils', () => {
       const render = getOutputRender(output);
       expect(render.kind).toBe('html');
     });
+
+    it('falls back to html mode when table literals only appear inside script blocks', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `
+            <div id="widget"></div>
+            <script>
+              const tpl = '<table><tr><td>Template</td></tr></table>';
+              window.renderWidget?.(tpl);
+            </script>
+          `,
+        },
+      };
+
+      const render = getOutputRender(output);
+      expect(render.kind).toBe('html');
+    });
+
+    it('falls back to html mode when table literals only appear inside style blocks', () => {
+      const output: NotebookOutput = {
+        output_type: 'display_data',
+        data: {
+          'text/html': `
+            <style>
+              .preview::after { content: "<table><tr><td>Template</td></tr></table>"; }
+            </style>
+            <div class="preview">Done</div>
+          `,
+        },
+      };
+
+      const render = getOutputRender(output);
+      expect(render.kind).toBe('html');
+    });
   });
 });

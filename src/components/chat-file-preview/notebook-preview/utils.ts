@@ -759,18 +759,21 @@ function extractTableCaption(tableHtml: string): string | null {
   return captionText || null;
 }
 
+function stripNonRenderedHtmlBlocks(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+}
+
 function hasSignificantContentOutsidePrimaryTable(html: string, primaryTableHtml: string): boolean {
   const remaining = html.replace(primaryTableHtml, '');
   if (remaining.trim().length === 0) {
     return false;
   }
 
-  const withoutNonRenderedBlocks = remaining
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
-    .trim();
+  const withoutNonRenderedBlocks = stripNonRenderedHtmlBlocks(remaining).trim();
 
   if (withoutNonRenderedBlocks.length === 0) {
     return false;
@@ -797,9 +800,10 @@ function getTableData(output: NotebookOutput): ParsedTable | null {
   const data = output.data ?? {};
   const html = toHtml(data['text/html']);
   if (!html) return null;
+  const htmlWithoutNonRenderedBlocks = stripNonRenderedHtmlBlocks(html);
 
-  if (!/<table[\s>]/i.test(html)) return null;
-  if (!/<tr[\s>]/i.test(html)) return null;
+  if (!/<table[\s>]/i.test(htmlWithoutNonRenderedBlocks)) return null;
+  if (!/<tr[\s>]/i.test(htmlWithoutNonRenderedBlocks)) return null;
 
   // Chart outputs are already handled via dedicated parsers.
   if (/vegaEmbed\s*\(/i.test(html)) return null;
@@ -809,7 +813,7 @@ function getTableData(output: NotebookOutput): ParsedTable | null {
   if (/id=(["'])T_[^"']+\1/i.test(html)) return null;
   if (/class=(["'])[^"']*\bStyler\b[^"']*\1/i.test(html)) return null;
 
-  const tableMatch = html.match(/<table\b[^>]*>([\s\S]*?)<\/table>/i);
+  const tableMatch = htmlWithoutNonRenderedBlocks.match(/<table\b[^>]*>([\s\S]*?)<\/table>/i);
   if (!tableMatch) return null;
   const tableHtml = tableMatch[0];
   const tableInnerHtml = tableMatch[1];
