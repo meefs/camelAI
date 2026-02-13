@@ -1,6 +1,6 @@
 ---
 name: data-analysis
-description: Analyze data using Python and SQL tools. Use this skill when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create visualizations, or perform data analysis. Supports pandas, polars, DuckDB for data processing, matplotlib/seaborn/plotly for visualization, scikit-learn for ML, and database connectivity via SQLAlchemy, usql, the google-cloud-bigquery client with OAuth access tokens, and the Chiridion MS SQL Proxy API for SQL Server. For live dashboards or data apps, read the developing-software skill.
+description: Analyze data using Python and SQL tools. Use this skill when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create visualizations, or perform data analysis. Supports pandas, polars, DuckDB for data processing, altair/plotly for visualization (matplotlib/seaborn as fallbacks), scikit-learn for ML, and database connectivity via SQLAlchemy, usql, the google-cloud-bigquery client with OAuth access tokens, and the Chiridion MS SQL Proxy API for SQL Server. For live dashboards or data apps, read the developing-software skill.
 license: Complete terms in LICENSE.txt
 ---
 
@@ -107,29 +107,37 @@ print(result.df())
 
 | Package | Purpose | Install |
 |---------|---------|---------|
-| `matplotlib` | Static plots and charts | `uv pip install --system matplotlib` |
-| `seaborn` | Statistical visualization | `uv pip install --system seaborn` |
-| `plotly` | Interactive charts | `uv pip install --system plotly` |
+| `altair` | Declarative charts (Vega-Lite) — **preferred** | `uv pip install --system altair` |
+| `plotly` | Interactive charts — use for 3D, maps, finance | `uv pip install --system plotly` |
+| `matplotlib` | Static plots (fallback) | `uv pip install --system matplotlib` |
+| `seaborn` | Statistical visualization (fallback) | `uv pip install --system seaborn` |
 
 **Install if needed, then use:**
 
 ```python
+# Altair (preferred — renders natively with dark/light theme support)
+import altair as alt
+
+chart = alt.Chart(df).mark_bar().encode(
+    x="category:N",
+    y="amount:Q"
+).properties(
+    title=alt.Title("Sales by Category", subtitle="Q4 2025 data"),
+    width=500,
+    height=300
+)
+chart  # Display in notebook cell output
+
+# Plotly (native rendering, use for charts Altair doesn't support)
+import plotly.express as px
+fig = px.line(df, x="date", y="value", title="Trend Over Time")
+fig.show()
+
+# Matplotlib/Seaborn (static PNG — no dark mode support)
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-# Matplotlib
-plt.figure(figsize=(10, 6))
-plt.plot(df["date"], df["value"])
-plt.savefig("chart.png")
-
-# Seaborn
 sns.barplot(data=df, x="category", y="amount")
 plt.savefig("barplot.png")
-
-# Plotly (interactive)
-import plotly.express as px
-fig = px.line(df, x="date", y="value")
-fig.show()
 ```
 
 ## Jupyter Notebook Workflow (Preferred)
@@ -167,11 +175,46 @@ set_file_preview(
 )
 ```
 
-### Interactive output guidance
+### How notebooks are presented
 
-- Prefer `plotly` for interactive charts in notebook previews (`fig.show()` or Plotly MIME output).
-- `matplotlib`/`seaborn` outputs render as static images in notebooks.
-- Prefer Plotly over niche notebook-specific chart stacks when you need reliable interactive behavior in preview.
+Chiridion renders notebooks in **Report mode** by default — the user sees a polished article, not raw cells.
+
+**What Report mode does:**
+- Hides all code — only markdown prose and cell outputs (charts, tables, text) are visible
+- Auto-hides setup cells (imports, data loading, `.describe()`, `pd.set_option`, etc.)
+- Extracts the first `#` heading as the report title and the following paragraph as the subtitle
+- Builds a sidebar table of contents from `##` and `###` headings
+
+**Structure notebooks for Report mode:**
+- Start with a single `#` heading followed by a one-sentence description (becomes the report header)
+- Use `##` headings to define sections — these populate the sidebar TOC
+- Keep setup code in dedicated cells (the classifier hides entire cells, not individual lines)
+- Write markdown between analysis cells explaining what each result shows
+- End with a `## Key Findings` or `## Conclusion` section
+
+The user can toggle to Notebook mode to see all cells, code, and execution counts, but Report mode is the default first impression.
+
+### Chart library preference
+
+Chiridion's notebook preview renders Altair and Plotly charts natively — not in iframes. Chart colors, text, and backgrounds automatically adapt to the user's light/dark theme.
+
+**Preferred order:**
+1. **Altair** (Vega-Lite) — emits structured specs with full theme support
+2. **Plotly** — also renders natively; use when Altair doesn't cover the chart type (3D, maps, financial)
+3. **matplotlib / seaborn** — static PNG fallback; won't adapt to dark mode
+
+**Altair renderer constraints:**
+- Use `alt.Title("Title", subtitle="Subtitle")` — both are themed automatically
+- Do **not** set `background` — the renderer makes backgrounds transparent
+- Do **not** hardcode text colors — the renderer applies theme-appropriate colors
+- Set `width`/`height` via `.properties()` — width is overridden to fill the container; height is used as a baseline
+- Arc marks (donut/pie) are detected and allocated extra vertical space automatically
+
+**Plotly renderer constraints:**
+- Use `fig.show()` to emit Plotly MIME output — the renderer picks it up natively
+- Do **not** use `fig.write_image()` or `fig.write_html()` — these bypass native rendering
+- Do **not** set `paper_bgcolor` or `plot_bgcolor` — the renderer makes them transparent
+- Subtitles via `layout.annotations` are automatically themed
 
 ### Scientific Computing & ML
 

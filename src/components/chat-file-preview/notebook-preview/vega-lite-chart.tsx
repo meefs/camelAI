@@ -47,8 +47,6 @@ function loadScriptSequentially(
   if (globalCheck()) return Promise.resolve();
 
   return new Promise((resolve, reject) => {
-    const existing = getTaggedScript(src);
-
     const onLoad = () => {
       if (globalCheck()) {
         resolve();
@@ -59,14 +57,21 @@ function loadScriptSequentially(
 
     const onError = () => reject(new Error(`Failed to load ${src}.`));
 
+    const existing = getTaggedScript(src);
     if (existing) {
       if (existing.dataset.loaded === 'true' || globalCheck()) {
         onLoad();
         return;
       }
-      existing.addEventListener('load', onLoad, { once: true });
-      existing.addEventListener('error', onError, { once: true });
-      return;
+      const isLoading = existing.dataset.loading === 'true';
+      const hasFailed = existing.dataset.failed === 'true';
+      if (isLoading && !hasFailed) {
+        existing.addEventListener('load', onLoad, { once: true });
+        existing.addEventListener('error', onError, { once: true });
+        return;
+      }
+
+      existing.remove();
     }
 
     const script = document.createElement('script');
@@ -75,15 +80,27 @@ function loadScriptSequentially(
     script.crossOrigin = 'anonymous';
     script.referrerPolicy = 'no-referrer';
     script.dataset.chiridionNotebookScript = src;
+    script.dataset.loading = 'true';
+    script.dataset.failed = 'false';
     script.addEventListener(
       'load',
       () => {
         script.dataset.loaded = 'true';
+        script.dataset.loading = 'false';
+        script.dataset.failed = 'false';
         onLoad();
       },
       { once: true }
     );
-    script.addEventListener('error', onError, { once: true });
+    script.addEventListener(
+      'error',
+      () => {
+        script.dataset.loading = 'false';
+        script.dataset.failed = 'true';
+        onError();
+      },
+      { once: true }
+    );
 
     document.head.appendChild(script);
   });
