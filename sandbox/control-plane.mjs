@@ -18,6 +18,10 @@ import { readFile, access } from 'fs/promises';
 import { homedir } from 'os';
 
 const PORT = parseInt(process.env.CONTROL_PLANE_PORT || '8080', 10);
+const CONTROL_PLANE_IDLE_TIMEOUT_SECS = Math.max(
+  10,
+  parseInt(process.env.CONTROL_PLANE_IDLE_TIMEOUT_SECS || '120', 10)
+);
 
 // ─── Chat Sessions ─────────────────────────────────────────
 const chatSessions = new Map();
@@ -295,6 +299,25 @@ class ChatSession {
     this.disconnectTimer = null;
     this.clients = new Set();
     this.shuttingDown = false;
+  }
+
+  updateSessionEnv(nextSessionEnv) {
+    const incoming = nextSessionEnv && typeof nextSessionEnv === 'object' ? nextSessionEnv : {};
+    const prevProxySessionId = typeof this.sessionEnv?.CHIRIDION_PROXY_SESSION_ID === 'string'
+      ? this.sessionEnv.CHIRIDION_PROXY_SESSION_ID.trim()
+      : '';
+    this.sessionEnv = {
+      ...this.sessionEnv,
+      ...incoming,
+    };
+    const nextProxySessionId = typeof this.sessionEnv?.CHIRIDION_PROXY_SESSION_ID === 'string'
+      ? this.sessionEnv.CHIRIDION_PROXY_SESSION_ID.trim()
+      : '';
+    if (nextProxySessionId && nextProxySessionId !== prevProxySessionId) {
+      console.log(
+        `[ControlPlane] refreshed proxy session thread=${this.threadId} proxySession=${nextProxySessionId}`
+      );
+    }
   }
 
   addClient(ws) {
@@ -617,6 +640,8 @@ function getOrCreateSession(threadId, sessionEnv) {
   if (!session) {
     session = new ChatSession(threadId, sessionEnv);
     chatSessions.set(threadId, session);
+  } else {
+    session.updateSessionEnv(sessionEnv);
   }
   return session;
 }
@@ -661,6 +686,7 @@ function errorResponse(message, status) {
 
 const server = Bun.serve({
   port: PORT,
+  idleTimeout: CONTROL_PLANE_IDLE_TIMEOUT_SECS,
 
   async fetch(req, server) {
     const url = new URL(req.url);
@@ -701,6 +727,7 @@ const server = Bun.serve({
   websocket: {
     open(ws) {
       // Wait for init message to attach to a session.
+      console.log('[ControlPlane] websocket opened (awaiting init)');
     },
 
     message(ws, data) {
@@ -720,6 +747,12 @@ const server = Bun.serve({
         ws.data.threadId = threadId;
         ws.data.session = session;
         session.addClient(ws);
+        const proxySessionId = typeof sessionEnv.CHIRIDION_PROXY_SESSION_ID === 'string'
+          ? sessionEnv.CHIRIDION_PROXY_SESSION_ID
+          : '';
+        console.log(
+          `[ControlPlane] websocket initialized thread=${threadId} proxySession=${proxySessionId}`
+        );
         ws.send(JSON.stringify({ type: 'ready', threadId }));
 
         // Replay pending questions
@@ -737,6 +770,14 @@ const server = Bun.serve({
       const session = ws.data.session;
       if (!session) {
         ws.send(JSON.stringify({ type: 'error', error: 'Send init message first' }));
+        return;
+      }
+
+      if (msg.type === 'heartbeat') {
+        ws.send(JSON.stringify({
+          type: 'heartbeat_ack',
+          ts: typeof msg.ts === 'number' ? msg.ts : Date.now(),
+        }));
         return;
       }
 
@@ -760,11 +801,14 @@ const server = Bun.serve({
       }
     },
 
-    close(ws) {
+    close(ws, code, reason) {
       const session = ws.data.session;
       if (session) {
         session.removeClient(ws);
       }
+      const threadId = ws.data.threadId || 'unknown';
+      const reasonText = typeof reason === 'string' ? reason : '';
+      console.log(`[ControlPlane] websocket closed thread=${threadId} code=${code} reason=${reasonText}`);
     },
   },
 });

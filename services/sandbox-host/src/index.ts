@@ -33,6 +33,22 @@ const PORT = parseInt(process.env.PORT || '80', 10);
 const R2_MOUNT_ROOT = process.env.R2_MOUNT_ROOT || '/mnt/r2';
 const WORKER_BASE_URL = process.env.WORKER_BASE_URL || '';
 const SANDBOX_PROXY_SECRET = process.env.SANDBOX_PROXY_SECRET || '';
+const SANDBOX_HOST_IDLE_TIMEOUT_SECS = Math.max(
+  10,
+  parseInt(process.env.SANDBOX_HOST_IDLE_TIMEOUT_SECS || '120', 10)
+);
+const PROXY_SESSION_ACTIVE_TTL_MS = Math.max(
+  30_000,
+  parseInt(process.env.PROXY_SESSION_ACTIVE_TTL_MS || String(30 * 60_000), 10)
+);
+const PROXY_SESSION_CLOSE_GRACE_MS = Math.max(
+  5_000,
+  parseInt(process.env.PROXY_SESSION_CLOSE_GRACE_MS || String(10 * 60_000), 10)
+);
+const PROXY_SESSION_CLEANUP_INTERVAL_MS = Math.max(
+  5_000,
+  parseInt(process.env.PROXY_SESSION_CLEANUP_INTERVAL_MS || '60000', 10)
+);
 const HEADER_WORKER_BASE_URL = 'x-chiridion-worker-base-url';
 const HEADER_THREAD_ID = 'x-chiridion-thread-id';
 const HEADER_PROXY_SESSION_ID = 'x-chiridion-proxy-session-id';
@@ -44,6 +60,7 @@ const NON_PROXY_DENY_CIDRS = (process.env.NON_PROXY_DENY_CIDRS || '172.17.0.0/16
 
 interface WsData {
   name: string;
+  threadId: string;
   proxySessionId: string;
   targetWsUrl: string;
   upstream: WebSocket | null;
@@ -58,9 +75,27 @@ interface ProxySessionContext {
   workspaceId: string;
   threadId: string;
   workerBaseUrl: string;
+  createdAt: number;
+  lastSeenAt: number;
+  expiresAt: number;
+  closedAt: number | null;
 }
 
 const proxySessions = new Map<string, ProxySessionContext>();
+
+function cleanupExpiredProxySessions(): void {
+  const now = Date.now();
+  let removed = 0;
+  for (const [sessionId, session] of proxySessions) {
+    if (session.expiresAt <= now) {
+      proxySessions.delete(sessionId);
+      removed += 1;
+    }
+  }
+  if (removed > 0) {
+    console.log(`[SandboxHost] cleaned up ${removed} expired proxy session(s)`);
+  }
+}
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -279,6 +314,11 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
   if (!session) {
     return errorResponse('Unknown proxy session', 403);
   }
+  const now = Date.now();
+  if (session.expiresAt <= now) {
+    proxySessions.delete(proxy.proxySessionId);
+    return errorResponse('Unknown proxy session', 403);
+  }
   if (session.containerName !== caller.name) {
     return errorResponse('Proxy session does not match caller container', 403);
   }
@@ -327,6 +367,9 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
     init.duplex = 'half';
   }
 
+  session.lastSeenAt = now;
+  session.expiresAt = now + PROXY_SESSION_ACTIVE_TTL_MS;
+  session.closedAt = null;
   return fetch(targetUrl, init);
 }
 
@@ -367,6 +410,7 @@ async function proxyToControlPlane(
 
 Bun.serve<WsData>({
   port: PORT,
+  idleTimeout: SANDBOX_HOST_IDLE_TIMEOUT_SECS,
 
   async fetch(req: Request, server) {
 
@@ -583,6 +627,7 @@ Bun.serve<WsData>({
         }
 
         await ensureContainer(name, { orgId, workspaceId });
+        const now = Date.now();
         proxySessions.set(proxySessionId, {
           id: proxySessionId,
           containerName: name,
@@ -590,7 +635,14 @@ Bun.serve<WsData>({
           workspaceId,
           threadId,
           workerBaseUrl,
+          createdAt: now,
+          lastSeenAt: now,
+          expiresAt: now + PROXY_SESSION_ACTIVE_TTL_MS,
+          closedAt: null,
         });
+        console.log(
+          `[SandboxHost] chat session opened container=${name} thread=${threadId} proxySession=${proxySessionId}`
+        );
         const port = await getControlPlanePort(name, { orgId, workspaceId });
         const targetWsUrl = `ws://127.0.0.1:${port}/chat`;
 
@@ -598,6 +650,7 @@ Bun.serve<WsData>({
         const upgraded = server.upgrade(req, {
           data: {
             name,
+            threadId,
             proxySessionId,
             targetWsUrl,
             upstream: null,
@@ -621,7 +674,7 @@ Bun.serve<WsData>({
 
   websocket: {
     open(ws: ServerWebSocket<WsData>) {
-      const { name, targetWsUrl } = ws.data;
+      const { name, threadId, proxySessionId, targetWsUrl } = ws.data;
 
       // Track active WS to prevent idle reaping
       addWebSocket(name);
@@ -643,12 +696,18 @@ Bun.serve<WsData>({
         }
       });
 
-      upstream.addEventListener('close', () => {
+      upstream.addEventListener('close', (event) => {
+        console.log(
+          `[SandboxHost] upstream ws closed container=${name} thread=${threadId} proxySession=${proxySessionId} code=${event.code} reason=${event.reason || ''}`
+        );
         try { ws.close(); } catch { /* already closed */ }
       });
 
       upstream.addEventListener('error', (err) => {
-        console.error(`[SandboxHost] upstream ws error:`, err);
+        console.error(
+          `[SandboxHost] upstream ws error container=${name} thread=${threadId} proxySession=${proxySessionId}:`,
+          err
+        );
         try { ws.close(); } catch { /* already closed */ }
       });
 
@@ -672,8 +731,16 @@ Bun.serve<WsData>({
       }
     },
 
-    close(ws: ServerWebSocket<WsData>) {
-      proxySessions.delete(ws.data.proxySessionId);
+    close(ws: ServerWebSocket<WsData>, code: number, reason: string) {
+      const session = proxySessions.get(ws.data.proxySessionId);
+      if (session) {
+        const now = Date.now();
+        session.closedAt = now;
+        session.expiresAt = now + PROXY_SESSION_CLOSE_GRACE_MS;
+      }
+      console.log(
+        `[SandboxHost] chat session closed container=${ws.data.name} thread=${ws.data.threadId} proxySession=${ws.data.proxySessionId} code=${code} reason=${reason || ''}`
+      );
       removeWebSocket(ws.data.name);
       if (ws.data.upstream && ws.data.upstream.readyState === WebSocket.OPEN) {
         ws.data.upstream.close();
@@ -681,6 +748,8 @@ Bun.serve<WsData>({
     },
   },
 });
+
+setInterval(cleanupExpiredProxySessions, PROXY_SESSION_CLEANUP_INTERVAL_MS);
 
 // ─── Host-level R2 mount (one-time at startup) ──────────────────────
 //
