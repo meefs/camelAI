@@ -180,7 +180,6 @@ const CHAT_SOCKET_TAG = 'chat';
 
 const CHAT_CONTEXT_KEY = 'chatContext';
 const CHAT_TODOS_KEY = 'chatTodos';
-const CHAT_IS_STREAMING_KEY = 'chatIsStreaming';
 const CHAT_NEXT_EVENT_ID_KEY = 'chatNextEventId';
 const CHAT_RUNNER_LAST_SEQ_KEY = 'chatRunnerLastSeq';
 
@@ -362,10 +361,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.lastPersistedRunnerSeq = storedRunnerLastSeq;
       }
 
-      const storedIsStreaming = ctx.storage.kv.get<boolean>(CHAT_IS_STREAMING_KEY);
-      if (typeof storedIsStreaming === 'boolean') {
-        this.chatIsStreaming = storedIsStreaming;
-      }
+      // chatIsStreaming is intentionally in-memory only (not persisted).
+      // If the DO restarts, there is no active stream by definition.
     });
   }
 
@@ -904,7 +901,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (this.chatIsStreaming === value) return;
     this.trace('set_chat_is_streaming', { from: this.chatIsStreaming, to: value });
     this.chatIsStreaming = value;
-    this.ctx.storage.kv.put(CHAT_IS_STREAMING_KEY, value);
     this.broadcastRealtime({ type: 'streaming_state', isStreaming: value });
   }
 
