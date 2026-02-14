@@ -52,8 +52,7 @@ export interface WorkspaceContainerEnv {
   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
 
   // Sandbox host — VPC binding (deployed) or URL fallback (local dev)
-  SANDBOX_HOST?: Fetcher;
-  SANDBOX_HOST_URL?: string;
+  SANDBOX_HOST: Fetcher;
 }
 
 interface ControlPlaneExecResponse {
@@ -499,22 +498,16 @@ export class WorkspaceContainer {
    * Env vars should be pre-built (and cached) by WorkspaceDO.ensureSandboxReady().
    */
   async startForWorkspace(prebuiltEnvVars?: Record<string, string>): Promise<void> {
-    // If we already have env vars pushed, skip
-    if (this.envVars && Object.keys(this.envVars).length > 0) {
-      console.log(`[Sandbox] startForWorkspace: already initialized workspace=${this.workspaceId}`);
-      return;
-    }
-
-    // Use prebuilt env vars if provided, otherwise build (fallback for legacy callers)
+    // Use prebuilt env vars if provided, otherwise build
     if (prebuiltEnvVars && Object.keys(prebuiltEnvVars).length > 0) {
-      console.log(`[Sandbox] startForWorkspace: using prebuilt env vars workspace=${this.workspaceId}`);
       this.envVars = prebuiltEnvVars;
-    } else {
+    } else if (!this.envVars || Object.keys(this.envVars).length === 0) {
       console.log(`[Sandbox] startForWorkspace: building env vars (no cache) workspace=${this.workspaceId} org=${this.orgId}`);
       this.envVars = await this.buildEnvVars();
     }
 
-    // Push workspace env to control plane
+    // Always push env to control plane — container may have been recreated
+    // after idle reap while this WorkspaceContainer instance persists in cache.
     await this.pushEnvToControlPlane(this.envVars);
 
     if (this.dataProxyTokenExpiry) {
