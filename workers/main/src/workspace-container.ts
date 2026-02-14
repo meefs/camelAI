@@ -172,28 +172,15 @@ export class WorkspaceContainer {
     return this.env === env;
   }
 
-  // ─── Proxy (lifecycle + FS + exec) ──────────────────────
+  // ─── Helpers ─────────────────────────────────────────────
 
-  /**
-   * Fetch via the sandbox host VPC binding.
-   */
-  private async fetchProxy(
-    path: string,
-    init: RequestInit = {},
-    query: Record<string, string | number | boolean | undefined> = {}
-  ): Promise<Response> {
-    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-    const url = new URL(`http://localhost${normalizedPath}`);
-    for (const [key, value] of Object.entries(query)) {
-      if (value === undefined || value === null) continue;
-      url.searchParams.set(key, String(value));
-    }
-
-    const headers = new Headers(init.headers);
-    return this.env.SANDBOX_HOST.fetch(url.toString(), { ...init, headers });
+  private sandboxUrl(subpath: string, query?: Record<string, string>): string {
+    const base = `http://sandbox/v1/workspaces/${encodeURIComponent(this.orgId)}/${encodeURIComponent(this.workspaceId)}${subpath}`;
+    if (!query) return base;
+    const url = new URL(base);
+    for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+    return url.toString();
   }
-
-  // ─── Path Helpers ────────────────────────────────────────
 
   private normalizeFsPath(path: string): string {
     if (!path) return '/';
@@ -227,12 +214,6 @@ export class WorkspaceContainer {
     }
   }
 
-  // ─── Exec + FS via Proxy ─────────────────────────────────
-
-  private sandboxProxyPath(subpath: string): string {
-    return `/v1/workspaces/${encodeURIComponent(this.orgId)}/${encodeURIComponent(this.workspaceId)}${subpath}`;
-  }
-
   /**
    * Execute a command on the sandbox via the proxy POST /exec endpoint.
    */
@@ -244,7 +225,7 @@ export class WorkspaceContainer {
       return { success: false, stdout: '', stderr: 'No command provided', exitCode: 1 };
     }
 
-    const response = await this.fetchProxy(this.sandboxProxyPath('/exec'), {
+    const response = await this.env.SANDBOX_HOST.fetch(this.sandboxUrl('/exec'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cmd: args, cwd: options.cwd, env: options.env }),
@@ -314,7 +295,7 @@ export class WorkspaceContainer {
    * Push workspace-level env vars to the control plane via the proxy.
    */
   private async pushEnvToControlPlane(envVars: Record<string, string>): Promise<void> {
-    const response = await this.fetchProxy(this.sandboxProxyPath('/env'), {
+    const response = await this.env.SANDBOX_HOST.fetch(this.sandboxUrl('/env'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(envVars),
@@ -543,7 +524,7 @@ export class WorkspaceContainer {
   async connectChatWebSocket(): Promise<WebSocket> {
     console.log(`[Sandbox] connectChatWebSocket: connecting via proxy`);
 
-    const response = await this.fetchProxy(this.sandboxProxyPath('/chat'), {
+    const response = await this.env.SANDBOX_HOST.fetch(this.sandboxUrl('/chat'), {
       headers: { Upgrade: 'websocket' },
     });
 
@@ -642,10 +623,8 @@ export class WorkspaceContainer {
 
   async exists(path: string): Promise<ControlPlaneExistsResponse> {
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.fetchProxy(
-      this.sandboxProxyPath('/fs/exists'),
-      { method: 'GET' },
-      { path: normalizedPath }
+    const response = await this.env.SANDBOX_HOST.fetch(
+      this.sandboxUrl('/fs/exists', { path: normalizedPath }),
     );
 
     if (!response.ok) {
@@ -662,10 +641,8 @@ export class WorkspaceContainer {
    */
   async readFileStream(path: string): Promise<Response | null> {
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.fetchProxy(
-      this.sandboxProxyPath('/fs/read'),
-      { method: 'GET' },
-      { path: normalizedPath }
+    const response = await this.env.SANDBOX_HOST.fetch(
+      this.sandboxUrl('/fs/read', { path: normalizedPath }),
     );
 
     if (response.status === 404) return null;
@@ -680,10 +657,8 @@ export class WorkspaceContainer {
 
   async readFile(path: string): Promise<ControlPlaneReadResponse> {
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.fetchProxy(
-      this.sandboxProxyPath('/fs/read'),
-      { method: 'GET' },
-      { path: normalizedPath }
+    const response = await this.env.SANDBOX_HOST.fetch(
+      this.sandboxUrl('/fs/read', { path: normalizedPath }),
     );
 
     if (response.status === 404) {
@@ -712,14 +687,13 @@ export class WorkspaceContainer {
 
   async writeFile(path: string, content: string): Promise<ControlPlaneWriteResponse> {
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.fetchProxy(
-      this.sandboxProxyPath('/fs/write'),
+    const response = await this.env.SANDBOX_HOST.fetch(
+      this.sandboxUrl('/fs/write', { path: normalizedPath }),
       {
         method: 'PUT',
         headers: { 'Content-Type': 'text/plain; charset=utf-8' },
         body: content,
       },
-      { path: normalizedPath }
     );
 
     if (!response.ok) {
@@ -733,14 +707,13 @@ export class WorkspaceContainer {
   async writeBinaryFile(path: string, base64Content: string): Promise<ControlPlaneWriteResponse> {
     const normalizedPath = this.normalizeFsPath(path);
     const binaryBuffer = Buffer.from(base64Content, 'base64');
-    const response = await this.fetchProxy(
-      this.sandboxProxyPath('/fs/write'),
+    const response = await this.env.SANDBOX_HOST.fetch(
+      this.sandboxUrl('/fs/write', { path: normalizedPath }),
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: binaryBuffer,
       },
-      { path: normalizedPath }
     );
 
     if (!response.ok) {
@@ -758,10 +731,8 @@ export class WorkspaceContainer {
     const files: ControlPlaneListResponse['files'] = [];
 
     const walk = async (current: string): Promise<void> => {
-      const response = await this.fetchProxy(
-        this.sandboxProxyPath('/fs/list'),
-        { method: 'GET' },
-        { path: current }
+      const response = await this.env.SANDBOX_HOST.fetch(
+        this.sandboxUrl('/fs/list', { path: current }),
       );
 
       if (response.status === 404) {
@@ -821,10 +792,9 @@ export class WorkspaceContainer {
 
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<ControlPlaneMkdirResponse> {
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.fetchProxy(
-      this.sandboxProxyPath('/fs/mkdir'),
+    const response = await this.env.SANDBOX_HOST.fetch(
+      this.sandboxUrl('/fs/mkdir', { path: normalizedPath }),
       { method: 'POST' },
-      { path: normalizedPath }
     );
 
     if (!response.ok) {
@@ -836,7 +806,7 @@ export class WorkspaceContainer {
   }
 
   async moveFile(source: string, destination: string): Promise<ControlPlaneMoveResponse> {
-    const response = await this.fetchProxy(this.sandboxProxyPath('/fs/move'), {
+    const response = await this.env.SANDBOX_HOST.fetch(this.sandboxUrl('/fs/move'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -854,7 +824,7 @@ export class WorkspaceContainer {
   }
 
   async deleteFile(path: string): Promise<ControlPlaneDeleteResponse> {
-    const response = await this.fetchProxy(this.sandboxProxyPath('/fs/delete'), {
+    const response = await this.env.SANDBOX_HOST.fetch(this.sandboxUrl('/fs/delete'), {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
