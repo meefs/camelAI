@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { WorkspaceContainer, getContainerIdForWorkspace, getWorkspaceContainer } from '../src/workspace-container';
+import { WorkspaceContainer, getWorkspaceContainer } from '../src/workspace-container';
 import type { WorkspaceContainerEnv } from '../src/workspace-container';
 import type { OrgDO } from '../src/auth';
 import type { WorkspaceDO } from '../src/workspace';
@@ -40,27 +40,6 @@ function buildEnvVarsForTest(workspaceId: string, orgId: string) {
 }
 
 describe('sandbox runtime', () => {
-  it('derives runtime ID from workspace ID', () => {
-    const id = getContainerIdForWorkspace('workspace-123');
-    expect(id).toBe('ws-workspace-123');
-  });
-
-  it('sanitizes special characters in workspace ID', () => {
-    const id = getContainerIdForWorkspace('ws:with/chars');
-    expect(id).toBe('ws-ws_with_chars');
-  });
-
-  it('truncates long workspace IDs to 63 chars', () => {
-    const longId = 'w'.repeat(100);
-    const id = getContainerIdForWorkspace(longId);
-    expect(id.length).toBeLessThanOrEqual(63);
-  });
-
-  it('prefixes runtime ID with ws-', () => {
-    const id = getContainerIdForWorkspace('abc');
-    expect(id.startsWith('ws-')).toBe(true);
-  });
-
   it('passes workspaceId and orgId to runtime env', async () => {
     const envVars = await buildEnvVarsForTest('ws-1', 'org-1');
     expect(envVars.WORKSPACE_ID).toBe('ws-1');

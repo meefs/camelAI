@@ -137,11 +137,6 @@ const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const runtimeCache = new Map<string, WorkspaceContainer>();
 const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
 
-const PROXY_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504, 524]);
-const PROXY_MAX_RETRY_ATTEMPTS = 6;
-const PROXY_BASE_RETRY_DELAY_MS = 250;
-const PROXY_MAX_RETRY_DELAY_MS = 3000;
-
 function toIsoTime(ms: number): string {
   return new Date(ms).toISOString();
 }
@@ -227,42 +222,11 @@ export class WorkspaceContainer {
     return `${normalizedBase}/${name}`;
   }
 
-  private dirnameFsPath(path: string): string {
-    const normalized = this.normalizeFsPath(path);
-    if (normalized === '/') return '/';
-    const idx = normalized.lastIndexOf('/');
-    if (idx <= 0) return '/';
-    return normalized.slice(0, idx);
-  }
-
   private basenameFsPath(path: string): string {
     const normalized = this.normalizeFsPath(path);
     if (normalized === '/') return '/';
     const idx = normalized.lastIndexOf('/');
     return idx < 0 ? normalized : normalized.slice(idx + 1);
-  }
-
-  // ─── Retry Helpers ───────────────────────────────────────
-
-  private computeRetryDelayMs(attempt: number): number {
-    const exponential = Math.min(
-      PROXY_MAX_RETRY_DELAY_MS,
-      PROXY_BASE_RETRY_DELAY_MS * Math.pow(2, Math.max(0, attempt - 1))
-    );
-    const jitter = Math.floor(Math.random() * 120);
-    return exponential + jitter;
-  }
-
-  private isRetryableStatus(status: number): boolean {
-    return PROXY_RETRYABLE_STATUS_CODES.has(status);
-  }
-
-  private isRetryableError(err: unknown): boolean {
-    const message = String((err as { message?: unknown })?.message || err || '').toLowerCase();
-    return message.includes('timed out')
-      || message.includes('timeout')
-      || message.includes('network')
-      || message.includes('econnrefused');
   }
 
   private isLocalOnlyWorkerBaseUrl(baseUrl: string): boolean {
@@ -598,20 +562,11 @@ export class WorkspaceContainer {
    * running in-process inside the sandbox.
    */
   async connectChatWebSocket(): Promise<WebSocket> {
-    const wsPath = this.sandboxProxyPath('/chat');
     console.log(`[Sandbox] connectChatWebSocket: connecting via proxy`);
 
-    const headers: Record<string, string> = { Upgrade: 'websocket' };
-    let response: Response;
-
-    if (this.env.SANDBOX_HOST) {
-      // VPC binding — use absolute URL with http:// (tunnel handles transport)
-      response = await this.env.SANDBOX_HOST.fetch(`http://localhost${wsPath}`, { headers });
-    } else {
-      // Local dev fallback
-      const baseUrl = (this.env.SANDBOX_HOST_URL || 'http://localhost:4400').replace(/\/$/, '');
-      response = await fetch(`${baseUrl}${wsPath}`, { headers });
-    }
+    const response = await this.fetchProxy(this.sandboxProxyPath('/chat'), {
+      headers: { Upgrade: 'websocket' },
+    });
 
     if (response.status !== 101 || !response.webSocket) {
       const body = await response.text();
@@ -705,14 +660,6 @@ export class WorkspaceContainer {
   }
 
   // ─── Public FS API ───────────────────────────────────────
-
-  async healthCheck(): Promise<{ status: string }> {
-    const response = await this.fetchProxy(this.sandboxProxyPath('/health'), { method: 'GET' });
-    if (!response.ok) {
-      return { status: 'error' };
-    }
-    return await response.json() as { status: string };
-  }
 
   async exists(path: string): Promise<ControlPlaneExistsResponse> {
     const normalizedPath = this.normalizeFsPath(path);
@@ -944,11 +891,6 @@ export class WorkspaceContainer {
 
     return { success: true, timestamp: toIsoTime(Date.now()) };
   }
-}
-
-export function getContainerIdForWorkspace(workspaceId: string): string {
-  const safeId = workspaceId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return `ws-${safeId}`.slice(0, 63);
 }
 
 export function getWorkspaceContainer(
