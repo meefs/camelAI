@@ -723,8 +723,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       : 0;
 
     this.sendDirect(ws, { type: 'session', sessionId: this.chatContext.threadId });
-    this.sendDirect(ws, { type: 'ready' });
+    // streaming_state MUST arrive before ready: the client sends queued messages
+    // on ready and optimistically sets loading=true.  If streaming_state (false)
+    // arrives *after* ready it overwrites the optimistic loading state, causing a
+    // visible flicker on the first message of a new chat in production.
     this.sendDirect(ws, { type: 'streaming_state', isStreaming: this.chatIsStreaming });
+    this.sendDirect(ws, { type: 'ready' });
     this.sendDirect(ws, {
       type: 'preview_state',
       target: this.previewTarget,
