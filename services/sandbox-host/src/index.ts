@@ -10,14 +10,15 @@
 import type { ServerWebSocket } from 'bun';
 import {
   ensureContainer,
-  getContainer,
   terminateContainer,
   execInContainer,
   getControlPlanePort,
   touchContainer,
   addWebSocket,
   removeWebSocket,
+  setWorkspaceOpts,
 } from './container-manager';
+import { ensureOverlay } from './overlay';
 import {
   fsReadInfo,
   fsWrite,
@@ -52,12 +53,12 @@ function errorResponse(message: string, status: number): Response {
 
 /**
  * Parse sandbox name + sub-path from URL:
- *   /v1/sandboxes/{name}
  *   /v1/sandboxes/{name}/fs/read?path=...
  *   /v1/sandboxes/{name}/exec
  *   /v1/sandboxes/{name}/env
  *   /v1/sandboxes/{name}/health
  *   /v1/sandboxes/{name}/chat
+ *   /v1/sandboxes/{name}/terminate
  */
 function parseSandboxRoute(url: URL): { name: string; subpath: string } | null {
   const match = url.pathname.match(/^\/v1\/sandboxes\/([^/]+)(\/.*)?$/);
@@ -120,55 +121,19 @@ Bun.serve<WsData>({
     touchContainer(name);
 
     try {
-      // ─── Lifecycle ───────────────────────────────────────
+      // ─── Terminate ─────────────────────────────────────────
 
-      if (!subpath) {
-        // POST /v1/sandboxes/{name} — Create or reconnect (idempotent)
-        if (req.method === 'POST') {
-          // Parse optional JSON body with orgId + workspaceId for R2 bind mounts
-          let opts: { orgId?: string; workspaceId?: string } | undefined;
-          try {
-            const contentType = req.headers.get('content-type') || '';
-            if (contentType.includes('application/json')) {
-              const body = (await req.json()) as { orgId?: string; workspaceId?: string };
-              if (body.orgId && body.workspaceId) {
-                opts = { orgId: body.orgId, workspaceId: body.workspaceId };
-              }
-            }
-          } catch {
-            // Ignore parse errors — body is optional
-          }
-          const record = await ensureContainer(name, opts);
-          return jsonResponse({
-            id: record.containerId,
-            name: record.name,
-            status: 'warm',
-          });
-        }
-
-        // GET /v1/sandboxes/{name} — Get info
-        if (req.method === 'GET') {
-          const record = await getContainer(name);
-          if (!record) {
-            return errorResponse('Sandbox not found', 404);
-          }
-          return jsonResponse({
-            id: record.containerId,
-            name: record.name,
-            status: 'warm',
-          });
-        }
-
-        // DELETE /v1/sandboxes/{name} — Terminate
-        if (req.method === 'DELETE') {
-          const success = await terminateContainer(name);
-          return jsonResponse({ success });
-        }
-
-        return errorResponse('Method not allowed', 405);
+      if (subpath === '/terminate' && req.method === 'POST') {
+        const success = await terminateContainer(name);
+        return jsonResponse({ success });
       }
 
-      // ─── Filesystem (host FS) ──────────────────────────────
+      // ─── Filesystem (host FS, overlay-only — no container) ─
+
+      if (subpath.startsWith('/fs/')) {
+        // FS operations only need the overlay mount, not a running container
+        await ensureOverlay(name);
+      }
 
       if (subpath === '/fs/read' && req.method === 'GET') {
         const path = url.searchParams.get('path');
@@ -278,9 +243,10 @@ Bun.serve<WsData>({
         }
       }
 
-      // ─── Exec ────────────────────────────────────────────
+      // ─── Exec (requires container) ──────────────────────
 
       if (subpath === '/exec' && req.method === 'POST') {
+        await ensureContainer(name);
         const body = (await req.json()) as {
           cmd?: string[];
           cwd?: string;
@@ -301,11 +267,19 @@ Bun.serve<WsData>({
         });
       }
 
-      // ─── Control Plane Proxy ─────────────────────────────
+      // ─── Control Plane Proxy (auto-creates container) ──
 
       // POST /v1/sandboxes/{name}/env → container :8080/env
       if (subpath === '/env' && req.method === 'POST') {
         const body = (await req.json()) as Record<string, string>;
+
+        // Extract workspace opts from env body for R2 bind mounts
+        if (body.ORG_ID && body.WORKSPACE_ID) {
+          setWorkspaceOpts(name, { orgId: body.ORG_ID, workspaceId: body.WORKSPACE_ID });
+        }
+
+        // Auto-create container if not running
+        await ensureContainer(name);
 
         // Proxy to control plane
         return proxyToControlPlane(name, '/env', new Request(req.url, {
@@ -317,6 +291,7 @@ Bun.serve<WsData>({
 
       // GET /v1/sandboxes/{name}/health → container :8080/health
       if (subpath === '/health' && req.method === 'GET') {
+        await ensureContainer(name);
         return proxyToControlPlane(name, '/health', req);
       }
 
@@ -326,6 +301,8 @@ Bun.serve<WsData>({
           return errorResponse('WebSocket upgrade required', 426);
         }
 
+        // Auto-create container if not running
+        await ensureContainer(name);
         const port = await getControlPlanePort(name);
         const targetWsUrl = `ws://127.0.0.1:${port}/chat`;
 

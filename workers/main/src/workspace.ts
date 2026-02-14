@@ -224,9 +224,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
     const container = getWorkspaceContainer(runtimeEnv, workspaceId, orgId);
 
-    // Ensure sandbox exists
-    await container.ensureSandboxReady();
-
     // Check for cached env vars
     const cached = this.ctx.storage.kv.get<WorkspaceEnvCache>(WORKSPACE_ENV_CACHE_KEY);
     const now = Date.now();
@@ -288,9 +285,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     console.log(`[WorkspaceDO] prewarmEnvVars: building cache workspace=${workspaceId}`);
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
     const container = getWorkspaceContainer(runtimeEnv, workspaceId, orgId);
-
-    // Ensure sandbox exists first
-    await container.ensureSandboxReady();
 
     // Build and cache env vars
     const envVars = await container.buildEnvVars();
@@ -387,16 +381,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     ) as unknown as OrgDO;
     await orgStub.addWorkspace(id, name, now, createdBy);
 
-    // Eagerly provision sandbox, bootstrap, and prewarm env vars at workspace creation
-    // so runtime paths avoid first-touch latency.
+    // Prewarm env vars in background (don't block workspace creation).
+    // Container creation is deferred to first chat — sandbox host auto-creates on demand.
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
-    const shouldEagerProvision = !!(runtimeEnv.SANDBOX_HOST || runtimeEnv.SANDBOX_HOST_URL);
-    if (shouldEagerProvision) {
-      const runtime = getWorkspaceContainer(runtimeEnv, id, orgId);
-      await runtime.provisionSandbox();
-      await runtime.ensureSandboxReady();
-
-      // Prewarm env vars in background (don't block workspace creation)
+    const shouldPrewarm = !!(runtimeEnv.SANDBOX_HOST || runtimeEnv.SANDBOX_HOST_URL);
+    if (shouldPrewarm) {
       waitUntil(
         this.prewarmEnvVars(id, orgId).catch((err) =>
           console.error(`[WorkspaceDO] createWorkspace: prewarm failed workspace=${id}`, err)

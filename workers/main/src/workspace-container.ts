@@ -127,12 +127,6 @@ interface ControlPlaneDeleteResponse {
   code?: string;
 }
 
-interface SandboxRecord {
-  id: string;
-  name: string;
-  status: string;
-}
-
 export interface ClaudeRunnerEnvOptions {
   threadId: string;
   threadDeployToken?: string | null;
@@ -174,8 +168,6 @@ export class WorkspaceContainer {
   private workspaceId: string;
   private orgId: string;
   private envVars: Record<string, string> | null = null;
-  private sandbox: SandboxRecord | null = null;
-  private sandboxKnownToExist = false;
   private dataProxyTokenExpiry: number | null = null;
 
   constructor(private env: WorkspaceContainerEnv, workspaceId: string, orgId: string) {
@@ -368,7 +360,7 @@ export class WorkspaceContainer {
   }
 
 
-  // ─── Sandbox Lifecycle ───────────────────────────────────
+  // ─── Sandbox Name ───────────────────────────────────────
 
   private getSandboxName(): string {
     const raw = `chiridion-${getContainerIdForWorkspace(this.workspaceId)}`;
@@ -378,74 +370,6 @@ export class WorkspaceContainer {
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '');
     return (normalized || `chiridion-${Date.now()}`).slice(0, 63);
-  }
-
-  private async ensureSandboxExists(name: string): Promise<SandboxRecord> {
-    if (this.sandboxKnownToExist && this.sandbox) {
-      return this.sandbox;
-    }
-
-    // Create or reconnect via the proxy (idempotent POST)
-    // Pass orgId + workspaceId so sandbox-host can set up R2 bind mounts at creation time.
-    const response = await this.fetchProxy(`/v1/sandboxes/${encodeURIComponent(name)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgId: this.orgId, workspaceId: this.workspaceId }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Failed to ensure sandbox ${name}: ${response.status} ${body}`);
-    }
-
-    const data = await response.json() as {
-      id: string;
-      name: string;
-      status: string;
-    };
-    this.sandbox = {
-      id: data.id,
-      name: data.name,
-      status: data.status || 'warm',
-    };
-    this.sandboxKnownToExist = true;
-    return this.sandbox;
-  }
-
-  private async ensureSandbox(): Promise<SandboxRecord> {
-    if (this.sandbox) return this.sandbox;
-    return this.ensureSandboxExists(this.getSandboxName());
-  }
-
-  private async clearSandboxUserClaudeDir(): Promise<void> {
-    const response = await this.fetchProxy(this.sandboxProxyPath('/fs/delete'), {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: '/home/claude/.claude', recursive: true }),
-    });
-
-    if (!response.ok && response.status !== 404) {
-      const body = await response.text();
-      throw new Error(`Failed clearing /home/claude/.claude: ${response.status} ${body}`);
-    }
-  }
-
-  async provisionSandbox(): Promise<SandboxRecord> {
-    const name = this.getSandboxName();
-    console.log(`[Sandbox] provisioning sandbox=${name} workspace=${this.workspaceId}`);
-    const sandbox = await this.ensureSandboxExists(name);
-    await this.clearSandboxUserClaudeDir();
-    console.log(`[Sandbox] sandbox=${name} ready (status=${sandbox.status})`);
-    return sandbox;
-  }
-
-  /**
-   * Ensure the sandbox exists and is ready.
-   * Everything (SDK, skills, create-worker) is baked into the sandbox image,
-   * so this just needs to create/reconnect the sandbox via the proxy.
-   */
-  async ensureSandboxReady(): Promise<void> {
-    await this.ensureSandbox();
   }
 
   // ─── Env Vars ────────────────────────────────────────────
@@ -687,8 +611,6 @@ export class WorkspaceContainer {
    * running in-process inside the sandbox.
    */
   async connectChatWebSocket(): Promise<WebSocket> {
-    await this.ensureSandbox();
-
     const wsPath = this.sandboxProxyPath('/chat');
     console.log(`[Sandbox] connectChatWebSocket: connecting via proxy`);
 
