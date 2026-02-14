@@ -26,6 +26,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const includeHidden = parseBooleanParam(url.searchParams.get('includeHidden'), true);
 
     const listing = await container.listFiles(containerPath, { recursive, includeHidden });
+    if (listing.success === false) {
+      const errorMessage = listing.error || 'Failed to list workspace files';
+      const lowered = errorMessage.toLowerCase();
+      const status = lowered.includes('not found') || lowered.includes('enoent') ? 404 : 500;
+      return Response.json({ error: errorMessage }, { status });
+    }
 
     // Transform backend response to frontend expected format
     // Entry paths must be workspace-relative (e.g., '/.claude/projects' not just 'projects')
