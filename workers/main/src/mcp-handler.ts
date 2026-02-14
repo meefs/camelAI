@@ -12,8 +12,7 @@ import type { ApiTokenData } from './api-tokens';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
 import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse, PreviewTarget } from './durable-objects';
-import type { WorkspaceContainerEnv } from './workspace-container';
-import { getWorkspaceContainer } from './workspace-container';
+import { WorkspaceContainer, type WorkspaceContainerEnv } from './workspace-container';
 import type { Integration } from '../../../src/types';
 import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition, validateConfig, validateCredentials } from '../../../src/lib/integration-registry';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
@@ -837,7 +836,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           );
 
           // Push updated env vars to running container (fire-and-forget)
-          getWorkspaceContainer(this.env, workspaceId, orgId)
+          new WorkspaceContainer(this.env, workspaceId, orgId)
             .refreshIntegrationEnvVars()
             .catch(() => {});
 
@@ -1073,7 +1072,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           );
 
           // Push updated env vars to running container (fire-and-forget)
-          getWorkspaceContainer(this.env, workspaceId, orgId)
+          new WorkspaceContainer(this.env, workspaceId, orgId)
             .refreshIntegrationEnvVars()
             .catch(() => {});
 

@@ -132,7 +132,6 @@ export interface ClaudeRunnerEnvOptions {
 }
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
-const runtimeCache = new Map<string, WorkspaceContainer>();
 const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
 
 function toIsoTime(ms: number): string {
@@ -160,16 +159,10 @@ async function createDeployToken(
 export class WorkspaceContainer {
   private workspaceId: string;
   private orgId: string;
-  private envVars: Record<string, string> | null = null;
-  private dataProxyTokenExpiry: number | null = null;
 
   constructor(private env: WorkspaceContainerEnv, workspaceId: string, orgId: string) {
     this.workspaceId = workspaceId;
     this.orgId = orgId;
-  }
-
-  matchesEnv(env: WorkspaceContainerEnv): boolean {
-    return this.env === env;
   }
 
   // ─── Helpers ─────────────────────────────────────────────
@@ -442,7 +435,18 @@ export class WorkspaceContainer {
     envVars.CLOUDFLARE_API_TOKEN = deployToken;
     envVars.DATA_PROXY_TOKEN = dataProxyToken;
     envVars.DATA_PROXY_URL = `${workerBaseUrl}/api`;
-    this.dataProxyTokenExpiry = dataProxyTokenExpiry;
+
+    // Register data proxy token expiry for alarm-based refresh (fire-and-forget)
+    waitUntil(
+      (async () => {
+        try {
+          const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(this.workspaceId));
+          await workspaceStub.registerDataProxyTokenExpiry(dataProxyTokenExpiry);
+        } catch (err) {
+          console.error('[WorkspaceContainer] Failed to register data proxy token expiry:', err);
+        }
+      })()
+    );
 
     if (openRouterKey) {
       envVars.OPENROUTER_API_KEY = openRouterKey;
@@ -461,30 +465,11 @@ export class WorkspaceContainer {
   }
 
   /**
-   * Start the workspace runtime with the given env vars.
+   * Push pre-built workspace env vars to the control plane.
    * Env vars should be pre-built (and cached) by WorkspaceDO.ensureSandboxReady().
    */
-  async startForWorkspace(prebuiltEnvVars?: Record<string, string>): Promise<void> {
-    // Use prebuilt env vars if provided, otherwise build
-    if (prebuiltEnvVars && Object.keys(prebuiltEnvVars).length > 0) {
-      this.envVars = prebuiltEnvVars;
-    } else if (!this.envVars || Object.keys(this.envVars).length === 0) {
-      console.log(`[Sandbox] startForWorkspace: building env vars (no cache) workspace=${this.workspaceId} org=${this.orgId}`);
-      this.envVars = await this.buildEnvVars();
-    }
-
-    // Always push env to control plane — container may have been recreated
-    // after idle reap while this WorkspaceContainer instance persists in cache.
-    await this.pushEnvToControlPlane(this.envVars);
-
-    if (this.dataProxyTokenExpiry) {
-      try {
-        const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(this.workspaceId));
-        await workspaceStub.registerDataProxyTokenExpiry(this.dataProxyTokenExpiry);
-      } catch (err) {
-        console.error('[WorkspaceContainer] Failed to register data proxy token expiry:', err);
-      }
-    }
+  async pushEnvVars(envVars: Record<string, string>): Promise<void> {
+    await this.pushEnvToControlPlane(envVars);
   }
 
   /**
@@ -595,7 +580,6 @@ export class WorkspaceContainer {
       dataProxyMs = Date.now() - dataProxyStartedAt;
       if (dataProxyResult) {
         integrationEnvVars.DATA_PROXY_TOKEN = dataProxyResult.token;
-        this.dataProxyTokenExpiry = dataProxyResult.expiresAt;
       }
       console.log(
         `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} dataProxyMs=${dataProxyMs} totalMs=${Date.now() - startedAt}`
@@ -842,18 +826,3 @@ export class WorkspaceContainer {
   }
 }
 
-export function getWorkspaceContainer(
-  env: WorkspaceContainerEnv,
-  workspaceId: string,
-  orgId: string
-): WorkspaceContainer {
-  const cacheKey = `${workspaceId}:${orgId}`;
-  const cached = runtimeCache.get(cacheKey);
-  if (cached && cached.matchesEnv(env)) {
-    return cached;
-  }
-
-  const runtime = new WorkspaceContainer(env, workspaceId, orgId);
-  runtimeCache.set(cacheKey, runtime);
-  return runtime;
-}

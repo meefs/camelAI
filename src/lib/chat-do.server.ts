@@ -5,7 +5,7 @@ import { parseClaudeJsonlMessages } from './chat-jsonl-parser';
 import type { PreviewTarget } from '@/types';
 import { OrgDO, type OrgThread } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
-import { getWorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
+import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 
 // Helper to convert OrgThread to Thread
 function toThread(orgThread: OrgThread): Thread {
@@ -248,7 +248,7 @@ export async function getMessages(
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return [];
 
-    const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, wsInfo.org_id);
+    const container = new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, wsInfo.org_id);
 
     // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
     // Modal sandbox uses /home/claude (-home-claude).

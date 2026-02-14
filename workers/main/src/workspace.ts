@@ -7,7 +7,7 @@ import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-prox
 import { mintBigQueryAccessTokenFromServiceAccount } from './google-service-account';
 import { createSignedToken } from './signed-tokens';
 import {
-  getWorkspaceContainer,
+  WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from './workspace-container';
 
@@ -222,7 +222,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     orgId: string
   ): Promise<{ envVars: Record<string, string>; fromCache: boolean }> {
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
-    const container = getWorkspaceContainer(runtimeEnv, workspaceId, orgId);
+    const container = new WorkspaceContainer(runtimeEnv, workspaceId, orgId);
 
     // Check for cached env vars
     const cached = this.ctx.storage.kv.get<WorkspaceEnvCache>(WORKSPACE_ENV_CACHE_KEY);
@@ -284,7 +284,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
     console.log(`[WorkspaceDO] prewarmEnvVars: building cache workspace=${workspaceId}`);
     const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
-    const container = getWorkspaceContainer(runtimeEnv, workspaceId, orgId);
+    const container = new WorkspaceContainer(runtimeEnv, workspaceId, orgId);
 
     // Build and cache env vars
     const envVars = await container.buildEnvVars();
@@ -931,7 +931,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     }
 
     try {
-      const container = getWorkspaceContainer(
+      const container = new WorkspaceContainer(
         this.env as unknown as WorkspaceContainerEnv,
         info.id,
         info.org_id

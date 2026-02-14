@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { WorkspaceContainer, getWorkspaceContainer } from '../src/workspace-container';
+import { WorkspaceContainer } from '../src/workspace-container';
 import type { WorkspaceContainerEnv } from '../src/workspace-container';
 import type { OrgDO } from '../src/auth';
 import type { WorkspaceDO } from '../src/workspace';
@@ -46,10 +46,10 @@ describe('sandbox runtime', () => {
     expect(envVars.ORG_ID).toBe('org-1');
   });
 
-  it('reuses cached runtime per workspace for same env object', () => {
+  it('creates independent instances per call', () => {
     const env = {} as WorkspaceContainerEnv;
-    const a = getWorkspaceContainer(env, 'ws-1', 'org-1');
-    const b = getWorkspaceContainer(env, 'ws-1', 'org-1');
-    expect(a).toBe(b);
+    const a = new WorkspaceContainer(env, 'ws-1', 'org-1');
+    const b = new WorkspaceContainer(env, 'ws-1', 'org-1');
+    expect(a).not.toBe(b);
   });
 });

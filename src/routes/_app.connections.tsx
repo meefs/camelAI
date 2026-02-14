@@ -7,7 +7,7 @@ import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { INTEGRATION_REGISTRY, getIntegrationDefinition } from '@/lib/integration-registry';
 import { encryptCredentials } from '@/lib/integration-crypto';
 import type { WorkspaceDO } from '../../workers/main/src/workspace';
-import { getWorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
+import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 import ConnectionsClient from '@/components/pages/connections/connections-client';
 import { ConnectionsLoadingSkeleton } from '@/components/pages/connections/connections-loading';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
@@ -96,7 +96,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       );
       // Push updated env vars to running container (background, kept alive via waitUntil)
       waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
+        new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
           .refreshIntegrationEnvVars()
           .catch(() => {})
       );
@@ -133,7 +133,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       await stub.updateIntegration(integrationId, updates, authContext.user.id);
       // Push updated env vars to running container (background, kept alive via waitUntil)
       waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
+        new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
           .refreshIntegrationEnvVars()
           .catch(() => {})
       );
@@ -154,7 +154,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       await stub.deleteIntegration(integrationId, authContext.user.id);
       // Push updated env vars to running container (background, kept alive via waitUntil)
       waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
+        new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
           .refreshIntegrationEnvVars()
           .catch(() => {})
       );
@@ -217,7 +217,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
       // Push updated env vars to target workspace container
       waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, targetWorkspaceId, authContext.currentOrg.id)
+        new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, targetWorkspaceId, authContext.currentOrg.id)
           .refreshIntegrationEnvVars()
           .catch(() => {})
       );

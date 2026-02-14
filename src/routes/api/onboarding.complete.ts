@@ -10,7 +10,7 @@ import {
 } from '@/lib/onboarding';
 import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
 import {
-  getWorkspaceContainer,
+  WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from '../../../workers/main/src/workspace-container';
 
@@ -64,7 +64,7 @@ async function writeOnboardingProfile(
   profileMarkdown: string
 ): Promise<void> {
   const env = getEnv(context);
-  const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, orgId);
+  const container = new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, orgId);
   const writeResult = await container.writeFile(
     '/home/claude/.chiridion/profile.md',
     profileMarkdown

@@ -4,7 +4,7 @@ import { waitUntil } from 'cloudflare:workers';
 import type { Route } from './+types/_app.settings.workspace.connections';
 import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { getWorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
+import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import {
@@ -89,7 +89,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       const stub = getWorkspaceStub(env, workspaceId);
       await stub.deleteIntegration(integrationId, authContext.user.id);
       waitUntil(
-        getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
+        new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, authContext.currentOrg.id)
           .refreshIntegrationEnvVars()
           .catch(() => {})
       );

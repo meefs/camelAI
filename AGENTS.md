@@ -778,6 +778,34 @@ waitUntil(
 
 **Important:** Import `waitUntil` directly - don't pass `ctx` through function calls. This keeps APIs clean and avoids prop drilling.
 
+## Anti-Patterns
+
+### No Module-Level Mutable State
+
+Never use module-level `Map`, `Set`, or other mutable variables to cache instances across requests in Workers code. Cloudflare Workers can reuse module-level state across requests within the same isolate lifetime, causing stale data and subtle bugs.
+
+**Bad:**
+```typescript
+const cache = new Map<string, MyClass>();
+
+export function getInstance(id: string): MyClass {
+  let instance = cache.get(id);
+  if (!instance) {
+    instance = new MyClass(id);
+    cache.set(id, instance);
+  }
+  return instance;
+}
+```
+
+**Good:**
+```typescript
+// Create a fresh instance per request — no shared mutable state
+const instance = new MyClass(id);
+```
+
+If you need caching, use Durable Object storage (`ctx.storage.kv`) which is scoped per DO instance and survives hibernation correctly.
+
 ## Known Issues & Solutions
 
 See repository history/PR context for legacy streaming bug investigations and fixes.

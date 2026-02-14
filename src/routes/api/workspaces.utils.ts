@@ -5,8 +5,7 @@ import { type AuthEnv } from '@/lib/auth-helpers';
 import { getWorkspace, getWorkspaceAccess } from '@/lib/auth-do';
 import type { WorkspaceAccessLevel } from '../../../workers/main/src/workspace';
 import {
-  getWorkspaceContainer,
-  type WorkspaceContainer,
+  WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from '../../../workers/main/src/workspace-container';
 
@@ -78,7 +77,7 @@ export async function requireWorkspaceAuth(
 ): Promise<WorkspaceAuth> {
   const accessAuth = await requireWorkspaceAccess(request, context, workspaceId, options);
   const env = getEnv(context);
-  const container = getWorkspaceContainer(env as unknown as WorkspaceContainerEnv, accessAuth.workspaceId, accessAuth.orgId);
+  const container = new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, accessAuth.workspaceId, accessAuth.orgId);
 
   return {
     ...accessAuth,

@@ -2,8 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import type { OrgDO } from './auth';
 import type { WorkspaceDO } from './workspace';
 import {
-  getWorkspaceContainer,
-  type WorkspaceContainer,
+  WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from './workspace-container';
 import { SUPPORTED_SLASH_COMMANDS } from '../../../src/lib/slash-commands';
@@ -219,7 +218,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private currentTodos: unknown[] = [];
   private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
 
-  private runtime: WorkspaceContainer | null = null;
   private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
 
@@ -832,22 +830,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       );
       console.log(`[ChatThreadDO] ensureRunnerConnected: got workspace env fromCache=${fromCache}`);
 
-      if (!this.runtime) {
-        this.runtime = getWorkspaceContainer(this.env, context.workspaceId, context.orgId);
-      }
+      const container = new WorkspaceContainer(this.env, context.workspaceId, context.orgId);
 
       // Push workspace env to the control plane (using cached env vars).
-      await this.runtime.startForWorkspace(workspaceEnvVars);
+      await container.pushEnvVars(workspaceEnvVars);
 
       // Build thread-specific env delta for the chat session.
-      const envVars = await this.runtime.buildClaudeRunnerEnv({
+      const envVars = await container.buildClaudeRunnerEnv({
         threadId: context.threadId,
         threadDeployToken: context.threadDeployToken,
         mcpToken: context.mcpToken,
       });
 
       // Open WebSocket to the control plane's /chat endpoint.
-      const chatWs = await this.runtime.connectChatWebSocket();
+      const chatWs = await container.connectChatWebSocket();
       this.attachRunnerSocket(chatWs);
 
       // Send init message with thread ID and env vars.

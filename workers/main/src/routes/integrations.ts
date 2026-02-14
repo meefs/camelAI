@@ -7,7 +7,7 @@ import type { RouteContext } from '../types.js';
 import { createIntegrationOAuthState, validateAndConsumeIntegrationOAuthState, type IntegrationOAuthState } from '../integration-oauth-state.js';
 import { INTEGRATION_REGISTRY } from '../../../../src/lib/integration-registry.js';
 import { encryptCredentials } from '../../../../src/lib/integration-crypto.js';
-import { getWorkspaceContainer } from '../workspace-container.js';
+import { WorkspaceContainer } from '../workspace-container.js';
 import { requireSession } from '../helpers/auth.js';
 import { getWorkspaceStub, getOrgStub } from '../helpers/stubs.js';
 import { redirect, text } from '../helpers/response.js';
@@ -214,7 +214,7 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
 
     // Push secrets to running container
     ctx.waitUntil(
-      getWorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
+      new WorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
         .refreshIntegrationEnvVars()
         .catch(() => {})
     );
@@ -399,7 +399,7 @@ export async function handleNotionOAuthCallback({ env, url, ctx }: RouteContext)
 
     // Push secrets to running container
     ctx.waitUntil(
-      getWorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
+      new WorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
         .refreshIntegrationEnvVars()
         .catch(() => {})
     );
@@ -569,7 +569,7 @@ export async function handleSalesforceOAuthCallback({ env, url, ctx }: RouteCont
 
     // Push secrets to running container
     ctx.waitUntil(
-      getWorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
+      new WorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
         .refreshIntegrationEnvVars()
         .catch(() => {})
     );
