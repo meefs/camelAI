@@ -15,7 +15,7 @@ import { WorkspaceContainer, type WorkspaceContainerEnv } from './workspace-cont
 import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition, validateConfig, validateCredentials } from '../../../src/lib/integration-registry';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
-import { validateSandboxProxy, validateMcpIdentityProof } from './sandbox-auth';
+import { validateSandboxProxy } from './sandbox-auth';
 import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
 import { captureScreenshotRaw } from './screenshot-queue';
 import { createScreenshotToken } from './worker-auth';
@@ -1240,29 +1240,6 @@ export async function handleMcpRequest(
   if (!proxyAuth.valid) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
-
-  // Validate HMAC identity proof — ensures the sandbox making this request
-  // is actually authorized for this org+workspace (prevents spoofing via
-  // proxy URL manipulation).
-  const identityProof = request.headers.get('x-chiridion-mcp-identity');
-  if (!identityProof || !env.SANDBOX_PROXY_SECRET) {
-    return new Response(JSON.stringify({ error: 'Missing MCP identity proof' }), {
-      status: 401,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
-  const identityValid = await validateMcpIdentityProof(
-    env.SANDBOX_PROXY_SECRET,
-    proxyAuth.orgId,
-    proxyAuth.workspaceId,
-    identityProof
-  );
-  if (!identityValid) {
-    return new Response(JSON.stringify({ error: 'Invalid MCP identity proof' }), {
-      status: 403,
       headers: { 'content-type': 'application/json' },
     });
   }

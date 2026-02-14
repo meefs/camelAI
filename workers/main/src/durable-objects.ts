@@ -5,7 +5,6 @@ import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from './workspace-container';
-import { createMcpIdentityProof } from './sandbox-auth';
 import { SUPPORTED_SLASH_COMMANDS } from '../../../src/lib/slash-commands';
 
 export type PreviewTarget =
@@ -815,26 +814,19 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       console.log(`[ChatThreadDO] ensureRunnerConnected: connecting for thread=${context.threadId}`);
 
       const container = new WorkspaceContainer(this.env, context.workspaceId, context.orgId);
+      const proxySessionId = crypto.randomUUID();
 
-      // Create HMAC identity proof so the sandbox can authenticate MCP
-      // requests for this specific org+workspace (prevents spoofing).
-      let mcpIdentity: string | undefined;
-      if (this.env.SANDBOX_PROXY_SECRET) {
-        mcpIdentity = await createMcpIdentityProof(
-          this.env.SANDBOX_PROXY_SECRET,
-          context.orgId,
-          context.workspaceId
-        );
-      }
-
-      // Build thread-specific env (integration creds + thread ID + MCP identity).
+      // Build thread-specific env (integration creds + thread ID).
       const envVars = await container.buildClaudeRunnerEnv({
         threadId: context.threadId,
-        mcpIdentity,
+        proxySessionId,
       });
 
       // Open WebSocket to the control plane's /chat endpoint.
-      const chatWs = await container.connectChatWebSocket();
+      const chatWs = await container.connectChatWebSocket({
+        threadId: context.threadId,
+        proxySessionId,
+      });
       this.attachRunnerSocket(chatWs);
 
       // Send init message with thread ID and env vars.

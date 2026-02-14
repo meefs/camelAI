@@ -161,6 +161,25 @@ The full profile is always in your system prompt under "User Profile".
 `;
 }
 
+function withProxySessionPath(rawUrl, proxySessionId) {
+  try {
+    const url = new URL(rawUrl);
+    const basePath = '/proxy';
+    if (!url.pathname.startsWith(basePath)) return rawUrl;
+
+    const sessionPathPrefix = `${basePath}/${encodeURIComponent(proxySessionId)}`;
+    if (url.pathname.startsWith(`${sessionPathPrefix}/`) || url.pathname === sessionPathPrefix) {
+      return url.toString();
+    }
+
+    const suffix = url.pathname.slice(basePath.length);
+    url.pathname = `${sessionPathPrefix}${suffix || '/'}`;
+    return url.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
 const MEMORY_AGENT = {
   description: `Episodic memory manager. IMPORTANT: Always RESUME this subagent using its previous agent ID if one exists - do not start fresh each time. This preserves context about what has already been logged/searched.
 
@@ -374,18 +393,24 @@ class ChatSession {
       THREAD_ID: this.threadId,
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
     };
+    const proxySessionId = typeof mergedEnv.CHIRIDION_PROXY_SESSION_ID === 'string'
+      ? mergedEnv.CHIRIDION_PROXY_SESSION_ID.trim()
+      : '';
+    if (proxySessionId) {
+      for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'MCP_SERVER_URL']) {
+        const value = mergedEnv[key];
+        if (typeof value === 'string' && value.length > 0) {
+          mergedEnv[key] = withProxySessionPath(value, proxySessionId);
+        }
+      }
+    }
 
     const mcpServerUrl = mergedEnv.MCP_SERVER_URL;
     const mcpServers = {};
     if (mcpServerUrl) {
-      const mcpHeaders = { 'X-Chiridion-Thread-Id': this.threadId };
-      if (mergedEnv.CHIRIDION_MCP_IDENTITY) {
-        mcpHeaders['X-Chiridion-MCP-Identity'] = mergedEnv.CHIRIDION_MCP_IDENTITY;
-      }
       mcpServers.chiridion = {
         type: 'http',
         url: mcpServerUrl,
-        headers: mcpHeaders,
       };
     }
 

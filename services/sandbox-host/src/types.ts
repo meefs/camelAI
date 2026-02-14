@@ -2,6 +2,7 @@ export interface ContainerRecord {
   name: string;
   containerId: string;
   hostPort: number;
+  containerIp?: string;
   status: 'running' | 'stopped' | 'unknown';
   createdAt: number;
   lastAccessedAt: number;

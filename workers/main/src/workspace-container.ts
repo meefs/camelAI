@@ -27,6 +27,7 @@ export interface WorkspaceContainerEnv {
   INTEGRATION_SECRET_KEY: string;
 
   SANDBOX_HOST: Fetcher;
+  WORKER_BASE_URL?: string;
 }
 
 interface ControlPlaneExecResponse {
@@ -102,7 +103,7 @@ interface ControlPlaneDeleteResponse {
 
 export interface ClaudeRunnerEnvOptions {
   threadId: string;
-  mcpIdentity?: string;
+  proxySessionId: string;
 }
 
 const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
@@ -149,6 +150,10 @@ export class WorkspaceContainer {
     return idx < 0 ? normalized : normalized.slice(idx + 1);
   }
 
+  private async fetchSandbox(url: string, init: RequestInit = {}): Promise<Response> {
+    return this.env.SANDBOX_HOST.fetch(url, init);
+  }
+
   /**
    * Execute a command on the sandbox via the proxy POST /exec endpoint.
    */
@@ -160,7 +165,7 @@ export class WorkspaceContainer {
       return { success: false, stdout: '', stderr: 'No command provided', exitCode: 1 };
     }
 
-    const response = await this.env.SANDBOX_HOST.fetch(this.sandboxUrl('/exec'), {
+    const response = await this.fetchSandbox(this.sandboxUrl('/exec'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cmd: args, cwd: options.cwd, env: options.env }),
@@ -241,7 +246,7 @@ export class WorkspaceContainer {
     return {
       ...integrationEnv,
       CHIRIDION_THREAD_ID: options.threadId,
-      ...(options.mcpIdentity && { CHIRIDION_MCP_IDENTITY: options.mcpIdentity }),
+      CHIRIDION_PROXY_SESSION_ID: options.proxySessionId,
     };
   }
 
@@ -252,11 +257,26 @@ export class WorkspaceContainer {
    * ChatThreadDO uses this to bridge chat clients to the Claude Agent SDK
    * running in-process inside the sandbox.
    */
-  async connectChatWebSocket(): Promise<WebSocket> {
+  async connectChatWebSocket(options: { threadId: string; proxySessionId: string }): Promise<WebSocket> {
     console.log(`[Sandbox] connectChatWebSocket: connecting via proxy`);
+    if (!options.threadId) {
+      throw new Error('Thread ID is required for chat websocket');
+    }
+    if (!options.proxySessionId) {
+      throw new Error('Proxy session ID is required for chat websocket');
+    }
+    const workerBaseUrl = (this.env.WORKER_BASE_URL || '').trim();
+    if (!workerBaseUrl) {
+      throw new Error('WORKER_BASE_URL is not configured');
+    }
 
-    const response = await this.env.SANDBOX_HOST.fetch(this.sandboxUrl('/chat'), {
-      headers: { Upgrade: 'websocket' },
+    const response = await this.fetchSandbox(this.sandboxUrl('/chat'), {
+      headers: {
+        Upgrade: 'websocket',
+        'X-Chiridion-Thread-Id': options.threadId,
+        'X-Chiridion-Proxy-Session-Id': options.proxySessionId,
+        'X-Chiridion-Worker-Base-Url': workerBaseUrl,
+      },
     });
 
     if (response.status !== 101 || !response.webSocket) {
@@ -346,7 +366,7 @@ export class WorkspaceContainer {
 
   async exists(path: string): Promise<ControlPlaneExistsResponse> {
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.env.SANDBOX_HOST.fetch(
+    const response = await this.fetchSandbox(
       this.sandboxUrl('/fs/exists', { path: normalizedPath }),
     );
 
@@ -364,7 +384,7 @@ export class WorkspaceContainer {
    */
   async readFileStream(path: string): Promise<Response | null> {
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.env.SANDBOX_HOST.fetch(
+    const response = await this.fetchSandbox(
       this.sandboxUrl('/fs/read', { path: normalizedPath }),
     );
 
@@ -380,7 +400,7 @@ export class WorkspaceContainer {
 
   async readFile(path: string): Promise<ControlPlaneReadResponse> {
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.env.SANDBOX_HOST.fetch(
+    const response = await this.fetchSandbox(
       this.sandboxUrl('/fs/read', { path: normalizedPath }),
     );
 
@@ -410,7 +430,7 @@ export class WorkspaceContainer {
 
   async writeFile(path: string, content: string): Promise<ControlPlaneWriteResponse> {
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.env.SANDBOX_HOST.fetch(
+    const response = await this.fetchSandbox(
       this.sandboxUrl('/fs/write', { path: normalizedPath }),
       {
         method: 'PUT',
@@ -430,7 +450,7 @@ export class WorkspaceContainer {
   async writeBinaryFile(path: string, base64Content: string): Promise<ControlPlaneWriteResponse> {
     const normalizedPath = this.normalizeFsPath(path);
     const binaryBuffer = Buffer.from(base64Content, 'base64');
-    const response = await this.env.SANDBOX_HOST.fetch(
+    const response = await this.fetchSandbox(
       this.sandboxUrl('/fs/write', { path: normalizedPath }),
       {
         method: 'PUT',
@@ -454,7 +474,7 @@ export class WorkspaceContainer {
     const files: ControlPlaneListResponse['files'] = [];
 
     const walk = async (current: string): Promise<void> => {
-      const response = await this.env.SANDBOX_HOST.fetch(
+      const response = await this.fetchSandbox(
         this.sandboxUrl('/fs/list', { path: current }),
       );
 
@@ -515,7 +535,7 @@ export class WorkspaceContainer {
 
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<ControlPlaneMkdirResponse> {
     const normalizedPath = this.normalizeFsPath(path);
-    const response = await this.env.SANDBOX_HOST.fetch(
+    const response = await this.fetchSandbox(
       this.sandboxUrl('/fs/mkdir', { path: normalizedPath }),
       { method: 'POST' },
     );
@@ -529,7 +549,7 @@ export class WorkspaceContainer {
   }
 
   async moveFile(source: string, destination: string): Promise<ControlPlaneMoveResponse> {
-    const response = await this.env.SANDBOX_HOST.fetch(this.sandboxUrl('/fs/move'), {
+    const response = await this.fetchSandbox(this.sandboxUrl('/fs/move'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -547,7 +567,7 @@ export class WorkspaceContainer {
   }
 
   async deleteFile(path: string): Promise<ControlPlaneDeleteResponse> {
-    const response = await this.env.SANDBOX_HOST.fetch(this.sandboxUrl('/fs/delete'), {
+    const response = await this.fetchSandbox(this.sandboxUrl('/fs/delete'), {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -564,4 +584,3 @@ export class WorkspaceContainer {
     return { success: true, timestamp: toIsoTime(Date.now()) };
   }
 }
-

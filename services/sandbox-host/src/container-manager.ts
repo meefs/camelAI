@@ -21,10 +21,9 @@ const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'chiridion-sandbox:latest';
 const CONTAINER_MEMORY = process.env.CONTAINER_MEMORY || '16g';
 const CONTAINER_CPU_SHARES = process.env.CONTAINER_CPU_SHARES || '2048';
 const CONTAINER_RUNTIME = process.env.CONTAINER_RUNTIME || 'runsc';
+const PORT = parseInt(process.env.PORT || '80', 10);
 const CONTROL_PLANE_PORT = 8080;
 const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || String(30 * 1000), 10);
-const WORKER_BASE_URL = process.env.WORKER_BASE_URL || '';
-const SANDBOX_PROXY_SECRET = process.env.SANDBOX_PROXY_SECRET || '';
 const CF_DISPATCH_NAMESPACE = process.env.CF_DISPATCH_NAMESPACE || '';
 const REAPER_INTERVAL_MS = 10_000;
 const R2_MOUNT_ROOT = process.env.R2_MOUNT_ROOT || '/mnt/r2';
@@ -37,6 +36,7 @@ export interface EnsureContainerOptions {
 }
 
 const containers = new Map<string, ContainerRecord>();
+const containerIpIndex = new Map<string, string>();
 
 /** Refcount of in-flight ensureContainer calls per workspace (prevents reclaim race). */
 const pendingWorkspaces = new Map<string, number>();
@@ -79,6 +79,15 @@ async function getHostPort(name: string): Promise<number | null> {
   // Output: "0.0.0.0:32768" or "[::]:32768"
   const match = result.stdout.match(/:(\d+)$/m);
   return match ? parseInt(match[1], 10) : null;
+}
+
+async function getContainerIp(name: string): Promise<string | undefined> {
+  const result = await dockerExec([
+    'inspect', '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}', name,
+  ]);
+  if (!result.success) return undefined;
+  const ip = result.stdout.trim();
+  return ip || undefined;
 }
 
 /**
@@ -142,6 +151,44 @@ export function removeWebSocket(name: string): void {
   }
 }
 
+export async function resolveContainerBySourceIp(sourceIp: string): Promise<ContainerRecord | null> {
+  const cached = getContainerBySourceIpCached(sourceIp);
+  if (cached) return cached;
+
+  // Refresh from Docker in case IP cache is stale.
+  for (const [name, record] of containers) {
+    const latestIp = await getContainerIp(name);
+    if (!latestIp) continue;
+    if (record.containerIp && record.containerIp !== latestIp) {
+      containerIpIndex.delete(record.containerIp);
+    }
+    record.containerIp = latestIp;
+    containerIpIndex.set(latestIp, name);
+    if (latestIp === sourceIp) {
+      return record;
+    }
+  }
+
+  return null;
+}
+
+function getContainerBySourceIpCached(sourceIp: string): ContainerRecord | null {
+  const indexedName = containerIpIndex.get(sourceIp);
+  if (indexedName) {
+    const indexedRecord = containers.get(indexedName);
+    if (indexedRecord) return indexedRecord;
+    containerIpIndex.delete(sourceIp);
+  }
+
+  for (const [name, record] of containers) {
+    if (record.containerIp === sourceIp) {
+      containerIpIndex.set(sourceIp, name);
+      return record;
+    }
+  }
+  return null;
+}
+
 /**
  * Compute the R2 bind mount prefix for a workspace.
  * Same logic as workspace-container.ts buildEnvVars.
@@ -169,17 +216,20 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
         return cached;
       }
       // Container stopped — remove from cache and recreate
+      if (cached.containerIp) containerIpIndex.delete(cached.containerIp);
       containers.delete(name);
     }
 
     // Check if container already exists and is running
     if (await isRunning(name)) {
       const port = await getHostPort(name);
+      const containerIp = await getContainerIp(name);
       if (port) {
         const record: ContainerRecord = {
           name,
           containerId: name,
           hostPort: port,
+          containerIp,
           status: 'running',
           createdAt: Date.now(),
           lastAccessedAt: Date.now(),
@@ -188,6 +238,7 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
           workspaceId: opts?.workspaceId,
         };
         containers.set(name, record);
+        if (containerIp) containerIpIndex.set(containerIp, name);
         console.log(`[ContainerManager] reconnected to existing container ${name} (port=${port})`);
         return record;
       }
@@ -217,7 +268,7 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
 
     // Base identity + proxy URLs (route API traffic through sandbox host proxy)
     if (opts?.orgId && opts?.workspaceId) {
-      const proxyBase = `http://172.17.0.1:${PORT}/proxy/${opts.orgId}/${opts.workspaceId}`;
+      const proxyBase = `http://172.17.0.1:${PORT}/proxy`;
       runArgs.push(
         '-e', `WORKSPACE_ID=${opts.workspaceId}`,
         '-e', `ORG_ID=${opts.orgId}`,
@@ -228,7 +279,6 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
         '-e', `DATA_PROXY_URL=${proxyBase}/api`,
         '-e', `DATA_PROXY_TOKEN=proxy`,
         '-e', `MCP_SERVER_URL=${proxyBase}/mcp`,
-        '-e', `WORKER_BASE_URL=${WORKER_BASE_URL}`,
         '-e', `CLOUDFLARE_ACCOUNT_ID=chiridion`,
         '-e', `WRANGLER_SEND_METRICS=false`,
         '-e', `CI=1`,
@@ -278,6 +328,7 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
 
     const containerId = result.stdout.slice(0, 12);
     const port = await getHostPort(name);
+    const containerIp = await getContainerIp(name);
     if (!port) {
       throw new Error(`Container ${name} created but no port mapping found`);
     }
@@ -292,6 +343,7 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
       name,
       containerId,
       hostPort: port,
+      containerIp,
       status: 'running',
       createdAt: Date.now(),
       lastAccessedAt: Date.now(),
@@ -300,6 +352,7 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
       workspaceId: opts?.workspaceId,
     };
     containers.set(name, record);
+    if (containerIp) containerIpIndex.set(containerIp, name);
     console.log(`[ContainerManager] created container ${name} (id=${containerId}, port=${port})`);
     return record;
   } finally {
@@ -322,23 +375,27 @@ export async function getContainer(name: string): Promise<ContainerRecord | null
     if (await isRunning(name)) {
       return cached;
     }
+    if (cached.containerIp) containerIpIndex.delete(cached.containerIp);
     containers.delete(name);
   }
 
   // Check if container exists
   if (await isRunning(name)) {
     const port = await getHostPort(name);
+    const containerIp = await getContainerIp(name);
     if (port) {
       const record: ContainerRecord = {
         name,
         containerId: name,
         hostPort: port,
+        containerIp,
         status: 'running',
         createdAt: Date.now(),
         lastAccessedAt: Date.now(),
         activeWebSockets: 0,
       };
       containers.set(name, record);
+      if (containerIp) containerIpIndex.set(containerIp, name);
       return record;
     }
   }
@@ -353,6 +410,8 @@ export async function getContainer(name: string): Promise<ContainerRecord | null
  * reuse the existing overlay mount immediately.
  */
 export async function terminateContainer(name: string): Promise<boolean> {
+  const existing = containers.get(name);
+  if (existing?.containerIp) containerIpIndex.delete(existing.containerIp);
   const result = await dockerExec(['rm', '-f', name]);
   containers.delete(name);
   if (result.success) {

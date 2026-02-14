@@ -16,6 +16,7 @@ import {
   touchContainer,
   addWebSocket,
   removeWebSocket,
+  resolveContainerBySourceIp,
 } from './container-manager';
 import { ensureOverlay } from './overlay';
 import {
@@ -30,14 +31,36 @@ import {
 
 const PORT = parseInt(process.env.PORT || '80', 10);
 const R2_MOUNT_ROOT = process.env.R2_MOUNT_ROOT || '/mnt/r2';
+const WORKER_BASE_URL = process.env.WORKER_BASE_URL || '';
+const SANDBOX_PROXY_SECRET = process.env.SANDBOX_PROXY_SECRET || '';
+const HEADER_WORKER_BASE_URL = 'x-chiridion-worker-base-url';
+const HEADER_THREAD_ID = 'x-chiridion-thread-id';
+const HEADER_PROXY_SESSION_ID = 'x-chiridion-proxy-session-id';
+const HEADER_SANDBOX_SECRET = 'x-sandbox-secret';
+const NON_PROXY_DENY_CIDRS = (process.env.NON_PROXY_DENY_CIDRS || '172.17.0.0/16,fc00::/7,fe80::/10')
+  .split(',')
+  .map((entry) => entry.trim())
+  .filter(Boolean);
 
 interface WsData {
   name: string;
+  proxySessionId: string;
   targetWsUrl: string;
   upstream: WebSocket | null;
   upstreamReady: boolean;
   pendingMessages: string[];
 }
+
+interface ProxySessionContext {
+  id: string;
+  containerName: string;
+  orgId: string;
+  workspaceId: string;
+  threadId: string;
+  workerBaseUrl: string;
+}
+
+const proxySessions = new Map<string, ProxySessionContext>();
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -76,7 +99,6 @@ interface WorkspaceRoute {
  * Parse workspace route from URL:
  *   /v1/workspaces/{orgId}/{workspaceId}/fs/read?path=...
  *   /v1/workspaces/{orgId}/{workspaceId}/exec
- *   /v1/workspaces/{orgId}/{workspaceId}/env
  *   /v1/workspaces/{orgId}/{workspaceId}/health
  *   /v1/workspaces/{orgId}/{workspaceId}/chat
  *   /v1/workspaces/{orgId}/{workspaceId}/terminate
@@ -95,6 +117,210 @@ function parseWorkspaceRoute(url: URL): WorkspaceRoute | null {
 }
 
 /**
+ * Parse proxy route from URL:
+ *   /proxy/{proxySessionId}/api/claude/v1/messages
+ *   /proxy/{proxySessionId}/client/v4/...
+ *   /proxy/{proxySessionId}/api/mssql/query
+ *
+ * Returns the proxy session ID and upstream path.
+ */
+interface ProxyRoute {
+  proxySessionId: string;
+  upstreamPath: string;
+}
+
+function parseProxyRoute(url: URL): ProxyRoute | null {
+  const match = url.pathname.match(/^\/proxy\/([^/]+)(\/.*)?$/);
+  if (!match) return null;
+  return {
+    proxySessionId: decodeURIComponent(match[1]),
+    upstreamPath: match[2] || '/',
+  };
+}
+
+function normalizeWorkerBaseUrl(raw: string | null | undefined): string | null {
+  const value = (raw || '').trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    parsed.pathname = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
+function normalizeIpv4(ip: string): string | null {
+  if (!ip) return null;
+  const trimmed = ip.trim();
+  const v4 = trimmed.startsWith('::ffff:') ? trimmed.slice(7) : trimmed;
+  const parts = v4.split('.');
+  if (parts.length !== 4) return null;
+  const nums = parts.map((part) => Number(part));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  return nums.join('.');
+}
+
+function ipv4ToInt(ip: string): number {
+  const [a, b, c, d] = ip.split('.').map(Number);
+  return (((a << 24) >>> 0) | (b << 16) | (c << 8) | d) >>> 0;
+}
+
+function parseIpv6ToBigInt(ip: string): bigint | null {
+  let value = ip.trim().toLowerCase();
+  if (!value) return null;
+  if (value.startsWith('[') && value.endsWith(']')) {
+    value = value.slice(1, -1);
+  }
+  const zoneIdx = value.indexOf('%');
+  if (zoneIdx >= 0) {
+    value = value.slice(0, zoneIdx);
+  }
+
+  // Convert IPv4-embedded suffix into 2 hextets.
+  if (value.includes('.')) {
+    const lastColon = value.lastIndexOf(':');
+    if (lastColon < 0) return null;
+    const ipv4Part = normalizeIpv4(value.slice(lastColon + 1));
+    if (!ipv4Part) return null;
+    const ipv4Int = ipv4ToInt(ipv4Part);
+    const hi = ((ipv4Int >>> 16) & 0xffff).toString(16);
+    const lo = (ipv4Int & 0xffff).toString(16);
+    value = `${value.slice(0, lastColon)}:${hi}:${lo}`;
+  }
+
+  const parts = value.split('::');
+  if (parts.length > 2) return null;
+
+  const left = parts[0] ? parts[0].split(':').filter(Boolean) : [];
+  const right = parts[1] ? parts[1].split(':').filter(Boolean) : [];
+  const hasCompression = parts.length === 2;
+  const missing = 8 - (left.length + right.length);
+
+  if (hasCompression) {
+    if (missing < 1) return null;
+  } else if (missing !== 0) {
+    return null;
+  }
+
+  const hextets = hasCompression
+    ? [...left, ...new Array(missing).fill('0'), ...right]
+    : left;
+  if (hextets.length !== 8) return null;
+  if (hextets.some((h) => !/^[0-9a-f]{1,4}$/i.test(h))) return null;
+
+  let out = 0n;
+  for (const h of hextets) {
+    out = (out << 16n) + BigInt(parseInt(h, 16));
+  }
+  return out;
+}
+
+type ParsedIp =
+  | { family: 'ipv4'; value: number }
+  | { family: 'ipv6'; value: bigint };
+
+function parseIp(ip: string): ParsedIp | null {
+  const v4 = normalizeIpv4(ip);
+  if (v4) return { family: 'ipv4', value: ipv4ToInt(v4) };
+  const v6 = parseIpv6ToBigInt(ip);
+  if (v6 === null) return null;
+  return { family: 'ipv6', value: v6 };
+}
+
+function ipInCidr(parsedIp: ParsedIp, cidr: string): boolean {
+  const [base, prefixRaw] = cidr.split('/');
+  if (!base || prefixRaw === undefined) return false;
+
+  const parsedBase = parseIp(base);
+  if (!parsedBase) return false;
+  if (parsedBase.family !== parsedIp.family) return false;
+
+  const prefix = Number(prefixRaw);
+  const maxBits = parsedIp.family === 'ipv4' ? 32 : 128;
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > maxBits) return false;
+
+  if (parsedIp.family === 'ipv4' && parsedBase.family === 'ipv4') {
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    return (parsedIp.value & mask) === (parsedBase.value & mask);
+  }
+
+  if (parsedIp.family !== 'ipv6' || parsedBase.family !== 'ipv6') return false;
+  if (prefix === 0) return true;
+  const shift = BigInt(128 - prefix);
+  return (parsedIp.value >> shift) === (parsedBase.value >> shift);
+}
+
+function isDeniedNonProxySourceIp(sourceIp: string): boolean {
+  const parsedIp = parseIp(sourceIp);
+  if (!parsedIp) return false;
+  return NON_PROXY_DENY_CIDRS.some((cidr) => ipInCidr(parsedIp, cidr));
+}
+
+/**
+ * Proxy container API traffic to the Worker with identity headers.
+ * Strips original auth headers and adds X-Sandbox-Secret + X-Chiridion-* headers.
+ */
+async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: string): Promise<Response> {
+  if (!SANDBOX_PROXY_SECRET) {
+    return errorResponse('SANDBOX_PROXY_SECRET not configured', 500);
+  }
+
+  const caller = await resolveContainerBySourceIp(sourceIp);
+  if (!caller) {
+    return errorResponse('Unknown proxy caller', 403);
+  }
+  const session = proxySessions.get(proxy.proxySessionId);
+  if (!session) {
+    return errorResponse('Unknown proxy session', 403);
+  }
+  if (session.containerName !== caller.name) {
+    return errorResponse('Proxy session does not match caller container', 403);
+  }
+
+  const workerBaseUrl = normalizeWorkerBaseUrl(session.workerBaseUrl || WORKER_BASE_URL);
+  if (!workerBaseUrl) {
+    return errorResponse('Worker base URL unavailable for proxy session', 503);
+  }
+
+  const url = new URL(req.url);
+  const targetUrl = `${workerBaseUrl}${proxy.upstreamPath}${url.search}`;
+
+  const headers = new Headers(req.headers);
+  // Strip original auth — container doesn't need to authenticate
+  headers.delete('Authorization');
+  headers.delete('x-api-key');
+  headers.delete('x-sandbox-secret');
+  headers.delete('x-chiridion-org-id');
+  headers.delete('x-chiridion-workspace-id');
+  headers.delete('x-chiridion-thread-id');
+  headers.delete('x-chiridion-proxy-session-id');
+  headers.delete('x-chiridion-mcp-identity');
+  // Add sandbox proxy identity headers
+  headers.set('X-Sandbox-Secret', SANDBOX_PROXY_SECRET);
+  headers.set('X-Chiridion-Org-Id', session.orgId);
+  headers.set('X-Chiridion-Workspace-Id', session.workspaceId);
+  headers.set('X-Chiridion-Thread-Id', session.threadId);
+
+  const init: RequestInit = {
+    method: req.method,
+    headers,
+  };
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    init.body = req.body;
+    // @ts-expect-error Bun supports duplex
+    init.duplex = 'half';
+  }
+
+  return fetch(targetUrl, init);
+}
+
+/**
  * Proxy an HTTP request to a container's control plane.
  */
 async function proxyToControlPlane(
@@ -109,6 +335,10 @@ async function proxyToControlPlane(
   const headers = new Headers(req.headers);
   // Remove proxy auth — control plane doesn't need it
   headers.delete('Authorization');
+  headers.delete(HEADER_SANDBOX_SECRET);
+  headers.delete(HEADER_WORKER_BASE_URL);
+  headers.delete(HEADER_THREAD_ID);
+  headers.delete(HEADER_PROXY_SESSION_ID);
 
   const init: RequestInit = {
     method: req.method,
@@ -129,10 +359,31 @@ Bun.serve<WsData>({
   async fetch(req: Request, server) {
 
     const url = new URL(req.url);
+    const sourceIp = server.requestIP(req)?.address || '';
+    if (!url.pathname.startsWith('/proxy')) {
+      if (!sourceIp) {
+        return errorResponse('Missing source IP for non-proxy route', 403);
+      }
+      if (!parseIp(sourceIp)) {
+        return errorResponse('Unparseable source IP for non-proxy route', 403);
+      }
+      if (isDeniedNonProxySourceIp(sourceIp)) {
+        return errorResponse('Sandbox containers may only access /proxy', 403);
+      }
+    }
 
     // Service health check
     if (url.pathname === '/health') {
       return jsonResponse({ status: 'ok', service: 'sandbox-host' });
+    }
+
+    // ─── Proxy route (container API traffic → Worker) ──
+    const proxyRoute = parseProxyRoute(url);
+    if (proxyRoute) {
+      if (!sourceIp) {
+        return errorResponse('Missing proxy source IP', 403);
+      }
+      return handleProxyRoute(req, proxyRoute, sourceIp);
     }
 
     const route = parseWorkspaceRoute(url);
@@ -294,18 +545,6 @@ Bun.serve<WsData>({
 
       // ─── Control Plane Proxy (auto-creates container) ──
 
-      if (subpath === '/env' && req.method === 'POST') {
-        const body = (await req.json()) as Record<string, string>;
-
-        await ensureContainer(name, { orgId, workspaceId });
-
-        return proxyToControlPlane(name, '/env', new Request(req.url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }));
-      }
-
       if (subpath === '/health' && req.method === 'GET') {
         await ensureContainer(name, { orgId, workspaceId });
         return proxyToControlPlane(name, '/health', req);
@@ -316,7 +555,30 @@ Bun.serve<WsData>({
           return errorResponse('WebSocket upgrade required', 426);
         }
 
+        const threadId = req.headers.get(HEADER_THREAD_ID)?.trim() || '';
+        if (!threadId) {
+          return errorResponse('Missing thread ID', 400);
+        }
+        const proxySessionId = req.headers.get(HEADER_PROXY_SESSION_ID)?.trim() || '';
+        if (!proxySessionId) {
+          return errorResponse('Missing proxy session ID', 400);
+        }
+        const workerBaseUrl = normalizeWorkerBaseUrl(
+          req.headers.get(HEADER_WORKER_BASE_URL) || WORKER_BASE_URL
+        );
+        if (!workerBaseUrl) {
+          return errorResponse('Missing worker base URL', 400);
+        }
+
         await ensureContainer(name, { orgId, workspaceId });
+        proxySessions.set(proxySessionId, {
+          id: proxySessionId,
+          containerName: name,
+          orgId,
+          workspaceId,
+          threadId,
+          workerBaseUrl,
+        });
         const port = await getControlPlanePort(name);
         const targetWsUrl = `ws://127.0.0.1:${port}/chat`;
 
@@ -324,6 +586,7 @@ Bun.serve<WsData>({
         const upgraded = server.upgrade(req, {
           data: {
             name,
+            proxySessionId,
             targetWsUrl,
             upstream: null,
             upstreamReady: false,
@@ -331,6 +594,7 @@ Bun.serve<WsData>({
           },
         });
         if (!upgraded) {
+          proxySessions.delete(proxySessionId);
           return errorResponse('WebSocket upgrade failed', 500);
         }
         return undefined as unknown as Response;
@@ -397,6 +661,7 @@ Bun.serve<WsData>({
     },
 
     close(ws: ServerWebSocket<WsData>) {
+      proxySessions.delete(ws.data.proxySessionId);
       removeWebSocket(ws.data.name);
       if (ws.data.upstream && ws.data.upstream.readyState === WebSocket.OPEN) {
         ws.data.upstream.close();
