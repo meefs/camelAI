@@ -57,3 +57,33 @@ variable "cloudflared_tunnel_token" {
   type        = string
   sensitive   = true
 }
+
+variable "sandbox_proxy_secret" {
+  description = "Shared secret used by workers when proxying requests to sandbox-host"
+  type        = string
+  sensitive   = true
+}
+
+variable "r2_access_key_id" {
+  description = "R2 API access key ID used by sandbox-host rclone mount"
+  type        = string
+  sensitive   = true
+}
+
+variable "r2_secret_access_key" {
+  description = "R2 API secret access key used by sandbox-host rclone mount"
+  type        = string
+  sensitive   = true
+}
+
+variable "r2_account_id" {
+  description = "Cloudflare account ID for R2 API endpoint"
+  type        = string
+  default     = "85bbd288051330fb51ee1c86031a299b"
+}
+
+variable "r2_bucket_name" {
+  description = "R2 bucket name mounted by sandbox-host"
+  type        = string
+  default     = "chiridion-sandbox"
+}

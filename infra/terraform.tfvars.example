@@ -9,3 +9,15 @@ os_disk_size_gb      = 128
 
 # Restrict SSH to your IP in production
 ssh_allowed_cidr          = "*"
+
+# Cloudflare tunnel token used by cloudflared on the VM
+cloudflared_tunnel_token  = "eyJ...replace-me..."
+
+# Sandbox host auth
+sandbox_proxy_secret      = "replace-with-hex-secret"
+
+# R2 mount credentials for sandbox-host
+r2_access_key_id          = "replace-with-r2-access-key-id"
+r2_secret_access_key      = "replace-with-r2-secret-access-key"
+r2_account_id             = "85bbd288051330fb51ee1c86031a299b"
+r2_bucket_name            = "chiridion-sandbox"

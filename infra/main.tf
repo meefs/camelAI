@@ -245,15 +245,20 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
   }
 
   custom_data = base64encode(templatefile("${path.module}/cloud-init.yaml.tpl", {
-    setup_script      = file("${path.module}/../services/sandbox-host/scripts/setup-host.sh")
-    storage_account   = var.storage_account_name
-    storage_key       = azurerm_storage_account.blob.primary_access_key
-    blob_container    = var.blob_container_name
-    juicefs_container = azurerm_storage_container.juicefs.name
+    setup_script             = file("${path.module}/../services/sandbox-host/scripts/setup-host.sh")
+    storage_account          = var.storage_account_name
+    storage_key              = azurerm_storage_account.blob.primary_access_key
+    blob_container           = var.blob_container_name
+    juicefs_container        = azurerm_storage_container.juicefs.name
     pg_host                  = azurerm_postgresql_flexible_server.metadata.fqdn
     pg_password              = random_password.pg.result
     cloudflared_tunnel_token = var.cloudflared_tunnel_token
     acr_login_server         = azurerm_container_registry.sandbox.login_server
+    sandbox_proxy_secret     = var.sandbox_proxy_secret
+    r2_access_key_id         = var.r2_access_key_id
+    r2_secret_access_key     = var.r2_secret_access_key
+    r2_account_id            = var.r2_account_id
+    r2_bucket_name           = var.r2_bucket_name
   }))
 
   identity {

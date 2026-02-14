@@ -992,6 +992,9 @@ const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
+const R2_MOUNT_UID = process.env.R2_MOUNT_UID || '1001';
+const R2_MOUNT_GID = process.env.R2_MOUNT_GID || '1001';
+const R2_MOUNT_UMASK = process.env.R2_MOUNT_UMASK || '002';
 
 async function mountR2OnHost(): Promise<void> {
   if (!R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_ACCOUNT_ID || !R2_BUCKET_NAME) {
@@ -1029,7 +1032,7 @@ async function mountR2OnHost(): Promise<void> {
   const { execSync } = await import('child_process');
   try {
     execSync(
-      `rclone mount --daemon r2:${R2_BUCKET_NAME} ${R2_MOUNT_ROOT} --config=${configPath} --allow-other --dir-cache-time=5s --vfs-cache-mode=writes --vfs-write-back=0`,
+      `rclone mount --daemon r2:${R2_BUCKET_NAME} ${R2_MOUNT_ROOT} --config=${configPath} --allow-other --uid=${R2_MOUNT_UID} --gid=${R2_MOUNT_GID} --umask=${R2_MOUNT_UMASK} --dir-cache-time=5s --vfs-cache-mode=writes --vfs-write-back=0`,
       { stdio: 'pipe', timeout: 10_000 }
     );
     console.log(`[SandboxHost] R2 bucket mounted at ${R2_MOUNT_ROOT}`);
