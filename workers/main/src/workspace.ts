@@ -383,15 +383,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
     // Prewarm env vars in background (don't block workspace creation).
     // Container creation is deferred to first chat — sandbox host auto-creates on demand.
-    const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
-    const shouldPrewarm = !!(runtimeEnv.SANDBOX_HOST || runtimeEnv.SANDBOX_HOST_URL);
-    if (shouldPrewarm) {
-      waitUntil(
-        this.prewarmEnvVars(id, orgId).catch((err) =>
-          console.error(`[WorkspaceDO] createWorkspace: prewarm failed workspace=${id}`, err)
-        )
-      );
-    }
+    waitUntil(
+      this.prewarmEnvVars(id, orgId).catch((err) =>
+        console.error(`[WorkspaceDO] createWorkspace: prewarm failed workspace=${id}`, err)
+      )
+    );
 
     return info;
   }

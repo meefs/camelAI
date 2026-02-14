@@ -51,7 +51,6 @@ export interface WorkspaceContainerEnv {
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC?: string;
   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
 
-  // Sandbox host — VPC binding (deployed) or URL fallback (local dev)
   SANDBOX_HOST: Fetcher;
 }
 
@@ -176,8 +175,7 @@ export class WorkspaceContainer {
   // ─── Proxy (lifecycle + FS + exec) ──────────────────────
 
   /**
-   * Fetch via the sandbox host — uses Workers VPC binding when available
-   * (deployed envs), falls back to direct HTTP for local dev.
+   * Fetch via the sandbox host VPC binding.
    */
   private async fetchProxy(
     path: string,
@@ -192,19 +190,7 @@ export class WorkspaceContainer {
     }
 
     const headers = new Headers(init.headers);
-
-    // Use VPC binding when available (deployed envs), otherwise fall back to direct HTTP (local dev)
-    if (this.env.SANDBOX_HOST) {
-      return this.env.SANDBOX_HOST.fetch(url.toString(), { ...init, headers });
-    }
-
-    // Local dev fallback — use SANDBOX_HOST_URL or default
-    const baseUrl = (this.env.SANDBOX_HOST_URL || 'http://localhost:4400').replace(/\/$/, '');
-    const fallbackUrl = new URL(`${baseUrl}${normalizedPath}`);
-    for (const [key, value] of url.searchParams.entries()) {
-      fallbackUrl.searchParams.set(key, value);
-    }
-    return fetch(fallbackUrl.toString(), { ...init, headers });
+    return this.env.SANDBOX_HOST.fetch(url.toString(), { ...init, headers });
   }
 
   // ─── Path Helpers ────────────────────────────────────────
