@@ -281,8 +281,7 @@ export class WorkspaceContainer {
   // ─── Exec + FS via Proxy ─────────────────────────────────
 
   private sandboxProxyPath(subpath: string): string {
-    const name = this.getSandboxName();
-    return `/v1/sandboxes/${encodeURIComponent(name)}${subpath}`;
+    return `/v1/workspaces/${encodeURIComponent(this.orgId)}/${encodeURIComponent(this.workspaceId)}${subpath}`;
   }
 
   /**
@@ -359,18 +358,6 @@ export class WorkspaceContainer {
     });
   }
 
-
-  // ─── Sandbox Name ───────────────────────────────────────
-
-  private getSandboxName(): string {
-    const raw = `chiridion-${getContainerIdForWorkspace(this.workspaceId)}`;
-    const normalized = raw
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '');
-    return (normalized || `chiridion-${Date.now()}`).slice(0, 63);
-  }
 
   // ─── Env Vars ────────────────────────────────────────────
 

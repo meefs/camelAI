@@ -16,7 +16,6 @@ import {
   touchContainer,
   addWebSocket,
   removeWebSocket,
-  setWorkspaceOpts,
 } from './container-manager';
 import { ensureOverlay } from './overlay';
 import {
@@ -52,20 +51,46 @@ function errorResponse(message: string, status: number): Response {
 }
 
 /**
- * Parse sandbox name + sub-path from URL:
- *   /v1/sandboxes/{name}/fs/read?path=...
- *   /v1/sandboxes/{name}/exec
- *   /v1/sandboxes/{name}/env
- *   /v1/sandboxes/{name}/health
- *   /v1/sandboxes/{name}/chat
- *   /v1/sandboxes/{name}/terminate
+ * Derive a deterministic sandbox container name from a workspace ID.
+ * Must match the logic formerly in workspace-container.ts getSandboxName().
  */
-function parseSandboxRoute(url: URL): { name: string; subpath: string } | null {
-  const match = url.pathname.match(/^\/v1\/sandboxes\/([^/]+)(\/.*)?$/);
+function sandboxName(workspaceId: string): string {
+  const safeId = workspaceId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const raw = `chiridion-ws-${safeId}`;
+  const normalized = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return (normalized || `chiridion-${Date.now()}`).slice(0, 63);
+}
+
+interface WorkspaceRoute {
+  name: string;
+  orgId: string;
+  workspaceId: string;
+  subpath: string;
+}
+
+/**
+ * Parse workspace route from URL:
+ *   /v1/workspaces/{orgId}/{workspaceId}/fs/read?path=...
+ *   /v1/workspaces/{orgId}/{workspaceId}/exec
+ *   /v1/workspaces/{orgId}/{workspaceId}/env
+ *   /v1/workspaces/{orgId}/{workspaceId}/health
+ *   /v1/workspaces/{orgId}/{workspaceId}/chat
+ *   /v1/workspaces/{orgId}/{workspaceId}/terminate
+ */
+function parseWorkspaceRoute(url: URL): WorkspaceRoute | null {
+  const match = url.pathname.match(/^\/v1\/workspaces\/([^/]+)\/([^/]+)(\/.*)?$/);
   if (!match) return null;
+  const orgId = decodeURIComponent(match[1]);
+  const workspaceId = decodeURIComponent(match[2]);
   return {
-    name: decodeURIComponent(match[1]),
-    subpath: match[2] || '',
+    name: sandboxName(workspaceId),
+    orgId,
+    workspaceId,
+    subpath: match[3] || '',
   };
 }
 
@@ -110,12 +135,12 @@ Bun.serve<WsData>({
       return jsonResponse({ status: 'ok', service: 'sandbox-host' });
     }
 
-    const route = parseSandboxRoute(url);
+    const route = parseWorkspaceRoute(url);
     if (!route) {
       return errorResponse('Not found', 404);
     }
 
-    const { name, subpath } = route;
+    const { name, orgId, workspaceId, subpath } = route;
 
     // Keep container alive while it's receiving requests
     touchContainer(name);
@@ -246,7 +271,7 @@ Bun.serve<WsData>({
       // ─── Exec (requires container) ──────────────────────
 
       if (subpath === '/exec' && req.method === 'POST') {
-        await ensureContainer(name);
+        await ensureContainer(name, { orgId, workspaceId });
         const body = (await req.json()) as {
           cmd?: string[];
           cwd?: string;
@@ -269,19 +294,11 @@ Bun.serve<WsData>({
 
       // ─── Control Plane Proxy (auto-creates container) ──
 
-      // POST /v1/sandboxes/{name}/env → container :8080/env
       if (subpath === '/env' && req.method === 'POST') {
         const body = (await req.json()) as Record<string, string>;
 
-        // Extract workspace opts from env body for R2 bind mounts
-        if (body.ORG_ID && body.WORKSPACE_ID) {
-          setWorkspaceOpts(name, { orgId: body.ORG_ID, workspaceId: body.WORKSPACE_ID });
-        }
+        await ensureContainer(name, { orgId, workspaceId });
 
-        // Auto-create container if not running
-        await ensureContainer(name);
-
-        // Proxy to control plane
         return proxyToControlPlane(name, '/env', new Request(req.url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -289,20 +306,17 @@ Bun.serve<WsData>({
         }));
       }
 
-      // GET /v1/sandboxes/{name}/health → container :8080/health
       if (subpath === '/health' && req.method === 'GET') {
-        await ensureContainer(name);
+        await ensureContainer(name, { orgId, workspaceId });
         return proxyToControlPlane(name, '/health', req);
       }
 
-      // WebSocket /v1/sandboxes/{name}/chat → container :8080/chat
       if (subpath === '/chat') {
         if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
           return errorResponse('WebSocket upgrade required', 426);
         }
 
-        // Auto-create container if not running
-        await ensureContainer(name);
+        await ensureContainer(name, { orgId, workspaceId });
         const port = await getControlPlanePort(name);
         const targetWsUrl = `ws://127.0.0.1:${port}/chat`;
 

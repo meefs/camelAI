@@ -35,9 +35,6 @@ export interface EnsureContainerOptions {
 
 const containers = new Map<string, ContainerRecord>();
 
-/** Stored workspace opts per sandbox name for R2 bind mounts on container recreation. */
-const workspaceOpts = new Map<string, EnsureContainerOptions>();
-
 /** Refcount of in-flight ensureContainer calls per workspace (prevents reclaim race). */
 const pendingWorkspaces = new Map<string, number>();
 
@@ -111,14 +108,6 @@ async function waitForHealth(port: number, timeoutMs = 30_000): Promise<boolean>
 }
 
 /**
- * Store workspace opts (orgId/workspaceId) for a sandbox name.
- * Called by index.ts when /env is received with ORG_ID + WORKSPACE_ID.
- */
-export function setWorkspaceOpts(name: string, opts: EnsureContainerOptions): void {
-  workspaceOpts.set(name, opts);
-}
-
-/**
  * Touch a container's lastAccessedAt timestamp.
  */
 export function touchContainer(name: string): void {
@@ -164,13 +153,6 @@ function r2MountPrefix(orgId: string, workspaceId: string): string {
  * at container creation time (host-level rclone mount at R2_MOUNT_ROOT).
  */
 export async function ensureContainer(name: string, opts?: EnsureContainerOptions): Promise<ContainerRecord> {
-  // Store or look up workspace opts for R2 bind mounts
-  if (opts?.orgId && opts?.workspaceId) {
-    workspaceOpts.set(name, opts);
-  } else {
-    opts = workspaceOpts.get(name);
-  }
-
   // Mark workspace as pending so NVMe reclaim won't race with us (refcounted)
   pendingWorkspaces.set(name, (pendingWorkspaces.get(name) ?? 0) + 1);
   containerTerminatedAt.delete(name);
