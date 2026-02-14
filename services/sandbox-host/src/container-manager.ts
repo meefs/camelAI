@@ -35,15 +35,15 @@ export interface EnsureContainerOptions {
 
 const containers = new Map<string, ContainerRecord>();
 
-/** Workspaces currently being provisioned (prevents reclaim race). */
-const pendingWorkspaces = new Set<string>();
+/** Refcount of in-flight ensureContainer calls per workspace (prevents reclaim race). */
+const pendingWorkspaces = new Map<string, number>();
 
 /** When a container was last terminated (for reclaim idle guard). */
 const containerTerminatedAt = new Map<string, number>();
 
 /** True if a workspace has a running container or is being provisioned. */
 function isWorkspaceActive(name: string): boolean {
-  return containers.has(name) || pendingWorkspaces.has(name);
+  return containers.has(name) || (pendingWorkspaces.get(name) ?? 0) > 0;
 }
 
 async function dockerExec(args: string[], timeoutMs = 30_000): Promise<ExecResult> {
@@ -153,8 +153,8 @@ function r2MountPrefix(orgId: string, workspaceId: string): string {
  * at container creation time (host-level rclone mount at R2_MOUNT_ROOT).
  */
 export async function ensureContainer(name: string, opts?: EnsureContainerOptions): Promise<ContainerRecord> {
-  // Mark workspace as pending so NVMe reclaim won't race with us
-  pendingWorkspaces.add(name);
+  // Mark workspace as pending so NVMe reclaim won't race with us (refcounted)
+  pendingWorkspaces.set(name, (pendingWorkspaces.get(name) ?? 0) + 1);
   containerTerminatedAt.delete(name);
 
   try {
@@ -265,7 +265,12 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
     console.log(`[ContainerManager] created container ${name} (id=${containerId}, port=${port})`);
     return record;
   } finally {
-    pendingWorkspaces.delete(name);
+    const count = (pendingWorkspaces.get(name) ?? 1) - 1;
+    if (count <= 0) {
+      pendingWorkspaces.delete(name);
+    } else {
+      pendingWorkspaces.set(name, count);
+    }
   }
 }
 
@@ -422,8 +427,11 @@ async function reclaimIdleOverlays(): Promise<void> {
 
     // Attempt reclaim with double-check guard (isSafe callback runs after sync)
     console.log(`[ContainerManager] reclaiming NVMe for ${name} (idle=${Math.round((now - terminatedAt) / 1000)}s)`);
-    await reclaimOverlay(name, () => !isWorkspaceActive(name));
-    containerTerminatedAt.delete(name);
+    const reclaimed = await reclaimOverlay(name, () => !isWorkspaceActive(name));
+    if (reclaimed) {
+      containerTerminatedAt.delete(name);
+    }
+    // On failure/abort, keep the entry so the next reclaim cycle retries
   }
 }
 

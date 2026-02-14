@@ -228,6 +228,12 @@ export async function reclaimOverlay(name: string, isSafe: () => boolean): Promi
   const release = await acquireSyncLock(mount);
 
   try {
+    // Re-check after acquiring lock: another reclaim may have already completed
+    if (!mounts.has(name) || !isMounted(mount.mergedDir)) {
+      console.log(`[Overlay] ${name}: reclaim skipped — overlay already removed`);
+      return false;
+    }
+
     // Final sync to JuiceFS
     const start = Date.now();
     await runAsync(rsyncCmd(mount.mergedDir, mount.lowerDir));
