@@ -102,6 +102,7 @@ interface ControlPlaneDeleteResponse {
 
 export interface ClaudeRunnerEnvOptions {
   threadId: string;
+  mcpIdentity?: string;
 }
 
 const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
@@ -240,6 +241,7 @@ export class WorkspaceContainer {
     return {
       ...integrationEnv,
       CHIRIDION_THREAD_ID: options.threadId,
+      ...(options.mcpIdentity && { CHIRIDION_MCP_IDENTITY: options.mcpIdentity }),
     };
   }
 

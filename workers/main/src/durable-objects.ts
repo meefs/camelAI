@@ -5,6 +5,7 @@ import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from './workspace-container';
+import { createMcpIdentityProof } from './sandbox-auth';
 import { SUPPORTED_SLASH_COMMANDS } from '../../../src/lib/slash-commands';
 
 export type PreviewTarget =
@@ -120,6 +121,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   R2_MOUNT_DIR?: string;
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   DEBUG_CLAUDE_AGENT_SDK?: string;
+  SANDBOX_PROXY_SECRET?: string;
 }
 
 // Pending connection setup with MCP callback info
@@ -814,9 +816,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       const container = new WorkspaceContainer(this.env, context.workspaceId, context.orgId);
 
-      // Build thread-specific env (integration creds + thread ID).
+      // Create HMAC identity proof so the sandbox can authenticate MCP
+      // requests for this specific org+workspace (prevents spoofing).
+      let mcpIdentity: string | undefined;
+      if (this.env.SANDBOX_PROXY_SECRET) {
+        mcpIdentity = await createMcpIdentityProof(
+          this.env.SANDBOX_PROXY_SECRET,
+          context.orgId,
+          context.workspaceId
+        );
+      }
+
+      // Build thread-specific env (integration creds + thread ID + MCP identity).
       const envVars = await container.buildClaudeRunnerEnv({
         threadId: context.threadId,
+        mcpIdentity,
       });
 
       // Open WebSocket to the control plane's /chat endpoint.

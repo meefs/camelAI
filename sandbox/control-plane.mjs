@@ -378,10 +378,14 @@ class ChatSession {
     const mcpServerUrl = mergedEnv.MCP_SERVER_URL;
     const mcpServers = {};
     if (mcpServerUrl) {
+      const mcpHeaders = { 'X-Chiridion-Thread-Id': this.threadId };
+      if (mergedEnv.CHIRIDION_MCP_IDENTITY) {
+        mcpHeaders['X-Chiridion-MCP-Identity'] = mergedEnv.CHIRIDION_MCP_IDENTITY;
+      }
       mcpServers.chiridion = {
         type: 'http',
         url: mcpServerUrl,
-        headers: { 'X-Chiridion-Thread-Id': this.threadId },
+        headers: mcpHeaders,
       };
     }
 
