@@ -103,7 +103,6 @@ interface ControlPlaneDeleteResponse {
 
 export interface ClaudeRunnerEnvOptions {
   threadId: string;
-  proxySessionId: string;
 }
 
 const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
@@ -246,7 +245,6 @@ export class WorkspaceContainer {
     return {
       ...integrationEnv,
       CHIRIDION_THREAD_ID: options.threadId,
-      CHIRIDION_PROXY_SESSION_ID: options.proxySessionId,
     };
   }
 
@@ -257,13 +255,10 @@ export class WorkspaceContainer {
    * ChatThreadDO uses this to bridge chat clients to the Claude Agent SDK
    * running in-process inside the sandbox.
    */
-  async connectChatWebSocket(options: { threadId: string; proxySessionId: string }): Promise<WebSocket> {
+  async connectChatWebSocket(options: { threadId: string }): Promise<WebSocket> {
     console.log(`[Sandbox] connectChatWebSocket: connecting via proxy`);
     if (!options.threadId) {
       throw new Error('Thread ID is required for chat websocket');
-    }
-    if (!options.proxySessionId) {
-      throw new Error('Proxy session ID is required for chat websocket');
     }
     const workerBaseUrl = (this.env.WORKER_BASE_URL || '').trim();
     if (!workerBaseUrl) {
@@ -274,7 +269,6 @@ export class WorkspaceContainer {
       headers: {
         Upgrade: 'websocket',
         'X-Chiridion-Thread-Id': options.threadId,
-        'X-Chiridion-Proxy-Session-Id': options.proxySessionId,
         'X-Chiridion-Worker-Base-Url': workerBaseUrl,
       },
     });

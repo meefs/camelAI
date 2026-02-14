@@ -14,7 +14,7 @@
  * The pendingWorkspaces Set prevents races with concurrent ensureContainer.
  */
 import type { ContainerRecord, ExecResult } from './types';
-import { ensureOverlay, syncOverlay, hasOverlay, reclaimOverlay } from './overlay';
+import { ensureOverlay, syncOverlay, hasOverlay, reclaimOverlay, listMountedOverlayNames } from './overlay';
 
 const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/mnt/workspaces';
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'chiridion-sandbox:latest';
@@ -29,7 +29,7 @@ const REAPER_INTERVAL_MS = 10_000;
 const R2_MOUNT_ROOT = process.env.R2_MOUNT_ROOT || '/mnt/r2';
 const RECLAIM_IDLE_MS = parseInt(process.env.RECLAIM_IDLE_MS || String(10 * 60_000), 10);
 const RECLAIM_INTERVAL_MS = 5 * 60_000;
-const TRACE_SANDBOX_LIFECYCLE = process.env.TRACE_SANDBOX_LIFECYCLE !== '0';
+const TRACE_SANDBOX_LIFECYCLE = process.env.TRACE_SANDBOX_LIFECYCLE === '1';
 
 export interface EnsureContainerOptions {
   orgId?: string;
@@ -104,6 +104,17 @@ const containerTerminatedAt = new Map<string, number>();
 /** True if a workspace has a running container or is being provisioned. */
 function isWorkspaceActive(name: string): boolean {
   return containers.has(name) || (pendingWorkspaces.get(name) ?? 0) > 0;
+}
+
+async function isWorkspaceActiveForReclaim(name: string): Promise<boolean> {
+  if (isWorkspaceActive(name)) return true;
+
+  // After host restarts, in-memory tracking may be empty while a container still runs.
+  if (await isRunning(name)) {
+    return true;
+  }
+
+  return false;
 }
 
 async function dockerExec(args: string[], timeoutMs = 30_000): Promise<ExecResult> {
@@ -611,27 +622,48 @@ export async function terminateContainer(name: string, reason = 'manual'): Promi
     reason,
     container: containerSnapshot(existing),
   });
-  if (existing?.containerIp) unindexContainerIp(existing.containerIp);
   const result = await dockerExec(['rm', '-f', name]);
-  containers.delete(name);
-  if (result.success) {
-    console.log(`[ContainerManager] terminated container ${name}`);
-    traceLifecycle('terminate_container_success', { name, reason });
-  } else {
-    traceLifecycle('terminate_container_failed', {
+  const noSuchContainer = /No such container/i.test(result.stderr);
+  let terminated = result.success || noSuchContainer;
+
+  if (!terminated) {
+    let stillRunning = false;
+    try {
+      stillRunning = await isRunning(name);
+    } catch {
+      stillRunning = true;
+    }
+    terminated = !stillRunning;
+    traceLifecycle('terminate_container_postcheck', {
       name,
       reason,
+      stillRunning,
       exitCode: result.exitCode,
       stderr: result.stderr.slice(0, 500),
     });
   }
-  // Track termination time for NVMe reclaim idle guard
-  containerTerminatedAt.set(name, Date.now());
-  // Non-destructive sync — keeps overlay + NVMe intact for fast reconnect
-  syncOverlay(name).catch((err) =>
-    console.error(`[ContainerManager] post-terminate sync failed for ${name}:`, err)
-  );
-  return result.success;
+
+  if (terminated) {
+    if (existing?.containerIp) unindexContainerIp(existing.containerIp);
+    containers.delete(name);
+    console.log(`[ContainerManager] terminated container ${name}`);
+    traceLifecycle('terminate_container_success', { name, reason });
+    // Track termination time for NVMe reclaim idle guard
+    containerTerminatedAt.set(name, Date.now());
+    // Non-destructive sync — keeps overlay + NVMe intact for fast reconnect
+    syncOverlay(name).catch((err) =>
+      console.error(`[ContainerManager] post-terminate sync failed for ${name}:`, err)
+    );
+    return true;
+  }
+
+  traceLifecycle('terminate_container_failed', {
+    name,
+    reason,
+    exitCode: result.exitCode,
+    stderr: result.stderr.slice(0, 500),
+  });
+  return false;
 }
 
 /**
@@ -740,9 +772,18 @@ console.log(
 
 async function reclaimIdleOverlays(): Promise<void> {
   const now = Date.now();
+  const mountedOverlays = await listMountedOverlayNames();
+  for (const name of mountedOverlays) {
+    if (containerTerminatedAt.has(name)) continue;
+    if (await isWorkspaceActiveForReclaim(name)) continue;
+    // Restart recovery: begin idle tracking for previously mounted inactive overlays.
+    containerTerminatedAt.set(name, now);
+    traceLifecycle('reclaim_track_inactive_overlay', { name, trackedAt: now });
+  }
+
   for (const [name, terminatedAt] of containerTerminatedAt) {
     // Workspace came back — stop tracking for reclaim
-    if (isWorkspaceActive(name)) {
+    if (await isWorkspaceActiveForReclaim(name)) {
       containerTerminatedAt.delete(name);
       continue;
     }
@@ -758,7 +799,7 @@ async function reclaimIdleOverlays(): Promise<void> {
 
     // Attempt reclaim with double-check guard (isSafe callback runs after sync)
     console.log(`[ContainerManager] reclaiming NVMe for ${name} (idle=${Math.round((now - terminatedAt) / 1000)}s)`);
-    const reclaimed = await reclaimOverlay(name, () => !isWorkspaceActive(name));
+    const reclaimed = await reclaimOverlay(name, async () => !(await isWorkspaceActiveForReclaim(name)));
     if (reclaimed) {
       containerTerminatedAt.delete(name);
     }

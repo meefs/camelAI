@@ -231,6 +231,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private runnerReconnectArmed: boolean = false;
   private lastRunnerSeq: number = 0;
   private lastPersistedRunnerSeq: number = 0;
+  private runnerTransitionChain: Promise<void> = Promise.resolve();
+  private runnerActivityGeneration: number = 0;
+  private runnerIntentionalIdleDisconnect: boolean = false;
 
   private trace(event: string, details: Record<string, unknown> = {}): void {
     if (!TRACE_CHAT_THREAD_DO) return;
@@ -250,6 +253,33 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     } catch {
       console.log(`[ChatThreadDO][trace] ${event}`);
     }
+  }
+
+  private async withRunnerTransitionLock<T>(source: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.runnerTransitionChain;
+    let release!: () => void;
+    this.runnerTransitionChain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => {});
+    this.trace('runner_transition_lock_acquired', { source });
+    try {
+      return await fn();
+    } finally {
+      release();
+      this.trace('runner_transition_lock_released', { source });
+    }
+  }
+
+  private markRunnerActivity(source: string): void {
+    this.runnerActivityGeneration += 1;
+    const hadIntentionalIdleDisconnect = this.runnerIntentionalIdleDisconnect;
+    this.runnerIntentionalIdleDisconnect = false;
+    this.trace('runner_activity', {
+      source,
+      generation: this.runnerActivityGeneration,
+      hadIntentionalIdleDisconnect,
+    });
   }
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
@@ -543,11 +573,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.stopRunnerReconnectLoop('no_chat_sockets');
       this.cancelRunnerDisconnectGrace('no_chat_sockets');
     }
-    // Intentional no-op: we never detach the runner from the DO side.
-    // The sandbox control-plane owns the disconnect lifecycle and will
-    // close the WebSocket after 1 minute of idle following a result event.
-    // Keeping the runner alive means reconnecting chat clients can
-    // immediately resume without re-provisioning the sandbox connection.
+    // Intentional no-op on chat socket close. Runner lifecycle is handled
+    // by runner-side control events and explicit reconnect-on-demand.
   }
 
   webSocketError(_ws: WebSocket, error: unknown): void {
@@ -734,6 +761,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       chatIsStreaming: this.chatIsStreaming,
     });
 
+    if (this.runnerIntentionalIdleDisconnect && !this.chatIsStreaming && this.pendingQuestions.size === 0) {
+      this.trace('handle_chat_init_skip_runner_connect_idle_disconnected');
+      return;
+    }
+
     // Ensure we are connected to the sandbox control plane so in-flight output can resume.
     void this.ensureRunnerConnected().catch((err) => {
       this.trace('ensure_runner_connected_init_failed', {
@@ -759,6 +791,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       attributedLength: attributedContent.length,
     });
 
+    this.markRunnerActivity('chat_message');
     await this.ensureRunnerConnected();
     if (!(await this.sendRunnerCommandWithReconnect({ type: 'message', content: attributedContent }))) {
       this.emitChatError('Failed to send message to sandbox');
@@ -775,6 +808,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
   private async handleChatStop(): Promise<void> {
     this.trace('handle_chat_stop');
+    this.markRunnerActivity('chat_stop');
     await this.sendRunnerCommandWithReconnect({ type: 'stop' });
   }
 
@@ -788,6 +822,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
+    this.markRunnerActivity('question_response');
     if (!(await this.sendRunnerCommandWithReconnect({
       type: 'question_response',
       questionId: data.questionId,
@@ -928,6 +963,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private async ensureRunnerConnected(): Promise<void> {
+    await this.withRunnerTransitionLock('ensure_runner_connected', async () => {
+      await this.ensureRunnerConnectedUnlocked();
+    });
+  }
+
+  private async ensureRunnerConnectedUnlocked(): Promise<void> {
     if (this.runnerSocket) {
       console.log(`[ChatThreadDO] ensureRunnerConnected: already connected`);
       this.trace('ensure_runner_connected_already_connected');
@@ -954,27 +995,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
 
       const container = new WorkspaceContainer(this.env, context.workspaceId, context.orgId);
-      const proxySessionId = crypto.randomUUID();
-
       // Build thread-specific env (integration creds + thread ID).
       const envVars = await container.buildClaudeRunnerEnv({
         threadId: context.threadId,
-        proxySessionId,
       });
       this.trace('ensure_runner_env_built', {
         envVarCount: Object.keys(envVars).length,
-        proxySessionId,
       });
 
       // Open WebSocket to the control plane's /chat endpoint.
       const chatWs = await container.connectChatWebSocket({
         threadId: context.threadId,
-        proxySessionId,
       });
       this.attachRunnerSocket(chatWs);
-      this.trace('ensure_runner_ws_connected', {
-        proxySessionId,
-      });
+      this.trace('ensure_runner_ws_connected');
 
       // Send init message with thread ID and env vars.
       if (!this.sendRunnerCommand({
@@ -992,7 +1026,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.cancelRunnerDisconnectGrace('runner_connected');
       this.stopRunnerReconnectLoop('runner_connected');
       this.trace('ensure_runner_connected_complete', {
-        proxySessionId,
         lastSeq: this.lastRunnerSeq,
       });
     })();
@@ -1026,22 +1059,45 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     });
 
     ws.addEventListener('close', (event) => {
-      this.stopRunnerPingLoop('runner_socket_close');
-      this.runnerSocket = null;
-      console.log(`[ChatThreadDO] runner websocket closed (code=${event.code})`);
-      this.trace('runner_socket_closed', {
-        code: event.code,
-        reason: event.reason || '',
+      void this.withRunnerTransitionLock('runner_socket_close', async () => {
+        const wasActiveSocket = this.runnerSocket === ws;
+        if (!wasActiveSocket) {
+          this.trace('runner_socket_closed_stale', {
+            code: event.code,
+            reason: event.reason || '',
+          });
+          return;
+        }
+
+        this.stopRunnerPingLoop('runner_socket_close');
+        this.runnerSocket = null;
+
+        const intentionalIdleDisconnect = this.runnerIntentionalIdleDisconnect;
+        console.log(`[ChatThreadDO] runner websocket closed (code=${event.code})`);
+        this.trace('runner_socket_closed', {
+          code: event.code,
+          reason: event.reason || '',
+          intentionalIdleDisconnect,
+        });
+
+        if (intentionalIdleDisconnect) {
+          this.stopRunnerReconnectLoop('intentional_idle_disconnect');
+          this.cancelRunnerDisconnectGrace('intentional_idle_disconnect');
+          return;
+        }
+
+        if (this.getChatSockets().length > 0) {
+          this.runnerReconnectArmed = true;
+          this.armRunnerDisconnectGrace('runner_socket_close');
+          this.scheduleRunnerReconnect('runner_socket_close');
+        }
       });
-      if (this.getChatSockets().length > 0) {
-        this.runnerReconnectArmed = true;
-        this.armRunnerDisconnectGrace('runner_socket_close');
-        this.scheduleRunnerReconnect('runner_socket_close');
-      }
     });
 
     ws.addEventListener('error', (err) => {
-      this.stopRunnerPingLoop('runner_socket_error');
+      if (this.runnerSocket === ws) {
+        this.stopRunnerPingLoop('runner_socket_error');
+      }
       console.error('[ChatThreadDO] runner websocket error', err);
       this.trace('runner_socket_error', {
         error: String(err),
@@ -1100,6 +1156,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       return;
     }
 
+    if (eventType === 'control') {
+      const action = typeof event.action === 'string' ? event.action : '';
+      if (action === 'runner_idle_disconnect') {
+        const generationAtSignal = this.runnerActivityGeneration;
+        this.trace('runner_idle_disconnect_control_received', {
+          generationAtSignal,
+          reason: typeof event.reason === 'string' ? event.reason : '',
+          idleMs: typeof event.idleMs === 'number' ? event.idleMs : null,
+        });
+        void this.handleRunnerIdleDisconnectControl(generationAtSignal, event);
+      }
+      return;
+    }
+
     if (eventType === 'error') {
       console.error(`[ChatThreadDO] runner error: ${JSON.stringify({ error: event.error, source: event.source }).slice(0, 500)}`);
       this.setChatIsStreaming(false);
@@ -1152,6 +1222,40 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     this.pushChatEvent(event);
+  }
+
+  private async handleRunnerIdleDisconnectControl(
+    generationAtSignal: number,
+    event: Record<string, unknown>,
+  ): Promise<void> {
+    await this.withRunnerTransitionLock('runner_idle_disconnect_control', async () => {
+      if (generationAtSignal !== this.runnerActivityGeneration) {
+        this.trace('runner_idle_disconnect_control_skipped_generation', {
+          generationAtSignal,
+          currentGeneration: this.runnerActivityGeneration,
+        });
+        return;
+      }
+      if (!this.runnerSocket) {
+        this.trace('runner_idle_disconnect_control_skipped_no_socket', {
+          generationAtSignal,
+        });
+        return;
+      }
+
+      this.runnerIntentionalIdleDisconnect = true;
+      this.stopRunnerReconnectLoop('idle_disconnect_control');
+      this.cancelRunnerDisconnectGrace('idle_disconnect_control');
+      this.trace('runner_idle_disconnect_control_closing', {
+        generationAtSignal,
+        reason: typeof event.reason === 'string' ? event.reason : '',
+      });
+      try {
+        this.runnerSocket.close(1000, 'idle_post_result');
+      } catch {
+        this.trace('runner_idle_disconnect_control_close_failed');
+      }
+    });
   }
 
   private persistRunnerSeqIfNeeded(reason: 'event' | 'result' | 'disconnect'): void {

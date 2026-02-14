@@ -24,7 +24,7 @@
  * mounts (even with --writeback) are too slow for bulk file creation (bun install,
  * git clone, etc). Do not replace this with JuiceFS-direct mounts.
  */
-import { mkdir } from 'fs/promises';
+import { mkdir, readdir } from 'fs/promises';
 import { exec, execSync } from 'child_process';
 
 const JFS_ROOT = process.env.JFS_ROOT || '/mnt/juicefs';
@@ -46,6 +46,30 @@ interface OverlayMount {
 }
 
 const mounts = new Map<string, OverlayMount>();
+
+function createMountRecord(name: string): OverlayMount {
+  const now = Date.now();
+  return {
+    name,
+    lowerDir: `${JFS_ROOT}/${name}`,
+    upperDir: `${NVME_ROOT}/${name}`,
+    workDir: `${NVME_ROOT}/.work/${name}`,
+    mergedDir: `${WORKSPACES_ROOT}/${name}`,
+    mountedAt: now,
+    lastSyncedAt: now,
+    syncLock: null,
+  };
+}
+
+function hydrateMountFromFs(name: string): OverlayMount | null {
+  const existing = mounts.get(name);
+  if (existing) return existing;
+  const mount = createMountRecord(name);
+  if (!isMounted(mount.mergedDir)) return null;
+  mounts.set(name, mount);
+  console.log(`[Overlay] hydrated mount record for ${name}`);
+  return mount;
+}
 
 /** Synchronous exec for fast commands (mount, umount, mkdir, chown). */
 function run(cmd: string): string {
@@ -204,8 +228,38 @@ export async function syncOverlay(name: string): Promise<void> {
  * Check if an overlay is mounted for a workspace.
  */
 export function hasOverlay(name: string): boolean {
-  const mount = mounts.get(name);
+  const mount = mounts.get(name) ?? hydrateMountFromFs(name);
   return !!mount && isMounted(mount.mergedDir);
+}
+
+export async function listMountedOverlayNames(): Promise<string[]> {
+  let entries: Array<{ isDirectory: () => boolean; name: string }> = [];
+  try {
+    entries = await readdir(WORKSPACES_ROOT, { withFileTypes: true, encoding: 'utf8' });
+  } catch {
+    entries = [];
+  }
+
+  const names = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const name = entry.name;
+    const mount = mounts.get(name) ?? hydrateMountFromFs(name);
+    if (mount && isMounted(mount.mergedDir)) {
+      names.add(name);
+    }
+  }
+
+  // Also include pre-existing tracked mounts that may not appear in readdir snapshots.
+  for (const [name, mount] of mounts) {
+    if (!isMounted(mount.mergedDir)) {
+      mounts.delete(name);
+      continue;
+    }
+    names.add(name);
+  }
+
+  return Array.from(names);
 }
 
 /**
@@ -221,8 +275,8 @@ export function hasOverlay(name: string): boolean {
  * NVMe dirs are renamed atomically before deletion so that a concurrent
  * ensureOverlay call would create fresh dirs instead of colliding.
  */
-export async function reclaimOverlay(name: string, isSafe: () => boolean): Promise<boolean> {
-  const mount = mounts.get(name);
+export async function reclaimOverlay(name: string, isSafe: () => boolean | Promise<boolean>): Promise<boolean> {
+  const mount = mounts.get(name) ?? hydrateMountFromFs(name);
   if (!mount) return false;
 
   const release = await acquireSyncLock(mount);
@@ -242,7 +296,7 @@ export async function reclaimOverlay(name: string, isSafe: () => boolean): Promi
     console.log(`[Overlay] ${name}: reclaim final sync (${syncElapsed}s)`);
 
     // Double-check: did a new container appear during the sync?
-    if (!isSafe()) {
+    if (!(await isSafe())) {
       console.log(`[Overlay] ${name}: reclaim aborted — workspace became active during sync`);
       return false;
     }

@@ -26,7 +26,8 @@ const CONTROL_PLANE_IDLE_TIMEOUT_SECS = Math.max(
 // ─── Chat Sessions ─────────────────────────────────────────
 const chatSessions = new Map();
 const DISCONNECT_IDLE_MS = 60_000;  // Close client WebSockets after 1 min of post-result inactivity
-const TRACE_CONTROL_PLANE = process.env.TRACE_CONTROL_PLANE !== '0';
+const IDLE_DISCONNECT_CLOSE_GRACE_MS = 3_000;
+const TRACE_CONTROL_PLANE = process.env.TRACE_CONTROL_PLANE === '1';
 const REPLAY_BUFFER_MAX = Math.max(200, parseInt(process.env.CONTROL_PLANE_REPLAY_BUFFER_MAX || '4000', 10));
 
 function traceControlPlane(event, details = {}) {
@@ -57,7 +58,6 @@ function wsDebugSnapshot(ws) {
   const lastOutboundAt = typeof ws.data.lastOutboundAt === 'number' ? ws.data.lastOutboundAt : null;
   return {
     threadId: ws.data.threadId || '',
-    proxySessionId: ws.data.proxySessionId || '',
     openedAt,
     uptimeMs: openedAt ? now - openedAt : null,
     lastInboundAt,
@@ -277,19 +277,19 @@ The full profile is always in your system prompt under "User Profile".
 `;
 }
 
-function withProxySessionPath(rawUrl, proxySessionId) {
+function withThreadProxyPath(rawUrl, threadId) {
   try {
     const url = new URL(rawUrl);
     const basePath = '/proxy';
     if (!url.pathname.startsWith(basePath)) return rawUrl;
 
-    const sessionPathPrefix = `${basePath}/${encodeURIComponent(proxySessionId)}`;
-    if (url.pathname.startsWith(`${sessionPathPrefix}/`) || url.pathname === sessionPathPrefix) {
+    const threadPathPrefix = `${basePath}/${encodeURIComponent(threadId)}`;
+    if (url.pathname.startsWith(`${threadPathPrefix}/`) || url.pathname === threadPathPrefix) {
       return url.toString();
     }
 
     const suffix = url.pathname.slice(basePath.length);
-    url.pathname = `${sessionPathPrefix}${suffix || '/'}`;
+    url.pathname = `${threadPathPrefix}${suffix || '/'}`;
     return url.toString();
   } catch {
     return rawUrl;
@@ -409,6 +409,8 @@ class ChatSession {
     this.userProfile = null;
     this.lastForwardedCompactSummaryKey = null;
     this.disconnectTimer = null;
+    this.activityGeneration = 0;
+    this.hasTerminalResultSinceActivity = false;
     this.clients = new Set();
     this.shuttingDown = false;
     this.nextOutboundSeq = 1;
@@ -417,21 +419,10 @@ class ChatSession {
 
   updateSessionEnv(nextSessionEnv) {
     const incoming = nextSessionEnv && typeof nextSessionEnv === 'object' ? nextSessionEnv : {};
-    const prevProxySessionId = typeof this.sessionEnv?.CHIRIDION_PROXY_SESSION_ID === 'string'
-      ? this.sessionEnv.CHIRIDION_PROXY_SESSION_ID.trim()
-      : '';
     this.sessionEnv = {
       ...this.sessionEnv,
       ...incoming,
     };
-    const nextProxySessionId = typeof this.sessionEnv?.CHIRIDION_PROXY_SESSION_ID === 'string'
-      ? this.sessionEnv.CHIRIDION_PROXY_SESSION_ID.trim()
-      : '';
-    if (nextProxySessionId && nextProxySessionId !== prevProxySessionId) {
-      console.log(
-        `[ControlPlane] refreshed proxy session thread=${this.threadId} proxySession=${nextProxySessionId}`
-      );
-    }
   }
 
   addClient(ws) {
@@ -535,31 +526,138 @@ class ChatSession {
     });
   }
 
+  markUserActivity(source) {
+    this.activityGeneration += 1;
+    this.hasTerminalResultSinceActivity = false;
+    this.clearDisconnect();
+    traceControlPlane('session_user_activity', {
+      threadId: this.threadId,
+      source,
+      activityGeneration: this.activityGeneration,
+      hasTerminalResultSinceActivity: this.hasTerminalResultSinceActivity,
+      pendingQuestions: this.pendingQuestions.size,
+      queueLength: this.messageQueue.length,
+    });
+  }
+
+  markTerminalResult() {
+    this.hasTerminalResultSinceActivity = true;
+    traceControlPlane('session_terminal_result_seen', {
+      threadId: this.threadId,
+      activityGeneration: this.activityGeneration,
+    });
+  }
+
+  canIdleDisconnect() {
+    return (
+      this.hasTerminalResultSinceActivity &&
+      !this.activeQuery &&
+      !this.eventLoopRunning &&
+      this.pendingQuestions.size === 0 &&
+      this.messageQueue.length === 0 &&
+      !this.shuttingDown
+    );
+  }
+
   /**
    * Start the post-result disconnect timer. After 1 minute of no new
-   * messages following a result/stop, close all client WebSockets so
-   * the sandbox-host reaper can eventually reclaim the container.
+   * user activity following a final result, signal the DO to close first,
+   * then force-close as a fallback.
    */
   scheduleDisconnect() {
     this.clearDisconnect();
+    const generationAtSchedule = this.activityGeneration;
     traceControlPlane('session_schedule_disconnect', {
       threadId: this.threadId,
       delayMs: DISCONNECT_IDLE_MS,
+      generationAtSchedule,
       activeQuery: Boolean(this.activeQuery),
       eventLoopRunning: this.eventLoopRunning,
+      hasTerminalResultSinceActivity: this.hasTerminalResultSinceActivity,
+      pendingQuestions: this.pendingQuestions.size,
+      queueLength: this.messageQueue.length,
       clientCount: this.clients.size,
     });
     this.disconnectTimer = setTimeout(() => {
-      if (this.activeQuery || this.eventLoopRunning) return; // still active
-      console.log(`[ControlPlane] disconnecting idle clients thread=${this.threadId}`);
+      if (generationAtSchedule !== this.activityGeneration) {
+        traceControlPlane('session_disconnect_timer_skipped_generation', {
+          threadId: this.threadId,
+          generationAtSchedule,
+          currentGeneration: this.activityGeneration,
+        });
+        return;
+      }
+      if (!this.canIdleDisconnect()) {
+        traceControlPlane('session_disconnect_timer_skipped_not_idle', {
+          threadId: this.threadId,
+          generationAtSchedule,
+          activeQuery: Boolean(this.activeQuery),
+          eventLoopRunning: this.eventLoopRunning,
+          hasTerminalResultSinceActivity: this.hasTerminalResultSinceActivity,
+          pendingQuestions: this.pendingQuestions.size,
+          queueLength: this.messageQueue.length,
+          shuttingDown: this.shuttingDown,
+        });
+        return;
+      }
+
+      console.log(`[ControlPlane] signaling idle disconnect thread=${this.threadId}`);
       traceControlPlane('session_disconnect_timer_fired', {
         threadId: this.threadId,
+        generationAtSchedule,
         clientCount: this.clients.size,
       });
-      for (const ws of this.clients) {
-        closeWsWithTrace(ws, 1000, 'idle', 'idle_disconnect_timer');
-      }
+      this.broadcast({
+        type: 'control',
+        action: 'runner_idle_disconnect',
+        reason: 'post_result_idle',
+        idleMs: DISCONNECT_IDLE_MS,
+      });
+
+      setTimeout(() => {
+        if (generationAtSchedule !== this.activityGeneration) {
+          traceControlPlane('session_idle_disconnect_close_skipped_generation', {
+            threadId: this.threadId,
+            generationAtSchedule,
+            currentGeneration: this.activityGeneration,
+          });
+          return;
+        }
+        if (!this.canIdleDisconnect()) {
+          traceControlPlane('session_idle_disconnect_close_skipped_not_idle', {
+            threadId: this.threadId,
+            generationAtSchedule,
+          });
+          return;
+        }
+        for (const ws of this.clients) {
+          closeWsWithTrace(ws, 1000, 'idle', 'idle_disconnect_timer');
+        }
+      }, IDLE_DISCONNECT_CLOSE_GRACE_MS);
     }, DISCONNECT_IDLE_MS);
+  }
+
+  scheduleDisconnectIfIdleEligible(source) {
+    if (!this.hasTerminalResultSinceActivity) {
+      traceControlPlane('session_schedule_disconnect_skipped_no_result', {
+        threadId: this.threadId,
+        source,
+        activityGeneration: this.activityGeneration,
+      });
+      return;
+    }
+    if (!this.canIdleDisconnect()) {
+      traceControlPlane('session_schedule_disconnect_skipped_not_idle', {
+        threadId: this.threadId,
+        source,
+        activeQuery: Boolean(this.activeQuery),
+        eventLoopRunning: this.eventLoopRunning,
+        pendingQuestions: this.pendingQuestions.size,
+        queueLength: this.messageQueue.length,
+      });
+      return;
+    }
+    this.scheduleDisconnect();
   }
 
   clearDisconnect() {
@@ -609,12 +707,14 @@ class ChatSession {
       this.pendingQuestions.set(questionId, { questionId, toolUseId, questions, resolve });
     });
 
+    this.clearDisconnect();
     this.broadcast({ type: 'ask_user_question', questionId, toolUseId, questions });
     const answers = await answerPromise;
     return { behavior: 'allow', updatedInput: { questions, answers } };
   }
 
   handleQuestionResponse(questionId, answers) {
+    this.markUserActivity('question_response');
     const pending = this.pendingQuestions.get(questionId);
     if (!pending) return;
     this.pendingQuestions.delete(questionId);
@@ -635,14 +735,14 @@ class ChatSession {
       THREAD_ID: this.threadId,
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
     };
-    const proxySessionId = typeof mergedEnv.CHIRIDION_PROXY_SESSION_ID === 'string'
-      ? mergedEnv.CHIRIDION_PROXY_SESSION_ID.trim()
-      : '';
-    if (proxySessionId) {
+    const proxyThreadId = typeof mergedEnv.CHIRIDION_THREAD_ID === 'string'
+      ? mergedEnv.CHIRIDION_THREAD_ID.trim()
+      : this.threadId;
+    if (proxyThreadId) {
       for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'MCP_SERVER_URL']) {
         const value = mergedEnv[key];
         if (typeof value === 'string' && value.length > 0) {
-          mergedEnv[key] = withProxySessionPath(value, proxySessionId);
+          mergedEnv[key] = withThreadProxyPath(value, proxyThreadId);
         }
       }
     }
@@ -834,6 +934,9 @@ class ChatSession {
           });
 
           this.broadcast({ type: 'sdk_event', event });
+          if (event?.type === 'result') {
+            this.markTerminalResult();
+          }
 
           if (event?.type === 'system' && event?.subtype === 'compact_boundary') {
             this.forwardCompactSummary(event).catch(() => {});
@@ -854,8 +957,7 @@ class ChatSession {
           threadId: this.threadId,
           clientCount: this.clients.size,
         });
-        // Start disconnect countdown — a new message will cancel it.
-        this.scheduleDisconnect();
+        this.scheduleDisconnectIfIdleEligible('event_loop_stop');
       }
     })();
   }
@@ -869,8 +971,7 @@ class ChatSession {
       queueLength: this.messageQueue.length,
       clientCount: this.clients.size,
     });
-    // New message resets the post-result disconnect timer.
-    this.clearDisconnect();
+    this.markUserActivity('message');
     await this.init();
     this.startEventLoop();
 
@@ -889,6 +990,7 @@ class ChatSession {
   }
 
   async handleStop() {
+    this.markUserActivity('stop');
     traceControlPlane('session_handle_stop', {
       threadId: this.threadId,
       pendingQuestions: this.pendingQuestions.size,
@@ -1052,13 +1154,8 @@ const server = Bun.serve({
         const session = getOrCreateSession(threadId, sessionEnv);
         ws.data.threadId = threadId;
         ws.data.session = session;
-        ws.data.proxySessionId = typeof sessionEnv.CHIRIDION_PROXY_SESSION_ID === 'string'
-          ? sessionEnv.CHIRIDION_PROXY_SESSION_ID
-          : '';
         session.addClient(ws);
-        console.log(
-          `[ControlPlane] websocket initialized thread=${threadId} proxySession=${ws.data.proxySessionId || ''}`
-        );
+        console.log(`[ControlPlane] websocket initialized thread=${threadId}`);
         session.replaySince(ws, lastSeq);
         sendWsJson(ws, { type: 'ready', threadId }, 'init_ready');
         traceControlPlane('ws_init_complete', {

@@ -7,7 +7,6 @@
  * - /api/auth/:provider → User OAuth (Google, GitHub)
  * - /api/integrations/slack/* → Slack OAuth
  * - /api/threads/:id/preview → Thread preview API
- * - /ws/debug/azure-echo → Debug WebSocket tunnel probe (Worker -> SANDBOX_HOST -> VM)
  * - /ws/:workspace → Chat WebSocket (forwarded to ChatThreadDO)
  * - * → React Router SSR
  */
@@ -31,7 +30,6 @@ import {
 } from './routes/integrations.js';
 import { handleChatWebSocket } from './routes/websocket.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
-import { handleDebugAzureEchoWebSocket } from './routes/debug-websocket.js';
 import { handleClaudeProxy, handleCountTokens } from './routes/claude-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 import { handleMssqlQuery, handleDataProxyHealth } from './routes/data-proxy.js';
@@ -92,7 +90,6 @@ const routes: Route[] = [
 
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/logs$/, handler: handleLogsWebSocket, websocket: true },
-  { method: 'GET', path: /^\/ws\/debug\/azure-echo$/, handler: handleDebugAzureEchoWebSocket, websocket: true },
   { method: 'GET', path: /^\/ws\/[^/]+$/, handler: handleChatWebSocket, websocket: true },
 ];
 

@@ -364,7 +364,6 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 |-------|---------|
 | `/ws/{workspace}` | Real-time chat streaming |
 | `/ws/logs?scriptName={name}` | Real-time log streaming for deployed workers |
-| `/ws/debug/azure-echo` | Debug websocket tunnel probe (Worker → SANDBOX_HOST → Azure VM echo server) |
 
 ### OAuth Routes (Main Worker)
 | Route | Method | Purpose |

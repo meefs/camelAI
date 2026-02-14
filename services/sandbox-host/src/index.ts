@@ -39,45 +39,39 @@ const SANDBOX_HOST_IDLE_TIMEOUT_SECS = Math.max(
   10,
   parseInt(process.env.SANDBOX_HOST_IDLE_TIMEOUT_SECS || '120', 10)
 );
-const PROXY_SESSION_ACTIVE_TTL_MS = Math.max(
+const PROXY_THREAD_ACTIVE_TTL_MS = Math.max(
   30_000,
   parseInt(process.env.PROXY_SESSION_ACTIVE_TTL_MS || String(30 * 60_000), 10)
 );
-const PROXY_SESSION_CLOSE_GRACE_MS = Math.max(
+const PROXY_THREAD_CLOSE_GRACE_MS = Math.max(
   5_000,
   parseInt(process.env.PROXY_SESSION_CLOSE_GRACE_MS || String(10 * 60_000), 10)
 );
-const PROXY_SESSION_CLEANUP_INTERVAL_MS = Math.max(
+const PROXY_THREAD_CLEANUP_INTERVAL_MS = Math.max(
   5_000,
   parseInt(process.env.PROXY_SESSION_CLEANUP_INTERVAL_MS || '60000', 10)
 );
 const HEADER_WORKER_BASE_URL = 'x-chiridion-worker-base-url';
 const HEADER_THREAD_ID = 'x-chiridion-thread-id';
-const HEADER_PROXY_SESSION_ID = 'x-chiridion-proxy-session-id';
 const HEADER_SANDBOX_SECRET = 'x-sandbox-secret';
-const TRACE_SANDBOX_HOST = process.env.TRACE_SANDBOX_HOST !== '0';
-const DEBUG_ECHO_WS_PORT = Math.max(
-  1,
-  parseInt(process.env.DEBUG_ECHO_WS_PORT || '18765', 10)
-);
+const TRACE_SANDBOX_HOST = process.env.TRACE_SANDBOX_HOST === '1';
 const NON_PROXY_DENY_CIDRS = (process.env.NON_PROXY_DENY_CIDRS || '172.17.0.0/16,fc00::/7,fe80::/10')
   .split(',')
   .map((entry) => entry.trim())
   .filter(Boolean);
 
 interface WsData {
-  kind: 'chat' | 'debug_echo';
   name: string;
   threadId: string;
-  proxySessionId: string;
+  threadKey: string;
   targetWsUrl: string;
   upstream: WebSocket | null;
   upstreamReady: boolean;
   pendingMessages: string[];
 }
 
-interface ProxySessionContext {
-  id: string;
+interface ProxyThreadContext {
+  key: string;
   containerName: string;
   orgId: string;
   workspaceId: string;
@@ -89,7 +83,11 @@ interface ProxySessionContext {
   closedAt: number | null;
 }
 
-const proxySessions = new Map<string, ProxySessionContext>();
+const proxyThreads = new Map<string, ProxyThreadContext>();
+
+function proxyThreadKey(containerName: string, threadId: string): string {
+  return `${containerName}::${threadId}`;
+}
 
 function traceHost(event: string, details: Record<string, unknown>): void {
   if (!TRACE_SANDBOX_HOST) return;
@@ -109,28 +107,28 @@ function describeMessageType(raw: string): string {
   }
 }
 
-function cleanupExpiredProxySessions(): void {
+function cleanupExpiredProxyThreads(): void {
   const now = Date.now();
   let removed = 0;
-  for (const [sessionId, session] of proxySessions) {
-    if (session.expiresAt <= now) {
-      traceHost('proxy_session_expired', {
-        proxySessionId: sessionId,
-        container: session.containerName,
-        threadId: session.threadId,
-        orgId: session.orgId,
-        workspaceId: session.workspaceId,
-        createdAt: session.createdAt,
-        lastSeenAt: session.lastSeenAt,
-        closedAt: session.closedAt,
-        expiredAt: session.expiresAt,
+  for (const [threadKey, thread] of proxyThreads) {
+    if (thread.expiresAt <= now) {
+      traceHost('proxy_thread_expired', {
+        threadKey,
+        container: thread.containerName,
+        threadId: thread.threadId,
+        orgId: thread.orgId,
+        workspaceId: thread.workspaceId,
+        createdAt: thread.createdAt,
+        lastSeenAt: thread.lastSeenAt,
+        closedAt: thread.closedAt,
+        expiredAt: thread.expiresAt,
       });
-      proxySessions.delete(sessionId);
+      proxyThreads.delete(threadKey);
       removed += 1;
     }
   }
   if (removed > 0) {
-    console.log(`[SandboxHost] cleaned up ${removed} expired proxy session(s)`);
+    console.log(`[SandboxHost] cleaned up ${removed} expired proxy thread mapping(s)`);
   }
 }
 
@@ -190,14 +188,14 @@ function parseWorkspaceRoute(url: URL): WorkspaceRoute | null {
 
 /**
  * Parse proxy route from URL:
- *   /proxy/{proxySessionId}/api/claude/v1/messages
- *   /proxy/{proxySessionId}/client/v4/...
- *   /proxy/{proxySessionId}/api/mssql/query
+ *   /proxy/{threadId}/api/claude/v1/messages
+ *   /proxy/{threadId}/client/v4/...
+ *   /proxy/{threadId}/api/mssql/query
  *
- * Returns the proxy session ID and upstream path.
+ * Returns the thread ID and upstream path.
  */
 interface ProxyRoute {
-  proxySessionId: string;
+  threadId: string;
   upstreamPath: string;
 }
 
@@ -205,7 +203,7 @@ function parseProxyRoute(url: URL): ProxyRoute | null {
   const match = url.pathname.match(/^\/proxy\/([^/]+)(\/.*)?$/);
   if (!match) return null;
   return {
-    proxySessionId: decodeURIComponent(match[1]),
+    threadId: decodeURIComponent(match[1]),
     upstreamPath: match[2] || '/',
   };
 }
@@ -352,58 +350,63 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
       sourceIp,
       method: req.method,
       upstreamPath: proxy.upstreamPath,
-      proxySessionId: proxy.proxySessionId,
+      threadId: proxy.threadId,
     });
     return errorResponse('Unknown proxy caller', 403);
   }
-  const session = proxySessions.get(proxy.proxySessionId);
-  if (!session) {
-    traceHost('proxy_request_rejected_unknown_session', {
+  const threadKey = proxyThreadKey(caller.name, proxy.threadId);
+  const threadContext = proxyThreads.get(threadKey);
+  if (!threadContext) {
+    traceHost('proxy_request_rejected_unknown_thread', {
       requestId,
       sourceIp,
       callerContainer: caller.name,
       method: req.method,
       upstreamPath: proxy.upstreamPath,
-      proxySessionId: proxy.proxySessionId,
+      threadId: proxy.threadId,
+      threadKey,
     });
-    return errorResponse('Unknown proxy session', 403);
+    return errorResponse('Unknown proxy thread', 403);
   }
   const now = Date.now();
-  if (session.expiresAt <= now) {
-    proxySessions.delete(proxy.proxySessionId);
-    traceHost('proxy_request_rejected_expired_session', {
+  if (threadContext.expiresAt <= now) {
+    proxyThreads.delete(threadKey);
+    traceHost('proxy_request_rejected_expired_thread', {
       requestId,
       sourceIp,
       callerContainer: caller.name,
       method: req.method,
       upstreamPath: proxy.upstreamPath,
-      proxySessionId: proxy.proxySessionId,
-      expiredAt: session.expiresAt,
+      threadId: proxy.threadId,
+      threadKey,
+      expiredAt: threadContext.expiresAt,
       now,
     });
-    return errorResponse('Unknown proxy session', 403);
+    return errorResponse('Unknown proxy thread', 403);
   }
-  if (session.containerName !== caller.name) {
+  if (threadContext.containerName !== caller.name) {
     traceHost('proxy_request_rejected_container_mismatch', {
       requestId,
       sourceIp,
       callerContainer: caller.name,
-      sessionContainer: session.containerName,
+      threadContainer: threadContext.containerName,
       method: req.method,
       upstreamPath: proxy.upstreamPath,
-      proxySessionId: proxy.proxySessionId,
+      threadId: proxy.threadId,
+      threadKey,
     });
-    return errorResponse('Proxy session does not match caller container', 403);
+    return errorResponse('Proxy thread does not match caller container', 403);
   }
 
-  const workerBaseUrl = normalizeWorkerBaseUrl(session.workerBaseUrl || WORKER_BASE_URL);
+  const workerBaseUrl = normalizeWorkerBaseUrl(threadContext.workerBaseUrl || WORKER_BASE_URL);
   if (!workerBaseUrl) {
     traceHost('proxy_request_rejected_missing_worker_base', {
       requestId,
       callerContainer: caller.name,
-      proxySessionId: proxy.proxySessionId,
+      threadId: proxy.threadId,
+      threadKey,
     });
-    return errorResponse('Worker base URL unavailable for proxy session', 503);
+    return errorResponse('Worker base URL unavailable for proxy thread', 503);
   }
 
   const url = new URL(req.url);
@@ -418,7 +421,6 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
   headers.delete('x-chiridion-org-id');
   headers.delete('x-chiridion-workspace-id');
   headers.delete('x-chiridion-thread-id');
-  headers.delete('x-chiridion-proxy-session-id');
   headers.delete('x-chiridion-mcp-identity');
   // Never forward incoming host authority from container -> VM proxy.
   // Bun may use it for TLS authority, causing cert altname mismatches.
@@ -431,9 +433,9 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
   }
   // Add sandbox proxy identity headers
   headers.set('X-Sandbox-Secret', SANDBOX_PROXY_SECRET);
-  headers.set('X-Chiridion-Org-Id', session.orgId);
-  headers.set('X-Chiridion-Workspace-Id', session.workspaceId);
-  headers.set('X-Chiridion-Thread-Id', session.threadId);
+  headers.set('X-Chiridion-Org-Id', threadContext.orgId);
+  headers.set('X-Chiridion-Workspace-Id', threadContext.workspaceId);
+  headers.set('X-Chiridion-Thread-Id', threadContext.threadId);
 
   const init: RequestInit = {
     method: req.method,
@@ -445,20 +447,20 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
     init.duplex = 'half';
   }
 
-  session.lastSeenAt = now;
-  session.expiresAt = now + PROXY_SESSION_ACTIVE_TTL_MS;
-  session.closedAt = null;
+  threadContext.lastSeenAt = now;
+  threadContext.expiresAt = now + PROXY_THREAD_ACTIVE_TTL_MS;
+  threadContext.closedAt = null;
   traceHost('proxy_request_start', {
     requestId,
     sourceIp,
     callerContainer: caller.name,
     method: req.method,
-    proxySessionId: proxy.proxySessionId,
-    threadId: session.threadId,
+    threadId: threadContext.threadId,
+    threadKey,
     targetHost: target.hostname,
     targetPath: proxy.upstreamPath,
   });
-  addProxyRequest(session.containerName, `proxy:${req.method}:${proxy.upstreamPath}`);
+  addProxyRequest(threadContext.containerName, `proxy:${req.method}:${proxy.upstreamPath}`);
 
   try {
     const upstreamRes = await fetch(targetUrl, init);
@@ -467,13 +469,14 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
       requestId,
       callerContainer: caller.name,
       method: req.method,
-      proxySessionId: proxy.proxySessionId,
+      threadId: threadContext.threadId,
+      threadKey,
       status: upstreamRes.status,
       durationMs,
       targetPath: proxy.upstreamPath,
     });
     removeProxyRequest(
-      session.containerName,
+      threadContext.containerName,
       `proxy:${req.method}:${proxy.upstreamPath}`,
       upstreamRes.status,
       durationMs,
@@ -485,13 +488,14 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
       requestId,
       callerContainer: caller.name,
       method: req.method,
-      proxySessionId: proxy.proxySessionId,
+      threadId: threadContext.threadId,
+      threadKey,
       durationMs,
       targetPath: proxy.upstreamPath,
       error: err instanceof Error ? err.message : String(err),
     });
     removeProxyRequest(
-      session.containerName,
+      threadContext.containerName,
       `proxy:${req.method}:${proxy.upstreamPath}`,
       undefined,
       durationMs,
@@ -519,7 +523,6 @@ async function proxyToControlPlane(
   headers.delete(HEADER_SANDBOX_SECRET);
   headers.delete(HEADER_WORKER_BASE_URL);
   headers.delete(HEADER_THREAD_ID);
-  headers.delete(HEADER_PROXY_SESSION_ID);
   headers.delete('host');
 
   const init: RequestInit = {
@@ -578,50 +581,6 @@ Bun.serve<WsData>({
     // Service health check
     if (url.pathname === '/health') {
       return jsonResponse({ status: 'ok', service: 'sandbox-host' });
-    }
-
-    // Debug websocket echo route (worker -> tunnel -> VM local process)
-    if (url.pathname === '/debug/ws-echo') {
-      if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
-        return errorResponse('WebSocket upgrade required', 426);
-      }
-      if (SANDBOX_PROXY_SECRET) {
-        const providedSecret = req.headers.get(HEADER_SANDBOX_SECRET)?.trim() || '';
-        if (providedSecret !== SANDBOX_PROXY_SECRET) {
-          traceHost('debug_ws_echo_rejected_secret_mismatch', {
-            sourceIp,
-            hasProvidedSecret: providedSecret.length > 0,
-          });
-          return errorResponse('Forbidden', 403);
-        }
-      }
-      const debugSessionId = crypto.randomUUID();
-      const targetWsUrl = `ws://127.0.0.1:${DEBUG_ECHO_WS_PORT}/`;
-      const upgraded = server.upgrade(req, {
-        data: {
-          kind: 'debug_echo',
-          name: 'debug-echo',
-          threadId: 'debug-echo',
-          proxySessionId: debugSessionId,
-          targetWsUrl,
-          upstream: null,
-          upstreamReady: false,
-          pendingMessages: [],
-        },
-      });
-      if (!upgraded) {
-        traceHost('debug_ws_echo_upgrade_failed', {
-          sourceIp,
-          targetWsUrl,
-        });
-        return errorResponse('WebSocket upgrade failed', 500);
-      }
-      traceHost('debug_ws_echo_upgrade_success', {
-        sourceIp,
-        targetWsUrl,
-        sessionId: debugSessionId,
-      });
-      return undefined as unknown as Response;
     }
 
     // ─── Proxy route (container API traffic → Worker) ──
@@ -806,10 +765,6 @@ Bun.serve<WsData>({
         if (!threadId) {
           return errorResponse('Missing thread ID', 400);
         }
-        const proxySessionId = req.headers.get(HEADER_PROXY_SESSION_ID)?.trim() || '';
-        if (!proxySessionId) {
-          return errorResponse('Missing proxy session ID', 400);
-        }
         const workerBaseUrl = normalizeWorkerBaseUrl(
           req.headers.get(HEADER_WORKER_BASE_URL) || WORKER_BASE_URL
         );
@@ -819,29 +774,29 @@ Bun.serve<WsData>({
 
         await ensureContainer(name, { orgId, workspaceId });
         const now = Date.now();
-        proxySessions.set(proxySessionId, {
-          id: proxySessionId,
+        const threadKey = proxyThreadKey(name, threadId);
+        const existingThreadContext = proxyThreads.get(threadKey);
+        proxyThreads.set(threadKey, {
+          key: threadKey,
           containerName: name,
           orgId,
           workspaceId,
           threadId,
           workerBaseUrl,
-          createdAt: now,
+          createdAt: existingThreadContext?.createdAt ?? now,
           lastSeenAt: now,
-          expiresAt: now + PROXY_SESSION_ACTIVE_TTL_MS,
+          expiresAt: now + PROXY_THREAD_ACTIVE_TTL_MS,
           closedAt: null,
         });
-        console.log(
-          `[SandboxHost] chat session opened container=${name} thread=${threadId} proxySession=${proxySessionId}`
-        );
+        console.log(`[SandboxHost] chat session opened container=${name} thread=${threadId}`);
         traceHost('chat_session_opened', {
           container: name,
           orgId,
           workspaceId,
           threadId,
-          proxySessionId,
+          threadKey,
           workerBaseUrl,
-          activeProxySessions: proxySessions.size,
+          activeProxyThreads: proxyThreads.size,
         });
         const port = await getControlPlanePort(name, { orgId, workspaceId });
         const targetWsUrl = `ws://127.0.0.1:${port}/chat`;
@@ -849,10 +804,9 @@ Bun.serve<WsData>({
         // Upgrade client connection
         const upgraded = server.upgrade(req, {
           data: {
-            kind: 'chat',
             name,
             threadId,
-            proxySessionId,
+            threadKey,
             targetWsUrl,
             upstream: null,
             upstreamReady: false,
@@ -860,13 +814,15 @@ Bun.serve<WsData>({
           },
         });
         if (!upgraded) {
-          proxySessions.delete(proxySessionId);
+          if (!existingThreadContext) {
+            proxyThreads.delete(threadKey);
+          }
           traceHost('chat_session_upgrade_failed', {
             container: name,
             orgId,
             workspaceId,
             threadId,
-            proxySessionId,
+            threadKey,
             targetWsUrl,
           });
           return errorResponse('WebSocket upgrade failed', 500);
@@ -876,7 +832,7 @@ Bun.serve<WsData>({
           orgId,
           workspaceId,
           threadId,
-          proxySessionId,
+          threadKey,
           targetWsUrl,
         });
         return undefined as unknown as Response;
@@ -897,17 +853,14 @@ Bun.serve<WsData>({
 
   websocket: {
     open(ws: ServerWebSocket<WsData>) {
-      const { kind, name, threadId, proxySessionId, targetWsUrl } = ws.data;
+      const { name, threadId, threadKey, targetWsUrl } = ws.data;
 
       // Track active WS to prevent idle reaping
-      if (kind === 'chat') {
-        addWebSocket(name, 'chat_client_ws_open');
-      }
-      traceHost(kind === 'chat' ? 'chat_ws_open' : 'debug_ws_open', {
-        kind,
+      addWebSocket(name, 'chat_client_ws_open');
+      traceHost('chat_ws_open', {
         container: name,
         threadId,
-        proxySessionId,
+        threadKey,
         targetWsUrl,
       });
 
@@ -919,21 +872,19 @@ Bun.serve<WsData>({
       upstream.addEventListener('message', (event) => {
         try {
           if (typeof event.data === 'string') {
-            traceHost(kind === 'chat' ? 'chat_ws_upstream_message' : 'debug_ws_upstream_message', {
-              kind,
+            traceHost('chat_ws_upstream_message', {
               container: name,
               threadId,
-              proxySessionId,
+              threadKey,
               bytes: event.data.length,
               type: describeMessageType(event.data),
             });
           } else {
             const bytes = (event.data as unknown as ArrayBufferLike)?.byteLength ?? 0;
-            traceHost(kind === 'chat' ? 'chat_ws_upstream_binary' : 'debug_ws_upstream_binary', {
-              kind,
+            traceHost('chat_ws_upstream_binary', {
               container: name,
               threadId,
-              proxySessionId,
+              threadKey,
               bytes,
             });
           }
@@ -948,37 +899,26 @@ Bun.serve<WsData>({
       });
 
       upstream.addEventListener('close', (event) => {
-        if (kind === 'chat') {
-          console.log(
-            `[SandboxHost] upstream ws closed container=${name} thread=${threadId} proxySession=${proxySessionId} code=${event.code} reason=${event.reason || ''}`
-          );
-        } else {
-          console.log(
-            `[SandboxHost] debug upstream ws closed session=${proxySessionId} code=${event.code} reason=${event.reason || ''}`
-          );
-        }
+        console.log(
+          `[SandboxHost] upstream ws closed container=${name} thread=${threadId} code=${event.code} reason=${event.reason || ''}`
+        );
         try { ws.close(); } catch { /* already closed */ }
       });
 
       upstream.addEventListener('error', (err) => {
-        if (kind === 'chat') {
-          console.error(
-            `[SandboxHost] upstream ws error container=${name} thread=${threadId} proxySession=${proxySessionId}:`,
-            err
-          );
-        } else {
-          console.error(`[SandboxHost] debug upstream ws error session=${proxySessionId}:`, err);
-        }
+        console.error(
+          `[SandboxHost] upstream ws error container=${name} thread=${threadId}:`,
+          err
+        );
         try { ws.close(); } catch { /* already closed */ }
       });
 
       upstream.addEventListener('open', () => {
         ws.data.upstreamReady = true;
-        traceHost(kind === 'chat' ? 'chat_ws_upstream_open' : 'debug_ws_upstream_open', {
-          kind,
+        traceHost('chat_ws_upstream_open', {
           container: name,
           threadId,
-          proxySessionId,
+          threadKey,
           pendingMessages: ws.data.pendingMessages.length,
         });
         // Flush any messages queued while upstream was connecting
@@ -991,11 +931,10 @@ Bun.serve<WsData>({
 
     message(ws: ServerWebSocket<WsData>, data: string | Buffer) {
       const message = typeof data === 'string' ? data : data.toString('utf-8');
-      traceHost(ws.data.kind === 'chat' ? 'chat_ws_client_message' : 'debug_ws_client_message', {
-        kind: ws.data.kind,
+      traceHost('chat_ws_client_message', {
         container: ws.data.name,
         threadId: ws.data.threadId,
-        proxySessionId: ws.data.proxySessionId,
+        threadKey: ws.data.threadKey,
         bytes: message.length,
         type: describeMessageType(message),
         upstreamReady: ws.data.upstreamReady,
@@ -1006,49 +945,34 @@ Bun.serve<WsData>({
         ws.data.upstream.send(message);
       } else if (ws.data.upstream) {
         ws.data.pendingMessages.push(message);
-        traceHost(
-          ws.data.kind === 'chat'
-            ? 'chat_ws_client_message_buffered'
-            : 'debug_ws_client_message_buffered',
-          {
-            kind: ws.data.kind,
-            container: ws.data.name,
-            threadId: ws.data.threadId,
-            proxySessionId: ws.data.proxySessionId,
-            pendingMessages: ws.data.pendingMessages.length,
-          }
-        );
+        traceHost('chat_ws_client_message_buffered', {
+          container: ws.data.name,
+          threadId: ws.data.threadId,
+          threadKey: ws.data.threadKey,
+          pendingMessages: ws.data.pendingMessages.length,
+        });
       }
     },
 
     close(ws: ServerWebSocket<WsData>, code: number, reason: string) {
-      if (ws.data.kind === 'chat') {
-        const session = proxySessions.get(ws.data.proxySessionId);
-        if (session) {
-          const now = Date.now();
-          session.closedAt = now;
-          session.expiresAt = now + PROXY_SESSION_CLOSE_GRACE_MS;
-        }
-        console.log(
-          `[SandboxHost] chat session closed container=${ws.data.name} thread=${ws.data.threadId} proxySession=${ws.data.proxySessionId} code=${code} reason=${reason || ''}`
-        );
-      } else {
-        console.log(
-          `[SandboxHost] debug ws session closed session=${ws.data.proxySessionId} code=${code} reason=${reason || ''}`
-        );
+      const threadContext = proxyThreads.get(ws.data.threadKey);
+      if (threadContext) {
+        const now = Date.now();
+        threadContext.closedAt = now;
+        threadContext.expiresAt = now + PROXY_THREAD_CLOSE_GRACE_MS;
       }
-      traceHost(ws.data.kind === 'chat' ? 'chat_ws_close' : 'debug_ws_close', {
-        kind: ws.data.kind,
+      console.log(
+        `[SandboxHost] chat session closed container=${ws.data.name} thread=${ws.data.threadId} code=${code} reason=${reason || ''}`
+      );
+      traceHost('chat_ws_close', {
         container: ws.data.name,
         threadId: ws.data.threadId,
-        proxySessionId: ws.data.proxySessionId,
+        threadKey: ws.data.threadKey,
         code,
         reason: reason || '',
         upstreamReadyState: ws.data.upstream?.readyState ?? -1,
       });
-      if (ws.data.kind === 'chat') {
-        removeWebSocket(ws.data.name, 'chat_client_ws_close', code, reason);
-      }
+      removeWebSocket(ws.data.name, 'chat_client_ws_close', code, reason);
       if (ws.data.upstream && ws.data.upstream.readyState === WebSocket.OPEN) {
         ws.data.upstream.close();
       }
@@ -1056,7 +980,7 @@ Bun.serve<WsData>({
   },
 });
 
-setInterval(cleanupExpiredProxySessions, PROXY_SESSION_CLEANUP_INTERVAL_MS);
+setInterval(cleanupExpiredProxyThreads, PROXY_THREAD_CLEANUP_INTERVAL_MS);
 
 // ─── Host-level R2 mount (one-time at startup) ──────────────────────
 //
