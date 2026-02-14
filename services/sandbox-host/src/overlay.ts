@@ -10,10 +10,15 @@
  * New/modified files land on NVMe (fast), unchanged files read from JuiceFS.
  * Background sync flushes merged → JuiceFS lower via rsync through the FUSE mount.
  *
- * Overlay mounts are never torn down — they persist across container lifecycles.
+ * Container termination triggers a non-destructive sync (NVMe→JuiceFS) but
+ * does NOT unmount or clear NVMe, so a new container can reuse the mount.
+ *
+ * NVMe reclaim happens in the background after a workspace has been idle for
+ * a configurable period. Reclaim does: final sync → safety check → unmount →
+ * atomic rename of NVMe dirs → background rm -rf. The atomic rename prevents
+ * races with concurrent ensureOverlay calls.
+ *
  * NVMe is ephemeral (rebuilt on boot) so data is safe as long as syncs complete.
- * Container termination triggers a non-destructive sync but never unmounts or
- * clears NVMe, preventing race conditions with concurrent container creation.
  *
  * IMPORTANT: OverlayFS is required for write performance. JuiceFS FUSE direct
  * mounts (even with --writeback) are too slow for bulk file creation (bun install,
@@ -201,6 +206,70 @@ export async function syncOverlay(name: string): Promise<void> {
 export function hasOverlay(name: string): boolean {
   const mount = mounts.get(name);
   return !!mount && isMounted(mount.mergedDir);
+}
+
+/**
+ * Reclaim NVMe space for a workspace overlay.
+ *
+ * Flow: acquire sync lock → final rsync → call isSafe() → unmount →
+ *       atomic rename NVMe dirs → background rm -rf.
+ *
+ * The isSafe callback is called AFTER the (potentially long) rsync to
+ * re-verify no container was created during the sync. This is the
+ * double-check guard that prevents the race condition.
+ *
+ * NVMe dirs are renamed atomically before deletion so that a concurrent
+ * ensureOverlay call would create fresh dirs instead of colliding.
+ */
+export async function reclaimOverlay(name: string, isSafe: () => boolean): Promise<boolean> {
+  const mount = mounts.get(name);
+  if (!mount) return false;
+
+  const release = await acquireSyncLock(mount);
+
+  try {
+    // Final sync to JuiceFS
+    const start = Date.now();
+    await runAsync(rsyncCmd(mount.mergedDir, mount.lowerDir));
+    mount.lastSyncedAt = Date.now();
+    const syncElapsed = Math.round((Date.now() - start) / 1000);
+    console.log(`[Overlay] ${name}: reclaim final sync (${syncElapsed}s)`);
+
+    // Double-check: did a new container appear during the sync?
+    if (!isSafe()) {
+      console.log(`[Overlay] ${name}: reclaim aborted — workspace became active during sync`);
+      return false;
+    }
+
+    // Unmount overlay
+    if (isMounted(mount.mergedDir)) {
+      run(`umount "${mount.mergedDir}"`);
+    }
+
+    // Atomically rename NVMe dirs to prevent races with ensureOverlay.
+    // If ensureOverlay runs after this point, it creates fresh dirs.
+    const suffix = Date.now();
+    const oldUpper = `${mount.upperDir}.reclaim-${suffix}`;
+    const oldWork = `${mount.workDir}.reclaim-${suffix}`;
+    try { run(`mv "${mount.upperDir}" "${oldUpper}"`); } catch {}
+    try { run(`mv "${mount.workDir}" "${oldWork}"`); } catch {}
+
+    // Stop tracking this overlay
+    mounts.delete(name);
+
+    // Clean up renamed dirs in background (fire-and-forget)
+    runAsync(`rm -rf "${oldUpper}" "${oldWork}"`, 5 * 60_000).catch((err) =>
+      console.error(`[Overlay] ${name}: reclaim cleanup failed:`, err)
+    );
+
+    console.log(`[Overlay] ${name}: reclaimed NVMe`);
+    return true;
+  } catch (err) {
+    console.error(`[Overlay] ${name}: reclaim failed:`, err);
+    return false;
+  } finally {
+    release();
+  }
 }
 
 // ─── Background Sync ──────────────────────────────────────────

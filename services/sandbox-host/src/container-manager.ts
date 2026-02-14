@@ -7,9 +7,14 @@
  *
  * Idle reaper terminates containers with no active WebSocket connections
  * and no recent HTTP requests after IDLE_TIMEOUT_MS.
+ *
+ * NVMe reclaim runs every 5 minutes. For workspaces idle >10 minutes
+ * with no running/pending container, it calls reclaimOverlay which does:
+ * final sync → safety double-check → unmount → atomic rename → rm -rf.
+ * The pendingWorkspaces Set prevents races with concurrent ensureContainer.
  */
 import type { ContainerRecord, ExecResult } from './types';
-import { ensureOverlay, syncOverlay } from './overlay';
+import { ensureOverlay, syncOverlay, hasOverlay, reclaimOverlay } from './overlay';
 
 const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/mnt/workspaces';
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'chiridion-sandbox:latest';
@@ -20,6 +25,8 @@ const CONTROL_PLANE_PORT = 8080;
 const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || String(30 * 1000), 10);
 const REAPER_INTERVAL_MS = 10_000;
 const R2_MOUNT_ROOT = process.env.R2_MOUNT_ROOT || '/mnt/r2';
+const RECLAIM_IDLE_MS = parseInt(process.env.RECLAIM_IDLE_MS || String(10 * 60_000), 10);
+const RECLAIM_INTERVAL_MS = 5 * 60_000;
 
 export interface EnsureContainerOptions {
   orgId?: string;
@@ -27,6 +34,17 @@ export interface EnsureContainerOptions {
 }
 
 const containers = new Map<string, ContainerRecord>();
+
+/** Workspaces currently being provisioned (prevents reclaim race). */
+const pendingWorkspaces = new Set<string>();
+
+/** When a container was last terminated (for reclaim idle guard). */
+const containerTerminatedAt = new Map<string, number>();
+
+/** True if a workspace has a running container or is being provisioned. */
+function isWorkspaceActive(name: string): boolean {
+  return containers.has(name) || pendingWorkspaces.has(name);
+}
 
 async function dockerExec(args: string[], timeoutMs = 30_000): Promise<ExecResult> {
   const proc = Bun.spawn(['docker', ...args], {
@@ -135,112 +153,120 @@ function r2MountPrefix(orgId: string, workspaceId: string): string {
  * at container creation time (host-level rclone mount at R2_MOUNT_ROOT).
  */
 export async function ensureContainer(name: string, opts?: EnsureContainerOptions): Promise<ContainerRecord> {
-  // Check cache first
-  const cached = containers.get(name);
-  if (cached) {
-    cached.lastAccessedAt = Date.now();
+  // Mark workspace as pending so NVMe reclaim won't race with us
+  pendingWorkspaces.add(name);
+  containerTerminatedAt.delete(name);
+
+  try {
+    // Check cache first
+    const cached = containers.get(name);
+    if (cached) {
+      cached.lastAccessedAt = Date.now();
+      if (await isRunning(name)) {
+        return cached;
+      }
+      // Container stopped — remove from cache and recreate
+      containers.delete(name);
+    }
+
+    // Check if container already exists and is running
     if (await isRunning(name)) {
-      return cached;
+      const port = await getHostPort(name);
+      if (port) {
+        const record: ContainerRecord = {
+          name,
+          containerId: name,
+          hostPort: port,
+          status: 'running',
+          createdAt: Date.now(),
+          lastAccessedAt: Date.now(),
+          activeWebSockets: 0,
+          orgId: opts?.orgId,
+          workspaceId: opts?.workspaceId,
+        };
+        containers.set(name, record);
+        console.log(`[ContainerManager] reconnected to existing container ${name} (port=${port})`);
+        return record;
+      }
     }
-    // Container stopped — remove from cache and recreate
-    containers.delete(name);
-  }
 
-  // Check if container already exists and is running
-  if (await isRunning(name)) {
+    // Remove any stopped container with the same name
+    await dockerExec(['rm', '-f', name]).catch(() => {});
+
+    // Set up overlayfs mount: NFS (lower) + NVMe (upper) → merged workspace dir
+    await ensureOverlay(name);
+    const wsPath = workspacePath(name);
+
+    console.log(`[ContainerManager] creating container ${name}`);
+
+    const runArgs = [
+      'run', '-d',
+      `--name=${name}`,
+      `--runtime=${CONTAINER_RUNTIME}`,
+      `-v`, `${wsPath}:/home/claude`,
+      '--network=bridge',
+      `--memory=${CONTAINER_MEMORY}`,
+      `--cpu-shares=${CONTAINER_CPU_SHARES}`,
+      '-p', `0:${CONTROL_PLANE_PORT}`,
+      '-e', 'HOME=/home/claude',
+      '-e', 'USER=claude',
+    ];
+
+    // Add R2 bind mounts if orgId + workspaceId are available and host mount exists
+    if (opts?.orgId && opts?.workspaceId) {
+      const prefix = r2MountPrefix(opts.orgId, opts.workspaceId);
+      const uploadsHost = `${R2_MOUNT_ROOT}/${prefix}/user-uploads`;
+      const outputsHost = `${R2_MOUNT_ROOT}/${prefix}/user-outputs`;
+
+      // Ensure host directories exist (mkdir -p is safe even if R2 mount populates them)
+      const { mkdirSync } = await import('fs');
+      try { mkdirSync(uploadsHost, { recursive: true }); } catch {}
+      try { mkdirSync(outputsHost, { recursive: true }); } catch {}
+
+      runArgs.push('-v', `${uploadsHost}:/mnt/user-uploads:ro`);
+      runArgs.push('-v', `${outputsHost}:/mnt/user-outputs`);
+      console.log(`[ContainerManager] R2 bind mounts: ${prefix}`);
+    }
+
+    runArgs.push(
+      SANDBOX_IMAGE,
+      'bun', 'run', '/opt/chiridion/control-plane.mjs',
+    );
+
+    const result = await dockerExec(runArgs, 60_000);
+    if (!result.success) {
+      throw new Error(`Failed to create container ${name}: ${result.stderr}`);
+    }
+
+    const containerId = result.stdout.slice(0, 12);
     const port = await getHostPort(name);
-    if (port) {
-      const record: ContainerRecord = {
-        name,
-        containerId: name,
-        hostPort: port,
-        status: 'running',
-        createdAt: Date.now(),
-        lastAccessedAt: Date.now(),
-        activeWebSockets: 0,
-        orgId: opts?.orgId,
-        workspaceId: opts?.workspaceId,
-      };
-      containers.set(name, record);
-      console.log(`[ContainerManager] reconnected to existing container ${name} (port=${port})`);
-      return record;
+    if (!port) {
+      throw new Error(`Container ${name} created but no port mapping found`);
     }
+
+    // Wait for control plane to be healthy
+    const healthy = await waitForHealth(port);
+    if (!healthy) {
+      console.warn(`[ContainerManager] container ${name} health check timed out, proceeding anyway`);
+    }
+
+    const record: ContainerRecord = {
+      name,
+      containerId,
+      hostPort: port,
+      status: 'running',
+      createdAt: Date.now(),
+      lastAccessedAt: Date.now(),
+      activeWebSockets: 0,
+      orgId: opts?.orgId,
+      workspaceId: opts?.workspaceId,
+    };
+    containers.set(name, record);
+    console.log(`[ContainerManager] created container ${name} (id=${containerId}, port=${port})`);
+    return record;
+  } finally {
+    pendingWorkspaces.delete(name);
   }
-
-  // Remove any stopped container with the same name
-  await dockerExec(['rm', '-f', name]).catch(() => {});
-
-  // Set up overlayfs mount: NFS (lower) + NVMe (upper) → merged workspace dir
-  await ensureOverlay(name);
-  const wsPath = workspacePath(name);
-
-  console.log(`[ContainerManager] creating container ${name}`);
-
-  const runArgs = [
-    'run', '-d',
-    `--name=${name}`,
-    `--runtime=${CONTAINER_RUNTIME}`,
-    `-v`, `${wsPath}:/home/claude`,
-    '--network=bridge',
-    `--memory=${CONTAINER_MEMORY}`,
-    `--cpu-shares=${CONTAINER_CPU_SHARES}`,
-    '-p', `0:${CONTROL_PLANE_PORT}`,
-    '-e', 'HOME=/home/claude',
-    '-e', 'USER=claude',
-  ];
-
-  // Add R2 bind mounts if orgId + workspaceId are available and host mount exists
-  if (opts?.orgId && opts?.workspaceId) {
-    const prefix = r2MountPrefix(opts.orgId, opts.workspaceId);
-    const uploadsHost = `${R2_MOUNT_ROOT}/${prefix}/user-uploads`;
-    const outputsHost = `${R2_MOUNT_ROOT}/${prefix}/user-outputs`;
-
-    // Ensure host directories exist (mkdir -p is safe even if R2 mount populates them)
-    const { mkdirSync } = await import('fs');
-    try { mkdirSync(uploadsHost, { recursive: true }); } catch {}
-    try { mkdirSync(outputsHost, { recursive: true }); } catch {}
-
-    runArgs.push('-v', `${uploadsHost}:/mnt/user-uploads:ro`);
-    runArgs.push('-v', `${outputsHost}:/mnt/user-outputs`);
-    console.log(`[ContainerManager] R2 bind mounts: ${prefix}`);
-  }
-
-  runArgs.push(
-    SANDBOX_IMAGE,
-    'bun', 'run', '/opt/chiridion/control-plane.mjs',
-  );
-
-  const result = await dockerExec(runArgs, 60_000);
-  if (!result.success) {
-    throw new Error(`Failed to create container ${name}: ${result.stderr}`);
-  }
-
-  const containerId = result.stdout.slice(0, 12);
-  const port = await getHostPort(name);
-  if (!port) {
-    throw new Error(`Container ${name} created but no port mapping found`);
-  }
-
-  // Wait for control plane to be healthy
-  const healthy = await waitForHealth(port);
-  if (!healthy) {
-    console.warn(`[ContainerManager] container ${name} health check timed out, proceeding anyway`);
-  }
-
-  const record: ContainerRecord = {
-    name,
-    containerId,
-    hostPort: port,
-    status: 'running',
-    createdAt: Date.now(),
-    lastAccessedAt: Date.now(),
-    activeWebSockets: 0,
-    orgId: opts?.orgId,
-    workspaceId: opts?.workspaceId,
-  };
-  containers.set(name, record);
-  console.log(`[ContainerManager] created container ${name} (id=${containerId}, port=${port})`);
-  return record;
 }
 
 /**
@@ -289,6 +315,8 @@ export async function terminateContainer(name: string): Promise<boolean> {
   if (result.success) {
     console.log(`[ContainerManager] terminated container ${name}`);
   }
+  // Track termination time for NVMe reclaim idle guard
+  containerTerminatedAt.set(name, Date.now());
   // Non-destructive sync — keeps overlay + NVMe intact for fast reconnect
   syncOverlay(name).catch((err) =>
     console.error(`[ContainerManager] post-terminate sync failed for ${name}:`, err)
@@ -370,4 +398,41 @@ setInterval(() => {
 
 console.log(
   `[ContainerManager] idle reaper started (timeout=${IDLE_TIMEOUT_MS / 1000}s, interval=${REAPER_INTERVAL_MS / 1000}s)`
+);
+
+// ─── NVMe Reclaim ────────────────────────────────────────────
+
+async function reclaimIdleOverlays(): Promise<void> {
+  const now = Date.now();
+  for (const [name, terminatedAt] of containerTerminatedAt) {
+    // Workspace came back — stop tracking for reclaim
+    if (isWorkspaceActive(name)) {
+      containerTerminatedAt.delete(name);
+      continue;
+    }
+
+    // Not idle long enough yet
+    if (now - terminatedAt < RECLAIM_IDLE_MS) continue;
+
+    // No overlay to reclaim (already cleaned or lost)
+    if (!hasOverlay(name)) {
+      containerTerminatedAt.delete(name);
+      continue;
+    }
+
+    // Attempt reclaim with double-check guard (isSafe callback runs after sync)
+    console.log(`[ContainerManager] reclaiming NVMe for ${name} (idle=${Math.round((now - terminatedAt) / 1000)}s)`);
+    await reclaimOverlay(name, () => !isWorkspaceActive(name));
+    containerTerminatedAt.delete(name);
+  }
+}
+
+setInterval(() => {
+  reclaimIdleOverlays().catch((err) =>
+    console.error('[ContainerManager] reclaim error:', err)
+  );
+}, RECLAIM_INTERVAL_MS);
+
+console.log(
+  `[ContainerManager] NVMe reclaim started (idle=${RECLAIM_IDLE_MS / 1000}s, interval=${RECLAIM_INTERVAL_MS / 1000}s)`
 );
