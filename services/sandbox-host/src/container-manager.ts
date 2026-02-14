@@ -9,7 +9,7 @@
  * and no recent HTTP requests after IDLE_TIMEOUT_MS.
  */
 import type { ContainerRecord, ExecResult } from './types';
-import { ensureOverlay, removeOverlay } from './overlay';
+import { ensureOverlay, syncOverlay } from './overlay';
 
 const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/mnt/workspaces';
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'chiridion-sandbox:latest';
@@ -279,6 +279,9 @@ export async function getContainer(name: string): Promise<ContainerRecord | null
 
 /**
  * Terminate and remove a container.
+ * Triggers a non-destructive sync (NVMe → JuiceFS) but does NOT unmount
+ * the overlay or clear NVMe. A new container for the same workspace can
+ * reuse the existing overlay mount immediately.
  */
 export async function terminateContainer(name: string): Promise<boolean> {
   const result = await dockerExec(['rm', '-f', name]);
@@ -286,8 +289,10 @@ export async function terminateContainer(name: string): Promise<boolean> {
   if (result.success) {
     console.log(`[ContainerManager] terminated container ${name}`);
   }
-  // Sync upper → NFS, unmount overlay, clean up NVMe
-  await removeOverlay(name);
+  // Non-destructive sync — keeps overlay + NVMe intact for fast reconnect
+  syncOverlay(name).catch((err) =>
+    console.error(`[ContainerManager] post-terminate sync failed for ${name}:`, err)
+  );
   return result.success;
 }
 

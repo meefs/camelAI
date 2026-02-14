@@ -9,8 +9,11 @@
  *
  * New/modified files land on NVMe (fast), unchanged files read from JuiceFS.
  * Background sync flushes merged → JuiceFS lower via rsync through the FUSE mount.
- * NVMe is only cleared on teardown AFTER the final sync completes successfully,
- * so reconnecting during a sync always sees complete data from NVMe.
+ *
+ * Overlay mounts are never torn down — they persist across container lifecycles.
+ * NVMe is ephemeral (rebuilt on boot) so data is safe as long as syncs complete.
+ * Container termination triggers a non-destructive sync but never unmounts or
+ * clears NVMe, preventing race conditions with concurrent container creation.
  *
  * IMPORTANT: OverlayFS is required for write performance. JuiceFS FUSE direct
  * mounts (even with --writeback) are too slow for bulk file creation (bun install,
@@ -190,70 +193,6 @@ export async function syncOverlay(name: string): Promise<void> {
   } finally {
     release();
   }
-}
-
-/**
- * Full flush on teardown: wait for any in-progress sync, run final sync,
- * unmount overlay, then clear NVMe.
- *
- * Called when the sandbox is reaped (idle timeout) or explicitly terminated.
- * NVMe is only cleared AFTER the final sync completes successfully, so
- * reconnecting during a sync always sees complete data from the NVMe layer.
- */
-export async function removeOverlay(name: string): Promise<void> {
-  const mount = mounts.get(name);
-  if (!mount) return;
-
-  const start = Date.now();
-
-  // Acquire the sync lock — waits for any in-progress background sync to finish
-  const release = await acquireSyncLock(mount);
-
-  try {
-    // Final sync: merged → JuiceFS lower (via FUSE mount)
-    let syncOk = false;
-    try {
-      await runAsync(rsyncCmd(mount.mergedDir, mount.lowerDir));
-      console.log(`[Overlay] ${name}: final sync completed`);
-      syncOk = true;
-    } catch (err) {
-      console.error(`[Overlay] ${name}: final sync failed:`, err);
-    }
-
-    // Unmount overlay
-    if (isMounted(mount.mergedDir)) {
-      try {
-        run(`umount "${mount.mergedDir}"`);
-      } catch {
-        try { run(`umount -l "${mount.mergedDir}"`); } catch { /* best effort */ }
-      }
-    }
-
-    if (syncOk) {
-      // Catch any stragglers written between sync and umount
-      try {
-        await runAsync(rsyncCmd(mount.upperDir, mount.lowerDir));
-      } catch {
-        // Best effort — upper may already be empty
-      }
-
-      // Clear NVMe upper + work dirs (data is on JuiceFS now)
-      try {
-        run(`rm -rf "${mount.upperDir}" "${mount.workDir}"`);
-      } catch {
-        // Best effort
-      }
-    } else {
-      // Sync failed — keep NVMe data intact so next mount has it
-      console.error(`[Overlay] ${name}: skipping NVMe cleanup (sync failed, data preserved on NVMe)`);
-    }
-  } finally {
-    release();
-  }
-
-  mounts.delete(name);
-  const elapsed = Math.round((Date.now() - start) / 1000);
-  console.log(`[Overlay] ${name}: removed (flushed + cleared NVMe in ${elapsed}s)`);
 }
 
 /**
