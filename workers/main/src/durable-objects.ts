@@ -145,8 +145,6 @@ interface ChatContextState {
   orgId: string;
   userName: string | null;
   userEmail: string | null;
-  threadDeployToken: string | null;
-  mcpToken: string | null;
 }
 
 interface PendingQuestionInfo {
@@ -185,8 +183,6 @@ const CHAT_NEXT_EVENT_ID_KEY = 'chatNextEventId';
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 
-const HEADER_THREAD_DEPLOY_TOKEN = 'X-Chiridion-Thread-Deploy-Token';
-const HEADER_MCP_TOKEN = 'X-Chiridion-MCP-Token';
 const HEADER_USER_NAME = 'X-Chiridion-User-Name';
 const HEADER_USER_EMAIL = 'X-Chiridion-User-Email';
 
@@ -553,8 +549,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     const userName = request.headers.get(HEADER_USER_NAME);
     const userEmail = request.headers.get(HEADER_USER_EMAIL);
-    const threadDeployToken = request.headers.get(HEADER_THREAD_DEPLOY_TOKEN);
-    const mcpToken = request.headers.get(HEADER_MCP_TOKEN);
 
     const prev = this.chatContext;
     const threadId = queryThreadId || prev?.threadId || '';
@@ -571,8 +565,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       orgId,
       userName: userName || prev?.userName || null,
       userEmail: userEmail || prev?.userEmail || null,
-      threadDeployToken: threadDeployToken || prev?.threadDeployToken || null,
-      mcpToken: mcpToken || prev?.mcpToken || null,
     };
 
     this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, this.chatContext);
@@ -820,26 +812,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       console.log(`[ChatThreadDO] ensureRunnerConnected: connecting for thread=${context.threadId}`);
 
-      // Delegate sandbox creation + env var building to WorkspaceDO (with caching).
-      const workspaceStub = this.env.WORKSPACE.get(
-        this.env.WORKSPACE.idFromName(context.workspaceId)
-      );
-      const { envVars: workspaceEnvVars, fromCache } = await workspaceStub.ensureSandboxReady(
-        context.workspaceId,
-        context.orgId
-      );
-      console.log(`[ChatThreadDO] ensureRunnerConnected: got workspace env fromCache=${fromCache}`);
-
       const container = new WorkspaceContainer(this.env, context.workspaceId, context.orgId);
 
-      // Push workspace env to the control plane (using cached env vars).
-      await container.pushEnvVars(workspaceEnvVars);
-
-      // Build thread-specific env delta for the chat session.
+      // Build thread-specific env (integration creds + thread ID).
       const envVars = await container.buildClaudeRunnerEnv({
         threadId: context.threadId,
-        threadDeployToken: context.threadDeployToken,
-        mcpToken: context.mcpToken,
       });
 
       // Open WebSocket to the control plane's /chat endpoint.

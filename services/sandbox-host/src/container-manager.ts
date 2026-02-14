@@ -23,6 +23,9 @@ const CONTAINER_CPU_SHARES = process.env.CONTAINER_CPU_SHARES || '2048';
 const CONTAINER_RUNTIME = process.env.CONTAINER_RUNTIME || 'runsc';
 const CONTROL_PLANE_PORT = 8080;
 const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || String(30 * 1000), 10);
+const WORKER_BASE_URL = process.env.WORKER_BASE_URL || '';
+const SANDBOX_PROXY_SECRET = process.env.SANDBOX_PROXY_SECRET || '';
+const CF_DISPATCH_NAMESPACE = process.env.CF_DISPATCH_NAMESPACE || '';
 const REAPER_INTERVAL_MS = 10_000;
 const R2_MOUNT_ROOT = process.env.R2_MOUNT_ROOT || '/mnt/r2';
 const RECLAIM_IDLE_MS = parseInt(process.env.RECLAIM_IDLE_MS || String(10 * 60_000), 10);
@@ -211,6 +214,41 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
       '-e', 'HOME=/home/claude',
       '-e', 'USER=claude',
     ];
+
+    // Base identity + proxy URLs (route API traffic through sandbox host proxy)
+    if (opts?.orgId && opts?.workspaceId) {
+      const proxyBase = `http://172.17.0.1:${PORT}/proxy/${opts.orgId}/${opts.workspaceId}`;
+      runArgs.push(
+        '-e', `WORKSPACE_ID=${opts.workspaceId}`,
+        '-e', `ORG_ID=${opts.orgId}`,
+        '-e', `ANTHROPIC_BASE_URL=${proxyBase}/api/claude`,
+        '-e', `ANTHROPIC_API_KEY=proxy`,
+        '-e', `CLOUDFLARE_API_BASE_URL=${proxyBase}/client/v4`,
+        '-e', `CLOUDFLARE_API_TOKEN=proxy`,
+        '-e', `DATA_PROXY_URL=${proxyBase}/api`,
+        '-e', `DATA_PROXY_TOKEN=proxy`,
+        '-e', `MCP_SERVER_URL=${proxyBase}/mcp`,
+        '-e', `WORKER_BASE_URL=${WORKER_BASE_URL}`,
+        '-e', `CLOUDFLARE_ACCOUNT_ID=chiridion`,
+        '-e', `WRANGLER_SEND_METRICS=false`,
+        '-e', `CI=1`,
+        '-e', `CLAUDE_ENV_FILE=/home/claude/.chiridion/integration.env`,
+        '-e', `DEBUG_CLAUDE_AGENT_SDK=1`,
+      );
+      if (CF_DISPATCH_NAMESPACE) {
+        runArgs.push('-e', `CF_DISPATCH_NAMESPACE=${CF_DISPATCH_NAMESPACE}`);
+      }
+      // Pass through optional debug/config flags from sandbox host env
+      for (const key of [
+        'CHIRIDION_TRACE_EVENTS', 'CHIRIDION_DEBUG_STARTUP', 'CHIRIDION_DEBUG_SDK',
+        'CHIRIDION_DEBUG_FS', 'CLAUDE_CODE_MAX_TURNS', 'CLAUDE_CODE_DISABLE_NONESSENTIAL',
+        'CHIRIDION_PREQUEUE_FIRST_MESSAGE', 'CHIRIDION_FIRST_MESSAGE_DELAY_MS',
+      ]) {
+        if (process.env[key]) {
+          runArgs.push('-e', `${key}=${process.env[key]}`);
+        }
+      }
+    }
 
     // Add R2 bind mounts if orgId + workspaceId are available and host mount exists
     if (opts?.orgId && opts?.workspaceId) {

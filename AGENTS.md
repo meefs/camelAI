@@ -377,7 +377,7 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 | `/mcp/health` | GET | Health check |
 | `/mcp` | POST | MCP protocol endpoint (streamable HTTP) |
 
-MCP auth uses signed JWT tokens with `mcp` scope. Per-thread tokens are created when a WebSocket connects and passed to the workspace runtime via `X-Chiridion-MCP-Token` header. The token includes the `thread_id` in the payload for secure thread context (can't be spoofed).
+MCP traffic routes through the sandbox host proxy, which adds identity headers (`X-Sandbox-Secret`, `X-Chiridion-Org-Id`, `X-Chiridion-Workspace-Id`). The control plane sets `X-Chiridion-Thread-Id` for thread context.
 
 ## Development
 

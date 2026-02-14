@@ -6,7 +6,6 @@
  *
  * Endpoints:
  *   GET  /health              Health check
- *   POST /env                 Set workspace environment variables
  *   POST /exec               Synchronous command execution
  *   WS   /chat               Claude Agent SDK session (JSON over WebSocket)
  *
@@ -20,17 +19,13 @@ import { homedir } from 'os';
 
 const PORT = parseInt(process.env.CONTROL_PLANE_PORT || '8080', 10);
 
-// ─── Workspace Environment Store ───────────────────────────
-// Pushed by workspace-container via POST /env after sandbox creation.
-let workspaceEnv = {};
-
 // ─── Chat Sessions ─────────────────────────────────────────
 const chatSessions = new Map();
 const DISCONNECT_IDLE_MS = 60_000;  // Close client WebSockets after 1 min of post-result inactivity
 
 // ─── System Prompt ─────────────────────────────────────────
 function buildSystemPromptAppend() {
-  const wsId = workspaceEnv.WORKSPACE_ID || process.env.WORKSPACE_ID || '';
+  const wsId = process.env.WORKSPACE_ID || '';
   return `
 ## About This Environment
 
@@ -372,26 +367,21 @@ class ChatSession {
   }
 
   getQueryOptions(fileExists) {
-    // Merge: process.env (sandbox base) + workspaceEnv (pushed via /env) + sessionEnv (per-thread)
+    // Merge: process.env (Docker env vars) + sessionEnv (per-thread from WebSocket init)
     const mergedEnv = {
       ...process.env,
-      ...workspaceEnv,
       ...this.sessionEnv,
       THREAD_ID: this.threadId,
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
     };
 
-    const threadDeployToken = this.sessionEnv.CHIRIDION_THREAD_DEPLOY_TOKEN || '';
-    if (threadDeployToken) mergedEnv.CLOUDFLARE_API_TOKEN = threadDeployToken;
-
     const mcpServerUrl = mergedEnv.MCP_SERVER_URL;
-    const mcpToken = this.sessionEnv.CHIRIDION_MCP_TOKEN || '';
     const mcpServers = {};
-    if (mcpServerUrl && mcpToken) {
+    if (mcpServerUrl) {
       mcpServers.chiridion = {
         type: 'http',
         url: mcpServerUrl,
-        headers: { Authorization: `Bearer ${mcpToken}` },
+        headers: { 'X-Chiridion-Thread-Id': this.threadId },
       };
     }
 
@@ -607,7 +597,7 @@ function getOrCreateSession(threadId, sessionEnv) {
 async function execCommand(cmd, options = {}) {
   const proc = Bun.spawn(cmd, {
     cwd: options.cwd || '/home/claude',
-    env: { ...process.env, ...workspaceEnv, ...(options.env || {}) },
+    env: { ...process.env, ...(options.env || {}) },
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -649,17 +639,6 @@ const server = Bun.serve({
     // Health
     if (url.pathname === '/health') {
       return jsonResponse({ status: 'ok', pid: process.pid, sessions: chatSessions.size });
-    }
-
-    // Set workspace env
-    if (url.pathname === '/env' && req.method === 'POST') {
-      try {
-        const body = await req.json();
-        workspaceEnv = { ...workspaceEnv, ...body };
-        return jsonResponse({ success: true, count: Object.keys(workspaceEnv).length });
-      } catch (err) {
-        return errorResponse(String(err.message), 400);
-      }
     }
 
     // Exec

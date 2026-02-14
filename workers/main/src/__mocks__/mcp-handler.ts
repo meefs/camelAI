@@ -12,7 +12,7 @@ export interface McpEnv {
   WORKSPACE: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
   APP_KV: KVNamespace;
-  TOKEN_SIGNING_SECRET: string;
+  SANDBOX_PROXY_SECRET?: string;
 }
 
 /**

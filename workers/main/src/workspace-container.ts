@@ -3,53 +3,28 @@
  *
  * Architecture:
  * - Sandbox host (services/sandbox-host/): Manages Docker container lifecycle,
- *   host filesystem operations, exec, and proxies control plane traffic
- *   (health, env, chat WebSocket) to containers.
+ *   host filesystem operations, exec, and proxies control plane + API traffic.
  * - Control plane (sandbox/control-plane.mjs): Runs inside the container as
- *   the main entrypoint on port 8080. Handles env push and Claude Agent SDK
- *   chat sessions.
- * - This module: Orchestrates sandbox lifecycle via the proxy, pushes env
- *   vars to the control plane, provides FS/exec APIs for dashboard routes,
- *   and exposes connectChatWebSocket() for ChatThreadDO.
+ *   the main entrypoint on port 8080. Handles Claude Agent SDK chat sessions.
+ * - This module: Provides FS/exec APIs for dashboard routes, builds
+ *   thread-specific env vars (integrations), and exposes
+ *   connectChatWebSocket() for ChatThreadDO.
+ *
+ * Base env vars (API keys, proxy URLs) are set as Docker -e flags at container
+ * creation. API traffic from containers routes through the sandbox host proxy
+ * which adds identity headers + a shared secret.
  *
  * All traffic (lifecycle, FS, exec, control plane) routes through the
- * sandbox host proxy — CF Workers can't reach Docker bridge IPs directly.
+ * sandbox host — CF Workers can't reach Docker bridge IPs directly.
  */
-import { createSignedToken } from './signed-tokens';
 import { mapCredentialsToEnvVars } from './integration-env';
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
-import {
-  createOpenRouterKey,
-  encryptOpenRouterKey,
-  decryptOpenRouterKey,
-  getKeyHash,
-} from './openrouter-keys';
-import { waitUntil } from 'cloudflare:workers';
-import type { OrgDO } from './auth';
 import type { WorkspaceDO } from './workspace';
 
 export interface WorkspaceContainerEnv {
-  ORG: DurableObjectNamespace<OrgDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   R2_BUCKET: R2Bucket;
-  EMAIL_TO_USER: KVNamespace;
-  ANTHROPIC_API_KEY: string;
-  TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
-  CF_ACCOUNT_ID?: string;
-  CF_DISPATCH_NAMESPACE?: string;
-  WORKER_BASE_URL?: string;
-  OPENROUTER_PROVISIONING_KEY?: string;
-  CHIRIDION_TRACE_EVENTS?: string;
-  CHIRIDION_DEBUG_STARTUP?: string;
-  CHIRIDION_DEBUG_SDK?: string;
-  CHIRIDION_DEBUG_FS?: string;
-  CHIRIDION_DEBUG_PROXY?: string;
-  CHIRIDION_PREQUEUE_FIRST_MESSAGE?: string;
-  CHIRIDION_FIRST_MESSAGE_DELAY_MS?: string;
-  CLAUDE_CODE_ENABLE_TELEMETRY?: string;
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC?: string;
-  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
 
   SANDBOX_HOST: Fetcher;
 }
@@ -127,33 +102,12 @@ interface ControlPlaneDeleteResponse {
 
 export interface ClaudeRunnerEnvOptions {
   threadId: string;
-  threadDeployToken?: string | null;
-  mcpToken?: string | null;
 }
 
-const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
 
 function toIsoTime(ms: number): string {
   return new Date(ms).toISOString();
-}
-
-async function createDeployToken(
-  secret: string,
-  workspaceId: string,
-  orgId: string,
-  orgSlug: string,
-  userId: string
-): Promise<string> {
-  return createSignedToken(secret, {
-    org_id: orgId,
-    org_slug: orgSlug,
-    user_id: userId,
-    scopes: ['deploy'],
-    exp: Date.now() + TOKEN_TTL_MS,
-    workspace_id: workspaceId,
-    name: `deploy-${workspaceId}`,
-  });
 }
 
 export class WorkspaceContainer {
@@ -192,19 +146,6 @@ export class WorkspaceContainer {
     if (normalized === '/') return '/';
     const idx = normalized.lastIndexOf('/');
     return idx < 0 ? normalized : normalized.slice(idx + 1);
-  }
-
-  private isLocalOnlyWorkerBaseUrl(baseUrl: string): boolean {
-    try {
-      const url = new URL(baseUrl);
-      const host = url.hostname.toLowerCase();
-      return host === 'localhost'
-        || host === '127.0.0.1'
-        || host === '::1'
-        || host === 'host.docker.internal';
-    } catch {
-      return false;
-    }
   }
 
   /**
@@ -282,198 +223,8 @@ export class WorkspaceContainer {
   }
 
 
-  // ─── Env Vars ────────────────────────────────────────────
-
   /**
-   * Push workspace-level env vars to the control plane via the proxy.
-   */
-  private async pushEnvToControlPlane(envVars: Record<string, string>): Promise<void> {
-    const response = await this.env.SANDBOX_HOST.fetch(this.sandboxUrl('/env'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envVars),
-    });
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Failed to push env to control plane: ${response.status} ${body}`);
-    }
-  }
-
-  async buildEnvVars(): Promise<Record<string, string>> {
-    const { workspaceId, orgId } = this;
-    const buildStartedAt = Date.now();
-    console.log(`[WorkspaceContainer] buildEnvVars:start workspace=${workspaceId} org=${orgId}`);
-
-    const envVars: Record<string, string> = {
-      ORG_ID: orgId,
-      WORKSPACE_ID: workspaceId,
-    };
-
-    if (this.env.CHIRIDION_TRACE_EVENTS) envVars.CHIRIDION_TRACE_EVENTS = this.env.CHIRIDION_TRACE_EVENTS;
-    if (this.env.CHIRIDION_DEBUG_STARTUP) envVars.CHIRIDION_DEBUG_STARTUP = this.env.CHIRIDION_DEBUG_STARTUP;
-    if (this.env.CHIRIDION_DEBUG_SDK) envVars.CHIRIDION_DEBUG_SDK = this.env.CHIRIDION_DEBUG_SDK;
-    if (this.env.CHIRIDION_DEBUG_FS) envVars.CHIRIDION_DEBUG_FS = this.env.CHIRIDION_DEBUG_FS;
-    if (this.env.CHIRIDION_DEBUG_PROXY) envVars.CHIRIDION_DEBUG_PROXY = this.env.CHIRIDION_DEBUG_PROXY;
-    if (this.env.CHIRIDION_PREQUEUE_FIRST_MESSAGE) envVars.CHIRIDION_PREQUEUE_FIRST_MESSAGE = this.env.CHIRIDION_PREQUEUE_FIRST_MESSAGE;
-    if (this.env.CHIRIDION_FIRST_MESSAGE_DELAY_MS) envVars.CHIRIDION_FIRST_MESSAGE_DELAY_MS = this.env.CHIRIDION_FIRST_MESSAGE_DELAY_MS;
-    if (this.env.CLAUDE_CODE_ENABLE_TELEMETRY) envVars.CLAUDE_CODE_ENABLE_TELEMETRY = this.env.CLAUDE_CODE_ENABLE_TELEMETRY;
-    if (this.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) envVars.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = this.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
-    if (this.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) envVars.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = this.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS;
-
-    const prefix = `${orgId}/${workspaceId}/`;
-
-    if (!this.env.TOKEN_SIGNING_SECRET) {
-      throw new Error('TOKEN_SIGNING_SECRET is required for token signing');
-    }
-    if (!this.env.WORKER_BASE_URL) {
-      throw new Error('WORKER_BASE_URL is required for Claude API proxy');
-    }
-
-    const workerBaseUrl = this.env.WORKER_BASE_URL;
-    if (this.isLocalOnlyWorkerBaseUrl(workerBaseUrl)) {
-      throw new Error(
-        `WORKER_BASE_URL must be publicly reachable from sandboxes (got ${workerBaseUrl}). ` +
-        'Use an ngrok URL for local development.'
-      );
-    }
-
-    // ─── Phase 1: Parallel fetches (no dependencies) ─────────────
-    const phase1StartedAt = Date.now();
-    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId));
-
-    const [orgInfo, keyRecord] = await Promise.all([
-      orgStub.getInfo(),
-      orgStub.getOpenRouterKeyRecord(),
-    ]);
-    console.log(`[WorkspaceContainer] buildEnvVars:phase1 workspace=${workspaceId} ms=${Date.now() - phase1StartedAt}`);
-
-    const userId = orgInfo?.created_by || 'system';
-    const orgName = orgInfo?.name || orgId;
-    const orgSlug = orgInfo?.slug || `org-${orgId.slice(0, 3)}`;
-
-    // ─── Phase 2: Parallel operations (depend on phase 1) ────────
-    const phase2StartedAt = Date.now();
-    const dataProxyTokenExpiry = Date.now() + TOKEN_TTL_MS;
-
-    // R2 placeholder check (fire and forget in background)
-    if (this.env.R2_BUCKET) {
-      const placeholderKey = `${prefix}.keep`;
-      waitUntil(
-        this.env.R2_BUCKET.head(placeholderKey).then((existing) => {
-          if (!existing) return this.env.R2_BUCKET.put(placeholderKey, '');
-        }).catch((e) => console.error('[WorkspaceContainer] R2 placeholder check failed:', e))
-      );
-    }
-
-    // All token signing in parallel
-    const tokenPromises = Promise.all([
-      createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
-        org_id: orgId,
-        org_slug: orgSlug,
-        user_id: userId,
-        scopes: ['claude_api'],
-        exp: Date.now() + TOKEN_TTL_MS,
-        workspace_id: workspaceId,
-        name: `claude-api-${workspaceId}`,
-      }),
-      createDeployToken(this.env.TOKEN_SIGNING_SECRET, workspaceId, orgId, orgSlug, userId),
-      createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
-        org_id: orgId,
-        org_slug: orgSlug,
-        user_id: userId,
-        scopes: ['data-proxy'],
-        exp: dataProxyTokenExpiry,
-        workspace_id: workspaceId,
-        name: `data-proxy-${workspaceId}`,
-      }),
-    ]);
-
-    // OpenRouter key handling
-    const openRouterPromise = (async (): Promise<string | null> => {
-      if (keyRecord) {
-        try {
-          return await decryptOpenRouterKey(keyRecord.key_encrypted, this.env.INTEGRATION_SECRET_KEY);
-        } catch (e) {
-          console.error('[WorkspaceContainer] Failed to decrypt org OpenRouter key:', e);
-          return null;
-        }
-      } else if (this.env.OPENROUTER_PROVISIONING_KEY) {
-        try {
-          const keyResponse = await createOpenRouterKey(this.env.OPENROUTER_PROVISIONING_KEY, {
-            name: `Chiridion - ${orgName}`,
-          });
-          const keyHash = getKeyHash(keyResponse.key);
-          const keyEncrypted = await encryptOpenRouterKey(keyResponse.key, this.env.INTEGRATION_SECRET_KEY);
-          // Fire and forget the storage write
-          waitUntil(
-            orgStub.setOpenRouterKey(
-              keyHash,
-              keyEncrypted,
-              `Chiridion - ${orgName}`,
-              keyResponse.data.hash,
-              null
-            ).catch((e) => console.error('[WorkspaceContainer] Failed to store OpenRouter key:', e))
-          );
-          return keyResponse.key;
-        } catch (e) {
-          console.error('[WorkspaceContainer] Failed to create org OpenRouter key:', e);
-          return null;
-        }
-      }
-      return null;
-    })();
-
-    const [[claudeApiToken, deployToken, dataProxyToken], openRouterKey] = await Promise.all([
-      tokenPromises,
-      openRouterPromise,
-    ]);
-    console.log(`[WorkspaceContainer] buildEnvVars:phase2 workspace=${workspaceId} ms=${Date.now() - phase2StartedAt}`);
-
-    // Apply tokens
-    envVars.ANTHROPIC_BASE_URL = `${workerBaseUrl}/api/claude`;
-    envVars.ANTHROPIC_API_KEY = claudeApiToken;
-    envVars.CLOUDFLARE_API_TOKEN = deployToken;
-    envVars.DATA_PROXY_TOKEN = dataProxyToken;
-    envVars.DATA_PROXY_URL = `${workerBaseUrl}/api`;
-
-    // Register data proxy token expiry for alarm-based refresh (fire-and-forget)
-    waitUntil(
-      (async () => {
-        try {
-          const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(this.workspaceId));
-          await workspaceStub.registerDataProxyTokenExpiry(dataProxyTokenExpiry);
-        } catch (err) {
-          console.error('[WorkspaceContainer] Failed to register data proxy token expiry:', err);
-        }
-      })()
-    );
-
-    if (openRouterKey) {
-      envVars.OPENROUTER_API_KEY = openRouterKey;
-    }
-
-    envVars.CLOUDFLARE_ACCOUNT_ID = 'chiridion';
-    if (this.env.CF_DISPATCH_NAMESPACE) envVars.CF_DISPATCH_NAMESPACE = this.env.CF_DISPATCH_NAMESPACE;
-    envVars.WRANGLER_SEND_METRICS = 'false';
-    envVars.CI = '1';
-    envVars.WORKER_BASE_URL = workerBaseUrl;
-    envVars.CLOUDFLARE_API_BASE_URL = `${workerBaseUrl}/client/v4`;
-    envVars.MCP_SERVER_URL = `${workerBaseUrl}/mcp`;
-
-    console.log(`[WorkspaceContainer] buildEnvVars:done workspace=${workspaceId} org=${orgId} totalMs=${Date.now() - buildStartedAt}`);
-    return envVars;
-  }
-
-  /**
-   * Push pre-built workspace env vars to the control plane.
-   * Env vars should be pre-built (and cached) by WorkspaceDO.ensureSandboxReady().
-   */
-  async pushEnvVars(envVars: Record<string, string>): Promise<void> {
-    await this.pushEnvToControlPlane(envVars);
-  }
-
-  /**
-   * Build thread-specific env vars (delta from workspace env).
+   * Build thread-specific env vars (integration creds + thread ID).
    * Passed to the control plane chat WebSocket init message.
    */
   async buildClaudeRunnerEnv(options: ClaudeRunnerEnvOptions): Promise<Record<string, string>> {
@@ -486,17 +237,10 @@ export class WorkspaceContainer {
 
     await this.writeIntegrationEnvFileToSandbox(integrationEnv);
 
-    const env: Record<string, string> = {
+    return {
       ...integrationEnv,
       CHIRIDION_THREAD_ID: options.threadId,
-      DEBUG_CLAUDE_AGENT_SDK: '1',
-      CLAUDE_ENV_FILE: INTEGRATION_ENV_FILE_PATH,
     };
-
-    if (options.threadDeployToken) env.CHIRIDION_THREAD_DEPLOY_TOKEN = options.threadDeployToken;
-    if (options.mcpToken) env.CHIRIDION_MCP_TOKEN = options.mcpToken;
-
-    return env;
   }
 
   // ─── Chat WebSocket ──────────────────────────────────────
@@ -559,7 +303,6 @@ export class WorkspaceContainer {
     let integrationCount = 0;
     let getIntegrationsMs = 0;
     let decryptAndMapMs = 0;
-    let dataProxyMs = 0;
     try {
       const workspaceStub = this.env.WORKSPACE.get(this.env.WORKSPACE.idFromName(workspaceId));
       const getIntegrationsStartedAt = Date.now();
@@ -575,19 +318,13 @@ export class WorkspaceContainer {
       }
       decryptAndMapMs = Date.now() - decryptStartedAt;
 
-      const dataProxyStartedAt = Date.now();
-      const dataProxyResult = await workspaceStub.generateDataProxyToken();
-      dataProxyMs = Date.now() - dataProxyStartedAt;
-      if (dataProxyResult) {
-        integrationEnvVars.DATA_PROXY_TOKEN = dataProxyResult.token;
-      }
       console.log(
-        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} dataProxyMs=${dataProxyMs} totalMs=${Date.now() - startedAt}`
+        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`
       );
     } catch (e) {
       console.error('[WorkspaceContainer] Failed to fetch integration env vars:', e);
       console.log(
-        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} failed=true integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} dataProxyMs=${dataProxyMs} totalMs=${Date.now() - startedAt}`
+        `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} failed=true integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`
       );
     }
 

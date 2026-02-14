@@ -1,24 +1,22 @@
 /**
  * MCP Server Handler
  *
- * Handles MCP protocol requests with API key authentication.
+ * Handles MCP protocol requests authenticated via sandbox host proxy.
  * Uses the agents package with streamable HTTP transport.
  */
 
 import { McpAgent } from 'agents/mcp';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import type { ApiTokenData } from './api-tokens';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
 import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse, PreviewTarget } from './durable-objects';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from './workspace-container';
-import type { Integration } from '../../../src/types';
 import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition, validateConfig, validateCredentials } from '../../../src/lib/integration-registry';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
-import { isSignedToken, validateSignedToken } from './signed-tokens';
-import { getEnvPrefix, resolveEnvPrefix, syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
+import { validateSandboxProxy } from './sandbox-auth';
+import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
 import { captureScreenshotRaw } from './screenshot-queue';
 import { createScreenshotToken } from './worker-auth';
 
@@ -27,18 +25,8 @@ export interface McpEnv extends WorkspaceContainerEnv {
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
   APP_KV: KVNamespace;
   BROWSER?: Fetcher;
+  SANDBOX_PROXY_SECRET?: string;
 }
-
-type AuthContext = {
-  tokenId: string;
-  token: ApiTokenData;
-  workspaceId: string | null;
-  threadId: string | null;
-};
-
-type AuthResult =
-  | { ok: true; auth: AuthContext }
-  | { ok: false; error: string };
 
 // Headers used to pass auth context to the MCP DO
 const AUTH_HEADER_ORG_ID = 'x-chiridion-org-id';
@@ -448,12 +436,12 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           return this.textResponse({ success: false, error: 'No workspace context available' });
         }
 
-        // Thread ID comes from the signed token (can't be spoofed)
+        // Thread ID comes from the proxy auth headers
         const threadId = this.threadId;
         if (!threadId) {
           return this.textResponse({
             success: false,
-            error: 'No thread context available. This tool requires a per-thread MCP token.',
+            error: 'No thread context available.',
           });
         }
 
@@ -506,12 +494,12 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           return this.textResponse({ success: false, error: 'No workspace context available' });
         }
 
-        // Thread ID comes from the signed token (can't be spoofed)
+        // Thread ID comes from the proxy auth headers
         const threadId = this.threadId;
         if (!threadId) {
           return this.textResponse({
             success: false,
-            error: 'No thread context available. This tool requires a per-thread MCP token.',
+            error: 'No thread context available.',
           });
         }
 
@@ -914,12 +902,12 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           return this.textResponse({ error: 'No workspace context available' });
         }
 
-        // Thread ID comes from the signed token (can't be spoofed)
+        // Thread ID comes from the proxy auth headers
         const threadId = this.threadId;
         if (!threadId) {
           return this.textResponse({
             success: false,
-            error: 'No thread context available. This tool requires a per-thread MCP token.',
+            error: 'No thread context available.',
           });
         }
 
@@ -1128,12 +1116,12 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           return this.textResponse({ error: 'No workspace context available' });
         }
 
-        // Thread ID comes from the signed token (can't be spoofed)
+        // Thread ID comes from the proxy auth headers
         const threadId = this.threadId;
         if (!threadId) {
           return this.textResponse({
             success: false,
-            error: 'No thread context available. This tool requires a per-thread MCP token.',
+            error: 'No thread context available.',
           });
         }
 
@@ -1231,86 +1219,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 }
 
 /**
- * Extract API key from Authorization header (Bearer token) or x-api-key header
- */
-function extractApiKey(request: Request): string | null {
-  const auth = request.headers.get('authorization');
-  if (auth) {
-    const [scheme, token] = auth.split(' ');
-    if (scheme?.toLowerCase() === 'bearer' && token) {
-      return token.trim();
-    }
-  }
-  return request.headers.get('x-api-key')?.trim() || null;
-}
-
-/**
- * Validate API key and return auth context
- * Only accepts signed tokens (no KV lookup)
- */
-async function authorizeRequest(
-  apiKey: string | null,
-  env: McpEnv
-): Promise<AuthResult> {
-  if (!apiKey) {
-    return { ok: false, error: 'Missing API key' };
-  }
-
-  if (!env.TOKEN_SIGNING_SECRET) {
-    return { ok: false, error: 'Token signing not configured' };
-  }
-
-  if (!isSignedToken(apiKey)) {
-    return { ok: false, error: 'Invalid API key format' };
-  }
-
-  const payload = await validateSignedToken(env.TOKEN_SIGNING_SECRET, apiKey);
-  if (!payload) {
-    return { ok: false, error: 'Invalid API key' };
-  }
-
-  if (!hasMcpScope(payload.scopes)) {
-    return { ok: false, error: 'API key lacks MCP scope' };
-  }
-
-  // Convert SignedTokenPayload to ApiTokenData format for compatibility
-  const token: ApiTokenData = {
-    org_id: payload.org_id,
-    user_id: payload.user_id,
-    integration_id: null,
-    name: payload.name || 'signed-token',
-    scopes: payload.scopes,
-    created_at: payload.iat,
-    expires_at: payload.exp,
-  };
-  return {
-    ok: true,
-    auth: {
-      tokenId: apiKey,
-      token,
-      workspaceId: payload.workspace_id ?? null,
-      threadId: payload.thread_id ?? null,
-    },
-  };
-}
-
-/**
- * Check if token has MCP scope
- */
-function hasMcpScope(scopes: string[] | undefined): boolean {
-  if (!scopes || scopes.length === 0) return false;
-  const normalized = scopes.map((s) => s.toLowerCase());
-  return normalized.some(
-    (scope) =>
-      scope === 'mcp' ||
-      scope.startsWith('mcp:') ||
-      scope === '*' ||
-      scope === 'all' ||
-      scope === 'admin'
-  );
-}
-
-/**
  * Handle MCP requests
  */
 export async function handleMcpRequest(
@@ -1327,28 +1235,21 @@ export async function handleMcpRequest(
     });
   }
 
-  // Authenticate the request
-  const apiKey = extractApiKey(request);
-  const authResult = await authorizeRequest(apiKey, env);
-
-  if (!authResult.ok) {
-    return new Response(JSON.stringify({ error: authResult.error }), {
+  // Authenticate via sandbox host proxy
+  const proxyAuth = validateSandboxProxy(request, env);
+  if (!proxyAuth.valid) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
       headers: { 'content-type': 'application/json' },
     });
   }
 
-  // Create a new request with auth context headers (from validated token)
-  const { token, workspaceId, threadId } = authResult.auth;
   const headers = new Headers(request.headers);
-  headers.set(AUTH_HEADER_ORG_ID, token.org_id);
-  headers.set(AUTH_HEADER_USER_ID, token.user_id);
-  if (workspaceId) {
-    headers.set(AUTH_HEADER_WORKSPACE_ID, workspaceId);
-  }
-  if (threadId) {
-    headers.set(AUTH_HEADER_THREAD_ID, threadId);
-  }
+  headers.set(AUTH_HEADER_ORG_ID, proxyAuth.orgId);
+  headers.set(AUTH_HEADER_USER_ID, 'system');
+  headers.set(AUTH_HEADER_WORKSPACE_ID, proxyAuth.workspaceId);
+  const threadId = request.headers.get('x-chiridion-thread-id');
+  if (threadId) headers.set(AUTH_HEADER_THREAD_ID, threadId);
 
   const authenticatedRequest = new Request(request.url, {
     method: request.method,
@@ -1357,7 +1258,5 @@ export async function handleMcpRequest(
     // @ts-expect-error - duplex is required for streaming bodies
     duplex: 'half',
   });
-
-  // Delegate to MCP handler with auth context in headers
   return ChiridionMcp.serve('/mcp').fetch(authenticatedRequest, env, ctx);
 }
