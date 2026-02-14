@@ -180,6 +180,7 @@ const CHAT_SOCKET_TAG = 'chat';
 
 const CHAT_CONTEXT_KEY = 'chatContext';
 const CHAT_TODOS_KEY = 'chatTodos';
+const CHAT_IS_STREAMING_KEY = 'chatIsStreaming';
 const CHAT_NEXT_EVENT_ID_KEY = 'chatNextEventId';
 const CHAT_RUNNER_LAST_SEQ_KEY = 'chatRunnerLastSeq';
 
@@ -193,7 +194,7 @@ const HEADER_USER_EMAIL = 'X-Chiridion-User-Email';
 
 const CHIRIDION_SYSTEM_MESSAGE_REGEX =
   /<chiridion system message>([\s\S]*?)<\/chiridion system message>/gi;
-const TRACE_CHAT_THREAD_DO = true;
+const TRACE_CHAT_THREAD_DO = false;
 
 /**
  * ChatThreadDO - One per thread, holds preview state + chat websocket bridge.
@@ -218,6 +219,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private chatEventBuffer: Array<Record<string, unknown>> = [];
   private nextChatEventId: number = 1;
   private currentTodos: unknown[] = [];
+  private chatIsStreaming: boolean = false;
   private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
 
   private runnerSocket: WebSocket | null = null;
@@ -328,6 +330,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (typeof storedRunnerLastSeq === 'number' && storedRunnerLastSeq > 0) {
         this.lastRunnerSeq = storedRunnerLastSeq;
         this.lastPersistedRunnerSeq = storedRunnerLastSeq;
+      }
+
+      const storedIsStreaming = ctx.storage.kv.get<boolean>(CHAT_IS_STREAMING_KEY);
+      if (typeof storedIsStreaming === 'boolean') {
+        this.chatIsStreaming = storedIsStreaming;
       }
     });
   }
@@ -693,6 +700,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     this.sendDirect(ws, { type: 'session', sessionId: this.chatContext.threadId });
     this.sendDirect(ws, { type: 'ready' });
+    this.sendDirect(ws, { type: 'streaming_state', isStreaming: this.chatIsStreaming });
     this.sendDirect(ws, {
       type: 'preview_state',
       target: this.previewTarget,
@@ -723,6 +731,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       bufferedEvents: this.chatEventBuffer.length,
       pendingQuestions: this.pendingQuestions.size,
       currentTodos: this.currentTodos.length,
+      chatIsStreaming: this.chatIsStreaming,
     });
 
     // Ensure we are connected to the sandbox control plane so in-flight output can resume.
@@ -755,6 +764,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.emitChatError('Failed to send message to sandbox');
       return;
     }
+    this.setChatIsStreaming(true);
 
     this.ctx.waitUntil(
       this.touchThreadForUserMessage().catch((err) => {
@@ -853,6 +863,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       target: this.previewTarget,
       version: this.previewVersion,
     });
+  }
+
+  private setChatIsStreaming(value: boolean): void {
+    if (this.chatIsStreaming === value) return;
+    this.trace('set_chat_is_streaming', { from: this.chatIsStreaming, to: value });
+    this.chatIsStreaming = value;
+    this.ctx.storage.kv.put(CHAT_IS_STREAMING_KEY, value);
+    this.broadcastRealtime({ type: 'streaming_state', isStreaming: value });
   }
 
   private formatAttributedUserMessage(content: string): string {
@@ -1084,6 +1102,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     if (eventType === 'error') {
       console.error(`[ChatThreadDO] runner error: ${JSON.stringify({ error: event.error, source: event.source }).slice(0, 500)}`);
+      this.setChatIsStreaming(false);
     }
 
     if (eventType === 'todo_state') {
@@ -1122,6 +1141,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (sdkEvent?.type === 'result') {
         this.currentTodos = [];
         this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
+        this.setChatIsStreaming(false);
         this.persistRunnerSeqIfNeeded('result');
       }
     }
@@ -1158,6 +1178,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         source,
         lastRunnerSeq: this.lastRunnerSeq,
       });
+      this.setChatIsStreaming(false);
       this.pushChatEvent({
         type: 'sdk_event',
         event: { type: 'result', subtype: 'runner_disconnected' },

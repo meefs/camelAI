@@ -963,8 +963,10 @@ export default function Chat({
     }
 
     setReady(false);
-    // Clear any streaming message on reconnect
+    // Clear stale streaming state on reconnect; server sends the
+    // authoritative streaming_state immediately after ready.
     setStreamingMessageId(null);
+    setLoading(false);
     if (!isReconnect) {
       reconnectAttempts.current = 0;
     }
@@ -1428,6 +1430,8 @@ export default function Chat({
           }
           return prev;
         });
+      } else if (data.type === 'streaming_state') {
+        setLoading(Boolean(data.isStreaming));
       } else if (data.type === 'error') {
         console.error('WebSocket error:', data.error);
         setError(data.error || 'An unknown error occurred');
