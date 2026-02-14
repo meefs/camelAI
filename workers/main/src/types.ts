@@ -37,6 +37,8 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;
   BEDROCK_REGION?: string;
+  // Sandbox proxy shared secret
+  SANDBOX_PROXY_SECRET?: string;
 }
 
 export interface RouteContext {
@@ -59,7 +61,6 @@ export interface Route {
 // Re-export cookie constants from cookies.ts (single source of truth)
 export { SESSION_HEADER } from './cookies.js';
 
-export const THREAD_TOKEN_HEADER = 'X-Chiridion-Thread-Deploy-Token';
 // New prefix with org-slug namespacing: script:{script-name}--{org-slug}
 export const SCRIPT_PREFIX = 'script:';
 // Legacy prefix for backwards compatibility during migration

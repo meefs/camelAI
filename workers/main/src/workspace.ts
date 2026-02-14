@@ -1,11 +1,10 @@
-import { DurableObject, waitUntil } from 'cloudflare:workers';
+import { DurableObject } from 'cloudflare:workers';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
 import type { Workspace } from '../../../src/types';
 import type { OrgDO } from './auth';
 import { decryptCredentials, encryptCredentials } from '../../../src/lib/integration-crypto';
 import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
 import { mintBigQueryAccessTokenFromServiceAccount } from './google-service-account';
-import { createSignedToken } from './signed-tokens';
 import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
@@ -17,21 +16,7 @@ const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
 const TOKEN_BATCH_WINDOW_MS = 15 * 60 * 1000;
 // Fallback alarm delay if the alarm handler fails catastrophically (1 hour)
 const TOKEN_REFRESH_FALLBACK_MS = 60 * 60 * 1000;
-// TTL for data proxy tokens (24 hours)
-const DATA_PROXY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const BIGQUERY_INTEGRATION_TYPE = 'bigquery';
-// Sync KV key for data proxy token expiry
-const DATA_PROXY_TOKEN_EXPIRY_KEY = 'data_proxy_token_expires_at';
-// Workspace env cache keys
-const WORKSPACE_ENV_CACHE_KEY = 'workspaceEnvCache';
-// Buffer before env cache expiry to trigger rebuild (30 minutes)
-const ENV_CACHE_REFRESH_BUFFER_MS = 30 * 60 * 1000;
-
-interface WorkspaceEnvCache {
-  envVars: Record<string, string>;
-  expiresAt: number;
-  builtAt: number;
-}
 
 export type WorkspaceAccessLevel = 'full' | 'none';
 
@@ -205,101 +190,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Sandbox Bootstrap + Env Caching
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Ensure the workspace sandbox is created and bootstrapped, and return
-   * cached workspace-level env vars (building them if needed).
-   *
-   * This is the single entry point for all callers that need a ready sandbox.
-   * Env vars are cached in DO storage to avoid expensive operations (R2 temp
-   * credentials, OpenRouter key provisioning) on every new chat.
-   */
-  async ensureSandboxReady(
-    workspaceId: string,
-    orgId: string
-  ): Promise<{ envVars: Record<string, string>; fromCache: boolean }> {
-    const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
-    const container = new WorkspaceContainer(runtimeEnv, workspaceId, orgId);
-
-    // Check for cached env vars
-    const cached = this.ctx.storage.kv.get<WorkspaceEnvCache>(WORKSPACE_ENV_CACHE_KEY);
-    const now = Date.now();
-
-    if (cached && cached.expiresAt > now + ENV_CACHE_REFRESH_BUFFER_MS) {
-      console.log(
-        `[WorkspaceDO] ensureSandboxReady: using cached env vars workspace=${workspaceId} ` +
-        `age=${Math.round((now - cached.builtAt) / 1000)}s expiresIn=${Math.round((cached.expiresAt - now) / 1000)}s`
-      );
-      return { envVars: cached.envVars, fromCache: true };
-    }
-
-    // Build fresh env vars
-    console.log(
-      `[WorkspaceDO] ensureSandboxReady: building env vars workspace=${workspaceId} ` +
-      `reason=${cached ? 'expiring' : 'no_cache'}`
-    );
-    const envVars = await container.buildEnvVars();
-
-    // Calculate expiry based on token TTLs (24 hours minus buffer)
-    const expiresAt = now + DATA_PROXY_TOKEN_TTL_MS - ENV_CACHE_REFRESH_BUFFER_MS;
-
-    // Cache the env vars
-    this.ctx.storage.kv.put<WorkspaceEnvCache>(WORKSPACE_ENV_CACHE_KEY, {
-      envVars,
-      expiresAt,
-      builtAt: now,
-    });
-
-    return { envVars, fromCache: false };
-  }
-
-  /**
-   * Invalidate the cached workspace env vars (e.g., after org slug change).
-   */
-  invalidateEnvCache(): void {
-    this.ctx.storage.kv.delete(WORKSPACE_ENV_CACHE_KEY);
-    console.log(`[WorkspaceDO] invalidateEnvCache: cleared workspace env cache`);
-  }
-
-  /**
-   * Prewarm the workspace env var cache. Call this from dashboard routes
-   * or workspace creation to ensure first chat is fast.
-   * Returns true if cache was built, false if already cached.
-   */
-  async prewarmEnvVars(workspaceId: string, orgId: string): Promise<boolean> {
-    const cached = this.ctx.storage.kv.get<WorkspaceEnvCache>(WORKSPACE_ENV_CACHE_KEY);
-    const now = Date.now();
-
-    // If cache is still fresh, skip prewarm
-    if (cached && cached.expiresAt > now + ENV_CACHE_REFRESH_BUFFER_MS) {
-      console.log(
-        `[WorkspaceDO] prewarmEnvVars: cache still fresh workspace=${workspaceId} ` +
-        `expiresIn=${Math.round((cached.expiresAt - now) / 1000)}s`
-      );
-      return false;
-    }
-
-    console.log(`[WorkspaceDO] prewarmEnvVars: building cache workspace=${workspaceId}`);
-    const runtimeEnv = this.env as unknown as WorkspaceContainerEnv;
-    const container = new WorkspaceContainer(runtimeEnv, workspaceId, orgId);
-
-    // Build and cache env vars
-    const envVars = await container.buildEnvVars();
-    const expiresAt = now + DATA_PROXY_TOKEN_TTL_MS - ENV_CACHE_REFRESH_BUFFER_MS;
-
-    this.ctx.storage.kv.put<WorkspaceEnvCache>(WORKSPACE_ENV_CACHE_KEY, {
-      envVars,
-      expiresAt,
-      builtAt: now,
-    });
-
-    console.log(`[WorkspaceDO] prewarmEnvVars: cache built workspace=${workspaceId}`);
-    return true;
-  }
-
   private log(
     action: string,
     actorId: string,
@@ -380,14 +270,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       this.env.ORG.idFromName(orgId)
     ) as unknown as OrgDO;
     await orgStub.addWorkspace(id, name, now, createdBy);
-
-    // Prewarm env vars in background (don't block workspace creation).
-    // Container creation is deferred to first chat — sandbox host auto-creates on demand.
-    waitUntil(
-      this.prewarmEnvVars(id, orgId).catch((err) =>
-        console.error(`[WorkspaceDO] createWorkspace: prewarm failed workspace=${id}`, err)
-      )
-    );
 
     return info;
   }
@@ -765,7 +647,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
   /**
    * Schedule alarm for the next token that needs refreshing.
    * Uses single-alarm pattern: finds earliest expiring token and sets alarm for it.
-   * Considers both integration tokens and data proxy service tokens.
    */
   private async scheduleNextTokenRefresh(): Promise<void> {
     // Find the earliest expiring managed integration token
@@ -778,13 +659,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       BIGQUERY_INTEGRATION_TYPE
     ).toArray() as { token_expires_at: number | null }[];
 
-    let nextExpiry = rows[0]?.token_expires_at ?? null;
-
-    // Also check data proxy token expiry
-    const dataProxyExpiry = this.ctx.storage.kv.get<number>(DATA_PROXY_TOKEN_EXPIRY_KEY);
-    if (dataProxyExpiry && (!nextExpiry || dataProxyExpiry < nextExpiry)) {
-      nextExpiry = dataProxyExpiry;
-    }
+    const nextExpiry = rows[0]?.token_expires_at ?? null;
 
     if (!nextExpiry) {
       // No managed tokens with expiry, clear any existing alarm
@@ -848,18 +723,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
             console.error(`[WorkspaceDO] Failed to refresh token for ${integration.integration_type}:`, err);
             // Continue with other tokens even if one fails
           }
-        }
-      }
-
-      // Check if data proxy token needs refresh
-      const dataProxyExpiry = this.ctx.storage.kv.get<number>(DATA_PROXY_TOKEN_EXPIRY_KEY);
-      if (dataProxyExpiry && dataProxyExpiry <= batchCutoff) {
-        console.log('[WorkspaceDO] Refreshing expiring data proxy token');
-        try {
-          await this.refreshDataProxyToken();
-          needsSync = true;
-        } catch (err) {
-          console.error('[WorkspaceDO] Failed to refresh data proxy token:', err);
         }
       }
 
@@ -1078,88 +941,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       },
       expiresAt,
     };
-  }
-
-  // =============================================================================
-  // Data Proxy Token Management
-  // =============================================================================
-
-  /**
-   * Register data proxy token expiry time.
-   * Called by container startup to schedule token refresh.
-   */
-  async registerDataProxyTokenExpiry(expiresAt: number): Promise<void> {
-    this.ctx.storage.kv.put(DATA_PROXY_TOKEN_EXPIRY_KEY, expiresAt);
-    await this.scheduleNextTokenRefresh();
-    console.log('[WorkspaceDO] Registered data proxy token expiry', { expiresAt: new Date(expiresAt).toISOString() });
-  }
-
-  /**
-   * Generate a new data proxy token for this workspace.
-   * Returns the token and its expiry time.
-   */
-  async generateDataProxyToken(): Promise<{ token: string; expiresAt: number } | null> {
-    const startedAt = Date.now();
-    const info = await this.getInfo();
-    if (!info) {
-      console.warn('[WorkspaceDO] Cannot generate data proxy token: workspace info not found', { elapsedMs: Date.now() - startedAt });
-      return null;
-    }
-
-    if (!this.env.TOKEN_SIGNING_SECRET) {
-      console.warn('[WorkspaceDO] Cannot generate data proxy token: TOKEN_SIGNING_SECRET not configured', { elapsedMs: Date.now() - startedAt });
-      return null;
-    }
-
-    // Get org slug for the token
-    const slugStartedAt = Date.now();
-    const orgStub = this.env.ORG.get(this.env.ORG.idFromName(info.org_id)) as unknown as OrgDO;
-    const orgSlug = await orgStub.getSlug();
-    const slugMs = Date.now() - slugStartedAt;
-    if (!orgSlug) {
-      console.warn('[WorkspaceDO] Cannot generate data proxy token: org has no slug', {
-        slugLookupMs: slugMs,
-        elapsedMs: Date.now() - startedAt,
-      });
-      return null;
-    }
-
-    const expiresAt = Date.now() + DATA_PROXY_TOKEN_TTL_MS;
-    const signStartedAt = Date.now();
-    const token = await createSignedToken(this.env.TOKEN_SIGNING_SECRET, {
-      org_id: info.org_id,
-      org_slug: orgSlug,
-      scopes: ['data-proxy'],
-      exp: expiresAt,
-      workspace_id: info.id,
-      name: `data-proxy-${info.id}`,
-    });
-    const signMs = Date.now() - signStartedAt;
-    console.log('[WorkspaceDO] Generated data proxy token', {
-      workspaceId: info.id,
-      slugLookupMs: slugMs,
-      signMs,
-      elapsedMs: Date.now() - startedAt,
-      expiresAt: new Date(expiresAt).toISOString(),
-    });
-
-    return { token, expiresAt };
-  }
-
-  /**
-   * Refresh data proxy token - generates new token and updates expiry tracking.
-   * Does NOT push to container/workers - caller should do that.
-   */
-  private async refreshDataProxyToken(): Promise<void> {
-    const result = await this.generateDataProxyToken();
-    if (!result) {
-      console.warn('[WorkspaceDO] Failed to generate data proxy token during refresh');
-      return;
-    }
-
-    // Update expiry tracking
-    this.ctx.storage.kv.put(DATA_PROXY_TOKEN_EXPIRY_KEY, result.expiresAt);
-    console.log('[WorkspaceDO] Refreshed data proxy token', { expiresAt: new Date(result.expiresAt).toISOString() });
   }
 
 }

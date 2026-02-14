@@ -10,6 +10,7 @@ import { isSignedToken, validateSignedToken, createSignedToken } from './signed-
 import { mapCredentialsToEnvVars } from './integration-env.js';
 import { decryptCredentials } from '../../../src/lib/integration-crypto.js';
 import { decryptOpenRouterKey } from './openrouter-keys.js';
+import { validateSandboxProxy } from './sandbox-auth.js';
 import type { OrgDO } from './auth.js';
 import type { WorkspaceDO } from './workspace.js';
 
@@ -171,6 +172,7 @@ export interface CfApiProxyEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   CHAT_THREAD: DurableObjectNamespace;
   WORKER_BASE_URL?: string;
+  SANDBOX_PROXY_SECRET?: string;
 }
 
 export interface DeploySideEffectsInfo {
@@ -910,75 +912,97 @@ export async function proxyCloudflareApi(
     return new Response(resp.body, { status: resp.status, headers: resp.headers });
   }
 
-  const proxyToken =
-    request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER)?.trim() ||
-    (() => {
-      const authHeader = request.headers.get('Authorization') ?? '';
-      const bearerMatch = authHeader.match(/^Bearer\s+(.+)\s*$/i);
-      return bearerMatch?.[1]?.trim() || null;
-    })();
+  // Check sandbox proxy secret first (static secret from sandbox host)
+  let orgId: string;
+  let orgSlug: string | undefined;
+  let workspaceId: string;
+  let threadId: string | undefined;
 
-  if (!proxyToken) {
-    console.warn('[cf-api-proxy] missing deploy token', {
-      method: request.method,
-      path: url.pathname,
-      hasAuthorizationHeader: !!request.headers.get('Authorization'),
-      hasDeployTokenHeader: !!request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER),
-    });
-    return cfApiError(10001, 'Authentication error: Missing deploy token', 401);
-  }
+  const proxyAuth = validateSandboxProxy(request, env);
+  if (proxyAuth.valid) {
+    orgId = proxyAuth.orgId;
+    workspaceId = proxyAuth.workspaceId;
 
-  // Validate signed deploy token (no KV lookup needed)
-  if (!isSignedToken(proxyToken)) {
-    console.warn('[cf-api-proxy] invalid deploy token format', {
-      method: request.method,
-      path: url.pathname,
-      tokenPrefix: proxyToken.slice(0, 8),
-    });
-    return cfApiError(10002, 'Authentication error: Invalid deploy token format', 401);
-  }
+    // Look up org_slug from OrgDO (needed for script namespacing)
+    const orgStub = env.ORG.get(env.ORG.idFromName(orgId)) as DurableObjectStub<OrgDO>;
+    orgSlug = await orgStub.getSlug() ?? undefined;
+    if (!orgSlug) {
+      console.warn('[cf-api-proxy] sandbox proxy: org has no slug', { orgId });
+      return cfApiError(10003, 'Authentication error: Org has no slug', 401);
+    }
 
-  const tokenPayload = await validateSignedToken(env.TOKEN_SIGNING_SECRET, proxyToken);
-  if (!tokenPayload) {
-    console.warn('[cf-api-proxy] invalid deploy token signature', {
-      method: request.method,
-      path: url.pathname,
-      tokenPrefix: proxyToken.slice(0, 8),
-    });
-    return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
-  }
+    console.log('[cf-api-proxy] authenticated via sandbox proxy', { orgId, workspaceId, orgSlug });
+  } else {
+    const proxyToken =
+      request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER)?.trim() ||
+      (() => {
+        const authHeader = request.headers.get('Authorization') ?? '';
+        const bearerMatch = authHeader.match(/^Bearer\s+(.+)\s*$/i);
+        return bearerMatch?.[1]?.trim() || null;
+      })();
 
-  // Check for deploy scope
-  if (!tokenPayload.scopes.includes('deploy')) {
-    console.warn('[cf-api-proxy] deploy token lacks deploy scope', {
-      method: request.method,
-      path: url.pathname,
-      scopes: tokenPayload.scopes,
-    });
-    return cfApiError(10002, 'Authentication error: Token lacks deploy scope', 401);
-  }
+    if (!proxyToken) {
+      console.warn('[cf-api-proxy] missing deploy token', {
+        method: request.method,
+        path: url.pathname,
+        hasAuthorizationHeader: !!request.headers.get('Authorization'),
+        hasDeployTokenHeader: !!request.headers.get(CHIRIDION_DEPLOY_TOKEN_HEADER),
+      });
+      return cfApiError(10001, 'Authentication error: Missing deploy token', 401);
+    }
 
-  if (!tokenPayload.workspace_id) {
-    console.warn('[cf-api-proxy] deploy token missing workspace_id', {
-      method: request.method,
-      path: url.pathname,
-    });
-    return cfApiError(10003, 'Authentication error: Invalid workspace', 401);
-  }
+    // Validate signed deploy token (no KV lookup needed)
+    if (!isSignedToken(proxyToken)) {
+      console.warn('[cf-api-proxy] invalid deploy token format', {
+        method: request.method,
+        path: url.pathname,
+        tokenPrefix: proxyToken.slice(0, 8),
+      });
+      return cfApiError(10002, 'Authentication error: Invalid deploy token format', 401);
+    }
 
-  const orgId = tokenPayload.org_id;
-  const orgSlug = tokenPayload.org_slug;
-  const workspaceId = tokenPayload.workspace_id;
-  const threadId = tokenPayload.thread_id;
+    const tokenPayload = await validateSignedToken(env.TOKEN_SIGNING_SECRET, proxyToken);
+    if (!tokenPayload) {
+      console.warn('[cf-api-proxy] invalid deploy token signature', {
+        method: request.method,
+        path: url.pathname,
+        tokenPrefix: proxyToken.slice(0, 8),
+      });
+      return cfApiError(10002, 'Authentication error: Invalid deploy token', 401);
+    }
 
-  // Require org_slug for deploy operations
-  if (!orgSlug) {
-    console.warn('[cf-api-proxy] deploy token missing org_slug', {
-      method: request.method,
-      path: url.pathname,
-      orgId,
-    });
-    return cfApiError(10003, 'Authentication error: Deploy token missing org_slug', 401);
+    // Check for deploy scope
+    if (!tokenPayload.scopes.includes('deploy')) {
+      console.warn('[cf-api-proxy] deploy token lacks deploy scope', {
+        method: request.method,
+        path: url.pathname,
+        scopes: tokenPayload.scopes,
+      });
+      return cfApiError(10002, 'Authentication error: Token lacks deploy scope', 401);
+    }
+
+    if (!tokenPayload.workspace_id) {
+      console.warn('[cf-api-proxy] deploy token missing workspace_id', {
+        method: request.method,
+        path: url.pathname,
+      });
+      return cfApiError(10003, 'Authentication error: Invalid workspace', 401);
+    }
+
+    orgId = tokenPayload.org_id;
+    orgSlug = tokenPayload.org_slug;
+    workspaceId = tokenPayload.workspace_id;
+    threadId = tokenPayload.thread_id;
+
+    // Require org_slug for deploy operations
+    if (!orgSlug) {
+      console.warn('[cf-api-proxy] deploy token missing org_slug', {
+        method: request.method,
+        path: url.pathname,
+        orgId,
+      });
+      return cfApiError(10003, 'Authentication error: Deploy token missing org_slug', 401);
+    }
   }
 
   let pathname = url.pathname;

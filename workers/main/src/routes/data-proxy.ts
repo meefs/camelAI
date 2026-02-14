@@ -7,6 +7,7 @@
 
 import type { Env } from '../types.js';
 import { isSignedToken, validateSignedToken } from '../signed-tokens.js';
+import { validateSandboxProxy } from '../sandbox-auth.js';
 import type { MssqlQueryRequest } from '../data-proxy.js';
 
 /**
@@ -35,6 +36,17 @@ async function validateDataProxyToken(
   request: Request,
   env: Env
 ): Promise<{ valid: true; orgId: string; workspaceId?: string } | { valid: false; response: Response }> {
+  // Check sandbox proxy secret first (static secret from sandbox host)
+  const proxyAuth = validateSandboxProxy(request, env);
+  if (proxyAuth.valid) {
+    return {
+      valid: true,
+      orgId: proxyAuth.orgId,
+      workspaceId: proxyAuth.workspaceId,
+    };
+  }
+
+  // Fall back to signed token validation
   const token = extractBearerToken(request);
 
   if (!token) {
