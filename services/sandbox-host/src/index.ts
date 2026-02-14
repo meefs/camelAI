@@ -290,6 +290,7 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
 
   const url = new URL(req.url);
   const targetUrl = `${workerBaseUrl}${proxy.upstreamPath}${url.search}`;
+  const target = new URL(targetUrl);
 
   const headers = new Headers(req.headers);
   // Strip original auth — container doesn't need to authenticate
@@ -301,6 +302,15 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
   headers.delete('x-chiridion-thread-id');
   headers.delete('x-chiridion-proxy-session-id');
   headers.delete('x-chiridion-mcp-identity');
+  // Never forward incoming host authority from container -> VM proxy.
+  // Bun may use it for TLS authority, causing cert altname mismatches.
+  headers.delete('host');
+  if (
+    !headers.has('ngrok-skip-browser-warning') &&
+    (target.hostname.endsWith('.ngrok-free.dev') || target.hostname.endsWith('.ngrok.app'))
+  ) {
+    headers.set('ngrok-skip-browser-warning', 'true');
+  }
   // Add sandbox proxy identity headers
   headers.set('X-Sandbox-Secret', SANDBOX_PROXY_SECRET);
   headers.set('X-Chiridion-Org-Id', session.orgId);
@@ -326,9 +336,10 @@ async function handleProxyRoute(req: Request, proxy: ProxyRoute, sourceIp: strin
 async function proxyToControlPlane(
   name: string,
   path: string,
+  opts: { orgId?: string; workspaceId?: string } | undefined,
   req: Request
 ): Promise<Response> {
-  const port = await getControlPlanePort(name);
+  const port = await getControlPlanePort(name, opts);
   const url = new URL(req.url);
   const targetUrl = `http://127.0.0.1:${port}${path}${url.search}`;
 
@@ -339,6 +350,7 @@ async function proxyToControlPlane(
   headers.delete(HEADER_WORKER_BASE_URL);
   headers.delete(HEADER_THREAD_ID);
   headers.delete(HEADER_PROXY_SESSION_ID);
+  headers.delete('host');
 
   const init: RequestInit = {
     method: req.method,
@@ -547,7 +559,7 @@ Bun.serve<WsData>({
 
       if (subpath === '/health' && req.method === 'GET') {
         await ensureContainer(name, { orgId, workspaceId });
-        return proxyToControlPlane(name, '/health', req);
+        return proxyToControlPlane(name, '/health', { orgId, workspaceId }, req);
       }
 
       if (subpath === '/chat') {
@@ -579,7 +591,7 @@ Bun.serve<WsData>({
           threadId,
           workerBaseUrl,
         });
-        const port = await getControlPlanePort(name);
+        const port = await getControlPlanePort(name, { orgId, workspaceId });
         const targetWsUrl = `ws://127.0.0.1:${port}/chat`;
 
         // Upgrade client connection

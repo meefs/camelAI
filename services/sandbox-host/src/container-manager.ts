@@ -38,8 +38,38 @@ export interface EnsureContainerOptions {
 const containers = new Map<string, ContainerRecord>();
 const containerIpIndex = new Map<string, string>();
 
+function normalizeSourceIp(ip: string): string {
+  const trimmed = ip.trim();
+  return trimmed.startsWith('::ffff:') ? trimmed.slice(7) : trimmed;
+}
+
+function sourceIpKeys(ip: string): string[] {
+  const normalized = normalizeSourceIp(ip);
+  if (!normalized) return [];
+  const keys = new Set<string>([normalized]);
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(normalized)) {
+    keys.add(`::ffff:${normalized}`);
+  }
+  return Array.from(keys);
+}
+
+function indexContainerIp(ip: string, name: string): void {
+  for (const key of sourceIpKeys(ip)) {
+    containerIpIndex.set(key, name);
+  }
+}
+
+function unindexContainerIp(ip: string): void {
+  for (const key of sourceIpKeys(ip)) {
+    containerIpIndex.delete(key);
+  }
+}
+
 /** Refcount of in-flight ensureContainer calls per workspace (prevents reclaim race). */
 const pendingWorkspaces = new Map<string, number>();
+
+/** Shared ensureContainer promise per workspace (prevents duplicate docker run races). */
+const ensureContainerInFlight = new Map<string, Promise<ContainerRecord>>();
 
 /** When a container was last terminated (for reclaim idle guard). */
 const containerTerminatedAt = new Map<string, number>();
@@ -152,19 +182,22 @@ export function removeWebSocket(name: string): void {
 }
 
 export async function resolveContainerBySourceIp(sourceIp: string): Promise<ContainerRecord | null> {
-  const cached = getContainerBySourceIpCached(sourceIp);
-  if (cached) return cached;
+  for (const key of sourceIpKeys(sourceIp)) {
+    const cached = getContainerBySourceIpCached(key);
+    if (cached) return cached;
+  }
 
   // Refresh from Docker in case IP cache is stale.
   for (const [name, record] of containers) {
     const latestIp = await getContainerIp(name);
     if (!latestIp) continue;
     if (record.containerIp && record.containerIp !== latestIp) {
-      containerIpIndex.delete(record.containerIp);
+      unindexContainerIp(record.containerIp);
     }
     record.containerIp = latestIp;
-    containerIpIndex.set(latestIp, name);
-    if (latestIp === sourceIp) {
+    indexContainerIp(latestIp, name);
+    const latestKeys = new Set(sourceIpKeys(latestIp));
+    if (sourceIpKeys(sourceIp).some((key) => latestKeys.has(key))) {
       return record;
     }
   }
@@ -181,7 +214,7 @@ function getContainerBySourceIpCached(sourceIp: string): ContainerRecord | null 
   }
 
   for (const [name, record] of containers) {
-    if (record.containerIp === sourceIp) {
+    if (record.containerIp && sourceIpKeys(record.containerIp).includes(sourceIp)) {
       containerIpIndex.set(sourceIp, name);
       return record;
     }
@@ -203,6 +236,21 @@ function r2MountPrefix(orgId: string, workspaceId: string): string {
  * at container creation time (host-level rclone mount at R2_MOUNT_ROOT).
  */
 export async function ensureContainer(name: string, opts?: EnsureContainerOptions): Promise<ContainerRecord> {
+  const inFlight = ensureContainerInFlight.get(name);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const op = ensureContainerUnlocked(name, opts).finally(() => {
+    if (ensureContainerInFlight.get(name) === op) {
+      ensureContainerInFlight.delete(name);
+    }
+  });
+  ensureContainerInFlight.set(name, op);
+  return op;
+}
+
+async function ensureContainerUnlocked(name: string, opts?: EnsureContainerOptions): Promise<ContainerRecord> {
   // Mark workspace as pending so NVMe reclaim won't race with us (refcounted)
   pendingWorkspaces.set(name, (pendingWorkspaces.get(name) ?? 0) + 1);
   containerTerminatedAt.delete(name);
@@ -216,7 +264,7 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
         return cached;
       }
       // Container stopped — remove from cache and recreate
-      if (cached.containerIp) containerIpIndex.delete(cached.containerIp);
+      if (cached.containerIp) unindexContainerIp(cached.containerIp);
       containers.delete(name);
     }
 
@@ -238,7 +286,7 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
           workspaceId: opts?.workspaceId,
         };
         containers.set(name, record);
-        if (containerIp) containerIpIndex.set(containerIp, name);
+        if (containerIp) indexContainerIp(containerIp, name);
         console.log(`[ContainerManager] reconnected to existing container ${name} (port=${port})`);
         return record;
       }
@@ -352,7 +400,7 @@ export async function ensureContainer(name: string, opts?: EnsureContainerOption
       workspaceId: opts?.workspaceId,
     };
     containers.set(name, record);
-    if (containerIp) containerIpIndex.set(containerIp, name);
+    if (containerIp) indexContainerIp(containerIp, name);
     console.log(`[ContainerManager] created container ${name} (id=${containerId}, port=${port})`);
     return record;
   } finally {
@@ -375,7 +423,7 @@ export async function getContainer(name: string): Promise<ContainerRecord | null
     if (await isRunning(name)) {
       return cached;
     }
-    if (cached.containerIp) containerIpIndex.delete(cached.containerIp);
+    if (cached.containerIp) unindexContainerIp(cached.containerIp);
     containers.delete(name);
   }
 
@@ -395,7 +443,7 @@ export async function getContainer(name: string): Promise<ContainerRecord | null
         activeWebSockets: 0,
       };
       containers.set(name, record);
-      if (containerIp) containerIpIndex.set(containerIp, name);
+      if (containerIp) indexContainerIp(containerIp, name);
       return record;
     }
   }
@@ -411,7 +459,7 @@ export async function getContainer(name: string): Promise<ContainerRecord | null
  */
 export async function terminateContainer(name: string): Promise<boolean> {
   const existing = containers.get(name);
-  if (existing?.containerIp) containerIpIndex.delete(existing.containerIp);
+  if (existing?.containerIp) unindexContainerIp(existing.containerIp);
   const result = await dockerExec(['rm', '-f', name]);
   containers.delete(name);
   if (result.success) {
@@ -454,7 +502,7 @@ export async function execInContainer(
  * Get the host port for a container's control plane.
  * Ensures container exists first.
  */
-export async function getControlPlanePort(name: string): Promise<number> {
+export async function getControlPlanePort(name: string, opts?: EnsureContainerOptions): Promise<number> {
   const record = containers.get(name);
   if (record) {
     record.lastAccessedAt = Date.now();
@@ -464,7 +512,9 @@ export async function getControlPlanePort(name: string): Promise<number> {
   // Try to reconnect
   const container = await getContainer(name);
   if (!container) {
-    throw new Error(`Container ${name} not found`);
+    console.warn(`[ContainerManager] control plane port missing for ${name}; recreating container`);
+    const ensured = await ensureContainer(name, opts);
+    return ensured.hostPort;
   }
   return container.hostPort;
 }
@@ -480,15 +530,25 @@ export function listContainers(): ContainerRecord[] {
 
 async function reapIdleContainers(): Promise<void> {
   const now = Date.now();
-  for (const [name, record] of containers) {
-    if (record.activeWebSockets > 0) continue;
-    const idleMs = now - record.lastAccessedAt;
-    if (idleMs >= IDLE_TIMEOUT_MS) {
-      console.log(
-        `[ContainerManager] reaping idle container ${name} (idle=${Math.round(idleMs / 1000)}s)`
-      );
-      await terminateContainer(name);
-    }
+  for (const [name, snapshot] of containers) {
+    if (snapshot.activeWebSockets > 0) continue;
+    if ((pendingWorkspaces.get(name) ?? 0) > 0) continue;
+    const idleMs = now - snapshot.lastAccessedAt;
+    if (idleMs < IDLE_TIMEOUT_MS) continue;
+
+    // Guard against races: only reap if the same record is still current.
+    const current = containers.get(name);
+    if (!current || current !== snapshot) continue;
+    if (current.activeWebSockets > 0) continue;
+    if ((pendingWorkspaces.get(name) ?? 0) > 0) continue;
+
+    const refreshedIdleMs = Date.now() - current.lastAccessedAt;
+    if (refreshedIdleMs < IDLE_TIMEOUT_MS) continue;
+
+    console.log(
+      `[ContainerManager] reaping idle container ${name} (idle=${Math.round(refreshedIdleMs / 1000)}s)`
+    );
+    await terminateContainer(name);
   }
 }
 
