@@ -7,6 +7,7 @@ export interface ContainerRecord {
   createdAt: number;
   lastAccessedAt: number;
   activeWebSockets: number;
+  inFlightProxyRequests?: number;
   orgId?: string;
   workspaceId?: string;
 }

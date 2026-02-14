@@ -26,6 +26,118 @@ const CONTROL_PLANE_IDLE_TIMEOUT_SECS = Math.max(
 // ─── Chat Sessions ─────────────────────────────────────────
 const chatSessions = new Map();
 const DISCONNECT_IDLE_MS = 60_000;  // Close client WebSockets after 1 min of post-result inactivity
+const TRACE_CONTROL_PLANE = process.env.TRACE_CONTROL_PLANE !== '0';
+const REPLAY_BUFFER_MAX = Math.max(200, parseInt(process.env.CONTROL_PLANE_REPLAY_BUFFER_MAX || '4000', 10));
+
+function traceControlPlane(event, details = {}) {
+  if (!TRACE_CONTROL_PLANE) return;
+  try {
+    console.log(`[ControlPlane][trace] ${event} ${JSON.stringify(details)}`);
+  } catch {
+    console.log(`[ControlPlane][trace] ${event}`);
+  }
+}
+
+function initWsDebugState(ws) {
+  const now = Date.now();
+  ws.data.openedAt = now;
+  ws.data.lastInboundAt = now;
+  ws.data.lastOutboundAt = now;
+  ws.data.inboundCount = 0;
+  ws.data.outboundCount = 0;
+  ws.data.lastInboundType = '';
+  ws.data.lastOutboundType = '';
+  ws.data.closeRequestedBy = '';
+}
+
+function wsDebugSnapshot(ws) {
+  const now = Date.now();
+  const openedAt = typeof ws.data.openedAt === 'number' ? ws.data.openedAt : null;
+  const lastInboundAt = typeof ws.data.lastInboundAt === 'number' ? ws.data.lastInboundAt : null;
+  const lastOutboundAt = typeof ws.data.lastOutboundAt === 'number' ? ws.data.lastOutboundAt : null;
+  return {
+    threadId: ws.data.threadId || '',
+    proxySessionId: ws.data.proxySessionId || '',
+    openedAt,
+    uptimeMs: openedAt ? now - openedAt : null,
+    lastInboundAt,
+    lastOutboundAt,
+    sinceLastInboundMs: lastInboundAt ? now - lastInboundAt : null,
+    sinceLastOutboundMs: lastOutboundAt ? now - lastOutboundAt : null,
+    inboundCount: typeof ws.data.inboundCount === 'number' ? ws.data.inboundCount : 0,
+    outboundCount: typeof ws.data.outboundCount === 'number' ? ws.data.outboundCount : 0,
+    lastInboundType: ws.data.lastInboundType || '',
+    lastOutboundType: ws.data.lastOutboundType || '',
+    closeRequestedBy: ws.data.closeRequestedBy || '',
+  };
+}
+
+function noteInbound(ws, type, bytes) {
+  ws.data.lastInboundAt = Date.now();
+  ws.data.inboundCount = (typeof ws.data.inboundCount === 'number' ? ws.data.inboundCount : 0) + 1;
+  ws.data.lastInboundType = type;
+  traceControlPlane('ws_inbound', {
+    ...wsDebugSnapshot(ws),
+    type,
+    bytes,
+  });
+}
+
+function noteOutbound(ws, type, bytes) {
+  ws.data.lastOutboundAt = Date.now();
+  ws.data.outboundCount = (typeof ws.data.outboundCount === 'number' ? ws.data.outboundCount : 0) + 1;
+  ws.data.lastOutboundType = type;
+}
+
+function sendWsJson(ws, payload, context) {
+  const json = JSON.stringify(payload);
+  const payloadType = payload && typeof payload === 'object' && typeof payload.type === 'string'
+    ? payload.type
+    : 'unknown';
+  try {
+    ws.send(json);
+    noteOutbound(ws, payloadType, json.length);
+    traceControlPlane('ws_send', {
+      ...wsDebugSnapshot(ws),
+      context,
+      payloadType,
+      bytes: json.length,
+    });
+    return true;
+  } catch (err) {
+    traceControlPlane('ws_send_failed', {
+      ...wsDebugSnapshot(ws),
+      context,
+      payloadType,
+      bytes: json.length,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+function closeWsWithTrace(ws, code, reason, source) {
+  ws.data.closeRequestedBy = source;
+  traceControlPlane('ws_close_requested', {
+    ...wsDebugSnapshot(ws),
+    code,
+    reason,
+    source,
+  });
+  try {
+    ws.close(code, reason);
+    return true;
+  } catch (err) {
+    traceControlPlane('ws_close_request_failed', {
+      ...wsDebugSnapshot(ws),
+      code,
+      reason,
+      source,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
 
 // ─── System Prompt ─────────────────────────────────────────
 function buildSystemPromptAppend() {
@@ -299,6 +411,8 @@ class ChatSession {
     this.disconnectTimer = null;
     this.clients = new Set();
     this.shuttingDown = false;
+    this.nextOutboundSeq = 1;
+    this.replayBuffer = [];
   }
 
   updateSessionEnv(nextSessionEnv) {
@@ -322,17 +436,103 @@ class ChatSession {
 
   addClient(ws) {
     this.clients.add(ws);
+    traceControlPlane('session_client_state', {
+      action: 'add',
+      ...wsDebugSnapshot(ws),
+    });
+    traceControlPlane('session_client_added', {
+      threadId: this.threadId,
+      clientCount: this.clients.size,
+      pendingQuestions: this.pendingQuestions.size,
+      messageQueueLength: this.messageQueue.length,
+    });
   }
 
   removeClient(ws) {
     this.clients.delete(ws);
+    traceControlPlane('session_client_state', {
+      action: 'remove',
+      ...wsDebugSnapshot(ws),
+    });
+    traceControlPlane('session_client_removed', {
+      threadId: this.threadId,
+      clientCount: this.clients.size,
+      pendingQuestions: this.pendingQuestions.size,
+      messageQueueLength: this.messageQueue.length,
+    });
   }
 
   broadcast(payload) {
-    const json = JSON.stringify(payload);
-    for (const ws of this.clients) {
-      try { ws.send(json); } catch { /* closed */ }
+    const payloadType = payload && typeof payload === 'object' ? payload.type : undefined;
+    const seq = this.nextOutboundSeq++;
+    const sequencedPayload = {
+      ...payload,
+      seq,
+    };
+    const json = JSON.stringify(sequencedPayload);
+    this.replayBuffer.push(sequencedPayload);
+    if (this.replayBuffer.length > REPLAY_BUFFER_MAX) {
+      this.replayBuffer.shift();
     }
+    traceControlPlane('session_broadcast', {
+      threadId: this.threadId,
+      payloadType: typeof payloadType === 'string' ? payloadType : 'unknown',
+      seq,
+      clientCount: this.clients.size,
+      bytes: json.length,
+      replayBufferSize: this.replayBuffer.length,
+    });
+    for (const ws of this.clients) {
+      try {
+        ws.send(json);
+        noteOutbound(
+          ws,
+          typeof payloadType === 'string' ? payloadType : 'unknown',
+          json.length
+        );
+      } catch (err) {
+        traceControlPlane('session_broadcast_send_failed', {
+          threadId: this.threadId,
+          payloadType: typeof payloadType === 'string' ? payloadType : 'unknown',
+          seq,
+          bytes: json.length,
+          error: err instanceof Error ? err.message : String(err),
+          ...wsDebugSnapshot(ws),
+        });
+      }
+    }
+  }
+
+  replaySince(ws, lastSeq) {
+    const normalizedLastSeq = Number.isFinite(lastSeq) ? Math.max(0, Math.floor(lastSeq)) : 0;
+    const oldestSeq = this.replayBuffer.length > 0 ? this.replayBuffer[0].seq : null;
+    const newestSeq = this.replayBuffer.length > 0 ? this.replayBuffer[this.replayBuffer.length - 1].seq : null;
+    if (oldestSeq !== null && normalizedLastSeq + 1 < oldestSeq) {
+      sendWsJson(ws, {
+        type: 'replay_gap',
+        oldestSeq,
+        newestSeq,
+        requestedAfterSeq: normalizedLastSeq,
+      }, 'init_replay_gap');
+    }
+
+    let replayed = 0;
+    for (const payload of this.replayBuffer) {
+      if (typeof payload.seq !== 'number' || payload.seq <= normalizedLastSeq) continue;
+      if (sendWsJson(ws, payload, 'init_replay_event')) {
+        replayed += 1;
+      }
+    }
+
+    traceControlPlane('session_replay_complete', {
+      threadId: this.threadId,
+      requestedAfterSeq: normalizedLastSeq,
+      oldestSeq,
+      newestSeq,
+      replayed,
+      replayBufferSize: this.replayBuffer.length,
+      ...wsDebugSnapshot(ws),
+    });
   }
 
   /**
@@ -342,17 +542,31 @@ class ChatSession {
    */
   scheduleDisconnect() {
     this.clearDisconnect();
+    traceControlPlane('session_schedule_disconnect', {
+      threadId: this.threadId,
+      delayMs: DISCONNECT_IDLE_MS,
+      activeQuery: Boolean(this.activeQuery),
+      eventLoopRunning: this.eventLoopRunning,
+      clientCount: this.clients.size,
+    });
     this.disconnectTimer = setTimeout(() => {
       if (this.activeQuery || this.eventLoopRunning) return; // still active
       console.log(`[ControlPlane] disconnecting idle clients thread=${this.threadId}`);
+      traceControlPlane('session_disconnect_timer_fired', {
+        threadId: this.threadId,
+        clientCount: this.clients.size,
+      });
       for (const ws of this.clients) {
-        try { ws.close(1000, 'idle'); } catch { /* already closed */ }
+        closeWsWithTrace(ws, 1000, 'idle', 'idle_disconnect_timer');
       }
     }, DISCONNECT_IDLE_MS);
   }
 
   clearDisconnect() {
     if (this.disconnectTimer) {
+      traceControlPlane('session_clear_disconnect', {
+        threadId: this.threadId,
+      });
       clearTimeout(this.disconnectTimer);
       this.disconnectTimer = null;
     }
@@ -405,6 +619,11 @@ class ChatSession {
     if (!pending) return;
     this.pendingQuestions.delete(questionId);
     pending.resolve(answers);
+    traceControlPlane('session_question_answered', {
+      threadId: this.threadId,
+      questionId,
+      pendingQuestions: this.pendingQuestions.size,
+    });
     this.broadcast({ type: 'question_answered', questionId });
   }
 
@@ -487,12 +706,24 @@ class ChatSession {
       let message = null;
       if (this.messageQueue.length > 0) {
         message = this.messageQueue.shift();
+        traceControlPlane('session_dequeue_message', {
+          threadId: this.threadId,
+          source: 'queue',
+          remainingQueue: this.messageQueue.length,
+          messageLength: typeof message === 'string' ? message.length : 0,
+        });
       } else {
         if (this.shuttingDown) return;
         message = await new Promise((resolve) => { this.messageResolver = resolve; });
         if (this.shuttingDown) {
           if (this.messageQueue.length > 0) {
             message = this.messageQueue.shift();
+            traceControlPlane('session_dequeue_message', {
+              threadId: this.threadId,
+              source: 'queue_after_shutdown',
+              remainingQueue: this.messageQueue.length,
+              messageLength: typeof message === 'string' ? message.length : 0,
+            });
           } else {
             return;
           }
@@ -506,6 +737,11 @@ class ChatSession {
   async init() {
     if (this.activeQuery || this.initPromise) {
       if (this.initPromise) await this.initPromise;
+      traceControlPlane('session_init_reused', {
+        threadId: this.threadId,
+        hasActiveQuery: Boolean(this.activeQuery),
+        hasInitPromise: Boolean(this.initPromise),
+      });
       return;
     }
 
@@ -516,6 +752,10 @@ class ChatSession {
       const messageStream = this.createMessageStream();
       this.activeQuery = query({ prompt: messageStream, options });
       this.queryIterator = this.activeQuery[Symbol.asyncIterator]();
+      traceControlPlane('session_query_initialized', {
+        threadId: this.threadId,
+        fileExists,
+      });
     })();
 
     try {
@@ -577,12 +817,21 @@ class ChatSession {
   startEventLoop() {
     if (this.eventLoopRunning || !this.queryIterator) return;
     this.eventLoopRunning = true;
+    traceControlPlane('session_event_loop_start', {
+      threadId: this.threadId,
+      clientCount: this.clients.size,
+    });
 
     (async () => {
       try {
         while (true) {
           const { value: event, done } = await this.queryIterator.next();
           if (done) break;
+          traceControlPlane('session_event_loop_event', {
+            threadId: this.threadId,
+            eventType: typeof event?.type === 'string' ? event.type : 'unknown',
+            eventSubtype: typeof event?.subtype === 'string' ? event.subtype : '',
+          });
 
           this.broadcast({ type: 'sdk_event', event });
 
@@ -601,6 +850,10 @@ class ChatSession {
         this.activeQuery = null;
         this.queryIterator = null;
         this.eventLoopRunning = false;
+        traceControlPlane('session_event_loop_stop', {
+          threadId: this.threadId,
+          clientCount: this.clients.size,
+        });
         // Start disconnect countdown — a new message will cancel it.
         this.scheduleDisconnect();
       }
@@ -609,6 +862,13 @@ class ChatSession {
 
   async handleMessage(content) {
     if (typeof content !== 'string' || !content.trim()) return;
+    traceControlPlane('session_handle_message', {
+      threadId: this.threadId,
+      contentLength: content.trim().length,
+      hasResolver: Boolean(this.messageResolver),
+      queueLength: this.messageQueue.length,
+      clientCount: this.clients.size,
+    });
     // New message resets the post-result disconnect timer.
     this.clearDisconnect();
     await this.init();
@@ -620,10 +880,20 @@ class ChatSession {
       r(content.trim());
     } else {
       this.messageQueue.push(content.trim());
+      traceControlPlane('session_queue_message', {
+        threadId: this.threadId,
+        queueLength: this.messageQueue.length,
+        contentLength: content.trim().length,
+      });
     }
   }
 
   async handleStop() {
+    traceControlPlane('session_handle_stop', {
+      threadId: this.threadId,
+      pendingQuestions: this.pendingQuestions.size,
+      hasActiveQuery: Boolean(this.activeQuery),
+    });
     for (const [qid, pending] of this.pendingQuestions) {
       this.pendingQuestions.delete(qid);
       this.broadcast({ type: 'question_answered', questionId: qid });
@@ -640,8 +910,16 @@ function getOrCreateSession(threadId, sessionEnv) {
   if (!session) {
     session = new ChatSession(threadId, sessionEnv);
     chatSessions.set(threadId, session);
+    traceControlPlane('session_created', {
+      threadId,
+      totalSessions: chatSessions.size,
+    });
   } else {
     session.updateSessionEnv(sessionEnv);
+    traceControlPlane('session_reused', {
+      threadId,
+      totalSessions: chatSessions.size,
+    });
   }
   return session;
 }
@@ -690,6 +968,11 @@ const server = Bun.serve({
 
   async fetch(req, server) {
     const url = new URL(req.url);
+    traceControlPlane('http_request', {
+      method: req.method,
+      path: url.pathname,
+      search: url.search,
+    });
 
     // Health
     if (url.pathname === '/health') {
@@ -727,57 +1010,101 @@ const server = Bun.serve({
   websocket: {
     open(ws) {
       // Wait for init message to attach to a session.
+      initWsDebugState(ws);
       console.log('[ControlPlane] websocket opened (awaiting init)');
+      traceControlPlane('ws_open', {
+        initialized: false,
+        ...wsDebugSnapshot(ws),
+      });
     },
 
     message(ws, data) {
-      if (typeof data !== 'string') return;
+      if (typeof data !== 'string') {
+        traceControlPlane('ws_message_ignored_non_string', {
+          ...wsDebugSnapshot(ws),
+        });
+        return;
+      }
       let msg;
-      try { msg = JSON.parse(data); } catch { return; }
+      try {
+        msg = JSON.parse(data);
+      } catch {
+        traceControlPlane('ws_message_invalid_json', {
+          ...wsDebugSnapshot(ws),
+          bytes: data.length,
+        });
+        return;
+      }
+      const messageType = typeof msg?.type === 'string' ? msg.type : 'unknown';
+      noteInbound(ws, messageType, data.length);
 
       if (msg.type === 'init') {
         const threadId = msg.threadId;
         if (!threadId) {
-          ws.send(JSON.stringify({ type: 'error', error: 'threadId required in init' }));
-          ws.close();
+          sendWsJson(ws, { type: 'error', error: 'threadId required in init' }, 'init_missing_thread_id');
+          closeWsWithTrace(ws, 1008, 'missing_thread_id', 'init_missing_thread_id');
           return;
         }
+        const lastSeq = typeof msg.lastSeq === 'number' && Number.isFinite(msg.lastSeq)
+          ? Math.max(0, Math.floor(msg.lastSeq))
+          : 0;
         const sessionEnv = msg.env || {};
         const session = getOrCreateSession(threadId, sessionEnv);
         ws.data.threadId = threadId;
         ws.data.session = session;
-        session.addClient(ws);
-        const proxySessionId = typeof sessionEnv.CHIRIDION_PROXY_SESSION_ID === 'string'
+        ws.data.proxySessionId = typeof sessionEnv.CHIRIDION_PROXY_SESSION_ID === 'string'
           ? sessionEnv.CHIRIDION_PROXY_SESSION_ID
           : '';
+        session.addClient(ws);
         console.log(
-          `[ControlPlane] websocket initialized thread=${threadId} proxySession=${proxySessionId}`
+          `[ControlPlane] websocket initialized thread=${threadId} proxySession=${ws.data.proxySessionId || ''}`
         );
-        ws.send(JSON.stringify({ type: 'ready', threadId }));
+        session.replaySince(ws, lastSeq);
+        sendWsJson(ws, { type: 'ready', threadId }, 'init_ready');
+        traceControlPlane('ws_init_complete', {
+          ...wsDebugSnapshot(ws),
+          lastSeq,
+          pendingQuestions: session.pendingQuestions.size,
+          clientCount: session.clients.size,
+        });
 
         // Replay pending questions
         for (const pending of session.pendingQuestions.values()) {
-          ws.send(JSON.stringify({
+          sendWsJson(ws, {
             type: 'ask_user_question',
             questionId: pending.questionId,
             toolUseId: pending.toolUseId,
             questions: pending.questions,
-          }));
+          }, 'init_replay_pending_question');
         }
         return;
       }
 
       const session = ws.data.session;
       if (!session) {
-        ws.send(JSON.stringify({ type: 'error', error: 'Send init message first' }));
+        sendWsJson(ws, { type: 'error', error: 'Send init message first' }, 'message_before_init');
         return;
       }
 
       if (msg.type === 'heartbeat') {
-        ws.send(JSON.stringify({
+        sendWsJson(ws, {
           type: 'heartbeat_ack',
           ts: typeof msg.ts === 'number' ? msg.ts : Date.now(),
-        }));
+        }, 'heartbeat_ack');
+        traceControlPlane('ws_heartbeat_ack', {
+          ...wsDebugSnapshot(ws),
+        });
+        return;
+      }
+
+      if (msg.type === 'ping') {
+        sendWsJson(ws, {
+          type: 'pong',
+          ts: typeof msg.ts === 'number' ? msg.ts : Date.now(),
+        }, 'ping_pong');
+        traceControlPlane('ws_pong', {
+          ...wsDebugSnapshot(ws),
+        });
         return;
       }
 
@@ -809,6 +1136,13 @@ const server = Bun.serve({
       const threadId = ws.data.threadId || 'unknown';
       const reasonText = typeof reason === 'string' ? reason : '';
       console.log(`[ControlPlane] websocket closed thread=${threadId} code=${code} reason=${reasonText}`);
+      traceControlPlane('ws_close', {
+        ...wsDebugSnapshot(ws),
+        code,
+        reason: reasonText,
+        hadSession: Boolean(session),
+        remainingClients: session ? session.clients.size : 0,
+      });
     },
   },
 });

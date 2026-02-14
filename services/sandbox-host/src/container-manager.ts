@@ -29,6 +29,7 @@ const REAPER_INTERVAL_MS = 10_000;
 const R2_MOUNT_ROOT = process.env.R2_MOUNT_ROOT || '/mnt/r2';
 const RECLAIM_IDLE_MS = parseInt(process.env.RECLAIM_IDLE_MS || String(10 * 60_000), 10);
 const RECLAIM_INTERVAL_MS = 5 * 60_000;
+const TRACE_SANDBOX_LIFECYCLE = process.env.TRACE_SANDBOX_LIFECYCLE !== '0';
 
 export interface EnsureContainerOptions {
   orgId?: string;
@@ -37,6 +38,32 @@ export interface EnsureContainerOptions {
 
 const containers = new Map<string, ContainerRecord>();
 const containerIpIndex = new Map<string, string>();
+
+function traceLifecycle(event: string, details: Record<string, unknown>): void {
+  if (!TRACE_SANDBOX_LIFECYCLE) return;
+  try {
+    console.log(`[ContainerManager][trace] ${event} ${JSON.stringify(details)}`);
+  } catch {
+    console.log(`[ContainerManager][trace] ${event}`);
+  }
+}
+
+function containerSnapshot(record: ContainerRecord | undefined): Record<string, unknown> | null {
+  if (!record) return null;
+  return {
+    name: record.name,
+    status: record.status,
+    hostPort: record.hostPort,
+    containerIp: record.containerIp || '',
+    createdAt: record.createdAt,
+    lastAccessedAt: record.lastAccessedAt,
+    idleMs: Math.max(0, Date.now() - record.lastAccessedAt),
+    activeWebSockets: record.activeWebSockets,
+    inFlightProxyRequests: record.inFlightProxyRequests ?? 0,
+    orgId: record.orgId || '',
+    workspaceId: record.workspaceId || '',
+  };
+}
 
 function normalizeSourceIp(ip: string): string {
   const trimmed = ip.trim();
@@ -152,33 +179,104 @@ async function waitForHealth(port: number, timeoutMs = 30_000): Promise<boolean>
 /**
  * Touch a container's lastAccessedAt timestamp.
  */
-export function touchContainer(name: string): void {
+export function touchContainer(name: string, reason = 'unknown'): void {
   const record = containers.get(name);
   if (record) {
     record.lastAccessedAt = Date.now();
+    traceLifecycle('touch_container', {
+      reason,
+      container: containerSnapshot(record),
+    });
+  } else {
+    traceLifecycle('touch_container_miss', { name, reason });
   }
 }
 
 /**
  * Increment active WebSocket count for a container.
  */
-export function addWebSocket(name: string): void {
+export function addWebSocket(name: string, source = 'unknown'): void {
   const record = containers.get(name);
   if (record) {
     record.activeWebSockets++;
     record.lastAccessedAt = Date.now();
+    traceLifecycle('ws_open', {
+      source,
+      container: containerSnapshot(record),
+    });
+  } else {
+    traceLifecycle('ws_open_missing_container', { name, source });
   }
 }
 
 /**
  * Decrement active WebSocket count for a container.
  */
-export function removeWebSocket(name: string): void {
+export function removeWebSocket(
+  name: string,
+  source = 'unknown',
+  closeCode?: number,
+  closeReason?: string,
+): void {
   const record = containers.get(name);
   if (record) {
     record.activeWebSockets = Math.max(0, record.activeWebSockets - 1);
     record.lastAccessedAt = Date.now();
+    traceLifecycle('ws_close', {
+      source,
+      closeCode: typeof closeCode === 'number' ? closeCode : null,
+      closeReason: closeReason || '',
+      container: containerSnapshot(record),
+    });
+  } else {
+    traceLifecycle('ws_close_missing_container', {
+      name,
+      source,
+      closeCode: typeof closeCode === 'number' ? closeCode : null,
+      closeReason: closeReason || '',
+    });
   }
+}
+
+export function addProxyRequest(name: string, reason = 'unknown'): void {
+  const record = containers.get(name);
+  if (!record) {
+    traceLifecycle('proxy_request_open_missing_container', { name, reason });
+    return;
+  }
+  record.inFlightProxyRequests = (record.inFlightProxyRequests ?? 0) + 1;
+  record.lastAccessedAt = Date.now();
+  traceLifecycle('proxy_request_open', {
+    reason,
+    container: containerSnapshot(record),
+  });
+}
+
+export function removeProxyRequest(
+  name: string,
+  reason = 'unknown',
+  status?: number,
+  durationMs?: number,
+): void {
+  const record = containers.get(name);
+  if (!record) {
+    traceLifecycle('proxy_request_close_missing_container', {
+      name,
+      reason,
+      status: typeof status === 'number' ? status : null,
+      durationMs: typeof durationMs === 'number' ? durationMs : null,
+    });
+    return;
+  }
+  const next = Math.max(0, (record.inFlightProxyRequests ?? 0) - 1);
+  record.inFlightProxyRequests = next;
+  record.lastAccessedAt = Date.now();
+  traceLifecycle('proxy_request_close', {
+    reason,
+    status: typeof status === 'number' ? status : null,
+    durationMs: typeof durationMs === 'number' ? durationMs : null,
+    container: containerSnapshot(record),
+  });
 }
 
 export async function resolveContainerBySourceIp(sourceIp: string): Promise<ContainerRecord | null> {
@@ -236,8 +334,18 @@ function r2MountPrefix(orgId: string, workspaceId: string): string {
  * at container creation time (host-level rclone mount at R2_MOUNT_ROOT).
  */
 export async function ensureContainer(name: string, opts?: EnsureContainerOptions): Promise<ContainerRecord> {
+  traceLifecycle('ensure_container_request', {
+    name,
+    opts: {
+      orgId: opts?.orgId || '',
+      workspaceId: opts?.workspaceId || '',
+    },
+    hasInFlight: ensureContainerInFlight.has(name),
+    isTracked: containers.has(name),
+  });
   const inFlight = ensureContainerInFlight.get(name);
   if (inFlight) {
+    traceLifecycle('ensure_container_join_inflight', { name });
     return inFlight;
   }
 
@@ -261,9 +369,17 @@ async function ensureContainerUnlocked(name: string, opts?: EnsureContainerOptio
     if (cached) {
       cached.lastAccessedAt = Date.now();
       if (await isRunning(name)) {
+        traceLifecycle('ensure_container_cache_hit', {
+          name,
+          container: containerSnapshot(cached),
+        });
         return cached;
       }
       // Container stopped — remove from cache and recreate
+      traceLifecycle('ensure_container_cache_stale', {
+        name,
+        container: containerSnapshot(cached),
+      });
       if (cached.containerIp) unindexContainerIp(cached.containerIp);
       containers.delete(name);
     }
@@ -282,11 +398,16 @@ async function ensureContainerUnlocked(name: string, opts?: EnsureContainerOptio
           createdAt: Date.now(),
           lastAccessedAt: Date.now(),
           activeWebSockets: 0,
+          inFlightProxyRequests: 0,
           orgId: opts?.orgId,
           workspaceId: opts?.workspaceId,
         };
         containers.set(name, record);
         if (containerIp) indexContainerIp(containerIp, name);
+        traceLifecycle('ensure_container_reconnected_existing', {
+          name,
+          container: containerSnapshot(record),
+        });
         console.log(`[ContainerManager] reconnected to existing container ${name} (port=${port})`);
         return record;
       }
@@ -300,6 +421,16 @@ async function ensureContainerUnlocked(name: string, opts?: EnsureContainerOptio
     const wsPath = workspacePath(name);
 
     console.log(`[ContainerManager] creating container ${name}`);
+    traceLifecycle('ensure_container_create_begin', {
+      name,
+      workspacePath: wsPath,
+      image: SANDBOX_IMAGE,
+      runtime: CONTAINER_RUNTIME,
+      opts: {
+        orgId: opts?.orgId || '',
+        workspaceId: opts?.workspaceId || '',
+      },
+    });
 
     const runArgs = [
       'run', '-d',
@@ -371,6 +502,11 @@ async function ensureContainerUnlocked(name: string, opts?: EnsureContainerOptio
 
     const result = await dockerExec(runArgs, 60_000);
     if (!result.success) {
+      traceLifecycle('ensure_container_create_failed', {
+        name,
+        exitCode: result.exitCode,
+        stderr: result.stderr.slice(0, 500),
+      });
       throw new Error(`Failed to create container ${name}: ${result.stderr}`);
     }
 
@@ -385,6 +521,7 @@ async function ensureContainerUnlocked(name: string, opts?: EnsureContainerOptio
     const healthy = await waitForHealth(port);
     if (!healthy) {
       console.warn(`[ContainerManager] container ${name} health check timed out, proceeding anyway`);
+      traceLifecycle('ensure_container_health_timeout', { name, hostPort: port });
     }
 
     const record: ContainerRecord = {
@@ -396,11 +533,16 @@ async function ensureContainerUnlocked(name: string, opts?: EnsureContainerOptio
       createdAt: Date.now(),
       lastAccessedAt: Date.now(),
       activeWebSockets: 0,
+      inFlightProxyRequests: 0,
       orgId: opts?.orgId,
       workspaceId: opts?.workspaceId,
     };
     containers.set(name, record);
     if (containerIp) indexContainerIp(containerIp, name);
+    traceLifecycle('ensure_container_create_success', {
+      name,
+      container: containerSnapshot(record),
+    });
     console.log(`[ContainerManager] created container ${name} (id=${containerId}, port=${port})`);
     return record;
   } finally {
@@ -441,9 +583,14 @@ export async function getContainer(name: string): Promise<ContainerRecord | null
         createdAt: Date.now(),
         lastAccessedAt: Date.now(),
         activeWebSockets: 0,
+        inFlightProxyRequests: 0,
       };
       containers.set(name, record);
       if (containerIp) indexContainerIp(containerIp, name);
+      traceLifecycle('get_container_reconnected', {
+        name,
+        container: containerSnapshot(record),
+      });
       return record;
     }
   }
@@ -457,13 +604,26 @@ export async function getContainer(name: string): Promise<ContainerRecord | null
  * the overlay or clear NVMe. A new container for the same workspace can
  * reuse the existing overlay mount immediately.
  */
-export async function terminateContainer(name: string): Promise<boolean> {
+export async function terminateContainer(name: string, reason = 'manual'): Promise<boolean> {
   const existing = containers.get(name);
+  traceLifecycle('terminate_container_request', {
+    name,
+    reason,
+    container: containerSnapshot(existing),
+  });
   if (existing?.containerIp) unindexContainerIp(existing.containerIp);
   const result = await dockerExec(['rm', '-f', name]);
   containers.delete(name);
   if (result.success) {
     console.log(`[ContainerManager] terminated container ${name}`);
+    traceLifecycle('terminate_container_success', { name, reason });
+  } else {
+    traceLifecycle('terminate_container_failed', {
+      name,
+      reason,
+      exitCode: result.exitCode,
+      stderr: result.stderr.slice(0, 500),
+    });
   }
   // Track termination time for NVMe reclaim idle guard
   containerTerminatedAt.set(name, Date.now());
@@ -531,7 +691,15 @@ export function listContainers(): ContainerRecord[] {
 async function reapIdleContainers(): Promise<void> {
   const now = Date.now();
   for (const [name, snapshot] of containers) {
+    traceLifecycle('reaper_scan', {
+      name,
+      idleMs: now - snapshot.lastAccessedAt,
+      activeWebSockets: snapshot.activeWebSockets,
+      inFlightProxyRequests: snapshot.inFlightProxyRequests ?? 0,
+      pendingEnsures: pendingWorkspaces.get(name) ?? 0,
+    });
     if (snapshot.activeWebSockets > 0) continue;
+    if ((snapshot.inFlightProxyRequests ?? 0) > 0) continue;
     if ((pendingWorkspaces.get(name) ?? 0) > 0) continue;
     const idleMs = now - snapshot.lastAccessedAt;
     if (idleMs < IDLE_TIMEOUT_MS) continue;
@@ -540,6 +708,7 @@ async function reapIdleContainers(): Promise<void> {
     const current = containers.get(name);
     if (!current || current !== snapshot) continue;
     if (current.activeWebSockets > 0) continue;
+    if ((current.inFlightProxyRequests ?? 0) > 0) continue;
     if ((pendingWorkspaces.get(name) ?? 0) > 0) continue;
 
     const refreshedIdleMs = Date.now() - current.lastAccessedAt;
@@ -548,7 +717,12 @@ async function reapIdleContainers(): Promise<void> {
     console.log(
       `[ContainerManager] reaping idle container ${name} (idle=${Math.round(refreshedIdleMs / 1000)}s)`
     );
-    await terminateContainer(name);
+    traceLifecycle('reaper_terminate', {
+      name,
+      idleMs: refreshedIdleMs,
+      container: containerSnapshot(current),
+    });
+    await terminateContainer(name, 'idle_reaper');
   }
 }
 

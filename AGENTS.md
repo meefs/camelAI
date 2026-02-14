@@ -223,8 +223,10 @@ export async function action({ request, context }: Route.ActionArgs) {
 3. On accepted user messages, `ChatThreadDO` updates thread metadata (`updated_at` and `user_message_count`) via `OrgDO.touchThread`
 4. `ChatThreadDO` opens a WebSocket to the sandbox control plane (`control-plane.mjs`)
 5. `control-plane.mjs` calls Claude SDK `query()` and streams events over the WebSocket
-6. `ChatThreadDO` multiplexes/replays events to connected chat clients
-7. Claude SDK stores messages in JSONL files at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`
+6. `control-plane.mjs` tags outbound chat events with monotonic `seq` numbers and keeps an in-memory replay buffer per thread
+7. On runner websocket reconnects, `ChatThreadDO` sends `lastSeq` in `init`, replays missed events from control plane, dedupes duplicate `seq`, then resumes live streaming
+8. `ChatThreadDO` multiplexes/replays events to connected chat clients
+9. Claude SDK stores messages in JSONL files at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`
 
 ### Slash Commands
 Users can send Claude SDK slash commands by typing the command as their entire message (nothing else). `ChatThreadDO.formatAttributedUserMessage()` detects these and strips the author prefix so the SDK receives the bare command. Supported commands:
@@ -362,6 +364,7 @@ API routes are defined as React Router routes with loaders (GET) and actions (PO
 |-------|---------|
 | `/ws/{workspace}` | Real-time chat streaming |
 | `/ws/logs?scriptName={name}` | Real-time log streaming for deployed workers |
+| `/ws/debug/azure-echo` | Debug websocket tunnel probe (Worker → SANDBOX_HOST → Azure VM echo server) |
 
 ### OAuth Routes (Main Worker)
 | Route | Method | Purpose |
