@@ -1152,6 +1152,19 @@ const server = Bun.serve({
           : 0;
         const sessionEnv = msg.env || {};
         const session = getOrCreateSession(threadId, sessionEnv);
+        // If the session's seq counter is behind the client's lastSeq
+        // (e.g. container restarted and session was recreated), advance it
+        // so new events won't be deduped by the client.
+        if (lastSeq > 0 && session.nextOutboundSeq <= lastSeq) {
+          const oldSeq = session.nextOutboundSeq;
+          session.nextOutboundSeq = lastSeq + 1;
+          traceControlPlane('session_seq_advanced', {
+            threadId,
+            oldSeq,
+            newSeq: session.nextOutboundSeq,
+            clientLastSeq: lastSeq,
+          });
+        }
         ws.data.threadId = threadId;
         ws.data.session = session;
         session.addClient(ws);
