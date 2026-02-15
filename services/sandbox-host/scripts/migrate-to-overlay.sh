@@ -35,7 +35,7 @@ systemctl stop lsyncd 2>/dev/null || true
 systemctl disable lsyncd 2>/dev/null || true
 
 # Kill any running sandbox-host process
-pkill -f 'sandbox-host/src/index.ts' 2>/dev/null || true
+pkill -f 'chiridion-sandbox-host' 2>/dev/null || true
 
 # Stop and remove all containers
 docker stop $(docker ps -q) 2>/dev/null || true
@@ -118,7 +118,7 @@ echo "=== Migration complete ==="
 echo ""
 echo "Next steps:"
 echo "  1. Start sandbox-host with overlay env vars:"
-echo "     WORKSPACES_ROOT=/mnt/workspaces NFS_ROOT=/mnt/nfs NVME_ROOT=/mnt/nvme bun run src/index.ts"
+echo "     WORKSPACES_ROOT=/mnt/workspaces NFS_ROOT=/mnt/nfs NVME_ROOT=/mnt/nvme go run ./cmd/sandbox-host"
 echo "  2. Test: curl -X POST -H 'Authorization: Bearer ...' http://localhost:4400/v1/sandboxes/test-overlay"
 echo "  3. Verify overlay mount: mount | grep overlay | grep workspaces"
 echo ""

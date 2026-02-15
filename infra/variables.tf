@@ -64,6 +64,12 @@ variable "sandbox_proxy_secret" {
   sensitive   = true
 }
 
+variable "sandbox_proxy_port" {
+  description = "Host port dedicated to container proxy traffic (/proxy/* only)"
+  type        = number
+  default     = 8081
+}
+
 variable "r2_access_key_id" {
   description = "R2 API access key ID used by sandbox-host rclone mount"
   type        = string

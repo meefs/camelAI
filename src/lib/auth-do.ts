@@ -677,33 +677,6 @@ export async function getWorkspaceAccess(env: AuthEnv, workspaceId: string, user
   return access?.access_level ?? 'full';
 }
 
-/**
- * Warm up a workspace container asynchronously.
- * Note: This simplified version doesn't background the warmup.
- * For full background warmup support, use the worker-level implementation.
- */
-export async function warmupWorkspace(
-  env: AuthEnv,
-  workspaceId: string,
-  userId: string
-): Promise<{ status: 'warm' | 'warming' | 'unauthorized' }> {
-  // Check access first (cheap - just KV/DO lookups)
-  const accessLevel = await getWorkspaceAccess(env, workspaceId, userId);
-  if (accessLevel === 'none') {
-    return { status: 'unauthorized' };
-  }
-
-  const wsStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
-  const info = await wsStub.getInfo();
-  if (!info) {
-    return { status: 'unauthorized' };
-  }
-
-  // Return warming status - actual warmup happens when the container is accessed
-  // Full background warmup requires ExecutionContext.waitUntil which isn't available here
-  return { status: 'warming' };
-}
-
 export async function setWorkspaceAccess(
   env: AuthEnv,
   workspaceId: string,

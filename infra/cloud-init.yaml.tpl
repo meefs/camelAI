@@ -25,6 +25,7 @@ write_files:
     permissions: "0600"
     content: |
       SANDBOX_PROXY_SECRET=${sandbox_proxy_secret}
+      SANDBOX_PROXY_PORT=${sandbox_proxy_port}
       R2_ACCESS_KEY_ID=${r2_access_key_id}
       R2_SECRET_ACCESS_KEY=${r2_secret_access_key}
       R2_ACCOUNT_ID=${r2_account_id}

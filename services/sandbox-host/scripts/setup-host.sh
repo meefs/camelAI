@@ -2,7 +2,7 @@
 #
 # Azure VM provisioning script for Chiridion sandbox host.
 # Sets up: NVMe RAID0 (cache), JuiceFS (durable canonical via Azure Blob + PostgreSQL),
-# overlayfs (per-workspace tiered mounts), Docker + gVisor, Bun.
+# overlayfs (per-workspace tiered mounts), Docker + gVisor, Go sandbox-host service.
 #
 # Storage layout:
 #   /mnt/nvme           - NVMe RAID0 (fast ephemeral, overlay upper layers)
@@ -193,35 +193,68 @@ cat > /etc/docker/daemon.json << DEOF
 DEOF
 systemctl restart docker
 
-# ─── 7. Bun runtime + systemd services ──────────────────────
-echo "[7/9] Installing Bun and setting up services..."
-if ! command -v bun &>/dev/null; then
-  apt-get install -y -qq unzip >/dev/null 2>&1
-  export HOME="${HOME:-/root}"
-  curl -fsSL https://bun.sh/install | bash
-  cp /root/.bun/bin/bun /usr/local/bin/bun
-  chmod 755 /usr/local/bin/bun
+# ─── 7. Go runtime + systemd services ───────────────────────
+echo "[7/9] Installing Go and setting up services..."
+REQUIRED_GO_VERSION="${REQUIRED_GO_VERSION:-1.24.0}"
+INSTALL_GO_VERSION="${INSTALL_GO_VERSION:-1.25.7}"
+
+have_required_go() {
+  if ! command -v go &>/dev/null; then
+    return 1
+  fi
+  local current
+  current="$(go version | awk '{print $3}' | sed 's/^go//')"
+  [ "$(printf '%s\n' "$REQUIRED_GO_VERSION" "$current" | sort -V | head -n1)" = "$REQUIRED_GO_VERSION" ]
+}
+
+if have_required_go; then
+  echo "  Go $(go version | awk '{print $3}') already installed (meets >= ${REQUIRED_GO_VERSION})."
 else
-  echo "  Bun already installed."
+  GO_ARCH="$(uname -m)"
+  case "$GO_ARCH" in
+    x86_64) GO_ARCH="amd64" ;;
+    aarch64|arm64) GO_ARCH="arm64" ;;
+    *)
+      echo "  ERROR: unsupported architecture for Go install: $GO_ARCH"
+      exit 1
+      ;;
+  esac
+
+  GO_TARBALL="go${INSTALL_GO_VERSION}.linux-${GO_ARCH}.tar.gz"
+  GO_URL="https://go.dev/dl/${GO_TARBALL}"
+  echo "  Installing Go ${INSTALL_GO_VERSION} from ${GO_URL}..."
+  curl -fsSL "$GO_URL" -o "/tmp/${GO_TARBALL}"
+  rm -rf /usr/local/go
+  tar -C /usr/local -xzf "/tmp/${GO_TARBALL}"
+  ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+  echo "  Installed $(go version)"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HOST_BINARY_PATH="/usr/local/bin/chiridion-sandbox-host"
+
+# Build sandbox host binary from source
+go build -C "${SERVICE_DIR}" -o "${HOST_BINARY_PATH}" ./cmd/sandbox-host
+chmod 755 "${HOST_BINARY_PATH}"
 
 # Sandbox host service
 cat > /etc/systemd/system/chiridion-sandbox-host.service << EOF
 [Unit]
 Description=Chiridion Sandbox Host
-After=docker.service chiridion-nvme-raid.service mnt-juicefs.service
+After=docker.service chiridion-nvme-raid.service mnt-juicefs.service chiridion-sandbox-firewall.service
 Requires=docker.service
+Wants=chiridion-sandbox-firewall.service
 
 [Service]
 Type=simple
 WorkingDirectory=${SERVICE_DIR}
-ExecStart=/usr/local/bin/bun run src/index.ts
+ExecStart=${HOST_BINARY_PATH}
 Restart=always
 RestartSec=5
 Environment=PORT=80
+Environment=SANDBOX_PROXY_PORT=8081
 Environment=WORKSPACES_ROOT=${WORKSPACES_DIR}
 Environment=JFS_ROOT=${JUICEFS_DIR}
 Environment=NVME_ROOT=${NVME_DIR}
@@ -230,6 +263,75 @@ Environment=CONTAINER_RUNTIME=runsc
 Environment=JFS_VOLUME_NAME=chiridion_workspaces
 EnvironmentFile=-/etc/chiridion/sandbox-host.env
 EnvironmentFile=-/etc/chiridion/storage.env
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enforce network-level split:
+# - containers on docker0 may reach SANDBOX_PROXY_PORT only
+# - containers on docker0 are blocked from PORT
+cat > /usr/local/bin/chiridion-apply-firewall.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONTROL_PORT="${PORT:-80}"
+PROXY_PORT="${SANDBOX_PROXY_PORT:-8081}"
+
+if ! command -v iptables >/dev/null 2>&1; then
+  echo "[firewall] iptables not available; skipping rules"
+  exit 0
+fi
+
+if [ "$CONTROL_PORT" = "$PROXY_PORT" ]; then
+  echo "[firewall] control and proxy ports are identical (${CONTROL_PORT}); refusing to apply rules"
+  exit 1
+fi
+
+ensure_rule() {
+  local cmd_check="$1"
+  local cmd_add="$2"
+  if ! eval "$cmd_check" >/dev/null 2>&1; then
+    eval "$cmd_add"
+  fi
+}
+
+# Allow docker containers to reach proxy listener.
+ensure_rule \
+  "iptables -C INPUT -i docker0 -p tcp --dport ${PROXY_PORT} -j ACCEPT" \
+  "iptables -I INPUT 1 -i docker0 -p tcp --dport ${PROXY_PORT} -j ACCEPT"
+
+# Deny docker containers from reaching control listener.
+ensure_rule \
+  "iptables -C INPUT -i docker0 -p tcp --dport ${CONTROL_PORT} -j DROP" \
+  "iptables -I INPUT 1 -i docker0 -p tcp --dport ${CONTROL_PORT} -j DROP"
+
+# Mirror rules for IPv6 if available.
+if command -v ip6tables >/dev/null 2>&1; then
+  ensure_rule \
+    "ip6tables -C INPUT -i docker0 -p tcp --dport ${PROXY_PORT} -j ACCEPT" \
+    "ip6tables -I INPUT 1 -i docker0 -p tcp --dport ${PROXY_PORT} -j ACCEPT"
+  ensure_rule \
+    "ip6tables -C INPUT -i docker0 -p tcp --dport ${CONTROL_PORT} -j DROP" \
+    "ip6tables -I INPUT 1 -i docker0 -p tcp --dport ${CONTROL_PORT} -j DROP"
+fi
+
+echo "[firewall] applied docker0 policy: allow :${PROXY_PORT}, drop :${CONTROL_PORT}"
+EOF
+chmod +x /usr/local/bin/chiridion-apply-firewall.sh
+
+cat > /etc/systemd/system/chiridion-sandbox-firewall.service << 'EOF'
+[Unit]
+Description=Apply Chiridion sandbox-host firewall policy
+After=docker.service
+Wants=docker.service
+Before=chiridion-sandbox-host.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/chiridion/sandbox-host.env
+ExecStart=/usr/local/bin/chiridion-apply-firewall.sh
+RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -295,6 +397,7 @@ chmod +x /usr/local/bin/chiridion-rebuild-raid.sh
 
 systemctl daemon-reload
 systemctl enable chiridion-nvme-raid 2>/dev/null || true
+systemctl enable --now chiridion-sandbox-firewall 2>/dev/null || true
 
 # ─── 8. cloudflared (Cloudflare Tunnel for VPC) ──────────────
 echo "[8/9] Installing cloudflared..."

@@ -255,6 +255,7 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
     cloudflared_tunnel_token = var.cloudflared_tunnel_token
     acr_login_server         = azurerm_container_registry.sandbox.login_server
     sandbox_proxy_secret     = var.sandbox_proxy_secret
+    sandbox_proxy_port       = var.sandbox_proxy_port
     r2_access_key_id         = var.r2_access_key_id
     r2_secret_access_key     = var.r2_secret_access_key
     r2_account_id            = var.r2_account_id

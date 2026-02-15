@@ -59,7 +59,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
    - `admin-cli/` - Local-only admin CLI for querying live environments
 
 3. **Sandbox Host** (`services/sandbox-host/`)
-   - Bun HTTP server managing Docker + gVisor container lifecycle on Azure VM
+   - Go HTTP server managing Docker + gVisor container lifecycle on Azure VM
    - Accessed via Workers VPC binding (Cloudflare Tunnel) — not exposed to public internet
    - Host FS operations on NVMe RAID0 + Azure Blob NFS v3 overlayfs
    - Proxies control plane traffic (health, env, chat WebSocket) to containers
@@ -386,6 +386,7 @@ MCP traffic routes through the sandbox host proxy, which adds identity headers (
 ### Prerequisites
 - Node.js 22+
 - Bun (package manager - **always use `bun` instead of `npm`**)
+- Go 1.24+ (required for `services/sandbox-host`)
 - Docker (optional for legacy local container tooling)
 - Cloudflare account (for deployment)
 
@@ -591,8 +592,10 @@ The sandbox host (`services/sandbox-host/`) runs on an Azure VM and manages Dock
 rsync -avz --exclude='node_modules' --exclude='.git' \
   services/sandbox-host/ chiridion-vm:/tmp/sandbox-host-update/
 
-# 2. SSH in and copy to service directory + restart
+# 2. SSH in, copy to service directory, build host binary, then restart
 ssh chiridion-vm "sudo rsync -av /tmp/sandbox-host-update/ /opt/chiridion/sandbox-host/ \
+  && cd /opt/chiridion/sandbox-host \
+  && sudo go build -o /usr/local/bin/chiridion-sandbox-host ./cmd/sandbox-host \
   && sudo systemctl restart chiridion-sandbox-host"
 
 # 3. Verify service is running
@@ -612,9 +615,16 @@ Sandbox names follow the pattern `chiridion-{workspaceId}`. Each workspace gets 
 
 **Sandbox image:** Ubuntu 24.04 with bun, node 22, git, rclone, fuse, uv, and `claude` user (uid 1001). Containers run with gVisor (`--runtime=runsc`) for isolation.
 
+**Network hardening (port split):** Sandbox-host runs two listeners:
+- `PORT` (default `80`) for Worker control/API traffic (`/v1/workspaces/*`, `/health`, etc.)
+- `SANDBOX_PROXY_PORT` (default `8081`) for container egress proxy traffic (`/proxy/*`) only
+VM firewall rules drop traffic from `docker0` to `PORT` and allow `docker0` to `SANDBOX_PROXY_PORT`, so containers cannot reach non-proxy endpoints even if app-layer checks regress.
+
 **R2 FUSE mounts:** Sandbox-host sets up R2 FUSE mounts automatically when env vars are pushed (`POST /v1/sandboxes/{name}/env` with `ORG_ID` + `WORKSPACE_ID`). Uses permanent R2 credentials from sandbox-host env vars (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`). Writes rclone config to host workspace dir, runs rclone inside the container via docker exec. No temp credentials or worker-side mount logic needed.
 
 **Storage:** NVMe RAID0 (hot, ~3.4TB) + JuiceFS (durable canonical) via overlayfs. On VM reboot, RAID0 is rebuilt empty; JuiceFS has all canonical data. Background sync flushes NVMe upper layer → JuiceFS via `jfs://` protocol (bypasses FUSE for speed).
+
+**Crash-recovery state DB:** Sandbox-host persists ephemeral runtime maps (containers, proxy thread routing context, reclaim-tracked terminated workspaces) to SQLite at `SANDBOX_HOST_STATE_DB` (default `/mnt/nvme/.sandbox-host/state.db`). This is for process-crash recovery only and is not required to survive VM restarts.
 
 ## Project Structure
 
@@ -676,10 +686,10 @@ chiridion-app/
 │   ├── dispatcher/src/        # WfP subdomain router
 │   └── admin-cli/             # Admin CLI tool
 ├── services/
-│   └── sandbox-host/          # Docker + gVisor sandbox host (Bun HTTP, Azure VM, VPC tunnel)
-│       ├── src/index.ts       # HTTP + WebSocket server
-│       ├── src/container-manager.ts # Docker lifecycle via CLI
-│       ├── src/fs-host.ts     # Direct host filesystem operations
+│   └── sandbox-host/          # Docker + gVisor sandbox host (Go HTTP, Azure VM, VPC tunnel)
+│       ├── cmd/sandbox-host/main.go # HTTP + WebSocket server entrypoint
+│       ├── internal/container/manager.go # Docker lifecycle via CLI
+│       ├── internal/fsops/fs.go # Direct host filesystem operations
 │       ├── Dockerfile.sandbox # Container image definition
 │       └── scripts/setup-host.sh # Azure VM provisioning
 ├── sandbox/
