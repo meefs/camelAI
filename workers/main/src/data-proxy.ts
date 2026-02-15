@@ -12,9 +12,6 @@ export interface DataProxyEnv {
 export class DataProxy extends Container<DataProxyEnv> {
   defaultPort = 8080;
 
-  // Override sleepAfterIdleSeconds - keep warm for 60 seconds after last request
-  override sleepAfterIdleSeconds = 60;
-
   // =============================================================================
   // MS SQL Server
   // =============================================================================
@@ -83,4 +80,3 @@ export interface MssqlQueryResponse {
   code?: string;
   number?: number;
 }
-

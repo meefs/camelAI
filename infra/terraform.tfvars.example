@@ -15,6 +15,7 @@ cloudflared_tunnel_token  = "eyJ...replace-me..."
 
 # Sandbox host auth
 sandbox_proxy_secret      = "replace-with-hex-secret"
+sandbox_proxy_port        = 8081
 
 # R2 mount credentials for sandbox-host
 r2_access_key_id          = "replace-with-r2-access-key-id"
