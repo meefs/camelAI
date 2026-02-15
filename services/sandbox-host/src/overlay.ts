@@ -134,6 +134,34 @@ function rsyncCmd(src: string, dst: string): string {
 }
 
 /**
+ * Run rsync, treating exit code 23 (partial transfer) as a warning.
+ *
+ * rsync exits 23 when it encounters I/O errors like ESTALE on individual
+ * files/dirs but successfully syncs everything else. We treat this as a
+ * partial success rather than a hard failure so that stale overlay dentries
+ * from force-killed containers don't block syncs entirely.
+ *
+ * Returns 'full' if rsync exited 0, 'partial' if it exited 23.
+ * Throws on any other non-zero exit code.
+ */
+function runRsync(src: string, dst: string): Promise<'full' | 'partial'> {
+  const cmd = rsyncCmd(src, dst);
+  return new Promise((resolve, reject) => {
+    exec(cmd, { encoding: 'utf-8', timeout: RSYNC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
+      if (!err) {
+        resolve('full');
+      } else if (err.code === 23) {
+        // Partial transfer — some files skipped (ESTALE, permission, etc.)
+        // but everything else synced successfully.
+        resolve('partial');
+      } else {
+        reject(new Error(`rsync failed (code=${err.code}): ${stderr || err.message}`));
+      }
+    });
+  });
+}
+
+/**
  * Ensure overlay mount exists for a workspace.
  * Creates JuiceFS lower dir, NVMe upper/work dirs, and mounts overlayfs.
  */
@@ -213,10 +241,14 @@ export async function syncOverlay(name: string): Promise<void> {
 
   try {
     const start = Date.now();
-    await runAsync(rsyncCmd(mount.mergedDir, mount.lowerDir));
+    const result = await runRsync(mount.mergedDir, mount.lowerDir);
     mount.lastSyncedAt = Date.now();
     const elapsed = Math.round((Date.now() - start) / 1000);
-    console.log(`[Overlay] ${name}: synced to JuiceFS (${elapsed}s)`);
+    if (result === 'partial') {
+      console.warn(`[Overlay] ${name}: partial sync to JuiceFS (${elapsed}s) — some files skipped (stale handles)`);
+    } else {
+      console.log(`[Overlay] ${name}: synced to JuiceFS (${elapsed}s)`);
+    }
   } catch (err) {
     console.error(`[Overlay] sync failed for ${name}:`, err);
   } finally {
@@ -297,10 +329,14 @@ export async function reclaimOverlay(name: string, isSafe: () => boolean | Promi
     // Final sync to JuiceFS (best-effort — proceed with reclaim even if this fails)
     try {
       const start = Date.now();
-      await runAsync(rsyncCmd(mount.mergedDir, mount.lowerDir));
+      const result = await runRsync(mount.mergedDir, mount.lowerDir);
       mount.lastSyncedAt = Date.now();
       const syncElapsed = Math.round((Date.now() - start) / 1000);
-      console.log(`[Overlay] ${name}: reclaim final sync (${syncElapsed}s)`);
+      if (result === 'partial') {
+        console.warn(`[Overlay] ${name}: reclaim final sync partial (${syncElapsed}s) — some files skipped (stale handles)`);
+      } else {
+        console.log(`[Overlay] ${name}: reclaim final sync (${syncElapsed}s)`);
+      }
     } catch (syncErr) {
       console.warn(
         `[Overlay] ${name}: reclaim final sync failed, proceeding with reclaim anyway ` +
