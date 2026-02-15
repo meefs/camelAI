@@ -622,9 +622,21 @@ export async function terminateContainer(name: string, reason = 'manual'): Promi
     reason,
     container: containerSnapshot(existing),
   });
+  // Graceful stop (SIGTERM → 5s grace → SIGKILL) then remove.
+  // This lets the process close file handles cleanly, preventing stale
+  // overlay dentries that break subsequent rsync syncs.
+  const stopResult = await dockerExec(['stop', '--timeout=5', name], 15_000);
+  const noSuchContainer = /No such container/i.test(stopResult.stderr);
+  if (!stopResult.success && !noSuchContainer) {
+    traceLifecycle('terminate_container_stop_failed', {
+      name,
+      reason,
+      exitCode: stopResult.exitCode,
+      stderr: stopResult.stderr.slice(0, 500),
+    });
+  }
   const result = await dockerExec(['rm', '-f', name]);
-  const noSuchContainer = /No such container/i.test(result.stderr);
-  let terminated = result.success || noSuchContainer;
+  let terminated = result.success || noSuchContainer || /No such container/i.test(result.stderr);
 
   if (!terminated) {
     let stillRunning = false;

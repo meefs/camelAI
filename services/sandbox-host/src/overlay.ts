@@ -274,6 +274,12 @@ export async function listMountedOverlayNames(): Promise<string[]> {
  *
  * NVMe dirs are renamed atomically before deletion so that a concurrent
  * ensureOverlay call would create fresh dirs instead of colliding.
+ *
+ * If the final rsync fails (e.g. stale overlay dentries from a crashed
+ * container), we proceed with unmount + reclaim anyway. The periodic
+ * background sync (every 60s) will have already captured recent state
+ * to JuiceFS, so at most ~60s of writes may be lost — which is better
+ * than leaking NVMe indefinitely.
  */
 export async function reclaimOverlay(name: string, isSafe: () => boolean | Promise<boolean>): Promise<boolean> {
   const mount = mounts.get(name) ?? hydrateMountFromFs(name);
@@ -288,12 +294,20 @@ export async function reclaimOverlay(name: string, isSafe: () => boolean | Promi
       return false;
     }
 
-    // Final sync to JuiceFS
-    const start = Date.now();
-    await runAsync(rsyncCmd(mount.mergedDir, mount.lowerDir));
-    mount.lastSyncedAt = Date.now();
-    const syncElapsed = Math.round((Date.now() - start) / 1000);
-    console.log(`[Overlay] ${name}: reclaim final sync (${syncElapsed}s)`);
+    // Final sync to JuiceFS (best-effort — proceed with reclaim even if this fails)
+    try {
+      const start = Date.now();
+      await runAsync(rsyncCmd(mount.mergedDir, mount.lowerDir));
+      mount.lastSyncedAt = Date.now();
+      const syncElapsed = Math.round((Date.now() - start) / 1000);
+      console.log(`[Overlay] ${name}: reclaim final sync (${syncElapsed}s)`);
+    } catch (syncErr) {
+      console.warn(
+        `[Overlay] ${name}: reclaim final sync failed, proceeding with reclaim anyway ` +
+        `(last successful sync at ${new Date(mount.lastSyncedAt).toISOString()})`,
+        syncErr,
+      );
+    }
 
     // Double-check: did a new container appear during the sync?
     if (!(await isSafe())) {
@@ -301,9 +315,15 @@ export async function reclaimOverlay(name: string, isSafe: () => boolean | Promi
       return false;
     }
 
-    // Unmount overlay
+    // Unmount overlay — use lazy unmount as fallback if regular unmount fails
+    // (stale dentries can cause "target is busy" on regular unmount)
     if (isMounted(mount.mergedDir)) {
-      run(`umount "${mount.mergedDir}"`);
+      try {
+        run(`umount "${mount.mergedDir}"`);
+      } catch {
+        console.warn(`[Overlay] ${name}: regular umount failed, using lazy umount`);
+        run(`umount -l "${mount.mergedDir}"`);
+      }
     }
 
     // Atomically rename NVMe dirs to prevent races with ensureOverlay.
