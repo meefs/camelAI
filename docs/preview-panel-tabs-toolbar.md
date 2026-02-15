@@ -75,7 +75,7 @@ When going from 1 → 2 tabs, the header should feel like it naturally "grew" ta
 
 ## File Type Icons
 
-Each file type gets a distinct icon from Lucide. These replace the colored dots.
+Each file type gets a distinct icon from Lucide.
 
 | Type | Extensions | Lucide Icon | Notes |
 |------|-----------|-------------|-------|
@@ -118,48 +118,42 @@ A horizontal row of icon buttons. Contents change based on the active tab's file
 [ ↻ Refresh ] │ [ URL bar (click-to-copy) ] [ Public/Private ] │ [ 🪲 Bug ] ─── [ ⧉ Open ]
 ```
 
-- **Refresh**: Reloads iframe (`setIframeKey(prev => prev + 1)`)
+- **Refresh**: Reloads iframe (`refreshActiveIframe()`)
 - **URL bar**: Non-editable field showing vanity domain (e.g. `my-dashboard--org.chiridion.app`). Styled like a mini browser URL bar: `bg-muted/50 rounded-md px-2 py-1 text-xs font-mono text-muted-foreground truncate`. On click, copies full URL (with `https://` prefix) to clipboard. Brief "Copied!" flash — field background pulses `bg-green-500/10` for ~1.5s then resets. Show a subtle "Copy" label on hover (`opacity-0 group-hover:opacity-100 text-[10px]`)
-- **Public/Private**: Existing `ShareStatusButton` — no changes
+- **Public/Private**: Existing `ShareStatusButton` — no changes needed to the component itself, but the `onStatusChange` callback must update the active tab target (see Step 7e)
 - **Bug report**: Existing bug button — no changes
 - **Open in new tab**: Opens `appPreviewVanityUrl` via `window.open()`
 
 **Notebook (.ipynb)**
 ```
-[ ↻ Refresh ] │ [ Report │ Notebook ] │ [ ↓ Download ▾ ] ──────── [ ⧉ Open ]
+[ ↻ Refresh ] │ [ Report │ Notebook ] │ [ ↓ Download ] ──────── [ ⧉ Open ]
 ```
 
-- **Refresh**: Re-fetches notebook (`setFilePreviewKey(prev => prev + 1)`)
+- **Refresh**: Re-fetches notebook (`refreshActiveFilePreview()`)
 - **Report / Notebook toggle**: Existing segmented control (shadcn `Tabs` with `variant="outline"`) — move from Row 1 to Row 2. Same implementation: `TabsList variant="outline" className="h-7"`, `TabsTrigger className="h-6 px-3 text-xs"`
-- **Download**: Single download icon button (`Download` icon). Click opens a `DropdownMenu`:
-  - "Download as PDF"
-  - "Download notebook (.ipynb)"
+- **Download**: Direct download of the `.ipynb` file (single format, no submenu)
 - **Open in new tab**: Opens file in computer tab
 
 **Markdown (.md)**
 ```
-[ ↻ Refresh ] │ [ ↓ Download ▾ ] ──────────────────────── [ ⧉ Open ]
+[ ↻ Refresh ] │ [ ↓ Download ] ──────────────────────── [ ⧉ Open ]
 ```
 
-- **Download**: Click opens `DropdownMenu`:
-  - "Download as PDF"
-  - "Download markdown (.md)"
+- **Download**: Direct download of the `.md` file (single format)
 
 **Text (.txt)**
 ```
 [ ↻ Refresh ] │ [ ↓ Download ] ────────────────────────── [ ⧉ Open ]
 ```
 
-- **Download**: Direct download (no submenu — single format)
+- **Download**: Direct download (single format)
 
 **Spreadsheet (.csv, .tsv)**
 ```
-[ ↻ Refresh ] │ [ ↓ Download ▾ ] ──────────────────────── [ ⧉ Open ]
+[ ↻ Refresh ] │ [ ↓ Download ] ──────────────────────── [ ⧉ Open ]
 ```
 
-- **Download** submenu:
-  - "Download CSV" (or "Download TSV" — matches original format)
-  - "Download as Excel (.xlsx)"
+- **Download**: Direct download (single format, original CSV/TSV)
 
 **JSON (.json, .jsonl)**
 ```
@@ -177,12 +171,10 @@ A horizontal row of icon buttons. Contents change based on the active tab's file
 
 **SVG images (.svg)**
 ```
-[ ↻ Refresh ] │ [ ↓ Download ▾ ] ──────────────────────── [ ⧉ Open ]
+[ ↻ Refresh ] │ [ ↓ Download ] ──────────────────────── [ ⧉ Open ]
 ```
 
-- **Download** submenu:
-  - "Download SVG"
-  - "Download as PNG"
+- **Download**: Direct download of SVG (single format)
 
 **Raster images (.png, .jpg, etc.)**
 ```
@@ -193,22 +185,22 @@ A horizontal row of icon buttons. Contents change based on the active tab's file
 
 ### Download Button Behavior
 
-The download button is always just the `Download` icon — no caret, no chevron, no visual indicator that it's a dropdown. The user clicks, and:
-- If single format → immediate download
-- If multiple formats → `DropdownMenu` appears below with options
+The download button is always just the `Download` icon — no caret, no chevron, no visual indicator that it's a dropdown.
 
-Downloads use the existing `filePreviewOpenUrl` (the `/api/workspaces/:id/fs/content/*` endpoint) with appropriate download headers. For format conversions (PDF, XLSX, PNG), the initial implementation should download the original format only. Format conversion can be added later as a separate feature.
+For the initial build, all downloads are single-format (the original file). The `triggerDownload` helper creates a temporary `<a>` element with the `download` attribute and clicks it programmatically (see Step 5 for implementation).
+
+The `getDownloadFormats` function returns possible formats per file type. For now it returns only the original format for each type. The multi-format dropdown code path exists in the component but won't be exercised until format conversion endpoints are built. When conversion endpoints are added later, the `getDownloadFormats` function is the only thing that needs to change — the UI will render the dropdown automatically when more than one format is returned.
 
 ### Open in New Tab Behavior
 
 - **Live apps**: `window.open(appPreviewVanityUrl, '_blank')`
-- **All files**: `window.open(filePreviewOpenUrl, '_blank')` — opens the raw file content URL
+- **All files**: `window.open(/computer/{workspaceId}?file={encodedPath}, '_blank')` — opens the source file in the Computer tab
 
 ---
 
 ## Implementation
 
-### 1. Define tab state types and extend `PreviewTarget`
+### 1. Define tab state types
 
 **File: `src/types.ts`**
 
@@ -223,22 +215,20 @@ export interface PreviewTab {
 }
 ```
 
-No changes needed to the existing `PreviewTarget` type.
+No changes needed to the existing `PreviewTarget` type (lines 13–26 in `src/types.ts`).
 
-### 2. Create the preview panel tab/toolbar components
+### 2. Create the preview panel tab row component
 
 **New file: `src/components/preview-panel/preview-tabs.tsx`**
 
-This component renders the full two-row header (tab row + action toolbar).
+This component renders Row 1 — the tab/header row.
 
 ```typescript
-interface PreviewTabsProps {
+interface PreviewTabRowProps {
   tabs: PreviewTab[];
   activeTabId: string;
   onTabSelect: (tabId: string) => void;
   onTabClose: (tabId: string) => void;
-  /** Action toolbar props — passed through to active tab's toolbar */
-  toolbarProps: PreviewToolbarProps;
 }
 ```
 
@@ -365,6 +355,59 @@ function PreviewToolbar(props: PreviewToolbarProps) {
 }
 ```
 
+**`AppToolbarActions` sub-component** (inline in same file):
+
+```tsx
+function AppToolbarActions(props: PreviewToolbarProps) {
+  return (
+    <>
+      <ClickToCopyUrlBar
+        url={props.vanityUrl ?? ''}
+        displayHost={props.vanityHost ?? ''}
+      />
+      {props.appShareButton}
+
+      <Separator orientation="vertical" className="mx-1 h-4" />
+
+      <ToolbarButton icon={Bug} tooltip="Report a bug" onClick={props.onBugReport ?? (() => {})} />
+    </>
+  );
+}
+```
+
+**`NotebookToolbarActions` sub-component** (inline in same file):
+
+```tsx
+function NotebookToolbarActions(props: PreviewToolbarProps) {
+  return (
+    <>
+      <Tabs
+        value={props.notebookViewMode ?? 'report'}
+        onValueChange={(value) => {
+          if (value === 'report' || value === 'notebook') {
+            props.onNotebookViewModeChange?.(value);
+          }
+        }}
+        className="shrink-0 gap-0"
+      >
+        <TabsList variant="outline" className="h-7">
+          <TabsTrigger value="report" className="h-6 px-3 text-xs">
+            Report
+          </TabsTrigger>
+          <TabsTrigger value="notebook" className="h-6 px-3 text-xs">
+            Notebook
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      <Separator orientation="vertical" className="mx-1 h-4" />
+
+      <DownloadButton activeTarget={props.activeTarget} filePreviewOpenUrl={props.filePreviewOpenUrl} />
+    </>
+  );
+}
+```
+
 **Small helper: `ToolbarButton`**
 
 ```tsx
@@ -383,6 +426,8 @@ function ToolbarButton({ icon: Icon, tooltip, onClick, ...rest }: {
   );
 }
 ```
+
+**Note on icon sizing:** The Button component's `size="icon-sm"` variant (`size-6`, icon `size-3` = `12px`) is pre-existing and matches current toolbar buttons. The `h-4 w-4` class on icon elements overrides the default in the CVA variants — this is intentional to match the existing app preview toolbar icon sizes. Verify visually that `h-4 w-4` looks right; if icons feel too large in the smaller toolbar row, switch to letting the variant default apply by removing the explicit icon class.
 
 ### 4. Create the URL bar component (app preview only)
 
@@ -425,9 +470,21 @@ function ClickToCopyUrlBar({ url, displayHost }: { url: string; displayHost: str
 
 **Add to: `src/components/preview-panel/preview-toolbar.tsx`** (or co-locate)
 
-The download button renders as a plain icon. If the file type has multiple download formats, it opens a `DropdownMenu`. Otherwise it triggers a direct download.
+The download button renders as a plain icon. If the file type has multiple download formats (future), it opens a `DropdownMenu`. Otherwise it triggers a direct download.
 
 ```tsx
+/** Trigger a file download by creating a temporary link and clicking it */
+function triggerDownload(url: string, filename?: string) {
+  const a = document.createElement('a');
+  a.href = url;
+  if (filename) a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  // Clean up asynchronously to avoid layout thrashing
+  requestAnimationFrame(() => a.remove());
+}
+
 function DownloadButton({ activeTarget, filePreviewOpenUrl }: {
   activeTarget: PreviewTarget;
   filePreviewOpenUrl?: string;
@@ -435,20 +492,20 @@ function DownloadButton({ activeTarget, filePreviewOpenUrl }: {
   const formats = getDownloadFormats(activeTarget);
   const downloadUrl = activeTarget.kind === 'file' ? filePreviewOpenUrl : undefined;
 
-  if (!downloadUrl) return null;
+  if (!downloadUrl || formats.length === 0) return null;
 
   // Single format: direct download
-  if (formats.length <= 1) {
+  if (formats.length === 1) {
     return (
       <ToolbarButton
         icon={Download}
         tooltip="Download"
-        onClick={() => triggerDownload(downloadUrl, formats[0]?.filename)}
+        onClick={() => triggerDownload(downloadUrl, formats[0].filename)}
       />
     );
   }
 
-  // Multiple formats: dropdown
+  // Multiple formats: dropdown (future — when conversion endpoints exist)
   return (
     <DropdownMenu>
       <Tooltip>
@@ -475,52 +532,39 @@ function DownloadButton({ activeTarget, filePreviewOpenUrl }: {
 
 **Download format resolution helper:**
 
+For the initial build, every file type returns exactly one format (the original file). The multi-format dropdown structure exists in the component and will activate automatically once `getDownloadFormats` returns more than one entry for a type.
+
 ```typescript
-function getDownloadFormats(target: PreviewTarget): { label: string; filename?: string }[] {
+function getDownloadFormats(target: PreviewTarget): { label: string; filename: string }[] {
   if (target.kind === 'app') return [];
 
   const ext = getFileExtension(target.path).toLowerCase();
   const name = target.filename || target.path.split('/').pop() || 'file';
 
+  // Initial build: single-format download only (original file).
+  // When server-side conversion endpoints are added, expand the
+  // relevant cases to return multiple entries — the dropdown UI
+  // will render automatically.
   switch (ext) {
     case 'ipynb':
-      return [
-        { label: 'Download as PDF', filename: name.replace(/\.ipynb$/, '.pdf') },
-        { label: 'Download notebook (.ipynb)', filename: name },
-      ];
+      return [{ label: 'Download notebook (.ipynb)', filename: name }];
     case 'md':
-      return [
-        { label: 'Download as PDF', filename: name.replace(/\.md$/, '.pdf') },
-        { label: 'Download markdown (.md)', filename: name },
-      ];
+      return [{ label: 'Download markdown (.md)', filename: name }];
     case 'csv':
-      return [
-        { label: 'Download CSV', filename: name },
-        { label: 'Download as Excel (.xlsx)', filename: name.replace(/\.csv$/, '.xlsx') },
-      ];
+      return [{ label: 'Download CSV', filename: name }];
     case 'tsv':
-      return [
-        { label: 'Download TSV', filename: name },
-        { label: 'Download as Excel (.xlsx)', filename: name.replace(/\.tsv$/, '.xlsx') },
-      ];
+      return [{ label: 'Download TSV', filename: name }];
     case 'svg':
-      return [
-        { label: 'Download SVG', filename: name },
-        { label: 'Download as PNG', filename: name.replace(/\.svg$/, '.png') },
-      ];
+      return [{ label: 'Download SVG', filename: name }];
     default:
-      return [{ label: `Download ${ext.toUpperCase() || 'file'}`, filename: name }];
+      return [{ label: `Download`, filename: name }];
   }
 }
 ```
 
-**Note on format conversion:** The download submenu items for converted formats (PDF, XLSX, PNG) should initially just download the original file. True format conversion requires server-side work (Puppeteer for PDF, a library for XLSX, resvg for SVG→PNG) that is out of scope for this plan. The submenu structure is put in place now so the UI is ready. When conversion endpoints exist, the `triggerDownload` calls simply point at different URLs. Until then, only the "Download original" option should be functional — conversion options should either be hidden or shown as disabled with a "(coming soon)" note.
+### 6. Create helpers: `getTabIcon`, `getTabLabel`, `getToolbarFileType`, `getPreviewTabId`
 
-**Recommended approach for the initial build:** Only show download formats that can actually be served right now. This means single-format download for all types (the original file). The multi-format dropdown structure exists in code and can be enabled per-type as conversion endpoints are added. This avoids showing broken menu items.
-
-### 6. Create helper: `getTabIcon` and `getTabLabel`
-
-**Add to: `src/components/preview-panel/preview-utils.ts`**
+**New file: `src/components/preview-panel/preview-utils.ts`**
 
 ```typescript
 import { AppWindow, FileText, NotebookPen, FileSpreadsheet, Braces, FileCode, FileImage, File } from 'lucide-react';
@@ -533,7 +577,6 @@ export function getTabIcon(target: PreviewTarget): LucideIcon {
 
   const ext = getFileExtension(target.path).toLowerCase();
 
-  // Specific overrides beyond file-type-utils categories
   if (ext === 'ipynb') return NotebookPen;
   if (ext === 'json' || ext === 'jsonl') return Braces;
   if (ext === 'md' || ext === 'txt') return FileText;
@@ -570,107 +613,210 @@ export function getToolbarFileType(target: PreviewTarget): ToolbarFileType {
 /** Generate a stable tab ID from a PreviewTarget */
 export function getPreviewTabId(target: PreviewTarget): string {
   if (target.kind === 'app') return `app:${target.scriptName}`;
-  return `file:${target.source}:${target.path}`;
+  return `file:${target.workspaceId}:${target.source}:${target.path}`;
 }
 ```
+
+Implementation note: keep extension classification centralized. `getToolbarFileType()` should reuse `file-type-utils.ts` primitives where possible (or share exported extension sets) so toolbar/file-preview classification does not drift over time.
 
 ### 7. Add tab state management to Chat.tsx
 
 **File: `src/components/Chat.tsx`**
 
-Replace the single `previewTarget` state with a tab list + active tab:
+This is the largest change. Replace the single `previewTarget` state with a tab list + active tab, and update all dependent code.
 
-**New state (replaces lines ~717–725):**
+#### 7a. New state (replaces lines 717–725)
+
+Remove the single-item preview state (`previewTarget`, `iframeKey`, `filePreviewKey`, `notebookViewMode`, `previewLoading`) and replace it with tab + per-tab maps:
 
 ```typescript
-// ── Preview tab state ──
+// ── Preview tabs ──
 const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(() => {
   if (!initialPreviewTarget) return [];
   return [{ id: getPreviewTabId(initialPreviewTarget), target: initialPreviewTarget }];
 });
-const [activeTabId, setActiveTabId] = useState<string | null>(() => {
-  return initialPreviewTarget ? getPreviewTabId(initialPreviewTarget) : null;
-});
+const [activeTabId, setActiveTabId] = useState<string | null>(() =>
+  initialPreviewTarget ? getPreviewTabId(initialPreviewTarget) : null
+);
+
 const previewTabsRef = useRef(previewTabs);
 const activeTabIdRef = useRef(activeTabId);
 
-// Derived: the active tab's target (replaces old previewTarget)
 const activeTab = useMemo(
-  () => previewTabs.find((t) => t.id === activeTabId) ?? null,
+  () => previewTabs.find((tab) => tab.id === activeTabId) ?? null,
   [previewTabs, activeTabId]
 );
 const previewTarget = activeTab?.target ?? null;
 
-// Keep existing refs in sync
 const previewTargetRef = useRef<PreviewTarget | null>(previewTarget);
-useEffect(() => { previewTargetRef.current = previewTarget; }, [previewTarget]);
-useEffect(() => { previewTabsRef.current = previewTabs; }, [previewTabs]);
-useEffect(() => { activeTabIdRef.current = activeTabId; }, [activeTabId]);
+useEffect(() => {
+  previewTargetRef.current = previewTarget;
+}, [previewTarget]);
+useEffect(() => {
+  previewTabsRef.current = previewTabs;
+}, [previewTabs]);
+useEffect(() => {
+  activeTabIdRef.current = activeTabId;
+}, [activeTabId]);
 
-// Existing state that stays unchanged:
-const [iframeKey, setIframeKey] = useState(0);
-const [filePreviewKey, setFilePreviewKey] = useState(0);
-const [notebookViewMode, setNotebookViewMode] = useState<'report' | 'notebook'>('report');
-const [previewLoading, setPreviewLoading] = useState(false);
+// ── Per-tab state ──
+const [tabIframeKeys, setTabIframeKeys] = useState<Record<string, number>>({});
+const [tabFilePreviewKeys, setTabFilePreviewKeys] = useState<Record<string, number>>({});
+const [tabNotebookViewModes, setTabNotebookViewModes] = useState<Record<string, 'report' | 'notebook'>>({});
+const [tabAppLoading, setTabAppLoading] = useState<Record<string, boolean>>({});
+
+const iframeRefreshTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+// Derived state for the active tab
+const iframeKey = activeTabId ? (tabIframeKeys[activeTabId] ?? 0) : 0;
+const filePreviewKey = activeTabId ? (tabFilePreviewKeys[activeTabId] ?? 0) : 0;
+const notebookViewMode = activeTabId ? (tabNotebookViewModes[activeTabId] ?? 'report') : 'report';
+const previewLoading = activeTabId ? Boolean(tabAppLoading[activeTabId]) : false;
+
 const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
 const previewVersionRef = useRef<number>(0);
 ```
 
-**Tab operations (new callbacks):**
+#### 7b. Add explicit per-tab key helpers (prevents active-tab race conditions)
 
 ```typescript
-/** Open a target as a tab. If the same target is already a tab, just activate it. */
+const bumpIframeKey = useCallback((tabId: string) => {
+  setTabIframeKeys((prev) => ({ ...prev, [tabId]: (prev[tabId] ?? 0) + 1 }));
+}, []);
+
+const bumpFilePreviewKey = useCallback((tabId: string) => {
+  setTabFilePreviewKeys((prev) => ({ ...prev, [tabId]: (prev[tabId] ?? 0) + 1 }));
+}, []);
+
+const refreshActiveIframe = useCallback(() => {
+  if (!activeTabId) return;
+  bumpIframeKey(activeTabId);
+}, [activeTabId, bumpIframeKey]);
+
+const refreshActiveFilePreview = useCallback(() => {
+  if (!activeTabId) return;
+  bumpFilePreviewKey(activeTabId);
+}, [activeTabId, bumpFilePreviewKey]);
+
+const setActiveNotebookViewMode = useCallback((mode: 'report' | 'notebook') => {
+  if (!activeTabId) return;
+  setTabNotebookViewModes((prev) => ({ ...prev, [activeTabId]: mode }));
+}, [activeTabId]);
+```
+
+#### 7c. Add a best-effort server sync helper for active target
+
+The DO still tracks one active `previewTarget`. In a tabbed UI, selecting/closing tabs must sync the active target back to the server.
+
+```typescript
+const syncPreviewTargetBestEffort = useCallback((target: PreviewTarget | null) => {
+  if (!threadId) return;
+  const socket = wsRef.current;
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({ type: 'set_preview_target', target, threadId }));
+}, [threadId]);
+```
+
+#### 7d. Tab operations (new callbacks)
+
+```typescript
+/** Open a target as a tab. If already open, update payload and activate. */
 const openTabForTarget = useCallback((target: PreviewTarget) => {
   const id = getPreviewTabId(target);
   setPreviewTabs((prev) => {
-    const existing = prev.find((t) => t.id === id);
+    const existing = prev.find((tab) => tab.id === id);
     if (existing) {
-      // Update the target data (e.g. isPublic may have changed)
-      return prev.map((t) => (t.id === id ? { ...t, target } : t));
+      return prev.map((tab) => (tab.id === id ? { ...tab, target } : tab));
     }
     return [...prev, { id, target }];
   });
   setActiveTabId(id);
 }, []);
 
-const closeTab = useCallback((tabId: string) => {
-  setPreviewTabs((prev) => {
-    const idx = prev.findIndex((t) => t.id === tabId);
-    if (idx === -1) return prev;
-    const next = prev.filter((t) => t.id !== tabId);
-    // If closing the active tab, activate the nearest neighbor
-    if (tabId === activeTabIdRef.current) {
-      if (next.length === 0) {
-        setActiveTabId(null);
-        setMobileView('chat');
-      } else {
-        const newIdx = Math.min(idx, next.length - 1);
-        setActiveTabId(next[newIdx].id);
-      }
-    }
-    return next;
-  });
-}, []);
-
 const selectTab = useCallback((tabId: string) => {
   setActiveTabId(tabId);
-}, []);
+  const tab = previewTabsRef.current.find((entry) => entry.id === tabId);
+  if (tab) syncPreviewTargetBestEffort(tab.target);
+}, [syncPreviewTargetBestEffort]);
+
+const closeTab = useCallback((tabId: string) => {
+  const prevTabs = previewTabsRef.current;
+  const idx = prevTabs.findIndex((tab) => tab.id === tabId);
+  if (idx === -1) return;
+
+  const nextTabs = prevTabs.filter((tab) => tab.id !== tabId);
+  setPreviewTabs(nextTabs);
+
+  const closingActive = tabId === activeTabIdRef.current;
+  if (closingActive) {
+    if (nextTabs.length === 0) {
+      setActiveTabId(null);
+      setMobileView('chat');
+      syncPreviewTargetBestEffort(null);
+    } else {
+      const nextIndex = Math.min(idx, nextTabs.length - 1);
+      const nextActive = nextTabs[nextIndex];
+      setActiveTabId(nextActive.id);
+      syncPreviewTargetBestEffort(nextActive.target);
+    }
+  }
+
+  // Per-tab cleanup
+  setTabIframeKeys((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
+  setTabFilePreviewKeys((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
+  setTabNotebookViewModes((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
+  setTabAppLoading((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
+
+  const timeout = iframeRefreshTimeoutsRef.current[tabId];
+  if (timeout) {
+    clearTimeout(timeout);
+    delete iframeRefreshTimeoutsRef.current[tabId];
+  }
+}, [syncPreviewTargetBestEffort]);
 ```
 
-**Update `setPreviewTargetForThread`:**
+#### 7e. Update `appIsPublic` / `setAppIsPublic` (line 773–779)
 
-The existing function sends a WebSocket message to ChatThreadDO to persist the "active" preview target. With tabs, this now just persists whichever target is active. The tab list itself is client-only state — not persisted server-side. On reconnect, the server replays the last active target and that becomes the single initial tab.
+The current code derives `appIsPublic` from `previewTarget` and mutates single-target state directly. With tabs, update the app target inside the active tab:
+
+```typescript
+const appIsPublic = previewTarget?.kind === 'app' ? previewTarget.isPublic : false;
+
+const setAppIsPublic = useCallback((isPublic: boolean) => {
+  if (!activeTabId) return;
+  setPreviewTabs((prev) =>
+    prev.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      if (tab.target.kind !== 'app') return tab;
+      return { ...tab, target: { ...tab.target, isPublic } };
+    })
+  );
+}, [activeTabId]);
+```
+
+#### 7f. Update `setPreviewTargetForThread` (lines 2409–2436)
+
+Do not refresh via `refreshActiveIframe()` here; that can race before `activeTabId` updates. Open tab locally, then sync target to DO.
 
 ```typescript
 const setPreviewTargetForThread = useCallback((target: PreviewTarget | null) => {
   if (!threadId) return;
+
   const socket = wsRef.current;
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     if (target === null) {
-      // Close all tabs
+      // Local "close all" still works offline.
       setPreviewTabs([]);
       setActiveTabId(null);
-      setPreviewLoading(false);
+      setTabIframeKeys({});
+      setTabFilePreviewKeys({});
+      setTabNotebookViewModes({});
+      setTabAppLoading({});
+      for (const timeout of Object.values(iframeRefreshTimeoutsRef.current)) {
+        clearTimeout(timeout);
+      }
+      iframeRefreshTimeoutsRef.current = {};
+      setMobileView('chat');
       return;
     }
     toast.error('Preview is unavailable while reconnecting.');
@@ -681,42 +827,38 @@ const setPreviewTargetForThread = useCallback((target: PreviewTarget | null) => 
 
   if (target) {
     openTabForTarget(target);
-    if (target.kind === 'app') {
-      setPreviewLoading(true);
-      setIframeKey((prev) => prev + 1);
-    } else {
-      setPreviewLoading(false);
-    }
   }
-  // Note: target=null from agent clears server state but doesn't close tabs
 }, [threadId, openTabForTarget]);
 ```
 
-**Update `openPreviewTarget`:**
+#### 7g. Update `openPreviewTarget` and `clearPreviewTarget`
 
 ```typescript
 const openPreviewTarget = useCallback((target: PreviewTarget) => {
   setPreviewTargetForThread(target);
   setMobileView('preview');
 }, [setPreviewTargetForThread]);
-```
 
-**Update `clearPreviewTarget`:**
-
-This is now "close all tabs" — called when the user wants to dismiss the preview panel entirely:
-
-```typescript
+// "Close all tabs" — dismiss the preview panel entirely
 const clearPreviewTarget = useCallback(() => {
   setPreviewTargetForThread(null);
   setPreviewTabs([]);
   setActiveTabId(null);
+  setTabIframeKeys({});
+  setTabFilePreviewKeys({});
+  setTabNotebookViewModes({});
+  setTabAppLoading({});
+  for (const timeout of Object.values(iframeRefreshTimeoutsRef.current)) {
+    clearTimeout(timeout);
+  }
+  iframeRefreshTimeoutsRef.current = {};
   setMobileView('chat');
 }, [setPreviewTargetForThread]);
 ```
 
-**Update `handleRealtimeSideChannelEvent` for `preview_state`:**
+#### 7h. Update `handleRealtimeSideChannelEvent` for `preview_state` (lines 882–910)
 
-When the server broadcasts a new preview target (e.g. Claude sets a new file preview via MCP), open it as a new tab:
+When the server broadcasts preview state, always update/open that tab. On version bump, refresh by explicit tab ID:
 
 ```typescript
 if (data.type === 'preview_state') {
@@ -725,38 +867,40 @@ if (data.type === 'preview_state') {
   const hasVersionBump = newVersion > previewVersionRef.current;
   previewVersionRef.current = newVersion;
 
-  if (nextTarget) {
-    openTabForTarget(nextTarget);
+  if (!nextTarget) {
+    // Keep client tabs; DO only stores the single active preview.
+    return;
+  }
 
-    const nextId = getPreviewTabId(nextTarget);
-    const currentId = activeTabIdRef.current;
-    const currentTarget = previewTargetRef.current;
-    const isSameItem = currentId === nextId;
+  openTabForTarget(nextTarget);
+  const nextId = getPreviewTabId(nextTarget);
 
-    if (nextTarget.kind === 'app' && hasVersionBump) {
-      // App deploy refresh logic (existing)
-      if (iframeRefreshTimeoutRef.current) clearTimeout(iframeRefreshTimeoutRef.current);
-      setPreviewLoading(true);
-      iframeRefreshTimeoutRef.current = setTimeout(() => {
-        setPreviewLoading(false);
-        setIframeKey((prev) => prev + 1);
-        iframeRefreshTimeoutRef.current = null;
-      }, 1500);
-    } else if (nextTarget.kind === 'file' && isSameItem && hasVersionBump) {
-      setFilePreviewKey((prev) => prev + 1);
-      setPreviewLoading(false);
-    } else {
-      setPreviewLoading(false);
-    }
-  } else {
-    // Server cleared the preview target — don't close tabs, just update server state tracking
-    setPreviewLoading(false);
+  if (nextTarget.kind === 'app' && hasVersionBump) {
+    const existingTimeout = iframeRefreshTimeoutsRef.current[nextId];
+    if (existingTimeout) clearTimeout(existingTimeout);
+
+    setTabAppLoading((prev) => ({ ...prev, [nextId]: true }));
+    iframeRefreshTimeoutsRef.current[nextId] = setTimeout(() => {
+      setTabAppLoading((prev) => ({ ...prev, [nextId]: false }));
+      bumpIframeKey(nextId);
+      delete iframeRefreshTimeoutsRef.current[nextId];
+    }, 1500);
+  } else if (nextTarget.kind === 'file' && hasVersionBump) {
+    // Refresh even if this tab is not currently active.
+    bumpFilePreviewKey(nextId);
   }
   return;
 }
 ```
 
-**Thread change reset (update the effect at ~line 756):**
+Dependency array for the side-channel handler should include:
+- `openTabForTarget`
+- `bumpIframeKey`
+- `bumpFilePreviewKey`
+
+#### 7i. Thread/reset cleanup
+
+Thread changes must reset tabs and clear outstanding refresh timers:
 
 ```typescript
 useEffect(() => {
@@ -768,21 +912,55 @@ useEffect(() => {
     setPreviewTabs([]);
     setActiveTabId(null);
   }
+
+  setTabIframeKeys({});
+  setTabFilePreviewKeys({});
+  setTabNotebookViewModes({});
+  setTabAppLoading({});
   previewVersionRef.current = 0;
+
+  for (const timeout of Object.values(iframeRefreshTimeoutsRef.current)) {
+    clearTimeout(timeout);
+  }
+  iframeRefreshTimeoutsRef.current = {};
 }, [threadId, initialPreviewTarget]);
+
+useEffect(() => {
+  if (!threadId) {
+    setPreviewTabs([]);
+    setActiveTabId(null);
+    setTabIframeKeys({});
+    setTabFilePreviewKeys({});
+    setTabNotebookViewModes({});
+    setTabAppLoading({});
+    for (const timeout of Object.values(iframeRefreshTimeoutsRef.current)) {
+      clearTimeout(timeout);
+    }
+    iframeRefreshTimeoutsRef.current = {};
+  }
+}, [threadId]);
 ```
+
+#### 7j. Remove the `notebookPreviewKey` view-mode-reset effect (lines 2549–2556)
+
+Remove the old reset effect:
+
+```typescript
+const notebookPreviewKey = useMemo(() => { ... }, [previewTarget]);
+useEffect(() => { setNotebookViewMode('report'); }, [notebookPreviewKey]);
+```
+
+Each tab now has independent notebook mode state and defaults to `'report'` when absent from `tabNotebookViewModes`.
 
 ### 8. Update `ChatPreviewProvider` context
 
 **File: `src/components/chat-preview/preview-context.tsx`**
 
-No changes needed — `openPreviewTarget` and `clearPreviewTarget` still work the same way from the consumer's perspective. The internal implementation change (opening a tab vs. setting a single target) is transparent.
+No changes needed — `openPreviewTarget` and `clearPreviewTarget` still work the same way from the consumer's perspective (file preview chips in chat messages call `openPreviewTarget` to open a file). The internal implementation change (opening a tab vs. setting a single target) is transparent.
 
-### 9. Replace `previewPanelBody` in Chat.tsx
+### 9. Replace `previewPanelBody` in Chat.tsx (lines 2604–2787)
 
-**File: `src/components/Chat.tsx`**
-
-Replace the current `previewPanelBody` block (~lines 2604–2787) with a unified structure that delegates to the new components:
+Replace the current `previewPanelBody` block with a unified structure that delegates to the new components:
 
 ```tsx
 const previewPanelBody = previewTabs.length > 0 && previewTarget ? (
@@ -804,16 +982,16 @@ const previewPanelBody = previewTabs.length > 0 && previewTarget ? (
       isAdmin={isAdmin}
       onRefresh={() => {
         if (previewTarget.kind === 'app') {
-          setIframeKey((prev) => prev + 1);
+          refreshActiveIframe();
         } else {
-          setFilePreviewKey((prev) => prev + 1);
+          refreshActiveFilePreview();
         }
       }}
       onOpenExternal={() => {
         if (previewTarget.kind === 'app') {
           window.open(appPreviewVanityUrl, '_blank');
         } else {
-          window.open(filePreviewOpenUrl, '_blank');
+          window.open(fileComputerOpenUrl, '_blank');
         }
       }}
       onBugReport={() => {
@@ -833,12 +1011,12 @@ const previewPanelBody = previewTabs.length > 0 && previewTarget ? (
         ) : undefined
       }
       notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
-      onNotebookViewModeChange={(mode) => setNotebookViewMode(mode)}
+      onNotebookViewModeChange={setActiveNotebookViewMode}
       filePreviewOpenUrl={filePreviewOpenUrl}
     />
 
-    {/* Content area */}
-    <div className="flex-1 min-h-0 overflow-hidden">
+    {/* Content area — key on activeTabId to force proper unmount/remount on tab switch */}
+    <div key={activeTabId} className="flex-1 min-h-0 overflow-hidden">
       {previewTarget.kind === 'app' ? (
         previewLoading ? (
           <div className="w-full h-full flex items-center justify-center bg-muted/30">
@@ -872,71 +1050,115 @@ const previewPanelBody = previewTabs.length > 0 && previewTarget ? (
 ) : null;
 ```
 
-**Important:** The `ResizablePanel` conditional (`previewTarget &&`) should now check `previewTabs.length > 0` instead:
+Where `fileComputerOpenUrl` is a new memo:
+
+```typescript
+const fileComputerOpenUrl = useMemo(() => {
+  if (previewTarget?.kind !== 'file') return '';
+  return `/computer/${previewTarget.workspaceId}?file=${encodeURIComponent(previewTarget.path)}`;
+}, [previewTarget]);
+```
+
+**Key detail:** The `key={activeTabId}` on the content `div` ensures React properly unmounts and remounts the content when switching tabs. This is important for:
+- Cleaning up iframe event listeners when switching away from an app tab
+- Resetting file preview scroll position
+- Avoiding stale notebook state
+
+#### 9a. Update ResizablePanel conditional (line 2953)
+
+Replace `previewTarget &&` with `previewTabs.length > 0 &&`:
 
 ```tsx
 {previewTabs.length > 0 && (
   <>
     <ResizableHandle withHandle />
-    <ResizablePanel ...>
+    <ResizablePanel
+      defaultSize="50%"
+      minSize="25%"
+      maxSize="70%"
+      className="flex flex-col min-h-0 min-w-0 bg-background"
+    >
       {previewPanelBody}
     </ResizablePanel>
   </>
 )}
 ```
 
-Same for the mobile view conditional — replace `previewTarget` checks with `previewTabs.length > 0`.
+Also update the chat panel `defaultSize` (line 2946):
 
-### 10. Update `file-type-utils.ts` icon mapping
-
-**File: `src/components/chat-file-preview/file-type-utils.ts`**
-
-The existing `getFileIcon()` returns `FileCode` for notebooks. This is fine for the general file card use case, but the new tab icons use a separate `getTabIcon()` in `preview-utils.ts` that returns `NotebookPen`. No changes needed to `file-type-utils.ts`.
-
-### 11. Handle per-tab state isolation
-
-Each tab needs its own refresh key and (for notebooks) view mode. Currently these are single values. Refactor to per-tab maps:
-
-**In Chat.tsx state:**
-
-```typescript
-// Per-tab state maps (keyed by tab ID)
-const [tabIframeKeys, setTabIframeKeys] = useState<Record<string, number>>({});
-const [tabFilePreviewKeys, setTabFilePreviewKeys] = useState<Record<string, number>>({});
-const [tabNotebookViewModes, setTabNotebookViewModes] = useState<Record<string, 'report' | 'notebook'>>({});
-
-// Helpers to get per-active-tab values
-const iframeKey = activeTabId ? (tabIframeKeys[activeTabId] ?? 0) : 0;
-const filePreviewKey = activeTabId ? (tabFilePreviewKeys[activeTabId] ?? 0) : 0;
-const notebookViewMode = activeTabId ? (tabNotebookViewModes[activeTabId] ?? 'report') : 'report';
-
-// Refresh helpers
-const refreshActiveIframe = useCallback(() => {
-  if (!activeTabId) return;
-  setTabIframeKeys((prev) => ({ ...prev, [activeTabId]: (prev[activeTabId] ?? 0) + 1 }));
-}, [activeTabId]);
-
-const refreshActiveFilePreview = useCallback(() => {
-  if (!activeTabId) return;
-  setTabFilePreviewKeys((prev) => ({ ...prev, [activeTabId]: (prev[activeTabId] ?? 0) + 1 }));
-}, [activeTabId]);
-
-const setActiveNotebookViewMode = useCallback((mode: 'report' | 'notebook') => {
-  if (!activeTabId) return;
-  setTabNotebookViewModes((prev) => ({ ...prev, [activeTabId]: mode }));
-}, [activeTabId]);
+```tsx
+<ResizablePanel
+  defaultSize={previewTabs.length > 0 ? "50%" : "100%"}
+  minSize="30%"
+  className="flex flex-col min-h-0 min-w-0"
+>
 ```
 
-When a tab is closed, clean up its entries from these maps:
+#### 9b. Update mobile layout (lines 2911–2939)
+
+Replace `previewTarget` checks with `previewTabs.length > 0`:
+
+```tsx
+{isMobile ? (
+  <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+    {previewTabs.length > 0 ? (
+      <>
+        <div className="relative flex-1 min-h-0 overflow-hidden">
+          <div
+            className={cn(
+              "flex h-full w-[200%] will-change-transform motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-out",
+              showMobilePreview ? "-translate-x-1/2" : "translate-x-0"
+            )}
+          >
+            <div className="flex w-1/2 shrink-0 flex-col min-h-0">
+              {chatPanelContent}
+            </div>
+            <div className="flex w-1/2 shrink-0 flex-col min-h-0 bg-background">
+              {previewPanelBody}
+            </div>
+          </div>
+        </div>
+        <div className="shrink-0 border-t border-border bg-background">
+          <MobileViewSwitcher value={mobileView} onChange={setMobileView} />
+        </div>
+      </>
+    ) : (
+      <div className="flex flex-1 min-h-0 flex-col">
+        {chatPanelContent}
+      </div>
+    )}
+  </div>
+) : ( /* desktop layout */ )}
+```
+
+Also update `showMobilePreview` (line 2601):
 
 ```typescript
-const closeTab = useCallback((tabId: string) => {
-  setPreviewTabs((prev) => { /* ... same as before ... */ });
-  // Clean up per-tab state
-  setTabIframeKeys((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
-  setTabFilePreviewKeys((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
-  setTabNotebookViewModes((prev) => { const { [tabId]: _, ...rest } = prev; return rest; });
-}, []);
+const showMobilePreview = previewTabs.length > 0 && mobileView === 'preview';
+```
+
+### 10. Add `.tsv` to `SPREADSHEET_EXTENSIONS` in file-type-utils.ts
+
+**File: `src/components/chat-file-preview/file-type-utils.ts`** (line 28)
+
+The existing `SPREADSHEET_EXTENSIONS` set is missing `tsv`. Add it:
+
+```typescript
+const SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xlsx', 'xls']);
+```
+
+This ensures `.tsv` files are categorized as `spreadsheet` by `getFileCategory()` consistently with the new `getToolbarFileType()` in `preview-utils.ts`.
+
+### 11. Add `.jsonl` to `CODE_EXTENSIONS` in file-type-utils.ts
+
+**File: `src/components/chat-file-preview/file-type-utils.ts`** (line 29)
+
+The existing `CODE_EXTENSIONS` set includes `json` but not `jsonl`. Add it:
+
+```typescript
+const CODE_EXTENSIONS = new Set([
+  'txt', 'json', 'jsonl', 'xml', 'html', /* ... rest unchanged ... */
+]);
 ```
 
 ---
@@ -948,27 +1170,55 @@ const closeTab = useCallback((tabId: string) => {
 | `src/types.ts` | Add `PreviewTab` interface |
 | `src/components/preview-panel/preview-utils.ts` | **New** — `getTabIcon`, `getTabLabel`, `getToolbarFileType`, `getPreviewTabId` helpers |
 | `src/components/preview-panel/preview-tabs.tsx` | **New** — `PreviewTabRow` component (Row 1) |
-| `src/components/preview-panel/preview-toolbar.tsx` | **New** — `PreviewToolbar`, `ToolbarButton`, `ClickToCopyUrlBar`, `DownloadButton` components (Row 2) |
-| `src/components/Chat.tsx` | Replace single `previewTarget` state with tab list + active tab; replace `previewPanelBody` with new two-row layout; update all preview state callbacks |
+| `src/components/preview-panel/preview-toolbar.tsx` | **New** — `PreviewToolbar`, `ToolbarButton`, `AppToolbarActions`, `NotebookToolbarActions`, `ClickToCopyUrlBar`, `DownloadButton`, `triggerDownload` (Row 2) |
+| `src/components/Chat.tsx` | Replace single `previewTarget` state with tab list + active tab; add per-tab state maps (including per-tab app loading); sync active tab changes back to DO; update `setAppIsPublic` to modify tab target; update `handleRealtimeSideChannelEvent`; replace `previewPanelBody` with new two-row layout; update ResizablePanel + mobile conditionals; open files externally via `/computer/:workspaceId?file=...` |
+| `src/components/chat-file-preview/file-type-utils.ts` | Add `tsv` to `SPREADSHEET_EXTENSIONS`, add `jsonl` to `CODE_EXTENSIONS` |
 | `src/components/chat-preview/preview-context.tsx` | No changes — API stays the same |
-| `src/components/chat-file-preview/file-type-utils.ts` | No changes needed |
 | `workers/main/src/durable-objects.ts` | No changes — server still stores single active target |
 
 ## Components Used
 
-- `Button` (shadcn) — toolbar actions with `variant="ghost" size="icon-sm"`
-- `Tooltip` / `TooltipTrigger` / `TooltipContent` (shadcn) — hover labels for toolbar buttons
-- `DropdownMenu` / `DropdownMenuTrigger` / `DropdownMenuContent` / `DropdownMenuItem` (shadcn) — download format picker, existing share status
-- `Tabs` / `TabsList` / `TabsTrigger` (shadcn) — notebook Report/Notebook toggle in toolbar
-- `Separator` (shadcn) — vertical dividers between action groups
+All of these shadcn components are already installed in `src/components/ui/`:
+
+- `Button` — toolbar actions with `variant="ghost" size="icon-sm"` (size-6, icon size-3)
+- `Tooltip` / `TooltipTrigger` / `TooltipContent` — hover labels for toolbar buttons
+- `DropdownMenu` / `DropdownMenuTrigger` / `DropdownMenuContent` / `DropdownMenuItem` — download format picker (future), existing share status
+- `Tabs` / `TabsList` / `TabsTrigger` — notebook Report/Notebook toggle in toolbar (using existing `variant="outline"`)
+- `Separator` — vertical dividers between action groups
 - `cn()` from `@/lib/utils` — conditional class merging
-- Lucide icons: `RefreshCw`, `ExternalLink`, `X`, `Download`, `Bug`, `Globe`, `Lock`, `AppWindow`, `NotebookPen`, `Braces`, `FileText`, `FileCode`, `FileSpreadsheet`, `FileImage`, `File`
+
+**Not installed but referenced in the original plan:** `toggle-group` — **not needed**. The notebook Report/Notebook toggle uses shadcn `Tabs` with `variant="outline"` (already in use, line 2712 of Chat.tsx).
+
+**Lucide icons:** `RefreshCw`, `ExternalLink`, `X`, `Download`, `Bug`, `Globe`, `AppWindow`, `NotebookPen`, `Braces`, `FileText`, `FileCode`, `FileSpreadsheet`, `FileImage`, `File`
+
+## Validation Checklist
+
+- **Unit tests (`preview-utils`)**
+  - `getPreviewTabId()` includes workspace/source/path for file IDs.
+  - `getToolbarFileType()` returns expected values for `ipynb`, `md`, `txt`, `csv`, `tsv`, `json`, `jsonl`, `svg`, raster image, and fallback extensions.
+- **Unit tests (`file-type-utils`)**
+  - `.tsv` is categorized as `spreadsheet`.
+  - `.jsonl` resolves to `code`/`text preview` path (not `other`).
+- **Chat tab state behavior (component/integration test or manual in dev)**
+  - Opening a second preview adds a tab and keeps the first tab available.
+  - Selecting a different tab updates active content and sends `set_preview_target` with that tab’s target.
+  - Closing the active tab activates neighbor tab and syncs new active target to DO.
+  - Closing the last tab hides preview panel and syncs `target: null`.
+  - Version-bump `preview_state` refreshes the correct tab key by tab ID (no reliance on current active tab).
+- **Open External behavior**
+  - App tab opens vanity URL.
+  - File tabs open `/computer/:workspaceId?file=<encoded path>` in a new browser tab.
+- **Regression checks**
+  - Bug report still works from active app tab.
+  - Public/Private status changes still update active app tab target.
+  - Mobile chat/preview switch still works when tabs exist.
 
 ## Not in Scope
 
 - **Server-side tab persistence** — Tab list is client-only. On reconnect, the server replays the last active target which becomes a single tab. This is intentional: tabs are ephemeral session state.
-- **Format conversion downloads** — The download submenu structure is built, but actual PDF/XLSX/PNG conversion requires server endpoints. Only original-format download is functional initially. Show only the formats that work.
+- **Format conversion downloads** — The download component supports multi-format dropdowns, but actual PDF/XLSX/PNG conversion requires server endpoints. Only original-format download is functional initially.
 - **Tab reordering** — Tabs are in insertion order. Drag-to-reorder is not included.
 - **Tab limit** — No maximum tab count. The horizontal scroll handles overflow.
 - **Mobile tab UX** — Mobile still shows one preview at a time with the existing chat/preview slide switcher. Tabs are rendered but scroll may be tight on small screens — acceptable for now.
 - **Keyboard shortcuts** — No Ctrl+W to close tab, no Ctrl+Tab to switch. Can be added later.
+- **Inactive tab iframe persistence** — When switching tabs, inactive content (including app iframes) is unmounted. This simplifies state management at the cost of a reload when switching back. A future optimization could keep app iframes alive but hidden.

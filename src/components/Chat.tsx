@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, memo } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { useNavigate, useFetcher, useRevalidator } from 'react-router';
-import { ArrowDown, RefreshCw, ExternalLink, X, Bug, ChevronDown, Globe, Lock } from 'lucide-react';
+import { ArrowDown, RefreshCw, X, ChevronDown, Globe, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 import type {
   Message,
@@ -14,6 +14,7 @@ import type {
   WorkerScriptWithCreator,
   Integration,
   PreviewTarget,
+  PreviewTab,
 } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -55,6 +56,9 @@ import { CompactingIndicator } from '@/components/compacting-indicator';
 import { WelcomeScreen } from '@/components/welcome-screen';
 import { FilePreviewContent, isImageFile } from '@/components/chat-file-preview';
 import { ChatPreviewProvider } from '@/components/chat-preview/preview-context';
+import { PreviewTabRow } from '@/components/preview-panel/preview-tabs';
+import { PreviewToolbar } from '@/components/preview-panel/preview-toolbar';
+import { getPreviewTabId } from '@/components/preview-panel/preview-utils';
 import { cn } from '@/lib/utils';
 import { buildSetAppPublicPayload } from '@/lib/app-visibility';
 import {
@@ -237,25 +241,6 @@ function coercePreviewTarget(value: unknown): PreviewTarget | null {
   }
 
   return null;
-}
-
-function isSamePreviewItem(a: PreviewTarget | null, b: PreviewTarget | null): boolean {
-  if (!a || !b) return false;
-  if (a.kind !== b.kind) return false;
-
-  if (a.kind === 'app' && b.kind === 'app') {
-    return a.scriptName === b.scriptName;
-  }
-
-  if (a.kind === 'file' && b.kind === 'file') {
-    return (
-      a.source === b.source &&
-      a.workspaceId === b.workspaceId &&
-      a.path === b.path
-    );
-  }
-
-  return false;
 }
 
 function MobileViewSwitcher({
@@ -714,12 +699,28 @@ export default function Chat({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentPreviewUrlsRef = useRef<Set<string>>(new Set());
   const [isDragOver, setIsDragOver] = useState(false);
-  const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(initialPreviewTarget ?? null);
-  const previewTargetRef = useRef<PreviewTarget | null>(initialPreviewTarget ?? null);
-  const [iframeKey, setIframeKey] = useState(0);
-  const [filePreviewKey, setFilePreviewKey] = useState(0);
-  const [notebookViewMode, setNotebookViewMode] = useState<'report' | 'notebook'>('report');
-  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(() => {
+    if (!initialPreviewTarget) return [];
+    return [{ id: getPreviewTabId(initialPreviewTarget), target: initialPreviewTarget }];
+  });
+  const [activeTabId, setActiveTabId] = useState<string | null>(() => (
+    initialPreviewTarget ? getPreviewTabId(initialPreviewTarget) : null
+  ));
+  const previewTabsRef = useRef<PreviewTab[]>(previewTabs);
+  const activeTabIdRef = useRef<string | null>(activeTabId);
+  const activeTab = useMemo(
+    () => previewTabs.find((tab) => tab.id === activeTabId) ?? null,
+    [previewTabs, activeTabId]
+  );
+  const previewTarget = activeTab?.target ?? null;
+  const [tabIframeKeys, setTabIframeKeys] = useState<Record<string, number>>({});
+  const [tabFilePreviewKeys, setTabFilePreviewKeys] = useState<Record<string, number>>({});
+  const [tabNotebookViewModes, setTabNotebookViewModes] = useState<Record<string, 'report' | 'notebook'>>({});
+  const [tabAppLoading, setTabAppLoading] = useState<Record<string, boolean>>({});
+  const iframeKey = activeTabId ? (tabIframeKeys[activeTabId] ?? 0) : 0;
+  const filePreviewKey = activeTabId ? (tabFilePreviewKeys[activeTabId] ?? 0) : 0;
+  const notebookViewMode = activeTabId ? (tabNotebookViewModes[activeTabId] ?? 'report') : 'report';
+  const previewLoading = activeTabId ? Boolean(tabAppLoading[activeTabId]) : false;
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
   const previewVersionRef = useRef<number>(0);
@@ -736,7 +737,7 @@ export default function Chat({
   const forceScrollOnNextUpdate = useRef(false);
   const splitStreamingMessageOnNextPartRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const iframeRefreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const iframeRefreshTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -754,14 +755,53 @@ export default function Chat({
   }, [threadId]);
 
   useEffect(() => {
-    setPreviewTarget(initialPreviewTarget ?? null);
-    previewTargetRef.current = initialPreviewTarget ?? null;
-    previewVersionRef.current = 0;
-  }, [threadId, initialPreviewTarget]);
+    previewTabsRef.current = previewTabs;
+  }, [previewTabs]);
 
   useEffect(() => {
-    previewTargetRef.current = previewTarget;
-  }, [previewTarget]);
+    activeTabIdRef.current = activeTabId;
+  }, [activeTabId]);
+
+  const clearAllIframeRefreshTimeouts = useCallback(() => {
+    for (const timeout of Object.values(iframeRefreshTimeoutsRef.current)) {
+      clearTimeout(timeout);
+    }
+    iframeRefreshTimeoutsRef.current = {};
+  }, []);
+
+  useEffect(() => {
+    if (initialPreviewTarget) {
+      const tab = {
+        id: getPreviewTabId(initialPreviewTarget),
+        target: initialPreviewTarget,
+      };
+      setPreviewTabs([tab]);
+      setActiveTabId(tab.id);
+    } else {
+      setPreviewTabs([]);
+      setActiveTabId(null);
+    }
+
+    setTabIframeKeys({});
+    setTabFilePreviewKeys({});
+    setTabNotebookViewModes({});
+    setTabAppLoading({});
+    previewVersionRef.current = 0;
+    clearAllIframeRefreshTimeouts();
+    setMobileView('chat');
+  }, [threadId, initialPreviewTarget, clearAllIframeRefreshTimeouts]);
+
+  useEffect(() => {
+    if (!threadId) {
+      setPreviewTabs([]);
+      setActiveTabId(null);
+      setTabIframeKeys({});
+      setTabFilePreviewKeys({});
+      setTabNotebookViewModes({});
+      setTabAppLoading({});
+      clearAllIframeRefreshTimeouts();
+    }
+  }, [threadId, clearAllIframeRefreshTimeouts]);
 
   const revokeAttachmentPreviewUrl = useCallback((url?: string) => {
     if (!url) return;
@@ -772,15 +812,20 @@ export default function Chat({
   const deployedApp = previewTarget?.kind === 'app' ? previewTarget.scriptName : null;
   const appIsPublic = previewTarget?.kind === 'app' ? previewTarget.isPublic : false;
   const setAppIsPublic = useCallback((isPublic: boolean) => {
-    setPreviewTarget((prev) => {
-      if (!prev || prev.kind !== 'app') return prev;
-      return { ...prev, isPublic };
-    });
-  }, []);
-
-  useEffect(() => {
-    setMobileView('chat');
-  }, [threadId]);
+    if (!activeTabId) return;
+    setPreviewTabs((prev) => (
+      prev.map((tab) => {
+        if (tab.id !== activeTabId || tab.target.kind !== 'app') return tab;
+        return {
+          ...tab,
+          target: {
+            ...tab.target,
+            isPublic,
+          },
+        };
+      })
+    ));
+  }, [activeTabId]);
 
 
   // Todo state comes directly from server via todo_state events
@@ -879,33 +924,152 @@ export default function Chat({
     revalidator.revalidate();
   }, [revalidator]);
 
+  const bumpIframeKey = useCallback((tabId: string) => {
+    setTabIframeKeys((prev) => ({
+      ...prev,
+      [tabId]: (prev[tabId] ?? 0) + 1,
+    }));
+  }, []);
+
+  const bumpFilePreviewKey = useCallback((tabId: string) => {
+    setTabFilePreviewKeys((prev) => ({
+      ...prev,
+      [tabId]: (prev[tabId] ?? 0) + 1,
+    }));
+  }, []);
+
+  const refreshActiveIframe = useCallback(() => {
+    if (!activeTabId) return;
+    bumpIframeKey(activeTabId);
+  }, [activeTabId, bumpIframeKey]);
+
+  const refreshActiveFilePreview = useCallback(() => {
+    if (!activeTabId) return;
+    bumpFilePreviewKey(activeTabId);
+  }, [activeTabId, bumpFilePreviewKey]);
+
+  const setActiveNotebookViewMode = useCallback((mode: 'report' | 'notebook') => {
+    if (!activeTabId) return;
+    setTabNotebookViewModes((prev) => ({
+      ...prev,
+      [activeTabId]: mode,
+    }));
+  }, [activeTabId]);
+
+  const syncPreviewTargetBestEffort = useCallback((target: PreviewTarget | null) => {
+    if (!threadId) return;
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({
+      type: 'set_preview_target',
+      target,
+      threadId,
+    }));
+  }, [threadId]);
+
+  const openTabForTarget = useCallback((target: PreviewTarget) => {
+    const id = getPreviewTabId(target);
+    setPreviewTabs((prev) => {
+      const existing = prev.find((tab) => tab.id === id);
+      if (existing) {
+        return prev.map((tab) => (tab.id === id ? { ...tab, target } : tab));
+      }
+      return [...prev, { id, target }];
+    });
+    setActiveTabId(id);
+  }, []);
+
+  const selectTab = useCallback((tabId: string) => {
+    setActiveTabId(tabId);
+    const nextActiveTab = previewTabsRef.current.find((tab) => tab.id === tabId);
+    if (nextActiveTab) {
+      syncPreviewTargetBestEffort(nextActiveTab.target);
+    }
+  }, [syncPreviewTargetBestEffort]);
+
+  const closeTab = useCallback((tabId: string) => {
+    const prevTabs = previewTabsRef.current;
+    const closingTabIndex = prevTabs.findIndex((tab) => tab.id === tabId);
+    if (closingTabIndex === -1) return;
+
+    const nextTabs = prevTabs.filter((tab) => tab.id !== tabId);
+    setPreviewTabs(nextTabs);
+
+    if (tabId === activeTabIdRef.current) {
+      if (!nextTabs.length) {
+        setActiveTabId(null);
+        setMobileView('chat');
+        syncPreviewTargetBestEffort(null);
+      } else {
+        const nextIndex = Math.min(closingTabIndex, nextTabs.length - 1);
+        const nextActiveTab = nextTabs[nextIndex];
+        setActiveTabId(nextActiveTab.id);
+        syncPreviewTargetBestEffort(nextActiveTab.target);
+      }
+    }
+
+    setTabIframeKeys((prev) => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+    setTabFilePreviewKeys((prev) => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+    setTabNotebookViewModes((prev) => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+    setTabAppLoading((prev) => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+
+    const timeout = iframeRefreshTimeoutsRef.current[tabId];
+    if (timeout) {
+      clearTimeout(timeout);
+      delete iframeRefreshTimeoutsRef.current[tabId];
+    }
+  }, [syncPreviewTargetBestEffort]);
+
   const handleRealtimeSideChannelEvent = useCallback((data: any) => {
     if (data.type === 'preview_state') {
       const nextTarget = coercePreviewTarget(data.target);
       const newVersion = typeof data.version === 'number' ? data.version : 0;
       const hasVersionBump = newVersion > previewVersionRef.current;
-      const currentTarget = previewTargetRef.current;
-      const shouldRefreshSameItem = hasVersionBump && isSamePreviewItem(currentTarget, nextTarget);
       previewVersionRef.current = newVersion;
 
-      setPreviewTarget(nextTarget);
-
-      if (nextTarget?.kind === 'app' && hasVersionBump) {
-        if (iframeRefreshTimeoutRef.current) {
-          clearTimeout(iframeRefreshTimeoutRef.current);
-        }
-        setPreviewLoading(true);
-        iframeRefreshTimeoutRef.current = setTimeout(() => {
-          setPreviewLoading(false);
-          setIframeKey(prev => prev + 1);
-          iframeRefreshTimeoutRef.current = null;
-        }, 1500);
-      } else if (nextTarget?.kind === 'file' && shouldRefreshSameItem) {
-        setFilePreviewKey((prev) => prev + 1);
-        setPreviewLoading(false);
-      } else {
-        setPreviewLoading(false);
+      if (!nextTarget) {
+        // Keep client tab state even if the server has no active target.
+        return;
       }
+
+      openTabForTarget(nextTarget);
+      const nextTabId = getPreviewTabId(nextTarget);
+
+      if (nextTarget.kind === 'app' && hasVersionBump) {
+        const existingTimeout = iframeRefreshTimeoutsRef.current[nextTabId];
+        if (existingTimeout) {
+          clearTimeout(existingTimeout);
+        }
+        setTabAppLoading((prev) => ({ ...prev, [nextTabId]: true }));
+        iframeRefreshTimeoutsRef.current[nextTabId] = setTimeout(() => {
+          setTabAppLoading((prev) => ({ ...prev, [nextTabId]: false }));
+          bumpIframeKey(nextTabId);
+          delete iframeRefreshTimeoutsRef.current[nextTabId];
+        }, 1500);
+      } else if (nextTarget.kind === 'file' && hasVersionBump) {
+        bumpFilePreviewKey(nextTabId);
+      }
+
       return;
     }
 
@@ -932,7 +1096,7 @@ export default function Chat({
         message: data.message as string | undefined,
       });
     }
-  }, []);
+  }, [openTabForTarget, bumpIframeKey, bumpFilePreviewKey]);
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
@@ -1564,18 +1728,9 @@ export default function Chat({
         pingIntervalRef.current = null;
       }
 
-      if (iframeRefreshTimeoutRef.current) {
-        clearTimeout(iframeRefreshTimeoutRef.current);
-        iframeRefreshTimeoutRef.current = null;
-      }
+      clearAllIframeRefreshTimeouts();
     };
-  }, [bumpConnectionId]);
-
-  useEffect(() => {
-    if (!threadId) {
-      setPreviewTarget(null);
-    }
-  }, [threadId]);
+  }, [bumpConnectionId, clearAllIframeRefreshTimeouts]);
 
   // Check if we should show the chat UI
   const shouldShowChat = Boolean(threadId);
@@ -2410,14 +2565,24 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     }
   }, [mcpBugReportPrompt, deployedApp, resolvedWorkspaceId, threadId, submitBugReport]);
 
+  const resetPreviewTabsState = useCallback(() => {
+    setPreviewTabs([]);
+    setActiveTabId(null);
+    setTabIframeKeys({});
+    setTabFilePreviewKeys({});
+    setTabNotebookViewModes({});
+    setTabAppLoading({});
+    clearAllIframeRefreshTimeouts();
+  }, [clearAllIframeRefreshTimeouts]);
+
   const setPreviewTargetForThread = useCallback((target: PreviewTarget | null) => {
     if (!threadId) return;
 
     const socket = wsRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       if (target === null) {
-        setPreviewTarget(null);
-        setPreviewLoading(false);
+        resetPreviewTabsState();
+        setMobileView('chat');
         return;
       }
       toast.error('Preview is unavailable while reconnecting.');
@@ -2430,14 +2595,10 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       threadId,
     }));
 
-    setPreviewTarget(target);
-    if (target?.kind === 'app') {
-      setPreviewLoading(true);
-      setIframeKey((prev) => prev + 1);
-    } else {
-      setPreviewLoading(false);
+    if (target) {
+      openTabForTarget(target);
     }
-  }, [threadId]);
+  }, [threadId, resetPreviewTabsState, openTabForTarget]);
 
   const openPreviewTarget = useCallback((target: PreviewTarget) => {
     setPreviewTargetForThread(target);
@@ -2446,8 +2607,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
   const clearPreviewTarget = useCallback(() => {
     setPreviewTargetForThread(null);
+    resetPreviewTabsState();
     setMobileView('chat');
-  }, [setPreviewTargetForThread]);
+  }, [setPreviewTargetForThread, resetPreviewTabsState]);
 
   function sendMessage() {
     if (!input.trim() || !shouldShowChat || !resolvedWorkspaceId || !threadId) {
@@ -2550,15 +2712,6 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     return previewTarget.path.split('/').filter(Boolean).pop() || 'file';
   }, [previewTarget]);
 
-  const notebookPreviewKey = useMemo(() => {
-    if (previewTarget?.kind !== 'file') return null;
-    return `${previewTarget.workspaceId}:${previewTarget.source}:${previewTarget.path}`;
-  }, [previewTarget]);
-
-  useEffect(() => {
-    setNotebookViewMode('report');
-  }, [notebookPreviewKey]);
-
   const isNotebookPreview = previewTarget?.kind === 'file'
     && previewFileName.toLowerCase().endsWith('.ipynb');
 
@@ -2602,88 +2755,66 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     return `/api/workspaces/${previewTarget.workspaceId}/${route}`;
   }, [previewTarget, encodePathSegments]);
 
-  const showMobilePreview = Boolean(previewTarget) && mobileView === 'preview';
+  const fileComputerOpenUrl = useMemo(() => {
+    if (previewTarget?.kind !== 'file') return '';
+    return `/computer/${previewTarget.workspaceId}?file=${encodeURIComponent(previewTarget.path)}`;
+  }, [previewTarget]);
+
+  const showMobilePreview = previewTabs.length > 0 && mobileView === 'preview';
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
-  const previewPanelBody = previewTarget ? (
-    previewTarget.kind === 'app' ? (
-      <>
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 bg-green-500 rounded-full" />
-            <span className="text-sm font-medium">{previewDomains.vanityHost}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <ShareStatusButton
-              threadId={threadId}
-              scriptName={previewTarget.scriptName}
-              isPublic={appIsPublic}
-              isAdmin={Boolean(isAdmin)}
-              onStatusChange={setAppIsPublic}
-            />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => {
-                    setBugReportOpen(true);
-                    setBugReportStatus('idle');
-                    setBugReportError(null);
-                  }}
-                >
-                  <Bug className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Report a bug</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setIframeKey(prev => prev + 1)}
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Reload</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  asChild
-                >
-                  <a
-                    href={appPreviewVanityUrl || 'about:blank'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Open in new tab</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={clearPreviewTarget}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Close preview</TooltipContent>
-            </Tooltip>
-          </div>
-        </div>
-        <div className="flex-1 min-h-0">
-          {previewLoading ? (
-            <div className="w-full h-full flex items-center justify-center bg-muted/30">
+  const previewPanelBody = previewTabs.length > 0 && previewTarget ? (
+    <>
+      <PreviewTabRow
+        tabs={previewTabs}
+        activeTabId={activeTabId!}
+        onTabSelect={selectTab}
+        onTabClose={closeTab}
+      />
+
+      <PreviewToolbar
+        activeTarget={previewTarget}
+        vanityUrl={appPreviewVanityUrl}
+        vanityHost={previewDomains.vanityHost}
+        onRefresh={() => {
+          if (previewTarget.kind === 'app') {
+            refreshActiveIframe();
+          } else {
+            refreshActiveFilePreview();
+          }
+        }}
+        onOpenExternal={() => {
+          if (previewTarget.kind === 'app') {
+            if (!appPreviewVanityUrl) return;
+            window.open(appPreviewVanityUrl, '_blank', 'noopener,noreferrer');
+            return;
+          }
+          if (!fileComputerOpenUrl) return;
+          window.open(fileComputerOpenUrl, '_blank', 'noopener,noreferrer');
+        }}
+        onBugReport={() => {
+          setBugReportOpen(true);
+          setBugReportStatus('idle');
+          setBugReportError(null);
+        }}
+        appShareButton={previewTarget.kind === 'app' ? (
+          <ShareStatusButton
+            threadId={threadId}
+            scriptName={previewTarget.scriptName}
+            isPublic={appIsPublic}
+            isAdmin={Boolean(isAdmin)}
+            onStatusChange={setAppIsPublic}
+          />
+        ) : undefined}
+        notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
+        onNotebookViewModeChange={setActiveNotebookViewMode}
+        filePreviewOpenUrl={filePreviewOpenUrl}
+      />
+
+      <div key={activeTabId} className="flex-1 min-h-0 overflow-hidden">
+        {previewTarget.kind === 'app' ? (
+          previewLoading ? (
+            <div className="flex h-full w-full items-center justify-center bg-muted/30">
               <div className="flex flex-col items-center gap-3">
                 <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
                 <span className="text-sm text-muted-foreground">Loading preview...</span>
@@ -2694,100 +2825,23 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
               ref={iframeRef}
               key={iframeKey}
               src={appPreviewUrl || 'about:blank'}
-              className="w-full h-full bg-white"
+              className="h-full w-full bg-white"
               title="Deployed App Preview"
             />
-          )}
-        </div>
-      </>
-    ) : (
-      <>
-        <div className="flex items-center gap-3 border-b border-border px-4 py-2">
-          <div className="min-w-0 flex flex-1 items-center gap-2">
-            <div className="w-2 h-2 bg-blue-500 rounded-full shrink-0" />
-            <div className="min-w-0">
-              <div className="text-sm font-medium truncate">{previewFileName}</div>
-              <div className="text-xs text-muted-foreground truncate">
-                {previewTarget.source}: {previewTarget.path}
-              </div>
-            </div>
+          )
+        ) : (
+          <div className={cn('h-full', !isNotebookPreview && 'p-3')}>
+            <FilePreviewContent
+              filename={previewFileName}
+              previewUrl={filePreviewUrl}
+              contentType={previewTarget.contentType}
+              layout="panel"
+              notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
+            />
           </div>
-          {isNotebookPreview ? (
-            <Tabs
-              value={notebookViewMode}
-              onValueChange={(value) => {
-                if (value === 'report' || value === 'notebook') {
-                  setNotebookViewMode(value);
-                }
-              }}
-              className="shrink-0 gap-0"
-            >
-              <TabsList variant="outline" className="h-7">
-                <TabsTrigger value="report" className="h-6 px-3 text-xs">
-                  Report
-                </TabsTrigger>
-                <TabsTrigger value="notebook" className="h-6 px-3 text-xs">
-                  Notebook
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-          ) : null}
-          <div className="flex shrink-0 items-center gap-2">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setFilePreviewKey((prev) => prev + 1)}
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Reload</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  asChild
-                >
-                  <a
-                    href={filePreviewOpenUrl || 'about:blank'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Open in new tab</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={clearPreviewTarget}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Close preview</TooltipContent>
-            </Tooltip>
-          </div>
-        </div>
-        <div className={cn('flex-1 min-h-0 overflow-hidden', !isNotebookPreview && 'p-3')}>
-          <FilePreviewContent
-            filename={previewFileName}
-            previewUrl={filePreviewUrl}
-            contentType={previewTarget.contentType}
-            layout="panel"
-            notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
-          />
-        </div>
-      </>
-    )
+        )}
+      </div>
+    </>
   ) : null;
 
   const chatPanelContent = (
@@ -2914,7 +2968,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
               )}
               {isMobile ? (
                 <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
-                  {previewTarget ? (
+                  {previewTabs.length > 0 ? (
                     <>
                       <div className="relative flex-1 min-h-0 overflow-hidden">
                         <div
@@ -2947,14 +3001,14 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   className="flex-1 min-h-0"
                 >
                   <ResizablePanel
-                    defaultSize={previewTarget ? "50%" : "100%"}
+                    defaultSize={previewTabs.length > 0 ? "50%" : "100%"}
                     minSize="30%"
                     className="flex flex-col min-h-0 min-w-0"
                   >
                     {chatPanelContent}
                   </ResizablePanel>
 
-                  {previewTarget && (
+                  {previewTabs.length > 0 && (
                     <>
                       <ResizableHandle withHandle />
                       <ResizablePanel

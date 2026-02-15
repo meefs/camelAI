@@ -25,6 +25,13 @@ export type PreviewTarget =
       contentType?: string;
     };
 
+export interface PreviewTab {
+  /** Unique ID for this tab (used as React key). */
+  id: string;
+  /** The preview target this tab displays. */
+  target: PreviewTarget;
+}
+
 // Content block types for structured message content
 export interface TextBlock {
   type: 'text';

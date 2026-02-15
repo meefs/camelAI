@@ -25,10 +25,11 @@ export type PreviewType = 'image' | 'pdf' | 'notebook' | 'text' | 'audio' | 'vid
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 const PDF_EXTENSIONS = new Set(['pdf']);
 const NOTEBOOK_EXTENSIONS = new Set(['ipynb']);
-const SPREADSHEET_EXTENSIONS = new Set(['csv', 'xlsx', 'xls']);
+const SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xlsx', 'xls']);
 const CODE_EXTENSIONS = new Set([
   'txt',
   'json',
+  'jsonl',
   'xml',
   'html',
   'css',

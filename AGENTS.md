@@ -273,6 +273,7 @@ Runtime startup is on-demand from chat/API paths; dashboard route loaders no lon
 - Each thread belongs to a workspace
 - Threads stored in `OrgDO` (one per organization)
 - `ChatThreadDO` handles real-time preview target state (single active target: deployed app or file)
+- Chat UI now supports multi-tab preview panels client-side (`PreviewTabRow` + `PreviewToolbar` in `src/components/preview-panel/`); selecting or closing tabs syncs the active tab target back to `ChatThreadDO`
 - History queries threads across accessible workspaces
 
 ### App Previews
