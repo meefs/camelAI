@@ -229,6 +229,7 @@ Environment=SANDBOX_IMAGE=${SANDBOX_IMAGE}
 Environment=CONTAINER_RUNTIME=runsc
 Environment=JFS_VOLUME_NAME=chiridion_workspaces
 EnvironmentFile=-/etc/chiridion/sandbox-host.env
+EnvironmentFile=-/etc/chiridion/storage.env
 
 [Install]
 WantedBy=multi-user.target
