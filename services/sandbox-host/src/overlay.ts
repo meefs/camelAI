@@ -8,7 +8,10 @@
  *   merged = /mnt/workspaces/{name} (what containers see)
  *
  * New/modified files land on NVMe (fast), unchanged files read from JuiceFS.
- * Background sync flushes merged → JuiceFS lower via rsync through the FUSE mount.
+ * Background sync flushes merged → JuiceFS via `juicefs sync` using the
+ * jfs:// protocol, which bypasses the FUSE mount on the write side and writes
+ * directly to the metadata engine + object storage backend (~3x faster than
+ * rsync through FUSE for no-op syncs).
  *
  * Container termination triggers a non-destructive sync (NVMe→JuiceFS) but
  * does NOT unmount or clear NVMe, so a new container can reuse the mount.
@@ -31,7 +34,22 @@ const JFS_ROOT = process.env.JFS_ROOT || '/mnt/juicefs';
 const NVME_ROOT = process.env.NVME_ROOT || '/mnt/nvme';
 const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/mnt/workspaces';
 const SYNC_INTERVAL_MS = parseInt(process.env.OVERLAY_SYNC_INTERVAL_MS || String(60_000), 10);
-const RSYNC_TIMEOUT_MS = 10 * 60_000; // 10 minutes for large workspaces
+const SYNC_TIMEOUT_MS = 10 * 60_000; // 10 minutes for large workspaces
+
+/**
+ * JuiceFS metadata URL for the jfs:// sync protocol.
+ * Constructed from PG_HOST + PG_PASSWORD env vars (sourced from /etc/chiridion/storage.env).
+ * Falls back to JFS_META_URL if set directly.
+ */
+const JFS_META_URL = (() => {
+  if (process.env.JFS_META_URL) return process.env.JFS_META_URL;
+  const host = process.env.PG_HOST;
+  const password = process.env.PG_PASSWORD;
+  if (host && password) {
+    return `postgres://chiridion:${password}@${host}:5432/juicefs?sslmode=require`;
+  }
+  return '';
+})();
 
 interface OverlayMount {
   name: string;
@@ -76,8 +94,8 @@ function run(cmd: string): string {
   return execSync(cmd, { encoding: 'utf-8', timeout: 30_000 }).trim();
 }
 
-/** Async exec for long-running commands (rsync). */
-function runAsync(cmd: string, timeoutMs = RSYNC_TIMEOUT_MS): Promise<string> {
+/** Async exec for long-running commands (juicefs sync, rm). */
+function runAsync(cmd: string, timeoutMs = SYNC_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     exec(cmd, { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
@@ -121,41 +139,38 @@ async function acquireSyncLock(mount: OverlayMount): Promise<() => void> {
 }
 
 /**
- * Build the rsync command for syncing a workspace.
+ * Run `juicefs sync` from a local source directory to the JuiceFS backend
+ * via the jfs:// protocol (bypasses FUSE on write side).
  *
  * Flags:
- *   -a          archive mode (recursive, preserves permissions, symlinks, times, etc.)
- *   -H          preserve hardlinks (bun install cache uses hardlinks heavily)
- *   --delete    remove files from dest that don't exist in source
- *   --no-compress  skip compression (local transfer, NVMe→FUSE — compression just wastes CPU)
- */
-function rsyncCmd(src: string, dst: string): string {
-  return `rsync -aH --delete --no-compress "${src}/" "${dst}/"`;
-}
-
-/**
- * Run rsync, treating exit code 23 (partial transfer) as a warning.
+ *   --delete-dst  remove files from dest that don't exist in source
+ *   --perms       preserve permissions
+ *   --links       preserve symlinks
+ *   --dirs        create directories even if empty
+ *   --threads 4   parallel transfer threads
+ *   --no-https    metadata URL is postgres://, no HTTPS needed
  *
- * rsync exits 23 when it encounters I/O errors like ESTALE on individual
- * files/dirs but successfully syncs everything else. We treat this as a
- * partial success rather than a hard failure so that stale overlay dentries
- * from force-killed containers don't block syncs entirely.
+ * The JFS_META_URL env var is passed as VOL so `jfs://VOL/{name}/` resolves
+ * to the correct JuiceFS volume + subpath.
  *
- * Returns 'full' if rsync exited 0, 'partial' if it exited 23.
- * Throws on any other non-zero exit code.
+ * Returns 'full' on exit 0. Throws on any non-zero exit code.
  */
-function runRsync(src: string, dst: string): Promise<'full' | 'partial'> {
-  const cmd = rsyncCmd(src, dst);
+function runJfsSync(src: string, jfsDstSubpath: string): Promise<'full'> {
+  if (!JFS_META_URL) {
+    throw new Error('JFS_META_URL not configured (need PG_HOST + PG_PASSWORD or JFS_META_URL env var)');
+  }
+  const cmd = `juicefs sync "${src}/" "jfs://VOL/${jfsDstSubpath}/" --delete-dst --perms --links --dirs --threads 4 --no-https`;
   return new Promise((resolve, reject) => {
-    exec(cmd, { encoding: 'utf-8', timeout: RSYNC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
+    exec(cmd, {
+      encoding: 'utf-8',
+      timeout: SYNC_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env, VOL: JFS_META_URL },
+    }, (err, _stdout, stderr) => {
       if (!err) {
         resolve('full');
-      } else if (err.code === 23) {
-        // Partial transfer — some files skipped (ESTALE, permission, etc.)
-        // but everything else synced successfully.
-        resolve('partial');
       } else {
-        reject(new Error(`rsync failed (code=${err.code}): ${stderr || err.message}`));
+        reject(new Error(`juicefs sync failed (code=${err.code}): ${stderr || err.message}`));
       }
     });
   });
@@ -220,9 +235,8 @@ export async function ensureOverlay(name: string): Promise<string> {
  * Sync workspace data from merged overlay to JuiceFS (non-disruptive).
  *
  * Acquires the per-workspace sync lock so only one sync runs at a time.
- * Uses rsync from the merged overlayfs view to the JuiceFS FUSE mount
- * so deletions are handled correctly (--delete removes files from JuiceFS
- * that were deleted in the overlay).
+ * Uses `juicefs sync` with jfs:// protocol to write directly to the
+ * JuiceFS backend, bypassing the FUSE mount on the write side.
  *
  * Does NOT clear NVMe — the overlay stays intact so the sandbox keeps
  * its full view of files even during/after sync.
@@ -241,14 +255,10 @@ export async function syncOverlay(name: string): Promise<void> {
 
   try {
     const start = Date.now();
-    const result = await runRsync(mount.mergedDir, mount.lowerDir);
+    await runJfsSync(mount.mergedDir, name);
     mount.lastSyncedAt = Date.now();
     const elapsed = Math.round((Date.now() - start) / 1000);
-    if (result === 'partial') {
-      console.warn(`[Overlay] ${name}: partial sync to JuiceFS (${elapsed}s) — some files skipped (stale handles)`);
-    } else {
-      console.log(`[Overlay] ${name}: synced to JuiceFS (${elapsed}s)`);
-    }
+    console.log(`[Overlay] ${name}: synced to JuiceFS (${elapsed}s)`);
   } catch (err) {
     console.error(`[Overlay] sync failed for ${name}:`, err);
   } finally {
@@ -297,17 +307,17 @@ export async function listMountedOverlayNames(): Promise<string[]> {
 /**
  * Reclaim NVMe space for a workspace overlay.
  *
- * Flow: acquire sync lock → final rsync → call isSafe() → unmount →
+ * Flow: acquire sync lock → final juicefs sync → call isSafe() → unmount →
  *       atomic rename NVMe dirs → background rm -rf.
  *
- * The isSafe callback is called AFTER the (potentially long) rsync to
+ * The isSafe callback is called AFTER the (potentially long) sync to
  * re-verify no container was created during the sync. This is the
  * double-check guard that prevents the race condition.
  *
  * NVMe dirs are renamed atomically before deletion so that a concurrent
  * ensureOverlay call would create fresh dirs instead of colliding.
  *
- * If the final rsync fails (e.g. stale overlay dentries from a crashed
+ * If the final sync fails (e.g. stale overlay dentries from a crashed
  * container), we proceed with unmount + reclaim anyway. The periodic
  * background sync (every 60s) will have already captured recent state
  * to JuiceFS, so at most ~60s of writes may be lost — which is better
@@ -329,14 +339,10 @@ export async function reclaimOverlay(name: string, isSafe: () => boolean | Promi
     // Final sync to JuiceFS (best-effort — proceed with reclaim even if this fails)
     try {
       const start = Date.now();
-      const result = await runRsync(mount.mergedDir, mount.lowerDir);
+      await runJfsSync(mount.mergedDir, name);
       mount.lastSyncedAt = Date.now();
       const syncElapsed = Math.round((Date.now() - start) / 1000);
-      if (result === 'partial') {
-        console.warn(`[Overlay] ${name}: reclaim final sync partial (${syncElapsed}s) — some files skipped (stale handles)`);
-      } else {
-        console.log(`[Overlay] ${name}: reclaim final sync (${syncElapsed}s)`);
-      }
+      console.log(`[Overlay] ${name}: reclaim final sync (${syncElapsed}s)`);
     } catch (syncErr) {
       console.warn(
         `[Overlay] ${name}: reclaim final sync failed, proceeding with reclaim anyway ` +
@@ -410,4 +416,4 @@ setInterval(() => {
   );
 }, SYNC_INTERVAL_MS);
 
-console.log(`[Overlay] background sync started (interval=${SYNC_INTERVAL_MS / 1000}s)`);
+console.log(`[Overlay] background sync started (interval=${SYNC_INTERVAL_MS / 1000}s, engine=${JFS_META_URL ? 'juicefs-sync' : 'UNCONFIGURED'})`);
