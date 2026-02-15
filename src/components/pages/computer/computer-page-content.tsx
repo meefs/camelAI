@@ -150,6 +150,12 @@ type ConflictState = {
   remoteVersion: string;
 };
 
+type WorkspaceFileReadPayload = Partial<WorkspaceFileRead> & {
+  success?: boolean;
+  error?: string;
+  code?: string;
+};
+
 const ROOT_PATH = '/';
 const WORKSPACE_ROOT_PREFIXES = ['/home/claude', '/workspace', '/root'];
 const MAX_EDITABLE_BYTES = 1024 * 1024;
@@ -264,13 +270,37 @@ function getRelativePath(path: string): string {
   return path.replace(/^\/+/, '');
 }
 
-function hashString(value: string): string {
+function hashString(value: string | null | undefined): string {
+  const input = typeof value === 'string' ? value : '';
   let hash = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(16);
+}
+
+function isReadNotFoundError(payload: WorkspaceFileReadPayload | null): boolean {
+  if (payload?.code === 'ENOENT') return true;
+  const errorMessage =
+    typeof payload?.error === 'string' ? payload.error.toLowerCase() : '';
+  return errorMessage.includes('not found') || errorMessage.includes('enoent');
+}
+
+function toWorkspaceFileRead(
+  payload: WorkspaceFileReadPayload | null,
+  fallbackPath: string
+): WorkspaceFileRead {
+  return {
+    path: typeof payload?.path === 'string' ? payload.path : fallbackPath,
+    content: typeof payload?.content === 'string' ? payload.content : '',
+    version: typeof payload?.version === 'string' ? payload.version : '',
+    size: typeof payload?.size === 'number' ? payload.size : null,
+    mtime: typeof payload?.mtime === 'string' ? payload.mtime : null,
+    isBinary: payload?.isBinary === true,
+    encoding: payload?.encoding === 'base64' ? 'base64' : 'utf-8',
+    mimeType: typeof payload?.mimeType === 'string' ? payload.mimeType : null,
+  };
 }
 
 function canDropInto(targetPath: string, sourcePath: string): boolean {
@@ -839,20 +869,37 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         const res = await fetch(
           `${apiBase}/read?path=${encodeURIComponent(normalizedPath)}`
         );
+        const payload = (await res
+          .json()
+          .catch(() => null)) as WorkspaceFileReadPayload | null;
+
         if (!res.ok) {
-          if (res.status === 404) {
+          if (res.status === 404 || isReadNotFoundError(payload)) {
             updateTab(normalizedPath, (tab) => ({
               ...tab,
               notFound: true,
             }));
             return;
           }
-          const payload = (await res
-            .json()
-            .catch(() => null)) as { error?: string } | null;
           throw new Error(payload?.error || 'Failed to open file');
         }
-        const data = (await res.json()) as WorkspaceFileRead;
+
+        if (!payload) {
+          throw new Error('Invalid file read response');
+        }
+
+        if (payload?.success === false) {
+          if (isReadNotFoundError(payload)) {
+            updateTab(normalizedPath, (tab) => ({
+              ...tab,
+              notFound: true,
+            }));
+            return;
+          }
+          throw new Error(payload.error || 'Failed to open file');
+        }
+
+        const data = toWorkspaceFileRead(payload, normalizedPath);
 
         updateTab(normalizedPath, (tab) => ({
           ...tab,
@@ -916,12 +963,21 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
             `${apiBase}/read?path=${encodeURIComponent(path)}`
           );
           if (latest.ok) {
-            const payload = (await latest.json()) as WorkspaceFileRead;
+            const payload = (await latest
+              .json()
+              .catch(() => null)) as WorkspaceFileReadPayload | null;
+            if (!payload) {
+              return;
+            }
+            if (payload?.success === false) {
+              return;
+            }
+            const latestFile = toWorkspaceFileRead(payload, path);
             setConflictState({
               path,
               localContent: content,
-              remoteContent: payload.content,
-              remoteVersion: payload.version,
+              remoteContent: latestFile.content,
+              remoteVersion: latestFile.version,
             });
           }
           return;
@@ -958,7 +1014,12 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
           `${apiBase}/read?path=${encodeURIComponent(path)}`
         );
         if (!res.ok) return;
-        const data = (await res.json()) as WorkspaceFileRead;
+        const payload = (await res
+          .json()
+          .catch(() => null)) as WorkspaceFileReadPayload | null;
+        if (!payload) return;
+        if (payload?.success === false) return;
+        const data = toWorkspaceFileRead(payload, path);
         let blob: Blob;
         if (data.isBinary && data.encoding === 'base64') {
           const raw = atob(data.content);
