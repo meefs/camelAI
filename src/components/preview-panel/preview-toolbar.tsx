@@ -217,7 +217,7 @@ function AppToolbarActions({
       {appShareButton}
       {onBugReport ? (
         <>
-          <Separator orientation="vertical" className="mx-1 h-4" />
+          <Separator orientation="vertical" className="mx-1 h-4 data-[orientation=vertical]:self-auto" />
           <ToolbarButton icon={Bug} tooltip="Report a bug" onClick={onBugReport} />
         </>
       ) : null}
@@ -254,7 +254,7 @@ function NotebookToolbarActions({
           </TabsTrigger>
         </TabsList>
       </Tabs>
-      <Separator orientation="vertical" className="mx-1 h-4" />
+      <Separator orientation="vertical" className="mx-1 h-4 data-[orientation=vertical]:self-auto" />
       <DownloadButton activeTarget={activeTarget} filePreviewOpenUrl={filePreviewOpenUrl} />
     </>
   );
@@ -278,7 +278,7 @@ export function PreviewToolbar({
     <div className="flex items-center gap-1 border-b border-border px-3 py-1.5">
       <ToolbarButton icon={RefreshCw} tooltip="Refresh" onClick={onRefresh} />
 
-      <Separator orientation="vertical" className="mx-1 h-4" />
+      <Separator orientation="vertical" className="mx-1 h-4 data-[orientation=vertical]:self-auto" />
 
       {fileType === 'app' ? (
         <AppToolbarActions
