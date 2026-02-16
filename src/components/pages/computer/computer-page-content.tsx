@@ -361,6 +361,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const [savingPaths, setSavingPaths] = useState<Set<string>>(new Set());
   const [conflictState, setConflictState] = useState<ConflictState | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [rootLoaded, setRootLoaded] = useState(false);
   const [monacoReady, setMonacoReady] = useState(false);
   const [readOnlyHintOpen, setReadOnlyHintOpen] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
@@ -716,9 +717,20 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   );
 
   useEffect(() => {
-    if (user) {
-      loadDirectory(ROOT_PATH);
+    if (!user) {
+      setRootLoaded(false);
+      return;
     }
+    let cancelled = false;
+    setRootLoaded(false);
+    void loadDirectory(ROOT_PATH).finally(() => {
+      if (!cancelled) {
+        setRootLoaded(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [user, loadDirectory]);
 
   useEffect(() => {
@@ -900,6 +912,18 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         }
 
         const data = toWorkspaceFileRead(payload, normalizedPath);
+        const effectiveSize = typeof data.size === 'number' ? data.size : null;
+        if (effectiveSize && effectiveSize > MAX_EDITABLE_BYTES && !options.force) {
+          updateTab(normalizedPath, (tab) => ({
+            ...tab,
+            isBinary: data.isBinary,
+            isTooLarge: true,
+            version: data.version,
+            isDirty: false,
+            notFound: false,
+          }));
+          return;
+        }
 
         updateTab(normalizedPath, (tab) => ({
           ...tab,
@@ -1240,7 +1264,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   );
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !rootLoaded) return;
     const initialFileParam = searchParams?.get('file');
     if (!initialFileParam) return;
     if (initialFileHandledRef.current === initialFileParam) return;
@@ -1257,7 +1281,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       openFile(normalizedPath);
       scrollToNode(normalizedPath);
     });
-  }, [ensurePathExpanded, hydrated, openFile, scrollToNode, searchParams]);
+  }, [ensurePathExpanded, hydrated, openFile, rootLoaded, scrollToNode, searchParams]);
 
   const remapOpenResources = useCallback(
     (fromPath: string, toPath: string) => {

@@ -7,6 +7,13 @@ import { OrgDO, type OrgThread } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from '../../workers/main/src/workspace-container';
 
+export interface ThreadPreviewState {
+  target: PreviewTarget | null;
+  tabs: PreviewTarget[];
+  activeTabId: string | null;
+  version: number;
+}
+
 // Helper to convert OrgThread to Thread
 function toThread(orgThread: OrgThread): Thread {
   return {
@@ -307,7 +314,21 @@ export async function getThreadPreviewTarget(
   context: AppLoadContext,
   threadId: string
 ): Promise<PreviewTarget | null> {
+  const state = await getThreadPreviewState(context, threadId);
+  return state.target;
+}
+
+export async function getThreadPreviewState(
+  context: AppLoadContext,
+  threadId: string
+): Promise<ThreadPreviewState> {
   const env = getEnv(context);
   const stub = env.CHAT_THREAD.get(env.CHAT_THREAD.idFromName(threadId));
-  return stub.getPreviewTarget();
+  const state = await stub.getPreviewState();
+  return {
+    target: state?.target ?? null,
+    tabs: Array.isArray(state?.tabs) ? state.tabs : [],
+    activeTabId: typeof state?.activeTabId === 'string' ? state.activeTabId : null,
+    version: typeof state?.version === 'number' ? state.version : 0,
+  };
 }

@@ -1,46 +1,18 @@
 ---
 name: data-analysis
-description: Analyze data using Python and SQL tools. Use this skill when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create visualizations, or perform data analysis. Supports pandas, polars, DuckDB for data processing, altair/plotly for visualization (matplotlib/seaborn as fallbacks), scikit-learn for ML, and database connectivity via SQLAlchemy, usql, the google-cloud-bigquery client with OAuth access tokens, and the Chiridion MS SQL Proxy API for SQL Server. For live dashboards or data apps, read the developing-software skill.
+description: Analyze data using Python and SQL tools. Use when the user asks to process CSVs, Excel, Parquet, PDFs, Word docs, or PowerPoint files, query databases (PostgreSQL, MySQL, SQLite, SQL Server, BigQuery), create charts or visualizations, or perform any data analysis. For live dashboards or data apps, read the developing-software skill.
 license: Complete terms in LICENSE.txt
 ---
 
-# Data Analysis Tools
-
-This skill provides tools for data analysis, database querying, and visualization. Python packages can be installed on-demand and persist across sessions.
+# Data Analysis
 
 ## Package Installation
 
-Python packages are **not pre-installed** by default. When you need a package, install it using **`uv`** (a fast Python package installer).
-
-### Installing uv (if not already installed)
-
-```bash
-# Check if uv is installed
-which uv
-
-# If not found, install it
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-### Installing Python packages
-
-```bash
-# Recommended: Use uv (much faster than pip)
-uv pip install --system <package>
-
-# Alternative: Use pip (slower)
-pip install <package>
-```
-
-**Why use `uv` over `pip`?** `uv` is significantly faster than `pip` for package installation and resolution, making it the preferred choice for data analysis workflows.
-
-**Installs persist** — once a package is installed in a workspace, it remains available across all future sessions. Before using a package, check if it needs to be installed first (with `python -c "import package_name"` or similar), and install it if missing.
+Install Python packages on-demand with `uv pip install --system <package>`. Installs persist across sessions. Before importing a package, check if it's installed (`python -c "import pkg"`) and install if missing.
 
 ## Database CLI
 
 ### usql - Universal SQL CLI
-
-Connect to any database from the command line:
 
 ```bash
 # PostgreSQL
@@ -66,8 +38,6 @@ Common commands inside usql:
 
 ### sqlite3
 
-SQLite CLI is also available for local databases:
-
 ```bash
 sqlite3 data.db "SELECT * FROM users LIMIT 10"
 ```
@@ -82,8 +52,6 @@ sqlite3 data.db "SELECT * FROM users LIMIT 10"
 | `numpy` | Numerical computing | `uv pip install --system numpy` |
 | `polars` | Fast DataFrame library (Rust-based) | `uv pip install --system polars` |
 | `duckdb` | In-process SQL analytics | `uv pip install --system duckdb` |
-
-**Install if needed, then use:**
 
 ```python
 import pandas as pd
@@ -105,14 +73,19 @@ print(result.df())
 
 ### Visualization
 
+Chiridion's notebook preview renders Altair and Plotly charts natively — not in iframes. Chart colors, text, and backgrounds automatically adapt to the user's light/dark theme.
+
+**Preferred order:**
+1. **Altair** (Vega-Lite) — emits structured specs with full theme support
+2. **Plotly** — also renders natively; use when Altair doesn't cover the chart type (3D, maps, financial)
+3. **matplotlib / seaborn** — static PNG fallback; won't adapt to dark mode
+
 | Package | Purpose | Install |
 |---------|---------|---------|
 | `altair` | Declarative charts (Vega-Lite) — **preferred** | `uv pip install --system altair` |
 | `plotly` | Interactive charts — use for 3D, maps, finance | `uv pip install --system plotly` |
 | `matplotlib` | Static plots (fallback) | `uv pip install --system matplotlib` |
 | `seaborn` | Statistical visualization (fallback) | `uv pip install --system seaborn` |
-
-**Install if needed, then use:**
 
 ```python
 # Altair (preferred — renders natively with dark/light theme support)
@@ -140,13 +113,32 @@ sns.barplot(data=df, x="category", y="amount")
 plt.savefig("barplot.png")
 ```
 
+**Altair renderer constraints:**
+- Use `alt.Title("Title", subtitle="Subtitle")` — both are themed automatically
+- Do **not** set `background` — the renderer makes backgrounds transparent
+- Do **not** hardcode text colors — the renderer applies theme-appropriate colors
+- Set `width`/`height` via `.properties()` — width is overridden to fill the container; height is used as a baseline
+- Arc marks (donut/pie) are detected and allocated extra vertical space automatically
+
+**Plotly renderer constraints:**
+- Use `fig.show()` to emit Plotly MIME output — the renderer picks it up natively
+- Do **not** use `fig.write_image()` or `fig.write_html()` — these bypass native rendering
+- Do **not** set `paper_bgcolor` or `plot_bgcolor` — the renderer makes them transparent
+- Subtitles via `layout.annotations` are automatically themed
+
+### Tabular output
+
+When outputting tabular data in notebooks, use plain pandas DataFrames — not `df.style` (pandas Styler). The rendering environment handles table styling automatically with theme-aware colors, index columns, and overflow handling.
+
+Only use `df.style` when the user explicitly requests conditional formatting, cell-level color coding, or other per-cell visual logic that can't be achieved with a plain table.
+
 ## Jupyter Notebook Workflow (Preferred)
 
-For exploratory analysis, prefer delivering results as a Jupyter notebook (`.ipynb`) instead of a standalone `.py` script with separate chart/image files. Notebooks let you combine code, visual output, and markdown conclusions in one artifact.
+For exploratory analysis, prefer delivering results as a Jupyter notebook (`.ipynb`) instead of a standalone `.py` script with separate chart/image files. Notebooks combine code, visual output, and markdown conclusions in one artifact.
 
 ### Build notebooks incrementally
 
-- Prefer using `NotebookEdit` for notebook changes (add/update markdown and code cells) instead of hand-editing raw JSON.
+- Use `NotebookEdit` for notebook changes (add/update markdown and code cells) instead of hand-editing raw JSON.
 - Keep a narrative flow:
   - markdown cell: objective and dataset context
   - code cell: data loading/cleaning
@@ -194,36 +186,12 @@ Chiridion renders notebooks in **Report mode** by default — the user sees a po
 
 The user can toggle to Notebook mode to see all cells, code, and execution counts, but Report mode is the default first impression.
 
-### Chart library preference
-
-Chiridion's notebook preview renders Altair and Plotly charts natively — not in iframes. Chart colors, text, and backgrounds automatically adapt to the user's light/dark theme.
-
-**Preferred order:**
-1. **Altair** (Vega-Lite) — emits structured specs with full theme support
-2. **Plotly** — also renders natively; use when Altair doesn't cover the chart type (3D, maps, financial)
-3. **matplotlib / seaborn** — static PNG fallback; won't adapt to dark mode
-
-**Altair renderer constraints:**
-- Use `alt.Title("Title", subtitle="Subtitle")` — both are themed automatically
-- Do **not** set `background` — the renderer makes backgrounds transparent
-- Do **not** hardcode text colors — the renderer applies theme-appropriate colors
-- Set `width`/`height` via `.properties()` — width is overridden to fill the container; height is used as a baseline
-- Arc marks (donut/pie) are detected and allocated extra vertical space automatically
-
-**Plotly renderer constraints:**
-- Use `fig.show()` to emit Plotly MIME output — the renderer picks it up natively
-- Do **not** use `fig.write_image()` or `fig.write_html()` — these bypass native rendering
-- Do **not** set `paper_bgcolor` or `plot_bgcolor` — the renderer makes them transparent
-- Subtitles via `layout.annotations` are automatically themed
-
-### Scientific Computing & ML
+## Scientific Computing & ML
 
 | Package | Purpose | Install |
 |---------|---------|---------|
 | `scipy` | Scientific computing, optimization | `uv pip install --system scipy` |
 | `scikit-learn` | Machine learning algorithms | `uv pip install --system scikit-learn` |
-
-**Install if needed, then use:**
 
 ```python
 from sklearn.model_selection import train_test_split
@@ -234,7 +202,7 @@ model = LinearRegression().fit(X_train, y_train)
 predictions = model.predict(X_test)
 ```
 
-### Database Connectivity
+## Database Connectivity
 
 | Package | Purpose | Install |
 |---------|---------|---------|
@@ -243,8 +211,6 @@ predictions = model.predict(X_test)
 | `pymysql` | MySQL driver | `uv pip install --system pymysql` |
 | `google-cloud-bigquery` | BigQuery client | `uv pip install --system google-cloud-bigquery` |
 | `google-auth` | Google authentication (used for BigQuery tokens) | `uv pip install --system google-auth` |
-
-**Install if needed, then use:**
 
 ```python
 from sqlalchemy import create_engine
@@ -259,7 +225,7 @@ engine = create_engine("mysql+pymysql://user:pass@host/db")
 df = pd.read_sql("SELECT * FROM orders", engine)
 ```
 
-#### BigQuery
+### BigQuery
 
 **Important:** BigQuery connections in Chiridion use **OAuth access tokens**, not service account JSON files directly. The platform automatically generates short-lived access tokens from the user's service account JSON key and exposes them as environment variables. Always use this token-based approach.
 
@@ -286,7 +252,7 @@ df = client.query("SELECT * FROM dataset.table").to_dataframe()
 
 **Do NOT** use `bigquery.Client.from_service_account_json()` or try to read a service account JSON file. The raw service account key is never available in the container — only the derived access token is exposed.
 
-#### MS SQL Server
+### MS SQL Server
 
 MS SQL Server connections use the **Chiridion Data Proxy API**. Direct drivers like `pymssql` or `pyodbc` are not available in the container. Instead, use the HTTP API with a signed token.
 
@@ -359,9 +325,9 @@ response = requests.post(
 )
 ```
 
-**Note:** The `usql sqlserver://` CLI shown above also works for interactive exploration but the HTTP API is preferred for programmatic access within scripts.
+**Note:** The `usql sqlserver://` CLI also works for interactive exploration but the HTTP API is preferred for programmatic access within scripts.
 
-### File Formats
+## File Formats
 
 | Package | Purpose | Install |
 |---------|---------|---------|
@@ -371,8 +337,6 @@ response = requests.post(
 | `pdfplumber` | PDF text and table extraction | `uv pip install --system pdfplumber` |
 | `python-docx` | Word documents | `uv pip install --system python-docx` |
 | `python-pptx` | PowerPoint files | `uv pip install --system python-pptx` |
-
-**Install if needed, then use:**
 
 ```python
 # Read Excel
@@ -404,8 +368,6 @@ When the user wants a **live dashboard**, **data app**, or any interactive web U
 Database connection credentials are available as environment variables in deployed workers (same `INT_*` env vars documented above), so dashboards can query databases directly at runtime.
 
 ## Additional Packages
-
-Common packages for specialized analysis:
 
 | Package | Purpose | Install |
 |---------|---------|---------|

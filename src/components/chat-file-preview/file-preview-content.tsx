@@ -3,6 +3,7 @@
 import { memo, useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { getPreviewType } from './file-type-utils';
 import { NotebookPreview } from './notebook-preview';
 import type { NotebookFile } from './notebook-preview';
@@ -28,6 +29,16 @@ function truncateTextLines(text: string, maxLines = MAX_TEXT_LINES) {
 
 function getFilenameFromPath(path: string): string {
   return path.split('/').filter(Boolean).pop() || path;
+}
+
+function getPreviewErrorMessage(previewType: string, status?: number): string {
+  if (status === 404 || status === 410) {
+    return 'This file no longer exists in the workspace.';
+  }
+  if (previewType === 'notebook') {
+    return 'Unable to preview this notebook.';
+  }
+  return 'Unable to preview this file.';
 }
 
 function ImagePreview({
@@ -80,6 +91,7 @@ export interface FilePreviewContentProps {
   contentType?: string;
   layout?: PreviewLayout;
   notebookViewMode?: 'report' | 'notebook';
+  markdownViewMode?: 'rendered' | 'source';
 }
 
 function FilePreviewContentComponent({
@@ -88,6 +100,7 @@ function FilePreviewContentComponent({
   contentType,
   layout = 'dialog',
   notebookViewMode,
+  markdownViewMode,
 }: FilePreviewContentProps) {
   const previewType = useMemo(
     () => getPreviewType(filename, contentType),
@@ -96,6 +109,7 @@ function FilePreviewContentComponent({
 
   const [textPreview, setTextPreview] = useState('');
   const [textStatus, setTextStatus] = useState<TextStatus>('idle');
+  const [textErrorMessage, setTextErrorMessage] = useState('Unable to preview this file.');
   const [notebook, setNotebook] = useState<NotebookFile | null>(null);
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaError, setMediaError] = useState(false);
@@ -105,18 +119,24 @@ function FilePreviewContentComponent({
   });
 
   useEffect(() => {
-    const shouldFetchText = previewType === 'text' || previewType === 'notebook';
+    const shouldFetchText =
+      previewType === 'text' || previewType === 'notebook' || previewType === 'markdown';
     if (!shouldFetchText) return;
 
     const controller = new AbortController();
     let cancelled = false;
 
     setTextStatus('loading');
+    setTextErrorMessage(getPreviewErrorMessage(previewType));
     setNotebook(null);
 
     fetch(previewUrl, { signal: controller.signal })
       .then(async (response) => {
-        if (!response.ok) throw new Error('Failed to load preview');
+        if (!response.ok) {
+          const error = new Error('Failed to load preview') as Error & { status?: number };
+          error.status = response.status;
+          throw error;
+        }
         const bodyText = await response.text();
         if (previewType === 'notebook') {
           let parsed: NotebookFile | null = null;
@@ -139,6 +159,8 @@ function FilePreviewContentComponent({
       })
       .catch((error) => {
         if (cancelled || error?.name === 'AbortError') return;
+        const status = typeof error?.status === 'number' ? error.status : undefined;
+        setTextErrorMessage(getPreviewErrorMessage(previewType, status));
         setTextStatus('error');
       });
 
@@ -249,14 +271,16 @@ function FilePreviewContentComponent({
             <p className="text-sm text-muted-foreground">Loading preview...</p>
           )}
           {textStatus === 'error' && (
-            <p className="text-sm text-muted-foreground">Unable to preview this file.</p>
+            <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
           {textStatus === 'ready' && (
             <>
               <pre
                 className={cn(
-                  'w-full min-w-0 overflow-auto rounded-md border bg-muted/30 p-3 text-xs',
-                  layout === 'panel' ? 'h-full max-h-full' : 'max-h-[60vh]',
+                  'w-full min-w-0 overflow-auto text-xs',
+                  layout === 'panel'
+                    ? 'h-full max-h-full'
+                    : 'max-h-[60vh] rounded-md border bg-muted/30 p-3',
                   textPreview ? 'text-foreground' : 'text-muted-foreground'
                 )}
               >
@@ -272,13 +296,54 @@ function FilePreviewContentComponent({
         </div>
       )}
 
+      {previewType === 'markdown' && (
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="text-sm text-muted-foreground">Loading preview...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
+          )}
+          {textStatus === 'ready' && (
+            (markdownViewMode ?? 'rendered') === 'rendered' ? (
+              <div
+                className={cn(
+                  layout === 'panel'
+                    ? 'h-full overflow-auto'
+                    : 'max-h-[60vh] overflow-auto p-6'
+                )}
+              >
+                <MarkdownRenderer content={textPreview} />
+              </div>
+            ) : (
+              <pre
+                className={cn(
+                  'w-full min-w-0 overflow-auto whitespace-pre-wrap text-xs',
+                  layout === 'panel'
+                    ? 'h-full max-h-full'
+                    : 'max-h-[60vh] rounded-md border bg-muted/30 p-3',
+                  textPreview ? 'text-foreground' : 'text-muted-foreground'
+                )}
+              >
+                {textPreview || 'No preview content available.'}
+              </pre>
+            )
+          )}
+          {lineInfo.truncated && (
+            <p className="mt-2 px-3 text-xs text-muted-foreground">
+              Showing first {MAX_TEXT_LINES} of {lineInfo.totalLines} lines.
+            </p>
+          )}
+        </div>
+      )}
+
       {previewType === 'notebook' && (
         <div className={cn(layout === 'panel' && 'h-full')}>
           {(textStatus === 'loading' || textStatus === 'idle') && (
             <p className="text-sm text-muted-foreground">Loading notebook...</p>
           )}
           {textStatus === 'error' && (
-            <p className="text-sm text-muted-foreground">Unable to preview this notebook.</p>
+            <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
           {textStatus === 'ready' && notebook && (
             <NotebookPreview
@@ -308,7 +373,8 @@ function areFilePreviewContentPropsEqual(
     prev.previewUrl === next.previewUrl &&
     prev.contentType === next.contentType &&
     prev.layout === next.layout &&
-    prev.notebookViewMode === next.notebookViewMode
+    prev.notebookViewMode === next.notebookViewMode &&
+    prev.markdownViewMode === next.markdownViewMode
   );
 }
 

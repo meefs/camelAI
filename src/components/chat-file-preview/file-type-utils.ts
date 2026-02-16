@@ -20,15 +20,24 @@ export type FileCategory =
   | 'video'
   | 'other';
 
-export type PreviewType = 'image' | 'pdf' | 'notebook' | 'text' | 'audio' | 'video' | 'other';
+export type PreviewType =
+  | 'image'
+  | 'pdf'
+  | 'notebook'
+  | 'markdown'
+  | 'text'
+  | 'audio'
+  | 'video'
+  | 'other';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 const PDF_EXTENSIONS = new Set(['pdf']);
 const NOTEBOOK_EXTENSIONS = new Set(['ipynb']);
-const SPREADSHEET_EXTENSIONS = new Set(['csv', 'xlsx', 'xls']);
+const SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xlsx', 'xls']);
 const CODE_EXTENSIONS = new Set([
   'txt',
   'json',
+  'jsonl',
   'xml',
   'html',
   'css',
@@ -95,6 +104,7 @@ export function getPreviewType(filename: string, contentType?: string): PreviewT
   if (category === 'notebook') return 'notebook';
   if (category === 'audio') return 'audio';
   if (category === 'video') return 'video';
+  if (getFileExtension(filename) === 'md') return 'markdown';
   if (category === 'code' || category === 'text' || category === 'spreadsheet') return 'text';
   return 'other';
 }

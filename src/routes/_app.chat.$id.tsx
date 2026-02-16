@@ -23,7 +23,14 @@ export function meta({ data }: Route.MetaArgs) {
 // Type for the combined data promise
 interface ChatData {
   messages: Message[];
+  previewTabs: PreviewTarget[];
+  activeTabId: string | null;
   previewTarget: PreviewTarget | null;
+}
+
+function getPreviewTabId(target: PreviewTarget): string {
+  if (target.kind === 'app') return `app:${target.scriptName}`;
+  return `file:${target.workspaceId}:${target.source}:${target.path}`;
 }
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -33,7 +40,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return {
       threadId: params.id,
       workspaceId: null,
-      chatDataPromise: Promise.resolve({ messages: [], previewTarget: null }),
+      chatDataPromise: Promise.resolve({
+        messages: [],
+        previewTabs: [],
+        activeTabId: null,
+        previewTarget: null,
+      }),
       threadTitle: null,
       isNewThread: false,
       hostname: undefined,
@@ -55,11 +67,21 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
   // Create promise for slower data - NOT awaited, will be streamed
   const chatDataPromise: Promise<ChatData> = isNewThread
-    ? Promise.resolve({ messages: [], previewTarget: null })
+    ? Promise.resolve({
+        messages: [],
+        previewTabs: [],
+        activeTabId: null,
+        previewTarget: null,
+      })
     : (async () => {
-        const [messages, previewTargetRaw] = await Promise.all([
+        const [messages, previewStateRaw] = await Promise.all([
           chatDO.getMessages(context, params.id, workspaceId),
-          chatDO.getThreadPreviewTarget(context, params.id).catch(() => null),
+          chatDO.getThreadPreviewState(context, params.id).catch(() => ({
+            target: null,
+            tabs: [],
+            activeTabId: null,
+            version: 0,
+          })),
         ]);
 
         if (!thread?.first_user_message) {
@@ -75,19 +97,42 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
           }
         }
 
-        let previewTarget = previewTargetRaw;
-        if (previewTarget?.kind === 'app') {
-          const script = await getWorkerScript(authEnv, orgId, previewTarget.scriptName);
-          if (script) {
-            previewTarget = {
-              ...previewTarget,
-              isPublic: script.is_public,
-            };
+        const applyAppVisibility = async (target: PreviewTarget): Promise<PreviewTarget> => {
+          if (target.kind !== 'app') {
+            return target;
           }
+          const script = await getWorkerScript(authEnv, orgId, target.scriptName);
+          if (!script) {
+            return target;
+          }
+          return {
+            ...target,
+            isPublic: script.is_public,
+          };
+        };
+
+        const fallbackTabs = previewStateRaw.tabs.length > 0
+          ? previewStateRaw.tabs
+          : (previewStateRaw.target ? [previewStateRaw.target] : []);
+        const previewTabs = await Promise.all(fallbackTabs.map(applyAppVisibility));
+        const tabIds = new Set(previewTabs.map(getPreviewTabId));
+
+        let activeTabId = previewStateRaw.activeTabId;
+        if (!activeTabId || !tabIds.has(activeTabId)) {
+          activeTabId = previewTabs[0] ? getPreviewTabId(previewTabs[0]) : null;
+        }
+
+        let previewTarget = activeTabId
+          ? (previewTabs.find((tab) => getPreviewTabId(tab) === activeTabId) ?? null)
+          : null;
+        if (!previewTarget && previewStateRaw.target) {
+          previewTarget = await applyAppVisibility(previewStateRaw.target);
         }
 
         return {
           messages,
+          previewTabs,
+          activeTabId,
           previewTarget,
         };
       })();
@@ -131,6 +176,8 @@ function ChatWithData({
       initialMessages={chatData?.messages ?? []}
       threadTitle={threadTitle}
       initialPreviewTarget={chatData?.previewTarget ?? null}
+      initialPreviewTabs={chatData?.previewTabs ?? []}
+      initialActiveTabId={chatData?.activeTabId ?? null}
       isNewThread={isNewThread}
       hostname={hostname}
       orgSlug={orgSlug}
