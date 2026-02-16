@@ -3016,10 +3016,16 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     return `/api/workspaces/${previewTarget.workspaceId}/${route}`;
   }, [previewTarget, encodePathSegments]);
 
-  const fileComputerOpenUrl = useMemo(() => {
+  const fileExternalOpenUrl = useMemo(() => {
     if (previewTarget?.kind !== 'file') return '';
-    return `/computer/${previewTarget.workspaceId}?file=${encodeURIComponent(previewTarget.path)}`;
-  }, [previewTarget]);
+    if (previewTarget.source === 'workspace') {
+      return `/computer/${previewTarget.workspaceId}?file=${encodeURIComponent(previewTarget.path)}`;
+    }
+    const normalizedPath = previewTarget.path.replace(/^\/+/, '');
+    const encodedPath = encodePathSegments(normalizedPath);
+    const route = previewTarget.source === 'upload' ? 'uploads' : 'outputs';
+    return `/api/workspaces/${previewTarget.workspaceId}/${route}/${encodedPath}`;
+  }, [previewTarget, encodePathSegments]);
 
   const handlePreviewRefresh = useCallback(() => {
     if (!previewTarget) return;
@@ -3037,9 +3043,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       window.open(appPreviewVanityUrl, '_blank', 'noopener,noreferrer');
       return;
     }
-    if (!fileComputerOpenUrl) return;
-    window.open(fileComputerOpenUrl, '_blank', 'noopener,noreferrer');
-  }, [previewTarget, appPreviewVanityUrl, fileComputerOpenUrl]);
+    if (!fileExternalOpenUrl) return;
+    window.open(fileExternalOpenUrl, '_blank', 'noopener,noreferrer');
+  }, [previewTarget, appPreviewVanityUrl, fileExternalOpenUrl]);
 
   const handlePreviewBugReportOpen = useCallback(() => {
     setBugReportOpen(true);
