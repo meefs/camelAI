@@ -26,7 +26,6 @@ write_files:
     content: |
       SANDBOX_PROXY_SECRET=${sandbox_proxy_secret}
       SANDBOX_PROXY_PORT=${sandbox_proxy_port}
-      CF_API_TOKEN=${cf_api_token}
       R2_ACCESS_KEY_ID=${r2_access_key_id}
       R2_SECRET_ACCESS_KEY=${r2_secret_access_key}
       R2_ACCOUNT_ID=${r2_account_id}

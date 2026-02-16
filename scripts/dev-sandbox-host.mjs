@@ -216,7 +216,6 @@ async function main() {
     && applyEnvFallback(env, 'SANDBOX_PROXY_SECRET', tfVars.sandbox_proxy_secret);
 
   const r2KeyMappings = [
-    ['CF_API_TOKEN', 'cf_api_token'],
     ['R2_ACCESS_KEY_ID', 'r2_access_key_id'],
     ['R2_SECRET_ACCESS_KEY', 'r2_secret_access_key'],
     ['R2_ACCOUNT_ID', 'r2_account_id'],
@@ -249,7 +248,7 @@ async function main() {
   if (!env.SANDBOX_PROXY_SECRET) {
     console.warn('[dev:sandbox-host] SANDBOX_PROXY_SECRET is not set; proxy calls from sandbox to worker will fail.');
   }
-  const hasAllR2Vars = Boolean(env.CF_API_TOKEN && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_ACCOUNT_ID && env.R2_BUCKET_NAME);
+  const hasAllR2Vars = Boolean(env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_ACCOUNT_ID && env.R2_BUCKET_NAME);
   if (!hasAllR2Vars) {
     console.warn('[dev:sandbox-host] R2 credential vars are incomplete; containers will start without R2 mounts.');
   }

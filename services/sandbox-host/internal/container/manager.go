@@ -63,10 +63,9 @@ type Manager struct {
 	proxyPort           int
 	idleTimeout         time.Duration
 	reaperInterval      time.Duration
-	r2AccountID         string
-	r2BucketName        string
-	r2ParentKeyID       string
-	cfAPIToken          string
+	r2MountRoot      string
+	r2BucketName     string
+	r2RcloneConfPath string
 	reclaimIdle         time.Duration
 	reclaimInterval     time.Duration
 	healthPollInterval  time.Duration
@@ -110,10 +109,9 @@ func NewManager(overlays *overlay.Manager, stateStore *state.Store) *Manager {
 		proxyPort:             proxyPort,
 		idleTimeout:           time.Duration(envInt("IDLE_TIMEOUT_MS", 30_000)) * time.Millisecond,
 		reaperInterval:        10 * time.Second,
-		r2AccountID:           envString("R2_ACCOUNT_ID", ""),
-		r2BucketName:          envString("R2_BUCKET_NAME", ""),
-		r2ParentKeyID:         envString("R2_ACCESS_KEY_ID", ""),
-		cfAPIToken:            envString("CF_API_TOKEN", ""),
+		r2MountRoot:      envString("R2_MOUNT_ROOT", defaultR2MountRoot()),
+		r2BucketName:     envString("R2_BUCKET_NAME", ""),
+		r2RcloneConfPath: envString("R2_RCLONE_CONF", filepath.Join(os.TempDir(), "rclone-r2-host.conf")),
 		reclaimIdle:           time.Duration(envInt("RECLAIM_IDLE_MS", 10*60_000)) * time.Millisecond,
 		reclaimInterval:       5 * time.Minute,
 		healthPollInterval:    maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
@@ -404,22 +402,22 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		}
 	}
 
-	if opts.OrgID != "" && opts.WorkspaceID != "" && m.r2AccountID != "" && m.cfAPIToken != "" {
+	if opts.OrgID != "" && opts.WorkspaceID != "" && m.r2MountRoot != "" && m.r2BucketName != "" {
 		prefix := opts.OrgID + "/" + opts.WorkspaceID
-		creds, mintErr := MintR2TempCredentials(m.r2AccountID, m.r2ParentKeyID, m.cfAPIToken, m.r2BucketName, prefix)
-		if mintErr != nil {
-			log.Printf("[ContainerManager] R2 temp credential mint failed for %s: %v (container will start without R2)", name, mintErr)
+		if err := ensureR2Prefix(m.r2RcloneConfPath, m.r2BucketName, prefix); err != nil {
+			log.Printf("[ContainerManager] R2 prefix creation failed for %s: %v (container will start without R2 mounts)", name, err)
 		} else {
-			r2Endpoint := fmt.Sprintf("https://%s.r2.cloudflarestorage.com", m.r2AccountID)
-			env = append(env,
-				"R2_TEMP_ACCESS_KEY_ID="+creds.AccessKeyID,
-				"R2_TEMP_SECRET_ACCESS_KEY="+creds.SecretAccessKey,
-				"R2_TEMP_SESSION_TOKEN="+creds.SessionToken,
-				"R2_ENDPOINT="+r2Endpoint,
-				"R2_BUCKET_NAME="+m.r2BucketName,
-				"R2_PREFIX="+prefix,
-			)
-			log.Printf("[ContainerManager] R2 temp credentials minted for %s", prefix)
+			uploadsDir := filepath.Join(m.r2MountRoot, prefix, "user-uploads")
+			outputsDir := filepath.Join(m.r2MountRoot, prefix, "user-outputs")
+			if waitForR2Dir(uploadsDir, 10*time.Second) && waitForR2Dir(outputsDir, 10*time.Second) {
+				binds = append(binds,
+					uploadsDir+":/mnt/user-uploads:ro",
+					outputsDir+":/mnt/user-outputs",
+				)
+				log.Printf("[ContainerManager] R2 bind mounts added for %s", prefix)
+			} else {
+				log.Printf("[ContainerManager] R2 dirs not visible on FUSE for %s (container will start without R2 mounts)", name)
+			}
 		}
 	}
 
@@ -444,13 +442,9 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		Runtime:     m.containerRuntime,
 		Binds:       binds,
 		NetworkMode: dockercontainer.NetworkMode("bridge"),
-		CapAdd:      []string{"SYS_ADMIN"},
 		Resources: dockercontainer.Resources{
 			Memory:    memoryBytes,
 			CPUShares: cpuShares,
-			Devices: []dockercontainer.DeviceMapping{
-				{PathOnHost: "/dev/fuse", PathInContainer: "/dev/fuse", CgroupPermissions: "rwm"},
-			},
 		},
 		PortBindings: nat.PortMap{
 			controlPlanePort: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: ""}},
@@ -1206,6 +1200,13 @@ func defaultContainerProxyHost() string {
 		return "172.17.0.1"
 	}
 	return "host.docker.internal"
+}
+
+func defaultR2MountRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/mnt/r2"
+	}
+	return ""
 }
 
 func normalizeProxyBaseURL(raw string) string {

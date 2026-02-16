@@ -17,10 +17,7 @@ cloudflared_tunnel_token  = "eyJ...replace-me..."
 sandbox_proxy_secret      = "replace-with-hex-secret"
 sandbox_proxy_port        = 8081
 
-# Cloudflare API token (R2 temp credential minting)
-cf_api_token              = "replace-with-cf-api-token"
-
-# R2 credentials for sandbox-host
+# R2 credentials for sandbox-host (permanent keys, used by host-level rclone mount)
 r2_access_key_id          = "replace-with-r2-access-key-id"
 r2_secret_access_key      = "replace-with-r2-secret-access-key"
 r2_account_id             = "85bbd288051330fb51ee1c86031a299b"

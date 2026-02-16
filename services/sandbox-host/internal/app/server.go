@@ -721,7 +721,9 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 	}
 
 	headers := cloneHeaders(req.Header)
-	headers.Del("Authorization")
+	if !shouldPreserveAuthorization(proxy.UpstreamPath) {
+		headers.Del("Authorization")
+	}
 	headers.Del("x-api-key")
 	headers.Del("x-sandbox-secret")
 	headers.Del("x-chiridion-org-id")
@@ -1002,6 +1004,11 @@ func parseProxyRoute(path string) (ProxyRoute, bool) {
 
 var workspaceRouteRegex = regexp.MustCompile(`^/v1/workspaces/([^/]+)/([^/]+)(/.*)?$`)
 var proxyRouteRegex = regexp.MustCompile(`^/proxy/([^/]+)(/.*)?$`)
+var cfAssetsUploadProxyRegex = regexp.MustCompile(`^/client/v4/accounts/[^/]+/workers/assets/upload$`)
+
+func shouldPreserveAuthorization(upstreamPath string) bool {
+	return cfAssetsUploadProxyRegex.MatchString(upstreamPath)
+}
 
 func sandboxName(workspaceID string) string {
 	replacer := regexp.MustCompile(`[^a-zA-Z0-9_-]`)

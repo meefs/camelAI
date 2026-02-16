@@ -1,12 +1,9 @@
 FROM ubuntu:24.04
 
-# Core tools + FUSE for in-container R2 mounts
+# Core tools
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl git ca-certificates unzip jq fuse3 >/dev/null 2>&1 && \
+    apt-get install -y -qq curl git ca-certificates unzip jq >/dev/null 2>&1 && \
     rm -rf /var/lib/apt/lists/*
-
-# rclone (for R2 FUSE mounts inside container)
-RUN curl -fsSL https://rclone.org/install.sh | bash
 
 # Create claude user (uid 1001)
 RUN useradd -m -u 1001 -s /bin/bash claude
@@ -24,7 +21,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 &&
 # uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh 2>/dev/null
 
-# Directories (including R2 mount points — created at build time for entrypoint)
+# Directories (R2 mount points are bind-mounted from host)
 RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /usr/local/lib/create-worker \
     /mnt/user-uploads /mnt/user-outputs && \
     chown 1001:1001 /mnt/user-uploads /mnt/user-outputs
@@ -49,5 +46,5 @@ RUN chmod 755 /opt/chiridion/control-plane.mjs && \
 WORKDIR /home/claude
 
 EXPOSE 8080
-# Entrypoint runs as root to mount FUSE, then drops to claude user
+# Entrypoint runs as root to drop privileges to claude user
 CMD ["/opt/chiridion/entrypoint.sh"]

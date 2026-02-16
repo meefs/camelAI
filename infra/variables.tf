@@ -70,14 +70,8 @@ variable "sandbox_proxy_port" {
   default     = 8081
 }
 
-variable "cf_api_token" {
-  description = "Cloudflare API token with R2 temp credential minting permission (used by sandbox-host to mint scoped creds for containers)"
-  type        = string
-  sensitive   = true
-}
-
 variable "r2_access_key_id" {
-  description = "R2 API access key ID (parent key for minting temp credentials)"
+  description = "R2 API access key ID used by sandbox-host rclone mount"
   type        = string
   sensitive   = true
 }
