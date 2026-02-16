@@ -77,7 +77,10 @@ describe('mergeTaskNotifications', () => {
         id: 'assistant-2',
         thread_id: 'thread-1',
         role: 'assistant',
-        content: [{ type: 'text', text: 'Trying again.' }],
+        content: [
+          { type: 'text', text: 'Trying again.' },
+          { type: 'tool_use', id: 'tool_123', name: 'Task', input: { prompt: 'Try again' } },
+        ],
         created_at: 1200,
       },
       {
@@ -95,13 +98,72 @@ describe('mergeTaskNotifications', () => {
     expect(merged).toHaveLength(1);
     expect(Array.isArray(merged[0].content)).toBe(true);
     const blocks = merged[0].content as ContentBlock[];
-    expect(blocks[1]).toEqual({
+    expect(blocks[2]).toEqual({
       type: 'task_notification',
       taskId: 'task_2',
       outputFile: '/mnt/user-outputs/task_2.md',
       status: 'failed',
       summary: 'Task failed to complete.',
     });
+  });
+
+  it('uses sourceToolUseID to target the correct assistant turn when newer assistant messages exist', () => {
+    const notificationText = makeTaskNotification({
+      taskId: 'task_old',
+      outputFile: '/mnt/user-outputs/task_old.md',
+      status: 'completed',
+      summary: 'Older task finished.',
+    });
+
+    const messages: Message[] = [
+      {
+        id: 'assistant-old',
+        thread_id: 'thread-1',
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Starting old task.' },
+          { type: 'tool_use', id: 'tool_old', name: 'Task', input: { prompt: 'Old task' } },
+        ],
+        created_at: 1000,
+      },
+      {
+        id: 'assistant-new',
+        thread_id: 'thread-1',
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Starting new task.' },
+          { type: 'tool_use', id: 'tool_new', name: 'Task', input: { prompt: 'New task' } },
+        ],
+        created_at: 1100,
+      },
+      {
+        id: 'meta-task-old',
+        thread_id: 'thread-1',
+        role: 'user',
+        content: [{ type: 'text', text: notificationText }],
+        created_at: 1200,
+        isMeta: true,
+        sourceToolUseID: 'tool_old',
+      },
+    ];
+
+    const merged = mergeTaskNotifications(messages);
+    expect(merged).toHaveLength(2);
+
+    expect(Array.isArray(merged[0].content)).toBe(true);
+    const oldBlocks = merged[0].content as ContentBlock[];
+    expect(oldBlocks[2]).toEqual({
+      type: 'task_notification',
+      taskId: 'task_old',
+      outputFile: '/mnt/user-outputs/task_old.md',
+      status: 'completed',
+      summary: 'Older task finished.',
+    });
+
+    expect(Array.isArray(merged[1].content)).toBe(true);
+    const newBlocks = merged[1].content as ContentBlock[];
+    expect(newBlocks).toHaveLength(2);
+    expect(newBlocks.some(block => block.type === 'task_notification')).toBe(false);
   });
 
   it('synthesizes an assistant message when no preceding assistant exists', () => {

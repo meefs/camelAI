@@ -391,9 +391,10 @@ export function mergeTeammateMessages(messages: Message[]): Message[] {
  *
  * Task notifications arrive as `role: "user"` messages containing
  * `<task-notification>` XML. This function removes those messages and appends
- * a `task_notification` block to the nearest preceding assistant message.
- * If no assistant message exists yet, it creates a synthetic assistant message
- * so raw XML is never shown in the transcript.
+ * a `task_notification` block to the assistant message that owns the referenced
+ * tool use (`sourceToolUseID`) when available, otherwise to the nearest
+ * preceding assistant message. If no assistant message exists yet, it creates
+ * a synthetic assistant message so raw XML is never shown in the transcript.
  */
 export function mergeTaskNotifications(messages: Message[]): Message[] {
   const result: Message[] = [];
@@ -419,8 +420,13 @@ export function mergeTaskNotifications(messages: Message[]): Message[] {
       summary: parsed.summary,
     };
 
-    const lastAssistantIndex = findLastAssistantIndex(result);
-    if (lastAssistantIndex === -1) {
+    const sourceToolUseId = msg.sourceToolUseID;
+    const sourceToolEntry = sourceToolUseId
+      ? buildToolUseIndex(result).get(sourceToolUseId)
+      : undefined;
+    const targetAssistantIndex = sourceToolEntry?.messageIndex ?? findLastAssistantIndex(result);
+
+    if (targetAssistantIndex === -1) {
       result.push({
         id: `task_notification_${msg.id}`,
         thread_id: msg.thread_id,
@@ -432,9 +438,9 @@ export function mergeTaskNotifications(messages: Message[]): Message[] {
       continue;
     }
 
-    const assistantMsg = result[lastAssistantIndex];
+    const assistantMsg = result[targetAssistantIndex];
     const existingContent = coerceMessageContent(assistantMsg.content);
-    result[lastAssistantIndex] = {
+    result[targetAssistantIndex] = {
       ...assistantMsg,
       content: [...existingContent, taskBlock],
     };
