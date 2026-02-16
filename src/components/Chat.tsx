@@ -900,6 +900,7 @@ export default function Chat({
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
   const previewVersionRef = useRef<number>(0);
+  const supportsPreviewTabsStateRef = useRef<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messageColumnRef = useRef<HTMLDivElement>(null);
@@ -957,6 +958,7 @@ export default function Chat({
     setTabMarkdownViewModes({});
     setTabAppLoading({});
     previewVersionRef.current = 0;
+    supportsPreviewTabsStateRef.current = false;
     clearAllIframeRefreshTimeouts();
     setMobileView('chat');
   }, [threadId, clearAllIframeRefreshTimeouts]);
@@ -972,6 +974,7 @@ export default function Chat({
       setTabNotebookViewModes({});
       setTabMarkdownViewModes({});
       setTabAppLoading({});
+      supportsPreviewTabsStateRef.current = false;
       clearAllIframeRefreshTimeouts();
     }
   }, [threadId, clearAllIframeRefreshTimeouts]);
@@ -1150,24 +1153,24 @@ export default function Chat({
 
   const syncPreviewTabsStateBestEffort = useCallback((
     nextTabs: PreviewTab[],
-    nextActiveTabId: string | null,
-    sendLegacyTarget = true
+    nextActiveTabId: string | null
   ) => {
     if (!threadId) return;
     const socket = wsRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
-    socket.send(JSON.stringify({
-      type: 'set_preview_tabs_state',
-      tabs: nextTabs.map((tab) => tab.target),
-      activeTabId: nextActiveTabId,
-      threadId,
-    }));
+    const nextActiveTarget = nextActiveTabId
+      ? (nextTabs.find((tab) => tab.id === nextActiveTabId)?.target ?? null)
+      : null;
 
-    if (sendLegacyTarget) {
-      const nextActiveTarget = nextActiveTabId
-        ? (nextTabs.find((tab) => tab.id === nextActiveTabId)?.target ?? null)
-        : null;
+    if (supportsPreviewTabsStateRef.current) {
+      socket.send(JSON.stringify({
+        type: 'set_preview_tabs_state',
+        tabs: nextTabs.map((tab) => tab.target),
+        activeTabId: nextActiveTabId,
+        threadId,
+      }));
+    } else {
       syncPreviewTargetBestEffort(nextActiveTarget);
     }
   }, [threadId, syncPreviewTargetBestEffort]);
@@ -1274,6 +1277,7 @@ export default function Chat({
       const refreshTabId = typeof data.refreshTabId === 'string' ? data.refreshTabId : null;
 
       const hasTabsPayload = Array.isArray(data.tabs) || data.activeTabId !== undefined;
+      supportsPreviewTabsStateRef.current = hasTabsPayload;
       if (hasTabsPayload) {
         const nextSession = normalizePreviewSessionState(data.tabs, data.activeTabId, data.target);
         setLocalPreviewSessionState(nextSession.tabs, nextSession.activeTabId);
