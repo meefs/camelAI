@@ -23,6 +23,7 @@ const watchTargets = [
   dockerfilePath,
   resolve(repoRoot, 'sandbox/control-plane.mjs'),
   resolve(repoRoot, 'sandbox/memory-logger.mjs'),
+  resolve(repoRoot, 'sandbox/entrypoint.sh'),
   resolve(repoRoot, 'sandbox/skills'),
   resolve(repoRoot, 'sandbox/create-worker'),
 ];
@@ -208,7 +209,6 @@ async function main() {
   const { devVars, tfVars } = loadLocalEnvHints();
 
   if (!env.WORKSPACES_ROOT) env.WORKSPACES_ROOT = resolve(localPersistRoot, 'workspaces');
-  if (!env.R2_MOUNT_ROOT) env.R2_MOUNT_ROOT = resolve(localPersistRoot, 'r2');
   if (!env.SANDBOX_HOST_STATE_DB) env.SANDBOX_HOST_STATE_DB = resolve(localPersistRoot, 'state.db');
 
   const loadedSandboxProxyFromDevVars = applyEnvFallback(env, 'SANDBOX_PROXY_SECRET', devVars.SANDBOX_PROXY_SECRET);
@@ -216,6 +216,7 @@ async function main() {
     && applyEnvFallback(env, 'SANDBOX_PROXY_SECRET', tfVars.sandbox_proxy_secret);
 
   const r2KeyMappings = [
+    ['CF_API_TOKEN', 'cf_api_token'],
     ['R2_ACCESS_KEY_ID', 'r2_access_key_id'],
     ['R2_SECRET_ACCESS_KEY', 'r2_secret_access_key'],
     ['R2_ACCOUNT_ID', 'r2_account_id'],
@@ -248,9 +249,9 @@ async function main() {
   if (!env.SANDBOX_PROXY_SECRET) {
     console.warn('[dev:sandbox-host] SANDBOX_PROXY_SECRET is not set; proxy calls from sandbox to worker will fail.');
   }
-  const hasAllR2Vars = Boolean(env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_ACCOUNT_ID && env.R2_BUCKET_NAME);
+  const hasAllR2Vars = Boolean(env.CF_API_TOKEN && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_ACCOUNT_ID && env.R2_BUCKET_NAME);
   if (!hasAllR2Vars) {
-    console.warn('[dev:sandbox-host] R2 mount vars are incomplete; host R2 mount will be skipped.');
+    console.warn('[dev:sandbox-host] R2 credential vars are incomplete; containers will start without R2 mounts.');
   }
 
   goProc = spawn('go', ['run', './cmd/sandbox-host'], {

@@ -32,8 +32,6 @@ func main() {
 	fsManager := fsops.NewManager(os.Getenv("WORKSPACES_ROOT"))
 	server := app.NewServer(cfg, containers, overlays, fsManager, stateStore)
 
-	go app.MountR2OnHost()
-
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           server.Handler(),

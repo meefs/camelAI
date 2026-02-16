@@ -1,9 +1,12 @@
 FROM ubuntu:24.04
 
-# Core tools
+# Core tools + FUSE for in-container R2 mounts
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl git sudo ca-certificates unzip jq >/dev/null 2>&1 && \
+    apt-get install -y -qq curl git sudo ca-certificates unzip jq fuse3 >/dev/null 2>&1 && \
     rm -rf /var/lib/apt/lists/*
+
+# rclone (for R2 FUSE mounts inside container)
+RUN curl -fsSL https://rclone.org/install.sh | bash
 
 # Create claude user (uid 1001, passwordless sudo)
 RUN useradd -m -u 1001 -s /bin/bash claude && \
@@ -33,10 +36,12 @@ RUN cd /opt/chiridion && \
 # Copy sandbox files
 COPY sandbox/control-plane.mjs /opt/chiridion/control-plane.mjs
 COPY sandbox/memory-logger.mjs /opt/chiridion/memory-logger.mjs
+COPY sandbox/entrypoint.sh /opt/chiridion/entrypoint.sh
 COPY sandbox/skills/ /etc/claude-code/.claude/skills/
 COPY sandbox/create-worker/ /usr/local/lib/create-worker/
 RUN chmod 755 /opt/chiridion/control-plane.mjs && \
     chmod 644 /opt/chiridion/memory-logger.mjs && \
+    chmod +x /opt/chiridion/entrypoint.sh && \
     chmod +x /usr/local/lib/create-worker/create-worker.mjs && \
     ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker
 
@@ -44,4 +49,4 @@ WORKDIR /home/claude
 USER claude
 
 EXPOSE 8080
-CMD ["bun", "run", "/opt/chiridion/control-plane.mjs"]
+CMD ["/opt/chiridion/entrypoint.sh"]

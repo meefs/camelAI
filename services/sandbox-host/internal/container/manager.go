@@ -63,7 +63,10 @@ type Manager struct {
 	proxyPort           int
 	idleTimeout         time.Duration
 	reaperInterval      time.Duration
-	r2MountRoot         string
+	r2AccountID         string
+	r2BucketName        string
+	r2ParentKeyID       string
+	cfAPIToken          string
 	reclaimIdle         time.Duration
 	reclaimInterval     time.Duration
 	healthPollInterval  time.Duration
@@ -91,7 +94,6 @@ func NewManager(overlays *overlay.Manager, stateStore *state.Store) *Manager {
 	proxyPort := envInt("SANDBOX_PROXY_PORT", defaultProxyPort())
 	workspacesRoot := envString("WORKSPACES_ROOT", defaultWorkspaceRoot())
 	containerRuntime := envString("CONTAINER_RUNTIME", defaultContainerRuntime())
-	r2MountRoot := envString("R2_MOUNT_ROOT", defaultR2MountRoot())
 	defaultProxyBase := fmt.Sprintf("http://%s:%d/proxy", defaultContainerProxyHost(), proxyPort)
 	containerProxyBase := normalizeProxyBaseURL(envString("CONTAINER_PROXY_BASE_URL", defaultProxyBase))
 
@@ -108,7 +110,10 @@ func NewManager(overlays *overlay.Manager, stateStore *state.Store) *Manager {
 		proxyPort:             proxyPort,
 		idleTimeout:           time.Duration(envInt("IDLE_TIMEOUT_MS", 30_000)) * time.Millisecond,
 		reaperInterval:        10 * time.Second,
-		r2MountRoot:           r2MountRoot,
+		r2AccountID:           envString("R2_ACCOUNT_ID", ""),
+		r2BucketName:          envString("R2_BUCKET_NAME", ""),
+		r2ParentKeyID:         envString("R2_ACCESS_KEY_ID", ""),
+		cfAPIToken:            envString("CF_API_TOKEN", ""),
 		reclaimIdle:           time.Duration(envInt("RECLAIM_IDLE_MS", 10*60_000)) * time.Millisecond,
 		reclaimInterval:       5 * time.Minute,
 		healthPollInterval:    maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
@@ -399,17 +404,23 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		}
 	}
 
-	if opts.OrgID != "" && opts.WorkspaceID != "" {
+	if opts.OrgID != "" && opts.WorkspaceID != "" && m.r2AccountID != "" && m.cfAPIToken != "" {
 		prefix := opts.OrgID + "/" + opts.WorkspaceID
-		uploadsHost := filepath.Join(m.r2MountRoot, prefix, "user-uploads")
-		outputsHost := filepath.Join(m.r2MountRoot, prefix, "user-outputs")
-		_ = os.MkdirAll(uploadsHost, 0o755)
-		_ = os.MkdirAll(outputsHost, 0o755)
-		binds = append(binds,
-			uploadsHost+":/mnt/user-uploads:ro",
-			outputsHost+":/mnt/user-outputs",
-		)
-		log.Printf("[ContainerManager] R2 bind mounts: %s", prefix)
+		creds, mintErr := MintR2TempCredentials(m.r2AccountID, m.r2ParentKeyID, m.cfAPIToken, m.r2BucketName, prefix)
+		if mintErr != nil {
+			log.Printf("[ContainerManager] R2 temp credential mint failed for %s: %v (container will start without R2)", name, mintErr)
+		} else {
+			r2Endpoint := fmt.Sprintf("https://%s.r2.cloudflarestorage.com", m.r2AccountID)
+			env = append(env,
+				"R2_TEMP_ACCESS_KEY_ID="+creds.AccessKeyID,
+				"R2_TEMP_SECRET_ACCESS_KEY="+creds.SecretAccessKey,
+				"R2_TEMP_SESSION_TOKEN="+creds.SessionToken,
+				"R2_ENDPOINT="+r2Endpoint,
+				"R2_BUCKET_NAME="+m.r2BucketName,
+				"R2_PREFIX="+prefix,
+			)
+			log.Printf("[ContainerManager] R2 temp credentials minted for %s", prefix)
+		}
 	}
 
 	memoryBytes := int64(0)
@@ -424,7 +435,6 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	controlPlanePort := nat.Port(strconv.Itoa(m.controlPlanePort) + "/tcp")
 	createConfig := &dockercontainer.Config{
 		Image: m.sandboxImage,
-		Cmd:   []string{"bun", "run", "/opt/chiridion/control-plane.mjs"},
 		Env:   env,
 		ExposedPorts: nat.PortSet{
 			controlPlanePort: {},
@@ -434,9 +444,13 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		Runtime:     m.containerRuntime,
 		Binds:       binds,
 		NetworkMode: dockercontainer.NetworkMode("bridge"),
+		CapAdd:      []string{"SYS_ADMIN"},
 		Resources: dockercontainer.Resources{
 			Memory:    memoryBytes,
 			CPUShares: cpuShares,
+			Devices: []dockercontainer.DeviceMapping{
+				{PathOnHost: "/dev/fuse", PathInContainer: "/dev/fuse", CgroupPermissions: "rwm"},
+			},
 		},
 		PortBindings: nat.PortMap{
 			controlPlanePort: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: ""}},
@@ -1171,13 +1185,6 @@ func defaultWorkspaceRoot() string {
 		return "/mnt/workspaces"
 	}
 	return filepath.Join(defaultLocalRoot(), "workspaces")
-}
-
-func defaultR2MountRoot() string {
-	if runtime.GOOS == "linux" {
-		return "/mnt/r2"
-	}
-	return filepath.Join(defaultLocalRoot(), "r2")
 }
 
 func defaultContainerRuntime() string {
