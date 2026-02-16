@@ -2,12 +2,11 @@ FROM ubuntu:24.04
 
 # Core tools
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl git sudo ca-certificates unzip jq >/dev/null 2>&1 && \
+    apt-get install -y -qq curl git ca-certificates unzip jq >/dev/null 2>&1 && \
     rm -rf /var/lib/apt/lists/*
 
-# Create claude user (uid 1001, passwordless sudo)
-RUN useradd -m -u 1001 -s /bin/bash claude && \
-    echo "claude ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+# Create claude user (uid 1001)
+RUN useradd -m -u 1001 -s /bin/bash claude
 
 # Bun
 RUN curl -fsSL https://bun.sh/install | bash && \
@@ -22,8 +21,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 &&
 # uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh 2>/dev/null
 
-# Directories
-RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /usr/local/lib/create-worker
+# Directories (R2 mount points are bind-mounted from host)
+RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /usr/local/lib/create-worker \
+    /mnt/user-uploads /mnt/user-outputs && \
+    chown 1001:1001 /mnt/user-uploads /mnt/user-outputs
 
 # Claude Agent SDK
 RUN cd /opt/chiridion && \
@@ -33,15 +34,17 @@ RUN cd /opt/chiridion && \
 # Copy sandbox files
 COPY sandbox/control-plane.mjs /opt/chiridion/control-plane.mjs
 COPY sandbox/memory-logger.mjs /opt/chiridion/memory-logger.mjs
+COPY sandbox/entrypoint.sh /opt/chiridion/entrypoint.sh
 COPY sandbox/skills/ /etc/claude-code/.claude/skills/
 COPY sandbox/create-worker/ /usr/local/lib/create-worker/
 RUN chmod 755 /opt/chiridion/control-plane.mjs && \
     chmod 644 /opt/chiridion/memory-logger.mjs && \
+    chmod +x /opt/chiridion/entrypoint.sh && \
     chmod +x /usr/local/lib/create-worker/create-worker.mjs && \
     ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker
 
 WORKDIR /home/claude
-USER claude
 
 EXPOSE 8080
-CMD ["bun", "run", "/opt/chiridion/control-plane.mjs"]
+# Entrypoint runs as root to drop privileges to claude user
+CMD ["/opt/chiridion/entrypoint.sh"]

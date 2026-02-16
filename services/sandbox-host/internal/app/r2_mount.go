@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -10,100 +11,111 @@ import (
 	"time"
 )
 
-func MountR2OnHost() {
-	accessKey := strings.TrimSpace(os.Getenv("R2_ACCESS_KEY_ID"))
-	secretKey := strings.TrimSpace(os.Getenv("R2_SECRET_ACCESS_KEY"))
-	accountID := strings.TrimSpace(os.Getenv("R2_ACCOUNT_ID"))
-	bucketName := strings.TrimSpace(os.Getenv("R2_BUCKET_NAME"))
-	mountRoot := strings.TrimSpace(os.Getenv("R2_MOUNT_ROOT"))
-	if mountRoot == "" {
-		mountRoot = defaultR2MountRoot()
+// R2MountConfig holds settings for the host-level rclone R2 FUSE mount.
+type R2MountConfig struct {
+	MountRoot       string // e.g. /mnt/r2
+	RcloneConfPath  string // written at mount time
+	AccountID       string
+	AccessKeyID     string
+	SecretAccessKey string
+	BucketName      string
+}
+
+// LoadR2MountConfig reads the R2 mount configuration from env.
+func LoadR2MountConfig() *R2MountConfig {
+	accountID := envString("R2_ACCOUNT_ID", "")
+	accessKeyID := envString("R2_ACCESS_KEY_ID", "")
+	secretAccessKey := envString("R2_SECRET_ACCESS_KEY", "")
+	bucketName := envString("R2_BUCKET_NAME", "")
+
+	if accountID == "" || accessKeyID == "" || secretAccessKey == "" || bucketName == "" {
+		return nil
 	}
 
-	uid := strings.TrimSpace(os.Getenv("R2_MOUNT_UID"))
-	if uid == "" {
-		uid = "1001"
+	mountRoot := envString("R2_MOUNT_ROOT", defaultR2MountRoot())
+	return &R2MountConfig{
+		MountRoot:       mountRoot,
+		RcloneConfPath:  filepath.Join(os.TempDir(), "rclone-r2-host.conf"),
+		AccountID:       accountID,
+		AccessKeyID:     accessKeyID,
+		SecretAccessKey: secretAccessKey,
+		BucketName:      bucketName,
 	}
-	gid := strings.TrimSpace(os.Getenv("R2_MOUNT_GID"))
-	if gid == "" {
-		gid = "1001"
-	}
-	umask := strings.TrimSpace(os.Getenv("R2_MOUNT_UMASK"))
-	if umask == "" {
-		umask = "002"
+}
+
+// MountR2OnHost starts a rclone FUSE mount of the R2 bucket on the host.
+// Non-blocking: starts rclone in the background and waits for the mount to appear.
+func MountR2OnHost(cfg *R2MountConfig) error {
+	if cfg == nil {
+		log.Println("[R2Mount] R2 credentials not configured, skipping host mount")
+		return nil
 	}
 
-	if accessKey == "" || secretKey == "" || accountID == "" || bucketName == "" {
-		log.Printf("[SandboxHost] R2 credentials not configured, skipping host mount")
-		return
+	// Clean up stale FUSE mount if present (e.g. from a previous crash).
+	// Always try fusermount -uz: it's a no-op if nothing is mounted, and
+	// handles the case where isMounted/Stat fails on a disconnected endpoint.
+	_ = exec.Command("fusermount", "-uz", cfg.MountRoot).Run()
+
+	if err := os.MkdirAll(cfg.MountRoot, 0o755); err != nil {
+		return fmt.Errorf("failed to create R2 mount root %s: %w", cfg.MountRoot, err)
 	}
 
-	mountOutput, mountErr := exec.Command("mount").Output()
-	if mountErr == nil && strings.Contains(string(mountOutput), mountRoot) {
-		log.Printf("[SandboxHost] R2 already mounted at %s", mountRoot)
-		return
+	endpoint := fmt.Sprintf("https://%s.r2.cloudflarestorage.com", cfg.AccountID)
+	confContent := fmt.Sprintf(`[r2]
+type = s3
+provider = Cloudflare
+access_key_id = %s
+secret_access_key = %s
+endpoint = %s
+no_check_bucket = true
+`, cfg.AccessKeyID, cfg.SecretAccessKey, endpoint)
+
+	if err := os.WriteFile(cfg.RcloneConfPath, []byte(confContent), 0o600); err != nil {
+		return fmt.Errorf("failed to write rclone config: %w", err)
 	}
 
-	if err := os.MkdirAll(mountRoot, 0o755); err != nil {
-		log.Printf("[SandboxHost] failed to create R2 mount root: %v", err)
-		return
-	}
-
-	configPath := "/tmp/rclone-r2.conf"
-	configContents := strings.Join([]string{
-		"[r2]",
-		"type = s3",
-		"provider = Cloudflare",
-		"access_key_id = " + accessKey,
-		"secret_access_key = " + secretKey,
-		"endpoint = https://" + accountID + ".r2.cloudflarestorage.com",
-	}, "\n")
-	if err := os.WriteFile(configPath, []byte(configContents), 0o600); err != nil {
-		log.Printf("[SandboxHost] failed to write rclone config: %v", err)
-		return
-	}
-
-	cmd := exec.Command(
-		"rclone",
-		"mount",
-		"--daemon",
-		"r2:"+bucketName,
-		mountRoot,
-		"--config="+configPath,
+	remote := fmt.Sprintf("r2:%s", cfg.BucketName)
+	cmd := exec.Command("rclone", "mount",
+		"--config", cfg.RcloneConfPath,
+		"--dir-cache-time", "5s",
+		"--vfs-cache-mode", "writes",
+		"--vfs-write-back", "0",
 		"--allow-other",
-		"--uid="+uid,
-		"--gid="+gid,
-		"--umask="+umask,
-		"--dir-cache-time=5s",
-		"--vfs-cache-mode=writes",
-		"--vfs-write-back=0",
+		remote, cfg.MountRoot,
 	)
-	output, err := cmd.CombinedOutput()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start rclone mount: %w", err)
+	}
+
+	// Wait for the mount to appear (rclone foreground mode mounts immediately).
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if isMounted(cfg.MountRoot) {
+			log.Printf("[R2Mount] host R2 mount ready at %s", cfg.MountRoot)
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return fmt.Errorf("rclone mount at %s did not appear within 30s", cfg.MountRoot)
+}
+
+func isMounted(path string) bool {
+	data, err := os.ReadFile("/proc/mounts")
 	if err != nil {
-		log.Printf("[SandboxHost] Failed to mount R2 bucket: %v: %s", err, strings.TrimSpace(string(output)))
-		return
+		// Fallback: try to stat the path for FUSE characteristics.
+		info, statErr := os.Stat(path)
+		return statErr == nil && info.IsDir()
 	}
-	log.Printf("[SandboxHost] R2 bucket mounted at %s", mountRoot)
-	if text := strings.TrimSpace(string(output)); text != "" {
-		log.Printf("[SandboxHost] rclone mount output: %s", text)
-	}
-
-	time.Sleep(1 * time.Second)
-	if _, err := os.Stat(mountRoot); err == nil {
-		log.Printf("[SandboxHost] R2 mount verified at %s", mountRoot)
-	} else {
-		log.Printf("[SandboxHost] R2 mount point not accessible after mount: %v", err)
-	}
-
+	return strings.Contains(string(data), " "+path+" ")
 }
 
 func defaultR2MountRoot() string {
 	if runtime.GOOS == "linux" {
 		return "/mnt/r2"
 	}
-	wd, err := os.Getwd()
-	if err != nil || wd == "" {
-		return ".sandbox-host/r2"
-	}
-	return filepath.Join(wd, ".sandbox-host", "r2")
+	return ""
 }

@@ -98,36 +98,13 @@ Multipart-only R2 uploads via `/api/workspaces/:id/upload` with actions: `mpu-cr
 MCP-driven prompts (connection setup, bug reports) are persisted in `ChatThreadDO` and replayed to newly connected clients. Prompts expire (30m for connections, 5m for bug reports).
 
 ### Integration Token Refresh
-- OAuth integrations with expiring tokens (for example Notion) store `token_expires_at` and are refreshed by `WorkspaceDO` alarms.
-- BigQuery integrations now follow the same token lifecycle pattern: the encrypted `service_account_json` is used server-side to mint short-lived Google access tokens.
-- Runtime environments receive `INT_BIGQUERY_*_ACCESS_TOKEN` instead of raw service account JSON whenever a token is available.
-- After token refresh, updated credentials are pushed to both the running workspace sandbox runtime and all deployed workspace workers.
-
-### Workspace Runtime Provisioning
-Docker + gVisor sandboxes are provisioned eagerly when a workspace is created (`WorkspaceDO.createWorkspace` calls `WorkspaceContainer.provisionSandbox`).
-Each sandbox gets a host directory at `/mnt/workspaces/{sandboxName}` (NVMe RAID0 + Azure Blob NFS v3 overlayfs).
-Workers reach the sandbox host via a **VPC service binding** (`env.SANDBOX_HOST`) that routes through a Cloudflare Tunnel to the Azure VM. No public internet exposure.
-Runtime startup is on-demand from chat/API paths; dashboard route loaders no longer trigger warmup.
-
-### Threads
-- Each thread belongs to a workspace
-- Threads stored in `OrgDO` (one per organization)
-- `ChatThreadDO` persists preview tab sessions per thread (`previewTabs`, `previewActiveTabId`, legacy `previewTarget`, `previewVersion`) and broadcasts them via `preview_state`
-- Preview protocol supports both legacy `set_preview_target` and authoritative `set_preview_tabs_state` for multi-tab sync with backward compatibility
-- Chat UI uses `PreviewTabRow` + `PreviewToolbar` + memoized preview shell (`src/components/preview-panel/`, `src/components/Chat.tsx`) to keep preview tab/header rendering isolated from unrelated chat streaming updates
-- History queries threads across accessible workspaces
+OAuth integrations with expiring tokens are refreshed by `WorkspaceDO` alarms. Updated credentials are pushed to both sandbox runtimes and deployed workers.
 
 ### App Previews
 Deploy enqueues screenshot job → Browser Rendering → JPEG stored in R2 at `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg` → served via `/api/apps/:scriptName/preview`.
 
 ### Notebook File Previews
 Notebook previews render in the chat preview panel with two modes: **Report** (editorial rendering with TOC, hidden code, styled outputs) and **Notebook** (full cell-by-cell with execution gutters). Supports Vega/Vega-Lite, Plotly, DataFrame tables (native React rendering capped at 100 rows with CSV download), and generic HTML in sandboxed iframes.
-
-### Markdown File Previews
-Markdown (`.md`) previews in the chat preview panel support per-tab toolbar view modes: **Rendered** (default) and **Source**. Rendered mode uses `MarkdownRenderer`; source mode shows raw markdown text.
-
-### Missing Preview Files
-When a persisted preview tab points to a file that no longer exists, the tab is preserved and the panel shows an explicit missing-file message (`404/410` handling in `FilePreviewContent`) so users can close stale tabs manually.
 
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization

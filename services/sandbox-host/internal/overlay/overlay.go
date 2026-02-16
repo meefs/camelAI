@@ -43,6 +43,7 @@ type Manager struct {
 	useDirectBackend bool
 	mu               sync.RWMutex
 	mounts           map[string]*Mount
+	ensureMu         sync.Map // per-name *sync.Mutex — serializes Ensure() per workspace
 }
 
 func NewManagerFromEnv() *Manager {
@@ -140,7 +141,20 @@ func (m *Manager) hydrateMountFromFS(name string) *Mount {
 	return candidate
 }
 
+func (m *Manager) ensureLock(name string) *sync.Mutex {
+	v, _ := m.ensureMu.LoadOrStore(name, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
 func (m *Manager) Ensure(name string) (string, error) {
+	// Per-name lock prevents concurrent mounts for the same workspace.
+	// Without this, two goroutines can both pass isMounted()=false and
+	// stack two overlays; reclaim only unmounts one, leaving a stale
+	// mount whose upper dir gets deleted, breaking the merged view.
+	mu := m.ensureLock(name)
+	mu.Lock()
+	defer mu.Unlock()
+
 	m.mu.RLock()
 	existing := m.mounts[name]
 	m.mu.RUnlock()
@@ -313,12 +327,20 @@ func (m *Manager) Reclaim(name string, isSafe func() bool) (bool, error) {
 		return false, nil
 	}
 
-	if isMounted(mount.MergedDir) {
+	// Drain ALL stacked mounts. A previous race condition in Ensure()
+	// could have stacked multiple overlays on the same mountpoint.
+	// A single umount only peels one layer; the remaining stale mount
+	// would break the next Ensure() cycle.
+	for i := 0; i < 10 && isMounted(mount.MergedDir); i++ {
 		if _, err := runCommand(30*time.Second, "umount", mount.MergedDir); err != nil {
-			log.Printf("[Overlay] %s: regular umount failed, using lazy umount", name)
+			log.Printf("[Overlay] %s: regular umount failed (attempt %d), using lazy umount", name, i+1)
 			if _, lazyErr := runCommand(30*time.Second, "umount", "-l", mount.MergedDir); lazyErr != nil {
 				return false, lazyErr
 			}
+			break
+		}
+		if i > 0 {
+			log.Printf("[Overlay] %s: removed stacked mount (layer %d)", name, i+1)
 		}
 	}
 
@@ -389,6 +411,18 @@ func (m *Manager) runBackgroundSync() {
 func (m *Manager) runJfsSync(srcDir, dstSubPath string) error {
 	if strings.TrimSpace(m.cfg.JFSMetaURL) == "" {
 		return errors.New("JFS_META_URL not configured (need PG_HOST + PG_PASSWORD or JFS_META_URL)")
+	}
+
+	// Safety: refuse to run --delete-dst against an empty or unreadable source.
+	// A broken/stale overlay merged dir appears empty; syncing that with
+	// --delete-dst would wipe the canonical JuiceFS copy.
+	entries, readErr := os.ReadDir(srcDir)
+	if readErr != nil {
+		return fmt.Errorf("refusing sync: cannot read source dir %s: %w", srcDir, readErr)
+	}
+	if len(entries) == 0 {
+		log.Printf("[Overlay] CRITICAL: refusing to sync empty source %s to JuiceFS/%s (would destroy canonical data)", srcDir, dstSubPath)
+		return fmt.Errorf("refusing sync: source dir %s is empty", srcDir)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.SyncTimeout)

@@ -27,12 +27,19 @@ func main() {
 		}()
 	}
 
+	r2Cfg := app.LoadR2MountConfig()
+	if r2Cfg != nil {
+		go func() {
+			if err := app.MountR2OnHost(r2Cfg); err != nil {
+				log.Printf("[SandboxHost] R2 host mount failed: %v (containers will start without R2)", err)
+			}
+		}()
+	}
+
 	overlays := overlay.NewManagerFromEnv()
 	containers := container.NewManager(overlays, stateStore)
 	fsManager := fsops.NewManager(os.Getenv("WORKSPACES_ROOT"))
 	server := app.NewServer(cfg, containers, overlays, fsManager, stateStore)
-
-	go app.MountR2OnHost()
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,

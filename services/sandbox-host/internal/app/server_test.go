@@ -189,6 +189,18 @@ func TestIsLoopbackSourceIP(t *testing.T) {
 	}
 }
 
+func TestShouldPreserveAuthorization(t *testing.T) {
+	if !shouldPreserveAuthorization("/client/v4/accounts/chiridion/workers/assets/upload") {
+		t.Fatal("expected assets upload path to preserve Authorization")
+	}
+	if shouldPreserveAuthorization("/client/v4/accounts/chiridion/workers/dispatch/namespaces/ns/scripts/app") {
+		t.Fatal("did not expect dispatch script path to preserve Authorization")
+	}
+	if shouldPreserveAuthorization("/api/claude/v1/messages") {
+		t.Fatal("did not expect non-CF path to preserve Authorization")
+	}
+}
+
 type chunkReader struct {
 	chunks [][]byte
 	index  int
