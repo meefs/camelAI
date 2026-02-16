@@ -1,5 +1,13 @@
-import type { ContentBlock, Message, TeammateMessageBlock, ToolResultBlock, ToolUseBlock } from '@/types';
+import type {
+  ContentBlock,
+  Message,
+  TaskNotificationBlock,
+  TeammateMessageBlock,
+  ToolResultBlock,
+  ToolUseBlock,
+} from '@/types';
 import { parseTeammateMessage } from '@/lib/teammate-message';
+import { parseTaskNotificationFromContent } from '@/lib/task-notification';
 
 export interface SDKEvent {
   type: string;
@@ -371,6 +379,64 @@ export function mergeTeammateMessages(messages: Message[]): Message[] {
     result[lastAssistantIndex] = {
       ...assistantMsg,
       content: [...existingContent, teammateBlock],
+    };
+    changed = true;
+  }
+
+  return changed ? result : messages;
+}
+
+/**
+ * Merge task notifications into assistant content so they render as tool-call rows.
+ *
+ * Task notifications arrive as `role: "user"` messages containing
+ * `<task-notification>` XML. This function removes those messages and appends
+ * a `task_notification` block to the nearest preceding assistant message.
+ * If no assistant message exists yet, it creates a synthetic assistant message
+ * so raw XML is never shown in the transcript.
+ */
+export function mergeTaskNotifications(messages: Message[]): Message[] {
+  const result: Message[] = [];
+  let changed = false;
+
+  for (const msg of messages) {
+    if (msg.role !== 'user') {
+      result.push(msg);
+      continue;
+    }
+
+    const parsed = parseTaskNotificationFromContent(msg.content);
+    if (!parsed) {
+      result.push(msg);
+      continue;
+    }
+
+    const taskBlock: TaskNotificationBlock = {
+      type: 'task_notification',
+      taskId: parsed.taskId,
+      outputFile: parsed.outputFile,
+      status: parsed.status,
+      summary: parsed.summary,
+    };
+
+    const lastAssistantIndex = findLastAssistantIndex(result);
+    if (lastAssistantIndex === -1) {
+      result.push({
+        id: `task_notification_${msg.id}`,
+        thread_id: msg.thread_id,
+        role: 'assistant',
+        content: [taskBlock],
+        created_at: msg.created_at,
+      });
+      changed = true;
+      continue;
+    }
+
+    const assistantMsg = result[lastAssistantIndex];
+    const existingContent = coerceMessageContent(assistantMsg.content);
+    result[lastAssistantIndex] = {
+      ...assistantMsg,
+      content: [...existingContent, taskBlock],
     };
     changed = true;
   }

@@ -94,6 +94,9 @@ Multipart-only R2 uploads via `/api/workspaces/:id/upload` with actions: `mpu-cr
 ### Todo State Persistence
 `control-plane.mjs` emits `todo_state` on `TodoWrite` tool calls. `ChatThreadDO` persists it and replays on WebSocket init. Cleared on turn completion (`result` event).
 
+### Task Notifications
+SDK `<task-notification>` user-role payloads are parsed client-side, merged into the nearest assistant message as `task_notification` content blocks, and rendered inline as tool-call rows. If no assistant message exists yet, Chat synthesizes an assistant message so raw XML is never shown.
+
 ### MCP Prompt Replay
 MCP-driven prompts (connection setup, bug reports) are persisted in `ChatThreadDO` and replayed to newly connected clients. Prompts expire (30m for connections, 5m for bug reports).
 

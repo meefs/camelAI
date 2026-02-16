@@ -65,6 +65,7 @@ import {
   type SDKEvent,
   applyStreamingEventToMessage,
   attachToolResultsToMessages,
+  mergeTaskNotifications,
   normalizeToolResultMessages,
   mergeTeammateMessages,
 } from '@/lib/streaming';
@@ -109,7 +110,14 @@ function safeJsonStringify(value: unknown): string {
 function isContentBlock(value: unknown): value is ContentBlock {
   if (!value || typeof value !== 'object' || !('type' in value)) return false;
   const type = (value as { type?: string }).type;
-  return type === 'text' || type === 'tool_use' || type === 'tool_result' || type === 'thinking' || type === 'teammate_message';
+  return (
+    type === 'text' ||
+    type === 'tool_use' ||
+    type === 'tool_result' ||
+    type === 'thinking' ||
+    type === 'teammate_message' ||
+    type === 'task_notification'
+  );
 }
 
 function coerceContentBlocks(value: unknown): ContentBlock[] | null {
@@ -785,7 +793,7 @@ export default function Chat({
   const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const normalizedMessages = useMemo(
-    () => mergeTeammateMessages(normalizeToolResultMessages(messages)),
+    () => mergeTaskNotifications(mergeTeammateMessages(normalizeToolResultMessages(messages))),
     [messages]
   );
   const visibleMessages = useMemo(

@@ -11,6 +11,7 @@ import {
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ThinkingBlock, ToolCall } from '@/components/tool-call';
 import { TeammateMessage } from '@/components/tool-call/teammate-message';
+import { TaskNotification } from '@/components/tool-call/task-notification';
 import { LoadingDots } from '@/components/loading-dots';
 import { CompactSummaryCard } from '@/components/compact-summary-card';
 import type { ReactNode } from 'react';
@@ -187,6 +188,7 @@ function normalizeToolResultContent(content: unknown): string {
         if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
         if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${safeJsonStringify(block.input)}`;
         if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
+        if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
         return safeJsonStringify(block);
       })
       .filter(Boolean)
@@ -229,6 +231,7 @@ export function contentToString(content: string | ContentBlock[]): string {
       if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
       if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
       if (block.type === 'teammate_message') return `[Update from ${block.teammateId}]\n${block.content}`;
+      if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
       return '';
     })
     .filter(Boolean)
@@ -346,6 +349,22 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
           <TeammateMessage
             teammateId={block.teammateId}
             content={block.content}
+          />
+        ),
+      });
+      return;
+    }
+
+    if (block.type === 'task_notification') {
+      items.push({
+        kind: 'tool',
+        key: `task-notification-${index}`,
+        node: (
+          <TaskNotification
+            taskId={block.taskId}
+            outputFile={block.outputFile}
+            status={block.status}
+            summary={block.summary}
           />
         ),
       });
