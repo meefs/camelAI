@@ -716,10 +716,12 @@ export default function Chat({
   const [tabIframeKeys, setTabIframeKeys] = useState<Record<string, number>>({});
   const [tabFilePreviewKeys, setTabFilePreviewKeys] = useState<Record<string, number>>({});
   const [tabNotebookViewModes, setTabNotebookViewModes] = useState<Record<string, 'report' | 'notebook'>>({});
+  const [tabMarkdownViewModes, setTabMarkdownViewModes] = useState<Record<string, 'rendered' | 'source'>>({});
   const [tabAppLoading, setTabAppLoading] = useState<Record<string, boolean>>({});
   const iframeKey = activeTabId ? (tabIframeKeys[activeTabId] ?? 0) : 0;
   const filePreviewKey = activeTabId ? (tabFilePreviewKeys[activeTabId] ?? 0) : 0;
   const notebookViewMode = activeTabId ? (tabNotebookViewModes[activeTabId] ?? 'report') : 'report';
+  const markdownViewMode = activeTabId ? (tabMarkdownViewModes[activeTabId] ?? 'rendered') : 'rendered';
   const previewLoading = activeTabId ? Boolean(tabAppLoading[activeTabId]) : false;
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
@@ -775,16 +777,21 @@ export default function Chat({
         id: getPreviewTabId(initialPreviewTarget),
         target: initialPreviewTarget,
       };
+      previewTabsRef.current = [tab];
       setPreviewTabs([tab]);
+      activeTabIdRef.current = tab.id;
       setActiveTabId(tab.id);
     } else {
+      previewTabsRef.current = [];
       setPreviewTabs([]);
+      activeTabIdRef.current = null;
       setActiveTabId(null);
     }
 
     setTabIframeKeys({});
     setTabFilePreviewKeys({});
     setTabNotebookViewModes({});
+    setTabMarkdownViewModes({});
     setTabAppLoading({});
     previewVersionRef.current = 0;
     clearAllIframeRefreshTimeouts();
@@ -793,11 +800,14 @@ export default function Chat({
 
   useEffect(() => {
     if (!threadId) {
+      previewTabsRef.current = [];
       setPreviewTabs([]);
+      activeTabIdRef.current = null;
       setActiveTabId(null);
       setTabIframeKeys({});
       setTabFilePreviewKeys({});
       setTabNotebookViewModes({});
+      setTabMarkdownViewModes({});
       setTabAppLoading({});
       clearAllIframeRefreshTimeouts();
     }
@@ -956,6 +966,14 @@ export default function Chat({
     }));
   }, [activeTabId]);
 
+  const setActiveMarkdownViewMode = useCallback((mode: 'rendered' | 'source') => {
+    if (!activeTabId) return;
+    setTabMarkdownViewModes((prev) => ({
+      ...prev,
+      [activeTabId]: mode,
+    }));
+  }, [activeTabId]);
+
   const syncPreviewTargetBestEffort = useCallback((target: PreviewTarget | null) => {
     if (!threadId) return;
     const socket = wsRef.current;
@@ -969,17 +987,20 @@ export default function Chat({
 
   const openTabForTarget = useCallback((target: PreviewTarget) => {
     const id = getPreviewTabId(target);
-    setPreviewTabs((prev) => {
-      const existing = prev.find((tab) => tab.id === id);
-      if (existing) {
-        return prev.map((tab) => (tab.id === id ? { ...tab, target } : tab));
-      }
-      return [...prev, { id, target }];
-    });
+    // Local tab state only. Callers handle DO sync when needed.
+    const prevTabs = previewTabsRef.current;
+    const existing = prevTabs.find((tab) => tab.id === id);
+    const nextTabs = existing
+      ? prevTabs.map((tab) => (tab.id === id ? { ...tab, target } : tab))
+      : [...prevTabs, { id, target }];
+    previewTabsRef.current = nextTabs;
+    setPreviewTabs(nextTabs);
+    activeTabIdRef.current = id;
     setActiveTabId(id);
   }, []);
 
   const selectTab = useCallback((tabId: string) => {
+    activeTabIdRef.current = tabId;
     setActiveTabId(tabId);
     const nextActiveTab = previewTabsRef.current.find((tab) => tab.id === tabId);
     if (nextActiveTab) {
@@ -993,16 +1014,19 @@ export default function Chat({
     if (closingTabIndex === -1) return;
 
     const nextTabs = prevTabs.filter((tab) => tab.id !== tabId);
+    previewTabsRef.current = nextTabs;
     setPreviewTabs(nextTabs);
 
     if (tabId === activeTabIdRef.current) {
       if (!nextTabs.length) {
+        activeTabIdRef.current = null;
         setActiveTabId(null);
         setMobileView('chat');
         syncPreviewTargetBestEffort(null);
       } else {
         const nextIndex = Math.min(closingTabIndex, nextTabs.length - 1);
         const nextActiveTab = nextTabs[nextIndex];
+        activeTabIdRef.current = nextActiveTab.id;
         setActiveTabId(nextActiveTab.id);
         syncPreviewTargetBestEffort(nextActiveTab.target);
       }
@@ -1021,6 +1045,12 @@ export default function Chat({
       return next;
     });
     setTabNotebookViewModes((prev) => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+    setTabMarkdownViewModes((prev) => {
       if (!(tabId in prev)) return prev;
       const next = { ...prev };
       delete next[tabId];
@@ -2566,11 +2596,14 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
   }, [mcpBugReportPrompt, deployedApp, resolvedWorkspaceId, threadId, submitBugReport]);
 
   const resetPreviewTabsState = useCallback(() => {
+    previewTabsRef.current = [];
     setPreviewTabs([]);
+    activeTabIdRef.current = null;
     setActiveTabId(null);
     setTabIframeKeys({});
     setTabFilePreviewKeys({});
     setTabNotebookViewModes({});
+    setTabMarkdownViewModes({});
     setTabAppLoading({});
     clearAllIframeRefreshTimeouts();
   }, [clearAllIframeRefreshTimeouts]);
@@ -2714,6 +2747,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
   const isNotebookPreview = previewTarget?.kind === 'file'
     && previewFileName.toLowerCase().endsWith('.ipynb');
+  const isMarkdownPreview = previewTarget?.kind === 'file'
+    && previewFileName.toLowerCase().endsWith('.md');
 
   const previewDomains = useMemo(() => {
     if (previewTarget?.kind !== 'app') {
@@ -2808,6 +2843,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         ) : undefined}
         notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
         onNotebookViewModeChange={setActiveNotebookViewMode}
+        markdownViewMode={isMarkdownPreview ? markdownViewMode : undefined}
+        onMarkdownViewModeChange={setActiveMarkdownViewMode}
         filePreviewOpenUrl={filePreviewOpenUrl}
       />
 
@@ -2837,6 +2874,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
               contentType={previewTarget.contentType}
               layout="panel"
               notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
+              markdownViewMode={isMarkdownPreview ? markdownViewMode : undefined}
             />
           </div>
         )}

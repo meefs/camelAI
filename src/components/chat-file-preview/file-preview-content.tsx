@@ -3,6 +3,7 @@
 import { memo, useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { getPreviewType } from './file-type-utils';
 import { NotebookPreview } from './notebook-preview';
 import type { NotebookFile } from './notebook-preview';
@@ -80,6 +81,7 @@ export interface FilePreviewContentProps {
   contentType?: string;
   layout?: PreviewLayout;
   notebookViewMode?: 'report' | 'notebook';
+  markdownViewMode?: 'rendered' | 'source';
 }
 
 function FilePreviewContentComponent({
@@ -88,6 +90,7 @@ function FilePreviewContentComponent({
   contentType,
   layout = 'dialog',
   notebookViewMode,
+  markdownViewMode,
 }: FilePreviewContentProps) {
   const previewType = useMemo(
     () => getPreviewType(filename, contentType),
@@ -105,7 +108,8 @@ function FilePreviewContentComponent({
   });
 
   useEffect(() => {
-    const shouldFetchText = previewType === 'text' || previewType === 'notebook';
+    const shouldFetchText =
+      previewType === 'text' || previewType === 'notebook' || previewType === 'markdown';
     if (!shouldFetchText) return;
 
     const controller = new AbortController();
@@ -255,8 +259,10 @@ function FilePreviewContentComponent({
             <>
               <pre
                 className={cn(
-                  'w-full min-w-0 overflow-auto rounded-md border bg-muted/30 p-3 text-xs',
-                  layout === 'panel' ? 'h-full max-h-full' : 'max-h-[60vh]',
+                  'w-full min-w-0 overflow-auto text-xs',
+                  layout === 'panel'
+                    ? 'h-full max-h-full'
+                    : 'max-h-[60vh] rounded-md border bg-muted/30 p-3',
                   textPreview ? 'text-foreground' : 'text-muted-foreground'
                 )}
               >
@@ -268,6 +274,47 @@ function FilePreviewContentComponent({
                 </p>
               )}
             </>
+          )}
+        </div>
+      )}
+
+      {previewType === 'markdown' && (
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="text-sm text-muted-foreground">Loading preview...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="text-sm text-muted-foreground">Unable to preview this file.</p>
+          )}
+          {textStatus === 'ready' && (
+            (markdownViewMode ?? 'rendered') === 'rendered' ? (
+              <div
+                className={cn(
+                  layout === 'panel'
+                    ? 'h-full overflow-auto'
+                    : 'max-h-[60vh] overflow-auto p-6'
+                )}
+              >
+                <MarkdownRenderer content={textPreview} />
+              </div>
+            ) : (
+              <pre
+                className={cn(
+                  'w-full min-w-0 overflow-auto whitespace-pre-wrap text-xs',
+                  layout === 'panel'
+                    ? 'h-full max-h-full'
+                    : 'max-h-[60vh] rounded-md border bg-muted/30 p-3',
+                  textPreview ? 'text-foreground' : 'text-muted-foreground'
+                )}
+              >
+                {textPreview || 'No preview content available.'}
+              </pre>
+            )
+          )}
+          {lineInfo.truncated && (
+            <p className="mt-2 px-3 text-xs text-muted-foreground">
+              Showing first {MAX_TEXT_LINES} of {lineInfo.totalLines} lines.
+            </p>
           )}
         </div>
       )}
@@ -308,7 +355,8 @@ function areFilePreviewContentPropsEqual(
     prev.previewUrl === next.previewUrl &&
     prev.contentType === next.contentType &&
     prev.layout === next.layout &&
-    prev.notebookViewMode === next.notebookViewMode
+    prev.notebookViewMode === next.notebookViewMode &&
+    prev.markdownViewMode === next.markdownViewMode
   );
 }
 

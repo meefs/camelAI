@@ -27,6 +27,8 @@ interface PreviewToolbarProps {
   appShareButton?: ReactNode;
   notebookViewMode?: 'report' | 'notebook';
   onNotebookViewModeChange?: (mode: 'report' | 'notebook') => void;
+  markdownViewMode?: 'rendered' | 'source';
+  onMarkdownViewModeChange?: (mode: 'rendered' | 'source') => void;
   filePreviewOpenUrl?: string;
 }
 
@@ -150,6 +152,14 @@ function getDownloadFormats(target: PreviewTarget): { label: string; filename: s
       return [{ label: 'Download CSV', filename: name }];
     case 'tsv':
       return [{ label: 'Download TSV', filename: name }];
+    case 'xlsx':
+    case 'xls':
+      return [{ label: 'Download spreadsheet', filename: name }];
+    case 'json':
+    case 'jsonl':
+      return [{ label: 'Download JSON', filename: name }];
+    case 'pdf':
+      return [{ label: 'Download PDF', filename: name }];
     case 'svg':
       return [{ label: 'Download SVG', filename: name }];
     default:
@@ -260,6 +270,41 @@ function NotebookToolbarActions({
   );
 }
 
+function MarkdownToolbarActions({
+  markdownViewMode,
+  onMarkdownViewModeChange,
+  activeTarget,
+  filePreviewOpenUrl,
+}: Pick<
+  PreviewToolbarProps,
+  'markdownViewMode' | 'onMarkdownViewModeChange' | 'activeTarget' | 'filePreviewOpenUrl'
+>) {
+  return (
+    <>
+      <Tabs
+        value={markdownViewMode ?? 'rendered'}
+        onValueChange={(value) => {
+          if (value === 'rendered' || value === 'source') {
+            onMarkdownViewModeChange?.(value);
+          }
+        }}
+        className="shrink-0 gap-0"
+      >
+        <TabsList variant="outline" className="h-7">
+          <TabsTrigger value="rendered" className="h-6 px-3 text-xs">
+            Rendered
+          </TabsTrigger>
+          <TabsTrigger value="source" className="h-6 px-3 text-xs">
+            Source
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+      <Separator orientation="vertical" className="mx-1 h-4 data-[orientation=vertical]:self-auto" />
+      <DownloadButton activeTarget={activeTarget} filePreviewOpenUrl={filePreviewOpenUrl} />
+    </>
+  );
+}
+
 export function PreviewToolbar({
   activeTarget,
   vanityUrl,
@@ -270,6 +315,8 @@ export function PreviewToolbar({
   appShareButton,
   notebookViewMode,
   onNotebookViewModeChange,
+  markdownViewMode,
+  onMarkdownViewModeChange,
   filePreviewOpenUrl,
 }: PreviewToolbarProps) {
   const fileType = getToolbarFileType(activeTarget);
@@ -291,6 +338,13 @@ export function PreviewToolbar({
         <NotebookToolbarActions
           notebookViewMode={notebookViewMode}
           onNotebookViewModeChange={onNotebookViewModeChange}
+          activeTarget={activeTarget}
+          filePreviewOpenUrl={filePreviewOpenUrl}
+        />
+      ) : fileType === 'markdown' ? (
+        <MarkdownToolbarActions
+          markdownViewMode={markdownViewMode}
+          onMarkdownViewModeChange={onMarkdownViewModeChange}
           activeTarget={activeTarget}
           filePreviewOpenUrl={filePreviewOpenUrl}
         />

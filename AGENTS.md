@@ -122,6 +122,9 @@ Deploy enqueues screenshot job → Browser Rendering → JPEG stored in R2 at `a
 ### Notebook File Previews
 Notebook previews render in the chat preview panel with two modes: **Report** (editorial rendering with TOC, hidden code, styled outputs) and **Notebook** (full cell-by-cell with execution gutters). Supports Vega/Vega-Lite, Plotly, DataFrame tables (native React rendering capped at 100 rows with CSV download), and generic HTML in sandboxed iframes.
 
+### Markdown File Previews
+Markdown (`.md`) previews in the chat preview panel support per-tab toolbar view modes: **Rendered** (default) and **Source**. Rendered mode uses `MarkdownRenderer`; source mode shows raw markdown text.
+
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization
 - `stream_event` - Real-time: `content_block_start`, `content_block_delta`, `message_delta`
