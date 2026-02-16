@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,6 +68,7 @@ type Manager struct {
 	reclaimInterval     time.Duration
 	healthPollInterval  time.Duration
 	cfDispatchNamespace string
+	containerProxyBase  string
 	traceLifecycle      bool
 
 	mu                    sync.Mutex
@@ -86,24 +88,32 @@ func NewManager(overlays *overlay.Manager, stateStore *state.Store) *Manager {
 		log.Fatalf("[ContainerManager] failed to initialize Docker API client: %v", err)
 	}
 
+	proxyPort := envInt("SANDBOX_PROXY_PORT", defaultProxyPort())
+	workspacesRoot := envString("WORKSPACES_ROOT", defaultWorkspaceRoot())
+	containerRuntime := envString("CONTAINER_RUNTIME", defaultContainerRuntime())
+	r2MountRoot := envString("R2_MOUNT_ROOT", defaultR2MountRoot())
+	defaultProxyBase := fmt.Sprintf("http://%s:%d/proxy", defaultContainerProxyHost(), proxyPort)
+	containerProxyBase := normalizeProxyBaseURL(envString("CONTAINER_PROXY_BASE_URL", defaultProxyBase))
+
 	m := &Manager{
 		overlays:              overlays,
 		docker:                docker,
 		state:                 stateStore,
-		workspacesRoot:        envString("WORKSPACES_ROOT", "/mnt/workspaces"),
+		workspacesRoot:        workspacesRoot,
 		sandboxImage:          envString("SANDBOX_IMAGE", "chiridion-sandbox:latest"),
 		containerMemory:       envString("CONTAINER_MEMORY", "16g"),
 		containerCPUShares:    envString("CONTAINER_CPU_SHARES", "2048"),
-		containerRuntime:      envString("CONTAINER_RUNTIME", "runsc"),
+		containerRuntime:      containerRuntime,
 		controlPlanePort:      8080,
-		proxyPort:             envInt("SANDBOX_PROXY_PORT", 8081),
+		proxyPort:             proxyPort,
 		idleTimeout:           time.Duration(envInt("IDLE_TIMEOUT_MS", 30_000)) * time.Millisecond,
 		reaperInterval:        10 * time.Second,
-		r2MountRoot:           envString("R2_MOUNT_ROOT", "/mnt/r2"),
+		r2MountRoot:           r2MountRoot,
 		reclaimIdle:           time.Duration(envInt("RECLAIM_IDLE_MS", 10*60_000)) * time.Millisecond,
 		reclaimInterval:       5 * time.Minute,
 		healthPollInterval:    maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
 		cfDispatchNamespace:   envString("CF_DISPATCH_NAMESPACE", ""),
+		containerProxyBase:    containerProxyBase,
 		traceLifecycle:        envString("TRACE_SANDBOX_LIFECYCLE", "") == "1",
 		containers:            make(map[string]*ContainerRecord),
 		containerIPIndex:      make(map[string]string),
@@ -359,17 +369,16 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	}
 
 	if opts.OrgID != "" && opts.WorkspaceID != "" {
-		proxyBase := fmt.Sprintf("http://172.17.0.1:%d/proxy", m.proxyPort)
 		env = append(env,
 			"WORKSPACE_ID="+opts.WorkspaceID,
 			"ORG_ID="+opts.OrgID,
-			"ANTHROPIC_BASE_URL="+proxyBase+"/api/claude",
+			"ANTHROPIC_BASE_URL="+m.containerProxyBase+"/api/claude",
 			"ANTHROPIC_API_KEY=proxy",
-			"CLOUDFLARE_API_BASE_URL="+proxyBase+"/client/v4",
+			"CLOUDFLARE_API_BASE_URL="+m.containerProxyBase+"/client/v4",
 			"CLOUDFLARE_API_TOKEN=proxy",
-			"DATA_PROXY_URL="+proxyBase+"/api",
+			"DATA_PROXY_URL="+m.containerProxyBase+"/api",
 			"DATA_PROXY_TOKEN=proxy",
-			"MCP_SERVER_URL="+proxyBase+"/mcp",
+			"MCP_SERVER_URL="+m.containerProxyBase+"/mcp",
 			"CLOUDFLARE_ACCOUNT_ID=chiridion",
 			"WRANGLER_SEND_METRICS=false",
 			"CI=1",
@@ -1147,4 +1156,58 @@ func maxDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func defaultLocalRoot() string {
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return ".sandbox-host"
+	}
+	return filepath.Join(wd, ".sandbox-host")
+}
+
+func defaultWorkspaceRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/mnt/workspaces"
+	}
+	return filepath.Join(defaultLocalRoot(), "workspaces")
+}
+
+func defaultR2MountRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/mnt/r2"
+	}
+	return filepath.Join(defaultLocalRoot(), "r2")
+}
+
+func defaultContainerRuntime() string {
+	if runtime.GOOS == "linux" {
+		return "runsc"
+	}
+	return "runc"
+}
+
+func defaultProxyPort() int {
+	if runtime.GOOS == "linux" {
+		return 8081
+	}
+	return 4401
+}
+
+func defaultContainerProxyHost() string {
+	if runtime.GOOS == "linux" {
+		return "172.17.0.1"
+	}
+	return "host.docker.internal"
+}
+
+func normalizeProxyBaseURL(raw string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if trimmed == "" {
+		return trimmed
+	}
+	if strings.HasSuffix(trimmed, "/proxy") {
+		return trimmed
+	}
+	return trimmed + "/proxy"
 }

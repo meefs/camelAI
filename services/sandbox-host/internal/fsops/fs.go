@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -36,7 +37,7 @@ type Manager struct {
 
 func NewManager(workspacesRoot string) *Manager {
 	if workspacesRoot == "" {
-		workspacesRoot = "/mnt/workspaces"
+		workspacesRoot = defaultWorkspaceRoot()
 	}
 	return &Manager{workspacesRoot: workspacesRoot}
 }
@@ -210,4 +211,15 @@ func StreamFile(path string, w io.Writer) error {
 	defer file.Close()
 	_, err = io.Copy(w, file)
 	return err
+}
+
+func defaultWorkspaceRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/mnt/workspaces"
+	}
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return ".sandbox-host/workspaces"
+	}
+	return filepath.Join(wd, ".sandbox-host", "workspaces")
 }

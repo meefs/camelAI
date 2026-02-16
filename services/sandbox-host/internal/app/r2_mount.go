@@ -4,6 +4,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -15,7 +17,7 @@ func MountR2OnHost() {
 	bucketName := strings.TrimSpace(os.Getenv("R2_BUCKET_NAME"))
 	mountRoot := strings.TrimSpace(os.Getenv("R2_MOUNT_ROOT"))
 	if mountRoot == "" {
-		mountRoot = "/mnt/r2"
+		mountRoot = defaultR2MountRoot()
 	}
 
 	uid := strings.TrimSpace(os.Getenv("R2_MOUNT_UID"))
@@ -93,4 +95,15 @@ func MountR2OnHost() {
 		log.Printf("[SandboxHost] R2 mount point not accessible after mount: %v", err)
 	}
 
+}
+
+func defaultR2MountRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/mnt/r2"
+	}
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return ".sandbox-host/r2"
+	}
+	return filepath.Join(wd, ".sandbox-host", "r2")
 }

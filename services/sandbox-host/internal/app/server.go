@@ -490,7 +490,6 @@ func (s *Server) handleChatProxy(
 		})
 		return nil
 	}
-
 	s.trace("chat_session_upgrade_success", map[string]any{
 		"container":   name,
 		"orgId":       route.OrgID,
@@ -503,12 +502,15 @@ func (s *Server) handleChatProxy(
 	s.containers.AddWebSocket(name, "chat_client_ws_open")
 	s.trace("chat_ws_open", map[string]any{"container": name, "threadId": threadID, "threadKey": threadKey, "targetWsUrl": targetWSURL})
 
-	upstreamConn, _, err := websocket.DefaultDialer.Dial(targetWSURL, nil)
+	upstreamDialer := *websocket.DefaultDialer
+	upstreamDialer.HandshakeTimeout = 10 * time.Second
+	upstreamConn, _, err := upstreamDialer.Dial(targetWSURL, nil)
 	if err != nil {
 		_ = clientConn.Close()
 		s.containers.RemoveWebSocket(name, "chat_client_ws_close", 1011, "upstream dial failed")
 		return err
 	}
+	log.Printf("[SandboxHost] chat session upstream connected container=%s thread=%s target=%s", name, threadID, targetWSURL)
 
 	var closeOnce sync.Once
 	closeAll := func(code int, reason string) {
@@ -626,6 +628,15 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 		errorJSON(w, "Proxy caller resolution failed", http.StatusInternalServerError)
 		return
 	}
+	fallbackThreadKey := ""
+	if caller == nil {
+		if isLoopbackSourceIP(sourceIP) {
+			if threadKey, containerName, ok := s.findActiveProxyThreadByThreadID(proxy.ThreadID, time.Now().UTC()); ok {
+				fallbackThreadKey = threadKey
+				caller = &container.ContainerRecord{Name: containerName}
+			}
+		}
+	}
 	if caller == nil {
 		s.trace("proxy_request_rejected_unknown_caller", map[string]any{
 			"requestId":    requestID,
@@ -639,6 +650,9 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 	}
 
 	threadKey := proxyThreadKey(caller.Name, proxy.ThreadID)
+	if fallbackThreadKey != "" {
+		threadKey = fallbackThreadKey
+	}
 	var upsertedThread *ProxyThreadContext
 	removedThread := false
 	s.proxyMu.Lock()
@@ -751,6 +765,7 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 			"error":           upstreamErr.Error(),
 		})
 		s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), 0, durationMs)
+		log.Printf("[SandboxHost] proxy request failed method=%s path=%s thread=%s container=%s target=%s durationMs=%d error=%v", req.Method, proxy.UpstreamPath, threadContext.ThreadID, threadContext.ContainerName, target.String(), durationMs, upstreamErr)
 		errorJSON(w, "Upstream proxy request failed", http.StatusBadGateway)
 		return
 	}
@@ -780,6 +795,37 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 			"error":           err.Error(),
 		})
 	}
+}
+
+func (s *Server) findActiveProxyThreadByThreadID(threadID string, now time.Time) (threadKey string, containerName string, ok bool) {
+	if strings.TrimSpace(threadID) == "" {
+		return "", "", false
+	}
+
+	s.proxyMu.Lock()
+	defer s.proxyMu.Unlock()
+
+	var found *ProxyThreadContext
+	var foundKey string
+	for key, ctx := range s.proxyThreads {
+		if ctx == nil || ctx.ThreadID != threadID {
+			continue
+		}
+		if !ctx.ExpiresAt.After(now) {
+			continue
+		}
+		if found != nil && foundKey != key {
+			// Ambiguous thread mapping; fall back to strict caller-IP flow.
+			return "", "", false
+		}
+		found = ctx
+		foundKey = key
+	}
+
+	if found == nil {
+		return "", "", false
+	}
+	return foundKey, found.ContainerName, true
 }
 
 func (s *Server) runProxyThreadCleanup() {

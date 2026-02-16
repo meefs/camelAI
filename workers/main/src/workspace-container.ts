@@ -26,7 +26,8 @@ export interface WorkspaceContainerEnv {
   R2_BUCKET: R2Bucket;
   INTEGRATION_SECRET_KEY: string;
 
-  SANDBOX_HOST: Fetcher;
+  SANDBOX_HOST?: Fetcher;
+  SANDBOX_HOST_URL?: string;
   WORKER_BASE_URL?: string;
 }
 
@@ -122,11 +123,43 @@ export class WorkspaceContainer {
 
   // ─── Helpers ─────────────────────────────────────────────
 
+  private getSandboxHostUrlOverride(): URL | null {
+    const raw = (this.env.SANDBOX_HOST_URL || '').trim();
+    if (!raw) return null;
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        console.warn(`[Sandbox] ignoring SANDBOX_HOST_URL with unsupported protocol: ${parsed.protocol}`);
+        return null;
+      }
+      return parsed;
+    } catch {
+      console.warn(`[Sandbox] ignoring invalid SANDBOX_HOST_URL: ${raw}`);
+      return null;
+    }
+  }
+
+  private normalizeBaseUrl(url: URL): URL {
+    const copy = new URL(url.toString());
+    copy.search = '';
+    copy.hash = '';
+    copy.pathname = copy.pathname.replace(/\/+$/, '');
+    return copy;
+  }
+
   private sandboxUrl(subpath: string, query?: Record<string, string>): string {
-    const base = `http://sandbox/v1/workspaces/${encodeURIComponent(this.orgId)}/${encodeURIComponent(this.workspaceId)}${subpath}`;
-    if (!query) return base;
-    const url = new URL(base);
-    for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+    const workspacePath = `/v1/workspaces/${encodeURIComponent(this.orgId)}/${encodeURIComponent(this.workspaceId)}${subpath}`;
+    const sandboxBase = this.getSandboxHostUrlOverride();
+    const url = sandboxBase
+      ? this.normalizeBaseUrl(sandboxBase)
+      : new URL('http://sandbox');
+
+    const basePath = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '');
+    url.pathname = `${basePath}${workspacePath}`;
+
+    if (query) {
+      for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+    }
     return url.toString();
   }
 
@@ -150,6 +183,13 @@ export class WorkspaceContainer {
   }
 
   private async fetchSandbox(url: string, init: RequestInit = {}): Promise<Response> {
+    const sandboxBase = this.getSandboxHostUrlOverride();
+    if (sandboxBase) {
+      return fetch(url, init);
+    }
+    if (!this.env.SANDBOX_HOST) {
+      throw new Error('SANDBOX_HOST binding is not configured (or set SANDBOX_HOST_URL for local sandbox mode)');
+    }
     return this.env.SANDBOX_HOST.fetch(url, init);
   }
 
