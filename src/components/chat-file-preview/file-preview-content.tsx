@@ -31,6 +31,16 @@ function getFilenameFromPath(path: string): string {
   return path.split('/').filter(Boolean).pop() || path;
 }
 
+function getPreviewErrorMessage(previewType: string, status?: number): string {
+  if (status === 404 || status === 410) {
+    return 'This file no longer exists in the workspace.';
+  }
+  if (previewType === 'notebook') {
+    return 'Unable to preview this notebook.';
+  }
+  return 'Unable to preview this file.';
+}
+
 function ImagePreview({
   src,
   alt,
@@ -99,6 +109,7 @@ function FilePreviewContentComponent({
 
   const [textPreview, setTextPreview] = useState('');
   const [textStatus, setTextStatus] = useState<TextStatus>('idle');
+  const [textErrorMessage, setTextErrorMessage] = useState('Unable to preview this file.');
   const [notebook, setNotebook] = useState<NotebookFile | null>(null);
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaError, setMediaError] = useState(false);
@@ -116,11 +127,16 @@ function FilePreviewContentComponent({
     let cancelled = false;
 
     setTextStatus('loading');
+    setTextErrorMessage(getPreviewErrorMessage(previewType));
     setNotebook(null);
 
     fetch(previewUrl, { signal: controller.signal })
       .then(async (response) => {
-        if (!response.ok) throw new Error('Failed to load preview');
+        if (!response.ok) {
+          const error = new Error('Failed to load preview') as Error & { status?: number };
+          error.status = response.status;
+          throw error;
+        }
         const bodyText = await response.text();
         if (previewType === 'notebook') {
           let parsed: NotebookFile | null = null;
@@ -143,6 +159,8 @@ function FilePreviewContentComponent({
       })
       .catch((error) => {
         if (cancelled || error?.name === 'AbortError') return;
+        const status = typeof error?.status === 'number' ? error.status : undefined;
+        setTextErrorMessage(getPreviewErrorMessage(previewType, status));
         setTextStatus('error');
       });
 
@@ -253,7 +271,7 @@ function FilePreviewContentComponent({
             <p className="text-sm text-muted-foreground">Loading preview...</p>
           )}
           {textStatus === 'error' && (
-            <p className="text-sm text-muted-foreground">Unable to preview this file.</p>
+            <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
           {textStatus === 'ready' && (
             <>
@@ -284,7 +302,7 @@ function FilePreviewContentComponent({
             <p className="text-sm text-muted-foreground">Loading preview...</p>
           )}
           {textStatus === 'error' && (
-            <p className="text-sm text-muted-foreground">Unable to preview this file.</p>
+            <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
           {textStatus === 'ready' && (
             (markdownViewMode ?? 'rendered') === 'rendered' ? (
@@ -325,7 +343,7 @@ function FilePreviewContentComponent({
             <p className="text-sm text-muted-foreground">Loading notebook...</p>
           )}
           {textStatus === 'error' && (
-            <p className="text-sm text-muted-foreground">Unable to preview this notebook.</p>
+            <p className="text-sm text-muted-foreground">{textErrorMessage}</p>
           )}
           {textStatus === 'ready' && notebook && (
             <NotebookPreview

@@ -176,6 +176,12 @@ interface ChatClientSetPreviewTarget {
   target?: PreviewTarget | null;
 }
 
+interface ChatClientSetPreviewTabsState {
+  type: 'set_preview_tabs_state';
+  tabs?: PreviewTarget[];
+  activeTabId?: string | null;
+}
+
 const CHAT_SOCKET_TAG = 'chat';
 
 const CHAT_CONTEXT_KEY = 'chatContext';
@@ -204,6 +210,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private static readonly BUG_REPORT_TIMEOUT_MS = 5 * 60 * 1000;
 
   private previewTarget: PreviewTarget | null = null;
+  private previewTabs: PreviewTarget[] = [];
+  private previewActiveTabId: string | null = null;
   private previewVersion: number = 0;
 
   // Pending connection setup requests (requestId -> MCP DO callback info)
@@ -294,14 +302,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // Restore state from storage
     ctx.blockConcurrencyWhile(async () => {
+      const storedTabs = ctx.storage.kv.get<PreviewTarget[]>('previewTabs');
+      const storedActiveTabId = ctx.storage.kv.get<string | null>('previewActiveTabId');
       const storedTarget = ctx.storage.kv.get<PreviewTarget>('previewTarget');
-      if (storedTarget) {
-        this.previewTarget = storedTarget;
+      if (Array.isArray(storedTabs)) {
+        const normalizedState = this.normalizePreviewTabsState(storedTabs, storedActiveTabId) ?? {
+          tabs: [],
+          activeTabId: null,
+          target: null,
+        };
+        this.previewTabs = normalizedState.tabs;
+        this.previewActiveTabId = normalizedState.activeTabId;
+        this.previewTarget = normalizedState.target;
+      } else {
+        const normalizedTarget = this.normalizePreviewTarget(storedTarget ?? null);
+        if (normalizedTarget) {
+          this.previewTabs = [normalizedTarget];
+          this.previewActiveTabId = this.getPreviewTabId(normalizedTarget);
+          this.previewTarget = normalizedTarget;
+        }
       }
+
       const version = ctx.storage.kv.get<number>('previewVersion');
       if (typeof version === 'number') {
         this.previewVersion = version;
       }
+
+      // Persist normalized preview session state. This also migrates legacy
+      // single-target threads into multi-tab state on first hydrate.
+      this.ctx.storage.kv.put('previewTabs', this.previewTabs);
+      this.ctx.storage.kv.put('previewActiveTabId', this.previewActiveTabId);
+      this.ctx.storage.kv.put('previewTarget', this.previewTarget);
 
       // Restore pending connection setups from storage (sync KV)
       const pendingEntries = ctx.storage.kv.list({ prefix: 'pending_connection:' });
@@ -397,10 +428,20 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     // HTTP API for setting preview state
     if (url.pathname === '/preview' && request.method === 'POST') {
-      const body = await request.json() as { target?: PreviewTarget | null };
-      await this.setPreviewTarget(body.target ?? null);
+      const body = await request.json() as {
+        target?: PreviewTarget | null;
+        tabs?: PreviewTarget[];
+        activeTabId?: string | null;
+      };
+      if (Array.isArray(body.tabs) || body.activeTabId !== undefined) {
+        await this.setPreviewTabsState(body.tabs ?? [], body.activeTabId ?? null);
+      } else {
+        await this.setPreviewTarget(body.target ?? null);
+      }
       return new Response(JSON.stringify({
         target: this.previewTarget,
+        tabs: this.previewTabs,
+        activeTabId: this.previewActiveTabId,
         version: this.previewVersion,
       }), {
         headers: { 'Content-Type': 'application/json' },
@@ -410,6 +451,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (url.pathname === '/preview' && request.method === 'GET') {
       return new Response(JSON.stringify({
         target: this.previewTarget,
+        tabs: this.previewTabs,
+        activeTabId: this.previewActiveTabId,
         version: this.previewVersion,
       }), {
         headers: { 'Content-Type': 'application/json' },
@@ -553,6 +596,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         await this.handleSetPreviewTarget(data as unknown as ChatClientSetPreviewTarget);
         return;
       }
+
+      if (data.type === 'set_preview_tabs_state') {
+        await this.handleSetPreviewTabsState(data as unknown as ChatClientSetPreviewTabsState);
+        return;
+      }
     } catch (err) {
       console.error(`[ChatThreadDO] webSocketMessage error (type=${data.type}):`, err);
       this.emitChatError(`Internal error handling ${data.type}: ${err instanceof Error ? err.message : String(err)}`);
@@ -584,12 +632,74 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return this.previewTarget;
   }
 
+  getPreviewState(): {
+    target: PreviewTarget | null;
+    tabs: PreviewTarget[];
+    activeTabId: string | null;
+    version: number;
+  } {
+    return {
+      target: this.previewTarget,
+      tabs: this.previewTabs,
+      activeTabId: this.previewActiveTabId,
+      version: this.previewVersion,
+    };
+  }
+
   async setPreviewTarget(target: PreviewTarget | null): Promise<void> {
-    this.previewTarget = this.normalizePreviewTarget(target);
+    const normalizedTarget = this.normalizePreviewTarget(target);
+    if (!normalizedTarget) {
+      this.previewTabs = [];
+      this.previewActiveTabId = null;
+      this.previewTarget = null;
+      this.previewVersion++;
+      this.persistPreviewState();
+      this.broadcastPreviewState();
+      return;
+    }
+
+    const id = this.getPreviewTabId(normalizedTarget);
+    const existingIndex = this.previewTabs.findIndex(
+      (tabTarget) => this.getPreviewTabId(tabTarget) === id
+    );
+    if (existingIndex >= 0) {
+      this.previewTabs = this.previewTabs.map((tabTarget, index) => (
+        index === existingIndex ? normalizedTarget : tabTarget
+      ));
+    } else {
+      this.previewTabs = [...this.previewTabs, normalizedTarget];
+    }
+    this.previewActiveTabId = id;
+    this.previewTarget = normalizedTarget;
     this.previewVersion++;
-    this.ctx.storage.kv.put('previewTarget', this.previewTarget);
-    this.ctx.storage.kv.put('previewVersion', this.previewVersion);
+    this.persistPreviewState();
     this.broadcastPreviewState();
+  }
+
+  async setPreviewTabsState(
+    tabs: PreviewTarget[],
+    activeTabId: string | null
+  ): Promise<void> {
+    await this.setPreviewTabsStateInternal(tabs, activeTabId);
+  }
+
+  private async setPreviewTabsStateInternal(
+    tabs: PreviewTarget[],
+    activeTabId: string | null,
+    expectedWorkspaceId?: string
+  ): Promise<boolean> {
+    const normalizedState = this.normalizePreviewTabsState(tabs, activeTabId, expectedWorkspaceId);
+    if (!normalizedState) {
+      return false;
+    }
+
+    this.previewTabs = normalizedState.tabs;
+    this.previewActiveTabId = normalizedState.activeTabId;
+    this.previewTarget = normalizedState.target;
+    this.previewVersion++;
+    this.persistPreviewState();
+    this.broadcastPreviewState();
+    return true;
   }
 
   async clearPreviewTarget(): Promise<void> {
@@ -608,7 +718,16 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       ...this.previewTarget,
       isPublic,
     };
-    this.ctx.storage.kv.put('previewTarget', this.previewTarget);
+
+    const previewTabId = this.getPreviewTabId(this.previewTarget);
+    this.previewTabs = this.previewTabs.map((tabTarget) => {
+      if (this.getPreviewTabId(tabTarget) !== previewTabId || tabTarget.kind !== 'app') {
+        return tabTarget;
+      }
+      return { ...tabTarget, isPublic };
+    });
+
+    this.persistPreviewState(false);
     this.broadcastPreviewState();
   }
 
@@ -732,6 +851,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.sendDirect(ws, {
       type: 'preview_state',
       target: this.previewTarget,
+      tabs: this.previewTabs,
+      activeTabId: this.previewActiveTabId,
       version: this.previewVersion,
     });
     this.sendPendingPromptsToWebSocket(ws);
@@ -852,6 +973,32 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     await this.setPreviewTarget(normalized);
   }
 
+  private async handleSetPreviewTabsState(data: ChatClientSetPreviewTabsState): Promise<void> {
+    if (!this.chatContext) {
+      this.emitChatError('No session - send init first');
+      return;
+    }
+
+    const tabs = Array.isArray(data.tabs) ? data.tabs : [];
+    const activeTabId = typeof data.activeTabId === 'string' ? data.activeTabId : null;
+
+    const ok = await this.setPreviewTabsStateInternal(
+      tabs,
+      activeTabId,
+      this.chatContext.workspaceId
+    );
+    if (!ok) {
+      this.emitChatError('Invalid preview target workspace');
+    }
+  }
+
+  private getPreviewTabId(target: PreviewTarget): string {
+    if (target.kind === 'app') {
+      return `app:${target.scriptName}`;
+    }
+    return `file:${target.workspaceId}:${target.source}:${target.path}`;
+  }
+
   private normalizePreviewTarget(target: PreviewTarget | null | undefined): PreviewTarget | null {
     if (!target || typeof target !== 'object') {
       return null;
@@ -893,10 +1040,69 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return null;
   }
 
+  private normalizePreviewTabsState(
+    tabs: PreviewTarget[] | null | undefined,
+    activeTabId: string | null | undefined,
+    expectedWorkspaceId?: string
+  ): { tabs: PreviewTarget[]; activeTabId: string | null; target: PreviewTarget | null } | null {
+    const deduped: Array<{ id: string; target: PreviewTarget }> = [];
+    const dedupedById = new Map<string, number>();
+
+    if (Array.isArray(tabs)) {
+      for (const tabTarget of tabs) {
+        const normalized = this.normalizePreviewTarget(tabTarget);
+        if (!normalized) continue;
+        if (
+          expectedWorkspaceId &&
+          normalized.kind === 'file' &&
+          normalized.workspaceId !== expectedWorkspaceId
+        ) {
+          return null;
+        }
+
+        const tabId = this.getPreviewTabId(normalized);
+        const existingIndex = dedupedById.get(tabId);
+        if (existingIndex === undefined) {
+          dedupedById.set(tabId, deduped.length);
+          deduped.push({ id: tabId, target: normalized });
+          continue;
+        }
+        deduped[existingIndex] = { id: tabId, target: normalized };
+      }
+    }
+
+    const nextActiveTabId = (
+      typeof activeTabId === 'string' && dedupedById.has(activeTabId)
+    )
+      ? activeTabId
+      : (deduped[0]?.id ?? null);
+
+    const nextTarget = nextActiveTabId
+      ? (deduped.find((tab) => tab.id === nextActiveTabId)?.target ?? null)
+      : null;
+
+    return {
+      tabs: deduped.map((tab) => tab.target),
+      activeTabId: nextActiveTabId,
+      target: nextTarget,
+    };
+  }
+
+  private persistPreviewState(includeVersion = true): void {
+    this.ctx.storage.kv.put('previewTabs', this.previewTabs);
+    this.ctx.storage.kv.put('previewActiveTabId', this.previewActiveTabId);
+    this.ctx.storage.kv.put('previewTarget', this.previewTarget);
+    if (includeVersion) {
+      this.ctx.storage.kv.put('previewVersion', this.previewVersion);
+    }
+  }
+
   private broadcastPreviewState(): void {
     this.broadcastRealtime({
       type: 'preview_state',
       target: this.previewTarget,
+      tabs: this.previewTabs,
+      activeTabId: this.previewActiveTabId,
       version: this.previewVersion,
     });
   }

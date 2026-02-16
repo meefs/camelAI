@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type { ComponentProps, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { Bug, Download, ExternalLink, Globe, RefreshCw } from 'lucide-react';
@@ -305,7 +305,7 @@ function MarkdownToolbarActions({
   );
 }
 
-export function PreviewToolbar({
+function PreviewToolbarComponent({
   activeTarget,
   vanityUrl,
   vanityHost,
@@ -358,3 +358,5 @@ export function PreviewToolbar({
     </div>
   );
 }
+
+export const PreviewToolbar = memo(PreviewToolbarComponent);

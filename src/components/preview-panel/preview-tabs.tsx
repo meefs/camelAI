@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -11,7 +12,7 @@ interface PreviewTabRowProps {
   onTabClose: (tabId: string) => void;
 }
 
-export function PreviewTabRow({
+function PreviewTabRowComponent({
   tabs,
   activeTabId,
   onTabSelect,
@@ -97,3 +98,5 @@ export function PreviewTabRow({
     </div>
   );
 }
+
+export const PreviewTabRow = memo(PreviewTabRowComponent);

@@ -112,8 +112,9 @@ Runtime startup is on-demand from chat/API paths; dashboard route loaders no lon
 ### Threads
 - Each thread belongs to a workspace
 - Threads stored in `OrgDO` (one per organization)
-- `ChatThreadDO` handles real-time preview target state (single active target: deployed app or file)
-- Chat UI now supports multi-tab preview panels client-side (`PreviewTabRow` + `PreviewToolbar` in `src/components/preview-panel/`); selecting or closing tabs syncs the active tab target back to `ChatThreadDO`
+- `ChatThreadDO` persists preview tab sessions per thread (`previewTabs`, `previewActiveTabId`, legacy `previewTarget`, `previewVersion`) and broadcasts them via `preview_state`
+- Preview protocol supports both legacy `set_preview_target` and authoritative `set_preview_tabs_state` for multi-tab sync with backward compatibility
+- Chat UI uses `PreviewTabRow` + `PreviewToolbar` + memoized preview shell (`src/components/preview-panel/`, `src/components/Chat.tsx`) to keep preview tab/header rendering isolated from unrelated chat streaming updates
 - History queries threads across accessible workspaces
 
 ### App Previews
@@ -124,6 +125,9 @@ Notebook previews render in the chat preview panel with two modes: **Report** (e
 
 ### Markdown File Previews
 Markdown (`.md`) previews in the chat preview panel support per-tab toolbar view modes: **Rendered** (default) and **Source**. Rendered mode uses `MarkdownRenderer`; source mode shows raw markdown text.
+
+### Missing Preview Files
+When a persisted preview tab points to a file that no longer exists, the tab is preserved and the panel shows an explicit missing-file message (`404/410` handling in `FilePreviewContent`) so users can close stale tabs manually.
 
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, memo } from 'react';
-import type { Dispatch, RefObject, SetStateAction } from 'react';
+import type { Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
 import { useNavigate, useFetcher, useRevalidator } from 'react-router';
 import { ArrowDown, RefreshCw, X, ChevronDown, Globe, Lock } from 'lucide-react';
 import { toast } from 'sonner';
@@ -78,6 +78,8 @@ interface ChatProps {
   initialMessages?: Message[];
   threadTitle?: string | null;
   initialPreviewTarget?: PreviewTarget | null;
+  initialPreviewTabs?: PreviewTarget[];
+  initialActiveTabId?: string | null;
   isNewThread?: boolean;
   /** Hostname from server for consistent URL generation (avoids hydration mismatch) */
   hostname?: string;
@@ -241,6 +243,57 @@ function coercePreviewTarget(value: unknown): PreviewTarget | null {
   }
 
   return null;
+}
+
+interface PreviewSessionState {
+  tabs: PreviewTab[];
+  activeTabId: string | null;
+  target: PreviewTarget | null;
+}
+
+function normalizePreviewSessionState(
+  tabsInput: unknown,
+  activeTabIdInput: unknown,
+  fallbackTarget: unknown
+): PreviewSessionState {
+  const tabs: PreviewTab[] = [];
+  const tabIndexById = new Map<string, number>();
+
+  const upsert = (rawTarget: unknown) => {
+    const target = coercePreviewTarget(rawTarget);
+    if (!target) return;
+
+    const id = getPreviewTabId(target);
+    const tab: PreviewTab = { id, target };
+    const existingIndex = tabIndexById.get(id);
+    if (existingIndex === undefined) {
+      tabIndexById.set(id, tabs.length);
+      tabs.push(tab);
+      return;
+    }
+    tabs[existingIndex] = tab;
+  };
+
+  if (Array.isArray(tabsInput)) {
+    for (const tabTarget of tabsInput) {
+      upsert(tabTarget);
+    }
+  }
+
+  if (tabs.length === 0) {
+    upsert(fallbackTarget);
+  }
+
+  const activeTabId = (
+    typeof activeTabIdInput === 'string' && tabIndexById.has(activeTabIdInput)
+  )
+    ? activeTabIdInput
+    : (tabs[0]?.id ?? null);
+  const target = activeTabId
+    ? (tabs.find((tab) => tab.id === activeTabId)?.target ?? null)
+    : null;
+
+  return { tabs, activeTabId, target };
 }
 
 function MobileViewSwitcher({
@@ -516,6 +569,122 @@ const ChatMessagesView = memo(function ChatMessagesView({
   );
 });
 
+interface PreviewPanelShellProps {
+  previewTabs: PreviewTab[];
+  activeTabId: string | null;
+  previewTarget: PreviewTarget | null;
+  onTabSelect: (tabId: string) => void;
+  onTabClose: (tabId: string) => void;
+  onRefresh: () => void;
+  onOpenExternal: () => void;
+  onBugReportOpen: () => void;
+  appShareButton?: ReactNode;
+  notebookViewMode: 'report' | 'notebook';
+  onNotebookViewModeChange: (mode: 'report' | 'notebook') => void;
+  markdownViewMode: 'rendered' | 'source';
+  onMarkdownViewModeChange: (mode: 'rendered' | 'source') => void;
+  filePreviewOpenUrl: string;
+  previewLoading: boolean;
+  iframeRef: RefObject<HTMLIFrameElement | null>;
+  iframeKey: number;
+  appPreviewUrl: string;
+  previewFileName: string;
+  filePreviewUrl: string;
+  isNotebookPreview: boolean;
+  isMarkdownPreview: boolean;
+  vanityUrl: string;
+  vanityHost: string;
+}
+
+const PreviewPanelShell = memo(function PreviewPanelShell({
+  previewTabs,
+  activeTabId,
+  previewTarget,
+  onTabSelect,
+  onTabClose,
+  onRefresh,
+  onOpenExternal,
+  onBugReportOpen,
+  appShareButton,
+  notebookViewMode,
+  onNotebookViewModeChange,
+  markdownViewMode,
+  onMarkdownViewModeChange,
+  filePreviewOpenUrl,
+  previewLoading,
+  iframeRef,
+  iframeKey,
+  appPreviewUrl,
+  previewFileName,
+  filePreviewUrl,
+  isNotebookPreview,
+  isMarkdownPreview,
+  vanityUrl,
+  vanityHost,
+}: PreviewPanelShellProps) {
+  if (previewTabs.length === 0 || !previewTarget || !activeTabId) {
+    return null;
+  }
+
+  return (
+    <>
+      <PreviewTabRow
+        tabs={previewTabs}
+        activeTabId={activeTabId}
+        onTabSelect={onTabSelect}
+        onTabClose={onTabClose}
+      />
+
+      <PreviewToolbar
+        activeTarget={previewTarget}
+        vanityUrl={vanityUrl}
+        vanityHost={vanityHost}
+        onRefresh={onRefresh}
+        onOpenExternal={onOpenExternal}
+        onBugReport={onBugReportOpen}
+        appShareButton={appShareButton}
+        notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
+        onNotebookViewModeChange={onNotebookViewModeChange}
+        markdownViewMode={isMarkdownPreview ? markdownViewMode : undefined}
+        onMarkdownViewModeChange={onMarkdownViewModeChange}
+        filePreviewOpenUrl={filePreviewOpenUrl}
+      />
+
+      <div key={activeTabId} className="flex-1 min-h-0 overflow-hidden">
+        {previewTarget.kind === 'app' ? (
+          previewLoading ? (
+            <div className="flex h-full w-full items-center justify-center bg-muted/30">
+              <div className="flex flex-col items-center gap-3">
+                <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">Loading preview...</span>
+              </div>
+            </div>
+          ) : (
+            <iframe
+              ref={iframeRef}
+              key={iframeKey}
+              src={appPreviewUrl || 'about:blank'}
+              className="h-full w-full bg-white"
+              title="Deployed App Preview"
+            />
+          )
+        ) : (
+          <div className={cn('h-full', !isNotebookPreview && 'p-3')}>
+            <FilePreviewContent
+              filename={previewFileName}
+              previewUrl={filePreviewUrl}
+              contentType={previewTarget.contentType}
+              layout="panel"
+              notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
+              markdownViewMode={isMarkdownPreview ? markdownViewMode : undefined}
+            />
+          </div>
+        )}
+      </div>
+    </>
+  );
+});
+
 
 
 export default function Chat({
@@ -524,6 +693,8 @@ export default function Chat({
   initialMessages,
   threadTitle,
   initialPreviewTarget,
+  initialPreviewTabs,
+  initialActiveTabId,
   isNewThread = false,
   hostname,
   orgSlug,
@@ -545,6 +716,14 @@ export default function Chat({
   const parsedInitialMessages = useMemo(
     () => (initialMessages ?? []).map(msg => ({ ...msg, content: parseMessageContent(msg.content) })),
     [initialMessages]
+  );
+  const initialPreviewSession = useMemo(
+    () => normalizePreviewSessionState(
+      initialPreviewTabs,
+      initialActiveTabId,
+      initialPreviewTarget
+    ),
+    [initialPreviewTabs, initialActiveTabId, initialPreviewTarget]
   );
 
   // Local state for messages, streaming, and loading
@@ -699,13 +878,8 @@ export default function Chat({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentPreviewUrlsRef = useRef<Set<string>>(new Set());
   const [isDragOver, setIsDragOver] = useState(false);
-  const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(() => {
-    if (!initialPreviewTarget) return [];
-    return [{ id: getPreviewTabId(initialPreviewTarget), target: initialPreviewTarget }];
-  });
-  const [activeTabId, setActiveTabId] = useState<string | null>(() => (
-    initialPreviewTarget ? getPreviewTabId(initialPreviewTarget) : null
-  ));
+  const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(() => initialPreviewSession.tabs);
+  const [activeTabId, setActiveTabId] = useState<string | null>(() => initialPreviewSession.activeTabId);
   const previewTabsRef = useRef<PreviewTab[]>(previewTabs);
   const activeTabIdRef = useRef<string | null>(activeTabId);
   const activeTab = useMemo(
@@ -772,21 +946,10 @@ export default function Chat({
   }, []);
 
   useEffect(() => {
-    if (initialPreviewTarget) {
-      const tab = {
-        id: getPreviewTabId(initialPreviewTarget),
-        target: initialPreviewTarget,
-      };
-      previewTabsRef.current = [tab];
-      setPreviewTabs([tab]);
-      activeTabIdRef.current = tab.id;
-      setActiveTabId(tab.id);
-    } else {
-      previewTabsRef.current = [];
-      setPreviewTabs([]);
-      activeTabIdRef.current = null;
-      setActiveTabId(null);
-    }
+    previewTabsRef.current = initialPreviewSession.tabs;
+    setPreviewTabs(initialPreviewSession.tabs);
+    activeTabIdRef.current = initialPreviewSession.activeTabId;
+    setActiveTabId(initialPreviewSession.activeTabId);
 
     setTabIframeKeys({});
     setTabFilePreviewKeys({});
@@ -796,7 +959,7 @@ export default function Chat({
     previewVersionRef.current = 0;
     clearAllIframeRefreshTimeouts();
     setMobileView('chat');
-  }, [threadId, initialPreviewTarget, clearAllIframeRefreshTimeouts]);
+  }, [threadId, clearAllIframeRefreshTimeouts]);
 
   useEffect(() => {
     if (!threadId) {
@@ -985,53 +1148,41 @@ export default function Chat({
     }));
   }, [threadId]);
 
-  const openTabForTarget = useCallback((target: PreviewTarget) => {
-    const id = getPreviewTabId(target);
-    // Local tab state only. Callers handle DO sync when needed.
-    const prevTabs = previewTabsRef.current;
-    const existing = prevTabs.find((tab) => tab.id === id);
-    const nextTabs = existing
-      ? prevTabs.map((tab) => (tab.id === id ? { ...tab, target } : tab))
-      : [...prevTabs, { id, target }];
+  const syncPreviewTabsStateBestEffort = useCallback((
+    nextTabs: PreviewTab[],
+    nextActiveTabId: string | null,
+    sendLegacyTarget = true
+  ) => {
+    if (!threadId) return;
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+    socket.send(JSON.stringify({
+      type: 'set_preview_tabs_state',
+      tabs: nextTabs.map((tab) => tab.target),
+      activeTabId: nextActiveTabId,
+      threadId,
+    }));
+
+    if (sendLegacyTarget) {
+      const nextActiveTarget = nextActiveTabId
+        ? (nextTabs.find((tab) => tab.id === nextActiveTabId)?.target ?? null)
+        : null;
+      syncPreviewTargetBestEffort(nextActiveTarget);
+    }
+  }, [threadId, syncPreviewTargetBestEffort]);
+
+  const setLocalPreviewSessionState = useCallback((
+    nextTabs: PreviewTab[],
+    nextActiveTabId: string | null
+  ) => {
     previewTabsRef.current = nextTabs;
     setPreviewTabs(nextTabs);
-    activeTabIdRef.current = id;
-    setActiveTabId(id);
+    activeTabIdRef.current = nextActiveTabId;
+    setActiveTabId(nextActiveTabId);
   }, []);
 
-  const selectTab = useCallback((tabId: string) => {
-    activeTabIdRef.current = tabId;
-    setActiveTabId(tabId);
-    const nextActiveTab = previewTabsRef.current.find((tab) => tab.id === tabId);
-    if (nextActiveTab) {
-      syncPreviewTargetBestEffort(nextActiveTab.target);
-    }
-  }, [syncPreviewTargetBestEffort]);
-
-  const closeTab = useCallback((tabId: string) => {
-    const prevTabs = previewTabsRef.current;
-    const closingTabIndex = prevTabs.findIndex((tab) => tab.id === tabId);
-    if (closingTabIndex === -1) return;
-
-    const nextTabs = prevTabs.filter((tab) => tab.id !== tabId);
-    previewTabsRef.current = nextTabs;
-    setPreviewTabs(nextTabs);
-
-    if (tabId === activeTabIdRef.current) {
-      if (!nextTabs.length) {
-        activeTabIdRef.current = null;
-        setActiveTabId(null);
-        setMobileView('chat');
-        syncPreviewTargetBestEffort(null);
-      } else {
-        const nextIndex = Math.min(closingTabIndex, nextTabs.length - 1);
-        const nextActiveTab = nextTabs[nextIndex];
-        activeTabIdRef.current = nextActiveTab.id;
-        setActiveTabId(nextActiveTab.id);
-        syncPreviewTargetBestEffort(nextActiveTab.target);
-      }
-    }
-
+  const cleanupClosedTabState = useCallback((tabId: string) => {
     setTabIframeKeys((prev) => {
       if (!(tabId in prev)) return prev;
       const next = { ...prev };
@@ -1068,15 +1219,86 @@ export default function Chat({
       clearTimeout(timeout);
       delete iframeRefreshTimeoutsRef.current[tabId];
     }
-  }, [syncPreviewTargetBestEffort]);
+  }, []);
+
+  const openTabForTarget = useCallback((target: PreviewTarget, options?: { sync?: boolean }) => {
+    const id = getPreviewTabId(target);
+    const prevTabs = previewTabsRef.current;
+    const existing = prevTabs.find((tab) => tab.id === id);
+    const nextTabs = existing
+      ? prevTabs.map((tab) => (tab.id === id ? { ...tab, target } : tab))
+      : [...prevTabs, { id, target }];
+    setLocalPreviewSessionState(nextTabs, id);
+    if (options?.sync) {
+      syncPreviewTabsStateBestEffort(nextTabs, id);
+    }
+  }, [setLocalPreviewSessionState, syncPreviewTabsStateBestEffort]);
+
+  const selectTab = useCallback((tabId: string) => {
+    const nextActiveTab = previewTabsRef.current.find((tab) => tab.id === tabId);
+    if (!nextActiveTab) return;
+    setLocalPreviewSessionState(previewTabsRef.current, tabId);
+    syncPreviewTabsStateBestEffort(previewTabsRef.current, tabId);
+  }, [setLocalPreviewSessionState, syncPreviewTabsStateBestEffort]);
+
+  const closeTab = useCallback((tabId: string) => {
+    const prevTabs = previewTabsRef.current;
+    const closingTabIndex = prevTabs.findIndex((tab) => tab.id === tabId);
+    if (closingTabIndex === -1) return;
+
+    const nextTabs = prevTabs.filter((tab) => tab.id !== tabId);
+    let nextActiveTabId = activeTabIdRef.current;
+
+    if (tabId === activeTabIdRef.current) {
+      if (!nextTabs.length) {
+        nextActiveTabId = null;
+        setMobileView('chat');
+      } else {
+        const nextIndex = Math.min(closingTabIndex, nextTabs.length - 1);
+        const nextActiveTab = nextTabs[nextIndex];
+        nextActiveTabId = nextActiveTab.id;
+      }
+    }
+
+    setLocalPreviewSessionState(nextTabs, nextActiveTabId);
+    syncPreviewTabsStateBestEffort(nextTabs, nextActiveTabId);
+    cleanupClosedTabState(tabId);
+  }, [setLocalPreviewSessionState, syncPreviewTabsStateBestEffort, cleanupClosedTabState]);
 
   const handleRealtimeSideChannelEvent = useCallback((data: any) => {
     if (data.type === 'preview_state') {
-      const nextTarget = coercePreviewTarget(data.target);
       const newVersion = typeof data.version === 'number' ? data.version : 0;
       const hasVersionBump = newVersion > previewVersionRef.current;
       previewVersionRef.current = newVersion;
 
+      const hasTabsPayload = Array.isArray(data.tabs) || data.activeTabId !== undefined;
+      if (hasTabsPayload) {
+        const nextSession = normalizePreviewSessionState(data.tabs, data.activeTabId, data.target);
+        setLocalPreviewSessionState(nextSession.tabs, nextSession.activeTabId);
+
+        if (!nextSession.target || !nextSession.activeTabId) {
+          return;
+        }
+
+        const nextActiveId = nextSession.activeTabId;
+        if (nextSession.target.kind === 'app' && hasVersionBump) {
+          const existingTimeout = iframeRefreshTimeoutsRef.current[nextActiveId];
+          if (existingTimeout) {
+            clearTimeout(existingTimeout);
+          }
+          setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: true }));
+          iframeRefreshTimeoutsRef.current[nextActiveId] = setTimeout(() => {
+            setTabAppLoading((prev) => ({ ...prev, [nextActiveId]: false }));
+            bumpIframeKey(nextActiveId);
+            delete iframeRefreshTimeoutsRef.current[nextActiveId];
+          }, 1500);
+        } else if (nextSession.target.kind === 'file' && hasVersionBump) {
+          bumpFilePreviewKey(nextActiveId);
+        }
+        return;
+      }
+
+      const nextTarget = coercePreviewTarget(data.target);
       if (!nextTarget) {
         // Keep client tab state even if the server has no active target.
         return;
@@ -1126,7 +1348,12 @@ export default function Chat({
         message: data.message as string | undefined,
       });
     }
-  }, [openTabForTarget, bumpIframeKey, bumpFilePreviewKey]);
+  }, [
+    openTabForTarget,
+    setLocalPreviewSessionState,
+    bumpIframeKey,
+    bumpFilePreviewKey,
+  ]);
 
   // WebSocket connection management
   const connectWebSocket = useCallback((id: string, isReconnect = false) => {
@@ -2596,17 +2823,14 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
   }, [mcpBugReportPrompt, deployedApp, resolvedWorkspaceId, threadId, submitBugReport]);
 
   const resetPreviewTabsState = useCallback(() => {
-    previewTabsRef.current = [];
-    setPreviewTabs([]);
-    activeTabIdRef.current = null;
-    setActiveTabId(null);
+    setLocalPreviewSessionState([], null);
     setTabIframeKeys({});
     setTabFilePreviewKeys({});
     setTabNotebookViewModes({});
     setTabMarkdownViewModes({});
     setTabAppLoading({});
     clearAllIframeRefreshTimeouts();
-  }, [clearAllIframeRefreshTimeouts]);
+  }, [setLocalPreviewSessionState, clearAllIframeRefreshTimeouts]);
 
   const setPreviewTargetForThread = useCallback((target: PreviewTarget | null) => {
     if (!threadId) return;
@@ -2622,16 +2846,20 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       return;
     }
 
-    socket.send(JSON.stringify({
-      type: 'set_preview_target',
-      target,
-      threadId,
-    }));
-
-    if (target) {
-      openTabForTarget(target);
+    if (target === null) {
+      resetPreviewTabsState();
+      syncPreviewTabsStateBestEffort([], null);
+      setMobileView('chat');
+      return;
     }
-  }, [threadId, resetPreviewTabsState, openTabForTarget]);
+
+    openTabForTarget(target, { sync: true });
+  }, [
+    threadId,
+    resetPreviewTabsState,
+    openTabForTarget,
+    syncPreviewTabsStateBestEffort,
+  ]);
 
   const openPreviewTarget = useCallback((target: PreviewTarget) => {
     setPreviewTargetForThread(target);
@@ -2640,9 +2868,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
 
   const clearPreviewTarget = useCallback(() => {
     setPreviewTargetForThread(null);
-    resetPreviewTabsState();
-    setMobileView('chat');
-  }, [setPreviewTargetForThread, resetPreviewTabsState]);
+  }, [setPreviewTargetForThread]);
 
   function sendMessage() {
     if (!input.trim() || !shouldShowChat || !resolvedWorkspaceId || !threadId) {
@@ -2795,92 +3021,75 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     return `/computer/${previewTarget.workspaceId}?file=${encodeURIComponent(previewTarget.path)}`;
   }, [previewTarget]);
 
+  const handlePreviewRefresh = useCallback(() => {
+    if (!previewTarget) return;
+    if (previewTarget.kind === 'app') {
+      refreshActiveIframe();
+      return;
+    }
+    refreshActiveFilePreview();
+  }, [previewTarget, refreshActiveIframe, refreshActiveFilePreview]);
+
+  const handlePreviewOpenExternal = useCallback(() => {
+    if (!previewTarget) return;
+    if (previewTarget.kind === 'app') {
+      if (!appPreviewVanityUrl) return;
+      window.open(appPreviewVanityUrl, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (!fileComputerOpenUrl) return;
+    window.open(fileComputerOpenUrl, '_blank', 'noopener,noreferrer');
+  }, [previewTarget, appPreviewVanityUrl, fileComputerOpenUrl]);
+
+  const handlePreviewBugReportOpen = useCallback(() => {
+    setBugReportOpen(true);
+    setBugReportStatus('idle');
+    setBugReportError(null);
+  }, []);
+
   const showMobilePreview = previewTabs.length > 0 && mobileView === 'preview';
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
-  const previewPanelBody = previewTabs.length > 0 && previewTarget ? (
-    <>
-      <PreviewTabRow
-        tabs={previewTabs}
-        activeTabId={activeTabId!}
-        onTabSelect={selectTab}
-        onTabClose={closeTab}
+  const previewShareButton = useMemo(() => {
+    if (previewTarget?.kind !== 'app') return undefined;
+    return (
+      <ShareStatusButton
+        threadId={threadId}
+        scriptName={previewTarget.scriptName}
+        isPublic={appIsPublic}
+        isAdmin={Boolean(isAdmin)}
+        onStatusChange={setAppIsPublic}
       />
-
-      <PreviewToolbar
-        activeTarget={previewTarget}
-        vanityUrl={appPreviewVanityUrl}
-        vanityHost={previewDomains.vanityHost}
-        onRefresh={() => {
-          if (previewTarget.kind === 'app') {
-            refreshActiveIframe();
-          } else {
-            refreshActiveFilePreview();
-          }
-        }}
-        onOpenExternal={() => {
-          if (previewTarget.kind === 'app') {
-            if (!appPreviewVanityUrl) return;
-            window.open(appPreviewVanityUrl, '_blank', 'noopener,noreferrer');
-            return;
-          }
-          if (!fileComputerOpenUrl) return;
-          window.open(fileComputerOpenUrl, '_blank', 'noopener,noreferrer');
-        }}
-        onBugReport={() => {
-          setBugReportOpen(true);
-          setBugReportStatus('idle');
-          setBugReportError(null);
-        }}
-        appShareButton={previewTarget.kind === 'app' ? (
-          <ShareStatusButton
-            threadId={threadId}
-            scriptName={previewTarget.scriptName}
-            isPublic={appIsPublic}
-            isAdmin={Boolean(isAdmin)}
-            onStatusChange={setAppIsPublic}
-          />
-        ) : undefined}
-        notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
-        onNotebookViewModeChange={setActiveNotebookViewMode}
-        markdownViewMode={isMarkdownPreview ? markdownViewMode : undefined}
-        onMarkdownViewModeChange={setActiveMarkdownViewMode}
-        filePreviewOpenUrl={filePreviewOpenUrl}
-      />
-
-      <div key={activeTabId} className="flex-1 min-h-0 overflow-hidden">
-        {previewTarget.kind === 'app' ? (
-          previewLoading ? (
-            <div className="flex h-full w-full items-center justify-center bg-muted/30">
-              <div className="flex flex-col items-center gap-3">
-                <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-                <span className="text-sm text-muted-foreground">Loading preview...</span>
-              </div>
-            </div>
-          ) : (
-            <iframe
-              ref={iframeRef}
-              key={iframeKey}
-              src={appPreviewUrl || 'about:blank'}
-              className="h-full w-full bg-white"
-              title="Deployed App Preview"
-            />
-          )
-        ) : (
-          <div className={cn('h-full', !isNotebookPreview && 'p-3')}>
-            <FilePreviewContent
-              filename={previewFileName}
-              previewUrl={filePreviewUrl}
-              contentType={previewTarget.contentType}
-              layout="panel"
-              notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
-              markdownViewMode={isMarkdownPreview ? markdownViewMode : undefined}
-            />
-          </div>
-        )}
-      </div>
-    </>
-  ) : null;
+    );
+  }, [previewTarget, threadId, appIsPublic, isAdmin, setAppIsPublic]);
+  const previewPanelBody = (
+    <PreviewPanelShell
+      previewTabs={previewTabs}
+      activeTabId={activeTabId}
+      previewTarget={previewTarget}
+      onTabSelect={selectTab}
+      onTabClose={closeTab}
+      onRefresh={handlePreviewRefresh}
+      onOpenExternal={handlePreviewOpenExternal}
+      onBugReportOpen={handlePreviewBugReportOpen}
+      appShareButton={previewShareButton}
+      notebookViewMode={notebookViewMode}
+      onNotebookViewModeChange={setActiveNotebookViewMode}
+      markdownViewMode={markdownViewMode}
+      onMarkdownViewModeChange={setActiveMarkdownViewMode}
+      filePreviewOpenUrl={filePreviewOpenUrl}
+      previewLoading={previewLoading}
+      iframeRef={iframeRef}
+      iframeKey={iframeKey}
+      appPreviewUrl={appPreviewUrl}
+      previewFileName={previewFileName}
+      filePreviewUrl={filePreviewUrl}
+      isNotebookPreview={isNotebookPreview}
+      isMarkdownPreview={isMarkdownPreview}
+      vanityUrl={appPreviewVanityUrl}
+      vanityHost={previewDomains.vanityHost}
+    />
+  );
 
   const chatPanelContent = (
     <>
