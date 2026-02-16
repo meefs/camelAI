@@ -647,6 +647,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   async setPreviewTarget(target: PreviewTarget | null): Promise<void> {
+    const previousActiveTabId = this.previewActiveTabId;
     const normalizedTarget = this.normalizePreviewTarget(target);
     if (!normalizedTarget) {
       this.previewTabs = [];
@@ -673,7 +674,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.previewTarget = normalizedTarget;
     this.previewVersion++;
     this.persistPreviewState();
-    this.broadcastPreviewState();
+    this.broadcastPreviewState({
+      refreshTabId: previousActiveTabId === id ? id : undefined,
+    });
   }
 
   async setPreviewTabsState(
@@ -707,25 +710,38 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   async setPreviewAppVisibility(scriptName: string, isPublic: boolean): Promise<void> {
+    let tabsChanged = false;
+    const nextTabs = this.previewTabs.map((tabTarget) => {
+      if (tabTarget.kind !== 'app' || tabTarget.scriptName !== scriptName) {
+        return tabTarget;
+      }
+      if (tabTarget.isPublic === isPublic) {
+        return tabTarget;
+      }
+      tabsChanged = true;
+      return { ...tabTarget, isPublic };
+    });
+
+    let targetChanged = false;
+    let nextTarget = this.previewTarget;
     if (
-      this.previewTarget?.kind !== 'app' ||
-      this.previewTarget.scriptName !== scriptName
+      nextTarget?.kind === 'app' &&
+      nextTarget.scriptName === scriptName &&
+      nextTarget.isPublic !== isPublic
     ) {
+      targetChanged = true;
+      nextTarget = {
+        ...nextTarget,
+        isPublic,
+      };
+    }
+
+    if (!tabsChanged && !targetChanged) {
       return;
     }
 
-    this.previewTarget = {
-      ...this.previewTarget,
-      isPublic,
-    };
-
-    const previewTabId = this.getPreviewTabId(this.previewTarget);
-    this.previewTabs = this.previewTabs.map((tabTarget) => {
-      if (this.getPreviewTabId(tabTarget) !== previewTabId || tabTarget.kind !== 'app') {
-        return tabTarget;
-      }
-      return { ...tabTarget, isPublic };
-    });
+    this.previewTabs = nextTabs;
+    this.previewTarget = nextTarget;
 
     this.persistPreviewState(false);
     this.broadcastPreviewState();
@@ -854,6 +870,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       tabs: this.previewTabs,
       activeTabId: this.previewActiveTabId,
       version: this.previewVersion,
+      refreshTabId: null,
     });
     this.sendPendingPromptsToWebSocket(ws);
 
@@ -1097,13 +1114,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private broadcastPreviewState(): void {
+  private broadcastPreviewState(options?: { refreshTabId?: string | null }): void {
+    const refreshTabId = typeof options?.refreshTabId === 'string' && options.refreshTabId
+      ? options.refreshTabId
+      : null;
     this.broadcastRealtime({
       type: 'preview_state',
       target: this.previewTarget,
       tabs: this.previewTabs,
       activeTabId: this.previewActiveTabId,
       version: this.previewVersion,
+      refreshTabId,
     });
   }
 

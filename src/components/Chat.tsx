@@ -1270,6 +1270,8 @@ export default function Chat({
       const newVersion = typeof data.version === 'number' ? data.version : 0;
       const hasVersionBump = newVersion > previewVersionRef.current;
       previewVersionRef.current = newVersion;
+      const hasRefreshHint = data.refreshTabId !== undefined;
+      const refreshTabId = typeof data.refreshTabId === 'string' ? data.refreshTabId : null;
 
       const hasTabsPayload = Array.isArray(data.tabs) || data.activeTabId !== undefined;
       if (hasTabsPayload) {
@@ -1281,7 +1283,11 @@ export default function Chat({
         }
 
         const nextActiveId = nextSession.activeTabId;
-        if (nextSession.target.kind === 'app' && hasVersionBump) {
+        const shouldRefreshActiveTab = refreshTabId
+          ? refreshTabId === nextActiveId
+          : (!hasRefreshHint && hasVersionBump);
+
+        if (nextSession.target.kind === 'app' && shouldRefreshActiveTab) {
           const existingTimeout = iframeRefreshTimeoutsRef.current[nextActiveId];
           if (existingTimeout) {
             clearTimeout(existingTimeout);
@@ -1292,7 +1298,7 @@ export default function Chat({
             bumpIframeKey(nextActiveId);
             delete iframeRefreshTimeoutsRef.current[nextActiveId];
           }, 1500);
-        } else if (nextSession.target.kind === 'file' && hasVersionBump) {
+        } else if (nextSession.target.kind === 'file' && shouldRefreshActiveTab) {
           bumpFilePreviewKey(nextActiveId);
         }
         return;
@@ -1306,8 +1312,11 @@ export default function Chat({
 
       openTabForTarget(nextTarget);
       const nextTabId = getPreviewTabId(nextTarget);
+      const shouldRefreshTab = refreshTabId
+        ? refreshTabId === nextTabId
+        : (!hasRefreshHint && hasVersionBump);
 
-      if (nextTarget.kind === 'app' && hasVersionBump) {
+      if (nextTarget.kind === 'app' && shouldRefreshTab) {
         const existingTimeout = iframeRefreshTimeoutsRef.current[nextTabId];
         if (existingTimeout) {
           clearTimeout(existingTimeout);
@@ -1318,7 +1327,7 @@ export default function Chat({
           bumpIframeKey(nextTabId);
           delete iframeRefreshTimeoutsRef.current[nextTabId];
         }, 1500);
-      } else if (nextTarget.kind === 'file' && hasVersionBump) {
+      } else if (nextTarget.kind === 'file' && shouldRefreshTab) {
         bumpFilePreviewKey(nextTabId);
       }
 
