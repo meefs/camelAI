@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/chiridion/sandbox-host/internal/app"
 	"github.com/chiridion/sandbox-host/internal/container"
@@ -28,7 +29,7 @@ func main() {
 
 	overlays := overlay.NewManagerFromEnv()
 	containers := container.NewManager(overlays, stateStore)
-	fsManager := fsops.NewManager("")
+	fsManager := fsops.NewManager(os.Getenv("WORKSPACES_ROOT"))
 	server := app.NewServer(cfg, containers, overlays, fsManager, stateStore)
 
 	go app.MountR2OnHost()

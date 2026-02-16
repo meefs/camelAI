@@ -2,6 +2,8 @@ package app
 
 import (
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 )
@@ -27,8 +29,8 @@ type Config struct {
 }
 
 func LoadConfig() Config {
-	controlPort := envInt("PORT", 80)
-	proxyPort := envInt("SANDBOX_PROXY_PORT", 8081)
+	controlPort := envInt("PORT", defaultByPlatform(80, 4400))
+	proxyPort := envInt("SANDBOX_PROXY_PORT", defaultByPlatform(8081, 4401))
 	idleSecs := maxInt(10, envInt("SANDBOX_HOST_IDLE_TIMEOUT_SECS", 120))
 	activeTTLms := maxInt(30_000, envInt("PROXY_SESSION_ACTIVE_TTL_MS", 30*60_000))
 	closeGraceMs := maxInt(5_000, envInt("PROXY_SESSION_CLOSE_GRACE_MS", 10*60_000))
@@ -51,8 +53,26 @@ func LoadConfig() Config {
 		HeaderWorkerBaseURL:        "x-chiridion-worker-base-url",
 		HeaderThreadID:             "x-chiridion-thread-id",
 		HeaderSandboxSecret:        "x-sandbox-secret",
-		StateDBPath:                envString("SANDBOX_HOST_STATE_DB", "/mnt/nvme/.sandbox-host/state.db"),
+		StateDBPath:                envString("SANDBOX_HOST_STATE_DB", defaultStateDBPath()),
 	}
+}
+
+func defaultByPlatform(linuxValue, otherValue int) int {
+	if runtime.GOOS == "linux" {
+		return linuxValue
+	}
+	return otherValue
+}
+
+func defaultStateDBPath() string {
+	if runtime.GOOS == "linux" {
+		return "/mnt/nvme/.sandbox-host/state.db"
+	}
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return ".sandbox-host/state.db"
+	}
+	return filepath.Join(wd, ".sandbox-host", "state.db")
 }
 
 func envString(key, fallback string) string {

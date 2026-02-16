@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ type ManagerConfig struct {
 	JFSRoot        string
 	NVMERoot       string
 	WorkspacesRoot string
+	Backend        string
 	SyncInterval   time.Duration
 	SyncTimeout    time.Duration
 	JFSMetaURL     string
@@ -37,16 +39,28 @@ type Mount struct {
 }
 
 type Manager struct {
-	cfg    ManagerConfig
-	mu     sync.RWMutex
-	mounts map[string]*Mount
+	cfg              ManagerConfig
+	useDirectBackend bool
+	mu               sync.RWMutex
+	mounts           map[string]*Mount
 }
 
 func NewManagerFromEnv() *Manager {
+	defaultBackend := "overlay"
+	if runtime.GOOS != "linux" {
+		defaultBackend = "direct"
+	}
+	backend := strings.ToLower(strings.TrimSpace(envString("OVERLAY_BACKEND", defaultBackend)))
+	if backend != "overlay" && backend != "direct" {
+		log.Printf("[Overlay] ignoring unsupported OVERLAY_BACKEND=%q; using %q", backend, defaultBackend)
+		backend = defaultBackend
+	}
+
 	cfg := ManagerConfig{
-		JFSRoot:        envString("JFS_ROOT", "/mnt/juicefs"),
-		NVMERoot:       envString("NVME_ROOT", "/mnt/nvme"),
-		WorkspacesRoot: envString("WORKSPACES_ROOT", "/mnt/workspaces"),
+		JFSRoot:        envString("JFS_ROOT", defaultJFSRoot()),
+		NVMERoot:       envString("NVME_ROOT", defaultNVMERoot()),
+		WorkspacesRoot: envString("WORKSPACES_ROOT", defaultWorkspaceRoot()),
+		Backend:        backend,
 		SyncInterval:   time.Duration(envInt("OVERLAY_SYNC_INTERVAL_MS", 60_000)) * time.Millisecond,
 		SyncTimeout:    10 * time.Minute,
 	}
@@ -68,9 +82,15 @@ func NewManagerFromEnv() *Manager {
 }
 
 func NewManager(cfg ManagerConfig) *Manager {
+	useDirectBackend := strings.EqualFold(cfg.Backend, "direct")
 	m := &Manager{
-		cfg:    cfg,
-		mounts: make(map[string]*Mount),
+		cfg:              cfg,
+		useDirectBackend: useDirectBackend,
+		mounts:           make(map[string]*Mount),
+	}
+	if useDirectBackend {
+		log.Printf("[Overlay] running in direct workspace mode (overlayfs + juicefs sync disabled)")
+		return m
 	}
 	go m.runBackgroundSync()
 	log.Printf("[Overlay] background sync started (interval=%ds, engine=%s)", int(cfg.SyncInterval/time.Second), engineName(cfg.JFSMetaURL))
@@ -106,7 +126,7 @@ func (m *Manager) hydrateMountFromFS(name string) *Mount {
 	}
 
 	candidate := m.mountRecord(name)
-	if !isMounted(candidate.MergedDir) {
+	if !m.isWorkspaceReady(candidate.MergedDir) {
 		return nil
 	}
 
@@ -124,26 +144,33 @@ func (m *Manager) Ensure(name string) (string, error) {
 	m.mu.RLock()
 	existing := m.mounts[name]
 	m.mu.RUnlock()
-	if existing != nil && isMounted(existing.MergedDir) {
+	if existing != nil && m.isWorkspaceReady(existing.MergedDir) {
 		return existing.MergedDir, nil
 	}
 
 	mount := m.mountRecord(name)
-	for _, dir := range []string{mount.LowerDir, mount.UpperDir, mount.WorkDir, mount.MergedDir} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+	if m.useDirectBackend {
+		if err := os.MkdirAll(mount.MergedDir, 0o755); err != nil {
 			return "", err
 		}
-	}
-
-	_ = os.Chown(mount.LowerDir, 1001, 1001)
-	_ = os.Chown(mount.UpperDir, 1001, 1001)
-
-	if !isMounted(mount.MergedDir) {
-		opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", mount.LowerDir, mount.UpperDir, mount.WorkDir)
-		if _, err := runCommand(30*time.Second, "mount", "-t", "overlay", "overlay", "-o", opts, mount.MergedDir); err != nil {
-			return "", err
+		_ = os.Chown(mount.MergedDir, 1001, 1001)
+	} else {
+		for _, dir := range []string{mount.LowerDir, mount.UpperDir, mount.WorkDir, mount.MergedDir} {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return "", err
+			}
 		}
-		log.Printf("[Overlay] mounted %s: lower=%s upper=%s merged=%s", name, mount.LowerDir, mount.UpperDir, mount.MergedDir)
+
+		_ = os.Chown(mount.LowerDir, 1001, 1001)
+		_ = os.Chown(mount.UpperDir, 1001, 1001)
+
+		if !isMounted(mount.MergedDir) {
+			opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", mount.LowerDir, mount.UpperDir, mount.WorkDir)
+			if _, err := runCommand(30*time.Second, "mount", "-t", "overlay", "overlay", "-o", opts, mount.MergedDir); err != nil {
+				return "", err
+			}
+			log.Printf("[Overlay] mounted %s: lower=%s upper=%s merged=%s", name, mount.LowerDir, mount.UpperDir, mount.MergedDir)
+		}
 	}
 
 	m.mu.Lock()
@@ -154,6 +181,10 @@ func (m *Manager) Ensure(name string) (string, error) {
 }
 
 func (m *Manager) Sync(name string) error {
+	if m.useDirectBackend {
+		return nil
+	}
+
 	mount := m.getMount(name)
 	if mount == nil {
 		return nil
@@ -192,7 +223,7 @@ func (m *Manager) Has(name string) bool {
 	if mount == nil {
 		mount = m.hydrateMountFromFS(name)
 	}
-	return mount != nil && isMounted(mount.MergedDir)
+	return mount != nil && m.isWorkspaceReady(mount.MergedDir)
 }
 
 func (m *Manager) ListMountedNames() ([]string, error) {
@@ -214,14 +245,14 @@ func (m *Manager) ListMountedNames() ([]string, error) {
 		if mount == nil {
 			mount = m.hydrateMountFromFS(name)
 		}
-		if mount != nil && isMounted(mount.MergedDir) {
+		if mount != nil && m.isWorkspaceReady(mount.MergedDir) {
 			names[name] = struct{}{}
 		}
 	}
 
 	m.mu.Lock()
 	for name, mount := range m.mounts {
-		if !isMounted(mount.MergedDir) {
+		if !m.isWorkspaceReady(mount.MergedDir) {
 			delete(m.mounts, name)
 			continue
 		}
@@ -237,6 +268,10 @@ func (m *Manager) ListMountedNames() ([]string, error) {
 }
 
 func (m *Manager) Reclaim(name string, isSafe func() bool) (bool, error) {
+	if m.useDirectBackend {
+		return false, nil
+	}
+
 	mount := m.getMount(name)
 	if mount == nil {
 		mount = m.hydrateMountFromFS(name)
@@ -315,6 +350,10 @@ func (m *Manager) getMount(name string) *Mount {
 }
 
 func (m *Manager) runBackgroundSync() {
+	if m.useDirectBackend {
+		return
+	}
+
 	ticker := time.NewTicker(m.cfg.SyncInterval)
 	defer ticker.Stop()
 
@@ -329,7 +368,7 @@ func (m *Manager) runBackgroundSync() {
 		m.mu.RUnlock()
 
 		for _, mount := range mounts {
-			if !isMounted(mount.MergedDir) {
+			if !m.isWorkspaceReady(mount.MergedDir) {
 				m.mu.Lock()
 				delete(m.mounts, mount.Name)
 				m.mu.Unlock()
@@ -377,6 +416,14 @@ func (m *Manager) runJfsSync(srcDir, dstSubPath string) error {
 	return nil
 }
 
+func (m *Manager) isWorkspaceReady(path string) bool {
+	if m.useDirectBackend {
+		info, err := os.Stat(path)
+		return err == nil && info.IsDir()
+	}
+	return isMounted(path)
+}
+
 func isMounted(path string) bool {
 	_, err := runCommand(30*time.Second, "mountpoint", "-q", path)
 	return err == nil
@@ -411,4 +458,33 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func defaultLocalRoot() string {
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return ".sandbox-host"
+	}
+	return filepath.Join(wd, ".sandbox-host")
+}
+
+func defaultJFSRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/mnt/juicefs"
+	}
+	return filepath.Join(defaultLocalRoot(), "juicefs")
+}
+
+func defaultNVMERoot() string {
+	if runtime.GOOS == "linux" {
+		return "/mnt/nvme"
+	}
+	return filepath.Join(defaultLocalRoot(), "nvme")
+}
+
+func defaultWorkspaceRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/mnt/workspaces"
+	}
+	return filepath.Join(defaultLocalRoot(), "workspaces")
 }
