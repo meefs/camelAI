@@ -52,7 +52,7 @@ describe('email.server', () => {
 
     expect(result).toEqual({
       status: 'skipped',
-      reason: 'EMAIL binding is not configured',
+      reason: 'No email provider configured (Gmail API or Cloudflare EMAIL binding)',
     });
   });
 

@@ -639,9 +639,17 @@ export async function archiveWorkspace(
       const orgs = await userStub.getOrgs();
       const orgEntry = orgs.find((o) => o.org_id === info.org_id);
       if (orgEntry?.last_workspace_id === workspaceId) {
-        // Reassign to a workspace the user can actually access (or null if none remain)
-        const userWorkspaces = await listUserWorkspaces(env, member.user_id, info.org_id);
-        const newWorkspaceId = userWorkspaces[0]?.id ?? null;
+        // Reassign to the first active workspace where access is not explicitly blocked.
+        const workspaceRows = await orgStub.getWorkspaces();
+        let newWorkspaceId: string | null = null;
+        for (const workspace of workspaceRows) {
+          const candidateStub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspace.id));
+          const memberAccess = await candidateStub.getMemberAccess(member.user_id);
+          if ((memberAccess?.access_level ?? 'full') !== 'none') {
+            newWorkspaceId = workspace.id;
+            break;
+          }
+        }
         await userStub.setOrgLastWorkspace(info.org_id, newWorkspaceId);
       }
     })

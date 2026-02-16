@@ -371,17 +371,25 @@ export class UserDO extends DurableObject<DOEnv> {
     });
   }
 
+  private getSchemaVersionValue(): number {
+    const storedVersion = this.ctx.storage.kv.get<number>('schemaVersion');
+    if (typeof storedVersion === 'number') {
+      return storedVersion;
+    }
+
+    try {
+      const rows = this.sql.exec<{ version: number }>(
+        'SELECT MAX(version) AS version FROM _schema_version'
+      ).toArray();
+      return rows[0]?.version ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
   private migrate() {
     // Read version from sync KV, falling back to legacy SQL table for existing DOs.
-    let version = this.ctx.storage.kv.get<number>('schemaVersion') ?? null;
-    if (version === null) {
-      try {
-        const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
-        version = rows[0]?.version ?? 0;
-      } catch {
-        version = 0;
-      }
-    }
+    const version = this.getSchemaVersionValue();
 
     if (version < 1) {
       // V1: Fresh start
@@ -758,6 +766,16 @@ export class UserDO extends DurableObject<DOEnv> {
 
     return profile;
   }
+
+  // Test helper RPC: simulate constructor migration path on an existing DO.
+  async remigrate(): Promise<void> {
+    this.migrate();
+  }
+
+  // Test helper RPC: expose the current schema version used by migration logic.
+  async getSchemaVersion(): Promise<number> {
+    return this.getSchemaVersionValue();
+  }
 }
 
 // Organization Durable Object - one per org
@@ -779,7 +797,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     let version = this.ctx.storage.kv.get<number>('schemaVersion') ?? null;
     if (version === null) {
       try {
-        const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+        const rows = this.sql.exec<{ version: number }>('SELECT MAX(version) AS version FROM _schema_version').toArray();
         version = rows[0]?.version ?? 0;
       } catch {
         version = 0;
