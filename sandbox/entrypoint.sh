@@ -15,35 +15,38 @@ access_key_id = ${R2_TEMP_ACCESS_KEY_ID}
 secret_access_key = ${R2_TEMP_SECRET_ACCESS_KEY}
 session_token = ${R2_TEMP_SESSION_TOKEN:-}
 endpoint = ${R2_ENDPOINT}
+no_check_bucket = true
 RCLONEEOF
   chmod 600 /tmp/rclone-r2.conf
 
-  sudo mkdir -p /mnt/user-uploads /mnt/user-outputs
-  sudo chown claude:claude /mnt/user-uploads /mnt/user-outputs
-
   # Mount user-uploads (read-only)
+  # --allow-other + --uid/--gid so claude user can access the mounts
   rclone mount \
     --daemon \
     --config=/tmp/rclone-r2.conf \
     --read-only \
+    --allow-other \
+    --uid=1001 --gid=1001 \
     --dir-cache-time=5s \
     --vfs-cache-mode=full \
     "r2:${R2_BUCKET_NAME}/${PREFIX}/user-uploads" \
-    /mnt/user-uploads 2>/dev/null || echo "[entrypoint] warning: user-uploads mount failed, continuing"
+    /mnt/user-uploads || echo "[entrypoint] warning: user-uploads mount failed, continuing"
 
   # Mount user-outputs (read-write with write-back cache)
   rclone mount \
     --daemon \
     --config=/tmp/rclone-r2.conf \
+    --allow-other \
+    --uid=1001 --gid=1001 \
     --dir-cache-time=5s \
     --vfs-cache-mode=writes \
     --vfs-write-back=0 \
     "r2:${R2_BUCKET_NAME}/${PREFIX}/user-outputs" \
-    /mnt/user-outputs 2>/dev/null || echo "[entrypoint] warning: user-outputs mount failed, continuing"
+    /mnt/user-outputs || echo "[entrypoint] warning: user-outputs mount failed, continuing"
 
   echo "[entrypoint] R2 mounts started for prefix=${PREFIX}"
 else
   echo "[entrypoint] R2 credentials not set, skipping mounts"
 fi
 
-exec bun run /opt/chiridion/control-plane.mjs
+exec su -s /bin/sh claude -c 'exec bun run /opt/chiridion/control-plane.mjs'
