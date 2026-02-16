@@ -109,7 +109,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     let version = this.ctx.storage.kv.get<number>('schemaVersion') ?? null;
     if (version === null) {
       try {
-        const rows = this.sql.exec<{ version: number }>('SELECT version FROM _schema_version LIMIT 1').toArray();
+        const rows = this.sql.exec<{ version: number }>('SELECT MAX(version) AS version FROM _schema_version').toArray();
         version = rows[0]?.version ?? 0;
       } catch {
         version = 0;
