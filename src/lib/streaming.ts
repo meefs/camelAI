@@ -399,10 +399,53 @@ export function mergeTeammateMessages(messages: Message[]): Message[] {
 export function mergeTaskNotifications(messages: Message[]): Message[] {
   const result: Message[] = [];
   let changed = false;
+  const fullToolUseIndex = buildToolUseIndex(messages);
+  const resultAssistantIndexBySourceIndex = new Map<number, number>();
+  const queuedByAssistantSourceIndex = new Map<
+    number,
+    Array<{ sourceMessage: Message; taskBlock: TaskNotificationBlock }>
+  >();
 
-  for (const msg of messages) {
+  const appendTaskBlockToAssistant = (assistantResultIndex: number, taskBlock: TaskNotificationBlock) => {
+    const assistantMsg = result[assistantResultIndex];
+    const existingContent = coerceMessageContent(assistantMsg.content);
+    result[assistantResultIndex] = {
+      ...assistantMsg,
+      content: [...existingContent, taskBlock],
+    };
+  };
+
+  const enqueueForAssistant = (
+    assistantSourceIndex: number,
+    sourceMessage: Message,
+    taskBlock: TaskNotificationBlock
+  ) => {
+    const existing = queuedByAssistantSourceIndex.get(assistantSourceIndex);
+    if (existing) {
+      existing.push({ sourceMessage, taskBlock });
+      return;
+    }
+    queuedByAssistantSourceIndex.set(assistantSourceIndex, [{ sourceMessage, taskBlock }]);
+  };
+
+  const flushQueuedForAssistant = (assistantSourceIndex: number, assistantResultIndex: number) => {
+    const queued = queuedByAssistantSourceIndex.get(assistantSourceIndex);
+    if (!queued || queued.length === 0) return;
+
+    queued.forEach(({ taskBlock }) => {
+      appendTaskBlockToAssistant(assistantResultIndex, taskBlock);
+    });
+    queuedByAssistantSourceIndex.delete(assistantSourceIndex);
+  };
+
+  for (const [sourceIndex, msg] of messages.entries()) {
     if (msg.role !== 'user') {
       result.push(msg);
+      if (msg.role === 'assistant') {
+        const assistantResultIndex = result.length - 1;
+        resultAssistantIndexBySourceIndex.set(sourceIndex, assistantResultIndex);
+        flushQueuedForAssistant(sourceIndex, assistantResultIndex);
+      }
       continue;
     }
 
@@ -422,9 +465,21 @@ export function mergeTaskNotifications(messages: Message[]): Message[] {
 
     const sourceToolUseId = msg.sourceToolUseID;
     const sourceToolEntry = sourceToolUseId
-      ? buildToolUseIndex(result).get(sourceToolUseId)
+      ? fullToolUseIndex.get(sourceToolUseId)
       : undefined;
-    const targetAssistantIndex = sourceToolEntry?.messageIndex ?? findLastAssistantIndex(result);
+
+    if (typeof sourceToolEntry?.messageIndex === 'number') {
+      const resolvedAssistantResultIndex = resultAssistantIndexBySourceIndex.get(sourceToolEntry.messageIndex);
+      if (typeof resolvedAssistantResultIndex === 'number') {
+        appendTaskBlockToAssistant(resolvedAssistantResultIndex, taskBlock);
+      } else {
+        enqueueForAssistant(sourceToolEntry.messageIndex, msg, taskBlock);
+      }
+      changed = true;
+      continue;
+    }
+
+    const targetAssistantIndex = findLastAssistantIndex(result);
 
     if (targetAssistantIndex === -1) {
       result.push({
@@ -438,12 +493,22 @@ export function mergeTaskNotifications(messages: Message[]): Message[] {
       continue;
     }
 
-    const assistantMsg = result[targetAssistantIndex];
-    const existingContent = coerceMessageContent(assistantMsg.content);
-    result[targetAssistantIndex] = {
-      ...assistantMsg,
-      content: [...existingContent, taskBlock],
-    };
+    appendTaskBlockToAssistant(targetAssistantIndex, taskBlock);
+    changed = true;
+  }
+
+  if (queuedByAssistantSourceIndex.size > 0) {
+    queuedByAssistantSourceIndex.forEach(queued => {
+      queued.forEach(({ sourceMessage, taskBlock }) => {
+        result.push({
+          id: `task_notification_${sourceMessage.id}`,
+          thread_id: sourceMessage.thread_id,
+          role: 'assistant',
+          content: [taskBlock],
+          created_at: sourceMessage.created_at,
+        });
+      });
+    });
     changed = true;
   }
 

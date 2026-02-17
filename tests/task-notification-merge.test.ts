@@ -166,6 +166,64 @@ describe('mergeTaskNotifications', () => {
     expect(newBlocks.some(block => block.type === 'task_notification')).toBe(false);
   });
 
+  it('attaches notification to a later assistant turn when source tool_use appears after the notification', () => {
+    const notificationText = makeTaskNotification({
+      taskId: 'task_future',
+      outputFile: '/mnt/user-outputs/task_future.md',
+      status: 'completed',
+      summary: 'Future task finished.',
+    });
+
+    const messages: Message[] = [
+      {
+        id: 'assistant-prev',
+        thread_id: 'thread-1',
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Earlier assistant turn.' },
+          { type: 'tool_use', id: 'tool_prev', name: 'Task', input: { prompt: 'Earlier task' } },
+        ],
+        created_at: 1000,
+      },
+      {
+        id: 'meta-task-future',
+        thread_id: 'thread-1',
+        role: 'user',
+        content: [{ type: 'text', text: notificationText }],
+        created_at: 1100,
+        isMeta: true,
+        sourceToolUseID: 'tool_future',
+      },
+      {
+        id: 'assistant-future',
+        thread_id: 'thread-1',
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Later assistant turn.' },
+          { type: 'tool_use', id: 'tool_future', name: 'Task', input: { prompt: 'Later task' } },
+        ],
+        created_at: 1200,
+      },
+    ];
+
+    const merged = mergeTaskNotifications(messages);
+    expect(merged).toHaveLength(2);
+
+    expect(Array.isArray(merged[0].content)).toBe(true);
+    const firstAssistantBlocks = merged[0].content as ContentBlock[];
+    expect(firstAssistantBlocks.some(block => block.type === 'task_notification')).toBe(false);
+
+    expect(Array.isArray(merged[1].content)).toBe(true);
+    const secondAssistantBlocks = merged[1].content as ContentBlock[];
+    expect(secondAssistantBlocks[2]).toEqual({
+      type: 'task_notification',
+      taskId: 'task_future',
+      outputFile: '/mnt/user-outputs/task_future.md',
+      status: 'completed',
+      summary: 'Future task finished.',
+    });
+  });
+
   it('synthesizes an assistant message when no preceding assistant exists', () => {
     const messages: Message[] = [
       {

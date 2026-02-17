@@ -347,7 +347,13 @@ function extractVegaData(spec: Record<string, unknown>): Record<string, unknown>
 **Plotly data extraction:**
 ```typescript
 function extractPlotlyData(payload: Record<string, unknown>): Record<string, unknown>[] | null {
-  const rawTraces = Array.isArray(payload.data) ? payload.data : [];
+  const figure = (payload.figure as Record<string, unknown> | undefined) ?? undefined;
+  const rawTraces =
+    Array.isArray(payload.data)
+      ? payload.data
+      : Array.isArray(figure?.data)
+        ? (figure.data as unknown[])
+        : [];
   const traces = rawTraces as Record<string, unknown>[];
   if (traces.length === 0) return null;
 
@@ -519,12 +525,12 @@ function getDownloadFormats(target: PreviewTarget): DownloadFormat[] {
 }
 ```
 
-**Add `onPdfExport` prop to `NotebookToolbarActions` and `DownloadButton`:**
+**Add `onNotebookPdfExport` prop to `NotebookToolbarActions` and `DownloadButton`:**
 
 ```typescript
 interface PreviewToolbarProps {
   // ... existing props ...
-  onPdfExport?: () => void;
+  onNotebookPdfExport?: () => void;
 }
 ```
 
@@ -534,11 +540,11 @@ interface PreviewToolbarProps {
 function DownloadButton({
   activeTarget,
   filePreviewOpenUrl,
-  onPdfExport,
+  onNotebookPdfExport,
 }: {
   activeTarget: PreviewTarget;
   filePreviewOpenUrl?: string;
-  onPdfExport?: () => void;
+  onNotebookPdfExport?: () => void;
 }) {
   // ... existing early returns ...
 
@@ -554,7 +560,7 @@ function DownloadButton({
             key={format.label}
             onClick={() => {
               if (format.action === 'pdf') {
-                onPdfExport?.();
+                onNotebookPdfExport?.();
               } else {
                 triggerDownload(filePreviewOpenUrl!, format.filename);
               }
@@ -583,51 +589,81 @@ Add a `usePdfExport()` hook that handles the print flow. This can live in a new 
 ```typescript
 import { useCallback, useEffect, useRef } from 'react';
 
-export function usePdfExport() {
-  const wasDarkRef = useRef(false);
+export function usePdfExport(
+  currentMode: 'report' | 'notebook' | undefined,
+  setMode: ((mode: 'report' | 'notebook') => void) | undefined
+) {
+  const isPrintingRef = useRef(false);
+  const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    // Clean up on unmount — restore state if print was interrupted
-    return () => {
-      document.body.classList.remove('chiridion-printing-report');
-    };
+    return () => cleanupRef.current?.();
   }, []);
 
   const exportPdf = useCallback(() => {
-    const html = document.documentElement;
+    if (isPrintingRef.current) return;
+    isPrintingRef.current = true;
 
-    // 1. Save and force light mode
-    wasDarkRef.current = html.classList.contains('dark');
-    if (wasDarkRef.current) {
-      html.classList.remove('dark');
+    const html = document.documentElement;
+    const body = document.body;
+    const previousMode = currentMode;
+    const wasDark = html.classList.contains('dark');
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const restore = () => {
+      body.classList.remove('chiridion-printing-report');
+      if (wasDark) html.classList.add('dark');
+      if (previousMode === 'notebook') setMode?.('notebook');
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      window.removeEventListener('afterprint', restore);
+      cleanupRef.current = null;
+      isPrintingRef.current = false;
+    };
+    cleanupRef.current = restore;
+
+    if (currentMode === 'notebook') {
+      setMode?.('report');
     }
 
-    // 2. Add print class
-    document.body.classList.add('chiridion-printing-report');
-
-    // 3. Restore after print dialog closes
-    const restore = () => {
-      document.body.classList.remove('chiridion-printing-report');
-      if (wasDarkRef.current) {
-        html.classList.add('dark');
+    const waitForReportDom = async () => {
+      for (let i = 0; i < 20; i += 1) {
+        if (document.querySelector('.notebook-report')) return;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
-      window.removeEventListener('afterprint', restore);
     };
-    window.addEventListener('afterprint', restore);
 
-    // 4. Trigger print dialog (user selects "Save as PDF")
-    window.print();
-  }, []);
+    void (async () => {
+      try {
+        await waitForReportDom();
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+        );
+
+        if (wasDark) html.classList.remove('dark');
+        body.classList.add('chiridion-printing-report');
+
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, wasDark ? 250 : 0)
+        );
+
+        window.addEventListener('afterprint', restore, { once: true });
+        fallbackTimer = setTimeout(restore, 3000);
+        window.print();
+      } catch {
+        restore();
+      }
+    })();
+  }, [currentMode, setMode]);
 
   return exportPdf;
 }
 ```
 
-**Threading the callback:** The `usePdfExport` hook is called in `Chat.tsx` (or wherever the toolbar props are assembled). The returned `exportPdf` function is passed down through `PreviewToolbar` → `NotebookToolbarActions` → `DownloadButton` as `onPdfExport`.
+**Threading the callback:** The `usePdfExport` hook is called in `Chat.tsx` (or wherever the toolbar props are assembled). The returned `exportPdf` function is passed down through `PreviewToolbar` → `NotebookToolbarActions` → `DownloadButton` as `onNotebookPdfExport`.
 
 ---
 
-### File 6 (modify): `src/app/globals.css` (or equivalent Tailwind CSS file)
+### File 6 (modify): `src/styles/globals.css`
 
 Add the print-mode CSS rules.
 
@@ -641,6 +677,13 @@ Add the print-mode CSS rules.
   body.chiridion-printing-report {
     visibility: hidden;
     overflow: visible;
+  }
+
+  /* Prevent notebook scroll container clipping in print */
+  body.chiridion-printing-report [data-notebook-scroll-root="true"] {
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
   }
 
   /* Show only the report */
@@ -696,7 +739,6 @@ Add the print-mode CSS rules.
   /* Page setup */
   @page {
     margin: 1.5cm 2cm;
-    size: A4;
   }
 }
 ```
@@ -731,18 +773,19 @@ Same — ensure the root element has the class `report-footer`.
 Wire up the PDF export:
 
 1. Import `usePdfExport` from `use-pdf-export.ts`
-2. Call the hook: `const exportPdf = usePdfExport();`
-3. Pass `exportPdf` to `PreviewPanelShell` → `PreviewToolbar` as `onPdfExport`
+2. Call the hook with notebook mode wiring:
+   `const exportPdf = usePdfExport(notebookViewMode, isNotebookPreview ? setActiveNotebookViewMode : undefined);`
+3. Pass `exportPdf` to `PreviewPanelShell` → `PreviewToolbar` as `onNotebookPdfExport`
 
 **In `PreviewPanelShell`:**
 ```tsx
 <PreviewToolbar
   // ... existing props ...
-  onPdfExport={onPdfExport}
+  onNotebookPdfExport={onNotebookPdfExport}
 />
 ```
 
-The `onPdfExport` prop is only passed when the active tab is a notebook.
+The `onNotebookPdfExport` prop is only passed when the active tab is a notebook.
 
 ---
 
@@ -776,18 +819,23 @@ This preserves the caption text ("Showing 100 of 5,000 rows × 5 columns") in th
 All `OutputActionBar` components have the `output-action-bar` class and are hidden by the print CSS. The table download button is separately hidden via `notebook-table-download-btn` class. The toolbar itself is outside the `.notebook-report` tree, so it's already invisible in print.
 
 ### Dark Mode to Light Mode for PDF
-The `usePdfExport` hook removes the `dark` class from `<html>` before printing and restores it on `afterprint`. Both Vega-Lite and Plotly charts use `MutationObserver` on the `<html>` class list and will re-render with light theme colors automatically. However, the charts re-render asynchronously — we need a short delay between removing `dark` and calling `window.print()` to let charts update. Add a ~300ms debounce:
+The `usePdfExport` hook removes the `dark` class from `<html>` before printing and restores it on `afterprint`. Both Vega-Lite and Plotly charts use `MutationObserver` on the `<html>` class list and will re-render with light theme colors automatically. However, the charts re-render asynchronously — wait for report mount + two animation frames, then apply a short delay before calling `window.print()`:
 
 ```typescript
-if (wasDarkRef.current) {
+if (wasDark) {
   html.classList.remove('dark');
 }
-document.body.classList.add('chiridion-printing-report');
+body.classList.add('chiridion-printing-report');
 
-// Wait for chart theme re-render before printing
-setTimeout(() => {
-  window.print();
-}, wasDarkRef.current ? 300 : 0);
+// Wait for report mount/layout + chart re-render before printing
+await waitForReportDom();
+await new Promise<void>((resolve) =>
+  requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+);
+await new Promise<void>((resolve) =>
+  setTimeout(resolve, wasDark ? 250 : 0)
+);
+window.print();
 ```
 
 ### Charts Still Loading
@@ -808,7 +856,8 @@ export function usePdfExport(
     if (currentMode === 'notebook') {
       setMode?.('report');
     }
-    // ... rest of print flow ...
+    // Wait for .notebook-report to mount before window.print()
+    // Restore mode after print finishes
   }, [currentMode, setMode]);
 }
 ```
@@ -828,7 +877,7 @@ The `OutputActionBar` appears in both Report and Notebook modes. In `output-rend
 | `notebook-preview/output-renderers.tsx` | Modify | Wrap charts with action bars |
 | `preview-panel/preview-toolbar.tsx` | Modify | Dropdown with .ipynb + PDF options |
 | `Chat.tsx` | Modify | Wire `usePdfExport` to toolbar |
-| `globals.css` | Modify | Print CSS rules |
+| `src/styles/globals.css` | Modify | Print CSS rules |
 | `notebook-preview/notebook-table.tsx` | Modify | Add `notebook-table-download-btn` class to hide button in print |
 | `notebook-preview/report-sidebar.tsx` | Modify | Ensure `report-sidebar` class for print CSS |
 | `notebook-preview/report-footer.tsx` | Modify | Ensure `report-footer` class for print CSS |
