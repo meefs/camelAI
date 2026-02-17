@@ -27,6 +27,7 @@ interface PreviewToolbarProps {
   appShareButton?: ReactNode;
   notebookViewMode?: 'report' | 'notebook';
   onNotebookViewModeChange?: (mode: 'report' | 'notebook') => void;
+  onNotebookPdfExport?: () => void;
   markdownViewMode?: 'rendered' | 'source';
   onMarkdownViewModeChange?: (mode: 'rendered' | 'source') => void;
   filePreviewOpenUrl?: string;
@@ -136,7 +137,13 @@ function triggerDownload(url: string, filename?: string) {
   });
 }
 
-function getDownloadFormats(target: PreviewTarget): { label: string; filename: string }[] {
+interface DownloadFormat {
+  label: string;
+  filename: string;
+  action: 'download' | 'pdf';
+}
+
+function getDownloadFormats(target: PreviewTarget): DownloadFormat[] {
   if (target.kind === 'app') return [];
 
   const ext = getFileExtension(target.path);
@@ -145,46 +152,63 @@ function getDownloadFormats(target: PreviewTarget): { label: string; filename: s
 
   switch (ext) {
     case 'ipynb':
-      return [{ label: 'Download notebook (.ipynb)', filename: name }];
+      return [
+        { label: 'Download notebook (.ipynb)', filename: name, action: 'download' },
+        {
+          label: 'Download as PDF',
+          filename: name.replace(/\.ipynb$/i, '.pdf'),
+          action: 'pdf',
+        },
+      ];
     case 'md':
-      return [{ label: 'Download markdown (.md)', filename: name }];
+      return [{ label: 'Download markdown (.md)', filename: name, action: 'download' }];
     case 'csv':
-      return [{ label: 'Download CSV', filename: name }];
+      return [{ label: 'Download CSV', filename: name, action: 'download' }];
     case 'tsv':
-      return [{ label: 'Download TSV', filename: name }];
+      return [{ label: 'Download TSV', filename: name, action: 'download' }];
     case 'xlsx':
     case 'xls':
-      return [{ label: 'Download spreadsheet', filename: name }];
+      return [{ label: 'Download spreadsheet', filename: name, action: 'download' }];
     case 'json':
     case 'jsonl':
-      return [{ label: 'Download JSON', filename: name }];
+      return [{ label: 'Download JSON', filename: name, action: 'download' }];
     case 'pdf':
-      return [{ label: 'Download PDF', filename: name }];
+      return [{ label: 'Download PDF', filename: name, action: 'download' }];
     case 'svg':
-      return [{ label: 'Download SVG', filename: name }];
+      return [{ label: 'Download SVG', filename: name, action: 'download' }];
     default:
-      return [{ label: 'Download', filename: name }];
+      return [{ label: 'Download', filename: name, action: 'download' }];
   }
 }
 
 function DownloadButton({
   activeTarget,
   filePreviewOpenUrl,
+  onNotebookPdfExport,
 }: {
   activeTarget: PreviewTarget;
   filePreviewOpenUrl?: string;
+  onNotebookPdfExport?: () => void;
 }) {
   if (activeTarget.kind !== 'file' || !filePreviewOpenUrl) return null;
 
   const formats = getDownloadFormats(activeTarget);
   if (!formats.length) return null;
 
+  const handleFormatSelect = (format: DownloadFormat) => {
+    if (format.action === 'pdf') {
+      onNotebookPdfExport?.();
+      return;
+    }
+    triggerDownload(filePreviewOpenUrl, format.filename);
+  };
+
   if (formats.length === 1) {
     return (
       <ToolbarButton
         icon={Download}
         tooltip="Download"
-        onClick={() => triggerDownload(filePreviewOpenUrl, formats[0].filename)}
+        onClick={() => handleFormatSelect(formats[0])}
       />
     );
   }
@@ -205,8 +229,10 @@ function DownloadButton({
         {formats.map((format) => (
           <DropdownMenuItem
             key={format.label}
-            onClick={() => triggerDownload(filePreviewOpenUrl, format.filename)}
+            onClick={() => handleFormatSelect(format)}
+            disabled={format.action === 'pdf' && !onNotebookPdfExport}
           >
+            <Download className="mr-2 size-3.5 text-muted-foreground" />
             {format.label}
           </DropdownMenuItem>
         ))}
@@ -238,11 +264,16 @@ function AppToolbarActions({
 function NotebookToolbarActions({
   notebookViewMode,
   onNotebookViewModeChange,
+  onNotebookPdfExport,
   activeTarget,
   filePreviewOpenUrl,
 }: Pick<
   PreviewToolbarProps,
-  'notebookViewMode' | 'onNotebookViewModeChange' | 'activeTarget' | 'filePreviewOpenUrl'
+  | 'notebookViewMode'
+  | 'onNotebookViewModeChange'
+  | 'onNotebookPdfExport'
+  | 'activeTarget'
+  | 'filePreviewOpenUrl'
 >) {
   return (
     <>
@@ -265,7 +296,11 @@ function NotebookToolbarActions({
         </TabsList>
       </Tabs>
       <Separator orientation="vertical" className="mx-1 h-4 data-[orientation=vertical]:self-auto" />
-      <DownloadButton activeTarget={activeTarget} filePreviewOpenUrl={filePreviewOpenUrl} />
+      <DownloadButton
+        activeTarget={activeTarget}
+        filePreviewOpenUrl={filePreviewOpenUrl}
+        onNotebookPdfExport={onNotebookPdfExport}
+      />
     </>
   );
 }
@@ -315,6 +350,7 @@ function PreviewToolbarComponent({
   appShareButton,
   notebookViewMode,
   onNotebookViewModeChange,
+  onNotebookPdfExport,
   markdownViewMode,
   onMarkdownViewModeChange,
   filePreviewOpenUrl,
@@ -338,6 +374,7 @@ function PreviewToolbarComponent({
         <NotebookToolbarActions
           notebookViewMode={notebookViewMode}
           onNotebookViewModeChange={onNotebookViewModeChange}
+          onNotebookPdfExport={onNotebookPdfExport}
           activeTarget={activeTarget}
           filePreviewOpenUrl={filePreviewOpenUrl}
         />

@@ -55,6 +55,7 @@ import { LoadingDots } from '@/components/loading-dots';
 import { CompactingIndicator } from '@/components/compacting-indicator';
 import { WelcomeScreen } from '@/components/welcome-screen';
 import { FilePreviewContent, isImageFile } from '@/components/chat-file-preview';
+import { usePdfExport } from '@/components/chat-file-preview/notebook-preview/use-pdf-export';
 import { ChatPreviewProvider } from '@/components/chat-preview/preview-context';
 import { PreviewTabRow } from '@/components/preview-panel/preview-tabs';
 import { PreviewToolbar } from '@/components/preview-panel/preview-toolbar';
@@ -589,6 +590,7 @@ interface PreviewPanelShellProps {
   appShareButton?: ReactNode;
   notebookViewMode: 'report' | 'notebook';
   onNotebookViewModeChange: (mode: 'report' | 'notebook') => void;
+  onNotebookPdfExport?: () => void;
   markdownViewMode: 'rendered' | 'source';
   onMarkdownViewModeChange: (mode: 'rendered' | 'source') => void;
   filePreviewOpenUrl: string;
@@ -616,6 +618,7 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
   appShareButton,
   notebookViewMode,
   onNotebookViewModeChange,
+  onNotebookPdfExport,
   markdownViewMode,
   onMarkdownViewModeChange,
   filePreviewOpenUrl,
@@ -653,6 +656,7 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
         appShareButton={appShareButton}
         notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
         onNotebookViewModeChange={onNotebookViewModeChange}
+        onNotebookPdfExport={isNotebookPreview ? onNotebookPdfExport : undefined}
         markdownViewMode={isMarkdownPreview ? markdownViewMode : undefined}
         onMarkdownViewModeChange={onMarkdownViewModeChange}
         filePreviewOpenUrl={filePreviewOpenUrl}
@@ -2996,6 +3000,10 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     && previewFileName.toLowerCase().endsWith('.ipynb');
   const isMarkdownPreview = previewTarget?.kind === 'file'
     && previewFileName.toLowerCase().endsWith('.md');
+  const exportNotebookPdf = usePdfExport(
+    notebookViewMode,
+    isNotebookPreview ? setActiveNotebookViewMode : undefined
+  );
 
   const previewDomains = useMemo(() => {
     if (previewTarget?.kind !== 'app') {
@@ -3102,6 +3110,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       appShareButton={previewShareButton}
       notebookViewMode={notebookViewMode}
       onNotebookViewModeChange={setActiveNotebookViewMode}
+      onNotebookPdfExport={exportNotebookPdf}
       markdownViewMode={markdownViewMode}
       onMarkdownViewModeChange={setActiveMarkdownViewMode}
       filePreviewOpenUrl={filePreviewOpenUrl}
