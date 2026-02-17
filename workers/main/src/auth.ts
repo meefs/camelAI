@@ -480,7 +480,24 @@ export class UserDO extends DurableObject<DOEnv> {
 
     // V7: Reserve profile keys for onboarding state. No schema changes needed.
 
-    const CURRENT_SCHEMA_VERSION = 7;
+    if (version < 8) {
+      // V8: Track email verification status on profiles.
+      const rows = this.sql.exec('SELECT value FROM profile WHERE key = ?', 'data').toArray();
+      if (rows.length > 0) {
+        const profile = JSON.parse((rows[0] as { value: string }).value) as User;
+        if (profile.email_verified_at === undefined) {
+          // Backfill legacy accounts as verified so this remains non-breaking.
+          profile.email_verified_at = profile.created_at ?? Date.now();
+          this.sql.exec(
+            'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',
+            'data',
+            JSON.stringify(profile)
+          );
+        }
+      }
+    }
+
+    const CURRENT_SCHEMA_VERSION = 8;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -507,6 +524,11 @@ export class UserDO extends DurableObject<DOEnv> {
     }
     if (profile.orphaned_at === undefined) {
       profile.orphaned_at = null;
+      changed = true;
+    }
+    if (profile.email_verified_at === undefined) {
+      // Legacy accounts pre-date verification and are treated as verified.
+      profile.email_verified_at = profile.created_at ?? Date.now();
       changed = true;
     }
 
@@ -564,6 +586,7 @@ export class UserDO extends DurableObject<DOEnv> {
     const profile: User = {
       id,
       email,
+      email_verified_at: null,
       name,
       created_at: now,
       is_superuser: isSuperuserEmail(email),
@@ -585,6 +608,36 @@ export class UserDO extends DurableObject<DOEnv> {
     profile.is_orphaned = isOrphaned;
     profile.orphaned_at = isOrphaned ? Date.now() : null;
     await this.setProfile(profile);
+  }
+
+  async markEmailVerified(): Promise<User | null> {
+    const profile = await this.getProfile();
+    if (!profile) return null;
+    if (profile.email_verified_at === null) {
+      profile.email_verified_at = Date.now();
+      await this.setProfile(profile);
+    }
+    return profile;
+  }
+
+  async getEmailVerificationStatus(): Promise<{
+    required: boolean;
+    verified: boolean;
+    email_verified_at: number | null;
+  }> {
+    const profile = await this.getProfile();
+    if (!profile) {
+      return { required: false, verified: false, email_verified_at: null };
+    }
+
+    // Password-based accounts require verification. OAuth-only accounts do not.
+    const hasPassword = Boolean(await this.getPasswordHash());
+    const verified = profile.email_verified_at !== null;
+    return {
+      required: hasPassword,
+      verified,
+      email_verified_at: profile.email_verified_at,
+    };
   }
 
   async updateProfile(updates: {
@@ -753,6 +806,7 @@ export class UserDO extends DurableObject<DOEnv> {
     const profile: User = {
       id,
       email,
+      email_verified_at: now,
       name,
       created_at: now,
       is_superuser: isSuperuserEmail(email),

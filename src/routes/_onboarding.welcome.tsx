@@ -1,8 +1,15 @@
-import { useLoaderData, useNavigate, useOutletContext } from 'react-router';
+import {
+  useFetcher,
+  useLoaderData,
+  useLocation,
+  useNavigate,
+  useOutletContext,
+} from 'react-router';
 import type { Route } from './+types/_onboarding.welcome';
 import { getAuthEnv, requireSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { STEP_PATHS } from '@/lib/onboarding';
 import type { OnboardingRouteContext } from './_onboarding';
@@ -101,10 +108,23 @@ function formatTeamSummary(teamContext: TeamContext): string {
 export default function OnboardingWelcomeRoute() {
   const context = useOutletContext<OnboardingRouteContext>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const verificationFetcher = useFetcher<{ success?: boolean; error?: string }>();
   const { orgName, showOrgSlugStep, teamContext } =
     useLoaderData<typeof loader>() as WelcomeLoaderData;
   const isTeamWelcome = context.teamMode;
   const querySuffix = context.teamMode ? '?team=1' : '';
+  const emailVerificationRequired =
+    context.emailVerificationRequired && !context.emailVerified;
+  const emailVerifiedFromLink =
+    new URLSearchParams(location.search).get('emailVerified') === '1';
+  const verificationSent =
+    verificationFetcher.state === 'idle' &&
+    verificationFetcher.data?.success === true;
+  const verificationError =
+    verificationFetcher.state === 'idle'
+      ? verificationFetcher.data?.error
+      : undefined;
 
   return (
     <OnboardingLayout
@@ -142,6 +162,46 @@ export default function OnboardingWelcomeRoute() {
             </>
           )}
         </div>
+
+        {emailVerifiedFromLink ? (
+          <Alert>
+            <AlertDescription>
+              Email verified. You can finish onboarding now.
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {emailVerificationRequired ? (
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-4 text-left">
+            <p className="text-sm font-medium">Verify your email to finish onboarding.</p>
+            <p className="text-sm text-muted-foreground">
+              We sent a verification link to {context.userEmail}. You&apos;ll need to confirm it before the final onboarding step.
+            </p>
+            {verificationSent ? (
+              <p className="text-sm text-muted-foreground">
+                Verification email sent.
+              </p>
+            ) : null}
+            {verificationError ? (
+              <Alert variant="destructive">
+                <AlertDescription>{verificationError}</AlertDescription>
+              </Alert>
+            ) : null}
+            <verificationFetcher.Form method="post" action="/api/auth/verify-email/send">
+              <Button
+                type="submit"
+                variant="outline"
+                disabled={verificationFetcher.state !== 'idle'}
+              >
+                {verificationFetcher.state !== 'idle'
+                  ? 'Sending...'
+                  : verificationSent
+                    ? 'Resend verification email'
+                    : 'Send verification email'}
+              </Button>
+            </verificationFetcher.Form>
+          </div>
+        ) : null}
 
         <div className="pt-2">
           <Button

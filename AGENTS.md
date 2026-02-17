@@ -68,12 +68,13 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 
 ### Authentication
 1. User signs up/logs in via `/api/auth/login` or `/api/auth/signup`
-2. Password verified with PBKDF2 (100k iterations, SHA-256)
-3. Session stored in KV (`SESSIONS`), cookie set with `httpOnly`, `sameSite: lax`
-4. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
+2. Passwords are hashed/verified with PBKDF2 (100k iterations, SHA-256)
+3. Password-based signups receive an email verification link (`/api/auth/verify-email`), and onboarding completion is blocked until verified (`/api/auth/verify-email/send` for resend)
+4. Session stored in KV (`SESSIONS`), cookie set with `httpOnly`, `sameSite: lax`
+5. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
 
 ### Onboarding
-Incomplete users are redirected to `/onboarding` before accessing `_app` routes. Steps stored in localStorage during the flow, persisted to `UserDO` via `POST /api/onboarding`, finalized via `POST /api/onboarding/complete` (creates first thread, writes `~/.chiridion/profile.md`, returns redirect). Org slug step is conditional and enforced by `OrgSlugDO`.
+Incomplete users are redirected to `/onboarding` before accessing `_app` routes. For password-based accounts, email verification is required before `POST /api/onboarding/complete` succeeds. Steps are stored in localStorage during the flow, persisted to `UserDO` via `POST /api/onboarding`, finalized via `POST /api/onboarding/complete` (creates first thread, writes `~/.chiridion/profile.md`, returns redirect). Org slug step is conditional and enforced by `OrgSlugDO`.
 
 ### Message Sending
 1. WebSocket connects to `/ws/{workspace}` → Worker validates access → forwards to `ChatThreadDO`
@@ -122,7 +123,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 
 | Area | Key Routes |
 |------|------------|
-| Auth | `/api/auth/login`, `/api/auth/signup`, `/api/auth/logout`, `/api/auth/switch-org`, `/api/auth/switch-workspace` |
+| Auth | `/api/auth/login`, `/api/auth/signup`, `/api/auth/verify-email`, `/api/auth/verify-email/send`, `/api/auth/logout`, `/api/auth/switch-org`, `/api/auth/switch-workspace` |
 | OAuth | `/api/auth/google[/callback]`, `/api/auth/github[/callback]` |
 | Orgs | `/api/orgs/:id/invite`, `/api/orgs/:id/check-slug`, `/api/orgs/:id/update-slug` |
 | Onboarding | `/api/onboarding`, `/api/onboarding/complete` |

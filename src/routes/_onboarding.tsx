@@ -30,11 +30,14 @@ import type { OnboardingPreferences } from '@/types';
 
 interface OnboardingLoaderData {
   userId: string;
+  userEmail: string;
   orgId: string;
   onboarding: OnboardingPreferences | null;
   teamWelcomeOnly: boolean;
   vanityDomain: string;
   teamMode: boolean;
+  emailVerificationRequired: boolean;
+  emailVerified: boolean;
 }
 
 const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
@@ -94,7 +97,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const userStub = authEnv.USER.get(
     authEnv.USER.idFromName(sessionContext.session.user_id)
   );
-  const authBootstrap = await userStub.getAuthBootstrap();
+  const [authBootstrap, emailVerificationStatus] = await Promise.all([
+    userStub.getAuthBootstrap(),
+    userStub.getEmailVerificationStatus(),
+  ]);
 
   if (!authBootstrap.profile) {
     const url = new URL(request.url);
@@ -106,18 +112,23 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const teamMode = url.searchParams.get('team') === '1';
   const onboarding = authBootstrap.onboarding;
   const onboardingComplete = hasCompletedOnboarding(onboarding);
+  const isEmailVerifiedOrNotRequired =
+    !emailVerificationStatus.required || emailVerificationStatus.verified;
 
-  if (onboardingComplete && !teamMode) {
+  if (onboardingComplete && !teamMode && isEmailVerifiedOrNotRequired) {
     throw redirect('/chat');
   }
 
   return {
     userId: authBootstrap.profile.id,
+    userEmail: authBootstrap.profile.email,
     orgId: sessionContext.session.org_id,
     onboarding,
     teamWelcomeOnly: onboardingComplete && teamMode,
     vanityDomain: getVanityDomain(request.headers.get('host')?.split(':')[0]),
     teamMode,
+    emailVerificationRequired: emailVerificationStatus.required,
+    emailVerified: emailVerificationStatus.verified,
   } satisfies OnboardingLoaderData;
 }
 

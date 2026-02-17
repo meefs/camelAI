@@ -21,7 +21,8 @@ function normalizeOnboardingInput(input: unknown): OnboardingPreferences {
         ? dataInterests.integrations
         : [],
     },
-    completed_at: data.completed_at ?? null,
+    // Completion is only allowed through POST /api/onboarding/complete.
+    completed_at: null,
   };
 }
 

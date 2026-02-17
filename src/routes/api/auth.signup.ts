@@ -1,3 +1,4 @@
+import { waitUntil } from 'cloudflare:workers';
 import type { Route } from './+types/auth.signup';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { createSessionCookieHeader } from '@/lib/cookies.server';
@@ -8,6 +9,7 @@ import {
   createOrg,
   createSession,
 } from '@/lib/auth-do';
+import { sendUserVerificationEmail } from '@/lib/email-verification.server';
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
   return {
@@ -42,10 +44,27 @@ export async function action({ request, context }: Route.ActionArgs) {
       return Response.json({ error: 'User already exists' }, { status: 400 });
     }
 
-    const { userId } = await createUser(authEnv, email, password, name ?? null);
+    const { userId, user } = await createUser(authEnv, email, password, name ?? null);
     const orgName = name || email.split('@')[0];
     const { org, defaultWorkspaceId } = await createOrg(authEnv, orgName, userId);
     const { sessionId } = await createSession(authEnv, userId, org.id, defaultWorkspaceId);
+
+    waitUntil(
+      sendUserVerificationEmail({
+        env,
+        requestUrl: new URL(request.url),
+        userId,
+        email: user.email,
+      })
+        .then((result) => {
+          if (result.status !== 'sent') {
+            console.warn('Failed to send verification email on signup:', result.reason);
+          }
+        })
+        .catch((error) => {
+          console.error('Unexpected verification email error on signup:', error);
+        })
+    );
 
     return Response.json(
       { success: true },

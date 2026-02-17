@@ -132,6 +132,13 @@ export async function action({ request, context }: Route.ActionArgs) {
   const userStub = authEnv.USER.get(
     authEnv.USER.idFromName(authContext.user.id)
   );
+  const verificationStatus = await userStub.getEmailVerificationStatus();
+  if (verificationStatus.required && !verificationStatus.verified) {
+    return Response.json(
+      { error: 'Please verify your email before completing onboarding.' },
+      { status: 403 }
+    );
+  }
   await userStub.updateOnboarding(completed);
 
   const thread = await chatDO.createThread(

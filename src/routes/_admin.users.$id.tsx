@@ -94,6 +94,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const safeUser = {
     id: user.id,
     email: user.email,
+    email_verified_at: user.email_verified_at,
     name: user.name,
     created_at: user.created_at,
     is_superuser: user.is_superuser,
@@ -170,6 +171,12 @@ export default function AdminUserDetailPage() {
                   <div>
                     <dt className="text-sm font-medium text-muted-foreground">Created</dt>
                     <dd className="text-sm">{formatTimestamp(user.created_at)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-sm font-medium text-muted-foreground">Email Verified</dt>
+                    <dd className="text-sm">
+                      {user.email_verified_at ? formatTimestamp(user.email_verified_at) : 'No'}
+                    </dd>
                   </div>
                   <div>
                     <dt className="text-sm font-medium text-muted-foreground">Role</dt>

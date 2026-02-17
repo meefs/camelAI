@@ -122,6 +122,8 @@ export default [
   // Auth API routes
   route('api/auth/login', 'routes/api/auth.login.ts'),
   route('api/auth/signup', 'routes/api/auth.signup.ts'),
+  route('api/auth/verify-email', 'routes/api/auth.verify-email.ts'),
+  route('api/auth/verify-email/send', 'routes/api/auth.verify-email.send.ts'),
   route('api/auth/logout', 'routes/api/auth.logout.ts'),
   route('api/auth/switch-org', 'routes/api/auth.switch-org.ts'),
   route('api/auth/switch-workspace', 'routes/api/auth.switch-workspace.ts'),

@@ -1,6 +1,7 @@
 import { Outlet, redirect, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app';
-import { requireAuthContext } from '@/lib/auth.server';
+import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
+import { getEnv } from '@/lib/cloudflare.server';
 import { parseCookies } from '@/lib/cookies.server';
 import { AppSidebar } from '@/components/sidebar/app-sidebar';
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
@@ -11,8 +12,17 @@ const SIDEBAR_COOKIE_NAME = 'sidebar_state';
 export async function loader({ request, context }: Route.LoaderArgs) {
   // Auth check - redirects to /login if not authenticated
   const authContext = await requireAuthContext(request, context);
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const userStub = authEnv.USER.get(
+    authEnv.USER.idFromName(authContext.user.id)
+  );
+  const verificationStatus = await userStub.getEmailVerificationStatus();
 
   if (!authContext.onboarding?.completed_at) {
+    throw redirect('/onboarding');
+  }
+  if (verificationStatus.required && !verificationStatus.verified) {
     throw redirect('/onboarding');
   }
 

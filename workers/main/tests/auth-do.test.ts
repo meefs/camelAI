@@ -93,6 +93,42 @@ describe('Auth flow (full-stack with DOs)', () => {
       const isValid = await verifyUserPassword(testEnv, userId, 'wrongPassword');
       expect(isValid).toBe(false);
     });
+
+    it('requires email verification for password users', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Needs Verify');
+      const userStub = testEnv.USER.get(testEnv.USER.idFromName(userId));
+
+      const before = await userStub.getEmailVerificationStatus();
+      expect(before.required).toBe(true);
+      expect(before.verified).toBe(false);
+
+      const updatedProfile = await userStub.markEmailVerified();
+      expect(updatedProfile?.email_verified_at).toBeTypeOf('number');
+
+      const after = await userStub.getEmailVerificationStatus();
+      expect(after.required).toBe(true);
+      expect(after.verified).toBe(true);
+    });
+
+    it('marks OAuth users as already verified', async () => {
+      const userId = crypto.randomUUID();
+      const email = testEmail();
+      const userStub = testEnv.USER.get(testEnv.USER.idFromName(userId));
+
+      await userStub.createUserFromOAuth(
+        userId,
+        email,
+        'OAuth User',
+        'google',
+        `google-${crypto.randomUUID()}`
+      );
+
+      const status = await userStub.getEmailVerificationStatus();
+      expect(status.required).toBe(false);
+      expect(status.verified).toBe(true);
+      expect(status.email_verified_at).toBeTypeOf('number');
+    });
   });
 
   describe('Organization creation and membership', () => {

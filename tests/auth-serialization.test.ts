@@ -15,6 +15,7 @@ function toSafeUser(user: User): User {
   return {
     id: user.id,
     email: user.email,
+    email_verified_at: user.email_verified_at,
     name: user.name,
     created_at: user.created_at,
     is_superuser: user.is_superuser,
@@ -54,6 +55,7 @@ describe('toSafeUser', () => {
     const input: User = {
       id: 'user-123',
       email: 'test@example.com',
+      email_verified_at: 1234567900,
       name: 'Test User',
       created_at: 1234567890,
       is_superuser: false,
@@ -67,6 +69,7 @@ describe('toSafeUser', () => {
     expect(result).toEqual({
       id: 'user-123',
       email: 'test@example.com',
+      email_verified_at: 1234567900,
       name: 'Test User',
       created_at: 1234567890,
       is_superuser: false,
@@ -80,6 +83,7 @@ describe('toSafeUser', () => {
     const input: User = {
       id: 'user-123',
       email: 'test@example.com',
+      email_verified_at: null,
       name: null,
       created_at: 1234567890,
       is_superuser: false,
@@ -97,6 +101,7 @@ describe('toSafeUser', () => {
     const input: User = {
       id: 'user-123',
       email: 'test@example.com',
+      email_verified_at: null,
       name: 'Test',
       created_at: 1234567890,
       is_superuser: false,
@@ -115,6 +120,7 @@ describe('toSafeUser', () => {
     const input = Object.create(null) as User;
     input.id = 'user-123';
     input.email = 'test@example.com';
+    input.email_verified_at = null;
     input.name = 'Test';
     input.created_at = 1234567890;
     input.is_superuser = false;
@@ -133,6 +139,7 @@ describe('toSafeUser', () => {
     const input = {
       id: 'user-123',
       email: 'test@example.com',
+      email_verified_at: null,
       name: 'Test',
       created_at: 1234567890,
       is_superuser: false,
@@ -147,7 +154,7 @@ describe('toSafeUser', () => {
 
     expect(result).not.toHaveProperty('password_hash');
     expect(result).not.toHaveProperty('extra_field');
-    expect(Object.keys(result)).toEqual(['id', 'email', 'name', 'created_at', 'is_superuser', 'avatar', 'is_orphaned', 'orphaned_at']);
+    expect(Object.keys(result)).toEqual(['id', 'email', 'email_verified_at', 'name', 'created_at', 'is_superuser', 'avatar', 'is_orphaned', 'orphaned_at']);
   });
 });
 

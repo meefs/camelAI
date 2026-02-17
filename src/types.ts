@@ -173,6 +173,7 @@ export interface Avatar {
 export interface User {
   id: string;
   email: string;
+  email_verified_at: number | null;
   name: string | null;
   created_at: number;
   is_superuser: boolean;
