@@ -548,7 +548,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         script_name: z.string().describe('The name of the app/worker script to screenshot'),
       },
       async ({ script_name }) => {
-        const timeout_seconds = 10;
         const { orgId, workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ error: 'No workspace context available' });
@@ -604,7 +603,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           envPrefix,
           isPublic: script.is_public,
           screenshotToken,
-          timeoutMs: timeout_seconds * 1000,
+          timeoutMs: 10_000,
         });
 
         if (result.success) {
