@@ -959,7 +959,7 @@ class ChatSession {
     const options = {
       // Force Node as the runtime executable — Bun has a bug that breaks the SDK.
       executable: 'node',
-      model: 'opus',
+      model: 'sonnet',
       fallbackModel: 'sonnet',
       includePartialMessages: true,
       permissionMode: 'bypassPermissions',

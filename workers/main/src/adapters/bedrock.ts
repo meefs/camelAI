@@ -17,6 +17,7 @@ const MODEL_MAP: Record<string, string> = {
   'claude-haiku-4-5-20251001': 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
   'claude-opus-4-5-20251101': 'global.anthropic.claude-opus-4-5-20251101-v1:0',
   // Claude 4.6 models
+  'claude-sonnet-4-6': 'global.anthropic.claude-sonnet-4-6',
   'claude-opus-4-6': 'global.anthropic.claude-opus-4-6-v1',
   // Claude 4 models
   'claude-sonnet-4-20250514': 'global.anthropic.claude-sonnet-4-20250514-v1:0',
@@ -55,6 +56,19 @@ export interface TransformResult {
   isStreaming: boolean;
 }
 
+function mapAnthropicModelToBedrockModel(model: string): string {
+  const exactMatch = MODEL_MAP[model];
+  if (exactMatch) return exactMatch;
+
+  const modelLower = model.toLowerCase();
+  // Sonnet 4.6 currently uses a fixed global endpoint without the version postfix.
+  if (modelLower.includes('sonnet-4-6') || modelLower.includes('sonnet-4.6')) {
+    return 'global.anthropic.claude-sonnet-4-6';
+  }
+
+  return `global.anthropic.${model}-v1:0`;
+}
+
 /**
  * Transform an Anthropic API request for Bedrock via CF AI Gateway
  */
@@ -67,7 +81,7 @@ export function transformRequestForBedrock(
   const isStreaming = body.stream === true;
 
   // Map model ID
-  const bedrockModel = MODEL_MAP[body.model] || `global.anthropic.${body.model}-v1:0`;
+  const bedrockModel = mapAnthropicModelToBedrockModel(body.model);
 
   // Build Bedrock request body (same as Anthropic, minus model, plus anthropic_version)
   const bedrockBody: Record<string, unknown> = {

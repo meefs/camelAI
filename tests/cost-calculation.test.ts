@@ -37,6 +37,15 @@ describe('getModelPricing', () => {
       expect(pricing.output_per_million).toBe(1500);
     });
 
+    it('should return correct pricing for claude-sonnet-4-6', () => {
+      const pricing = getModelPricing('claude-sonnet-4-6');
+      expect(pricing.input_per_million).toBe(300);
+      expect(pricing.output_per_million).toBe(1500);
+      expect(pricing.cache_write_5m_per_million).toBe(375);
+      expect(pricing.cache_write_1h_per_million).toBe(600);
+      expect(pricing.cache_read_per_million).toBe(30);
+    });
+
     it('should return correct pricing for claude-haiku-4-5-20251001', () => {
       const pricing = getModelPricing('claude-haiku-4-5-20251001');
       expect(pricing.input_per_million).toBe(100);
@@ -69,6 +78,11 @@ describe('getModelPricing', () => {
 
     it('should match sonnet-4-5 variants', () => {
       const pricing = getModelPricing('claude-sonnet-4-5-20260101');
+      expect(pricing.input_per_million).toBe(300);
+    });
+
+    it('should match sonnet-4-6 variants', () => {
+      const pricing = getModelPricing('claude-sonnet-4-6-20260201');
       expect(pricing.input_per_million).toBe(300);
     });
 

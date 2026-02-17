@@ -72,6 +72,14 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
     cache_write_1h_per_million: 600,  // $6/MTok
     cache_read_per_million: 30,       // $0.30/MTok
   },
+  // Claude Sonnet 4.6 (same pricing as Sonnet 4.5)
+  'claude-sonnet-4-6': {
+    input_per_million: 300,           // $3/MTok
+    output_per_million: 1500,         // $15/MTok
+    cache_write_5m_per_million: 375,  // $3.75/MTok
+    cache_write_1h_per_million: 600,  // $6/MTok
+    cache_read_per_million: 30,       // $0.30/MTok
+  },
   // Claude Sonnet 4
   'claude-sonnet-4-20250514': {
     input_per_million: 300,           // $3/MTok
@@ -167,7 +175,14 @@ export function getModelPricing(model: string): ModelPricing {
   if (modelLower.includes('sonnet-4-5') || modelLower.includes('sonnet-4.5')) {
     return MODEL_PRICING['claude-sonnet-4-5-20250929'];
   }
-  if (modelLower.includes('sonnet-4') && !modelLower.includes('sonnet-4-5')) {
+  if (modelLower.includes('sonnet-4-6') || modelLower.includes('sonnet-4.6')) {
+    return MODEL_PRICING['claude-sonnet-4-6'];
+  }
+  if (
+    modelLower.includes('sonnet-4')
+    && !modelLower.includes('sonnet-4-5')
+    && !modelLower.includes('sonnet-4-6')
+  ) {
     return MODEL_PRICING['claude-sonnet-4-20250514'];
   }
   if (modelLower.includes('haiku-4-5') || modelLower.includes('haiku-4.5')) {
