@@ -546,16 +546,9 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
       'Take a screenshot of a deployed app and return the image. Useful for verifying the app looks correct after making changes.',
       {
         script_name: z.string().describe('The name of the app/worker script to screenshot'),
-        timeout_seconds: z
-          .number()
-          .int()
-          .min(5)
-          .max(120)
-          .optional()
-          .default(10)
-          .describe('Optional timeout for screenshot capture in seconds (5-120, default: 10)'),
       },
-      async ({ script_name, timeout_seconds }) => {
+      async ({ script_name }) => {
+        const timeout_seconds = 10;
         const { orgId, workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ error: 'No workspace context available' });
