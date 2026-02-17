@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   exportDataAsCsv,
+  hasExtractableData,
   hasSvgExportSupport,
 } from '@/components/chat-file-preview/notebook-preview/chart-export-utils';
 
@@ -111,5 +112,22 @@ describe('chart export utils', () => {
         data: [{ type: 'scatter' }, { type: 'scattergl' }],
       })
     ).toBe(false);
+  });
+
+  it('checks plotly CSV availability without iterating all trace points', () => {
+    const guardedPoints = new Proxy(['x0'], {
+      get(target, prop, receiver) {
+        if (prop === 'length') {
+          return Reflect.get(target, prop, receiver);
+        }
+        if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+          throw new Error('point iteration should not happen during shape checks');
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    expect(() => hasExtractableData('plotly', { data: [{ x: guardedPoints }] })).not.toThrow();
+    expect(hasExtractableData('plotly', { data: [{ x: guardedPoints }] })).toBe(true);
   });
 });

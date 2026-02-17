@@ -265,6 +265,15 @@ function getRowsFromValues(values: unknown[]): Record<string, unknown>[] | null 
   return rows.length > 0 ? rows : null;
 }
 
+function hasRecordValues(values: unknown[]): boolean {
+  for (const value of values) {
+    if (asRecord(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function walkVegaDataNodes(
   node: unknown,
   onDataNode: (dataNode: Record<string, unknown>) => boolean
@@ -357,6 +366,42 @@ function collectReferencedVegaDatasetNames(spec: Record<string, unknown>): strin
   });
 
   return names;
+}
+
+function hasVegaDataCandidate(spec: Record<string, unknown>): boolean {
+  const hasInlineData = walkVegaDataNodes(spec, (dataNode) => (
+    Array.isArray(dataNode.values) && hasRecordValues(dataNode.values)
+  ));
+  if (hasInlineData) return true;
+
+  if (Array.isArray(spec.datasets)) {
+    for (const dataset of spec.datasets) {
+      if (Array.isArray(dataset) && hasRecordValues(dataset)) {
+        return true;
+      }
+    }
+  }
+
+  const datasets = asRecord(spec.datasets);
+  if (!datasets) return false;
+
+  const referencedDatasetNames = collectReferencedVegaDatasetNames(spec);
+  for (const datasetName of referencedDatasetNames) {
+    const dataset = datasets[datasetName];
+    if (!Array.isArray(dataset)) continue;
+    if (hasRecordValues(dataset)) {
+      return true;
+    }
+  }
+
+  for (const dataset of Object.values(datasets)) {
+    if (!Array.isArray(dataset)) continue;
+    if (hasRecordValues(dataset)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function extractVegaData(spec: Record<string, unknown>): Record<string, unknown>[] | null {
@@ -463,8 +508,23 @@ function getRowsForCsv(kind: ChartKind, spec: Record<string, unknown>): Record<s
   return extractPlotlyData(spec);
 }
 
+function hasPlotlyDataCandidate(spec: Record<string, unknown>): boolean {
+  const traces = getPlotlyTraces(spec);
+  if (traces.length === 0) return false;
+
+  return traces.some((trace) => (
+    (Array.isArray(trace.x) && trace.x.length > 0)
+    || (Array.isArray(trace.y) && trace.y.length > 0)
+    || (Array.isArray(trace.labels) && trace.labels.length > 0)
+    || (Array.isArray(trace.values) && trace.values.length > 0)
+  ));
+}
+
 export function hasExtractableData(kind: ChartKind, spec: Record<string, unknown>): boolean {
-  return getRowsForCsv(kind, spec) !== null;
+  if (kind === 'vegalite') {
+    return hasVegaDataCandidate(spec);
+  }
+  return hasPlotlyDataCandidate(spec);
 }
 
 export function hasSvgExportSupport(kind: ChartKind, spec: Record<string, unknown>): boolean {
