@@ -17,6 +17,24 @@ interface PlotlyWindow extends Window {
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const XLINK_NS = 'http://www.w3.org/1999/xlink';
+const PLOTLY_NON_SVG_TRACE_TYPES = new Set([
+  'scatter3d',
+  'surface',
+  'mesh3d',
+  'cone',
+  'streamtube',
+  'volume',
+  'isosurface',
+  'splom',
+  'pointcloud',
+  'parcoords',
+  'scattermapbox',
+  'densitymapbox',
+  'choroplethmapbox',
+  'scattermap',
+  'densitymap',
+  'choroplethmap',
+]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -181,6 +199,39 @@ async function exportPlotlyAsPng(
   }
 }
 
+async function exportPlotlyAsSvg(
+  container: HTMLElement,
+  filename: string
+): Promise<boolean> {
+  const plotRoot = container.querySelector('.js-plotly-plot');
+  if (!(plotRoot instanceof HTMLElement)) return false;
+
+  const plotly = (window as PlotlyWindow).Plotly;
+  if (!plotly?.toImage) return false;
+
+  const rect = plotRoot.getBoundingClientRect();
+  const width = Math.max(1, Math.round(rect.width || 800));
+  const height = Math.max(1, Math.round(rect.height || 500));
+
+  try {
+    const dataUrl = await plotly.toImage(plotRoot, {
+      format: 'svg',
+      width,
+      height,
+    });
+    if (!dataUrl.startsWith('data:')) {
+      return false;
+    }
+
+    const blob = dataUrlToBlob(dataUrl);
+    if (!blob) return false;
+    triggerBlobDownload(blob, filename);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function escapeCell(value: string): string {
   if (/[",\n\r]/.test(value)) {
     return `"${value.replace(/"/g, '""')}"`;
@@ -214,12 +265,103 @@ function getRowsFromValues(values: unknown[]): Record<string, unknown>[] | null 
   return rows.length > 0 ? rows : null;
 }
 
-function extractVegaData(spec: Record<string, unknown>): Record<string, unknown>[] | null {
-  const specData = asRecord(spec.data);
-  if (specData && Array.isArray(specData.values)) {
-    const rows = getRowsFromValues(specData.values);
-    if (rows) return rows;
+function walkVegaDataNodes(
+  node: unknown,
+  onDataNode: (dataNode: Record<string, unknown>) => boolean
+): boolean {
+  const stack: unknown[] = [node];
+  const visited = new Set<Record<string, unknown>>();
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    const record = asRecord(current);
+    if (!record || visited.has(record)) continue;
+    visited.add(record);
+
+    for (const [key, value] of Object.entries(record)) {
+      if (key === 'datasets' || key === 'values') {
+        continue;
+      }
+
+      if (key === 'data') {
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            const dataNode = asRecord(item);
+            if (dataNode && onDataNode(dataNode)) {
+              return true;
+            }
+          }
+        } else {
+          const dataNode = asRecord(value);
+          if (dataNode && onDataNode(dataNode)) {
+            return true;
+          }
+        }
+        continue;
+      }
+
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          stack.push(item);
+        }
+        continue;
+      }
+
+      const child = asRecord(value);
+      if (child) {
+        stack.push(child);
+      }
+    }
   }
+
+  return false;
+}
+
+function extractInlineVegaData(spec: Record<string, unknown>): Record<string, unknown>[] | null {
+  let extractedRows: Record<string, unknown>[] | null = null;
+
+  walkVegaDataNodes(spec, (dataNode) => {
+    if (!Array.isArray(dataNode.values)) {
+      return false;
+    }
+
+    const rows = getRowsFromValues(dataNode.values);
+    if (!rows) {
+      return false;
+    }
+
+    extractedRows = rows;
+    return true;
+  });
+
+  return extractedRows;
+}
+
+function collectReferencedVegaDatasetNames(spec: Record<string, unknown>): string[] {
+  const names: string[] = [];
+  const seenNames = new Set<string>();
+
+  walkVegaDataNodes(spec, (dataNode) => {
+    if (typeof dataNode.name !== 'string') {
+      return false;
+    }
+
+    const name = dataNode.name.trim();
+    if (name.length === 0 || seenNames.has(name)) {
+      return false;
+    }
+
+    seenNames.add(name);
+    names.push(name);
+    return false;
+  });
+
+  return names;
+}
+
+function extractVegaData(spec: Record<string, unknown>): Record<string, unknown>[] | null {
+  const inlineRows = extractInlineVegaData(spec);
+  if (inlineRows) return inlineRows;
 
   if (Array.isArray(spec.datasets)) {
     for (const dataset of spec.datasets) {
@@ -232,6 +374,14 @@ function extractVegaData(spec: Record<string, unknown>): Record<string, unknown>
 
   const datasets = asRecord(spec.datasets);
   if (datasets) {
+    const referencedDatasetNames = collectReferencedVegaDatasetNames(spec);
+    for (const datasetName of referencedDatasetNames) {
+      const dataset = datasets[datasetName];
+      if (!Array.isArray(dataset)) continue;
+      const rows = getRowsFromValues(dataset);
+      if (rows) return rows;
+    }
+
     for (const dataset of Object.values(datasets)) {
       if (!Array.isArray(dataset)) continue;
       const rows = getRowsFromValues(dataset);
@@ -239,21 +389,10 @@ function extractVegaData(spec: Record<string, unknown>): Record<string, unknown>
     }
   }
 
-  if (Array.isArray(spec.layer)) {
-    for (const layer of spec.layer) {
-      const layerRecord = asRecord(layer);
-      if (!layerRecord) continue;
-      const layerData = asRecord(layerRecord.data);
-      if (!layerData || !Array.isArray(layerData.values)) continue;
-      const rows = getRowsFromValues(layerData.values);
-      if (rows) return rows;
-    }
-  }
-
   return null;
 }
 
-function extractPlotlyData(payload: Record<string, unknown>): Record<string, unknown>[] | null {
+function getPlotlyTraces(payload: Record<string, unknown>): Record<string, unknown>[] {
   const figure = asRecord(payload.figure);
   const rawTraces =
     Array.isArray(payload.data)
@@ -262,9 +401,21 @@ function extractPlotlyData(payload: Record<string, unknown>): Record<string, unk
         ? figure.data
         : [];
 
-  const traces = rawTraces
+  return rawTraces
     .map((trace) => asRecord(trace))
     .filter((trace): trace is Record<string, unknown> => Boolean(trace));
+}
+
+function isPlotlyTraceSvgCapable(trace: Record<string, unknown>): boolean {
+  const traceType = typeof trace.type === 'string' ? trace.type.trim().toLowerCase() : 'scatter';
+  if (traceType.endsWith('gl')) {
+    return false;
+  }
+  return !PLOTLY_NON_SVG_TRACE_TYPES.has(traceType);
+}
+
+function extractPlotlyData(payload: Record<string, unknown>): Record<string, unknown>[] | null {
+  const traces = getPlotlyTraces(payload);
   if (traces.length === 0) return null;
 
   const rows: Record<string, unknown>[] = [];
@@ -316,13 +467,32 @@ export function hasExtractableData(kind: ChartKind, spec: Record<string, unknown
   return getRowsForCsv(kind, spec) !== null;
 }
 
-export function exportAsSvg(
-  _kind: ChartKind,
+export function hasSvgExportSupport(kind: ChartKind, spec: Record<string, unknown>): boolean {
+  if (kind !== 'plotly') {
+    return true;
+  }
+
+  const traces = getPlotlyTraces(spec);
+  if (traces.length === 0) {
+    return false;
+  }
+
+  return traces.every((trace) => isPlotlyTraceSvgCapable(trace));
+}
+
+export async function exportAsSvg(
+  kind: ChartKind,
   containerRef: RefObject<HTMLDivElement | null>,
   title: string
-): void {
+): Promise<void> {
   const container = containerRef.current;
   if (!container) return;
+
+  const filename = `${sanitizeFilename(title)}.svg`;
+  if (kind === 'plotly') {
+    await exportPlotlyAsSvg(container, filename);
+    return;
+  }
 
   const svgElement = getChartSvg(container);
   if (!svgElement) return;
@@ -330,7 +500,7 @@ export function exportAsSvg(
   const svgString = new XMLSerializer().serializeToString(cloneSvgForExport(svgElement));
   triggerBlobDownload(
     new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' }),
-    `${sanitizeFilename(title)}.svg`
+    filename
   );
 }
 

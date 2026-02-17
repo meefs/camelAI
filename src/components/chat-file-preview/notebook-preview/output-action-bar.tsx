@@ -14,6 +14,7 @@ import {
   exportAsSvg,
   exportDataAsCsv,
   hasExtractableData,
+  hasSvgExportSupport,
 } from './chart-export-utils';
 
 interface OutputActionBarProps {
@@ -30,6 +31,7 @@ export function OutputActionBar({
   title,
 }: OutputActionBarProps) {
   const canExportCsv = hasExtractableData(kind, spec);
+  const canExportSvg = hasSvgExportSupport(kind, spec);
 
   return (
     <div className="output-action-bar mt-1.5 flex items-center justify-end text-xs text-muted-foreground/60">
@@ -48,7 +50,10 @@ export function OutputActionBar({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => exportAsSvg(kind, containerRef, title)}>
+          <DropdownMenuItem
+            onClick={() => { void exportAsSvg(kind, containerRef, title); }}
+            disabled={!canExportSvg}
+          >
             <Download className="mr-2 size-3.5 text-muted-foreground" />
             Download as SVG
           </DropdownMenuItem>
