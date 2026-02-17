@@ -231,8 +231,14 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     const baseUrl = this.env.WORKER_BASE_URL;
     if (baseUrl) {
       try {
-        const envPrefix = getEnvPrefix(new URL(baseUrl).hostname);
-        return envPrefix ? `${envPrefix}.chiridion.app` : 'chiridion.app';
+        const hostname = new URL(baseUrl).hostname;
+        const envPrefix = getEnvPrefix(hostname);
+        if (envPrefix) return `${envPrefix}.chiridion.app`;
+        // WORKER_BASE_URL is set but not a chiridion.ai hostname (e.g. ngrok) → local dev
+        if (hostname !== 'chiridion.ai' && !hostname.endsWith('.chiridion.ai')) {
+          return 'local.chiridion.app';
+        }
+        return 'chiridion.app';
       } catch {
         return 'chiridion.app';
       }
@@ -575,9 +581,15 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
         }
 
         // Get env prefix for building screenshot URL
-        const envPrefix = this.env.WORKER_BASE_URL
-          ? getEnvPrefix(new URL(this.env.WORKER_BASE_URL).hostname)
-          : '';
+        const envPrefix = (() => {
+          if (!this.env.WORKER_BASE_URL) return '';
+          const hostname = new URL(this.env.WORKER_BASE_URL).hostname;
+          const prefix = getEnvPrefix(hostname);
+          if (prefix) return prefix;
+          // WORKER_BASE_URL set but not a chiridion.ai hostname (e.g. ngrok) → local dev
+          if (hostname !== 'chiridion.ai' && !hostname.endsWith('.chiridion.ai')) return 'local';
+          return '';
+        })();
 
         // Create screenshot token for private apps
         let screenshotToken: string | undefined;
