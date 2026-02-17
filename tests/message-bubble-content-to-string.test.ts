@@ -38,4 +38,17 @@ describe('contentToString', () => {
     ];
     expect(contentToString(blocks)).toBe('[Update from alice]\nI fixed the failing test.');
   });
+
+  it('serializes task notification blocks as task status lines', () => {
+    const blocks: ContentBlock[] = [
+      {
+        type: 'task_notification',
+        taskId: 'task_123',
+        outputFile: '/mnt/user-outputs/task_123.md',
+        status: 'completed',
+        summary: 'Report generation finished.',
+      },
+    ];
+    expect(contentToString(blocks)).toBe('[Task completed] Report generation finished.');
+  });
 });

@@ -13,7 +13,14 @@ export function stripAnsi(str: string): string {
 function isContentBlock(value: unknown): value is ContentBlock {
   if (!value || typeof value !== 'object' || !('type' in value)) return false;
   const type = (value as { type?: string }).type;
-  return type === 'text' || type === 'tool_use' || type === 'tool_result' || type === 'thinking';
+  return (
+    type === 'text' ||
+    type === 'tool_use' ||
+    type === 'tool_result' ||
+    type === 'thinking' ||
+    type === 'teammate_message' ||
+    type === 'task_notification'
+  );
 }
 
 function coerceContentBlocks(value: unknown): ContentBlock[] | null {
@@ -41,6 +48,8 @@ export function normalizeToolResultContent(content: unknown): string {
         if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
         if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${safeJsonStringify(block.input)}`;
         if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
+        if (block.type === 'teammate_message') return `[Update from ${block.teammateId}]\n${block.content}`;
+        if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
         return safeJsonStringify(block);
       })
       .filter(Boolean)

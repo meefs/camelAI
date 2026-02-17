@@ -1,5 +1,13 @@
-import type { ContentBlock, Message, TeammateMessageBlock, ToolResultBlock, ToolUseBlock } from '@/types';
+import type {
+  ContentBlock,
+  Message,
+  TaskNotificationBlock,
+  TeammateMessageBlock,
+  ToolResultBlock,
+  ToolUseBlock,
+} from '@/types';
 import { parseTeammateMessage } from '@/lib/teammate-message';
+import { parseTaskNotificationFromContent } from '@/lib/task-notification';
 
 export interface SDKEvent {
   type: string;
@@ -372,6 +380,135 @@ export function mergeTeammateMessages(messages: Message[]): Message[] {
       ...assistantMsg,
       content: [...existingContent, teammateBlock],
     };
+    changed = true;
+  }
+
+  return changed ? result : messages;
+}
+
+/**
+ * Merge task notifications into assistant content so they render as tool-call rows.
+ *
+ * Task notifications arrive as `role: "user"` messages containing
+ * `<task-notification>` XML. This function removes those messages and appends
+ * a `task_notification` block to the assistant message that owns the referenced
+ * tool use (`sourceToolUseID`) when available, otherwise to the nearest
+ * preceding assistant message. If no assistant message exists yet, it creates
+ * a synthetic assistant message so raw XML is never shown in the transcript.
+ */
+export function mergeTaskNotifications(messages: Message[]): Message[] {
+  const result: Message[] = [];
+  let changed = false;
+  const fullToolUseIndex = buildToolUseIndex(messages);
+  const resultAssistantIndexBySourceIndex = new Map<number, number>();
+  const queuedByAssistantSourceIndex = new Map<
+    number,
+    Array<{ sourceMessage: Message; taskBlock: TaskNotificationBlock }>
+  >();
+
+  const appendTaskBlockToAssistant = (assistantResultIndex: number, taskBlock: TaskNotificationBlock) => {
+    const assistantMsg = result[assistantResultIndex];
+    const existingContent = coerceMessageContent(assistantMsg.content);
+    result[assistantResultIndex] = {
+      ...assistantMsg,
+      content: [...existingContent, taskBlock],
+    };
+  };
+
+  const enqueueForAssistant = (
+    assistantSourceIndex: number,
+    sourceMessage: Message,
+    taskBlock: TaskNotificationBlock
+  ) => {
+    const existing = queuedByAssistantSourceIndex.get(assistantSourceIndex);
+    if (existing) {
+      existing.push({ sourceMessage, taskBlock });
+      return;
+    }
+    queuedByAssistantSourceIndex.set(assistantSourceIndex, [{ sourceMessage, taskBlock }]);
+  };
+
+  const flushQueuedForAssistant = (assistantSourceIndex: number, assistantResultIndex: number) => {
+    const queued = queuedByAssistantSourceIndex.get(assistantSourceIndex);
+    if (!queued || queued.length === 0) return;
+
+    queued.forEach(({ taskBlock }) => {
+      appendTaskBlockToAssistant(assistantResultIndex, taskBlock);
+    });
+    queuedByAssistantSourceIndex.delete(assistantSourceIndex);
+  };
+
+  for (const [sourceIndex, msg] of messages.entries()) {
+    if (msg.role !== 'user') {
+      result.push(msg);
+      if (msg.role === 'assistant') {
+        const assistantResultIndex = result.length - 1;
+        resultAssistantIndexBySourceIndex.set(sourceIndex, assistantResultIndex);
+        flushQueuedForAssistant(sourceIndex, assistantResultIndex);
+      }
+      continue;
+    }
+
+    const parsed = parseTaskNotificationFromContent(msg.content);
+    if (!parsed) {
+      result.push(msg);
+      continue;
+    }
+
+    const taskBlock: TaskNotificationBlock = {
+      type: 'task_notification',
+      taskId: parsed.taskId,
+      outputFile: parsed.outputFile,
+      status: parsed.status,
+      summary: parsed.summary,
+    };
+
+    const sourceToolUseId = msg.sourceToolUseID;
+    const sourceToolEntry = sourceToolUseId
+      ? fullToolUseIndex.get(sourceToolUseId)
+      : undefined;
+
+    if (typeof sourceToolEntry?.messageIndex === 'number') {
+      const resolvedAssistantResultIndex = resultAssistantIndexBySourceIndex.get(sourceToolEntry.messageIndex);
+      if (typeof resolvedAssistantResultIndex === 'number') {
+        appendTaskBlockToAssistant(resolvedAssistantResultIndex, taskBlock);
+      } else {
+        enqueueForAssistant(sourceToolEntry.messageIndex, msg, taskBlock);
+      }
+      changed = true;
+      continue;
+    }
+
+    const targetAssistantIndex = findLastAssistantIndex(result);
+
+    if (targetAssistantIndex === -1) {
+      result.push({
+        id: `task_notification_${msg.id}`,
+        thread_id: msg.thread_id,
+        role: 'assistant',
+        content: [taskBlock],
+        created_at: msg.created_at,
+      });
+      changed = true;
+      continue;
+    }
+
+    appendTaskBlockToAssistant(targetAssistantIndex, taskBlock);
+    changed = true;
+  }
+
+  if (queuedByAssistantSourceIndex.size > 0) {
+    queuedByAssistantSourceIndex.forEach(queued => {
+      queued.forEach(({ sourceMessage, taskBlock }) => {
+        result.push({
+          id: `task_notification_${sourceMessage.id}`,
+          thread_id: sourceMessage.thread_id,
+          role: 'assistant',
+          content: [taskBlock],
+          created_at: sourceMessage.created_at,
+        });
+      });
+    });
     changed = true;
   }
 

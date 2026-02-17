@@ -64,7 +64,21 @@ export interface TeammateMessageBlock {
   content: string;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock | TeammateMessageBlock;
+export interface TaskNotificationBlock {
+  type: 'task_notification';
+  taskId: string;
+  outputFile: string;
+  status: string;
+  summary: string;
+}
+
+export type ContentBlock =
+  | TextBlock
+  | ToolUseBlock
+  | ToolResultBlock
+  | ThinkingBlock
+  | TeammateMessageBlock
+  | TaskNotificationBlock;
 
 export interface Message {
   id: string;
