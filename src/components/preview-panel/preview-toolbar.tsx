@@ -136,7 +136,12 @@ function triggerDownload(url: string, filename?: string) {
   });
 }
 
-function getDownloadFormats(target: PreviewTarget): { label: string; filename: string }[] {
+interface DownloadFormat {
+  label: string;
+  filename: string;
+}
+
+function getDownloadFormats(target: PreviewTarget): DownloadFormat[] {
   if (target.kind === 'app') return [];
 
   const ext = getFileExtension(target.path);
@@ -179,12 +184,16 @@ function DownloadButton({
   const formats = getDownloadFormats(activeTarget);
   if (!formats.length) return null;
 
+  const handleFormatSelect = (format: DownloadFormat) => {
+    triggerDownload(filePreviewOpenUrl, format.filename);
+  };
+
   if (formats.length === 1) {
     return (
       <ToolbarButton
         icon={Download}
         tooltip="Download"
-        onClick={() => triggerDownload(filePreviewOpenUrl, formats[0].filename)}
+        onClick={() => handleFormatSelect(formats[0])}
       />
     );
   }
@@ -205,8 +214,9 @@ function DownloadButton({
         {formats.map((format) => (
           <DropdownMenuItem
             key={format.label}
-            onClick={() => triggerDownload(filePreviewOpenUrl, format.filename)}
+            onClick={() => handleFormatSelect(format)}
           >
+            <Download className="mr-2 size-3.5 text-muted-foreground" />
             {format.label}
           </DropdownMenuItem>
         ))}
@@ -242,7 +252,10 @@ function NotebookToolbarActions({
   filePreviewOpenUrl,
 }: Pick<
   PreviewToolbarProps,
-  'notebookViewMode' | 'onNotebookViewModeChange' | 'activeTarget' | 'filePreviewOpenUrl'
+  | 'notebookViewMode'
+  | 'onNotebookViewModeChange'
+  | 'activeTarget'
+  | 'filePreviewOpenUrl'
 >) {
   return (
     <>
@@ -265,7 +278,10 @@ function NotebookToolbarActions({
         </TabsList>
       </Tabs>
       <Separator orientation="vertical" className="mx-1 h-4 data-[orientation=vertical]:self-auto" />
-      <DownloadButton activeTarget={activeTarget} filePreviewOpenUrl={filePreviewOpenUrl} />
+      <DownloadButton
+        activeTarget={activeTarget}
+        filePreviewOpenUrl={filePreviewOpenUrl}
+      />
     </>
   );
 }

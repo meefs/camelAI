@@ -108,7 +108,7 @@ OAuth integrations with expiring tokens are refreshed by `WorkspaceDO` alarms. U
 Deploy enqueues screenshot job → Browser Rendering → JPEG stored in R2 at `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg` → served via `/api/apps/:scriptName/preview`.
 
 ### Notebook File Previews
-Notebook previews render in the chat preview panel with two modes: **Report** (editorial rendering with TOC, hidden code, styled outputs) and **Notebook** (full cell-by-cell with execution gutters). Supports Vega/Vega-Lite, Plotly, DataFrame tables (native React rendering capped at 100 rows with CSV download), and generic HTML in sandboxed iframes.
+Notebook previews render in the chat preview panel with two modes: **Report** (editorial rendering with TOC, hidden code, styled outputs) and **Notebook** (full cell-by-cell with execution gutters). Supports Vega/Vega-Lite, Plotly, DataFrame tables (native React rendering capped at 100 rows with CSV download), and generic HTML in sandboxed iframes. Export options include toolbar download of raw `.ipynb` plus per-chart output downloads (SVG/PNG/CSV). Report-level PDF export is not supported.
 
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization

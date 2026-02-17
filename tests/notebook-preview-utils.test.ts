@@ -292,14 +292,10 @@ describe('notebook preview utils', () => {
         },
       };
 
-      let render: ReturnType<typeof getOutputRender> | null = null;
-      expect(() => {
-        render = getOutputRender(output);
-      }).not.toThrow();
-
-      expect(render?.kind).toBe('table');
-      if (!render || render.kind !== 'table') {
-        throw new Error(`Expected table output, got ${render?.kind ?? 'unknown'}`);
+      const render = getOutputRender(output);
+      expect(render.kind).toBe('table');
+      if (render.kind !== 'table') {
+        throw new Error(`Expected table output, got ${render.kind}`);
       }
 
       expect(render.table.rows.length).toBe(rowCount);

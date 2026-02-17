@@ -17,7 +17,7 @@ export function ReportFooter({
     .join('  ·  ');
 
   return (
-    <div className="mt-12">
+    <div className="report-footer mt-12">
       <Separator />
       <div className="flex items-center justify-between pt-3">
         <span className="font-mono text-[10px] text-muted-foreground/40">

@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { cn } from '@/lib/utils';
 import type { NotebookOutput } from './types';
 import { getOutputRender } from './utils';
@@ -5,12 +6,45 @@ import { NotebookHtmlOutput } from './html-output';
 import { PlotlyChart } from './plotly-chart';
 import { VegaLiteChart } from './vega-lite-chart';
 import { NotebookTable } from './notebook-table';
+import { OutputActionBar } from './output-action-bar';
 
 interface OutputRendererProps {
   output: NotebookOutput;
   mode: 'report' | 'notebook';
   layout: 'panel' | 'dialog';
   title: string;
+}
+
+interface ChartOutputWithActionsProps {
+  kind: 'vegalite' | 'plotly';
+  spec: Record<string, unknown>;
+  title: string;
+}
+
+function ChartOutputWithActions({
+  kind,
+  spec,
+  title,
+}: ChartOutputWithActionsProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  return (
+    <div className="w-full min-w-0">
+      <div ref={containerRef}>
+        {kind === 'vegalite' ? (
+          <VegaLiteChart spec={spec} title={title} />
+        ) : (
+          <PlotlyChart payload={spec} title={title} />
+        )}
+      </div>
+      <OutputActionBar
+        kind={kind}
+        containerRef={containerRef}
+        spec={spec}
+        title={title}
+      />
+    </div>
+  );
 }
 
 export function OutputRenderer({
@@ -34,17 +68,13 @@ export function OutputRenderer({
 
   if (render.kind === 'vegalite') {
     return (
-      <div className="w-full min-w-0">
-        <VegaLiteChart spec={render.spec} title={title} />
-      </div>
+      <ChartOutputWithActions kind="vegalite" spec={render.spec} title={title} />
     );
   }
 
   if (render.kind === 'plotly') {
     return (
-      <div className="w-full min-w-0">
-        <PlotlyChart payload={render.payload} title={title} />
-      </div>
+      <ChartOutputWithActions kind="plotly" spec={render.payload} title={title} />
     );
   }
 

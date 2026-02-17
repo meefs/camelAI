@@ -46,7 +46,7 @@ export function ReportSidebar({ entries }: ReportSidebarProps) {
   if (entries.length === 0) return null;
 
   return (
-    <nav className="sticky top-4 hidden w-44 shrink-0 self-start pt-2 @3xl:block">
+    <nav className="report-sidebar sticky top-4 hidden w-44 shrink-0 self-start pt-2 @3xl:block">
       <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground/50">
         Contents
       </p>

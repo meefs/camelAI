@@ -232,6 +232,7 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
           onClick={downloadCsv}
           disabled={!hasCsvData}
           className={cn(
+            'notebook-table-download-btn',
             'inline-flex shrink-0 items-center gap-1 text-xs transition-colors',
             hasCsvData
               ? 'text-muted-foreground/70 hover:text-foreground'
