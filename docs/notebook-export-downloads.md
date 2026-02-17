@@ -1,5 +1,15 @@
 # Notebook Export & Individual Output Downloads
 
+## Status (February 17, 2026)
+
+Report-level PDF export has been removed from the product and codebase.
+
+Current supported behavior:
+1. Toolbar download for raw `.ipynb`
+2. Per-chart/per-table downloads (CSV/PNG/SVG where supported)
+
+The remainder of this document is retained as historical implementation context from the original proposal.
+
 ## Problem
 
 The notebook preview panel has a single download option: download the raw `.ipynb` file. Users want two additional capabilities:
