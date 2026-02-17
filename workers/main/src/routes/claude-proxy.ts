@@ -3,13 +3,12 @@
  *
  * Proxies Anthropic API requests from the sandbox container.
  * Uses CF AI Gateway with Bedrock as primary and Anthropic as fallback.
- * Validates signed tokens and tracks spend per org.
+ * Authenticates via sandbox-host injected headers and tracks spend per org.
  */
 
 import { waitUntil } from 'cloudflare:workers';
 import type { RouteContext } from '../types.js';
 import type { OrgDO } from '../auth.js';
-import { isSignedToken, validateSignedToken } from '../signed-tokens.js';
 import { validateSandboxProxy } from '../sandbox-auth.js';
 import {
   transformRequestForBedrock,
@@ -20,20 +19,6 @@ import {
   type UsageInfo,
 } from '../adapters/bedrock.js';
 import { calculateCostCents, checkSpendLimitsFromKV } from '../lib/cost-calculation.js';
-
-/**
- * Extract API key from Authorization header (Bearer token) or x-api-key header
- */
-function extractApiKey(request: Request): string | null {
-  const auth = request.headers.get('authorization');
-  if (auth) {
-    const [scheme, token] = auth.split(' ');
-    if (scheme?.toLowerCase() === 'bearer' && token) {
-      return token.trim();
-    }
-  }
-  return request.headers.get('x-api-key')?.trim() || null;
-}
 
 /**
  * Headers to forward from client to Anthropic API
@@ -50,22 +35,6 @@ function extractAnthropicHeaders(request: Request): Record<string, string> {
     if (value) headers[name] = value;
   }
   return headers;
-}
-
-/**
- * Check if token has claude_api scope
- */
-function hasClaudeApiScope(scopes: string[] | undefined): boolean {
-  if (!scopes || scopes.length === 0) return false;
-  const normalized = scopes.map((s) => s.toLowerCase());
-  return normalized.some(
-    (scope) =>
-      scope === 'claude_api' ||
-      scope === 'llm' ||
-      scope === '*' ||
-      scope === 'all' ||
-      scope === 'admin'
-  );
 }
 
 /**
@@ -216,46 +185,13 @@ export async function handleCountTokens({ req, env }: RouteContext): Promise<Res
     });
   }
 
-  // Check sandbox proxy secret first (static secret from sandbox host)
+  // Require sandbox-host proxy identity headers.
   const proxyAuth = validateSandboxProxy(req, env);
   if (!proxyAuth.valid) {
-    // Fall back to signed token validation
-    const apiKey = extractApiKey(req);
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: 'Missing API key' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (!env.TOKEN_SIGNING_SECRET) {
-      return new Response(JSON.stringify({ error: 'Token signing not configured' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (!isSignedToken(apiKey)) {
-      return new Response(JSON.stringify({ error: 'Invalid API key format' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    const payload = await validateSignedToken(env.TOKEN_SIGNING_SECRET, apiKey);
-    if (!payload) {
-      return new Response(JSON.stringify({ error: 'Invalid or expired API key' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (!hasClaudeApiScope(payload.scopes)) {
-      return new Response(JSON.stringify({ error: 'API key lacks claude_api scope' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
+    return new Response(JSON.stringify({ error: 'Unauthorized: sandbox proxy auth required' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   // Require ANTHROPIC_API_KEY secret for direct Anthropic API calls
@@ -303,52 +239,15 @@ export async function handleClaudeProxy({ req, env, ctx }: RouteContext): Promis
     });
   }
 
-  // Check sandbox proxy secret first (static secret from sandbox host)
-  let orgId: string;
+  // Require sandbox-host proxy identity headers.
   const proxyAuth = validateSandboxProxy(req, env);
-  if (proxyAuth.valid) {
-    orgId = proxyAuth.orgId;
-  } else {
-    // Fall back to signed token validation
-    const apiKey = extractApiKey(req);
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: 'Missing API key' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (!env.TOKEN_SIGNING_SECRET) {
-      return new Response(JSON.stringify({ error: 'Token signing not configured' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (!isSignedToken(apiKey)) {
-      return new Response(JSON.stringify({ error: 'Invalid API key format' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    const payload = await validateSignedToken(env.TOKEN_SIGNING_SECRET, apiKey);
-    if (!payload) {
-      return new Response(JSON.stringify({ error: 'Invalid or expired API key' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (!hasClaudeApiScope(payload.scopes)) {
-      return new Response(JSON.stringify({ error: 'API key lacks claude_api scope' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    orgId = payload.org_id;
+  if (!proxyAuth.valid) {
+    return new Response(JSON.stringify({ error: 'Unauthorized: sandbox proxy auth required' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
+  const orgId = proxyAuth.orgId;
 
   // Extract headers to forward to Anthropic
   const clientHeaders = extractAnthropicHeaders(req);

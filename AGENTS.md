@@ -83,6 +83,12 @@ Incomplete users are redirected to `/onboarding` before accessing `_app` routes.
 4. On reconnects, `ChatThreadDO` sends `lastSeq`, replays missed events, dedupes, resumes streaming
 5. Claude SDK stores messages in JSONL at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`
 
+### Sandbox Proxy Auth
+- Container egress calls go through sandbox-host `/proxy/:threadId/*`.
+- Sandbox-host injects `x-sandbox-secret`, `x-chiridion-org-id`, `x-chiridion-workspace-id`, and `x-chiridion-thread-id` on upstream worker requests.
+- `claude-proxy` (`/api/claude/v1/messages` and `/api/claude/v1/messages/count_tokens`) accepts only sandbox-host injected auth (no signed-token fallback path).
+- Proxy thread mappings are session-based: active while chat WS is open; on close they enter close-grace (`PROXY_SESSION_CLOSE_GRACE_MS`) and then are cleaned up.
+
 ### Slash Commands
 Users send Claude SDK slash commands as their entire message. `ChatThreadDO.formatAttributedUserMessage()` strips the author prefix. Supported: `/compact`, `/context`, `/debug`, `/insights`, `/security-review`. Allowlist in `ChatThreadDO.SLASH_COMMANDS` (`workers/main/src/durable-objects.ts`).
 

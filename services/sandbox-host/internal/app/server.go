@@ -659,15 +659,18 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 	threadContext := s.proxyThreads[threadKey]
 	now := time.Now().UTC()
 	if threadContext != nil {
-		if threadContext.ExpiresAt.After(now) && threadContext.ContainerName == caller.Name {
-			threadContext.LastSeenAt = now
-			threadContext.ExpiresAt = now.Add(s.cfg.ProxyThreadActiveTTL)
-			threadContext.ClosedAt = nil
-			upsertedThread = copyProxyThreadContext(threadContext)
-		} else {
+		if threadContext.ContainerName != caller.Name {
 			threadContext = nil
 			delete(s.proxyThreads, threadKey)
 			removedThread = true
+		} else if threadContext.ClosedAt != nil && !threadContext.ExpiresAt.After(now) {
+			// Closed thread mappings are only valid through close-grace.
+			threadContext = nil
+			delete(s.proxyThreads, threadKey)
+			removedThread = true
+		} else {
+			threadContext.LastSeenAt = now
+			upsertedThread = copyProxyThreadContext(threadContext)
 		}
 	}
 	s.proxyMu.Unlock()
@@ -813,7 +816,7 @@ func (s *Server) findActiveProxyThreadByThreadID(threadID string, now time.Time)
 		if ctx == nil || ctx.ThreadID != threadID {
 			continue
 		}
-		if !ctx.ExpiresAt.After(now) {
+		if ctx.ClosedAt != nil {
 			continue
 		}
 		if found != nil && foundKey != key {
@@ -845,6 +848,9 @@ func (s *Server) cleanupExpiredProxyThreads() {
 
 	s.proxyMu.Lock()
 	for key, thread := range s.proxyThreads {
+		if thread.ClosedAt == nil {
+			continue
+		}
 		if thread.ExpiresAt.After(now) {
 			continue
 		}
@@ -889,7 +895,9 @@ func (s *Server) loadProxyThreadsFromState() {
 
 	s.proxyMu.Lock()
 	for _, record := range records {
-		if !record.ExpiresAt.After(now) {
+		// Restore open mappings regardless of ExpiresAt.
+		// For closed mappings, only restore entries still within close-grace.
+		if record.ClosedAt != nil && !record.ExpiresAt.After(now) {
 			continue
 		}
 		s.proxyThreads[record.Key] = &ProxyThreadContext{
@@ -909,6 +917,10 @@ func (s *Server) loadProxyThreadsFromState() {
 	s.proxyMu.Unlock()
 
 	for _, record := range records {
+		// Keep open mappings in durable state; only purge expired closed-grace mappings.
+		if record.ClosedAt == nil {
+			continue
+		}
 		if record.ExpiresAt.After(now) {
 			continue
 		}

@@ -65,16 +65,28 @@ func TestLoadProxyThreadsFromState(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	now := time.Now().UTC()
-	active := state.ProxyThreadRecord{
-		Key:           "sandbox-a::thread-active",
+	open := state.ProxyThreadRecord{
+		Key:           "sandbox-a::thread-open",
 		ContainerName: "sandbox-a",
 		OrgID:         "org-1",
 		WorkspaceID:   "ws-1",
-		ThreadID:      "thread-active",
+		ThreadID:      "thread-open",
 		WorkerBaseURL: "https://worker.example.com",
 		CreatedAt:     now.Add(-2 * time.Minute),
 		LastSeenAt:    now.Add(-1 * time.Minute),
 		ExpiresAt:     now.Add(2 * time.Minute),
+	}
+	closedGrace := state.ProxyThreadRecord{
+		Key:           "sandbox-a::thread-closed",
+		ContainerName: "sandbox-a",
+		OrgID:         "org-1",
+		WorkspaceID:   "ws-1",
+		ThreadID:      "thread-closed",
+		WorkerBaseURL: "https://worker.example.com",
+		CreatedAt:     now.Add(-3 * time.Minute),
+		LastSeenAt:    now.Add(-30 * time.Second),
+		ExpiresAt:     now.Add(90 * time.Second),
+		ClosedAt:      ptrTime(now.Add(-10 * time.Second)),
 	}
 	expired := state.ProxyThreadRecord{
 		Key:           "sandbox-a::thread-expired",
@@ -86,10 +98,14 @@ func TestLoadProxyThreadsFromState(t *testing.T) {
 		CreatedAt:     now.Add(-5 * time.Minute),
 		LastSeenAt:    now.Add(-4 * time.Minute),
 		ExpiresAt:     now.Add(-1 * time.Minute),
+		ClosedAt:      ptrTime(now.Add(-2 * time.Minute)),
 	}
 
-	if err := store.UpsertProxyThread(active); err != nil {
-		t.Fatalf("upsert active thread: %v", err)
+	if err := store.UpsertProxyThread(open); err != nil {
+		t.Fatalf("upsert open thread: %v", err)
+	}
+	if err := store.UpsertProxyThread(closedGrace); err != nil {
+		t.Fatalf("upsert closed grace thread: %v", err)
 	}
 	if err := store.UpsertProxyThread(expired); err != nil {
 		t.Fatalf("upsert expired thread: %v", err)
@@ -101,20 +117,34 @@ func TestLoadProxyThreadsFromState(t *testing.T) {
 	}
 	server.loadProxyThreadsFromState()
 
-	if _, ok := server.proxyThreads[active.Key]; !ok {
-		t.Fatalf("expected active proxy thread %q to be restored", active.Key)
+	if _, ok := server.proxyThreads[closedGrace.Key]; !ok {
+		t.Fatalf("expected closed-grace proxy thread %q to be restored", closedGrace.Key)
+	}
+	if _, ok := server.proxyThreads[open.Key]; !ok {
+		t.Fatalf("expected open proxy thread %q to be restored", open.Key)
 	}
 	if _, ok := server.proxyThreads[expired.Key]; ok {
-		t.Fatalf("expected expired proxy thread %q to be skipped", expired.Key)
+		t.Fatalf("did not expect expired proxy thread %q to be restored", expired.Key)
 	}
 
 	records, err := store.LoadProxyThreads()
 	if err != nil {
 		t.Fatalf("load proxy threads after hydration: %v", err)
 	}
-	if len(records) != 1 || records[0].Key != active.Key {
-		t.Fatalf("expected only active thread to remain persisted, got: %+v", records)
+	if len(records) != 2 {
+		t.Fatalf("expected open + closed-grace threads to remain persisted, got: %+v", records)
 	}
+	recordKeys := map[string]bool{}
+	for _, record := range records {
+		recordKeys[record.Key] = true
+	}
+	if !recordKeys[open.Key] || !recordKeys[closedGrace.Key] || recordKeys[expired.Key] {
+		t.Fatalf("unexpected persisted record keys: %+v", recordKeys)
+	}
+}
+
+func ptrTime(v time.Time) *time.Time {
+	return &v
 }
 
 func TestApplyStreamingRequestHeaders(t *testing.T) {
