@@ -12,7 +12,7 @@
 		"preview": "bun run build && vite preview",
 		"test": "vitest",
 		"typecheck": "bun run cf-typegen && react-router typegen && tsc -b",
-		"shadcn": "bun shadcn"
+		"shadcn": "shadcn"
 	},
 	"dependencies": {
 		"@ai-sdk/react": "^3.0.0",
