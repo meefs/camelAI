@@ -51,6 +51,7 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
 4. **Sandbox** (`sandbox/`)
    - `control-plane.mjs` - In-sandbox control plane server + Claude Agent SDK session runner
    - `memory-logger.mjs` - Runner helper for loading user profile context
+   - `create-worker/` - Project scaffolders (`create-worker` for starter apps, `create-notebook-worker` for static notebook viewer workers)
    - `session-search/` - Session search CLI/daemon used inside workspaces
    - `skills/` - Agent skills (data-analysis, developing-software, file-sharing, testing-debugging)
 

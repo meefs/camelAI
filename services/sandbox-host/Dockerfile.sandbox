@@ -41,7 +41,9 @@ RUN chmod 755 /opt/chiridion/control-plane.mjs && \
     chmod 644 /opt/chiridion/memory-logger.mjs && \
     chmod +x /opt/chiridion/entrypoint.sh && \
     chmod +x /usr/local/lib/create-worker/create-worker.mjs && \
-    ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker
+    chmod +x /usr/local/lib/create-worker/create-notebook-worker.mjs && \
+    ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker && \
+    ln -sf /usr/local/lib/create-worker/create-notebook-worker.mjs /usr/local/bin/create-notebook-worker
 
 WORKDIR /home/claude
 
