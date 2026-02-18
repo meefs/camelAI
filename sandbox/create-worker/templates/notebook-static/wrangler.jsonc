@@ -1,0 +1,10 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "notebook-static",
+	"compatibility_date": "2025-04-04",
+	"main": "./worker/index.ts",
+	"observability": {
+		"enabled": true
+	},
+	"assets": { "directory": "./dist", "binding": "ASSETS" }
+}

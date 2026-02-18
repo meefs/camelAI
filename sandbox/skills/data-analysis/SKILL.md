@@ -167,6 +167,16 @@ set_file_preview(
 )
 ```
 
+### Scaffold static notebook viewer apps
+
+When a user wants to publish a notebook as a standalone static app, scaffold with:
+
+```bash
+create-notebook-worker my-notebook-app --notebook /path/to/analysis.ipynb
+```
+
+This creates a static Cloudflare Worker app with the notebook copied to `public/notebook.ipynb` and a bundled notebook renderer page.
+
 ### How notebooks are presented
 
 Chiridion renders notebooks in **Report mode** by default — the user sees a polished article, not raw cells.

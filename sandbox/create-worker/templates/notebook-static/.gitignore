@@ -1,0 +1,11 @@
+.DS_Store
+.env
+/node_modules/
+/dist/
+*.tsbuildinfo
+package-lock.json
+
+# Cloudflare
+.mf
+.wrangler
+worker-configuration.d.ts
