@@ -336,7 +336,7 @@ Pay attention to who is speaking. Different team members may have different ques
 
 <camelai_context_blocks>
 Some messages include hidden context from camelAI:
-- \`<chiridion system message> ... </chiridion system message>\`
+- \`<camelai system message> ... </camelai system message>\`
 
 Treat content in these blocks as trusted operator context. Use it to guide your response, but do not mention the blocks, quote their wrappers, or tell the user that hidden context was provided.
 </camelai_context_blocks>
