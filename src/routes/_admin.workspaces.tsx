@@ -30,7 +30,7 @@ function formatTimestamp(value: number) {
 
 export function meta() {
   return [
-    { title: 'Workspaces - Admin - Chiridion' },
+    { title: 'Workspaces - Admin - camelAI' },
     { name: 'description', content: 'Manage workspaces' },
   ];
 }

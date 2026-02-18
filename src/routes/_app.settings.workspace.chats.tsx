@@ -46,7 +46,7 @@ function formatRelativeTime(ts: number) {
 
 export function meta() {
   return [
-    { title: 'Chats - Workspace Settings - Chiridion' },
+    { title: 'Chats - Workspace Settings - camelAI' },
     { name: 'description', content: 'Manage workspace chats' },
   ];
 }

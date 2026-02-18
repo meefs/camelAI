@@ -24,7 +24,7 @@ function formatTimestamp(value: number) {
 
 export function meta({ data }: Route.MetaArgs) {
   return [
-    { title: data?.app ? `${data.app.script_name} - Admin - Chiridion` : 'App - Admin - Chiridion' },
+    { title: data?.app ? `${data.app.script_name} - Admin - camelAI` : 'App - Admin - camelAI' },
     { name: 'description', content: 'View app details' },
   ];
 }

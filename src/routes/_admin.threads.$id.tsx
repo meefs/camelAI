@@ -31,7 +31,7 @@ function getTextContent(content: string | Array<{ type: string; text?: string }>
 
 export function meta({ data }: Route.MetaArgs) {
   return [
-    { title: data?.thread ? `${data.thread.title} - Admin - Chiridion` : 'Thread - Admin - Chiridion' },
+    { title: data?.thread ? `${data.thread.title} - Admin - camelAI` : 'Thread - Admin - camelAI' },
     { name: 'description', content: 'View thread details' },
   ];
 }

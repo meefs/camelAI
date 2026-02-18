@@ -9,7 +9,7 @@ import { sendOrgInvitationEmail, resolveAppBaseUrl } from '@/lib/email.server';
 
 export function meta() {
   return [
-    { title: 'Admin Dashboard - Chiridion' },
+    { title: 'Admin Dashboard - camelAI' },
     { name: 'description', content: 'Admin dashboard' },
   ];
 }

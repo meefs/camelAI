@@ -40,7 +40,7 @@ const roleBadgeClasses: Record<string, string> = {
 
 export function meta({ data }: Route.MetaArgs) {
   return [
-    { title: data?.user ? `${data.user.email} - Admin - Chiridion` : 'User - Admin - Chiridion' },
+    { title: data?.user ? `${data.user.email} - Admin - camelAI` : 'User - Admin - camelAI' },
     { name: 'description', content: 'View user details' },
   ];
 }

@@ -79,11 +79,11 @@ export default function AppsClient({
     if (chatFetcher.state !== 'idle' || !chatFetcher.data) return;
 
     if (chatFetcher.data.thread && pendingChatAppRef.current) {
-      // Build the chiridion system message
+      // Build the camelai system message
       const app = pendingChatAppRef.current;
       const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
       const sourceInfo = app.config_path ? ` The app's wrangler config is at "${app.config_path}".` : '';
-      const systemMessage = `<chiridion system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</chiridion system message>`;
+      const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
 
       // Store message in sessionStorage for the chat page to pick up
       sessionStorage.setItem(

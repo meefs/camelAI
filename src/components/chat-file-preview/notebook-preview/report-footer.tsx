@@ -21,7 +21,7 @@ export function ReportFooter({
       <Separator />
       <div className="flex items-center justify-between pt-3">
         <span className="font-mono text-[10px] text-muted-foreground/40">
-          Rendered by Chiridion
+          Rendered by camelAI
         </span>
         <span className="font-mono text-[10px] text-muted-foreground/40">
           {rightText}

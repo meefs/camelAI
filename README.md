@@ -1,6 +1,6 @@
-# Chiridion App
+# camelAI
 
-Chiridion is an AI coding assistant platform built on Cloudflare Workers + Durable Objects with Docker + gVisor sandbox runtimes on Azure VMs.
+camelAI is an AI coding assistant platform built on Cloudflare Workers + Durable Objects with Docker + gVisor sandbox runtimes on Azure VMs.
 
 ## Prerequisites
 

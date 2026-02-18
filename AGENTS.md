@@ -1,10 +1,10 @@
-# Chiridion App - Agent Documentation
+# camelAI - Agent Documentation
 
 > **Note to agents:** Keep this file up to date. When you add new features, workers, API routes, or make significant architectural changes, update the relevant sections of this document.
 
 ## Overview
 
-Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. Users chat with a Claude-powered agent that has a persistent workspace where files survive across sessions. Users create applications by having the agent write code, then publish them to live `*.camelai.app` URLs. The app supports integrations (connections) to external services.
+camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Users chat with a Claude-powered agent that has a persistent workspace where files survive across sessions. Users create applications by having the agent write code, then publish them to live `*.camelai.app` URLs. The app supports integrations (connections) to external services.
 
 ## Architecture
 
@@ -38,7 +38,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
    - Cloudflare Workers SSR via `@cloudflare/vite-plugin`
 
 2. **Workers** (`workers/`)
-   - `main/` - Main Chiridion app worker (SSR, Durable Objects, WebSocket routing, OAuth, MCP)
+   - `main/` - Main camelAI app worker (SSR, Durable Objects, WebSocket routing, OAuth, MCP)
    - `dispatcher/` - Routes `*.camelai.app` to user workers (Workers for Platforms)
    - `admin-cli/` - Local-only admin CLI for querying live environments
 
@@ -94,7 +94,7 @@ Incomplete users are redirected to `/onboarding` before accessing `_app` routes.
 Users send Claude SDK slash commands as their entire message. `ChatThreadDO.formatAttributedUserMessage()` strips the author prefix. Supported: `/compact`, `/context`, `/debug`, `/insights`, `/security-review`. Allowlist in `ChatThreadDO.SLASH_COMMANDS` (`workers/main/src/durable-objects.ts`).
 
 ### Pending-Message Handoff Pattern
-Several features (onboarding first-thread, custom connection "Other") use the same pattern: seed `sessionStorage` key `pendingMessage:newThread` with a `<chiridion system message>...</chiridion system message>` payload, navigate to `/chat/{threadId}?newThread=1`, and `Chat.tsx` consumes and sends the hidden message.
+Several features (onboarding first-thread, custom connection "Other") use the same pattern: seed `sessionStorage` key `pendingMessage:newThread` with a `<camelai system message>...</camelai system message>` payload, navigate to `/chat/{threadId}?newThread=1`, and `Chat.tsx` consumes and sends the hidden message.
 
 ### Chat Attachment Uploads
 Multipart-only R2 uploads via `/api/workspaces/:id/upload` with actions: `mpu-create`, `mpu-uploadpart`, `mpu-complete`, `mpu-abort`.

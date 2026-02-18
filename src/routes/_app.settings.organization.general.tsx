@@ -13,7 +13,7 @@ import { orgNameSchema } from '@/lib/schemas';
 
 export function meta() {
   return [
-    { title: 'Organization General - Settings - Chiridion' },
+    { title: 'Organization General - Settings - camelAI' },
     { name: 'description', content: 'Manage organization settings' },
   ];
 }

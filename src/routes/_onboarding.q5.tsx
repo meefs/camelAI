@@ -14,7 +14,7 @@ import type { OnboardingRouteContext } from './_onboarding';
 
 export function meta(_: Route.MetaArgs) {
   return [
-    { title: 'Starter Project - Chiridion' },
+    { title: 'Starter Project - camelAI' },
     { name: 'description', content: 'Pick a starter project direction' },
   ];
 }

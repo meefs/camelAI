@@ -268,7 +268,7 @@ export default function OnboardingLayout() {
           sessionStorage.setItem(
             PENDING_NEW_THREAD_MESSAGE_KEY,
             JSON.stringify({
-              message: `<chiridion system message>${onboardingSystemMessage}</chiridion system message>`,
+              message: `<camelai system message>${onboardingSystemMessage}</camelai system message>`,
               threadId,
             })
           );

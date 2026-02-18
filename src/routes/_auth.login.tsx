@@ -4,8 +4,8 @@ import { LoginForm } from '@/components/auth/login-form';
 
 export function meta() {
   return [
-    { title: 'Sign In - Chiridion' },
-    { name: 'description', content: 'Sign in to your Chiridion account' },
+    { title: 'Sign In - camelAI' },
+    { name: 'description', content: 'Sign in to your camelAI account' },
   ];
 }
 

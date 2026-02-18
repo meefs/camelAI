@@ -6,7 +6,7 @@ import { SettingsHeader } from '@/components/settings/settings-header';
 
 export function meta() {
   return [
-    { title: 'Domains - Settings - Chiridion' },
+    { title: 'Domains - Settings - camelAI' },
     { name: 'description', content: 'Manage custom domains' },
   ];
 }

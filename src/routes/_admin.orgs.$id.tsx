@@ -42,7 +42,7 @@ const roleBadgeClasses: Record<string, string> = {
 
 export function meta({ data }: Route.MetaArgs) {
   return [
-    { title: data?.org ? `${data.org.name} - Admin - Chiridion` : 'Organization - Admin - Chiridion' },
+    { title: data?.org ? `${data.org.name} - Admin - camelAI` : 'Organization - Admin - camelAI' },
     { name: 'description', content: 'View organization details' },
   ];
 }

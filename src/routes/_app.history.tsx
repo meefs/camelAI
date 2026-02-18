@@ -25,7 +25,7 @@ const PAGE_SIZE = 50;
 
 export function meta() {
   return [
-    { title: 'History - Chiridion' },
+    { title: 'History - camelAI' },
     { name: 'description', content: 'Chat history' },
   ];
 }

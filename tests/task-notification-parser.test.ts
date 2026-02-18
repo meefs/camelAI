@@ -5,7 +5,7 @@ import type { ContentBlock } from '@/types';
 describe('parseTaskNotification', () => {
   it('parses valid task notification payload with trailing output-file instruction', () => {
     const raw = [
-      '<chiridion system message>internal metadata</chiridion system message>',
+      '<camelai system message>internal metadata</camelai system message>',
       '<task-notification>',
       '<task-id>task_123</task-id>',
       '<output-file>/mnt/user-outputs/task_123.md</output-file>',

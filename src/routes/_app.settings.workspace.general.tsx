@@ -11,7 +11,7 @@ import { workspaceSchema } from '@/lib/schemas';
 
 export function meta() {
   return [
-    { title: 'Workspace General - Settings - Chiridion' },
+    { title: 'Workspace General - Settings - camelAI' },
     { name: 'description', content: 'Manage workspace settings' },
   ];
 }

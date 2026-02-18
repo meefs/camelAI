@@ -77,7 +77,7 @@ export function SignupForm({ redirectTo }: SignupFormProps) {
           <Link to="/" className="flex items-center gap-2">
             <LogoIcon />
             <span className="text-lg font-semibold tracking-tight">
-              Chiridion
+              camelAI
             </span>
           </Link>
         </div>
@@ -89,7 +89,7 @@ export function SignupForm({ redirectTo }: SignupFormProps) {
                   Create an account
                 </h1>
                 <p className="text-muted-foreground text-sm text-balance">
-                  Get started with Chiridion
+                  Get started with camelAI
                 </p>
               </div>
 

@@ -21,7 +21,7 @@ describe('parseSlashCommand', () => {
   });
 
   it('strips system message tags before parsing', () => {
-    const content = '<chiridion system message>hidden</chiridion system message>\n\n/compact';
+    const content = '<camelai system message>hidden</camelai system message>\n\n/compact';
     expect(parseSlashCommand(content)).toBe('/compact');
   });
 

@@ -197,8 +197,8 @@ const RUNNER_RECONNECT_GRACE_MS = 30_000;
 const HEADER_USER_NAME = 'X-Chiridion-User-Name';
 const HEADER_USER_EMAIL = 'X-Chiridion-User-Email';
 
-const CHIRIDION_SYSTEM_MESSAGE_REGEX =
-  /<chiridion system message>([\s\S]*?)<\/chiridion system message>/gi;
+const CAMELAI_SYSTEM_MESSAGE_REGEX =
+  /<camelai system message>([\s\S]*?)<\/camelai system message>/gi;
 const TRACE_CHAT_THREAD_DO = false;
 
 /**
@@ -1140,18 +1140,18 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     const contextMessages: string[] = [];
     let match: RegExpExecArray | null;
-    while ((match = CHIRIDION_SYSTEM_MESSAGE_REGEX.exec(content)) !== null) {
+    while ((match = CAMELAI_SYSTEM_MESSAGE_REGEX.exec(content)) !== null) {
       const value = typeof match[1] === 'string' ? match[1].trim() : '';
       if (value) {
         contextMessages.push(value);
       }
     }
-    CHIRIDION_SYSTEM_MESSAGE_REGEX.lastIndex = 0;
+    CAMELAI_SYSTEM_MESSAGE_REGEX.lastIndex = 0;
 
     const userMessage = content
-      .replace(CHIRIDION_SYSTEM_MESSAGE_REGEX, '')
+      .replace(CAMELAI_SYSTEM_MESSAGE_REGEX, '')
       .trim();
-    CHIRIDION_SYSTEM_MESSAGE_REGEX.lastIndex = 0;
+    CAMELAI_SYSTEM_MESSAGE_REGEX.lastIndex = 0;
 
     // Pass slash commands through without author attribution so the
     // Claude SDK recognises them as bare `/command` inputs.
@@ -1164,7 +1164,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
     const contextualPrefix = contextMessages.length > 0
       ? contextMessages
-          .map((messageText) => `<chiridion system message>${messageText}</chiridion system message>`)
+          .map((messageText) => `<camelai system message>${messageText}</camelai system message>`)
           .join('\n\n')
       : '';
 

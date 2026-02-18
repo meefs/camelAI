@@ -62,7 +62,7 @@ export function LoginForm({ redirectTo }: LoginFormProps) {
           <Link to="/" className="flex items-center gap-2">
             <LogoIcon />
             <span className="text-lg font-semibold tracking-tight">
-              Chiridion
+              camelAI
             </span>
           </Link>
         </div>

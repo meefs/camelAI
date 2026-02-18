@@ -5,7 +5,7 @@ import ComputerPageContent from '@/components/pages/computer/computer-page-conte
 
 export function meta() {
   return [
-    { title: 'Computer - Chiridion' },
+    { title: 'Computer - camelAI' },
     { name: 'description', content: 'Interactive workspace file browser' },
   ];
 }

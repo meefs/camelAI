@@ -131,7 +131,7 @@ async function deliverEmail({
     const messageId = crypto.randomUUID();
     const boundary = `chiridion_${messageId.replaceAll('-', '')}`;
     const rawMessage = [
-      `From: Chiridion <${sanitizeHeaderValue(from)}>`,
+      `From: camelAI <${sanitizeHeaderValue(from)}>`,
       `To: ${sanitizeHeaderValue(to)}`,
       `Subject: ${subject}`,
       `Message-ID: <${messageId}@camelai.com>`,
@@ -183,7 +183,7 @@ export async function sendOrgInvitationEmail({
 }: OrgInvitationEmailArgs): Promise<EmailDeliveryResult> {
   const normalizedTo = to.trim().toLowerCase();
   const inviter = inviterName?.trim() || 'A team member';
-  const subject = sanitizeHeaderValue(`You're invited to join ${orgName} on Chiridion`);
+  const subject = sanitizeHeaderValue(`You're invited to join ${orgName} on camelAI`);
   const expiration = formatExpiration(expiresAt);
   const displayRole = roleLabel(role);
 
@@ -215,7 +215,7 @@ export async function sendEmailVerificationEmail({
   expiresAt,
 }: EmailVerificationEmailArgs): Promise<EmailDeliveryResult> {
   const normalizedTo = to.trim().toLowerCase();
-  const subject = sanitizeHeaderValue('Verify your email for Chiridion');
+  const subject = sanitizeHeaderValue('Verify your email for camelAI');
   const expiration = formatExpiration(expiresAt);
 
   const htmlBody = await render(

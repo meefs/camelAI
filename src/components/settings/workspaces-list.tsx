@@ -144,7 +144,7 @@ export function WorkspacesList({
               ? canManage
                 ? "There are workspaces in this organization, but you are not assigned to any of them. Assign yourself access in the Team tab."
                 : "You don't have access to any workspaces in this organization. Ask an organization admin to grant you workspace access."
-              : "A workspace is required to use Chiridion. Without a workspace, you cannot create chats, set up connections, or deploy apps."}
+              : "A workspace is required to use camelAI. Without a workspace, you cannot create chats, set up connections, or deploy apps."}
           </p>
 
           <div className="flex flex-col items-center gap-3">

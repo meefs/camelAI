@@ -1,4 +1,4 @@
-# Chiridion Starter Template
+# camelAI Starter Template
 
 Full-stack React app with SSR, Durable Objects, and SQLite. Built on React Router 7 and Cloudflare Workers.
 

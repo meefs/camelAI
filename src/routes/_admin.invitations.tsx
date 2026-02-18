@@ -53,7 +53,7 @@ function formatExpiry(expiresAt: number, now: number) {
 
 export function meta() {
   return [
-    { title: 'Invitations - Admin - Chiridion' },
+    { title: 'Invitations - Admin - camelAI' },
     { name: 'description', content: 'Manage invitations' },
   ];
 }

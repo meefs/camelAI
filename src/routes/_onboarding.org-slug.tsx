@@ -33,7 +33,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export function meta(_: Route.MetaArgs) {
   return [
-    { title: 'Organization URL - Chiridion' },
+    { title: 'Organization URL - camelAI' },
     { name: 'description', content: 'Choose your organization app URL slug' },
   ];
 }

@@ -44,12 +44,12 @@ export function EmailVerificationEmailTemplate({
   return (
     <Html>
       <Head />
-      <Preview>Verify your Chiridion email address</Preview>
+      <Preview>Verify your camelAI email address</Preview>
       <Body>
         <Container style={containerStyle}>
           <Text>Hi,</Text>
           <Text>
-            Please verify your email address to complete onboarding in Chiridion.
+            Please verify your email address to complete onboarding in camelAI.
           </Text>
 
           <Section style={{ margin: '24px 0' }}>

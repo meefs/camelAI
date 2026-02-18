@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 export function meta({ data }: Route.MetaArgs) {
   return [
-    { title: data?.workspace ? `Audit Log - ${data.workspace.name} - Admin - Chiridion` : 'Audit Log - Admin - Chiridion' },
+    { title: data?.workspace ? `Audit Log - ${data.workspace.name} - Admin - camelAI` : 'Audit Log - Admin - camelAI' },
     { name: 'description', content: 'Workspace audit log' },
   ];
 }

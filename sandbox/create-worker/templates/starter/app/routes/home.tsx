@@ -3,8 +3,8 @@ import { Welcome } from "../welcome/welcome";
 
 export function meta({}: Route.MetaArgs) {
   return [
-    { title: "New Chiridion App" },
-    { name: "description", content: "Welcome to your Chiridion app!" },
+    { title: "New camelAI App" },
+    { name: "description", content: "Welcome to your camelAI app!" },
   ];
 }
 

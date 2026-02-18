@@ -45,7 +45,7 @@ function recordToIntegration(record: {
 
 export function meta() {
   return [
-    { title: 'Connections - Chiridion' },
+    { title: 'Connections - camelAI' },
     { name: 'description', content: 'Manage integrations and connections' },
   ];
 }

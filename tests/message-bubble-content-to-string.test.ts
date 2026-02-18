@@ -10,7 +10,7 @@ describe('contentToString', () => {
 
   it('strips system message tags but keeps literal teammate XML', () => {
     const content = [
-      '<chiridion system message>internal</chiridion system message>',
+      '<camelai system message>internal</camelai system message>',
       '<teammate-message teammate_id="alice">literal example</teammate-message>',
     ].join('\n');
     expect(contentToString(content)).toBe('<teammate-message teammate_id="alice">literal example</teammate-message>');

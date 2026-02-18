@@ -103,7 +103,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
 
 export function meta(): Route.MetaDescriptors {
   return [
-    { title: 'Chiridion' },
+    { title: 'camelAI' },
     { name: 'description', content: 'AI Chat Platform' },
   ];
 }
