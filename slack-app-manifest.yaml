@@ -1,19 +1,19 @@
 display_information:
-  name: Chiridion
-  description: AI coding assistant integration for Chiridion workspaces
+  name: camelAI
+  description: AI coding assistant integration for camelAI workspaces
   background_color: "#18181b"
   long_description: |
-    Chiridion is an AI coding assistant that can interact with your Slack workspace.
-    This integration allows Chiridion to read messages, post updates, manage channels,
+    camelAI is an AI coding assistant that can interact with your Slack workspace.
+    This integration allows camelAI to read messages, post updates, manage channels,
     and help automate workflows in your Slack workspace.
 
 features:
   bot_user:
-    display_name: Chiridion
+    display_name: camelAI
     always_online: true
   slash_commands:
-    - command: /chiridion
-      description: Interact with Chiridion AI assistant
+    - command: /camelai
+      description: Interact with camelAI assistant
       usage_hint: "[message or command]"
       should_escape: false
 

@@ -236,7 +236,7 @@ export default {
 		try {
 			if (path === '/' || path === '/help') {
 				return jsonResponse({
-					name: 'Chiridion Admin CLI',
+					name: 'camelAI Admin CLI',
 					description: 'Local worker for querying live data via direct DO bindings',
 					targetHost: env.TARGET_HOST,
 					usage: [

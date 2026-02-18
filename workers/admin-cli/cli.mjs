@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Admin CLI - Query live Chiridion environments
+ * Admin CLI - Query live camelAI environments
  *
  * Usage:
  *   ./cli.mjs [env] [endpoint] [jq-filter]
@@ -124,7 +124,7 @@ async function applyJqFilter(jsonStr, filter) {
 
 function usage() {
 	console.log(`
-Admin CLI - Query live Chiridion environments
+Admin CLI - Query live camelAI environments
 
 Usage:
   admin [env] [endpoint] [jq-filter]

@@ -62,7 +62,7 @@ The toggle lives in the file preview header bar in `Chat.tsx`, visible only when
 │  │             │  │  └────────────────────────────────────────────┘  │   │
 │  │             │  │                                                  │   │
 │  │             │  │  ──────────────────────────────────────────────  │   │
-│  │             │  │  Rendered by Chiridion          6 code · Py 3.13│   │
+│  │             │  │  Rendered by camelAI          6 code · Py 3.13│   │
 │  └─────────────┘  └──────────────────────────────────────────────────┘   │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -780,7 +780,7 @@ export function ReportFooter({ codeCellCount, languageVersion }: ReportFooterPro
       <Separator />
       <div className="flex items-center justify-between pt-3">
         <span className="font-mono text-[10px] text-muted-foreground/40">
-          Rendered by Chiridion
+          Rendered by camelAI
         </span>
         <span className="font-mono text-[10px] text-muted-foreground/40">
           {rightText}

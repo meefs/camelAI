@@ -1,5 +1,5 @@
 /**
- * Chiridion Debug Bridge
+ * camelAI Debug Bridge
  *
  * This script is injected into deployed apps to enable bug reporting.
  * It intercepts console logs, network requests, records user sessions with rrweb,
@@ -26,8 +26,8 @@
 
   // Allowed parent origins for postMessage
   const ALLOWED_ORIGINS = [
-    /\.chiridion\.ai$/,
-    /\.chiridion\.app$/,
+    /\.camelai\.dev$/,
+    /\.camelai\.app$/,
     /^https?:\/\/localhost(:\d+)?$/,
     /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
   ];
@@ -294,7 +294,7 @@
         },
       });
     } catch (e) {
-      originalConsole.error('[ChiridionDebugBridge] Failed to init session recording:', e);
+      originalConsole.error('[camelAIDebugBridge] Failed to init session recording:', e);
     }
   }
 
@@ -323,7 +323,7 @@
 
       return canvas.toDataURL('image/jpeg', 0.8);
     } catch (e) {
-      originalConsole.error('[ChiridionDebugBridge] Screenshot failed:', e);
+      originalConsole.error('[camelAIDebugBridge] Screenshot failed:', e);
       return null;
     }
   }

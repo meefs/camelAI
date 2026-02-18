@@ -1,5 +1,5 @@
 /**
- * Chiridion Dispatch Worker
+ * camelAI Dispatch Worker
  *
  * Routes requests to user workers deployed in the Workers for Platforms
  * dispatch namespace. Supports subdomain-based routing with private worker
@@ -336,7 +336,7 @@ export default {
     return new Response(
       JSON.stringify(
         {
-          message: 'Chiridion Dispatch Worker',
+          message: 'camelAI Dispatch Worker',
           routes: {
             vanity: '<worker-name>--<org-slug>.camelai.app',
             iframe: '<worker-name>--<org-slug>.apps.camelai.dev',

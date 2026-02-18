@@ -1,5 +1,5 @@
 /**
- * Main Chiridion Worker - Composition Root
+ * Main camelAI Worker - Composition Root
  *
  * Routes:
  * - /client/v4/* → CF API proxy for wrangler deploys
