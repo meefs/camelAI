@@ -2,7 +2,7 @@ import type { ContentBlock, Message } from '@/types';
 
 const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
 const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
-const SYSTEM_MESSAGE_TAG_REGEX = /<chiridion system message>[\s\S]*?<\/chiridion system message>/g;
+const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai system message>/g;
 const MAX_FIRST_USER_MESSAGE_LENGTH = 500;
 
 function stripSystemMessageTags(text: string): string {

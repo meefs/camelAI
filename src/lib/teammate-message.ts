@@ -6,11 +6,11 @@ export interface ParsedTeammateMessage {
 }
 
 /**
- * Strip Chiridion system message tags from content.
+ * Strip camelAI system message tags from content.
  * Duplicated here to avoid circular dependency with message-bubble.tsx.
  */
 function stripSystemMessageTags(text: string): string {
-  return text.replace(/<chiridion system message>[\s\S]*?<\/chiridion system message>/g, '').trim();
+  return text.replace(/<camelai system message>[\s\S]*?<\/camelai system message>/g, '').trim();
 }
 
 export function parseTeammateMessage(rawContent: string): ParsedTeammateMessage | null {

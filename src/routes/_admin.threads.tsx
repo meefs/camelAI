@@ -27,7 +27,7 @@ function formatTimestamp(value: number) {
 
 export function meta() {
   return [
-    { title: 'Threads - Admin - Chiridion' },
+    { title: 'Threads - Admin - camelAI' },
     { name: 'description', content: 'Manage threads' },
   ];
 }

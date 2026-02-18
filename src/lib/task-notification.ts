@@ -1,6 +1,6 @@
 import type { ContentBlock } from '@/types';
 
-const SYSTEM_MESSAGE_TAG_REGEX = /<chiridion system message>[\s\S]*?<\/chiridion system message>/g;
+const SYSTEM_MESSAGE_TAG_REGEX = /<camelai system message>[\s\S]*?<\/camelai system message>/g;
 const TASK_NOTIFICATION_REGEX = /^<task-notification\b[^>]*>([\s\S]*?)<\/task-notification>([\s\S]*)$/;
 const TRAILING_INSTRUCTION_REGEX = /^Read the output file to retrieve the result:.*$/i;
 

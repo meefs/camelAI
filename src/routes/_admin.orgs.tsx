@@ -28,7 +28,7 @@ function formatTimestamp(value: number) {
 
 export function meta() {
   return [
-    { title: 'Organizations - Admin - Chiridion' },
+    { title: 'Organizations - Admin - camelAI' },
     { name: 'description', content: 'Manage organizations' },
   ];
 }

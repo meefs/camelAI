@@ -1,10 +1,10 @@
 ---
 name: file-sharing
-description: Exchange files with users through the Chiridion chat interface. Read files they upload and create downloadable/previewable files for them.
+description: Exchange files with users through the camelAI chat interface. Read files they upload and create downloadable/previewable files for them.
 license: Complete terms in LICENSE.txt
 ---
 
-This skill enables file exchange between you and the user through Chiridion's chat interface.
+This skill enables file exchange between you and the user through camelAI's chat interface.
 
 ## User Uploads
 

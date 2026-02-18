@@ -9,7 +9,7 @@ import { OrgMembershipsList } from '@/components/settings/org-memberships-list';
 
 export function meta() {
   return [
-    { title: 'Organizations - Settings - Chiridion' },
+    { title: 'Organizations - Settings - camelAI' },
     { name: 'description', content: 'Manage your organizations' },
   ];
 }

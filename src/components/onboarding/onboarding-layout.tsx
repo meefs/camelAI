@@ -48,7 +48,7 @@ export function OnboardingLayout({
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-medium">
           <LogoIcon />
-          <span>Chiridion</span>
+          <span>camelAI</span>
         </div>
         <div className="flex items-center gap-2">
           {showBack && onBack ? (

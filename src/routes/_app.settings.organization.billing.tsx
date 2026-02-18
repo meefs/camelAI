@@ -7,7 +7,7 @@ import { SettingsHeader } from '@/components/settings/settings-header';
 
 export function meta() {
   return [
-    { title: 'Billing - Settings - Chiridion' },
+    { title: 'Billing - Settings - camelAI' },
     { name: 'description', content: 'Manage billing and subscription' },
   ];
 }

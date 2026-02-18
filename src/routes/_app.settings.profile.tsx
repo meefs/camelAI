@@ -14,7 +14,7 @@ import { profileSchema } from '@/lib/schemas';
 
 export function meta() {
   return [
-    { title: 'Profile - Settings - Chiridion' },
+    { title: 'Profile - Settings - camelAI' },
     { name: 'description', content: 'Manage your profile settings' },
   ];
 }

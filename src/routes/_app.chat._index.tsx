@@ -14,7 +14,7 @@ import { useAuthData } from '@/hooks/use-auth-data';
 
 export function meta() {
   return [
-    { title: 'New Chat - Chiridion' },
+    { title: 'New Chat - camelAI' },
     { name: 'description', content: 'Start a new AI chat' },
   ];
 }

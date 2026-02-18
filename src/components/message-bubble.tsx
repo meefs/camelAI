@@ -91,12 +91,12 @@ const AUTHOR_PREFIX_WITH_EMAIL_REGEX = /^\[([^\]]+)\s+\(([^)]+)\)\]:\s*/;
 const AUTHOR_PREFIX_SIMPLE_REGEX = /^\[([^\]]+)\]:\s*/;
 
 /**
- * Strip Chiridion system message tags from content.
+ * Strip camelAI system message tags from content.
  * These tags are used internally to pass context to the AI but shouldn't
  * be shown verbosely to users.
  */
 function stripSystemMessageTags(text: string): string {
-  return text.replace(/<chiridion system message>[\s\S]*?<\/chiridion system message>/g, '').trim();
+  return text.replace(/<camelai system message>[\s\S]*?<\/camelai system message>/g, '').trim();
 }
 
 function parseMessageAuthor(rawContent: string): ParsedMessage {

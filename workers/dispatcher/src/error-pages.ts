@@ -127,7 +127,7 @@ function renderErrorPage(opts: ErrorPageOptions): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${statusCode} - ${esc(statusLabel)} | Chiridion</title>
+<title>${statusCode} - ${esc(statusLabel)} | camelAI</title>
 <link rel="icon" href="${esc(homeUrl)}/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

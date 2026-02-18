@@ -2485,12 +2485,12 @@ export default function Chat({
 
     setIsCreatingThread(true);
 
-    // Build the chiridion system message
+    // Build the camelai system message
     const appUrl = getAppUrl(app.script_name, hostname, orgSlug);
     const sourceInfo = app.config_path
       ? ` The app's wrangler config is at "${app.config_path}".`
       : ` The project location is unknown - search for it in the home folder. The project may have a different name than the app, and look for either wrangler.toml or wrangler.jsonc files.`;
-    const systemMessage = `<chiridion system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</chiridion system message>`;
+    const systemMessage = `<camelai system message>I'd like to work on the app "${app.script_name}" at ${appUrl}.${sourceInfo}</camelai system message>`;
 
     // Store pending message for the createThreadFetcher effect
     pendingNewChatRef.current = { finalContent: systemMessage };

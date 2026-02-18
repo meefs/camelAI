@@ -29,7 +29,7 @@ function getAuthEnv(env: CloudflareEnv): AuthEnv {
 
 export function meta() {
   return [
-    { title: 'Apps - Chiridion' },
+    { title: 'Apps - camelAI' },
     { name: 'description', content: 'Your deployed applications' },
   ];
 }

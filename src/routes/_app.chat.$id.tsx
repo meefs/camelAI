@@ -15,7 +15,7 @@ import type { Message, PreviewTarget } from '@/types';
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.threadTitle || 'Chat';
   return [
-    { title: `${title} - Chiridion` },
+    { title: `${title} - camelAI` },
     { name: 'description', content: 'AI Chat' },
   ];
 }

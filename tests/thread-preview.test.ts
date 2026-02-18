@@ -16,13 +16,13 @@ describe('normalizeThreadPreviewUserMessage', () => {
     expect(normalizeThreadPreviewUserMessage(content)).toBe('Build me a dashboard');
   });
 
-  it('strips chiridion system message tags', () => {
-    const content = '<chiridion system message>hidden</chiridion system message>\n\nHello there';
+  it('strips camelai system message tags', () => {
+    const content = '<camelai system message>hidden</camelai system message>\n\nHello there';
     expect(normalizeThreadPreviewUserMessage(content)).toBe('Hello there');
   });
 
   it('returns null for system-only content', () => {
-    const content = '<chiridion system message>hidden</chiridion system message>';
+    const content = '<camelai system message>hidden</camelai system message>';
     expect(normalizeThreadPreviewUserMessage(content)).toBeNull();
   });
 
@@ -83,7 +83,7 @@ describe('getFirstThreadPreviewUserMessage', () => {
         id: '2',
         thread_id: 't1',
         role: 'user',
-        content: '<chiridion system message>hidden</chiridion system message>',
+        content: '<camelai system message>hidden</camelai system message>',
         created_at: 2,
       },
     ];

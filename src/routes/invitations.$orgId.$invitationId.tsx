@@ -18,7 +18,7 @@ import { Loader2 } from 'lucide-react';
 
 export function meta() {
   return [
-    { title: 'Accept Invitation - Chiridion' },
+    { title: 'Accept Invitation - camelAI' },
     { name: 'description', content: 'Accept your organization invitation' },
   ];
 }
@@ -197,7 +197,7 @@ export default function InvitationPage() {
         <Link to="/" className="flex items-center justify-center gap-2">
           <LogoIcon />
           <span className="text-lg font-semibold tracking-tight">
-            Chiridion
+            camelAI
           </span>
         </Link>
 

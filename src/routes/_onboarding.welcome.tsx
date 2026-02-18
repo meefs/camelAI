@@ -49,7 +49,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   if (!teamMode) {
     return {
-      orgName: 'Chiridion',
+      orgName: 'camelAI',
       showOrgSlugStep,
       teamContext: {
         memberCount: 0,
@@ -84,8 +84,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export function meta(_: Route.MetaArgs) {
   return [
-    { title: 'Welcome - Chiridion' },
-    { name: 'description', content: 'Welcome to Chiridion onboarding' },
+    { title: 'Welcome - camelAI' },
+    { name: 'description', content: 'Welcome to camelAI onboarding' },
   ];
 }
 
@@ -137,12 +137,12 @@ export default function OnboardingWelcomeRoute() {
       <div className="space-y-6 text-center">
         <div className="space-y-3">
           <h1 className="text-3xl font-semibold tracking-tight">
-            {isTeamWelcome ? `Welcome to ${orgName}` : 'Welcome to Chiridion'}
+            {isTeamWelcome ? `Welcome to ${orgName}` : 'Welcome to camelAI'}
           </h1>
           {!isTeamWelcome ? (
             <>
               <p className="text-balance text-muted-foreground">
-                Chiridion is your AI software engineer. Claude has a permanent computer here, so it can build, deploy, and maintain applications for you.
+                camelAI is your AI software engineer. Claude has a permanent computer here, so it can build, deploy, and maintain applications for you.
               </p>
               <p className="text-muted-foreground">
                 Let&apos;s get you set up. This takes about 30 seconds.

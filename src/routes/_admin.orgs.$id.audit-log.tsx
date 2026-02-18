@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 export function meta({ data }: Route.MetaArgs) {
   return [
-    { title: data?.org ? `Audit Log - ${data.org.name} - Admin - Chiridion` : 'Audit Log - Admin - Chiridion' },
+    { title: data?.org ? `Audit Log - ${data.org.name} - Admin - camelAI` : 'Audit Log - Admin - camelAI' },
     { name: 'description', content: 'Organization audit log' },
   ];
 }

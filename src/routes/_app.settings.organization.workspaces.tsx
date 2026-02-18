@@ -9,7 +9,7 @@ import { WorkspacesList } from '@/components/settings/workspaces-list';
 
 export function meta() {
   return [
-    { title: 'Workspaces - Settings - Chiridion' },
+    { title: 'Workspaces - Settings - camelAI' },
     { name: 'description', content: 'Manage workspaces' },
   ];
 }

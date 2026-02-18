@@ -65,7 +65,7 @@ function recordToIntegration(record: {
 
 export function meta() {
   return [
-    { title: 'Connections - Workspace Settings - Chiridion' },
+    { title: 'Connections - Workspace Settings - camelAI' },
     { name: 'description', content: 'Manage workspace connections' },
   ];
 }

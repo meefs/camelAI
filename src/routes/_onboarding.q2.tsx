@@ -6,7 +6,7 @@ import type { OnboardingRouteContext } from './_onboarding';
 
 export function meta(_: Route.MetaArgs) {
   return [
-    { title: 'Iteration Style - Chiridion' },
+    { title: 'Iteration Style - camelAI' },
     { name: 'description', content: 'Choose your preferred build collaboration style' },
   ];
 }

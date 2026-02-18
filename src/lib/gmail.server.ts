@@ -154,7 +154,7 @@ function buildRawEmail(
   const boundary = `chiridion_${messageId.replace(/-/g, '')}`;
 
   const lines = [
-    `From: Chiridion <${from}>`,
+    `From: camelAI <${from}>`,
     `To: ${to}`,
     `Subject: ${subject}`,
     `Message-ID: <${messageId}@camelai.com>`,

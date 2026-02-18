@@ -49,12 +49,12 @@ export function OrgInvitationEmailTemplate({
   return (
     <Html>
       <Head />
-      <Preview>{`${inviterName} invited you to join ${orgName} on Chiridion`}</Preview>
+      <Preview>{`${inviterName} invited you to join ${orgName} on camelAI`}</Preview>
       <Body>
         <Container style={containerStyle}>
           <Text>Hi,</Text>
           <Text>
-            {inviterName} invited you to join <strong>{orgName}</strong> on Chiridion as{' '}
+            {inviterName} invited you to join <strong>{orgName}</strong> on camelAI as{' '}
             <strong>{role}</strong>.
           </Text>
 

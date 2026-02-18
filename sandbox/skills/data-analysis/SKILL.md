@@ -73,7 +73,7 @@ print(result.df())
 
 ### Visualization
 
-Chiridion's notebook preview renders Altair and Plotly charts natively — not in iframes. Chart colors, text, and backgrounds automatically adapt to the user's light/dark theme.
+camelAI's notebook preview renders Altair and Plotly charts natively — not in iframes. Chart colors, text, and backgrounds automatically adapt to the user's light/dark theme.
 
 **Preferred order:**
 1. **Altair** (Vega-Lite) — emits structured specs with full theme support
@@ -169,7 +169,7 @@ set_file_preview(
 
 ### How notebooks are presented
 
-Chiridion renders notebooks in **Report mode** by default — the user sees a polished article, not raw cells.
+camelAI renders notebooks in **Report mode** by default — the user sees a polished article, not raw cells.
 
 **What Report mode does:**
 - Hides all code — only markdown prose and cell outputs (charts, tables, text) are visible
@@ -227,7 +227,7 @@ df = pd.read_sql("SELECT * FROM orders", engine)
 
 ### BigQuery
 
-**Important:** BigQuery connections in Chiridion use **OAuth access tokens**, not service account JSON files directly. The platform automatically generates short-lived access tokens from the user's service account JSON key and exposes them as environment variables. Always use this token-based approach.
+**Important:** BigQuery connections in camelAI use **OAuth access tokens**, not service account JSON files directly. The platform automatically generates short-lived access tokens from the user's service account JSON key and exposes them as environment variables. Always use this token-based approach.
 
 When a BigQuery integration named e.g. "Production" is connected, these env vars are available:
 - `INT_BIGQUERY_PRODUCTION_ACCESS_TOKEN` — short-lived OAuth token (auto-refreshed by the platform)
@@ -254,7 +254,7 @@ df = client.query("SELECT * FROM dataset.table").to_dataframe()
 
 ### MS SQL Server
 
-MS SQL Server connections use the **Chiridion Data Proxy API**. Direct drivers like `pymssql` or `pyodbc` are not available in the container. Instead, use the HTTP API with a signed token.
+MS SQL Server connections use the **camelAI Data Proxy API**. Direct drivers like `pymssql` or `pyodbc` are not available in the container. Instead, use the HTTP API with a signed token.
 
 When you need to query MS SQL Server, a `DATA_PROXY_TOKEN` environment variable is available for authentication.
 

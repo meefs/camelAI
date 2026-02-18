@@ -84,7 +84,7 @@ export function AdminDashboard({ overview, threadCount = 0, appCount = 0 }: Admi
             <div>
               <h1 className="text-lg font-semibold tracking-tight">QAML Backdoor</h1>
               <p className="text-sm text-muted-foreground">
-                Superuser-only admin surface for Chiridion.
+                Superuser-only admin surface for camelAI.
               </p>
             </div>
             <div className="flex gap-2">

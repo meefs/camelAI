@@ -15,7 +15,7 @@ import {
 
 export function meta() {
   return [
-    { title: 'Team - Settings - Chiridion' },
+    { title: 'Team - Settings - camelAI' },
     { name: 'description', content: 'Manage team members' },
   ];
 }

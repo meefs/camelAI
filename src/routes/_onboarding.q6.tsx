@@ -15,7 +15,7 @@ import type { OnboardingRouteContext } from './_onboarding';
 
 export function meta(_: Route.MetaArgs) {
   return [
-    { title: 'Data Interests - Chiridion' },
+    { title: 'Data Interests - camelAI' },
     { name: 'description', content: 'Select data sources and integrations' },
   ];
 }

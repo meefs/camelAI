@@ -15,7 +15,7 @@ import type { OnboardingRouteContext } from './_onboarding';
 
 export function meta(_: Route.MetaArgs) {
   return [
-    { title: 'Design Style - Chiridion' },
+    { title: 'Design Style - camelAI' },
     { name: 'description', content: 'Choose a design vibe for first projects' },
   ];
 }

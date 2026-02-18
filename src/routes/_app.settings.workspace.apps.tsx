@@ -50,7 +50,7 @@ function getAuthEnvFromCloudflare(env: CloudflareEnv): AuthEnv {
 
 export function meta() {
   return [
-    { title: 'Apps - Workspace Settings - Chiridion' },
+    { title: 'Apps - Workspace Settings - camelAI' },
     { name: 'description', content: 'Manage workspace apps' },
   ];
 }

@@ -6,7 +6,7 @@ import type { OnboardingRouteContext } from './_onboarding';
 
 export function meta(_: Route.MetaArgs) {
   return [
-    { title: 'AI Familiarity - Chiridion' },
+    { title: 'AI Familiarity - camelAI' },
     { name: 'description', content: 'Tell us your AI coding familiarity' },
   ];
 }

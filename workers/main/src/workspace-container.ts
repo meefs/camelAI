@@ -284,7 +284,6 @@ export class WorkspaceContainer {
 
     return {
       ...integrationEnv,
-      CHIRIDION_THREAD_ID: options.threadId,
     };
   }
 

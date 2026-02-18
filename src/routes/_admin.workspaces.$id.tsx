@@ -32,7 +32,7 @@ function formatTimestamp(value: number) {
 
 export function meta({ data }: Route.MetaArgs) {
   return [
-    { title: data?.workspace ? `${data.workspace.name} - Admin - Chiridion` : 'Workspace - Admin - Chiridion' },
+    { title: data?.workspace ? `${data.workspace.name} - Admin - camelAI` : 'Workspace - Admin - camelAI' },
     { name: 'description', content: 'View workspace details' },
   ];
 }
