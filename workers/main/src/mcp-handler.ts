@@ -225,7 +225,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
 
   /**
    * Get the vanity domain for deployed apps based on current environment.
-   * E.g., "chiridion.app" for production, "staging.chiridion.app" for staging
+   * E.g., "camelai.app" for production, "staging.camelai.app" for staging
    */
   private getVanityDomain(): string {
     const baseUrl = this.env.WORKER_BASE_URL;
@@ -233,17 +233,17 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
       try {
         const hostname = new URL(baseUrl).hostname;
         const envPrefix = getEnvPrefix(hostname);
-        if (envPrefix) return `${envPrefix}.chiridion.app`;
-        // WORKER_BASE_URL is set but not a chiridion.ai hostname (e.g. ngrok) → local dev
-        if (hostname !== 'chiridion.ai' && !hostname.endsWith('.chiridion.ai')) {
-          return 'local.chiridion.app';
+        if (envPrefix) return `${envPrefix}.camelai.app`;
+        // WORKER_BASE_URL is set but not a camelai.dev hostname (e.g. ngrok) → local dev
+        if (hostname !== 'camelai.dev' && !hostname.endsWith('.camelai.dev')) {
+          return 'local.camelai.app';
         }
-        return 'chiridion.app';
+        return 'camelai.app';
       } catch {
-        return 'chiridion.app';
+        return 'camelai.app';
       }
     }
-    return 'chiridion.app';
+    return 'camelai.app';
   }
 
   /**
@@ -578,8 +578,8 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           const hostname = new URL(this.env.WORKER_BASE_URL).hostname;
           const prefix = getEnvPrefix(hostname);
           if (prefix) return prefix;
-          // WORKER_BASE_URL set but not a chiridion.ai hostname (e.g. ngrok) → local dev
-          if (hostname !== 'chiridion.ai' && !hostname.endsWith('.chiridion.ai')) return 'local';
+          // WORKER_BASE_URL set but not a camelai.dev hostname (e.g. ngrok) → local dev
+          if (hostname !== 'camelai.dev' && !hostname.endsWith('.camelai.dev')) return 'local';
           return '';
         })();
 

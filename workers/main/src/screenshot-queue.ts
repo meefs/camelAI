@@ -40,8 +40,8 @@ const MAX_SCREENSHOT_RETRIES = 3;
 const RAW_CAPTURE_TIMEOUT_MS = 10_000;
 
 function buildTargetUrl(job: AppScreenshotJob): string {
-  const suffix = job.env_prefix ? `apps.${job.env_prefix}.chiridion.ai` : 'apps.chiridion.ai';
-  // Use flat URL format: {script}--{org-slug}.apps.chiridion.ai
+  const suffix = job.env_prefix ? `apps.${job.env_prefix}.camelai.dev` : 'apps.camelai.dev';
+  // Use flat URL format: {script}--{org-slug}.apps.camelai.dev
   // Fall back to legacy format if org_slug is missing (for queued messages before this change)
   if (job.org_slug) {
     return `https://${job.script_name}--${job.org_slug}.${suffix}`;
@@ -282,8 +282,8 @@ export async function captureScreenshotRaw(
   const { scriptName, orgId, orgSlug, envPrefix, isPublic, screenshotToken, timeoutMs } = params;
   const effectiveTimeoutMs = timeoutMs ?? RAW_CAPTURE_TIMEOUT_MS;
 
-  const suffix = envPrefix ? `apps.${envPrefix}.chiridion.ai` : 'apps.chiridion.ai';
-  // Use flat URL format: {script}--{org-slug}.apps.chiridion.ai
+  const suffix = envPrefix ? `apps.${envPrefix}.camelai.dev` : 'apps.camelai.dev';
+  // Use flat URL format: {script}--{org-slug}.apps.camelai.dev
   // Fall back to legacy format if orgSlug is missing
   const targetUrl = orgSlug
     ? `https://${scriptName}--${orgSlug}.${suffix}`

@@ -19,7 +19,7 @@ interface ErrorPageOptions {
   title: string;
   /** Longer description in muted text */
   description: string;
-  /** Main application URL (e.g. https://chiridion.ai) */
+  /** Main application URL (e.g. https://camelai.dev) */
   homeUrl: string;
   /** SVG icon markup (24×24 viewBox expected) */
   icon: string;

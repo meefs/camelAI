@@ -10,8 +10,8 @@
 	},
 	"routes": [
 		// Matches both legacy (script.apps.staging) and new (script.org-slug.apps.staging)
-		{ "pattern": "*.apps.staging.chiridion.ai/*", "zone_name": "chiridion.ai" },
-		{ "pattern": "*.staging.chiridion.app/*", "zone_name": "chiridion.app" }
+		{ "pattern": "*.apps.staging.camelai.dev/*", "zone_name": "camelai.dev" },
+		{ "pattern": "*.staging.camelai.app/*", "zone_name": "camelai.app" }
 	],
 	"dispatch_namespaces": [
 		{

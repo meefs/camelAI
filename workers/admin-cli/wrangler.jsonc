@@ -10,7 +10,7 @@
 
 	// Default: query staging environment
 	"vars": {
-		"TARGET_HOST": "https://staging.chiridion.ai"
+		"TARGET_HOST": "https://staging.camelai.dev"
 	},
 	"kv_namespaces": [
 		{
@@ -40,7 +40,7 @@
 		// Query production environment
 		"prod": {
 			"vars": {
-				"TARGET_HOST": "https://chiridion.ai"
+				"TARGET_HOST": "https://camelai.dev"
 			},
 			"kv_namespaces": [
 				{
@@ -70,7 +70,7 @@
 		// Query dev-illiana environment
 		"dev-illiana": {
 			"vars": {
-				"TARGET_HOST": "https://dev-illiana.chiridion.ai"
+				"TARGET_HOST": "https://dev-illiana.camelai.dev"
 			},
 			"kv_namespaces": [
 				{
@@ -100,7 +100,7 @@
 		// Query dev-miguel environment
 		"dev-miguel": {
 			"vars": {
-				"TARGET_HOST": "https://dev-miguel.chiridion.ai"
+				"TARGET_HOST": "https://dev-miguel.camelai.dev"
 			},
 			"kv_namespaces": [
 				{

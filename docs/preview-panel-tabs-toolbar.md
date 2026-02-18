@@ -119,7 +119,7 @@ A horizontal row of icon buttons. Contents change based on the active tab's file
 ```
 
 - **Refresh**: Reloads iframe (`refreshActiveIframe()`)
-- **URL bar**: Non-editable field showing vanity domain (e.g. `my-dashboard--org.chiridion.app`). Styled like a mini browser URL bar: `bg-muted/50 rounded-md px-2 py-1 text-xs font-mono text-muted-foreground truncate`. On click, copies full URL (with `https://` prefix) to clipboard. Brief "Copied!" flash — field background pulses `bg-green-500/10` for ~1.5s then resets. Show a subtle "Copy" label on hover (`opacity-0 group-hover:opacity-100 text-[10px]`)
+- **URL bar**: Non-editable field showing vanity domain (e.g. `my-dashboard--org.camelai.app`). Styled like a mini browser URL bar: `bg-muted/50 rounded-md px-2 py-1 text-xs font-mono text-muted-foreground truncate`. On click, copies full URL (with `https://` prefix) to clipboard. Brief "Copied!" flash — field background pulses `bg-green-500/10` for ~1.5s then resets. Show a subtle "Copy" label on hover (`opacity-0 group-hover:opacity-100 text-[10px]`)
 - **Public/Private**: Existing `ShareStatusButton` — no changes needed to the component itself, but the `onStatusChange` callback must update the active tab target (see Step 7e)
 - **Bug report**: Existing bug button — no changes
 - **Open in new tab**: Opens `appPreviewVanityUrl` via `window.open()`

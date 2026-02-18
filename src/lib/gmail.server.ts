@@ -12,7 +12,7 @@
  * 4. Set environment variables:
  *    - GMAIL_SERVICE_ACCOUNT_EMAIL: service account email
  *    - GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: private key (PEM format)
- *    - GMAIL_SENDER_EMAIL: email to send as (e.g., no-reply@chiridion.ai)
+ *    - GMAIL_SENDER_EMAIL: email to send as (e.g., no-reply@camelai.com)
  */
 
 export interface GmailConfig {
@@ -157,7 +157,7 @@ function buildRawEmail(
     `From: Chiridion <${from}>`,
     `To: ${to}`,
     `Subject: ${subject}`,
-    `Message-ID: <${messageId}@chiridion.ai>`,
+    `Message-ID: <${messageId}@camelai.com>`,
     `Date: ${new Date().toUTCString()}`,
     'MIME-Version: 1.0',
     `Content-Type: multipart/alternative; boundary="${boundary}"`,

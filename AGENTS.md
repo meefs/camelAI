@@ -4,7 +4,7 @@
 
 ## Overview
 
-Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. Users chat with a Claude-powered agent that has a persistent workspace where files survive across sessions. Users create applications by having the agent write code, then publish them to live `*.chiridion.app` URLs. The app supports integrations (connections) to external services.
+Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. Users chat with a Claude-powered agent that has a persistent workspace where files survive across sessions. Users create applications by having the agent write code, then publish them to live `*.camelai.app` URLs. The app supports integrations (connections) to external services.
 
 ## Architecture
 
@@ -39,7 +39,7 @@ Chiridion is an AI coding assistant built on Cloudflare's edge infrastructure. U
 
 2. **Workers** (`workers/`)
    - `main/` - Main Chiridion app worker (SSR, Durable Objects, WebSocket routing, OAuth, MCP)
-   - `dispatcher/` - Routes `*.chiridion.app` to user workers (Workers for Platforms)
+   - `dispatcher/` - Routes `*.camelai.app` to user workers (Workers for Platforms)
    - `admin-cli/` - Local-only admin CLI for querying live environments
 
 3. **Sandbox Host** (`services/sandbox-host/`)

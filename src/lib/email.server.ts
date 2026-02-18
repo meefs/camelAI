@@ -134,7 +134,7 @@ async function deliverEmail({
       `From: Chiridion <${sanitizeHeaderValue(from)}>`,
       `To: ${sanitizeHeaderValue(to)}`,
       `Subject: ${subject}`,
-      `Message-ID: <${messageId}@chiridion.ai>`,
+      `Message-ID: <${messageId}@camelai.com>`,
       `Date: ${new Date().toUTCString()}`,
       'MIME-Version: 1.0',
       `Content-Type: multipart/alternative; boundary="${boundary}"`,

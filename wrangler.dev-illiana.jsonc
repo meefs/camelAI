@@ -9,7 +9,7 @@
 	"observability": { "enabled": true },
 	"rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
 	"routes": [
-		{ "pattern": "dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" }
+		{ "pattern": "dev-illiana.camelai.dev/*", "zone_name": "camelai.dev" }
 	],
 	"vpc_services": [
 		{
@@ -25,8 +25,8 @@
 		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"CF_GATEWAY_NAME": "chiridion",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
-		"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai",
-		"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai",
+		"WORKER_BASE_URL": "https://dev-illiana.camelai.dev",
+		"EMAIL_FROM_ADDRESS": "no-reply@camelai.com",
 		"CF_WORKER_NAME": "chiridion-app-dev-illiana"
 		// OPENROUTER_PROVISIONING_KEY is set via secrets
 	},
@@ -51,7 +51,7 @@
 	"send_email": [
 		{
 			"name": "EMAIL",
-			"allowed_sender_addresses": ["no-reply@chiridion.ai"]
+			"allowed_sender_addresses": ["no-reply@camelai.com"]
 		}
 	],
 	"queues": {

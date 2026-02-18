@@ -39,8 +39,8 @@ export async function handleDeploySideEffects(env: Env, info: DeploySideEffectsI
   );
 
   // Also write legacy format for legacy URL redirect support.
-  // When someone uses a legacy URL (script.chiridion.app), the dispatcher can
-  // look this up and redirect to the new URL format (script--org-slug.chiridion.app).
+  // When someone uses a legacy URL (script.camelai.app), the dispatcher can
+  // look this up and redirect to the new URL format (script--org-slug.camelai.app).
   // Note: If multiple orgs deploy workers with the same name, this entry gets overwritten.
   // That's acceptable since this is only for redirect purposes - the primary lookup
   // uses the namespaced format which is unique per org.

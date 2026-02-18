@@ -5,17 +5,17 @@
  * dispatch namespace. Supports subdomain-based routing with private worker
  * access control.
  *
- * Example: hello-world.apps.chiridion.ai -> routes to worker "hello-world" (same-site for iframe)
- *          hello-world.chiridion.app -> routes to worker "hello-world" (vanity URL)
+ * Example: hello-world.apps.camelai.dev -> routes to worker "hello-world" (same-site for iframe)
+ *          hello-world.camelai.app -> routes to worker "hello-world" (vanity URL)
  *
  * Private worker authentication:
  *
- * Same-site requests (*.chiridion.ai):
+ * Same-site requests (*.camelai.dev):
  * - Main app session cookie is available (same domain)
  * - Validates session directly via RPC, no redirect needed
  * - Checks if user is a member of the workspace that deployed the worker
  *
- * Cross-site requests (*.chiridion.app vanity URLs):
+ * Cross-site requests (*.camelai.app vanity URLs):
  * 1. User visits private worker
  * 2. Dispatcher checks dispatcher session cookie
  * 3. If no session, redirects to main app for auth
@@ -83,9 +83,9 @@ function isEnvPrefix(s: string): boolean {
  * Parse worker route from hostname.
  * Returns script name and org slug for new format, or just script name for legacy.
  *
- * New flat format: {script}--{org-slug}.chiridion.app -> { scriptName, orgSlug, dispatchScriptName }
- * New flat format: {script}--{org-slug}.apps.chiridion.ai -> { scriptName, orgSlug, dispatchScriptName }
- * Legacy format: {script}.chiridion.app -> { scriptName, orgSlug: null, dispatchScriptName: scriptName }
+ * New flat format: {script}--{org-slug}.camelai.app -> { scriptName, orgSlug, dispatchScriptName }
+ * New flat format: {script}--{org-slug}.apps.camelai.dev -> { scriptName, orgSlug, dispatchScriptName }
+ * Legacy format: {script}.camelai.app -> { scriptName, orgSlug: null, dispatchScriptName: scriptName }
  *
  * The new format uses a flat structure with double-hyphen separator to avoid
  * nested subdomain issues with DNS wildcards and SSL certificates.
@@ -94,9 +94,9 @@ function isEnvPrefix(s: string): boolean {
 function parseWorkerRoute(hostname: string): { scriptName: string; orgSlug: string | null; dispatchScriptName: string } | null {
   const parts = hostname.split('.');
 
-  // .chiridion.app domain
-  if (hostname.endsWith('.chiridion.app')) {
-    // Need at least 3 parts: {something}.chiridion.app
+  // .camelai.app domain
+  if (hostname.endsWith('.camelai.app')) {
+    // Need at least 3 parts: {something}.camelai.app
     if (parts.length < 3) return null;
 
     const firstPart = parts[0]!;
@@ -112,14 +112,14 @@ function parseWorkerRoute(hostname: string): { scriptName: string; orgSlug: stri
       return { scriptName, orgSlug, dispatchScriptName };
     }
 
-    // Legacy format: {script}.chiridion.app or {script}.{env}.chiridion.app
+    // Legacy format: {script}.camelai.app or {script}.{env}.camelai.app
     const scriptName = firstPart;
     return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
   }
 
-  // .apps.chiridion.ai domain (same-site for iframes)
-  if (hostname.endsWith('.chiridion.ai') && hostname.includes('.apps.')) {
-    // Need at least 4 parts: {something}.apps.chiridion.ai
+  // .apps.camelai.dev domain (same-site for iframes)
+  if (hostname.endsWith('.camelai.dev') && hostname.includes('.apps.')) {
+    // Need at least 4 parts: {something}.apps.camelai.dev
     if (parts.length < 4) return null;
 
     const firstPart = parts[0]!;
@@ -135,7 +135,7 @@ function parseWorkerRoute(hostname: string): { scriptName: string; orgSlug: stri
       return { scriptName, orgSlug, dispatchScriptName };
     }
 
-    // Legacy format: {script}.apps.chiridion.ai or {script}.apps.{env}.chiridion.ai
+    // Legacy format: {script}.apps.camelai.dev or {script}.apps.{env}.camelai.dev
     const scriptName = firstPart;
     return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
   }
@@ -178,32 +178,32 @@ function buildNewFormatUrl(url: URL, scriptName: string, orgSlug: string): strin
   const hostname = url.hostname;
   const parts = hostname.split('.');
 
-  // For .chiridion.app domains
-  if (hostname.endsWith('.chiridion.app')) {
-    // Legacy: script.chiridion.app -> script--org-slug.chiridion.app
+  // For .camelai.app domains
+  if (hostname.endsWith('.camelai.app')) {
+    // Legacy: script.camelai.app -> script--org-slug.camelai.app
     if (parts.length === 3) {
-      const newHostname = `${scriptName}--${orgSlug}.chiridion.app`;
+      const newHostname = `${scriptName}--${orgSlug}.camelai.app`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
-    // Legacy with env: script.staging.chiridion.app -> script--org-slug.staging.chiridion.app
+    // Legacy with env: script.staging.camelai.app -> script--org-slug.staging.camelai.app
     if (parts.length === 4 && (parts[1]?.startsWith('dev-') || parts[1] === 'staging')) {
       const envPrefix = parts[1];
-      const newHostname = `${scriptName}--${orgSlug}.${envPrefix}.chiridion.app`;
+      const newHostname = `${scriptName}--${orgSlug}.${envPrefix}.camelai.app`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
   }
 
-  // For .apps.chiridion.ai domains
-  if (hostname.endsWith('.chiridion.ai') && hostname.includes('.apps.')) {
-    // Legacy: script.apps.chiridion.ai -> script--org-slug.apps.chiridion.ai
+  // For .apps.camelai.dev domains
+  if (hostname.endsWith('.camelai.dev') && hostname.includes('.apps.')) {
+    // Legacy: script.apps.camelai.dev -> script--org-slug.apps.camelai.dev
     if (parts.length === 4 && parts[1] === 'apps') {
-      const newHostname = `${scriptName}--${orgSlug}.apps.chiridion.ai`;
+      const newHostname = `${scriptName}--${orgSlug}.apps.camelai.dev`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
-    // Legacy with env: script.apps.staging.chiridion.ai -> script--org-slug.apps.staging.chiridion.ai
+    // Legacy with env: script.apps.staging.camelai.dev -> script--org-slug.apps.staging.camelai.dev
     if (parts.length === 5 && parts[1] === 'apps') {
       const envPrefix = parts[2];
-      const newHostname = `${scriptName}--${orgSlug}.apps.${envPrefix}.chiridion.ai`;
+      const newHostname = `${scriptName}--${orgSlug}.apps.${envPrefix}.camelai.dev`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
   }
@@ -223,43 +223,43 @@ const LEGACY_MAIN_APP_SESSION_COOKIE = 'chiridion_session';
 // Main app URL for auth redirects (determined from request hostname)
 function getMainAppUrl(hostname: string): string {
   // Extract environment from hostname
-  // New format: worker.org-slug.chiridion.app -> chiridion.ai (main app)
-  // New format: worker.org-slug.dev-miguel.chiridion.app -> dev-miguel.chiridion.ai (main app)
-  // Legacy: worker.chiridion.app -> chiridion.ai (main app)
-  // Legacy: worker.dev-miguel.chiridion.app -> dev-miguel.chiridion.ai (main app)
-  // Local: worker.local.chiridion.app -> local.chiridion.ai (main app)
+  // New format: worker.org-slug.camelai.app -> camelai.dev (main app)
+  // New format: worker.org-slug.dev-miguel.camelai.app -> dev-miguel.camelai.dev (main app)
+  // Legacy: worker.camelai.app -> camelai.dev (main app)
+  // Legacy: worker.dev-miguel.camelai.app -> dev-miguel.camelai.dev (main app)
+  // Local: worker.local.camelai.app -> local.camelai.dev (main app)
   const parts = hostname.split('.');
 
   const isKnownEnvPrefix = (s: string | undefined): boolean =>
     s !== undefined && (s.startsWith('dev-') || s === 'staging' || s === 'prod' || s === 'local');
 
-  // For .chiridion.app domains
-  if (hostname.endsWith('.chiridion.app')) {
+  // For .camelai.app domains
+  if (hostname.endsWith('.camelai.app')) {
     // Find the environment prefix if any (e.g., dev-miguel, staging, local)
-    // It's the part before .chiridion.app that looks like an env prefix
+    // It's the part before .camelai.app that looks like an env prefix
     for (let i = parts.length - 3; i >= 1; i--) {
       if (isKnownEnvPrefix(parts[i])) {
         const envPrefix = parts[i];
-        return `https://${envPrefix}.chiridion.ai`;
+        return `https://${envPrefix}.camelai.dev`;
       }
     }
-    return 'https://chiridion.ai';
+    return 'https://camelai.dev';
   }
 
-  // For .chiridion.ai domains (same-site)
-  if (hostname.endsWith('.chiridion.ai')) {
+  // For .camelai.dev domains (same-site)
+  if (hostname.endsWith('.camelai.dev')) {
     // Remove worker and org-slug subdomains
     for (let i = parts.length - 3; i >= 1; i--) {
       if (isKnownEnvPrefix(parts[i])) {
         const envPrefix = parts[i];
-        return `https://${envPrefix}.chiridion.ai`;
+        return `https://${envPrefix}.camelai.dev`;
       }
     }
-    return 'https://chiridion.ai';
+    return 'https://camelai.dev';
   }
 
-  // Fallback to chiridion.ai
-  return 'https://chiridion.ai';
+  // Fallback to camelai.dev
+  return 'https://camelai.dev';
 }
 
 // Parse cookie value from Cookie header
@@ -277,7 +277,7 @@ function getCookieValue(cookieHeader: string | null, name: string): string | nul
 
 // Create Set-Cookie header for session
 function createSessionCookie(sessionId: string, hostname: string): string {
-  // Get domain for cookie (e.g., .chiridion.app to cover all subdomains)
+  // Get domain for cookie (e.g., .camelai.app to cover all subdomains)
   const parts = hostname.split('.');
   const domain = parts.length >= 2 ? `.${parts.slice(-2).join('.')}` : hostname;
 
@@ -304,10 +304,10 @@ function createScreenshotSessionCookie(sessionId: string): string {
   ].join('; ');
 }
 
-// Check if request is from same-site (any *.chiridion.ai subdomain)
+// Check if request is from same-site (any *.camelai.dev subdomain)
 // These requests will have the main app session cookie available since they share the same domain
 function isSameSiteRequest(hostname: string): boolean {
-  return hostname.endsWith('.chiridion.ai');
+  return hostname.endsWith('.camelai.dev');
 }
 
 // Auth callback route
@@ -338,10 +338,10 @@ export default {
         {
           message: 'Chiridion Dispatch Worker',
           routes: {
-            vanity: '<worker-name>--<org-slug>.chiridion.app',
-            iframe: '<worker-name>--<org-slug>.apps.chiridion.ai',
+            vanity: '<worker-name>--<org-slug>.camelai.app',
+            iframe: '<worker-name>--<org-slug>.apps.camelai.dev',
           },
-          example: 'my-app--acme-85b.chiridion.app',
+          example: 'my-app--acme-85b.camelai.app',
         },
         null,
         2
@@ -541,7 +541,7 @@ async function handleWorkerRequest(
     }
   }
 
-  // For same-site requests (*.chiridion.ai), check main app session cookie directly
+  // For same-site requests (*.camelai.dev), check main app session cookie directly
   // No redirect dance needed - the cookie is already available or the user isn't logged in
   if (isSameSiteRequest(url.hostname)) {
     const mainSessionIdV2 = getCookieValue(cookieHeader, MAIN_APP_SESSION_COOKIE);
@@ -581,7 +581,7 @@ async function handleWorkerRequest(
     }
   }
 
-  // Cross-site request (*.chiridion.app) - redirect to auth
+  // Cross-site request (*.camelai.app) - redirect to auth
   return redirectToAuth(env, url, scriptName, accessInfo.org_id);
 }
 
@@ -665,7 +665,7 @@ async function dispatchToWorker(
       }
     }
 
-    // Only inject debug bridge on iframe domain (*.apps.chiridion.ai)
+    // Only inject debug bridge on iframe domain (*.apps.camelai.dev)
     // This is where the preview iframe loads from
     if (isSameSiteRequest(url.hostname)) {
       return injectDebugBridge(response, url.hostname);

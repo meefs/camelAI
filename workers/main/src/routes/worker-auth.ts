@@ -3,7 +3,7 @@
  *
  * Handles cross-domain authentication for private worker access.
  * This route is called by the dispatcher when a user tries to access
- * a private worker on *.chiridion.app (cross-site).
+ * a private worker on *.camelai.app (cross-site).
  *
  * Flow:
  * 1. Dispatcher redirects here with ?state={uuid}

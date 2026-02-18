@@ -206,10 +206,10 @@ export function cfApiError(code: number, message: string, status: number): Respo
 
 /**
  * Extract environment prefix from hostname.
- * E.g., "staging.chiridion.ai" -> "staging", "chiridion.ai" -> ""
+ * E.g., "staging.camelai.dev" -> "staging", "camelai.dev" -> ""
  */
 export function getEnvPrefix(hostname: string): string {
-  if (hostname.endsWith('.chiridion.ai') || hostname === 'chiridion.ai') {
+  if (hostname.endsWith('.camelai.dev') || hostname === 'camelai.dev') {
     const parts = hostname.split('.');
     if (parts.length <= 2 || parts[0] === 'www') {
       return '';

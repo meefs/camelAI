@@ -15,10 +15,10 @@ function getHostnameFromRequest(request: Request): string {
 
 /**
  * Get the vanity URL domain for deployed apps (server-side).
- * Can accept either a Request, AppLoadContext with request, or nothing (defaults to chiridion.ai).
+ * Can accept either a Request, AppLoadContext with request, or nothing (defaults to camelai.dev).
  */
 export async function getVanityDomain(contextOrRequest?: AppLoadContext | Request): Promise<string> {
-  let hostname = 'chiridion.ai';
+  let hostname = 'camelai.dev';
 
   if (contextOrRequest instanceof Request) {
     hostname = getHostnameFromRequest(contextOrRequest);
@@ -34,7 +34,7 @@ export async function getVanityDomain(contextOrRequest?: AppLoadContext | Reques
  * Get the full vanity URL for a deployed app (server-side).
  */
 export async function getAppUrl(scriptName: string, request?: Request, orgSlug?: string): Promise<string> {
-  const hostname = request ? getHostnameFromRequest(request) : 'chiridion.ai';
+  const hostname = request ? getHostnameFromRequest(request) : 'camelai.dev';
   return getAppUrlBase(scriptName, hostname, orgSlug);
 }
 
@@ -42,6 +42,6 @@ export async function getAppUrl(scriptName: string, request?: Request, orgSlug?:
  * Get the full iframe URL for a deployed app (server-side).
  */
 export async function getAppIframeUrl(scriptName: string, request?: Request, orgSlug?: string): Promise<string> {
-  const hostname = request ? getHostnameFromRequest(request) : 'chiridion.ai';
+  const hostname = request ? getHostnameFromRequest(request) : 'camelai.dev';
   return getAppIframeUrlBase(scriptName, hostname, orgSlug);
 }

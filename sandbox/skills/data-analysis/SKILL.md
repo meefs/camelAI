@@ -263,7 +263,7 @@ import os
 import requests
 
 token = os.environ["DATA_PROXY_TOKEN"]
-base_url = os.environ.get("DATA_PROXY_URL", "https://chiridion.ai/api")
+base_url = os.environ.get("DATA_PROXY_URL", "https://camelai.dev/api")
 
 response = requests.post(
     f"{base_url}/mssql/query",

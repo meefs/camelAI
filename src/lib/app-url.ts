@@ -6,13 +6,13 @@
  * from environment-specific domains.
  *
  * New flat URL format (with org slug, uses -- separator to avoid nested subdomain issues):
- * Production: {scriptName}--{orgSlug}.chiridion.app, {scriptName}--{orgSlug}.apps.chiridion.ai
- * Staging: {scriptName}--{orgSlug}.staging.chiridion.app, {scriptName}--{orgSlug}.apps.staging.chiridion.ai
- * Dev: {scriptName}--{orgSlug}.dev-{name}.chiridion.app, {scriptName}--{orgSlug}.apps.dev-{name}.chiridion.ai
- * Local: {scriptName}--{orgSlug}.local.chiridion.app, {scriptName}--{orgSlug}.apps.local.chiridion.ai
+ * Production: {scriptName}--{orgSlug}.camelai.app, {scriptName}--{orgSlug}.apps.camelai.dev
+ * Staging: {scriptName}--{orgSlug}.staging.camelai.app, {scriptName}--{orgSlug}.apps.staging.camelai.dev
+ * Dev: {scriptName}--{orgSlug}.dev-{name}.camelai.app, {scriptName}--{orgSlug}.apps.dev-{name}.camelai.dev
+ * Local: {scriptName}--{orgSlug}.local.camelai.app, {scriptName}--{orgSlug}.apps.local.camelai.dev
  *
  * Legacy URL format (backwards compatibility, no org slug):
- * Production: {scriptName}.chiridion.app, {scriptName}.apps.chiridion.ai
+ * Production: {scriptName}.camelai.app, {scriptName}.apps.camelai.dev
  */
 
 /**
@@ -20,17 +20,17 @@
  * Returns empty string for production, otherwise returns the env prefix (e.g., "staging", "dev-miguel", "local").
  */
 function getEnvPrefix(hostname: string): string {
-  // Handle chiridion.ai domains (main app)
-  // e.g., staging.chiridion.ai -> staging
-  // e.g., dev-miguel.chiridion.ai -> dev-miguel
-  // e.g., chiridion.ai -> "" (production)
-  if (hostname.endsWith('.chiridion.ai') || hostname === 'chiridion.ai') {
+  // Handle camelai.dev domains (main app)
+  // e.g., staging.camelai.dev -> staging
+  // e.g., dev-miguel.camelai.dev -> dev-miguel
+  // e.g., camelai.dev -> "" (production)
+  if (hostname.endsWith('.camelai.dev') || hostname === 'camelai.dev') {
     const parts = hostname.split('.');
-    // chiridion.ai or www.chiridion.ai = production
+    // camelai.dev or www.camelai.dev = production
     if (parts.length <= 2 || parts[0] === 'www') {
       return '';
     }
-    // {env}.chiridion.ai
+    // {env}.camelai.dev
     return parts[0];
   }
 
@@ -50,37 +50,37 @@ function getEnvPrefix(hostname: string): string {
 
 /**
  * Get the vanity URL domain for deployed apps (cross-site).
- * e.g., "chiridion.app" for production, "staging.chiridion.app" for staging
+ * e.g., "camelai.app" for production, "staging.camelai.app" for staging
  */
 export function getVanityDomain(hostname?: string): string {
-  const host = hostname ?? (typeof window !== 'undefined' ? window.location.hostname : 'chiridion.ai');
+  const host = hostname ?? (typeof window !== 'undefined' ? window.location.hostname : 'camelai.dev');
   const envPrefix = getEnvPrefix(host);
 
   if (envPrefix) {
-    return `${envPrefix}.chiridion.app`;
+    return `${envPrefix}.camelai.app`;
   }
-  return 'chiridion.app';
+  return 'camelai.app';
 }
 
 /**
  * Get the iframe URL domain for deployed apps (same-site).
- * e.g., "apps.chiridion.ai" for production, "apps.staging.chiridion.ai" for staging
+ * e.g., "apps.camelai.dev" for production, "apps.staging.camelai.dev" for staging
  */
 export function getIframeDomain(hostname?: string): string {
-  const host = hostname ?? (typeof window !== 'undefined' ? window.location.hostname : 'chiridion.ai');
+  const host = hostname ?? (typeof window !== 'undefined' ? window.location.hostname : 'camelai.dev');
   const envPrefix = getEnvPrefix(host);
 
   if (envPrefix) {
-    return `apps.${envPrefix}.chiridion.ai`;
+    return `apps.${envPrefix}.camelai.dev`;
   }
-  return 'apps.chiridion.ai';
+  return 'apps.camelai.dev';
 }
 
 /**
  * Get the full vanity URL for a deployed app with org slug.
  * Uses flat format with -- separator to avoid nested subdomain issues.
- * e.g., "https://my-app--acme-85b.chiridion.app" for production
- * e.g., "https://my-app--acme-85b.staging.chiridion.app" for staging
+ * e.g., "https://my-app--acme-85b.camelai.app" for production
+ * e.g., "https://my-app--acme-85b.staging.camelai.app" for staging
  */
 export function getAppUrl(scriptName: string, hostname?: string, orgSlug?: string): string {
   const domain = getVanityDomain(hostname);
@@ -94,8 +94,8 @@ export function getAppUrl(scriptName: string, hostname?: string, orgSlug?: strin
 /**
  * Get the full iframe URL for a deployed app (used for same-site embedding).
  * Uses flat format with -- separator to avoid nested subdomain issues.
- * e.g., "https://my-app--acme-85b.apps.chiridion.ai" for production
- * e.g., "https://my-app--acme-85b.apps.staging.chiridion.ai" for staging
+ * e.g., "https://my-app--acme-85b.apps.camelai.dev" for production
+ * e.g., "https://my-app--acme-85b.apps.staging.camelai.dev" for staging
  */
 export function getAppIframeUrl(scriptName: string, hostname?: string, orgSlug?: string): string {
   const domain = getIframeDomain(hostname);

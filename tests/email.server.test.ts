@@ -8,11 +8,11 @@ import {
 describe('email.server', () => {
   it('resolves base URL from WORKER_BASE_URL when provided', () => {
     const baseUrl = resolveAppBaseUrl(
-      { WORKER_BASE_URL: 'https://staging.chiridion.ai/' },
+      { WORKER_BASE_URL: 'https://staging.camelai.dev/' },
       new URL('https://example.com/foo')
     );
 
-    expect(baseUrl).toBe('https://staging.chiridion.ai');
+    expect(baseUrl).toBe('https://staging.camelai.dev');
   });
 
   it('falls back to request origin when WORKER_BASE_URL is missing or invalid', () => {
@@ -31,22 +31,22 @@ describe('email.server', () => {
 
   it('builds an absolute invitation URL', () => {
     const url = buildInvitationUrl(
-      'https://chiridion.ai/',
+      'https://camelai.dev/',
       'org_123',
       'inv_456'
     );
 
-    expect(url).toBe('https://chiridion.ai/invitations/org_123/inv_456');
+    expect(url).toBe('https://camelai.dev/invitations/org_123/inv_456');
   });
 
   it('skips invite email when binding is not configured', async () => {
     const result = await sendOrgInvitationEmail({
-      env: { EMAIL: undefined, EMAIL_FROM_ADDRESS: 'no-reply@chiridion.ai' },
+      env: { EMAIL: undefined, EMAIL_FROM_ADDRESS: 'no-reply@camelai.com' },
       to: 'invitee@example.com',
       orgName: 'Acme',
       inviterName: 'Owner',
       role: 'member',
-      invitationUrl: 'https://chiridion.ai/invitations/org/inv',
+      invitationUrl: 'https://camelai.dev/invitations/org/inv',
       expiresAt: Date.now() + 3600_000,
     });
 
@@ -68,7 +68,7 @@ describe('email.server', () => {
       orgName: 'Acme',
       inviterName: 'Owner',
       role: 'member',
-      invitationUrl: 'https://chiridion.ai/invitations/org/inv',
+      invitationUrl: 'https://camelai.dev/invitations/org/inv',
       expiresAt: Date.now() + 3600_000,
     });
 

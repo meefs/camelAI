@@ -19,10 +19,10 @@ features:
 
 oauth_config:
   redirect_urls:
-    - https://chiridion.ai/api/integrations/slack/callback
-    - https://staging.chiridion.ai/api/integrations/slack/callback
-    - https://dev-miguel.chiridion.ai/api/integrations/slack/callback
-    - https://dev-illiana.chiridion.ai/api/integrations/slack/callback
+    - https://camelai.dev/api/integrations/slack/callback
+    - https://staging.camelai.dev/api/integrations/slack/callback
+    - https://dev-miguel.camelai.dev/api/integrations/slack/callback
+    - https://dev-illiana.camelai.dev/api/integrations/slack/callback
     - http://localhost:3001/api/integrations/slack/callback
   scopes:
     bot:

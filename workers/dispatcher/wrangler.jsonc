@@ -35,8 +35,8 @@
 		"prod": {
 			"name": "chiridion-dispatcher",
 			"routes": [
-				{ "pattern": "*.apps.chiridion.ai/*", "zone_name": "chiridion.ai" },
-				{ "pattern": "*.chiridion.app/*", "zone_name": "chiridion.app" }
+				{ "pattern": "*.apps.camelai.dev/*", "zone_name": "camelai.dev" },
+				{ "pattern": "*.camelai.app/*", "zone_name": "camelai.app" }
 			],
 			"dispatch_namespaces": [
 				{
@@ -63,8 +63,8 @@
 		"staging": {
 			"name": "chiridion-dispatcher-staging",
 			"routes": [
-				{ "pattern": "*.apps.staging.chiridion.ai/*", "zone_name": "chiridion.ai" },
-				{ "pattern": "*.staging.chiridion.app/*", "zone_name": "chiridion.app" }
+				{ "pattern": "*.apps.staging.camelai.dev/*", "zone_name": "camelai.dev" },
+				{ "pattern": "*.staging.camelai.app/*", "zone_name": "camelai.app" }
 			],
 			"dispatch_namespaces": [
 				{
@@ -91,8 +91,8 @@
 		"dev-miguel": {
 			"name": "chiridion-dispatcher-dev-miguel",
 			"routes": [
-				{ "pattern": "*.apps.dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" },
-				{ "pattern": "*.dev-miguel.chiridion.app/*", "zone_name": "chiridion.app" }
+				{ "pattern": "*.apps.dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" },
+				{ "pattern": "*.dev-miguel.camelai.app/*", "zone_name": "camelai.app" }
 			],
 			"dispatch_namespaces": [
 				{
@@ -119,8 +119,8 @@
 		"dev-illiana": {
 			"name": "chiridion-dispatcher-dev-illiana",
 			"routes": [
-				{ "pattern": "*.apps.dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" },
-				{ "pattern": "*.dev-illiana.chiridion.app/*", "zone_name": "chiridion.app" }
+				{ "pattern": "*.apps.dev-illiana.camelai.dev/*", "zone_name": "camelai.dev" },
+				{ "pattern": "*.dev-illiana.camelai.app/*", "zone_name": "camelai.app" }
 			],
 			"dispatch_namespaces": [
 				{
@@ -147,8 +147,8 @@
 		"local": {
 			"name": "chiridion-dispatcher-local",
 			"routes": [
-				{ "pattern": "*.apps.local.chiridion.ai/*", "zone_name": "chiridion.ai" },
-				{ "pattern": "*.local.chiridion.app/*", "zone_name": "chiridion.app" }
+				{ "pattern": "*.apps.local.camelai.dev/*", "zone_name": "camelai.dev" },
+				{ "pattern": "*.local.camelai.app/*", "zone_name": "camelai.app" }
 			],
 			"vars": {
 				"SKIP_AUTH": "true"

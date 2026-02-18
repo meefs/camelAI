@@ -21,7 +21,7 @@
 		// Claude API proxy (CF AI Gateway)
 		"CF_GATEWAY_NAME": "chiridion",
 		"BEDROCK_REGION": "us-west-2",
-		"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
+		"EMAIL_FROM_ADDRESS": "no-reply@camelai.com"
 		// CF_GATEWAY_TOKEN is set via .dev.vars
 		// OPENROUTER_PROVISIONING_KEY (for per-org keys) is set via .dev.vars
 	},
@@ -70,7 +70,7 @@
 	"send_email": [
 		{
 			"name": "EMAIL",
-			"allowed_sender_addresses": ["no-reply@chiridion.ai"]
+			"allowed_sender_addresses": ["no-reply@camelai.com"]
 		}
 	],
 	"queues": {
@@ -140,8 +140,8 @@
 		"prod": {
 			"name": "chiridion-app",
 			"routes": [
-				{ "pattern": "chiridion.ai/*", "zone_name": "chiridion.ai" },
-				{ "pattern": "www.chiridion.ai/*", "zone_name": "chiridion.ai" }
+				{ "pattern": "camelai.dev/*", "zone_name": "camelai.dev" },
+				{ "pattern": "www.camelai.dev/*", "zone_name": "camelai.dev" }
 			],
 			"vpc_services": [
 				{
@@ -158,10 +158,10 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform",
 				"CF_WORKER_NAME": "chiridion-app",
 				"TAIL_WORKER_NAME": "chiridion-user-logs-tail",
-				"WORKER_BASE_URL": "https://chiridion.ai",
+				"WORKER_BASE_URL": "https://camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
-				"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
+				"EMAIL_FROM_ADDRESS": "no-reply@camelai.com"
 				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
@@ -199,7 +199,7 @@
 			"send_email": [
 				{
 					"name": "EMAIL",
-					"allowed_sender_addresses": ["no-reply@chiridion.ai"]
+					"allowed_sender_addresses": ["no-reply@camelai.com"]
 				}
 			],
 			"queues": {
@@ -242,7 +242,7 @@
 		"staging": {
 			"name": "chiridion-app-staging",
 			"routes": [
-				{ "pattern": "staging.chiridion.ai/*", "zone_name": "chiridion.ai" }
+				{ "pattern": "staging.camelai.dev/*", "zone_name": "camelai.dev" }
 			],
 			"vpc_services": [
 				{
@@ -259,10 +259,10 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
 				"CF_WORKER_NAME": "chiridion-app-staging",
 				"TAIL_WORKER_NAME": "chiridion-user-logs-tail-staging",
-				"WORKER_BASE_URL": "https://staging.chiridion.ai",
+				"WORKER_BASE_URL": "https://staging.camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
-				"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
+				"EMAIL_FROM_ADDRESS": "no-reply@camelai.com"
 				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
@@ -309,7 +309,7 @@
 			"send_email": [
 				{
 					"name": "EMAIL",
-					"allowed_sender_addresses": ["no-reply@chiridion.ai"]
+					"allowed_sender_addresses": ["no-reply@camelai.com"]
 				}
 			],
 			"queues": {
@@ -346,7 +346,7 @@
 		"dev-miguel": {
 			"name": "chiridion-app-dev-miguel",
 			"routes": [
-				{ "pattern": "dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" }
+				{ "pattern": "dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" }
 			],
 			"vpc_services": [
 				{
@@ -363,10 +363,10 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
 				"CF_WORKER_NAME": "chiridion-app-dev-miguel",
 				"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-miguel",
-				"WORKER_BASE_URL": "https://dev-miguel.chiridion.ai",
+				"WORKER_BASE_URL": "https://dev-miguel.camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
-				"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
+				"EMAIL_FROM_ADDRESS": "no-reply@camelai.com"
 				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
@@ -414,7 +414,7 @@
 			"send_email": [
 				{
 					"name": "EMAIL",
-					"allowed_sender_addresses": ["no-reply@chiridion.ai"]
+					"allowed_sender_addresses": ["no-reply@camelai.com"]
 				}
 			],
 			"queues": {
@@ -451,7 +451,7 @@
 		"dev-illiana": {
 			"name": "chiridion-app-dev-illiana",
 			"routes": [
-				{ "pattern": "dev-illiana.chiridion.ai/*", "zone_name": "chiridion.ai" }
+				{ "pattern": "dev-illiana.camelai.dev/*", "zone_name": "camelai.dev" }
 			],
 			"vpc_services": [
 				{
@@ -468,10 +468,10 @@
 				"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
 				"CF_WORKER_NAME": "chiridion-app-dev-illiana",
 				"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-illiana",
-				"WORKER_BASE_URL": "https://dev-illiana.chiridion.ai",
+				"WORKER_BASE_URL": "https://dev-illiana.camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
-				"EMAIL_FROM_ADDRESS": "no-reply@chiridion.ai"
+				"EMAIL_FROM_ADDRESS": "no-reply@camelai.com"
 				// CF_GATEWAY_TOKEN is set via secrets
 				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
@@ -519,7 +519,7 @@
 			"send_email": [
 				{
 					"name": "EMAIL",
-					"allowed_sender_addresses": ["no-reply@chiridion.ai"]
+					"allowed_sender_addresses": ["no-reply@camelai.com"]
 				}
 			],
 			"queues": {

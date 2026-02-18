@@ -7,7 +7,7 @@ export const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 /**
  * Get the session cookie name for the current environment.
- * Handles subdomains like asdf.apps.staging.chiridion.ai
+ * Handles subdomains like asdf.apps.staging.camelai.dev
  */
 export function getSessionCookieName(hostname: string | undefined): string {
   if (!hostname) return 'chiridion_session_v3';
@@ -15,10 +15,10 @@ export function getSessionCookieName(hostname: string | undefined): string {
   const host = hostname.split(':')[0];
 
   if (host === 'localhost' || host === '127.0.0.1') return 'chiridion_session_local';
-  if (host.endsWith('.staging.chiridion.ai') || host === 'staging.chiridion.ai') return 'chiridion_session_staging';
-  if (host.endsWith('.dev-illiana.chiridion.ai') || host === 'dev-illiana.chiridion.ai') return 'chiridion_session_illiana';
-  if (host.endsWith('.dev-miguel.chiridion.ai') || host === 'dev-miguel.chiridion.ai') return 'chiridion_session_miguel';
-  if (host.endsWith('.chiridion.ai') || host === 'chiridion.ai') return 'chiridion_session_v3';
+  if (host.endsWith('.staging.camelai.dev') || host === 'staging.camelai.dev') return 'chiridion_session_staging';
+  if (host.endsWith('.dev-illiana.camelai.dev') || host === 'dev-illiana.camelai.dev') return 'chiridion_session_illiana';
+  if (host.endsWith('.dev-miguel.camelai.dev') || host === 'dev-miguel.camelai.dev') return 'chiridion_session_miguel';
+  if (host.endsWith('.camelai.dev') || host === 'camelai.dev') return 'chiridion_session_v3';
 
   return 'chiridion_session_v3';
 }
@@ -31,10 +31,10 @@ export function getCookieDomain(hostname: string | undefined): string | undefine
   const host = hostname.split(':')[0];
 
   if (host === 'localhost' || host === '127.0.0.1') return undefined;
-  if (host.endsWith('.staging.chiridion.ai') || host === 'staging.chiridion.ai') return '.staging.chiridion.ai';
-  if (host.endsWith('.dev-illiana.chiridion.ai') || host === 'dev-illiana.chiridion.ai') return '.dev-illiana.chiridion.ai';
-  if (host.endsWith('.dev-miguel.chiridion.ai') || host === 'dev-miguel.chiridion.ai') return '.dev-miguel.chiridion.ai';
-  if (host.endsWith('.chiridion.ai') || host === 'chiridion.ai') return '.chiridion.ai';
+  if (host.endsWith('.staging.camelai.dev') || host === 'staging.camelai.dev') return '.staging.camelai.dev';
+  if (host.endsWith('.dev-illiana.camelai.dev') || host === 'dev-illiana.camelai.dev') return '.dev-illiana.camelai.dev';
+  if (host.endsWith('.dev-miguel.camelai.dev') || host === 'dev-miguel.camelai.dev') return '.dev-miguel.camelai.dev';
+  if (host.endsWith('.camelai.dev') || host === 'camelai.dev') return '.camelai.dev';
 
   return undefined;
 }

@@ -150,7 +150,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const hostname = request.headers.get('host')?.split(':')[0] ?? 'chiridion.ai';
+  const hostname = request.headers.get('host')?.split(':')[0] ?? 'camelai.dev';
   const renderedAt = Date.now();
 
   // Check filter from URL params

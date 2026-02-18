@@ -251,8 +251,8 @@ Each deployed app gets two URLs:
 
 | URL Pattern | Use Case |
 |-------------|----------|
-| \`https://{name}.apps.chiridion.ai\` | Same-site iframe (inherits auth) |
-| \`https://{name}.chiridion.app\` | Public vanity URL |
+| \`https://{name}.apps.camelai.dev\` | Same-site iframe (inherits auth) |
+| \`https://{name}.camelai.app\` | Public vanity URL |
 </deployment_urls>
 
 <app_visibility>
@@ -432,7 +432,7 @@ If a user is frustrated, stay calm and helpful. Focus on solving the problem.
 <getting_help>
 If users ask how to use Chiridion or have questions about the platform:
 - For feature questions, explain what you know about Chiridion's capabilities
-- For billing, account, or technical support issues, direct them to support@chiridion.ai
+- For billing, account, or technical support issues, direct them to support@camelai.com
 - For bugs or feedback, encourage them to use the feedback button in the interface
 
 You can help users understand what's possible, but you can't change account settings, billing, or platform configuration.

@@ -10,8 +10,8 @@
 	},
 	"routes": [
 		// Matches both legacy and new format
-		{ "pattern": "*.apps.dev-miguel.chiridion.ai/*", "zone_name": "chiridion.ai" },
-		{ "pattern": "*.dev-miguel.chiridion.app/*", "zone_name": "chiridion.app" }
+		{ "pattern": "*.apps.dev-miguel.camelai.dev/*", "zone_name": "camelai.dev" },
+		{ "pattern": "*.dev-miguel.camelai.app/*", "zone_name": "camelai.app" }
 	],
 	"dispatch_namespaces": [
 		{

@@ -17,15 +17,15 @@ import { describe, it, expect } from 'vitest';
  * Parse worker route from hostname.
  * Returns script name and org slug for new format, or just script name for legacy.
  *
- * New flat format: {script}--{org-slug}.chiridion.app
- * New flat format: {script}--{org-slug}.apps.chiridion.ai
- * Legacy format: {script}.chiridion.app
+ * New flat format: {script}--{org-slug}.camelai.app
+ * New flat format: {script}--{org-slug}.apps.camelai.dev
+ * Legacy format: {script}.camelai.app
  */
 function parseWorkerRoute(hostname: string): { scriptName: string; orgSlug: string | null; dispatchScriptName: string } | null {
   const parts = hostname.split('.');
 
-  // .chiridion.app domain
-  if (hostname.endsWith('.chiridion.app')) {
+  // .camelai.app domain
+  if (hostname.endsWith('.camelai.app')) {
     if (parts.length < 3) return null;
 
     const firstPart = parts[0]!;
@@ -41,13 +41,13 @@ function parseWorkerRoute(hostname: string): { scriptName: string; orgSlug: stri
       return { scriptName, orgSlug, dispatchScriptName };
     }
 
-    // Legacy format: {script}.chiridion.app or {script}.{env}.chiridion.app
+    // Legacy format: {script}.camelai.app or {script}.{env}.camelai.app
     const scriptName = firstPart;
     return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
   }
 
-  // .apps.chiridion.ai domain (same-site for iframes)
-  if (hostname.endsWith('.chiridion.ai') && hostname.includes('.apps.')) {
+  // .apps.camelai.dev domain (same-site for iframes)
+  if (hostname.endsWith('.camelai.dev') && hostname.includes('.apps.')) {
     if (parts.length < 4) return null;
 
     const firstPart = parts[0]!;
@@ -63,7 +63,7 @@ function parseWorkerRoute(hostname: string): { scriptName: string; orgSlug: stri
       return { scriptName, orgSlug, dispatchScriptName };
     }
 
-    // Legacy format: {script}.apps.chiridion.ai or {script}.apps.{env}.chiridion.ai
+    // Legacy format: {script}.apps.camelai.dev or {script}.apps.{env}.camelai.dev
     const scriptName = firstPart;
     return { scriptName, orgSlug: null, dispatchScriptName: scriptName };
   }
@@ -79,32 +79,32 @@ function buildNewFormatUrl(url: URL, scriptName: string, orgSlug: string): strin
   const hostname = url.hostname;
   const parts = hostname.split('.');
 
-  // For .chiridion.app domains
-  if (hostname.endsWith('.chiridion.app')) {
-    // Legacy: script.chiridion.app -> script--org-slug.chiridion.app
+  // For .camelai.app domains
+  if (hostname.endsWith('.camelai.app')) {
+    // Legacy: script.camelai.app -> script--org-slug.camelai.app
     if (parts.length === 3) {
-      const newHostname = `${scriptName}--${orgSlug}.chiridion.app`;
+      const newHostname = `${scriptName}--${orgSlug}.camelai.app`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
-    // Legacy with env: script.staging.chiridion.app -> script--org-slug.staging.chiridion.app
+    // Legacy with env: script.staging.camelai.app -> script--org-slug.staging.camelai.app
     if (parts.length === 4 && (parts[1]?.startsWith('dev-') || parts[1] === 'staging')) {
       const envPrefix = parts[1];
-      const newHostname = `${scriptName}--${orgSlug}.${envPrefix}.chiridion.app`;
+      const newHostname = `${scriptName}--${orgSlug}.${envPrefix}.camelai.app`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
   }
 
-  // For .apps.chiridion.ai domains
-  if (hostname.endsWith('.chiridion.ai') && hostname.includes('.apps.')) {
-    // Legacy: script.apps.chiridion.ai -> script--org-slug.apps.chiridion.ai
+  // For .apps.camelai.dev domains
+  if (hostname.endsWith('.camelai.dev') && hostname.includes('.apps.')) {
+    // Legacy: script.apps.camelai.dev -> script--org-slug.apps.camelai.dev
     if (parts.length === 4 && parts[1] === 'apps') {
-      const newHostname = `${scriptName}--${orgSlug}.apps.chiridion.ai`;
+      const newHostname = `${scriptName}--${orgSlug}.apps.camelai.dev`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
-    // Legacy with env: script.apps.staging.chiridion.ai -> script--org-slug.apps.staging.chiridion.ai
+    // Legacy with env: script.apps.staging.camelai.dev -> script--org-slug.apps.staging.camelai.dev
     if (parts.length === 5 && parts[1] === 'apps') {
       const envPrefix = parts[2];
-      const newHostname = `${scriptName}--${orgSlug}.apps.${envPrefix}.chiridion.ai`;
+      const newHostname = `${scriptName}--${orgSlug}.apps.${envPrefix}.camelai.dev`;
       return `${url.protocol}//${newHostname}${url.pathname}${url.search}`;
     }
   }
@@ -117,9 +117,9 @@ function buildNewFormatUrl(url: URL, scriptName: string, orgSlug: string): strin
 // ============================================================================
 
 describe('parseWorkerRoute', () => {
-  describe('vanity domain (.chiridion.app)', () => {
-    it('parses new flat format: script--org-slug.chiridion.app', () => {
-      const result = parseWorkerRoute('my-app--acme-85b.chiridion.app');
+  describe('vanity domain (.camelai.app)', () => {
+    it('parses new flat format: script--org-slug.camelai.app', () => {
+      const result = parseWorkerRoute('my-app--acme-85b.camelai.app');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: 'acme-85b',
@@ -127,8 +127,8 @@ describe('parseWorkerRoute', () => {
       });
     });
 
-    it('parses new flat format with env prefix: script--org-slug.staging.chiridion.app', () => {
-      const result = parseWorkerRoute('my-app--acme-85b.staging.chiridion.app');
+    it('parses new flat format with env prefix: script--org-slug.staging.camelai.app', () => {
+      const result = parseWorkerRoute('my-app--acme-85b.staging.camelai.app');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: 'acme-85b',
@@ -136,8 +136,8 @@ describe('parseWorkerRoute', () => {
       });
     });
 
-    it('parses new flat format with dev env prefix: script--org-slug.dev-miguel.chiridion.app', () => {
-      const result = parseWorkerRoute('my-app--acme-85b.dev-miguel.chiridion.app');
+    it('parses new flat format with dev env prefix: script--org-slug.dev-miguel.camelai.app', () => {
+      const result = parseWorkerRoute('my-app--acme-85b.dev-miguel.camelai.app');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: 'acme-85b',
@@ -145,8 +145,8 @@ describe('parseWorkerRoute', () => {
       });
     });
 
-    it('parses legacy format: script.chiridion.app', () => {
-      const result = parseWorkerRoute('my-app.chiridion.app');
+    it('parses legacy format: script.camelai.app', () => {
+      const result = parseWorkerRoute('my-app.camelai.app');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: null,
@@ -154,8 +154,8 @@ describe('parseWorkerRoute', () => {
       });
     });
 
-    it('parses legacy format with staging env prefix: script.staging.chiridion.app', () => {
-      const result = parseWorkerRoute('my-app.staging.chiridion.app');
+    it('parses legacy format with staging env prefix: script.staging.camelai.app', () => {
+      const result = parseWorkerRoute('my-app.staging.camelai.app');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: null,
@@ -163,8 +163,8 @@ describe('parseWorkerRoute', () => {
       });
     });
 
-    it('parses legacy format with dev env prefix: script.dev-miguel.chiridion.app', () => {
-      const result = parseWorkerRoute('my-app.dev-miguel.chiridion.app');
+    it('parses legacy format with dev env prefix: script.dev-miguel.camelai.app', () => {
+      const result = parseWorkerRoute('my-app.dev-miguel.camelai.app');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: null,
@@ -173,9 +173,9 @@ describe('parseWorkerRoute', () => {
     });
   });
 
-  describe('same-site domain (.apps.chiridion.ai)', () => {
-    it('parses new flat format: script--org-slug.apps.chiridion.ai', () => {
-      const result = parseWorkerRoute('my-app--acme-85b.apps.chiridion.ai');
+  describe('same-site domain (.apps.camelai.dev)', () => {
+    it('parses new flat format: script--org-slug.apps.camelai.dev', () => {
+      const result = parseWorkerRoute('my-app--acme-85b.apps.camelai.dev');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: 'acme-85b',
@@ -183,8 +183,8 @@ describe('parseWorkerRoute', () => {
       });
     });
 
-    it('parses new flat format with env prefix: script--org-slug.apps.staging.chiridion.ai', () => {
-      const result = parseWorkerRoute('my-app--acme-85b.apps.staging.chiridion.ai');
+    it('parses new flat format with env prefix: script--org-slug.apps.staging.camelai.dev', () => {
+      const result = parseWorkerRoute('my-app--acme-85b.apps.staging.camelai.dev');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: 'acme-85b',
@@ -192,8 +192,8 @@ describe('parseWorkerRoute', () => {
       });
     });
 
-    it('parses legacy format: script.apps.chiridion.ai', () => {
-      const result = parseWorkerRoute('my-app.apps.chiridion.ai');
+    it('parses legacy format: script.apps.camelai.dev', () => {
+      const result = parseWorkerRoute('my-app.apps.camelai.dev');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: null,
@@ -201,8 +201,8 @@ describe('parseWorkerRoute', () => {
       });
     });
 
-    it('parses legacy format with staging env prefix: script.apps.staging.chiridion.ai', () => {
-      const result = parseWorkerRoute('my-app.apps.staging.chiridion.ai');
+    it('parses legacy format with staging env prefix: script.apps.staging.camelai.dev', () => {
+      const result = parseWorkerRoute('my-app.apps.staging.camelai.dev');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: null,
@@ -210,8 +210,8 @@ describe('parseWorkerRoute', () => {
       });
     });
 
-    it('parses legacy format with dev env prefix: script.apps.dev-miguel.chiridion.ai', () => {
-      const result = parseWorkerRoute('my-app.apps.dev-miguel.chiridion.ai');
+    it('parses legacy format with dev env prefix: script.apps.dev-miguel.camelai.dev', () => {
+      const result = parseWorkerRoute('my-app.apps.dev-miguel.camelai.dev');
       expect(result).toEqual({
         scriptName: 'my-app',
         orgSlug: null,
@@ -222,11 +222,11 @@ describe('parseWorkerRoute', () => {
 
   describe('invalid hostnames', () => {
     it('returns null for apex domain', () => {
-      expect(parseWorkerRoute('chiridion.app')).toBeNull();
+      expect(parseWorkerRoute('camelai.app')).toBeNull();
     });
 
     it('returns null for main app domain', () => {
-      expect(parseWorkerRoute('chiridion.ai')).toBeNull();
+      expect(parseWorkerRoute('camelai.dev')).toBeNull();
     });
 
     it('returns null for unrelated domains', () => {
@@ -234,54 +234,54 @@ describe('parseWorkerRoute', () => {
     });
 
     it('returns null for malformed separator (empty script)', () => {
-      expect(parseWorkerRoute('--acme-85b.chiridion.app')).toBeNull();
+      expect(parseWorkerRoute('--acme-85b.camelai.app')).toBeNull();
     });
 
     it('returns null for malformed separator (empty org)', () => {
-      expect(parseWorkerRoute('my-app--.chiridion.app')).toBeNull();
+      expect(parseWorkerRoute('my-app--.camelai.app')).toBeNull();
     });
   });
 });
 
 describe('buildNewFormatUrl', () => {
-  describe('vanity domain (.chiridion.app)', () => {
+  describe('vanity domain (.camelai.app)', () => {
     it('converts legacy to new flat format', () => {
-      const url = new URL('https://my-app.chiridion.app/some/path?query=1');
+      const url = new URL('https://my-app.camelai.app/some/path?query=1');
       const result = buildNewFormatUrl(url, 'my-app', 'acme-85b');
-      expect(result).toBe('https://my-app--acme-85b.chiridion.app/some/path?query=1');
+      expect(result).toBe('https://my-app--acme-85b.camelai.app/some/path?query=1');
     });
 
     it('converts legacy with staging env to new flat format', () => {
-      const url = new URL('https://my-app.staging.chiridion.app/');
+      const url = new URL('https://my-app.staging.camelai.app/');
       const result = buildNewFormatUrl(url, 'my-app', 'acme-85b');
-      expect(result).toBe('https://my-app--acme-85b.staging.chiridion.app/');
+      expect(result).toBe('https://my-app--acme-85b.staging.camelai.app/');
     });
 
     it('converts legacy with dev env to new flat format', () => {
-      const url = new URL('https://my-app.dev-miguel.chiridion.app/');
+      const url = new URL('https://my-app.dev-miguel.camelai.app/');
       const result = buildNewFormatUrl(url, 'my-app', 'acme-85b');
-      expect(result).toBe('https://my-app--acme-85b.dev-miguel.chiridion.app/');
+      expect(result).toBe('https://my-app--acme-85b.dev-miguel.camelai.app/');
     });
   });
 
-  describe('same-site domain (.apps.chiridion.ai)', () => {
+  describe('same-site domain (.apps.camelai.dev)', () => {
     it('converts legacy to new flat format', () => {
-      const url = new URL('https://my-app.apps.chiridion.ai/api/data');
+      const url = new URL('https://my-app.apps.camelai.dev/api/data');
       const result = buildNewFormatUrl(url, 'my-app', 'acme-85b');
-      expect(result).toBe('https://my-app--acme-85b.apps.chiridion.ai/api/data');
+      expect(result).toBe('https://my-app--acme-85b.apps.camelai.dev/api/data');
     });
 
     it('converts legacy with env prefix to new flat format', () => {
-      const url = new URL('https://my-app.apps.staging.chiridion.ai/');
+      const url = new URL('https://my-app.apps.staging.camelai.dev/');
       const result = buildNewFormatUrl(url, 'my-app', 'acme-85b');
-      expect(result).toBe('https://my-app--acme-85b.apps.staging.chiridion.ai/');
+      expect(result).toBe('https://my-app--acme-85b.apps.staging.camelai.dev/');
     });
   });
 
   it('preserves path and query string', () => {
-    const url = new URL('https://my-app.chiridion.app/api/users?page=1&limit=10');
+    const url = new URL('https://my-app.camelai.app/api/users?page=1&limit=10');
     const result = buildNewFormatUrl(url, 'my-app', 'acme-85b');
-    expect(result).toBe('https://my-app--acme-85b.chiridion.app/api/users?page=1&limit=10');
+    expect(result).toBe('https://my-app--acme-85b.camelai.app/api/users?page=1&limit=10');
   });
 });
 

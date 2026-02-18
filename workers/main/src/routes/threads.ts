@@ -76,5 +76,5 @@ export async function handleThreadPreview({ req, env, match }: RouteContext): Pr
   );
 
   if (!res.ok) return new Response(res.body, { status: res.status, headers: res.headers });
-  return json({ target, url: `https://${scriptName}.chiridion.app` });
+  return json({ target, url: `https://${scriptName}.camelai.app` });
 }
