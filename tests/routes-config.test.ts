@@ -49,9 +49,19 @@ describe('route config', () => {
       routes as RouteNode[],
       'api/help'
     );
+    const devSentEmailsRoute = findRouteByPath(
+      routes as RouteNode[],
+      'api/dev/sent-emails'
+    );
+    const devSentEmailByIdRoute = findRouteByPath(
+      routes as RouteNode[],
+      'api/dev/sent-emails/:id'
+    );
 
     expect(orgInviteRoute).not.toBeNull();
     expect(invitationRoute).not.toBeNull();
     expect(helpRoute).not.toBeNull();
+    expect(devSentEmailsRoute).not.toBeNull();
+    expect(devSentEmailByIdRoute).not.toBeNull();
   });
 });

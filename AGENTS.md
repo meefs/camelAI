@@ -82,6 +82,12 @@ Users can open an in-app help dialog from the sidebar footer (`Get Help`, `Circl
 1. Generate a concise subject line with Workers AI (`@cf/google/gemma-3-12b-it`)
 2. Send a user confirmation email (CC + Reply-To: `support@camelai.com`)
 3. Send an internal support-triage email to `support@camelai.com` with user/org/workspace/browser context
+4. Log non-`sent` email delivery results (`failed`/`skipped`) for observability
+
+### Dev Email Outbox
+When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbox (KV-backed) with delivery status and provider metadata. Inspect via:
+- `GET /api/dev/sent-emails?format=html` for a browsable list
+- `GET /api/dev/sent-emails/:id?format=html` for full rendered HTML preview
 
 ### Message Sending
 1. WebSocket connects to `/ws/{workspace}` → Worker validates access → forwards to `ChatThreadDO`
@@ -141,6 +147,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Orgs | `/api/orgs/:id/invite`, `/api/orgs/:id/check-slug`, `/api/orgs/:id/update-slug` |
 | Onboarding | `/api/onboarding`, `/api/onboarding/complete` |
 | Support | `/api/help` |
+| Dev tooling | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id` |
 | Invitations | `/api/invitations/:orgId/:invitationId` (GET/POST) |
 | Workspace FS | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}` |
 | Workspace files | `/api/workspaces/:id/{upload,download,uploads/*,outputs/*}` |

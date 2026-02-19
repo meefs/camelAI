@@ -130,6 +130,8 @@ export default [
   route('api/onboarding', 'routes/api/onboarding.ts'),
   route('api/onboarding/complete', 'routes/api/onboarding.complete.ts'),
   route('api/help', 'routes/api/help.ts'),
+  route('api/dev/sent-emails', 'routes/api/dev.sent-emails.ts'),
+  route('api/dev/sent-emails/:id', 'routes/api/dev.sent-emails.$id.ts'),
 
   // Workspace filesystem API routes
   route('api/workspaces/:id/fs/list', 'routes/api/workspaces.$id.fs.list.ts'),

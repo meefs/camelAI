@@ -6,6 +6,11 @@ import { EmailVerificationEmailTemplate } from './email/templates/email-verifica
 import { HelpConfirmationEmailTemplate } from './email/templates/help-confirmation-email';
 import { HelpSupportEmailTemplate } from './email/templates/help-support-email';
 import { sendEmail, getGmailConfig, isGmailConfigured } from './gmail.server';
+import {
+  recordDevEmailOutboxEntry,
+  type DevEmailOutboxStatus,
+  type DevEmailOutboxTransport,
+} from './dev-email-outbox';
 
 export type EmailDeliveryStatus = 'sent' | 'skipped' | 'failed';
 
@@ -21,7 +26,8 @@ type EmailEnvBindings = Pick<
   | 'GMAIL_SERVICE_ACCOUNT_EMAIL'
   | 'GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY'
   | 'GMAIL_SENDER_EMAIL'
->;
+> &
+  Partial<Pick<CloudflareEnv, 'APP_KV' | 'NEXTJS_ENV'>>;
 
 interface OrgInvitationEmailArgs {
   env: EmailEnvBindings;
@@ -148,6 +154,33 @@ function supportSeverityTag(severity: string): string {
   return 'Low';
 }
 
+async function finalizeEmailDelivery(
+  env: EmailEnvBindings,
+  email: {
+    to: string;
+    cc?: string;
+    replyTo?: string;
+    subject: string;
+    textBody: string;
+    htmlBody: string;
+  },
+  result: { status: DevEmailOutboxStatus; reason?: string },
+  transport: DevEmailOutboxTransport
+): Promise<EmailDeliveryResult> {
+  await recordDevEmailOutboxEntry(env, {
+    to: email.to,
+    cc: email.cc,
+    replyTo: email.replyTo,
+    subject: email.subject,
+    textBody: email.textBody,
+    htmlBody: email.htmlBody,
+    status: result.status,
+    reason: result.reason,
+    transport,
+  });
+  return result;
+}
+
 async function deliverEmail({
   env,
   to,
@@ -167,6 +200,14 @@ async function deliverEmail({
 }): Promise<EmailDeliveryResult> {
   const normalizedCc = normalizeOptionalEmail(cc);
   const normalizedReplyTo = normalizeOptionalEmail(replyTo);
+  const emailContent = {
+    to,
+    cc: normalizedCc,
+    replyTo: normalizedReplyTo,
+    subject,
+    textBody,
+    htmlBody,
+  };
 
   // Try Gmail API first (preferred for sending to external recipients)
   if (isGmailConfigured(env)) {
@@ -181,25 +222,40 @@ async function deliverEmail({
     });
 
     if (result.success) {
-      return { status: 'sent' };
+      return finalizeEmailDelivery(env, emailContent, { status: 'sent' }, 'gmail');
     }
-    return { status: 'failed', reason: result.error };
+    return finalizeEmailDelivery(
+      env,
+      emailContent,
+      { status: 'failed', reason: result.error },
+      'gmail'
+    );
   }
 
   // Fall back to Cloudflare email binding (only works for verified addresses)
   if (!env.EMAIL) {
-    return {
-      status: 'skipped',
-      reason: 'No email provider configured (Gmail API or Cloudflare EMAIL binding)',
-    };
+    return finalizeEmailDelivery(
+      env,
+      emailContent,
+      {
+        status: 'skipped',
+        reason: 'No email provider configured (Gmail API or Cloudflare EMAIL binding)',
+      },
+      'none'
+    );
   }
 
   const from = env.EMAIL_FROM_ADDRESS?.trim();
   if (!from) {
-    return {
-      status: 'skipped',
-      reason: 'EMAIL_FROM_ADDRESS is not configured',
-    };
+    return finalizeEmailDelivery(
+      env,
+      emailContent,
+      {
+        status: 'skipped',
+        reason: 'EMAIL_FROM_ADDRESS is not configured',
+      },
+      'cloudflare'
+    );
   }
 
   try {
@@ -241,13 +297,18 @@ async function deliverEmail({
     );
     const message = new EmailMessage(from, to, rawMessage);
     await env.EMAIL.send(message);
-    return { status: 'sent' };
+    return finalizeEmailDelivery(env, emailContent, { status: 'sent' }, 'cloudflare');
   } catch (error) {
     const reason =
       error instanceof Error && error.message
         ? error.message
         : 'Unknown email delivery error';
-    return { status: 'failed', reason };
+    return finalizeEmailDelivery(
+      env,
+      emailContent,
+      { status: 'failed', reason },
+      'cloudflare'
+    );
   }
 }
 

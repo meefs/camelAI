@@ -38,6 +38,28 @@ function normalizeSubject(value: string | undefined | null): string | null {
   return normalized.slice(0, 100);
 }
 
+function logHelpDeliveryResult(
+  kind: 'confirmation' | 'support',
+  result: { status: 'sent' | 'skipped' | 'failed'; reason?: string },
+  context: { userId: string; orgId: string; category: string; severity: string }
+) {
+  if (result.status === 'sent') return;
+
+  const payload = {
+    kind,
+    status: result.status,
+    reason: result.reason,
+    ...context,
+  };
+
+  if (result.status === 'failed') {
+    console.error('Help email delivery failed:', payload);
+    return;
+  }
+
+  console.warn('Help email delivery skipped:', payload);
+}
+
 export async function generateHelpSubject(
   env: Pick<CloudflareEnv, 'AI'>,
   description: string,
@@ -104,7 +126,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   waitUntil(
     (async () => {
       const subject = await generateHelpSubject(env, description, categoryLabel);
-      await Promise.all([
+      const [confirmationResult, supportResult] = await Promise.all([
         sendHelpConfirmationEmail({
           env,
           baseUrl,
@@ -141,6 +163,15 @@ export async function action({ request, context }: Route.ActionArgs) {
           referer,
         }),
       ]);
+
+      const logContext = {
+        userId: authContext.user.id,
+        orgId: currentOrg.id,
+        category,
+        severity,
+      };
+      logHelpDeliveryResult('confirmation', confirmationResult, logContext);
+      logHelpDeliveryResult('support', supportResult, logContext);
     })().catch((error) => {
       console.error('Help email delivery failed:', error);
     })
