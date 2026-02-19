@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import type { WorkspaceDO, WorkspaceIntegrationRecord } from '../src/workspace';
 import { encryptCredentials, decryptCredentials } from '../../../src/lib/integration-crypto';
 import {
@@ -224,6 +224,11 @@ describe('OAuth Token Refresh', () => {
   });
 
   describe('Alarm handler', () => {
+    // All alarm tests use runInDurableObject with mocked refreshIntegrationToken
+    // to avoid hitting the real Notion/BigQuery APIs (which aren't configured in test env).
+    // Without mocks, refreshNotionToken throws "Notion OAuth credentials not configured"
+    // which corrupts vitest-pool-workers isolated storage frames.
+
     it('triggers alarm and reschedules for next expiring token', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Alarm Owner');
@@ -251,22 +256,32 @@ describe('OAuth Token Refresh', () => {
         expires_at: laterExpiry,
       });
 
-      // Run the alarm
       const id = testEnv.WORKSPACE.idFromName(workspace.id);
       const stub = testEnv.WORKSPACE.get(id);
-      const ran = await runDurableObjectAlarm(stub);
-      expect(ran).toBe(true);
 
-      // After running, alarm should still be scheduled (even if refresh failed)
-      // Note: When refresh fails, the token still has its original expiry,
-      // so the alarm is rescheduled for the earliest token (which may be the same one)
+      await runInDurableObject(stub, async (instance) => {
+        const target = instance as unknown as {
+          alarm: () => Promise<void>;
+          refreshIntegrationToken: (integration: WorkspaceIntegrationRecord) => Promise<void>;
+          syncIntegrationEnvVarsToContainer: () => Promise<void>;
+          syncSecretsToDeployedWorkers: () => Promise<void>;
+        };
+
+        vi.spyOn(target, 'refreshIntegrationToken').mockResolvedValue(undefined);
+        vi.spyOn(target, 'syncIntegrationEnvVarsToContainer').mockResolvedValue(undefined);
+        vi.spyOn(target, 'syncSecretsToDeployedWorkers').mockResolvedValue(undefined);
+
+        await target.alarm();
+      });
+
+      // After running, alarm should still be scheduled for the next expiring token
       const alarmTime = await getAlarmTime(workspace.id);
       expect(alarmTime).not.toBeNull();
       // The alarm should be scheduled at least 1 second from now
       expect(alarmTime!).toBeGreaterThanOrEqual(now + 1000);
     });
 
-    it('runs alarm and logs token refresh in audit log', async () => {
+    it('runs alarm and processes expiring integrations', async () => {
       const email = testEmail();
       const { userId } = await createUser(testEnv, email, 'password123', 'Audit Owner');
       const { org } = await createOrg(testEnv, 'Audit Org', userId);
@@ -283,16 +298,26 @@ describe('OAuth Token Refresh', () => {
         expires_at: tokenExpiresAt,
       });
 
-      // Run the alarm (will attempt to refresh but fail since Notion API isn't mocked)
       const id = testEnv.WORKSPACE.idFromName(workspace.id);
       const stub = testEnv.WORKSPACE.get(id);
 
-      // The alarm will run but the actual refresh will fail because we can't mock fetch
-      // That's okay - we're testing that the alarm runs and processes integrations
-      await runDurableObjectAlarm(stub);
+      await runInDurableObject(stub, async (instance) => {
+        const target = instance as unknown as {
+          alarm: () => Promise<void>;
+          refreshIntegrationToken: (integration: WorkspaceIntegrationRecord) => Promise<void>;
+          syncIntegrationEnvVarsToContainer: () => Promise<void>;
+          syncSecretsToDeployedWorkers: () => Promise<void>;
+        };
 
-      // Verify the alarm ran (it would have attempted refresh)
-      // The alarm should still reschedule even if refresh fails
+        const refreshSpy = vi.spyOn(target, 'refreshIntegrationToken').mockResolvedValue(undefined);
+        vi.spyOn(target, 'syncIntegrationEnvVarsToContainer').mockResolvedValue(undefined);
+        vi.spyOn(target, 'syncSecretsToDeployedWorkers').mockResolvedValue(undefined);
+
+        await target.alarm();
+
+        // Verify the alarm attempted to refresh the expiring token
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('sets fallback alarm immediately as dead man switch', async () => {
@@ -313,10 +338,23 @@ describe('OAuth Token Refresh', () => {
         expires_at: tokenExpiresAt,
       });
 
-      // Run the alarm
       const id = testEnv.WORKSPACE.idFromName(workspace.id);
       const stub = testEnv.WORKSPACE.get(id);
-      await runDurableObjectAlarm(stub);
+
+      await runInDurableObject(stub, async (instance) => {
+        const target = instance as unknown as {
+          alarm: () => Promise<void>;
+          refreshIntegrationToken: (integration: WorkspaceIntegrationRecord) => Promise<void>;
+          syncIntegrationEnvVarsToContainer: () => Promise<void>;
+          syncSecretsToDeployedWorkers: () => Promise<void>;
+        };
+
+        vi.spyOn(target, 'refreshIntegrationToken').mockResolvedValue(undefined);
+        vi.spyOn(target, 'syncIntegrationEnvVarsToContainer').mockResolvedValue(undefined);
+        vi.spyOn(target, 'syncSecretsToDeployedWorkers').mockResolvedValue(undefined);
+
+        await target.alarm();
+      });
 
       // After alarm completes, there should still be an alarm scheduled
       // Either the correct next time or the fallback (1 hour)
@@ -494,14 +532,26 @@ describe('OAuth Token Refresh', () => {
       expect(alarmTime).not.toBeNull();
       expect(alarmTime!).toBeGreaterThan(now); // Should be in the future
 
-      // Run the alarm
+      // Run the alarm with mocked refresh to avoid hitting real APIs
       const id = testEnv.WORKSPACE.idFromName(workspace.id);
       const stub = testEnv.WORKSPACE.get(id);
-      const ran = await runDurableObjectAlarm(stub);
-      expect(ran).toBe(true);
+
+      await runInDurableObject(stub, async (instance) => {
+        const target = instance as unknown as {
+          alarm: () => Promise<void>;
+          refreshIntegrationToken: (integration: WorkspaceIntegrationRecord) => Promise<void>;
+          syncIntegrationEnvVarsToContainer: () => Promise<void>;
+          syncSecretsToDeployedWorkers: () => Promise<void>;
+        };
+
+        vi.spyOn(target, 'refreshIntegrationToken').mockResolvedValue(undefined);
+        vi.spyOn(target, 'syncIntegrationEnvVarsToContainer').mockResolvedValue(undefined);
+        vi.spyOn(target, 'syncSecretsToDeployedWorkers').mockResolvedValue(undefined);
+
+        await target.alarm();
+      });
 
       // After running, the alarm should still be rescheduled
-      // (refresh failures don't prevent rescheduling)
       alarmTime = await getAlarmTime(workspace.id);
       expect(alarmTime).not.toBeNull();
     });
