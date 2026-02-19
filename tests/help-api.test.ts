@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const waitUntilMock = vi.fn();
 const requireAuthContextMock = vi.fn();
 const getEnvMock = vi.fn();
-const resolveAppBaseUrlMock = vi.fn();
 const sendHelpConfirmationEmailMock = vi.fn();
 const sendHelpSupportEmailMock = vi.fn();
 
@@ -26,7 +25,6 @@ vi.mock('@/lib/cloudflare.server', () => ({
 }));
 
 vi.mock('@/lib/email.server', () => ({
-  resolveAppBaseUrl: resolveAppBaseUrlMock,
   sendHelpConfirmationEmail: sendHelpConfirmationEmailMock,
   sendHelpSupportEmail: sendHelpSupportEmailMock,
 }));
@@ -80,7 +78,6 @@ describe('POST /api/help', () => {
       waitUntilPromises.push(promise);
     });
     requireAuthContextMock.mockResolvedValue(authContext);
-    resolveAppBaseUrlMock.mockReturnValue('https://camelai.com');
     sendHelpConfirmationEmailMock.mockResolvedValue({ status: 'sent' });
     sendHelpSupportEmailMock.mockResolvedValue({ status: 'sent' });
     getEnvMock.mockReturnValue({
@@ -186,6 +183,28 @@ describe('POST /api/help', () => {
 
     expect(response.status).toBe(200);
     expect(json.success).toBe(true);
+  });
+
+  it('does not fail the request when async email delivery throws', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    sendHelpConfirmationEmailMock.mockRejectedValueOnce(new Error('smtp down'));
+
+    const response = await action({
+      request: makeRequest({
+        category: 'bug',
+        severity: 'high',
+        description: 'Agent freezes when uploading files.',
+      }),
+      context: {},
+    } as never);
+    await flushWaitUntil();
+
+    expect(response.status).toBe(200);
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Help email delivery failed:',
+      expect.any(Error)
+    );
+    errorSpy.mockRestore();
   });
 
   it('passes pageUrl and screenSize from form data to support email', async () => {

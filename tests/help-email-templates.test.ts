@@ -8,7 +8,6 @@ describe('HelpConfirmationEmailTemplate', () => {
   it('renders without errors and includes key fields', async () => {
     const html = await render(
       createElement(HelpConfirmationEmailTemplate, {
-        baseUrl: 'https://camelai.com',
         firstName: 'Jane',
         userEmail: 'jane@example.com',
         category: 'Bug report',
@@ -27,7 +26,6 @@ describe('HelpConfirmationEmailTemplate', () => {
   it('renders logo image with expected src and alt', async () => {
     const html = await render(
       createElement(HelpConfirmationEmailTemplate, {
-        baseUrl: 'https://camelai.com',
         firstName: 'Jane',
         userEmail: 'jane@example.com',
         category: 'Question',
@@ -36,33 +34,16 @@ describe('HelpConfirmationEmailTemplate', () => {
       })
     );
 
-    expect(html).toContain('camelAI-fullname-logo-lightmode.svg');
+    expect(html).toContain(
+      'https://imagedelivery.net/0Ey8LwpQ4ATeP19F21mqig/8aaa14e7-fb26-4349-0b00-d836888f0900/w=800'
+    );
     expect(html).toContain('alt="camelAI"');
   });
 
-  it('truncates long descriptions to 500 characters', async () => {
-    const longDescription = 'x'.repeat(520);
+  it('renders provided description verbatim', async () => {
+    const description = 'x'.repeat(520);
     const html = await render(
       createElement(HelpConfirmationEmailTemplate, {
-        baseUrl: 'https://camelai.com',
-        firstName: 'Jane',
-        userEmail: 'jane@example.com',
-        category: 'Bug report',
-        severity: 'Medium',
-        description: longDescription,
-      })
-    );
-
-    const expected = `${'x'.repeat(497)}...`;
-    expect(html).toContain(expected);
-    expect(html).not.toContain('x'.repeat(520));
-  });
-
-  it('shows full description when under the limit', async () => {
-    const description = 'Agent does not respond after clicking submit.';
-    const html = await render(
-      createElement(HelpConfirmationEmailTemplate, {
-        baseUrl: 'https://camelai.com',
         firstName: 'Jane',
         userEmail: 'jane@example.com',
         category: 'Bug report',
@@ -72,6 +53,36 @@ describe('HelpConfirmationEmailTemplate', () => {
     );
 
     expect(html).toContain(description);
+  });
+
+  it('shows full description when under the limit', async () => {
+    const description = 'Agent does not respond after clicking submit.';
+    const html = await render(
+      createElement(HelpConfirmationEmailTemplate, {
+        firstName: 'Jane',
+        userEmail: 'jane@example.com',
+        category: 'Bug report',
+        severity: 'Medium',
+        description,
+      })
+    );
+
+    expect(html).toContain(description);
+  });
+
+  it('escapes potentially unsafe HTML in user-provided description', async () => {
+    const html = await render(
+      createElement(HelpConfirmationEmailTemplate, {
+        firstName: 'Jane',
+        userEmail: 'jane@example.com',
+        category: 'Bug report',
+        severity: 'High',
+        description: '<script>alert("xss")</script>',
+      })
+    );
+
+    expect(html).toContain('&lt;script&gt;alert');
+    expect(html).not.toContain('<script>alert("xss")</script>');
   });
 });
 

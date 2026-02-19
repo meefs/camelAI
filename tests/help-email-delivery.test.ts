@@ -35,7 +35,6 @@ describe('help email delivery', () => {
   it('sendHelpConfirmationEmail sends with expected subject and recipient', async () => {
     await sendHelpConfirmationEmail({
       env,
-      baseUrl: 'https://camelai.com',
       to: 'User@Example.com',
       firstName: 'Jane',
       userEmail: 'user@example.com',
@@ -54,7 +53,7 @@ describe('help email delivery', () => {
     expect(payload.replyTo).toBe('support@camelai.com');
     expect(payload.subject).toBe('We received your request - Agent freezes on upload');
     expect(payload.htmlBody).toContain(
-      'https://camelai.com/camelAI-fullname-logo-lightmode.svg'
+      'https://imagedelivery.net/0Ey8LwpQ4ATeP19F21mqig/8aaa14e7-fb26-4349-0b00-d836888f0900/w=800'
     );
   });
 
@@ -93,7 +92,6 @@ describe('help email delivery', () => {
   it('both helpers produce non-empty HTML and plain text bodies', async () => {
     await sendHelpConfirmationEmail({
       env,
-      baseUrl: 'https://camelai.com',
       to: 'user@example.com',
       firstName: 'Jane',
       userEmail: 'user@example.com',
@@ -132,5 +130,22 @@ describe('help email delivery', () => {
       expect(typeof payload.textBody).toBe('string');
       expect(payload.textBody.length).toBeGreaterThan(0);
     }
+  });
+
+  it('sendHelpConfirmationEmail truncates long descriptions before rendering', async () => {
+    await sendHelpConfirmationEmail({
+      env,
+      to: 'user@example.com',
+      firstName: 'Jane',
+      userEmail: 'user@example.com',
+      category: 'Bug report',
+      severity: 'High',
+      subject: 'Long description test',
+      description: 'x'.repeat(520),
+    });
+
+    const [, payload] = sendEmailMock.mock.calls[0];
+    expect(payload.htmlBody).toContain(`${'x'.repeat(497)}...`);
+    expect(payload.htmlBody).not.toContain('x'.repeat(520));
   });
 });

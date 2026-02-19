@@ -48,7 +48,6 @@ interface EmailVerificationEmailArgs {
 
 interface HelpConfirmationEmailArgs {
   env: EmailEnvBindings;
-  baseUrl: string;
   to: string;
   firstName: string;
   userEmail: string;
@@ -377,7 +376,6 @@ export async function sendEmailVerificationEmail({
 
 export async function sendHelpConfirmationEmail({
   env,
-  baseUrl,
   to,
   firstName,
   userEmail,
@@ -398,7 +396,6 @@ export async function sendHelpConfirmationEmail({
 
   const htmlBody = await render(
     createElement(HelpConfirmationEmailTemplate, {
-      baseUrl,
       firstName: normalizedFirstName,
       userEmail,
       category,

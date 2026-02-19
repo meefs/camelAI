@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useFetcher } from "react-router"
 import { type SubmissionResult, getFormProps, getTextareaProps, useForm } from "@conform-to/react"
 import { parseWithZod } from "@conform-to/zod/v4"
@@ -80,9 +80,12 @@ export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
   const [description, setDescription] = useState("")
   const [pageUrl, setPageUrl] = useState("")
   const [screenSize, setScreenSize] = useState("")
+  const successToastShownRef = useRef(false)
+
+  const lastSubmissionResult = fetcher.data?.success ? undefined : fetcher.data?.result
 
   const [form, fields] = useForm({
-    lastResult: fetcher.data?.result,
+    lastResult: lastSubmissionResult,
     onValidate({ formData }) {
       return parseWithZod(formData, { schema: getHelpFormSchema })
     },
@@ -104,6 +107,7 @@ export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
 
   useEffect(() => {
     if (!open) return
+    successToastShownRef.current = false
     const context = readPageContext()
     setCategory("bug")
     setSeverity("low")
@@ -114,7 +118,8 @@ export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
 
   useEffect(() => {
     if (fetcher.state !== "idle" || !fetcher.data) return
-    if (fetcher.data.success) {
+    if (fetcher.data.success && !successToastShownRef.current) {
+      successToastShownRef.current = true
       toast.success("Help request sent! Check your email for confirmation.")
       onOpenChange(false)
       return
@@ -143,6 +148,10 @@ export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
   )
 
   const submitDisabled = saving || description.trim().length === 0
+  const descriptionHelpTextId = `${fields.description.id}-help-text`
+  const descriptionDescribedBy = fields.description.errors?.length
+    ? `${descriptionHelpTextId} ${fields.description.errorId}`
+    : descriptionHelpTextId
 
   const formContent = (
     <fetcher.Form
@@ -215,11 +224,17 @@ export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           placeholder="What happened? What did you expect? Include steps to reproduce if applicable."
-          className="min-h-[120px]"
+          className="min-h-[120px] max-h-[240px]"
+          aria-describedby={descriptionDescribedBy}
           aria-invalid={fields.description.errors?.length ? true : undefined}
         />
+        <p id={descriptionHelpTextId} className="text-xs text-muted-foreground">
+          The more detail you include, the faster we can help.
+        </p>
         {fields.description.errors && fields.description.errors.length > 0 ? (
-          <p className="text-sm text-destructive">{fields.description.errors[0]}</p>
+          <p id={fields.description.errorId} className="text-sm text-destructive">
+            {fields.description.errors[0]}
+          </p>
         ) : null}
       </div>
     </fetcher.Form>

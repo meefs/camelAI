@@ -4,7 +4,6 @@ import { requireAuthContext } from '@/lib/auth.server';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
 import { waitUntil } from '@/lib/wait-until';
 import {
-  resolveAppBaseUrl,
   sendHelpConfirmationEmail,
   sendHelpSupportEmail,
 } from '@/lib/email.server';
@@ -121,7 +120,6 @@ export async function action({ request, context }: Route.ActionArgs) {
   const userAgent = request.headers.get('user-agent');
   const referer = request.headers.get('referer');
   const firstName = authContext.user.name?.trim().split(/\s+/)[0] ?? 'there';
-  const baseUrl = resolveAppBaseUrl(env, new URL(request.url));
 
   waitUntil(
     (async () => {
@@ -129,7 +127,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       const [confirmationResult, supportResult] = await Promise.all([
         sendHelpConfirmationEmail({
           env,
-          baseUrl,
           to: authContext.user.email,
           firstName,
           userEmail: authContext.user.email,
@@ -177,8 +174,5 @@ export async function action({ request, context }: Route.ActionArgs) {
     })
   );
 
-  return Response.json({
-    success: true,
-    result: submission.reply(),
-  });
+  return Response.json({ success: true });
 }

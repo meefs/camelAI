@@ -7,6 +7,10 @@ let fetcherState: 'idle' | 'submitting' = 'idle';
 let fetcherData: unknown = undefined;
 
 const useFetcherMock = vi.fn();
+const { toastSuccessMock, toastErrorMock } = vi.hoisted(() => ({
+  toastSuccessMock: vi.fn(),
+  toastErrorMock: vi.fn(),
+}));
 
 function FetcherForm(props: ComponentProps<'form'>) {
   return <form {...props} />;
@@ -22,8 +26,8 @@ vi.mock('@/hooks/use-mobile', () => ({
 
 vi.mock('sonner', () => ({
   toast: {
-    success: vi.fn(),
-    error: vi.fn(),
+    success: toastSuccessMock,
+    error: toastErrorMock,
   },
 }));
 
@@ -31,6 +35,8 @@ describe('GetHelpDialog', () => {
   beforeEach(() => {
     fetcherState = 'idle';
     fetcherData = undefined;
+    toastSuccessMock.mockClear();
+    toastErrorMock.mockClear();
     useFetcherMock.mockImplementation(() => ({
       state: fetcherState,
       data: fetcherData,
@@ -46,6 +52,9 @@ describe('GetHelpDialog', () => {
       screen.getByText(
         "Tell us what you need help with. We'll get back to you via email."
       )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('The more detail you include, the faster we can help.')
     ).toBeInTheDocument();
   });
 
@@ -71,6 +80,13 @@ describe('GetHelpDialog', () => {
 
     const submitButton = screen.getByRole('button', { name: 'Submit' });
     expect(submitButton).toBeDisabled();
+  });
+
+  it('caps description textarea height', () => {
+    render(<GetHelpDialog open={true} onOpenChange={() => undefined} />);
+
+    const textarea = screen.getByLabelText('Description');
+    expect(textarea).toHaveClass('max-h-[240px]');
   });
 
   it('shows loading state while submitting', () => {
@@ -114,5 +130,29 @@ describe('GetHelpDialog', () => {
       expect(pageUrlInput?.value).toBe(window.location.href);
       expect(screenSizeInput?.value).toBe('1280x720');
     });
+  });
+
+  it('shows success toast and closes dialog after successful submission', async () => {
+    fetcherData = { success: true };
+    const onOpenChange = vi.fn();
+
+    render(<GetHelpDialog open={true} onOpenChange={onOpenChange} />);
+
+    await waitFor(() => {
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        'Help request sent! Check your email for confirmation.'
+      );
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    });
+  });
+
+  it('links submit button to the rendered form via form attribute', () => {
+    render(<GetHelpDialog open={true} onOpenChange={() => undefined} />);
+
+    const form = document.querySelector('form') as HTMLFormElement | null;
+    const submitButton = screen.getByRole('button', { name: 'Submit' });
+
+    expect(form?.id).toBeTruthy();
+    expect(submitButton).toHaveAttribute('form', form?.id);
   });
 });

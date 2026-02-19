@@ -26,6 +26,13 @@ describe('generateHelpSubject', () => {
     expect(run).toHaveBeenCalledWith(
       '@cf/google/gemma-3-12b-it',
       expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({
+            role: 'system',
+            content:
+              'Summarize the following support request into a short subject line (under 80 characters). Respond with only the subject line, no quotes or extra punctuation.',
+          }),
+        ]),
         temperature: 0.3,
         max_tokens: 30,
       })

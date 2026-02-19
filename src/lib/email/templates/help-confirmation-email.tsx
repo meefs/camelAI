@@ -11,13 +11,15 @@ import {
 } from '@react-email/components';
 
 export interface HelpConfirmationEmailTemplateProps {
-  baseUrl: string;
   firstName: string;
   userEmail: string;
   category: string;
   severity: string;
   description: string;
 }
+
+const CAMELAI_LOGO_URL =
+  'https://imagedelivery.net/0Ey8LwpQ4ATeP19F21mqig/8aaa14e7-fb26-4349-0b00-d836888f0900/w=800';
 
 const containerStyle = {
   fontFamily:
@@ -67,21 +69,13 @@ const descriptionStyle = {
   margin: '14px 0 0',
 };
 
-function truncateDescription(value: string, maxLength = 500): string {
-  if (value.length <= maxLength) return value;
-  return `${value.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
-}
-
 export function HelpConfirmationEmailTemplate({
-  baseUrl,
   firstName,
   userEmail,
   category,
   severity,
   description,
 }: HelpConfirmationEmailTemplateProps) {
-  const summaryDescription = truncateDescription(description);
-
   return (
     <Html>
       <Head />
@@ -90,7 +84,7 @@ export function HelpConfirmationEmailTemplate({
         <Container style={containerStyle}>
           <Section style={{ marginBottom: '24px' }}>
             <Img
-              src={`${baseUrl}/camelAI-fullname-logo-lightmode.svg`}
+              src={CAMELAI_LOGO_URL}
               alt="camelAI"
               width={160}
               height={39}
@@ -136,7 +130,7 @@ export function HelpConfirmationEmailTemplate({
               }}
             />
 
-            <Text style={descriptionStyle}>&quot;{summaryDescription}&quot;</Text>
+            <Text style={descriptionStyle}>&quot;{description}&quot;</Text>
           </Section>
 
           <Text style={{ fontSize: '15px', fontWeight: 600, margin: '0', color: '#111827' }}>
