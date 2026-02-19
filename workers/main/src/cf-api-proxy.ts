@@ -907,8 +907,11 @@ export async function proxyCloudflareApi(
     headers.delete('cookie');
     headers.delete('host');
 
-    const body = await request.arrayBuffer();
-    const resp = await fetch(upstreamUrl, { method: 'POST', headers, body });
+    const resp = await fetch(upstreamUrl, {
+      method: 'POST',
+      headers,
+      body: request.body,
+    });
     return new Response(resp.body, { status: resp.status, headers: resp.headers });
   }
 

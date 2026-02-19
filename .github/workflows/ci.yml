@@ -17,3 +17,36 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run test:all
+
+  deploy-sandbox-image:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SANDBOX_VM_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.SANDBOX_VM_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Rsync sandbox files to VM
+        run: |
+          rsync -az --delete \
+            sandbox/ \
+            chiridion@172.173.64.214:/opt/chiridion/sandbox/
+          rsync -az \
+            services/sandbox-host/Dockerfile.sandbox \
+            chiridion@172.173.64.214:/opt/chiridion/Dockerfile.sandbox
+
+      - name: Build and push image to ACR
+        run: |
+          ssh chiridion@172.173.64.214 '
+            cd /opt/chiridion &&
+            sudo docker build -t chiridion-sandbox:latest -f Dockerfile.sandbox . &&
+            sudo az acr login --name crchiridionprod &&
+            sudo docker tag chiridion-sandbox:latest crchiridionprod.azurecr.io/chiridion-sandbox:latest &&
+            sudo docker push crchiridionprod.azurecr.io/chiridion-sandbox:latest
+          '
