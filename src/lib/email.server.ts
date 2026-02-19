@@ -153,6 +153,15 @@ function supportSeverityTag(severity: string): string {
   return 'Low';
 }
 
+function buildEnvelopeRecipients(to: string, cc?: string): string[] {
+  const recipients = [to, cc].filter((value): value is string => Boolean(value));
+  return Array.from(
+    new Set(
+      recipients.map((value) => value.trim().toLowerCase()).filter((value) => value.length > 0)
+    )
+  );
+}
+
 async function finalizeEmailDelivery(
   env: EmailEnvBindings,
   email: {
@@ -294,8 +303,13 @@ async function deliverEmail({
       /* @vite-ignore */
       cloudflareEmailModule
     );
-    const message = new EmailMessage(from, to, rawMessage);
-    await env.EMAIL.send(message);
+    const envelopeRecipients = buildEnvelopeRecipients(to, normalizedCc);
+    await Promise.all(
+      envelopeRecipients.map((recipient) => {
+        const message = new EmailMessage(from, recipient, rawMessage);
+        return env.EMAIL!.send(message);
+      })
+    );
     return finalizeEmailDelivery(env, emailContent, { status: 'sent' }, 'cloudflare');
   } catch (error) {
     const reason =
