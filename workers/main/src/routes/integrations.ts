@@ -6,18 +6,329 @@
 import type { RouteContext } from '../types.js';
 import { createIntegrationOAuthState, validateAndConsumeIntegrationOAuthState, type IntegrationOAuthState } from '../integration-oauth-state.js';
 import { INTEGRATION_REGISTRY } from '../../../../src/lib/integration-registry.js';
-import { encryptCredentials } from '../../../../src/lib/integration-crypto.js';
+import { decryptCredentials, encryptCredentials } from '../../../../src/lib/integration-crypto.js';
 import { WorkspaceContainer } from '../workspace-container.js';
 import { requireSession } from '../helpers/auth.js';
-import { getWorkspaceStub, getOrgStub } from '../helpers/stubs.js';
+import { getWorkspaceStub, getOrgStub, getThreadStub } from '../helpers/stubs.js';
 import { redirect, text } from '../helpers/response.js';
 import type { ConnectionSetupResponse } from '../durable-objects.js';
-import type { ChiridionMcp } from '../mcp-handler.js';
 import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from '../cf-api-proxy.js';
 
 // RPC interface for MCP DO callback
 interface ChiridionMcpRpc {
   receiveConnectionSetupResponse(response: ConnectionSetupResponse): void;
+}
+
+interface SlackTeamInstallationRecord {
+  workspace_id: string;
+  org_id: string;
+  integration_id: string;
+  team_id: string;
+  bot_user_id?: string;
+  updated_at: number;
+}
+
+interface SlackCredentials {
+  access_token?: string;
+  bot_user_id?: string;
+  team_id?: string;
+}
+
+interface SlackQuestion {
+  id?: string;
+  header?: string;
+  question?: string;
+  options?: Array<{ label?: string; description?: string }>;
+  multiSelect?: boolean;
+}
+
+interface SlackAskUserQuestionPayload {
+  questionId: string;
+  toolUseId?: string;
+  questions: SlackQuestion[];
+}
+
+interface SlackExternalStateResponse {
+  pendingQuestion: SlackAskUserQuestionPayload | null;
+}
+
+interface SlackExternalTurnResponse {
+  status: 'result' | 'question' | 'busy' | 'error';
+  reply?: string;
+  question?: SlackAskUserQuestionPayload;
+  error?: string;
+}
+
+interface SlackEventCallbackPayload {
+  type?: string;
+  challenge?: string;
+  team_id?: string;
+  event_id?: string;
+  authorizations?: Array<{ user_id?: string }>;
+  event?: {
+    type?: string;
+    subtype?: string;
+    channel?: string;
+    channel_type?: string;
+    text?: string;
+    user?: string;
+    bot_id?: string;
+    ts?: string;
+    thread_ts?: string;
+  };
+}
+
+const SLACK_TEAM_INDEX_PREFIX = 'slack_team:';
+const SLACK_THREAD_MAP_PREFIX = 'slack_thread:';
+const SLACK_EVENT_DEDUPE_PREFIX = 'slack_event:';
+const SLACK_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
+const DEFAULT_EXTERNAL_TURN_TIMEOUT_MS = 2 * 60 * 1000;
+
+function getSlackTeamIndexKey(teamId: string): string {
+  return `${SLACK_TEAM_INDEX_PREFIX}${teamId}`;
+}
+
+function getSlackThreadMapKey(workspaceId: string, teamId: string, channelId: string, rootTs: string): string {
+  return `${SLACK_THREAD_MAP_PREFIX}${workspaceId}:${teamId}:${channelId}:${rootTs}`;
+}
+
+function getSlackMappingRootTs(
+  event: NonNullable<SlackEventCallbackPayload['event']>,
+  isDm: boolean
+): string {
+  const explicitThreadTs = (event.thread_ts || '').trim();
+  if (explicitThreadTs) return explicitThreadTs;
+  if (isDm) return 'dm';
+  return (event.ts || '').trim();
+}
+
+function getSlackReplyThreadTs(event: NonNullable<SlackEventCallbackPayload['event']>): string {
+  return (event.thread_ts || event.ts || '').trim();
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    mismatch |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  }
+  return mismatch === 0;
+}
+
+async function verifySlackSignature(req: Request, rawBody: string, signingSecret: string): Promise<boolean> {
+  const signature = req.headers.get('x-slack-signature') || '';
+  const timestampHeader = req.headers.get('x-slack-request-timestamp') || '';
+  const timestamp = Number(timestampHeader);
+
+  if (!signature || !timestampHeader || !Number.isFinite(timestamp)) {
+    return false;
+  }
+
+  const nowInSeconds = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowInSeconds - timestamp) > 60 * 5) {
+    return false;
+  }
+
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(signingSecret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  const base = `v0:${timestampHeader}:${rawBody}`;
+  const signed = await crypto.subtle.sign('HMAC', key, encoder.encode(base));
+  const digest = `v0=${Array.from(new Uint8Array(signed)).map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+  return timingSafeEqual(digest, signature);
+}
+
+function toSlackJsonResponse(body: Record<string, unknown>, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+async function loadSlackTeamInstallations(kv: KVNamespace, teamId: string): Promise<SlackTeamInstallationRecord[]> {
+  const raw = await kv.get(getSlackTeamIndexKey(teamId));
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as SlackTeamInstallationRecord[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((record) => (
+      typeof record?.workspace_id === 'string' &&
+      typeof record?.org_id === 'string' &&
+      typeof record?.integration_id === 'string' &&
+      typeof record?.team_id === 'string'
+    ));
+  } catch {
+    return [];
+  }
+}
+
+async function saveSlackTeamInstallations(
+  kv: KVNamespace,
+  teamId: string,
+  records: SlackTeamInstallationRecord[]
+): Promise<void> {
+  await kv.put(getSlackTeamIndexKey(teamId), JSON.stringify(records));
+}
+
+async function upsertSlackTeamInstallation(
+  kv: KVNamespace,
+  record: SlackTeamInstallationRecord
+): Promise<void> {
+  const records = await loadSlackTeamInstallations(kv, record.team_id);
+  const deduped = records.filter((candidate) => candidate.integration_id !== record.integration_id);
+  deduped.unshift(record);
+  await saveSlackTeamInstallations(kv, record.team_id, deduped.slice(0, 20));
+}
+
+function chooseSlackInstallationCandidates(
+  records: SlackTeamInstallationRecord[],
+  authorizations: Array<{ user_id?: string }> | undefined
+): SlackTeamInstallationRecord[] {
+  if (!authorizations || authorizations.length === 0) return records;
+  const botUserIds = new Set(
+    authorizations
+      .map((entry) => entry.user_id)
+      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+  );
+  if (botUserIds.size === 0) return records;
+
+  const preferred = records.filter((record) => record.bot_user_id && botUserIds.has(record.bot_user_id));
+  if (preferred.length > 0) return preferred;
+  return records;
+}
+
+function normalizeSlackMessageText(rawText: string, botUserId?: string): string {
+  let text = rawText.trim();
+  if (botUserId) {
+    const mention = new RegExp(`<@${botUserId}>`, 'g');
+    text = text.replace(mention, '').trim();
+  }
+  return text;
+}
+
+function formatSlackQuestionPrompt(question: SlackAskUserQuestionPayload): string {
+  const lines: string[] = ['Claude needs your input before continuing:'];
+
+  question.questions.forEach((entry, index) => {
+    const label = entry.id || entry.header || `q${index + 1}`;
+    const prompt = entry.question || entry.header || `Question ${index + 1}`;
+    lines.push('');
+    lines.push(`${index + 1}. ${prompt}`);
+    lines.push(`Reply key: ${label}`);
+
+    const options = Array.isArray(entry.options) ? entry.options : [];
+    if (options.length > 0) {
+      for (let optIndex = 0; optIndex < options.length; optIndex += 1) {
+        const option = options[optIndex];
+        const optLabel = option?.label || `Option ${optIndex + 1}`;
+        const optDesc = option?.description ? ` - ${option.description}` : '';
+        lines.push(`  ${optIndex + 1}) ${optLabel}${optDesc}`);
+      }
+    }
+  });
+
+  if (question.questions.length > 1) {
+    lines.push('');
+    lines.push('For multiple questions, reply using one line per answer in the format:');
+    lines.push('key: value');
+  }
+
+  return lines.join('\n');
+}
+
+function parseSlackAnswers(text: string, payload: SlackAskUserQuestionPayload): Record<string, string> {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+
+  const questions = payload.questions;
+  if (!Array.isArray(questions) || questions.length === 0) return {};
+
+  const answers: Record<string, string> = {};
+  const mapAnswer = (input: string, question: SlackQuestion): string => {
+    const normalized = input.trim();
+    const options = Array.isArray(question.options) ? question.options : [];
+    if (!normalized || options.length === 0) return normalized;
+
+    const asNumber = Number(normalized);
+    if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= options.length) {
+      return options[asNumber - 1]?.label?.trim() || normalized;
+    }
+
+    const lower = normalized.toLowerCase();
+    const matched = options.find((option) => option?.label?.trim().toLowerCase() === lower);
+    return matched?.label?.trim() || normalized;
+  };
+
+  if (questions.length === 1) {
+    const question = questions[0];
+    const key = question.question || question.header || question.id || 'answer';
+    answers[key] = mapAnswer(trimmed, question);
+    return answers;
+  }
+
+  const lines = trimmed.split('\n').map((line) => line.trim()).filter(Boolean);
+  const byKey = new Map<string, SlackQuestion>();
+  for (let index = 0; index < questions.length; index += 1) {
+    const question = questions[index];
+    const key = (question.id || question.header || question.question || `q${index + 1}`).trim().toLowerCase();
+    byKey.set(key, question);
+  }
+
+  for (const line of lines) {
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex <= 0) continue;
+    const rawKey = line.slice(0, separatorIndex).trim().toLowerCase();
+    const rawValue = line.slice(separatorIndex + 1).trim();
+    const question = byKey.get(rawKey);
+    if (!question) continue;
+    const answerKey = question.question || question.header || question.id || rawKey;
+    answers[answerKey] = mapAnswer(rawValue, question);
+  }
+
+  if (Object.keys(answers).length === 0) {
+    const first = questions[0];
+    const firstKey = first.question || first.header || first.id || 'answer';
+    answers[firstKey] = mapAnswer(trimmed, first);
+  }
+
+  return answers;
+}
+
+async function postSlackThreadMessage(
+  token: string,
+  channel: string,
+  threadTs: string,
+  text: string
+): Promise<void> {
+  const safeText = text.trim().slice(0, 3500);
+  if (!safeText) return;
+  const response = await fetch('https://slack.com/api/chat.postMessage', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify({
+      channel,
+      thread_ts: threadTs,
+      text: safeText,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`chat.postMessage failed (${response.status}): ${body}`);
+  }
+
+  const payload = await response.json() as { ok?: boolean; error?: string };
+  if (!payload.ok) {
+    throw new Error(`chat.postMessage error: ${payload.error || 'unknown_error'}`);
+  }
 }
 
 /**
@@ -212,6 +523,17 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
       stateData.user_id
     );
 
+    if (tokenData.team?.id) {
+      await upsertSlackTeamInstallation(env.APP_KV, {
+        workspace_id: stateData.workspace_id,
+        org_id: wsInfo.org_id,
+        integration_id: integrationId,
+        team_id: tokenData.team.id,
+        bot_user_id: tokenData.bot_user_id,
+        updated_at: Date.now(),
+      });
+    }
+
     // Push secrets to running container
     ctx.waitUntil(
       new WorkspaceContainer(env, stateData.workspace_id, wsInfo.org_id)
@@ -238,6 +560,347 @@ export async function handleSlackOAuthCallback({ env, url, ctx }: RouteContext):
   } catch {
     return redirect(`${url.origin}/connections?error=oauth_failed`);
   }
+}
+
+async function resolveSlackInstallationForEvent(
+  env: RouteContext['env'],
+  payload: SlackEventCallbackPayload
+): Promise<{
+  workspaceId: string;
+  orgId: string;
+  teamId: string;
+  botUserId?: string;
+  token: string;
+}> {
+  const teamId = payload.team_id?.trim();
+  if (!teamId) {
+    throw new Error('Missing Slack team ID');
+  }
+
+  const stored = await loadSlackTeamInstallations(env.APP_KV, teamId);
+  if (stored.length === 0) {
+    throw new Error(`No Slack installation index found for team ${teamId}`);
+  }
+
+  const candidates = chooseSlackInstallationCandidates(stored, payload.authorizations);
+  const staleIntegrationIds = new Set<string>();
+
+  for (const candidate of candidates) {
+    const wsStub = getWorkspaceStub(env, candidate.workspace_id);
+    const [wsInfo, integration] = await Promise.all([
+      wsStub.getInfo(),
+      wsStub.getIntegration(candidate.integration_id),
+    ]);
+
+    if (!wsInfo || wsInfo.archived) {
+      staleIntegrationIds.add(candidate.integration_id);
+      continue;
+    }
+    if (!integration || integration.integration_type !== 'slack') {
+      staleIntegrationIds.add(candidate.integration_id);
+      continue;
+    }
+
+    let credentials: SlackCredentials;
+    try {
+      credentials = await decryptCredentials<SlackCredentials>(
+        integration.credentials_encrypted,
+        env.INTEGRATION_SECRET_KEY
+      );
+    } catch {
+      continue;
+    }
+
+    if (credentials.team_id && credentials.team_id !== teamId) {
+      continue;
+    }
+
+    const token = typeof credentials.access_token === 'string' ? credentials.access_token : '';
+    if (!token) continue;
+
+    const botUserId = typeof credentials.bot_user_id === 'string'
+      ? credentials.bot_user_id
+      : candidate.bot_user_id;
+
+    return {
+      workspaceId: candidate.workspace_id,
+      orgId: candidate.org_id,
+      teamId,
+      botUserId,
+      token,
+    };
+  }
+
+  if (staleIntegrationIds.size > 0) {
+    const filtered = stored.filter((record) => !staleIntegrationIds.has(record.integration_id));
+    await saveSlackTeamInstallations(env.APP_KV, teamId, filtered);
+  }
+
+  throw new Error(`No active Slack installation found for team ${teamId}`);
+}
+
+async function getOrCreateSlackThreadId(
+  env: RouteContext['env'],
+  args: {
+    workspaceId: string;
+    orgId: string;
+    teamId: string;
+    channelId: string;
+    rootTs: string;
+    initialText: string;
+  }
+): Promise<string> {
+  const mappingKey = getSlackThreadMapKey(
+    args.workspaceId,
+    args.teamId,
+    args.channelId,
+    args.rootTs
+  );
+
+  const existing = await env.APP_KV.get(mappingKey);
+  if (existing) {
+    return existing;
+  }
+
+  const orgStub = getOrgStub(env, args.orgId);
+  const title = args.initialText.trim().slice(0, 100) || 'Slack conversation';
+  const thread = await orgStub.createThread(
+    args.workspaceId,
+    title,
+    'slack',
+    args.initialText.trim().slice(0, 500) || undefined,
+    'slack'
+  );
+
+  await env.APP_KV.put(mappingKey, thread.id);
+  return thread.id;
+}
+
+async function runSlackExternalMessageTurn(
+  env: RouteContext['env'],
+  args: {
+    threadId: string;
+    workspaceId: string;
+    orgId: string;
+    userName: string;
+    message: string;
+  }
+): Promise<SlackExternalTurnResponse> {
+  const stub = getThreadStub(env, args.threadId);
+  const response = await stub.fetch(new Request('http://internal/external-message', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      threadId: args.threadId,
+      workspaceId: args.workspaceId,
+      orgId: args.orgId,
+      userName: args.userName,
+      userEmail: null,
+      message: args.message,
+      timeoutMs: DEFAULT_EXTERNAL_TURN_TIMEOUT_MS,
+    }),
+  }));
+
+  if (!response.ok) {
+    return { status: 'error', error: `Chat thread rejected message (${response.status})` };
+  }
+
+  return await response.json() as SlackExternalTurnResponse;
+}
+
+async function runSlackExternalQuestionTurn(
+  env: RouteContext['env'],
+  args: {
+    threadId: string;
+    workspaceId: string;
+    orgId: string;
+    questionId: string;
+    answers: Record<string, string>;
+  }
+): Promise<SlackExternalTurnResponse> {
+  const stub = getThreadStub(env, args.threadId);
+  const response = await stub.fetch(new Request('http://internal/external-question-response', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      threadId: args.threadId,
+      workspaceId: args.workspaceId,
+      orgId: args.orgId,
+      questionId: args.questionId,
+      answers: args.answers,
+      timeoutMs: DEFAULT_EXTERNAL_TURN_TIMEOUT_MS,
+    }),
+  }));
+
+  if (!response.ok) {
+    return { status: 'error', error: `Chat thread rejected question response (${response.status})` };
+  }
+
+  return await response.json() as SlackExternalTurnResponse;
+}
+
+async function getSlackExternalState(
+  env: RouteContext['env'],
+  threadId: string
+): Promise<SlackExternalStateResponse> {
+  const stub = getThreadStub(env, threadId);
+  const response = await stub.fetch(new Request('http://internal/external-state', { method: 'GET' }));
+  if (!response.ok) {
+    return { pendingQuestion: null };
+  }
+  return await response.json() as SlackExternalStateResponse;
+}
+
+async function dispatchSlackTurnOutcome(
+  token: string,
+  channel: string,
+  threadTs: string,
+  result: SlackExternalTurnResponse
+): Promise<void> {
+  if (result.status === 'result') {
+    const reply = result.reply?.trim();
+    if (reply) {
+      await postSlackThreadMessage(token, channel, threadTs, reply);
+    }
+    return;
+  }
+
+  if (result.status === 'question' && result.question) {
+    await postSlackThreadMessage(token, channel, threadTs, formatSlackQuestionPrompt(result.question));
+    return;
+  }
+
+  if (result.status === 'busy') {
+    await postSlackThreadMessage(
+      token,
+      channel,
+      threadTs,
+      'Claude is still processing the previous turn for this Slack thread. Please try again in a moment.'
+    );
+    return;
+  }
+
+  if (result.status === 'error') {
+    await postSlackThreadMessage(
+      token,
+      channel,
+      threadTs,
+      result.error || 'I could not process that message right now.'
+    );
+  }
+}
+
+async function processSlackEventCallback(
+  env: RouteContext['env'],
+  payload: SlackEventCallbackPayload
+): Promise<void> {
+  const event = payload.event;
+  if (!event) return;
+  if (event.type !== 'message' && event.type !== 'app_mention') return;
+  if (event.subtype) return;
+
+  const installation = await resolveSlackInstallationForEvent(env, payload);
+  const channelId = event.channel?.trim() || '';
+  const userId = event.user?.trim() || '';
+  if (!channelId || !userId) return;
+  if (event.bot_id) return;
+  if (installation.botUserId && installation.botUserId === userId) return;
+
+  const rawText = typeof event.text === 'string' ? event.text : '';
+  const isDm = event.channel_type === 'im';
+  const rootTs = getSlackMappingRootTs(event, isDm);
+  if (!rootTs) return;
+
+  const mappingKey = getSlackThreadMapKey(
+    installation.workspaceId,
+    installation.teamId,
+    channelId,
+    rootTs
+  );
+  const mappedThreadId = await env.APP_KV.get(mappingKey);
+  const mentionsBot = installation.botUserId ? rawText.includes(`<@${installation.botUserId}>`) : false;
+  const shouldHandle = isDm || event.type === 'app_mention' || mentionsBot || Boolean(mappedThreadId);
+  if (!shouldHandle) return;
+
+  const messageText = normalizeSlackMessageText(rawText, installation.botUserId);
+  if (!messageText) return;
+
+  const threadId = mappedThreadId || await getOrCreateSlackThreadId(env, {
+    workspaceId: installation.workspaceId,
+    orgId: installation.orgId,
+    teamId: installation.teamId,
+    channelId,
+    rootTs,
+    initialText: messageText,
+  });
+
+  const externalState = await getSlackExternalState(env, threadId);
+  const turnResult = externalState.pendingQuestion
+    ? await runSlackExternalQuestionTurn(env, {
+        threadId,
+        workspaceId: installation.workspaceId,
+        orgId: installation.orgId,
+        questionId: externalState.pendingQuestion.questionId,
+        answers: parseSlackAnswers(messageText, externalState.pendingQuestion),
+      })
+    : await runSlackExternalMessageTurn(env, {
+        threadId,
+        workspaceId: installation.workspaceId,
+        orgId: installation.orgId,
+        userName: `Slack ${userId}`,
+        message: messageText,
+      });
+
+  const replyThreadTs = getSlackReplyThreadTs(event);
+  if (!replyThreadTs) return;
+
+  await dispatchSlackTurnOutcome(installation.token, channelId, replyThreadTs, turnResult);
+}
+
+export async function handleSlackEvents({ req, env, ctx }: RouteContext): Promise<Response> {
+  const signingSecret = env.SLACK_SIGNING_SECRET;
+  if (!signingSecret) {
+    return text('Slack signing secret is not configured', 500);
+  }
+
+  const rawBody = await req.text();
+  const signatureValid = await verifySlackSignature(req, rawBody, signingSecret);
+  if (!signatureValid) {
+    return text('Invalid Slack signature', 401);
+  }
+
+  let payload: SlackEventCallbackPayload;
+  try {
+    payload = JSON.parse(rawBody) as SlackEventCallbackPayload;
+  } catch {
+    return text('Invalid JSON payload', 400);
+  }
+
+  if (payload.type === 'url_verification' && typeof payload.challenge === 'string') {
+    return toSlackJsonResponse({ challenge: payload.challenge });
+  }
+
+  if (payload.type !== 'event_callback') {
+    return text('ok', 200);
+  }
+
+  const eventId = payload.event_id?.trim();
+  if (eventId) {
+    const dedupeKey = `${SLACK_EVENT_DEDUPE_PREFIX}${eventId}`;
+    const seen = await env.APP_KV.get(dedupeKey);
+    if (seen) {
+      return text('ok', 200);
+    }
+    await env.APP_KV.put(dedupeKey, '1', { expirationTtl: SLACK_EVENT_DEDUPE_TTL_SECONDS });
+  }
+
+  ctx.waitUntil(
+    processSlackEventCallback(env, payload).catch((error) => {
+      console.error('[slack-events] failed to process callback', error);
+    })
+  );
+
+  return text('ok', 200);
 }
 
 // =============================================================================

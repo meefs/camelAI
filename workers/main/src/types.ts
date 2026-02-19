@@ -27,6 +27,7 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   GITHUB_CLIENT_SECRET?: string;
   SLACK_CLIENT_ID?: string;
   SLACK_CLIENT_SECRET?: string;
+  SLACK_SIGNING_SECRET?: string;
   NOTION_CLIENT_ID?: string;
   NOTION_CLIENT_SECRET?: string;
   SALESFORCE_CLIENT_ID?: string;

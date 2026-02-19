@@ -6,6 +6,7 @@
  * - /mcp/* → MCP protocol
  * - /api/auth/:provider → User OAuth (Google, GitHub)
  * - /api/integrations/slack/* → Slack OAuth
+ * - /api/integrations/slack/events → Slack Events API webhook
  * - /api/threads/:id/preview → Thread preview API
  * - /ws/:workspace → Chat WebSocket (forwarded to ChatThreadDO)
  * - * → React Router SSR
@@ -23,6 +24,7 @@ import { handleOAuthStart, handleOAuthCallback } from './routes/oauth.js';
 import {
   handleSlackOAuthStart,
   handleSlackOAuthCallback,
+  handleSlackEvents,
   handleNotionOAuthStart,
   handleNotionOAuthCallback,
   handleSalesforceOAuthStart,
@@ -79,6 +81,7 @@ const routes: Route[] = [
   // Integration OAuth
   { method: 'GET', path: /^\/api\/integrations\/slack\/oauth$/, handler: handleSlackOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/slack\/callback$/, handler: handleSlackOAuthCallback },
+  { method: 'POST', path: /^\/api\/integrations\/slack\/events$/, handler: handleSlackEvents },
   { method: 'GET', path: /^\/api\/integrations\/notion\/oauth$/, handler: handleNotionOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/notion\/callback$/, handler: handleNotionOAuthCallback },
   { method: 'GET', path: /^\/api\/integrations\/salesforce\/oauth$/, handler: handleSalesforceOAuthStart },

@@ -80,6 +80,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     created_by: thread.created_by,
     created_at: thread.created_at,
     updated_at: thread.updated_at,
+    source: thread.source,
   };
 
   const vanityDomain = await getVanityDomain(request);
@@ -135,6 +136,10 @@ export default function AdminThreadDetailPage() {
                   <div>
                     <dt className="text-sm font-medium text-muted-foreground">Title</dt>
                     <dd className="text-sm">{thread.title}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-sm font-medium text-muted-foreground">Source</dt>
+                    <dd className="text-sm capitalize">{thread.source}</dd>
                   </div>
                   <div>
                     <dt className="text-sm font-medium text-muted-foreground">Organization</dt>

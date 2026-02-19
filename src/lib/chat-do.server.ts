@@ -23,6 +23,7 @@ function toThread(orgThread: OrgThread): Thread {
     created_by: orgThread.created_by,
     created_at: orgThread.created_at,
     updated_at: orgThread.updated_at,
+    source: orgThread.source ?? 'web',
     user_message_count: orgThread.user_message_count ?? 0,
     first_user_message: orgThread.first_user_message ?? null,
   };
@@ -54,7 +55,7 @@ export async function getThreads(
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
   if (!wsInfo) return [];
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const threads = await orgStub.getThreadsByWorkspace(workspaceId);
+  const threads = await orgStub.getThreadsByWorkspace(workspaceId, { sources: ['web'] });
   return threads.map((t) => toThread(t));
 }
 
@@ -71,7 +72,7 @@ export async function getThreadsPaginated(
     return { items: [], total: 0, offset, limit };
   }
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const result = await orgStub.getThreadsPaginated(offset, limit, workspaceId);
+  const result = await orgStub.getThreadsPaginated(offset, limit, workspaceId, { sources: ['web'] });
   return {
     items: result.items.map((t) => toThread(t)),
     total: result.total,
@@ -96,7 +97,7 @@ export async function getThreadsPaginatedAllWorkspaces(
     return { items: [], total: 0, offset, limit };
   }
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const result = await orgStub.getThreadsAllWorkspacesPaginated(workspaceIds, offset, limit);
+  const result = await orgStub.getThreadsAllWorkspacesPaginated(workspaceIds, offset, limit, { sources: ['web'] });
   return {
     items: result.items.map((t) => toThread(t)),
     total: result.total,
@@ -131,7 +132,7 @@ export async function getRecentThreads(
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
   if (!wsInfo) return [];
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const result = await orgStub.getThreadsPaginated(0, limit, workspaceId);
+  const result = await orgStub.getThreadsPaginated(0, limit, workspaceId, { sources: ['web'] });
   return result.items.map((t) => toThread(t));
 }
 

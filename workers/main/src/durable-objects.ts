@@ -182,6 +182,42 @@ interface ChatClientSetPreviewTabsState {
   activeTabId?: string | null;
 }
 
+interface ExternalMessageRequest {
+  threadId?: string;
+  workspaceId?: string;
+  orgId?: string;
+  userName?: string | null;
+  userEmail?: string | null;
+  message?: string;
+  timeoutMs?: number;
+}
+
+interface ExternalQuestionResponseRequest {
+  threadId?: string;
+  workspaceId?: string;
+  orgId?: string;
+  questionId?: string;
+  answers?: Record<string, unknown>;
+  timeoutMs?: number;
+}
+
+interface ExternalTurnResult {
+  status: 'result' | 'question' | 'busy' | 'error';
+  reply?: string;
+  question?: {
+    questionId: string;
+    toolUseId?: string;
+    questions: unknown[];
+  };
+  error?: string;
+}
+
+interface PendingExternalTurn {
+  resolve: (result: ExternalTurnResult) => void;
+  streamingText: string;
+  latestAssistantText: string;
+}
+
 const CHAT_SOCKET_TAG = 'chat';
 
 const CHAT_CONTEXT_KEY = 'chatContext';
@@ -228,6 +264,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private currentTodos: unknown[] = [];
   private chatIsStreaming: boolean = false;
   private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
+  private pendingExternalTurn: PendingExternalTurn | null = null;
 
   private runnerSocket: WebSocket | null = null;
   private runnerConnectPromise: Promise<void> | null = null;
@@ -455,6 +492,161 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         activeTabId: this.previewActiveTabId,
         version: this.previewVersion,
       }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (url.pathname === '/external-state' && request.method === 'GET') {
+      const pendingQuestion = this.getOldestPendingQuestion();
+      return new Response(JSON.stringify({
+        pendingQuestion: pendingQuestion
+          ? {
+              questionId: pendingQuestion.questionId,
+              toolUseId: pendingQuestion.toolUseId,
+              questions: pendingQuestion.questions,
+            }
+          : null,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (url.pathname === '/external-message' && request.method === 'POST') {
+      const body = await request.json() as ExternalMessageRequest;
+      const contextError = this.updateExternalChatContext(body);
+      if (contextError) {
+        return new Response(JSON.stringify({ status: 'error', error: contextError }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const rawMessage = typeof body.message === 'string' ? body.message.trim() : '';
+      if (!rawMessage) {
+        return new Response(JSON.stringify({ status: 'error', error: 'Missing message' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (this.pendingExternalTurn) {
+        return new Response(JSON.stringify({ status: 'busy' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const existingPendingQuestion = this.getOldestPendingQuestion();
+      if (existingPendingQuestion) {
+        return new Response(JSON.stringify({
+          status: 'question',
+          question: {
+            questionId: existingPendingQuestion.questionId,
+            toolUseId: existingPendingQuestion.toolUseId,
+            questions: existingPendingQuestion.questions,
+          },
+        }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (this.chatIsStreaming) {
+        return new Response(JSON.stringify({ status: 'busy' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      this.markRunnerActivity('external_message');
+      await this.ensureRunnerConnected();
+
+      const attributedContent = this.formatAttributedUserMessage(rawMessage);
+      if (!attributedContent) {
+        return new Response(JSON.stringify({ status: 'error', error: 'Empty message' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const pendingResult = this.createPendingExternalTurn();
+      if (!(await this.sendRunnerCommandWithReconnect({ type: 'message', content: attributedContent }))) {
+        this.resolvePendingExternalTurn({
+          status: 'error',
+          error: 'Failed to send message to sandbox',
+        });
+      } else {
+        this.setChatIsStreaming(true);
+        this.ctx.waitUntil(
+          this.touchThreadForUserMessage().catch((err) => {
+            console.error('[ChatThreadDO] failed to touch thread after external user message', err);
+          })
+        );
+      }
+
+      const timeoutMs = this.getExternalTurnTimeout(body.timeoutMs);
+      const result = await this.waitForPendingExternalTurn(pendingResult, timeoutMs);
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (url.pathname === '/external-question-response' && request.method === 'POST') {
+      const body = await request.json() as ExternalQuestionResponseRequest;
+      const contextError = this.updateExternalChatContext(body);
+      if (contextError) {
+        return new Response(JSON.stringify({ status: 'error', error: contextError }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const questionId = typeof body.questionId === 'string' ? body.questionId.trim() : '';
+      const answers = body.answers && typeof body.answers === 'object'
+        ? body.answers
+        : null;
+      if (!questionId || !answers) {
+        return new Response(JSON.stringify({ status: 'error', error: 'Missing questionId or answers' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (!this.pendingQuestions.has(questionId)) {
+        return new Response(JSON.stringify({
+          status: 'error',
+          error: 'Question is no longer pending',
+        }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (this.pendingExternalTurn) {
+        return new Response(JSON.stringify({ status: 'busy' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      this.markRunnerActivity('external_question_response');
+      if (!(await this.sendRunnerCommandWithReconnect({
+        type: 'question_response',
+        questionId,
+        answers,
+      }))) {
+        return new Response(JSON.stringify({
+          status: 'error',
+          error: 'Failed to send question response to sandbox',
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const pendingResult = this.createPendingExternalTurn();
+      const timeoutMs = this.getExternalTurnTimeout(body.timeoutMs);
+      const result = await this.waitForPendingExternalTurn(pendingResult, timeoutMs);
+      return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1181,6 +1373,126 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return '';
   }
 
+  private getOldestPendingQuestion(): PendingQuestionInfo | null {
+    const iterator = this.pendingQuestions.values().next();
+    return iterator.done ? null : iterator.value;
+  }
+
+  private updateExternalChatContext(payload: {
+    threadId?: string;
+    workspaceId?: string;
+    orgId?: string;
+    userName?: string | null;
+    userEmail?: string | null;
+  }): string | null {
+    const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : '';
+    const workspaceId = typeof payload.workspaceId === 'string' ? payload.workspaceId.trim() : '';
+    const orgId = typeof payload.orgId === 'string' ? payload.orgId.trim() : '';
+    if (!threadId || !workspaceId || !orgId) {
+      return 'Missing thread/workspace/org context';
+    }
+
+    if (this.chatContext?.threadId && this.chatContext.threadId !== threadId) {
+      return 'Thread context mismatch';
+    }
+
+    this.chatContext = {
+      threadId,
+      workspaceId,
+      orgId,
+      userName: typeof payload.userName === 'string' && payload.userName.trim()
+        ? payload.userName.trim()
+        : (this.chatContext?.userName ?? null),
+      userEmail: typeof payload.userEmail === 'string' && payload.userEmail.trim()
+        ? payload.userEmail.trim()
+        : (this.chatContext?.userEmail ?? null),
+    };
+    this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, this.chatContext);
+    return null;
+  }
+
+  private getExternalTurnTimeout(timeoutMs: unknown): number {
+    if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs)) {
+      return 2 * 60 * 1000;
+    }
+    const rounded = Math.floor(timeoutMs);
+    return Math.max(5_000, Math.min(5 * 60 * 1000, rounded));
+  }
+
+  private createPendingExternalTurn(): Promise<ExternalTurnResult> {
+    return new Promise<ExternalTurnResult>((resolve) => {
+      this.pendingExternalTurn = {
+        resolve,
+        streamingText: '',
+        latestAssistantText: '',
+      };
+    });
+  }
+
+  private resolvePendingExternalTurn(result: ExternalTurnResult): void {
+    const pending = this.pendingExternalTurn;
+    if (!pending) return;
+
+    this.pendingExternalTurn = null;
+
+    if (result.status === 'result') {
+      const fallback = pending.latestAssistantText || pending.streamingText;
+      pending.resolve({
+        status: 'result',
+        reply: (result.reply || fallback || '').trim(),
+      });
+      return;
+    }
+
+    pending.resolve(result);
+  }
+
+  private async waitForPendingExternalTurn(
+    pendingResult: Promise<ExternalTurnResult>,
+    timeoutMs: number
+  ): Promise<ExternalTurnResult> {
+    let timeoutHandle: number | null = null;
+    const timeoutPromise = new Promise<ExternalTurnResult>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        resolve({
+          status: 'error',
+          error: 'Timed out waiting for Claude response',
+        });
+      }, timeoutMs) as unknown as number;
+    });
+
+    const result = await Promise.race([pendingResult, timeoutPromise]);
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+    }
+
+    if (result.status === 'error' && result.error === 'Timed out waiting for Claude response') {
+      this.pendingExternalTurn = null;
+    }
+
+    return result;
+  }
+
+  private extractAssistantTextFromContent(content: unknown): string {
+    if (typeof content === 'string') {
+      return content.trim();
+    }
+    if (!Array.isArray(content)) {
+      return '';
+    }
+
+    const textBlocks: string[] = [];
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const typed = block as { type?: unknown; text?: unknown };
+      if (typed.type === 'text' && typeof typed.text === 'string') {
+        textBlocks.push(typed.text);
+      }
+    }
+
+    return textBlocks.join('\n').trim();
+  }
+
   private async touchThreadForUserMessage(): Promise<void> {
     const context = this.chatContext;
     if (!context?.orgId || !context?.threadId) return;
@@ -1400,6 +1712,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (eventType === 'error') {
       console.error(`[ChatThreadDO] runner error: ${JSON.stringify({ error: event.error, source: event.source }).slice(0, 500)}`);
       this.setChatIsStreaming(false);
+      this.resolvePendingExternalTurn({
+        status: 'error',
+        error: typeof event.error === 'string' ? event.error : 'Runner error',
+      });
     }
 
     if (eventType === 'todo_state') {
@@ -1423,6 +1739,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           toolUseId: typeof event.toolUseId === 'string' ? event.toolUseId : undefined,
           questions,
         });
+        this.resolvePendingExternalTurn({
+          status: 'question',
+          question: {
+            questionId,
+            toolUseId: typeof event.toolUseId === 'string' ? event.toolUseId : undefined,
+            questions,
+          },
+        });
       }
     }
 
@@ -1434,12 +1758,41 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (eventType === 'sdk_event') {
-      const sdkEvent = event.event as { type?: string } | undefined;
+      const sdkEvent = event.event as {
+        type?: string;
+        message?: { content?: unknown };
+        event?: {
+          type?: string;
+          delta?: {
+            type?: string;
+            text?: string;
+          };
+        };
+      } | undefined;
+
+      if (sdkEvent?.type === 'stream_event' && this.pendingExternalTurn) {
+        const streamEvent = sdkEvent.event;
+        if (streamEvent?.type === 'message_start') {
+          this.pendingExternalTurn.streamingText = '';
+        }
+        if (streamEvent?.type === 'content_block_delta' && streamEvent.delta?.type === 'text_delta') {
+          this.pendingExternalTurn.streamingText += streamEvent.delta.text || '';
+        }
+      }
+
+      if (sdkEvent?.type === 'assistant' && this.pendingExternalTurn) {
+        const assistantText = this.extractAssistantTextFromContent(sdkEvent.message?.content);
+        if (assistantText) {
+          this.pendingExternalTurn.latestAssistantText = assistantText;
+        }
+      }
+
       if (sdkEvent?.type === 'result') {
         this.currentTodos = [];
         this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
         this.setChatIsStreaming(false);
         this.persistRunnerSeqIfNeeded('result');
+        this.resolvePendingExternalTurn({ status: 'result' });
       }
     }
 

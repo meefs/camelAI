@@ -84,6 +84,13 @@ Incomplete users are redirected to `/onboarding` before accessing `_app` routes.
 4. On reconnects, `ChatThreadDO` sends `lastSeq`, replays missed events, dedupes, resumes streaming
 5. Claude SDK stores messages in JSONL at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`
 
+### Slack Chat Ingress
+1. Slack Events API posts to `/api/integrations/slack/events` (signature-verified with `SLACK_SIGNING_SECRET`)
+2. Worker resolves workspace/integration by Slack `team_id` from KV index (`slack_team:{teamId}`)
+3. Worker maps Slack thread (`team/channel/root_ts`) to camelAI thread ID (`slack_thread:*`) and creates thread if needed
+4. `ChatThreadDO` ingests Slack turns through internal HTTP endpoints (`/external-message`, `/external-question-response`)
+5. AskUserQuestion prompts are returned to Slack thread replies and next Slack message is treated as tool input
+
 ### Sandbox Proxy Auth
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.
 - Sandbox-host injects `x-sandbox-secret`, `x-chiridion-org-id`, `x-chiridion-workspace-id`, and `x-chiridion-thread-id` on upstream worker requests.
@@ -132,6 +139,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 |------|------------|
 | Auth | `/api/auth/login`, `/api/auth/signup`, `/api/auth/verify-email`, `/api/auth/verify-email/send`, `/api/auth/logout`, `/api/auth/switch-org`, `/api/auth/switch-workspace` |
 | OAuth | `/api/auth/google[/callback]`, `/api/auth/github[/callback]` |
+| Slack | `/api/integrations/slack/oauth`, `/api/integrations/slack/callback`, `/api/integrations/slack/events` |
 | Orgs | `/api/orgs/:id/invite`, `/api/orgs/:id/check-slug`, `/api/orgs/:id/update-slug` |
 | Onboarding | `/api/onboarding`, `/api/onboarding/complete` |
 | Invitations | `/api/invitations/:orgId/:invitationId` (GET/POST) |
@@ -151,6 +159,8 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | `WorkspaceDO` | per workspace | Metadata, members, integrations, audit logs, token refresh alarms |
 | `ChatThreadDO` | per thread | WebSocket state, preview target, todo/prompt persistence |
 | `WorkerLogsDO` | per script | Deployed worker logs (up to 10k entries), real-time WebSocket streaming |
+
+Thread records now include `source` (`web` or `slack`). User-facing history queries filter to `web`; admin views include all sources.
 
 **Workspace Runtime** (per workspace): Docker + gVisor sandbox provisioned eagerly on workspace creation. Workers reach sandbox host via VPC service binding (`env.SANDBOX_HOST`). Runtime startup is on-demand from chat/API paths.
 

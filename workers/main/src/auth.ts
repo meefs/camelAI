@@ -311,9 +311,12 @@ export interface OrgThread {
   created_by: string;
   created_at: number;
   updated_at: number;
+  source: ThreadSource;
   user_message_count: number;
   first_user_message: string | null;
 }
+
+export type ThreadSource = 'web' | 'slack';
 
 export type OrgChatThreadAccessResult =
   | {
@@ -971,7 +974,8 @@ export class OrgDO extends DurableObject<DOEnv> {
           title TEXT NOT NULL,
           created_by TEXT NOT NULL,
           created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
+          updated_at INTEGER NOT NULL,
+          source TEXT NOT NULL DEFAULT 'web'
         )
       `);
       this.sql.exec('CREATE INDEX IF NOT EXISTS threads_workspace_id ON threads(workspace_id)');
@@ -1118,7 +1122,8 @@ export class OrgDO extends DurableObject<DOEnv> {
           title TEXT NOT NULL,
           created_by TEXT NOT NULL,
           created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
+          updated_at INTEGER NOT NULL,
+          source TEXT NOT NULL DEFAULT 'web'
         )
       `);
       this.sql.exec('CREATE INDEX IF NOT EXISTS threads_workspace_id ON threads(workspace_id)');
@@ -1232,7 +1237,21 @@ export class OrgDO extends DurableObject<DOEnv> {
       }
     }
 
-    const CURRENT_SCHEMA_VERSION = 14;
+    if (version < 15) {
+      // V15: Add source to threads so we can distinguish web vs Slack threads
+      try {
+        this.sql.exec("ALTER TABLE threads ADD COLUMN source TEXT NOT NULL DEFAULT 'web'");
+      } catch {
+        // Column may already exist
+      }
+      try {
+        this.sql.exec("UPDATE threads SET source = 'web' WHERE source IS NULL OR source = ''");
+      } catch {
+        // Best-effort backfill
+      }
+    }
+
+    const CURRENT_SCHEMA_VERSION = 15;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -2215,10 +2234,32 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   // Thread methods (consolidated from ChatIndexDO)
 
+  private normalizeThreadSources(sources?: ThreadSource[]): ThreadSource[] | null {
+    if (!Array.isArray(sources) || sources.length === 0) return null;
+    const deduped = new Set<ThreadSource>();
+    for (const source of sources) {
+      if (source === 'web' || source === 'slack') {
+        deduped.add(source);
+      }
+    }
+    return deduped.size > 0 ? Array.from(deduped) : null;
+  }
+
   /**
    * Get all threads across all workspaces in this org
    */
-  getThreads(): OrgThread[] {
+  getThreads(options?: { sources?: ThreadSource[] }): OrgThread[] {
+    const sources = this.normalizeThreadSources(options?.sources);
+    if (sources) {
+      const sourcePlaceholders = sources.map(() => '?').join(',');
+      return this.sql
+        .exec(
+          `SELECT * FROM threads WHERE source IN (${sourcePlaceholders}) ORDER BY updated_at DESC`,
+          ...sources
+        )
+        .toArray() as unknown as OrgThread[];
+    }
+
     return this.sql
       .exec('SELECT * FROM threads ORDER BY updated_at DESC')
       .toArray() as unknown as OrgThread[];
@@ -2227,7 +2268,19 @@ export class OrgDO extends DurableObject<DOEnv> {
   /**
    * Get threads for a specific workspace
    */
-  getThreadsByWorkspace(workspaceId: string): OrgThread[] {
+  getThreadsByWorkspace(workspaceId: string, options?: { sources?: ThreadSource[] }): OrgThread[] {
+    const sources = this.normalizeThreadSources(options?.sources);
+    if (sources) {
+      const sourcePlaceholders = sources.map(() => '?').join(',');
+      return this.sql
+        .exec(
+          `SELECT * FROM threads WHERE workspace_id = ? AND source IN (${sourcePlaceholders}) ORDER BY updated_at DESC`,
+          workspaceId,
+          ...sources
+        )
+        .toArray() as unknown as OrgThread[];
+    }
+
     return this.sql
       .exec('SELECT * FROM threads WHERE workspace_id = ? ORDER BY updated_at DESC', workspaceId)
       .toArray() as unknown as OrgThread[];
@@ -2239,40 +2292,44 @@ export class OrgDO extends DurableObject<DOEnv> {
   getThreadsPaginated(
     offset = 0,
     limit = 50,
-    workspaceId?: string
+    workspaceId?: string,
+    options?: { sources?: ThreadSource[] }
   ): { items: OrgThread[]; total: number; offset: number; limit: number } {
     const resolvedOffset = Math.max(0, Math.floor(offset));
     const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const sources = this.normalizeThreadSources(options?.sources);
 
-    let items: OrgThread[];
-    let total: number;
+    const whereClauses: string[] = [];
+    const whereParams: (string | number)[] = [];
 
     if (workspaceId) {
-      items = this.sql
-        .exec(
-          'SELECT * FROM threads WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?',
-          workspaceId,
-          resolvedLimit,
-          resolvedOffset
-        )
-        .toArray() as unknown as OrgThread[];
-      const totalRows = this.sql
-        .exec('SELECT COUNT(*) as count FROM threads WHERE workspace_id = ?', workspaceId)
-        .toArray() as Array<{ count: number }>;
-      total = Number(totalRows[0]?.count ?? 0);
-    } else {
-      items = this.sql
-        .exec(
-          'SELECT * FROM threads ORDER BY updated_at DESC LIMIT ? OFFSET ?',
-          resolvedLimit,
-          resolvedOffset
-        )
-        .toArray() as unknown as OrgThread[];
-      const totalRows = this.sql
-        .exec('SELECT COUNT(*) as count FROM threads')
-        .toArray() as Array<{ count: number }>;
-      total = Number(totalRows[0]?.count ?? 0);
+      whereClauses.push('workspace_id = ?');
+      whereParams.push(workspaceId);
     }
+    if (sources) {
+      const sourcePlaceholders = sources.map(() => '?').join(',');
+      whereClauses.push(`source IN (${sourcePlaceholders})`);
+      whereParams.push(...sources);
+    }
+
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+    const items = this.sql
+      .exec(
+        `SELECT * FROM threads ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+        ...whereParams,
+        resolvedLimit,
+        resolvedOffset
+      )
+      .toArray() as unknown as OrgThread[];
+
+    const totalRows = this.sql
+      .exec(
+        `SELECT COUNT(*) as count FROM threads ${whereSql}`,
+        ...whereParams
+      )
+      .toArray() as Array<{ count: number }>;
+    const total = Number(totalRows[0]?.count ?? 0);
 
     return {
       items,
@@ -2288,10 +2345,12 @@ export class OrgDO extends DurableObject<DOEnv> {
   getThreadsAllWorkspacesPaginated(
     workspaceIds: string[],
     offset = 0,
-    limit = 50
+    limit = 50,
+    options?: { sources?: ThreadSource[] }
   ): { items: OrgThread[]; total: number; offset: number; limit: number } {
     const resolvedOffset = Math.max(0, Math.floor(offset));
     const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const sources = this.normalizeThreadSources(options?.sources);
 
     if (workspaceIds.length === 0) {
       return {
@@ -2303,17 +2362,27 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
 
     const placeholders = workspaceIds.map(() => '?').join(',');
+    const whereClauses = [`workspace_id IN (${placeholders})`];
+    const queryParams: (string | number)[] = [...workspaceIds];
+    if (sources) {
+      const sourcePlaceholders = sources.map(() => '?').join(',');
+      whereClauses.push(`source IN (${sourcePlaceholders})`);
+      queryParams.push(...sources);
+    }
+
+    const whereSql = whereClauses.join(' AND ');
+
     const items = this.sql
       .exec(
-        `SELECT * FROM threads WHERE workspace_id IN (${placeholders}) ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
-        ...workspaceIds,
+        `SELECT * FROM threads WHERE ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+        ...queryParams,
         resolvedLimit,
         resolvedOffset
       )
       .toArray() as unknown as OrgThread[];
 
     const totalRows = this.sql
-      .exec(`SELECT COUNT(*) as count FROM threads WHERE workspace_id IN (${placeholders})`, ...workspaceIds)
+      .exec(`SELECT COUNT(*) as count FROM threads WHERE ${whereSql}`, ...queryParams)
       .toArray() as Array<{ count: number }>;
     const total = Number(totalRows[0]?.count ?? 0);
 
@@ -2328,23 +2397,31 @@ export class OrgDO extends DurableObject<DOEnv> {
   /**
    * Create a new thread with a server-generated UUID
    */
-  createThread(workspaceId: string, title: string | undefined, createdBy?: string, firstUserMessage?: string): OrgThread {
+  createThread(
+    workspaceId: string,
+    title: string | undefined,
+    createdBy?: string,
+    firstUserMessage?: string,
+    source: ThreadSource = 'web'
+  ): OrgThread {
     const id = crypto.randomUUID();
     const now = Date.now();
     const t = title || 'New Chat';
     const creator = createdBy?.trim() || 'system';
     const msg = firstUserMessage?.slice(0, 500) || null;
+    const threadSource: ThreadSource = source === 'slack' ? 'slack' : 'web';
     this.sql.exec(
-      'INSERT INTO threads (id, workspace_id, title, created_by, created_at, updated_at, first_user_message) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO threads (id, workspace_id, title, created_by, created_at, updated_at, first_user_message, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       id,
       workspaceId,
       t,
       creator,
       now,
       now,
-      msg
+      msg,
+      threadSource
     );
-    this.log('thread_created', creator, id, { workspace_id: workspaceId, title: t });
+    this.log('thread_created', creator, id, { workspace_id: workspaceId, title: t, source: threadSource });
     return {
       id,
       workspace_id: workspaceId,
@@ -2352,6 +2429,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       created_by: creator,
       created_at: now,
       updated_at: now,
+      source: threadSource,
       user_message_count: 0,
       first_user_message: msg,
     };
@@ -2497,9 +2575,21 @@ export class OrgDO extends DurableObject<DOEnv> {
   /**
    * Search threads by title across all workspaces in this org
    */
-  searchThreads(query: string, limit = 50): OrgThread[] {
+  searchThreads(query: string, limit = 50, options?: { sources?: ThreadSource[] }): OrgThread[] {
     const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
     const searchPattern = `%${query}%`;
+    const sources = this.normalizeThreadSources(options?.sources);
+    if (sources) {
+      const sourcePlaceholders = sources.map(() => '?').join(',');
+      return this.sql
+        .exec(
+          `SELECT * FROM threads WHERE title LIKE ? AND source IN (${sourcePlaceholders}) ORDER BY updated_at DESC LIMIT ?`,
+          searchPattern,
+          ...sources,
+          resolvedLimit
+        )
+        .toArray() as unknown as OrgThread[];
+    }
     return this.sql
       .exec(
         'SELECT * FROM threads WHERE title LIKE ? ORDER BY updated_at DESC LIMIT ?',

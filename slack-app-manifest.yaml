@@ -134,6 +134,14 @@ oauth_config:
       - identify
 
 settings:
+  event_subscriptions:
+    request_url: https://camelai.dev/api/integrations/slack/events
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
