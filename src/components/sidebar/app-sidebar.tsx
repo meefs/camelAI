@@ -1,9 +1,11 @@
 "use client"
 
-import { AppWindowMac, Cable, Home, LayoutGrid, MessagesSquare } from "lucide-react"
+import { useState } from "react"
+import { AppWindowMac, Cable, CircleHelp, Home, LayoutGrid, MessagesSquare } from "lucide-react"
 import { Link, useLocation } from "react-router"
 
 import { useAuthData } from "@/hooks/use-auth-data"
+import { GetHelpDialog } from "@/components/get-help-dialog"
 import { NavUser } from "@/components/sidebar/nav-user"
 import { WorkspaceSwitcher } from "@/components/sidebar/workspace-switcher"
 import {
@@ -21,6 +23,7 @@ import {
 type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
 
 export function AppSidebar(props: AppSidebarProps) {
+  const [helpOpen, setHelpOpen] = useState(false)
   const { pathname } = useLocation()
   const { currentWorkspace } = useAuthData()
   const isHome = pathname === "/"
@@ -84,8 +87,20 @@ export function AppSidebar(props: AppSidebarProps) {
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              tooltip="Get Help"
+              onClick={() => setHelpOpen(true)}
+            >
+              <CircleHelp />
+              <span>Get Help</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
         <NavUser />
       </SidebarFooter>
+      <GetHelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
       <SidebarRail />
     </Sidebar>
   )

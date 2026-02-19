@@ -129,6 +129,7 @@ export default [
   route('api/auth/switch-workspace', 'routes/api/auth.switch-workspace.ts'),
   route('api/onboarding', 'routes/api/onboarding.ts'),
   route('api/onboarding/complete', 'routes/api/onboarding.complete.ts'),
+  route('api/help', 'routes/api/help.ts'),
 
   // Workspace filesystem API routes
   route('api/workspaces/:id/fs/list', 'routes/api/workspaces.$id.fs.list.ts'),

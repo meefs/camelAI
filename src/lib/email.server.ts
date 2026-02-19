@@ -3,6 +3,8 @@ import { render, toPlainText } from '@react-email/render';
 import { createElement } from 'react';
 import { OrgInvitationEmailTemplate } from './email/templates/org-invitation-email';
 import { EmailVerificationEmailTemplate } from './email/templates/email-verification-email';
+import { HelpConfirmationEmailTemplate } from './email/templates/help-confirmation-email';
+import { HelpSupportEmailTemplate } from './email/templates/help-support-email';
 import { sendEmail, getGmailConfig, isGmailConfigured } from './gmail.server';
 
 export type EmailDeliveryStatus = 'sent' | 'skipped' | 'failed';
@@ -36,6 +38,43 @@ interface EmailVerificationEmailArgs {
   to: string;
   verificationUrl: string;
   expiresAt: number;
+}
+
+interface HelpConfirmationEmailArgs {
+  env: EmailEnvBindings;
+  baseUrl: string;
+  to: string;
+  firstName: string;
+  userEmail: string;
+  category: string;
+  severity: string;
+  subject: string;
+  description: string;
+  cc?: string;
+  replyTo?: string;
+}
+
+interface HelpSupportEmailArgs {
+  env: EmailEnvBindings;
+  to: string;
+  userName: string | null;
+  userEmail: string;
+  userId: string;
+  orgName: string;
+  orgSlug: string;
+  orgId: string;
+  billingStatus: string;
+  workspaceName: string | null;
+  workspaceId: string | null;
+  pageUrl: string | null;
+  category: string;
+  severity: string;
+  subject: string;
+  description: string;
+  submittedAt: string;
+  userAgent: string | null;
+  screenSize: string | null;
+  referer: string | null;
 }
 
 function sanitizeHeaderValue(value: string): string {
@@ -82,24 +121,60 @@ function formatExpiration(expiresAt: number): string {
   return date.toUTCString();
 }
 
+function truncateWithEllipsis(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function normalizeOptionalEmail(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function supportCategoryTag(category: string): string {
+  const normalized = category.trim().toLowerCase();
+  if (normalized.startsWith('bug')) return 'Bug';
+  if (normalized.startsWith('feature')) return 'Feature';
+  if (normalized.includes('billing')) return 'Billing';
+  if (normalized.startsWith('question')) return 'Question';
+  return 'Other';
+}
+
+function supportSeverityTag(severity: string): string {
+  const normalized = severity.trim().toLowerCase();
+  if (normalized === 'high') return 'High';
+  if (normalized === 'medium') return 'Medium';
+  return 'Low';
+}
+
 async function deliverEmail({
   env,
   to,
+  cc,
+  replyTo,
   subject,
   htmlBody,
   textBody,
 }: {
   env: EmailEnvBindings;
   to: string;
+  cc?: string;
+  replyTo?: string;
   subject: string;
   htmlBody: string;
   textBody: string;
 }): Promise<EmailDeliveryResult> {
+  const normalizedCc = normalizeOptionalEmail(cc);
+  const normalizedReplyTo = normalizeOptionalEmail(replyTo);
+
   // Try Gmail API first (preferred for sending to external recipients)
   if (isGmailConfigured(env)) {
     const gmailConfig = getGmailConfig(env)!;
     const result = await sendEmail(gmailConfig, {
       to,
+      cc: normalizedCc,
+      replyTo: normalizedReplyTo,
       subject,
       textBody,
       htmlBody,
@@ -133,6 +208,10 @@ async function deliverEmail({
     const rawMessage = [
       `From: camelAI <${sanitizeHeaderValue(from)}>`,
       `To: ${sanitizeHeaderValue(to)}`,
+      ...(normalizedCc ? [`Cc: ${sanitizeHeaderValue(normalizedCc)}`] : []),
+      ...(normalizedReplyTo
+        ? [`Reply-To: ${sanitizeHeaderValue(normalizedReplyTo)}`]
+        : []),
       `Subject: ${subject}`,
       `Message-ID: <${messageId}@camelai.com>`,
       `Date: ${new Date().toUTCString()}`,
@@ -230,6 +309,114 @@ export async function sendEmailVerificationEmail({
     env,
     to: normalizedTo,
     subject,
+    htmlBody,
+    textBody,
+  });
+}
+
+export async function sendHelpConfirmationEmail({
+  env,
+  baseUrl,
+  to,
+  firstName,
+  userEmail,
+  category,
+  severity,
+  subject,
+  description,
+  cc,
+  replyTo,
+}: HelpConfirmationEmailArgs): Promise<EmailDeliveryResult> {
+  const normalizedTo = to.trim().toLowerCase();
+  const normalizedFirstName = firstName.trim() || 'there';
+  const normalizedSubjectText = subject.trim() || category;
+  const emailSubject = sanitizeHeaderValue(
+    `We received your request - ${normalizedSubjectText}`
+  );
+  const normalizedDescription = truncateWithEllipsis(description.trim(), 500);
+
+  const htmlBody = await render(
+    createElement(HelpConfirmationEmailTemplate, {
+      baseUrl,
+      firstName: normalizedFirstName,
+      userEmail,
+      category,
+      severity,
+      description: normalizedDescription,
+    })
+  );
+  const textBody = toPlainText(htmlBody);
+
+  return deliverEmail({
+    env,
+    to: normalizedTo,
+    cc,
+    replyTo,
+    subject: emailSubject,
+    htmlBody,
+    textBody,
+  });
+}
+
+export async function sendHelpSupportEmail({
+  env,
+  to,
+  userName,
+  userEmail,
+  userId,
+  orgName,
+  orgSlug,
+  orgId,
+  billingStatus,
+  workspaceName,
+  workspaceId,
+  pageUrl,
+  category,
+  severity,
+  subject,
+  description,
+  submittedAt,
+  userAgent,
+  screenSize,
+  referer,
+}: HelpSupportEmailArgs): Promise<EmailDeliveryResult> {
+  const normalizedTo = to.trim().toLowerCase();
+  const userDisplayName = userName?.trim() || userEmail;
+  const severityTag = supportSeverityTag(severity);
+  const categoryTag = supportCategoryTag(category);
+  const normalizedSubjectText = subject.trim() || category;
+  const emailSubject = sanitizeHeaderValue(
+    `[${severityTag}] [${categoryTag}] ${normalizedSubjectText} - ${userDisplayName} (${orgSlug})`
+  );
+
+  const htmlBody = await render(
+    createElement(HelpSupportEmailTemplate, {
+      userName,
+      userEmail,
+      userId,
+      orgName,
+      orgSlug,
+      orgId,
+      billingStatus,
+      workspaceName,
+      workspaceId,
+      pageUrl,
+      category,
+      severity: severityTag,
+      subject: normalizedSubjectText,
+      description,
+      submittedAt,
+      userAgent,
+      screenSize,
+      referer,
+    })
+  );
+  const textBody = toPlainText(htmlBody);
+
+  return deliverEmail({
+    env,
+    to: normalizedTo,
+    subject: emailSubject,
     htmlBody,
     textBody,
   });

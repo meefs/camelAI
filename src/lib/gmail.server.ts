@@ -23,6 +23,8 @@ export interface GmailConfig {
 
 export interface SendEmailParams {
   to: string;
+  cc?: string;
+  replyTo?: string;
   subject: string;
   textBody: string;
   htmlBody: string;
@@ -146,6 +148,8 @@ async function getAccessToken(config: GmailConfig): Promise<string> {
 function buildRawEmail(
   from: string,
   to: string,
+  cc: string | undefined,
+  replyTo: string | undefined,
   subject: string,
   textBody: string,
   htmlBody: string
@@ -156,6 +160,8 @@ function buildRawEmail(
   const lines = [
     `From: camelAI <${from}>`,
     `To: ${to}`,
+    ...(cc ? [`Cc: ${cc}`] : []),
+    ...(replyTo ? [`Reply-To: ${replyTo}`] : []),
     `Subject: ${subject}`,
     `Message-ID: <${messageId}@camelai.com>`,
     `Date: ${new Date().toUTCString()}`,
@@ -193,6 +199,8 @@ export async function sendEmail(
     const rawEmail = buildRawEmail(
       config.senderEmail,
       params.to,
+      params.cc,
+      params.replyTo,
       params.subject,
       params.textBody,
       params.htmlBody

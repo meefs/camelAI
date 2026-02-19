@@ -45,8 +45,13 @@ describe('route config', () => {
       routes as RouteNode[],
       'api/invitations/:orgId/:invitationId'
     );
+    const helpRoute = findRouteByPath(
+      routes as RouteNode[],
+      'api/help'
+    );
 
     expect(orgInviteRoute).not.toBeNull();
     expect(invitationRoute).not.toBeNull();
+    expect(helpRoute).not.toBeNull();
   });
 });
