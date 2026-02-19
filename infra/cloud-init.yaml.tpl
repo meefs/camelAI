@@ -12,12 +12,7 @@ write_files:
   - path: /etc/chiridion/storage.env
     permissions: "0600"
     content: |
-      STORAGE_ACCOUNT=${storage_account}
-      STORAGE_KEY=${storage_key}
-      BLOB_CONTAINER=${blob_container}
-      JUICEFS_CONTAINER=${juicefs_container}
-      PG_HOST=${pg_host}
-      PG_PASSWORD=${pg_password}
+      SANDBOX_DATA_DEVICE=${sandbox_data_device}
       CLOUDFLARED_TUNNEL_TOKEN=${cloudflared_tunnel_token}
       ACR_LOGIN_SERVER=${acr_login_server}
 
@@ -32,4 +27,4 @@ write_files:
       R2_BUCKET_NAME=${r2_bucket_name}
 
 runcmd:
-  - bash -c '. /etc/chiridion/storage.env && export STORAGE_ACCOUNT STORAGE_KEY BLOB_CONTAINER JUICEFS_CONTAINER PG_HOST PG_PASSWORD CLOUDFLARED_TUNNEL_TOKEN ACR_LOGIN_SERVER && bash /opt/chiridion/sandbox-host/scripts/setup-host.sh'
+  - bash -c '. /etc/chiridion/storage.env && export SANDBOX_DATA_DEVICE CLOUDFLARED_TUNNEL_TOKEN ACR_LOGIN_SERVER && bash /opt/chiridion/sandbox-host/scripts/setup-host.sh'

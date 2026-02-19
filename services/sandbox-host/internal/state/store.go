@@ -43,11 +43,6 @@ type ProxyThreadRecord struct {
 	ClosedAt      *time.Time
 }
 
-type TerminatedWorkspaceRecord struct {
-	Name         string
-	TerminatedAt time.Time
-}
-
 func Open(path string) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("state DB path is required")
@@ -119,11 +114,6 @@ func (s *Store) initSchema(ctx context.Context) error {
 			updated_at_ms INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_proxy_threads_expires_at ON proxy_threads(expires_at_ms)`,
-		`CREATE TABLE IF NOT EXISTS terminated_workspaces (
-			name TEXT PRIMARY KEY,
-			terminated_at_ms INTEGER NOT NULL,
-			updated_at_ms INTEGER NOT NULL
-		)`,
 	}
 
 	for _, statement := range statements {
@@ -331,65 +321,6 @@ func (s *Store) LoadProxyThreads() ([]ProxyThreadRecord, error) {
 			closed := time.UnixMilli(closedAtMs.Int64).UTC()
 			r.ClosedAt = &closed
 		}
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (s *Store) UpsertTerminatedWorkspace(record TerminatedWorkspaceRecord) error {
-	if s == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO terminated_workspaces (name, terminated_at_ms, updated_at_ms)
-		VALUES (?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
-			terminated_at_ms=excluded.terminated_at_ms,
-			updated_at_ms=excluded.updated_at_ms
-	`,
-		record.Name,
-		record.TerminatedAt.UnixMilli(),
-		time.Now().UTC().UnixMilli(),
-	)
-	return err
-}
-
-func (s *Store) DeleteTerminatedWorkspace(name string) error {
-	if s == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM terminated_workspaces WHERE name = ?`, name)
-	return err
-}
-
-func (s *Store) LoadTerminatedWorkspaces() ([]TerminatedWorkspaceRecord, error) {
-	if s == nil {
-		return nil, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	rows, err := s.db.QueryContext(ctx, `SELECT name, terminated_at_ms FROM terminated_workspaces`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]TerminatedWorkspaceRecord, 0)
-	for rows.Next() {
-		var r TerminatedWorkspaceRecord
-		var terminatedAtMs int64
-		if err := rows.Scan(&r.Name, &terminatedAtMs); err != nil {
-			return nil, err
-		}
-		r.TerminatedAt = time.UnixMilli(terminatedAtMs).UTC()
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {

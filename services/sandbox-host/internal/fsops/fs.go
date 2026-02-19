@@ -215,7 +215,7 @@ func StreamFile(path string, w io.Writer) error {
 
 func defaultWorkspaceRoot() string {
 	if runtime.GOOS == "linux" {
-		return "/mnt/workspaces"
+		return "/srv/sandboxes"
 	}
 	wd, err := os.Getwd()
 	if err != nil || wd == "" {

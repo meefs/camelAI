@@ -6,10 +6,6 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.0"
-    }
   }
 }
 
@@ -48,7 +44,6 @@ resource "azurerm_subnet" "sandbox" {
   resource_group_name  = azurerm_resource_group.sandbox.name
   virtual_network_name = azurerm_virtual_network.sandbox.name
   address_prefixes     = ["10.0.1.0/24"]
-  service_endpoints    = ["Microsoft.Storage"]
 }
 
 resource "azurerm_network_security_group" "sandbox" {
@@ -83,6 +78,7 @@ resource "azurerm_public_ip" "sandbox" {
   location            = azurerm_resource_group.sandbox.location
   allocation_method   = "Static"
   sku                 = "Standard"
+  zones               = [var.availability_zone]
   tags                = local.tags
 }
 
@@ -100,105 +96,26 @@ resource "azurerm_network_interface" "sandbox" {
   }
 }
 
-# ─── Storage (Azure Blob with NFS v3) ─────────────────────────
+# ─── Durable Sandbox Data Disk (Premium SSD v2) ──────────────
 
-resource "azurerm_storage_account" "blob" {
-  name                       = var.storage_account_name
-  resource_group_name        = azurerm_resource_group.sandbox.name
-  location                   = azurerm_resource_group.sandbox.location
-  account_tier               = "Standard"
-  account_kind               = "StorageV2"
-  account_replication_type   = "LRS"
-  is_hns_enabled             = true
-  nfsv3_enabled              = true
-  https_traffic_only_enabled = false
-  tags                       = local.tags
+resource "azurerm_managed_disk" "sandbox_data" {
+  name                 = "datadisk-chiridion-sandbox-${var.environment}"
+  resource_group_name  = azurerm_resource_group.sandbox.name
+  location             = azurerm_resource_group.sandbox.location
+  storage_account_type = "PremiumV2_LRS"
+  create_option        = "Empty"
+  disk_size_gb         = var.sandbox_data_disk_size_gb
+  disk_iops_read_write = var.sandbox_data_disk_iops
+  disk_mbps_read_write = var.sandbox_data_disk_mbps
+  zone                 = var.availability_zone
+  tags                 = local.tags
 
-  network_rules {
-    default_action             = "Deny"
-    virtual_network_subnet_ids = [azurerm_subnet.sandbox.id]
-  }
-
+  # IOPS and throughput can be updated live via `az disk update` without
+  # destroying the disk. Ignore changes here so Terraform doesn't force
+  # a replacement when values are bumped out-of-band.
   lifecycle {
-    prevent_destroy = true
+    ignore_changes = [disk_iops_read_write, disk_mbps_read_write]
   }
-}
-
-resource "azurerm_storage_container" "workspaces" {
-  name               = var.blob_container_name
-  storage_account_id = azurerm_storage_account.blob.id
-}
-
-resource "azurerm_storage_container" "juicefs" {
-  name               = "juicefs"
-  storage_account_id = azurerm_storage_account.blob.id
-}
-
-# ─── PostgreSQL (JuiceFS metadata engine) ────────────────────
-
-resource "random_password" "pg" {
-  length  = 32
-  special = false
-}
-
-resource "azurerm_postgresql_flexible_server" "metadata" {
-  name                          = "pg-chiridion-${var.environment}"
-  resource_group_name           = azurerm_resource_group.sandbox.name
-  location                      = azurerm_resource_group.sandbox.location
-  version                       = "16"
-  administrator_login           = "chiridion"
-  administrator_password        = random_password.pg.result
-  sku_name                      = "GP_Standard_D2ds_v5"
-  storage_mb                    = 32768
-  zone                          = "1"
-  public_network_access_enabled = true
-  tags                          = local.tags
-}
-
-resource "azurerm_postgresql_flexible_server_database" "juicefs" {
-  name      = "juicefs"
-  server_id = azurerm_postgresql_flexible_server.metadata.id
-}
-
-# Kill connections idle in a transaction after 5 minutes (prevents leaked connections)
-resource "azurerm_postgresql_flexible_server_configuration" "idle_in_transaction_timeout" {
-  name      = "idle_in_transaction_session_timeout"
-  server_id = azurerm_postgresql_flexible_server.metadata.id
-  value     = "300000" # 5 minutes in ms
-}
-
-# TCP keepalive: detect dead connections faster
-resource "azurerm_postgresql_flexible_server_configuration" "tcp_keepalives_idle" {
-  name      = "tcp_keepalives_idle"
-  server_id = azurerm_postgresql_flexible_server.metadata.id
-  value     = "60" # seconds before sending first keepalive
-}
-
-resource "azurerm_postgresql_flexible_server_configuration" "tcp_keepalives_interval" {
-  name      = "tcp_keepalives_interval"
-  server_id = azurerm_postgresql_flexible_server.metadata.id
-  value     = "10" # seconds between keepalive retries
-}
-
-resource "azurerm_postgresql_flexible_server_configuration" "tcp_keepalives_count" {
-  name      = "tcp_keepalives_count"
-  server_id = azurerm_postgresql_flexible_server.metadata.id
-  value     = "3" # failed keepalives before declaring connection dead
-}
-
-# GP_Standard_D2ds_v5 supports up to 859; set high to allow concurrent juicefs sync
-# processes (each sync uses --threads 100, multiple workspaces can sync at once)
-resource "azurerm_postgresql_flexible_server_configuration" "max_connections" {
-  name      = "max_connections"
-  server_id = azurerm_postgresql_flexible_server.metadata.id
-  value     = "859"
-}
-
-resource "azurerm_postgresql_flexible_server_firewall_rule" "vm" {
-  name             = "allow-sandbox-vm"
-  server_id        = azurerm_postgresql_flexible_server.metadata.id
-  start_ip_address = azurerm_public_ip.sandbox.ip_address
-  end_ip_address   = azurerm_public_ip.sandbox.ip_address
 }
 
 # ─── Container Registry ───────────────────────────────────────
@@ -219,6 +136,7 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
   location            = azurerm_resource_group.sandbox.location
   size                = var.vm_size
   admin_username      = var.admin_username
+  zone                = var.availability_zone
   tags                = local.tags
 
   network_interface_ids = [azurerm_network_interface.sandbox.id]
@@ -246,12 +164,7 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
 
   custom_data = base64encode(templatefile("${path.module}/cloud-init.yaml.tpl", {
     setup_script             = file("${path.module}/../services/sandbox-host/scripts/setup-host.sh")
-    storage_account          = var.storage_account_name
-    storage_key              = azurerm_storage_account.blob.primary_access_key
-    blob_container           = var.blob_container_name
-    juicefs_container        = azurerm_storage_container.juicefs.name
-    pg_host                  = azurerm_postgresql_flexible_server.metadata.fqdn
-    pg_password              = random_password.pg.result
+    sandbox_data_device      = "/dev/disk/azure/data/by-lun/${var.sandbox_data_disk_lun}"
     cloudflared_tunnel_token = var.cloudflared_tunnel_token
     acr_login_server         = azurerm_container_registry.sandbox.login_server
     sandbox_proxy_secret     = var.sandbox_proxy_secret
@@ -265,6 +178,13 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
   identity {
     type = "SystemAssigned"
   }
+}
+
+resource "azurerm_virtual_machine_data_disk_attachment" "sandbox_data" {
+  managed_disk_id    = azurerm_managed_disk.sandbox_data.id
+  virtual_machine_id = azurerm_linux_virtual_machine.sandbox.id
+  lun                = var.sandbox_data_disk_lun
+  caching            = "None"
 }
 
 # VM managed identity → AcrPull on the container registry

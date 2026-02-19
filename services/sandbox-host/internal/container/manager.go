@@ -63,22 +63,19 @@ type Manager struct {
 	proxyPort           int
 	idleTimeout         time.Duration
 	reaperInterval      time.Duration
-	r2MountRoot      string
-	r2BucketName     string
-	r2RcloneConfPath string
-	reclaimIdle         time.Duration
-	reclaimInterval     time.Duration
+	r2MountRoot         string
+	r2BucketName        string
+	r2RcloneConfPath    string
 	healthPollInterval  time.Duration
 	cfDispatchNamespace string
 	containerProxyBase  string
 	traceLifecycle      bool
 
-	mu                    sync.Mutex
-	containers            map[string]*ContainerRecord
-	containerIPIndex      map[string]string
-	pendingWorkspaces     map[string]int
-	ensureInFlight        map[string]*ensureWait
-	containerTerminatedAt map[string]time.Time
+	mu                sync.Mutex
+	containers        map[string]*ContainerRecord
+	containerIPIndex  map[string]string
+	pendingWorkspaces map[string]int
+	ensureInFlight    map[string]*ensureWait
 }
 
 func NewManager(overlays *overlay.Manager, stateStore *state.Store) *Manager {
@@ -97,41 +94,36 @@ func NewManager(overlays *overlay.Manager, stateStore *state.Store) *Manager {
 	containerProxyBase := normalizeProxyBaseURL(envString("CONTAINER_PROXY_BASE_URL", defaultProxyBase))
 
 	m := &Manager{
-		overlays:              overlays,
-		docker:                docker,
-		state:                 stateStore,
-		workspacesRoot:        workspacesRoot,
-		sandboxImage:          envString("SANDBOX_IMAGE", "chiridion-sandbox:latest"),
-		containerMemory:       envString("CONTAINER_MEMORY", "16g"),
-		containerCPUShares:    envString("CONTAINER_CPU_SHARES", "2048"),
-		containerRuntime:      containerRuntime,
-		controlPlanePort:      8080,
-		proxyPort:             proxyPort,
-		idleTimeout:           time.Duration(envInt("IDLE_TIMEOUT_MS", 30_000)) * time.Millisecond,
-		reaperInterval:        10 * time.Second,
-		r2MountRoot:      envString("R2_MOUNT_ROOT", defaultR2MountRoot()),
-		r2BucketName:     envString("R2_BUCKET_NAME", ""),
-		r2RcloneConfPath: envString("R2_RCLONE_CONF", filepath.Join(os.TempDir(), "rclone-r2-host.conf")),
-		reclaimIdle:           time.Duration(envInt("RECLAIM_IDLE_MS", 10*60_000)) * time.Millisecond,
-		reclaimInterval:       5 * time.Minute,
-		healthPollInterval:    maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
-		cfDispatchNamespace:   envString("CF_DISPATCH_NAMESPACE", ""),
-		containerProxyBase:    containerProxyBase,
-		traceLifecycle:        envString("TRACE_SANDBOX_LIFECYCLE", "") == "1",
-		containers:            make(map[string]*ContainerRecord),
-		containerIPIndex:      make(map[string]string),
-		pendingWorkspaces:     make(map[string]int),
-		ensureInFlight:        make(map[string]*ensureWait),
-		containerTerminatedAt: make(map[string]time.Time),
+		overlays:            overlays,
+		docker:              docker,
+		state:               stateStore,
+		workspacesRoot:      workspacesRoot,
+		sandboxImage:        envString("SANDBOX_IMAGE", "chiridion-sandbox:latest"),
+		containerMemory:     envString("CONTAINER_MEMORY", "16g"),
+		containerCPUShares:  envString("CONTAINER_CPU_SHARES", "2048"),
+		containerRuntime:    containerRuntime,
+		controlPlanePort:    8080,
+		proxyPort:           proxyPort,
+		idleTimeout:         time.Duration(envInt("IDLE_TIMEOUT_MS", 30_000)) * time.Millisecond,
+		reaperInterval:      10 * time.Second,
+		r2MountRoot:         envString("R2_MOUNT_ROOT", defaultR2MountRoot()),
+		r2BucketName:        envString("R2_BUCKET_NAME", ""),
+		r2RcloneConfPath:    envString("R2_RCLONE_CONF", filepath.Join(os.TempDir(), "rclone-r2-host.conf")),
+		healthPollInterval:  maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
+		cfDispatchNamespace: envString("CF_DISPATCH_NAMESPACE", ""),
+		containerProxyBase:  containerProxyBase,
+		traceLifecycle:      envString("TRACE_SANDBOX_LIFECYCLE", "") == "1",
+		containers:          make(map[string]*ContainerRecord),
+		containerIPIndex:    make(map[string]string),
+		pendingWorkspaces:   make(map[string]int),
+		ensureInFlight:      make(map[string]*ensureWait),
 	}
 
 	m.loadPersistedState()
 
 	go m.runIdleReaper()
-	go m.runReclaimLoop()
 
 	log.Printf("[ContainerManager] idle reaper started (timeout=%ds, interval=%ds)", int(m.idleTimeout/time.Second), int(m.reaperInterval/time.Second))
-	log.Printf("[ContainerManager] NVMe reclaim started (idle=%ds, interval=%ds)", int(m.reclaimIdle/time.Second), int(m.reclaimInterval/time.Second))
 	return m
 }
 
@@ -272,7 +264,6 @@ func (m *Manager) EnsureContainer(name string, opts EnsureContainerOptions) (*Co
 		wait := &ensureWait{done: make(chan struct{})}
 		m.ensureInFlight[name] = wait
 		m.pendingWorkspaces[name] = m.pendingWorkspaces[name] + 1
-		delete(m.containerTerminatedAt, name)
 		m.mu.Unlock()
 
 		rec, err := m.ensureContainerUnlocked(name, opts)
@@ -603,18 +594,11 @@ func (m *Manager) TerminateContainer(name, reason string) (bool, error) {
 			}
 		}
 		delete(m.containers, name)
-		m.containerTerminatedAt[name] = time.Now().UTC()
 		m.mu.Unlock()
 		m.deleteContainerState(name)
-		m.upsertTerminatedWorkspaceState(name, time.Now().UTC())
 
 		log.Printf("[ContainerManager] terminated container %s", name)
 		m.trace("terminate_container_success", map[string]any{"name": name, "reason": reason})
-		go func() {
-			if err := m.overlays.Sync(name); err != nil {
-				log.Printf("[ContainerManager] post-terminate sync failed for %s: %v", name, err)
-			}
-		}()
 		return true, nil
 	}
 
@@ -746,104 +730,6 @@ func (m *Manager) reapIdleContainers() error {
 	}
 
 	return nil
-}
-
-func (m *Manager) runReclaimLoop() {
-	ticker := time.NewTicker(m.reclaimInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		if err := m.reclaimIdleOverlays(); err != nil {
-			log.Printf("[ContainerManager] reclaim error: %v", err)
-		}
-	}
-}
-
-func (m *Manager) reclaimIdleOverlays() error {
-	now := time.Now().UTC()
-	mounted, err := m.overlays.ListMountedNames()
-	if err != nil {
-		return err
-	}
-
-	for _, name := range mounted {
-		m.mu.Lock()
-		_, alreadyTracked := m.containerTerminatedAt[name]
-		m.mu.Unlock()
-		if alreadyTracked {
-			continue
-		}
-		if m.isWorkspaceActiveForReclaim(name) {
-			continue
-		}
-		m.mu.Lock()
-		m.containerTerminatedAt[name] = now
-		m.mu.Unlock()
-		m.upsertTerminatedWorkspaceState(name, now)
-		m.trace("reclaim_track_inactive_overlay", map[string]any{"name": name, "trackedAt": now.UnixMilli()})
-	}
-
-	m.mu.Lock()
-	tracked := make(map[string]time.Time, len(m.containerTerminatedAt))
-	for name, ts := range m.containerTerminatedAt {
-		tracked[name] = ts
-	}
-	m.mu.Unlock()
-
-	for name, terminatedAt := range tracked {
-		if m.isWorkspaceActiveForReclaim(name) {
-			m.mu.Lock()
-			delete(m.containerTerminatedAt, name)
-			m.mu.Unlock()
-			m.deleteTerminatedWorkspaceState(name)
-			continue
-		}
-
-		if now.Sub(terminatedAt) < m.reclaimIdle {
-			continue
-		}
-
-		if !m.overlays.Has(name) {
-			m.mu.Lock()
-			delete(m.containerTerminatedAt, name)
-			m.mu.Unlock()
-			m.deleteTerminatedWorkspaceState(name)
-			continue
-		}
-
-		log.Printf("[ContainerManager] reclaiming NVMe for %s (idle=%ds)", name, int(now.Sub(terminatedAt).Seconds()))
-		reclaimed, reclaimErr := m.overlays.Reclaim(name, func() bool {
-			return !m.isWorkspaceActiveForReclaim(name)
-		})
-		if reclaimErr != nil {
-			log.Printf("[ContainerManager] reclaim failed for %s: %v", name, reclaimErr)
-			continue
-		}
-		if reclaimed {
-			m.mu.Lock()
-			delete(m.containerTerminatedAt, name)
-			m.mu.Unlock()
-			m.deleteTerminatedWorkspaceState(name)
-		}
-	}
-
-	return nil
-}
-
-func (m *Manager) isWorkspaceActive(name string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.containers[name] != nil {
-		return true
-	}
-	return m.pendingWorkspaces[name] > 0
-}
-
-func (m *Manager) isWorkspaceActiveForReclaim(name string) bool {
-	if m.isWorkspaceActive(name) {
-		return true
-	}
-	running, _ := m.isRunning(name)
-	return running
 }
 
 func (m *Manager) getContainerBySourceIPCached(sourceIP string) *ContainerRecord {
@@ -1019,19 +905,6 @@ func (m *Manager) loadPersistedState() {
 		}
 	}
 
-	terminated, err := m.state.LoadTerminatedWorkspaces()
-	if err != nil {
-		log.Printf("[ContainerManager] failed to load persisted terminated workspaces: %v", err)
-		return
-	}
-	m.mu.Lock()
-	for _, persisted := range terminated {
-		m.containerTerminatedAt[persisted.Name] = persisted.TerminatedAt
-	}
-	m.mu.Unlock()
-	if len(terminated) > 0 {
-		log.Printf("[ContainerManager] restored %d reclaim-tracked workspace(s)", len(terminated))
-	}
 }
 
 func (m *Manager) upsertContainerState(rec *ContainerRecord) {
@@ -1061,27 +934,6 @@ func (m *Manager) deleteContainerState(name string) {
 	}
 	if err := m.state.DeleteContainer(name); err != nil {
 		log.Printf("[ContainerManager] failed to delete container state for %s: %v", name, err)
-	}
-}
-
-func (m *Manager) upsertTerminatedWorkspaceState(name string, terminatedAt time.Time) {
-	if m.state == nil || strings.TrimSpace(name) == "" {
-		return
-	}
-	if err := m.state.UpsertTerminatedWorkspace(state.TerminatedWorkspaceRecord{
-		Name:         name,
-		TerminatedAt: terminatedAt.UTC(),
-	}); err != nil {
-		log.Printf("[ContainerManager] failed to persist terminated workspace %s: %v", name, err)
-	}
-}
-
-func (m *Manager) deleteTerminatedWorkspaceState(name string) {
-	if m.state == nil || strings.TrimSpace(name) == "" {
-		return
-	}
-	if err := m.state.DeleteTerminatedWorkspace(name); err != nil {
-		log.Printf("[ContainerManager] failed to delete terminated workspace state for %s: %v", name, err)
 	}
 }
 
@@ -1176,7 +1028,7 @@ func defaultLocalRoot() string {
 
 func defaultWorkspaceRoot() string {
 	if runtime.GOOS == "linux" {
-		return "/mnt/workspaces"
+		return "/srv/sandboxes"
 	}
 	return filepath.Join(defaultLocalRoot(), "workspaces")
 }

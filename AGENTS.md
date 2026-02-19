@@ -16,9 +16,9 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
          │                        │                                      │
          │                        ▼                                      ▼
          │              ┌──────────────────┐                   ┌─────────────────┐
-         │              │  Dispatcher WfP  │                   │  NVMe RAID0     │
-         │              │ (User App Hosts) │                   │  + Azure NFS    │
-         │              └──────────────────┘                   │  (Persistent FS) │
+         │              │  Dispatcher WfP  │                   │ Premium SSD v2  │
+         │              │ (User App Hosts) │                   │ (XFS) + Optional│
+         │              └──────────────────┘                   │ NVMe cache      │
          │                        │                            └─────────────────┘
          ▼                        ▼
 ┌─────────────────┐     ┌──────────────────┐
@@ -45,7 +45,7 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
 3. **Sandbox Host** (`services/sandbox-host/`)
    - Go HTTP server managing Docker + gVisor container lifecycle on Azure VM
    - Accessed via Workers VPC binding (Cloudflare Tunnel) — not exposed to public internet
-   - Host FS operations on NVMe RAID0 + Azure Blob NFS v3 overlayfs
+   - Host FS operations on a Premium SSD v2 managed disk mounted as XFS at `/srv/sandboxes`
    - Proxies control plane traffic (health, env, chat WebSocket) to containers
 
 4. **Sandbox** (`sandbox/`)
@@ -270,11 +270,11 @@ Endpoints: `/overview`, `/orgs`, `/users`, `/threads`, `/kv-keys`, `/r2/list`, `
 
 The sandbox host runs on an Azure VM (`ssh chiridion-vm`, user `chiridion`, IP `172.173.64.214`). Deploy via rsync + SSH build + systemctl restart. Rebuild Docker image on VM and push to ACR (`crchiridionprod`).
 
-Sandbox names: `chiridion-{workspaceId}`. Host dir: `/mnt/workspaces/{sandboxName}` → container `/home/claude`. Image: Ubuntu 24.04 with bun, node 22, git, rclone, uv. Containers use gVisor (`--runtime=runsc`).
+Sandbox names: `chiridion-{workspaceId}`. Host dir: `/srv/sandboxes/{sandboxName}` → container `/home/claude`. Image: Ubuntu 24.04 with bun, node 22, git, rclone, uv. Containers use gVisor (`--runtime=runsc`).
 
 **Network:** Two listeners — `PORT` (80, worker control traffic) and `SANDBOX_PROXY_PORT` (8081, container egress only). VM firewall blocks containers from reaching control port.
 
-**Storage:** NVMe RAID0 (hot) + JuiceFS (durable canonical) via overlayfs. Background sync flushes NVMe → JuiceFS.
+**Storage:** Premium SSD v2 managed disk (host caching `None`) mounted as XFS at `/srv/sandboxes` with `prjquota` enabled. Default sandbox quota is `100g` via XFS project quotas. Optional NVMe is used only for rebuildable caches (for example Docker layers).
 
 **R2 FUSE mounts:** Set up automatically when env vars are pushed. Uses permanent R2 credentials from sandbox-host env.
 

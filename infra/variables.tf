@@ -11,9 +11,15 @@ variable "location" {
 }
 
 variable "vm_size" {
-  description = "VM SKU"
+  description = "VM SKU (default is no-local-temp-disk Easv7)"
   type        = string
-  default     = "Standard_E64ads_v7"
+  default     = "Standard_E64as_v7"
+}
+
+variable "availability_zone" {
+  description = "Availability zone for the VM and Premium SSD v2 disk"
+  type        = string
+  default     = "1"
 }
 
 variable "admin_username" {
@@ -27,16 +33,28 @@ variable "ssh_public_key" {
   type        = string
 }
 
-variable "storage_account_name" {
-  description = "Azure Blob storage account name (globally unique)"
-  type        = string
-  default     = "chiridionsandbox"
+variable "sandbox_data_disk_size_gb" {
+  description = "Premium SSD v2 data disk size in GB (persistent /srv/sandboxes)"
+  type        = number
+  default     = 2048
 }
 
-variable "blob_container_name" {
-  description = "Blob container name for workspace data"
-  type        = string
-  default     = "workspaces"
+variable "sandbox_data_disk_iops" {
+  description = "Provisioned IOPS for Premium SSD v2 data disk"
+  type        = number
+  default     = 20000
+}
+
+variable "sandbox_data_disk_mbps" {
+  description = "Provisioned throughput (MB/s) for Premium SSD v2 data disk"
+  type        = number
+  default     = 1200
+}
+
+variable "sandbox_data_disk_lun" {
+  description = "LUN index for attaching the Premium SSD v2 data disk"
+  type        = number
+  default     = 0
 }
 
 variable "ssh_allowed_cidr" {

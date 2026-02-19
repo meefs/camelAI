@@ -65,29 +65,11 @@ func TestStoreRoundTripAndDelete(t *testing.T) {
 		t.Fatalf("unexpected proxy threads: %+v", threads)
 	}
 
-	terminated := TerminatedWorkspaceRecord{
-		Name:         "sandbox-a",
-		TerminatedAt: now,
-	}
-	if err := store.UpsertTerminatedWorkspace(terminated); err != nil {
-		t.Fatalf("upsert terminated workspace: %v", err)
-	}
-	terminatedRows, err := store.LoadTerminatedWorkspaces()
-	if err != nil {
-		t.Fatalf("load terminated workspaces: %v", err)
-	}
-	if len(terminatedRows) != 1 || terminatedRows[0].Name != terminated.Name {
-		t.Fatalf("unexpected terminated rows: %+v", terminatedRows)
-	}
-
 	if err := store.DeleteProxyThread(thread.Key); err != nil {
 		t.Fatalf("delete proxy thread: %v", err)
 	}
 	if err := store.DeleteContainer(container.Name); err != nil {
 		t.Fatalf("delete container: %v", err)
-	}
-	if err := store.DeleteTerminatedWorkspace(terminated.Name); err != nil {
-		t.Fatalf("delete terminated workspace: %v", err)
 	}
 
 	threads, err = store.LoadProxyThreads()
@@ -103,12 +85,5 @@ func TestStoreRoundTripAndDelete(t *testing.T) {
 	}
 	if len(containers) != 0 {
 		t.Fatalf("expected no containers, got %d", len(containers))
-	}
-	terminatedRows, err = store.LoadTerminatedWorkspaces()
-	if err != nil {
-		t.Fatalf("reload terminated workspaces: %v", err)
-	}
-	if len(terminatedRows) != 0 {
-		t.Fatalf("expected no terminated rows, got %d", len(terminatedRows))
 	}
 }

@@ -66,7 +66,7 @@ func defaultByPlatform(linuxValue, otherValue int) int {
 
 func defaultStateDBPath() string {
 	if runtime.GOOS == "linux" {
-		return "/mnt/nvme/.sandbox-host/state.db"
+		return "/srv/sandboxes/.sandbox-host/state.db"
 	}
 	wd, err := os.Getwd()
 	if err != nil || wd == "" {

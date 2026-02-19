@@ -8,9 +8,9 @@ output "ssh_command" {
   value       = "ssh ${var.admin_username}@${azurerm_public_ip.sandbox.ip_address}"
 }
 
-output "pg_host" {
-  description = "PostgreSQL hostname for JuiceFS metadata"
-  value       = azurerm_postgresql_flexible_server.metadata.fqdn
+output "sandbox_data_disk_id" {
+  description = "Premium SSD v2 managed disk used for /srv/sandboxes"
+  value       = azurerm_managed_disk.sandbox_data.id
 }
 
 output "acr_login_server" {

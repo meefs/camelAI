@@ -229,14 +229,18 @@ function generateCssFromPreset(preset, options) {
 }
 
 /**
- * Copy template directory to project directory
+ * Copy template directory to project directory (excludes node_modules
+ * since bun install runs afterwards and pulls from the prewarmed cache).
  */
 function copyTemplate(projectDir) {
   if (!existsSync(TEMPLATE_DIR)) {
     throw new Error(`Template directory not found: ${TEMPLATE_DIR}`);
   }
 
-  cpSync(TEMPLATE_DIR, projectDir, { recursive: true });
+  cpSync(TEMPLATE_DIR, projectDir, {
+    recursive: true,
+    filter: (src) => !src.includes('/node_modules'),
+  });
 }
 
 function formatTime(ms) {

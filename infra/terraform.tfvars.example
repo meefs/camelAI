@@ -1,11 +1,13 @@
 environment          = "prod"
 location             = "centralus"
-vm_size              = "Standard_E64ads_v7"
+vm_size              = "Standard_E64as_v7"
 admin_username       = "chiridion"
 ssh_public_key       = "ssh-ed25519 AAAA... user@host"
-storage_account_name = "chiridionsandbox"
-blob_container_name  = "workspaces"
 os_disk_size_gb      = 128
+sandbox_data_disk_size_gb = 2048
+sandbox_data_disk_iops    = 5000
+sandbox_data_disk_mbps    = 200
+sandbox_data_disk_lun     = 0
 
 # Restrict SSH to your IP in production
 ssh_allowed_cidr          = "*"
