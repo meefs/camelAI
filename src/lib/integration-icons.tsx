@@ -115,7 +115,7 @@ export function resolveLogoType(
 
   if (nameHints) {
     for (const hint of nameHints) {
-      if (!hint) continue;
+      if (!hint || typeof hint !== 'string') continue;
       const normalized = hint.toLowerCase().replace(/[^a-z0-9]/g, '');
 
       // Exact match after normalization (e.g. "ClickHouse" → "clickhouse")
