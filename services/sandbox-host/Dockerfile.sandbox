@@ -21,6 +21,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 &&
 # uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh 2>/dev/null
 
+# Wrangler CLI (npm puts binaries in /usr/local/bin/ — accessible to all users)
+RUN npm install -g wrangler --loglevel=warn
+
 # Directories (R2 mount points are bind-mounted from host)
 RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /usr/local/lib/create-worker \
     /mnt/user-uploads /mnt/user-outputs && \
@@ -41,9 +44,16 @@ RUN chmod 755 /opt/chiridion/control-plane.mjs && \
     chmod 644 /opt/chiridion/memory-logger.mjs && \
     chmod +x /opt/chiridion/entrypoint.sh && \
     chmod +x /usr/local/lib/create-worker/create-worker.mjs && \
-    chmod +x /usr/local/lib/create-worker/create-notebook-worker.mjs && \
+    chmod +x /usr/local/lib/create-worker/publish.mjs && \
     ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker && \
-    ln -sf /usr/local/lib/create-worker/create-notebook-worker.mjs /usr/local/bin/create-notebook-worker
+    ln -sf /usr/local/lib/create-worker/publish.mjs /usr/local/bin/publish
+
+# Prewarm bun cache for create-worker template deps (runs as claude user so cache lands in /home/claude/.bun/)
+RUN cp /usr/local/lib/create-worker/templates/starter/package.json /tmp/package.json && \
+    cp /usr/local/lib/create-worker/templates/starter/bun.lock /tmp/bun.lock && \
+    cd /tmp && HOME=/home/claude bun install --no-progress --ignore-scripts && \
+    rm -rf /tmp/node_modules /tmp/package.json /tmp/bun.lock && \
+    chown -R 1001:1001 /home/claude/.bun
 
 WORKDIR /home/claude
 

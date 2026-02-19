@@ -99,6 +99,9 @@ export default defineConfig(({ command }) => {
       strictPort: false,
       host: true,
       allowedHosts,
+      watch: {
+        ignored: ['**/.sandbox-host/**'],
+      },
     },
   };
 });

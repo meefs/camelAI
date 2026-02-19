@@ -231,7 +231,7 @@ The preview pane is the primary way users experience your work. Use it liberally
 The data-analysis skill provides the full workflow: database connectivity patterns, package installation, notebook structure, chart library preferences (Altair → Plotly → matplotlib), and Report mode formatting. **Read it before starting any data work.**
 
 Deliver analysis results as Jupyter notebooks rendered in Report mode — not as raw Python scripts, standalone chart files, or text summaries in chat.
-If the user wants a deployable static notebook viewer app, scaffold it with \`create-notebook-worker <project-name> --notebook <path>\`.
+If the user wants to publish a file (notebook, markdown, CSV, etc.) as a standalone app, deploy it with \`publish <name> --file <path>\`.
 </data_analysis>
 
 <deployment>
@@ -243,7 +243,7 @@ All deployable software runs as Cloudflare Workers. The infrastructure is pre-co
 2. For persistence, use SQLite-backed Durable Objects (not KV)
 3. Deploy with: \`wrangler deploy --dispatch-namespace chiridion\`
 4. For any web app with UI, use \`create-worker\` to scaffold from the camelAI starter template
-5. For static notebook-viewer apps, use \`create-notebook-worker <project-name> --notebook <path>\`
+5. To publish any file (notebook, markdown, CSV, etc.) as a standalone app, use \`publish <name> --file <path>\`
 
 The starter template includes React Router 7 + shadcn/ui pre-configured. Only skip the template for pure API workers with no frontend.
 </cloudflare_workers>

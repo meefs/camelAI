@@ -167,15 +167,15 @@ set_file_preview(
 )
 ```
 
-### Scaffold static notebook viewer apps
+### Publish files as standalone apps
 
-When a user wants to publish a notebook as a standalone static app, scaffold with:
+When a user wants to publish a notebook (or any file) as a standalone app, deploy with:
 
 ```bash
-create-notebook-worker my-notebook-app --notebook /path/to/analysis.ipynb
+publish my-notebook-app --file /path/to/analysis.ipynb
 ```
 
-This creates a static Cloudflare Worker app with the notebook copied to `public/notebook.ipynb` and a bundled notebook renderer page.
+This deploys a lightweight Cloudflare Worker that serves the file via the main app's embed viewer. No build step required.
 
 ### How notebooks are presented
 

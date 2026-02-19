@@ -36,7 +36,8 @@
 		"admin:dev-illiana": "wrangler dev --config workers/admin-cli/wrangler.jsonc --env dev-illiana",
 		"admin:dev-miguel": "wrangler dev --config workers/admin-cli/wrangler.jsonc --env dev-miguel",
 		"dev:sandbox-host": "node scripts/dev-sandbox-host.mjs",
-		"test:sandbox-host": "cd services/sandbox-host && CGO_ENABLED=0 go test ./..."
+		"test:sandbox-host": "cd services/sandbox-host && CGO_ENABLED=0 go test ./...",
+		"build:renderer": "vite build --config vite.renderer.config.ts"
 	},
 	"dependencies": {
 		"@anthropic-ai/bedrock-sdk": "^0.26.0",

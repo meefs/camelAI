@@ -77,6 +77,9 @@ tests/integration/.server-url
 sandbox/.r2-creds
 package-lock.json
 
+# Pre-built renderer bundle (built at CI time)
+sandbox/create-worker/renderer-dist/
+
 # Auto-generated embedded files
 workers/main/src/embedded-create-worker.ts
 workers/main/src/embedded-skills.ts

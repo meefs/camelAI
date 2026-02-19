@@ -63,8 +63,8 @@ Use the `create-worker` command to scaffold new projects. Do NOT use `wrangler i
 # Create a fullstack React app with defaults
 create-worker my-app
 
-# Create a static notebook worker from an existing notebook file
-create-notebook-worker my-notebook --notebook ./analysis.ipynb
+# Publish any file (notebook, markdown, CSV, etc.) as a standalone app
+publish my-notebook --file ./analysis.ipynb
 
 # Customize the UI style and theme
 create-worker my-app --style nova --theme blue
