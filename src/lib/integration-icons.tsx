@@ -98,7 +98,7 @@ export function IntegrationIcon({
  * Check if a logo exists for an integration type
  */
 export function hasIntegrationIcon(type: string): boolean {
-  return type in logoRegistry;
+  return Object.hasOwn(logoRegistry, type);
 }
 
 /**
@@ -111,7 +111,7 @@ export function resolveLogoType(
   integrationType: string,
   nameHints?: (string | undefined | null)[]
 ): string {
-  if (integrationType in logoRegistry) return integrationType;
+  if (Object.hasOwn(logoRegistry, integrationType)) return integrationType;
 
   if (nameHints) {
     for (const hint of nameHints) {
@@ -119,7 +119,7 @@ export function resolveLogoType(
       const normalized = hint.toLowerCase().replace(/[^a-z0-9]/g, '');
 
       // Exact match after normalization (e.g. "ClickHouse" → "clickhouse")
-      if (normalized in logoRegistry) return normalized;
+      if (Object.hasOwn(logoRegistry, normalized)) return normalized;
 
       // Substring match — skip keys shorter than 3 chars to avoid false
       // positives (e.g. "x" would match almost anything)
