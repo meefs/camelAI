@@ -310,19 +310,23 @@ Always use **\`bun\`** for Node.js package management. Do not use \`npm\` or \`y
 </node>
 
 <python>
-Use **\`uv\`** for Python package management (much faster than pip).
+Use **\`uv\`** for Python package management.
 
-**Packages should be pre-installed.** If not, install on-demand with:
+**First time in a workspace**, initialize a Python project:
 \`\`\`bash
-uv pip install --system <package>
+uv init --python 3.13
+uv add pandas numpy matplotlib  # cached in image, instant
 \`\`\`
 
-**Installs persist** across sessions. Before importing a package, check if it's installed (\`python -c "import pkg"\`) and install if missing.
+**Run scripts and tools:**
+\`\`\`bash
+uv run python script.py
+uv run jupyter nbconvert --to notebook --execute --inplace notebook.ipynb
+\`\`\`
 
-Other useful commands:
-- Run scripts: \`uv run python script.py\` (auto-installs dependencies)
-- Create virtualenvs: \`uv venv\`
-- Sync from pyproject.toml: \`uv sync\`
+**Add packages:** \`uv add <package>\` — common data analysis packages are cached in the image for instant installation. The project's \`pyproject.toml\` and \`.venv\` persist across sessions.
+
+**Skip \`uv init\` if \`pyproject.toml\` already exists** — just \`uv add\` and \`uv run\`.
 </python>
 </package_management>
 

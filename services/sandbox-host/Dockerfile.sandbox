@@ -21,6 +21,31 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 &&
 # uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh 2>/dev/null
 
+# Python 3.13 (managed by uv)
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+ENV UV_CACHE_DIR=/opt/uv-cache
+RUN uv python install 3.13 && \
+    ln -sf $(uv python find 3.13) /usr/local/bin/python && \
+    ln -sf $(uv python find 3.13) /usr/local/bin/python3
+
+# Prewarm uv cache with common data analysis packages.
+# The throwaway venv is discarded — only the cached wheels matter.
+# Agent creates project venvs in the workspace via uv init + uv add.
+RUN uv venv /tmp/warmup --python 3.13 && \
+    VIRTUAL_ENV=/tmp/warmup uv pip install \
+        numpy pandas polars pyarrow \
+        matplotlib seaborn plotly altair vl-convert-python \
+        scikit-learn scipy statsmodels xgboost \
+        jupyterlab notebook nbconvert ipykernel ipywidgets \
+        openpyxl xlsxwriter duckdb beautifulsoup4 \
+        pdfplumber python-docx python-pptx \
+        sqlalchemy psycopg google-cloud-bigquery google-auth \
+        requests httpx \
+        sympy networkx \
+        pillow \
+        tqdm && \
+    rm -rf /tmp/warmup
+
 # Wrangler CLI (npm puts binaries in /usr/local/bin/ — accessible to all users)
 RUN npm install -g wrangler --loglevel=warn
 

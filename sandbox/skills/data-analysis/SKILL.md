@@ -6,9 +6,22 @@ license: Complete terms in LICENSE.txt
 
 # Data Analysis
 
-## Package Installation
+## Python Environment Setup
 
-Install Python packages on-demand with `uv pip install --system <package>`. Installs persist across sessions. Before importing a package, check if it's installed (`python -c "import pkg"`) and install if missing.
+Common data analysis packages are **cached in the image** for instant installation. Initialize a Python project in the workspace if one doesn't exist:
+
+```bash
+uv init --python 3.13
+uv add pandas numpy polars matplotlib altair plotly seaborn scipy scikit-learn duckdb pyarrow jupyterlab
+```
+
+Run scripts and tools with `uv run`:
+```bash
+uv run python script.py
+uv run jupyter nbconvert --to notebook --execute --inplace notebook.ipynb
+```
+
+Add more packages with `uv add <package>`. The project's `pyproject.toml` and `.venv` persist across sessions. Skip `uv init` if `pyproject.toml` already exists.
 
 ## Database CLI
 
@@ -46,12 +59,12 @@ sqlite3 data.db "SELECT * FROM users LIMIT 10"
 
 ### Core Libraries
 
-| Package | Purpose | Install |
-|---------|---------|---------|
-| `pandas` | DataFrames and data manipulation | `uv pip install --system pandas` |
-| `numpy` | Numerical computing | `uv pip install --system numpy` |
-| `polars` | Fast DataFrame library (Rust-based) | `uv pip install --system polars` |
-| `duckdb` | In-process SQL analytics | `uv pip install --system duckdb` |
+| Package | Purpose | Status |
+|---------|---------|--------|
+| `pandas` | DataFrames and data manipulation | cached |
+| `numpy` | Numerical computing | cached |
+| `polars` | Fast DataFrame library (Rust-based) | cached |
+| `duckdb` | In-process SQL analytics | cached |
 
 ```python
 import pandas as pd
@@ -80,12 +93,12 @@ camelAI's notebook preview renders Altair and Plotly charts natively — not in 
 2. **Plotly** — also renders natively; use when Altair doesn't cover the chart type (3D, maps, financial)
 3. **matplotlib / seaborn** — static PNG fallback; won't adapt to dark mode
 
-| Package | Purpose | Install |
-|---------|---------|---------|
-| `altair` | Declarative charts (Vega-Lite) — **preferred** | `uv pip install --system altair` |
-| `plotly` | Interactive charts — use for 3D, maps, finance | `uv pip install --system plotly` |
-| `matplotlib` | Static plots (fallback) | `uv pip install --system matplotlib` |
-| `seaborn` | Statistical visualization (fallback) | `uv pip install --system seaborn` |
+| Package | Purpose | Status |
+|---------|---------|--------|
+| `altair` | Declarative charts (Vega-Lite) — **preferred** | cached |
+| `plotly` | Interactive charts — use for 3D, maps, finance | cached |
+| `matplotlib` | Static plots (fallback) | cached |
+| `seaborn` | Statistical visualization (fallback) | cached |
 
 ```python
 # Altair (preferred — renders natively with dark/light theme support)
@@ -149,11 +162,7 @@ For exploratory analysis, prefer delivering results as a Jupyter notebook (`.ipy
 ### Execute notebooks
 
 ```bash
-# Install tools if needed
-uv pip install --system jupyter nbconvert
-
-# Execute in place so outputs are saved into the notebook file
-python -m jupyter nbconvert --to notebook --execute --inplace analysis.ipynb
+uv run jupyter nbconvert --to notebook --execute --inplace analysis.ipynb
 ```
 
 ### Preview notebooks in chat
@@ -198,10 +207,10 @@ The user can toggle to Notebook mode to see all cells, code, and execution count
 
 ## Scientific Computing & ML
 
-| Package | Purpose | Install |
-|---------|---------|---------|
-| `scipy` | Scientific computing, optimization | `uv pip install --system scipy` |
-| `scikit-learn` | Machine learning algorithms | `uv pip install --system scikit-learn` |
+| Package | Purpose | Status |
+|---------|---------|--------|
+| `scipy` | Scientific computing, optimization | cached |
+| `scikit-learn` | Machine learning algorithms | cached |
 
 ```python
 from sklearn.model_selection import train_test_split
@@ -214,13 +223,13 @@ predictions = model.predict(X_test)
 
 ## Database Connectivity
 
-| Package | Purpose | Install |
-|---------|---------|---------|
-| `sqlalchemy` | Python ORM and database toolkit | `uv pip install --system sqlalchemy` |
-| `psycopg` | PostgreSQL driver | `uv pip install --system psycopg` |
-| `pymysql` | MySQL driver | `uv pip install --system pymysql` |
-| `google-cloud-bigquery` | BigQuery client | `uv pip install --system google-cloud-bigquery` |
-| `google-auth` | Google authentication (used for BigQuery tokens) | `uv pip install --system google-auth` |
+| Package | Purpose | Status |
+|---------|---------|--------|
+| `sqlalchemy` | Python ORM and database toolkit | cached |
+| `psycopg` | PostgreSQL driver | cached |
+| `pymysql` | MySQL driver | `uv add pymysql` |
+| `google-cloud-bigquery` | BigQuery client | cached |
+| `google-auth` | Google authentication (used for BigQuery tokens) | cached |
 
 ```python
 from sqlalchemy import create_engine
@@ -339,14 +348,14 @@ response = requests.post(
 
 ## File Formats
 
-| Package | Purpose | Install |
-|---------|---------|---------|
-| `pyarrow` | Parquet, Arrow files | `uv pip install --system pyarrow` |
-| `openpyxl` | Excel (.xlsx) read/write | `uv pip install --system openpyxl` |
-| `xlsxwriter` | Excel creation with formatting | `uv pip install --system xlsxwriter` |
-| `pdfplumber` | PDF text and table extraction | `uv pip install --system pdfplumber` |
-| `python-docx` | Word documents | `uv pip install --system python-docx` |
-| `python-pptx` | PowerPoint files | `uv pip install --system python-pptx` |
+| Package | Purpose | Status |
+|---------|---------|--------|
+| `pyarrow` | Parquet, Arrow files | cached |
+| `openpyxl` | Excel (.xlsx) read/write | cached |
+| `xlsxwriter` | Excel creation with formatting | cached |
+| `pdfplumber` | PDF text and table extraction | cached |
+| `python-docx` | Word documents | cached |
+| `python-pptx` | PowerPoint files | cached |
 
 ```python
 # Read Excel
@@ -379,9 +388,9 @@ Database connection credentials are available as environment variables in deploy
 
 ## Additional Packages
 
-| Package | Purpose | Install |
-|---------|---------|---------|
-| `statsmodels` | Statistical modeling, time series | `uv pip install --system statsmodels` |
-| `xgboost` | Gradient boosting | `uv pip install --system xgboost` |
-| `geopandas` | Geospatial data | `uv pip install --system geopandas` |
-| `opencv-python-headless` | Computer vision | `uv pip install --system opencv-python-headless` |
+| Package | Purpose | Status |
+|---------|---------|--------|
+| `statsmodels` | Statistical modeling, time series | cached |
+| `xgboost` | Gradient boosting | cached |
+| `geopandas` | Geospatial data | `uv add geopandas` |
+| `opencv-python-headless` | Computer vision | `uv add opencv-python-headless` |
