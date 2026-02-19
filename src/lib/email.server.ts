@@ -3,7 +3,14 @@ import { render, toPlainText } from '@react-email/render';
 import { createElement } from 'react';
 import { OrgInvitationEmailTemplate } from './email/templates/org-invitation-email';
 import { EmailVerificationEmailTemplate } from './email/templates/email-verification-email';
+import { HelpConfirmationEmailTemplate } from './email/templates/help-confirmation-email';
+import { HelpSupportEmailTemplate } from './email/templates/help-support-email';
 import { sendEmail, getGmailConfig, isGmailConfigured } from './gmail.server';
+import {
+  recordDevEmailOutboxEntry,
+  type DevEmailOutboxStatus,
+  type DevEmailOutboxTransport,
+} from './dev-email-outbox';
 
 export type EmailDeliveryStatus = 'sent' | 'skipped' | 'failed';
 
@@ -19,7 +26,8 @@ type EmailEnvBindings = Pick<
   | 'GMAIL_SERVICE_ACCOUNT_EMAIL'
   | 'GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY'
   | 'GMAIL_SENDER_EMAIL'
->;
+> &
+  Partial<Pick<CloudflareEnv, 'APP_KV' | 'NEXTJS_ENV'>>;
 
 interface OrgInvitationEmailArgs {
   env: EmailEnvBindings;
@@ -36,6 +44,42 @@ interface EmailVerificationEmailArgs {
   to: string;
   verificationUrl: string;
   expiresAt: number;
+}
+
+interface HelpConfirmationEmailArgs {
+  env: EmailEnvBindings;
+  to: string;
+  firstName: string;
+  userEmail: string;
+  category: string;
+  severity: string;
+  subject: string;
+  description: string;
+  cc?: string;
+  replyTo?: string;
+}
+
+interface HelpSupportEmailArgs {
+  env: EmailEnvBindings;
+  to: string;
+  userName: string | null;
+  userEmail: string;
+  userId: string;
+  orgName: string;
+  orgSlug: string;
+  orgId: string;
+  billingStatus: string;
+  workspaceName: string | null;
+  workspaceId: string | null;
+  pageUrl: string | null;
+  category: string;
+  severity: string;
+  subject: string;
+  description: string;
+  submittedAt: string;
+  userAgent: string | null;
+  screenSize: string | null;
+  referer: string | null;
 }
 
 function sanitizeHeaderValue(value: string): string {
@@ -82,49 +126,144 @@ function formatExpiration(expiresAt: number): string {
   return date.toUTCString();
 }
 
+function truncateWithEllipsis(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function normalizeOptionalEmail(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function supportCategoryTag(category: string): string {
+  const normalized = category.trim().toLowerCase();
+  if (normalized.startsWith('bug')) return 'Bug';
+  if (normalized.startsWith('feature')) return 'Feature';
+  if (normalized.includes('billing')) return 'Billing';
+  if (normalized.startsWith('question')) return 'Question';
+  return 'Other';
+}
+
+function supportSeverityTag(severity: string): string {
+  const normalized = severity.trim().toLowerCase();
+  if (normalized === 'high') return 'High';
+  if (normalized === 'medium') return 'Medium';
+  return 'Low';
+}
+
+function buildEnvelopeRecipients(to: string, cc?: string): string[] {
+  const recipients = [to, cc].filter((value): value is string => Boolean(value));
+  return Array.from(
+    new Set(
+      recipients.map((value) => value.trim().toLowerCase()).filter((value) => value.length > 0)
+    )
+  );
+}
+
+async function finalizeEmailDelivery(
+  env: EmailEnvBindings,
+  email: {
+    to: string;
+    cc?: string;
+    replyTo?: string;
+    subject: string;
+    textBody: string;
+    htmlBody: string;
+  },
+  result: { status: DevEmailOutboxStatus; reason?: string },
+  transport: DevEmailOutboxTransport
+): Promise<EmailDeliveryResult> {
+  await recordDevEmailOutboxEntry(env, {
+    to: email.to,
+    cc: email.cc,
+    replyTo: email.replyTo,
+    subject: email.subject,
+    textBody: email.textBody,
+    htmlBody: email.htmlBody,
+    status: result.status,
+    reason: result.reason,
+    transport,
+  });
+  return result;
+}
+
 async function deliverEmail({
   env,
   to,
+  cc,
+  replyTo,
   subject,
   htmlBody,
   textBody,
 }: {
   env: EmailEnvBindings;
   to: string;
+  cc?: string;
+  replyTo?: string;
   subject: string;
   htmlBody: string;
   textBody: string;
 }): Promise<EmailDeliveryResult> {
+  const normalizedCc = normalizeOptionalEmail(cc);
+  const normalizedReplyTo = normalizeOptionalEmail(replyTo);
+  const emailContent = {
+    to,
+    cc: normalizedCc,
+    replyTo: normalizedReplyTo,
+    subject,
+    textBody,
+    htmlBody,
+  };
+
   // Try Gmail API first (preferred for sending to external recipients)
   if (isGmailConfigured(env)) {
     const gmailConfig = getGmailConfig(env)!;
     const result = await sendEmail(gmailConfig, {
       to,
+      cc: normalizedCc,
+      replyTo: normalizedReplyTo,
       subject,
       textBody,
       htmlBody,
     });
 
     if (result.success) {
-      return { status: 'sent' };
+      return finalizeEmailDelivery(env, emailContent, { status: 'sent' }, 'gmail');
     }
-    return { status: 'failed', reason: result.error };
+    return finalizeEmailDelivery(
+      env,
+      emailContent,
+      { status: 'failed', reason: result.error },
+      'gmail'
+    );
   }
 
   // Fall back to Cloudflare email binding (only works for verified addresses)
   if (!env.EMAIL) {
-    return {
-      status: 'skipped',
-      reason: 'No email provider configured (Gmail API or Cloudflare EMAIL binding)',
-    };
+    return finalizeEmailDelivery(
+      env,
+      emailContent,
+      {
+        status: 'skipped',
+        reason: 'No email provider configured (Gmail API or Cloudflare EMAIL binding)',
+      },
+      'none'
+    );
   }
 
   const from = env.EMAIL_FROM_ADDRESS?.trim();
   if (!from) {
-    return {
-      status: 'skipped',
-      reason: 'EMAIL_FROM_ADDRESS is not configured',
-    };
+    return finalizeEmailDelivery(
+      env,
+      emailContent,
+      {
+        status: 'skipped',
+        reason: 'EMAIL_FROM_ADDRESS is not configured',
+      },
+      'cloudflare'
+    );
   }
 
   try {
@@ -133,6 +272,10 @@ async function deliverEmail({
     const rawMessage = [
       `From: camelAI <${sanitizeHeaderValue(from)}>`,
       `To: ${sanitizeHeaderValue(to)}`,
+      ...(normalizedCc ? [`Cc: ${sanitizeHeaderValue(normalizedCc)}`] : []),
+      ...(normalizedReplyTo
+        ? [`Reply-To: ${sanitizeHeaderValue(normalizedReplyTo)}`]
+        : []),
       `Subject: ${subject}`,
       `Message-ID: <${messageId}@camelai.com>`,
       `Date: ${new Date().toUTCString()}`,
@@ -160,15 +303,25 @@ async function deliverEmail({
       /* @vite-ignore */
       cloudflareEmailModule
     );
-    const message = new EmailMessage(from, to, rawMessage);
-    await env.EMAIL.send(message);
-    return { status: 'sent' };
+    const envelopeRecipients = buildEnvelopeRecipients(to, normalizedCc);
+    await Promise.all(
+      envelopeRecipients.map((recipient) => {
+        const message = new EmailMessage(from, recipient, rawMessage);
+        return env.EMAIL!.send(message);
+      })
+    );
+    return finalizeEmailDelivery(env, emailContent, { status: 'sent' }, 'cloudflare');
   } catch (error) {
     const reason =
       error instanceof Error && error.message
         ? error.message
         : 'Unknown email delivery error';
-    return { status: 'failed', reason };
+    return finalizeEmailDelivery(
+      env,
+      emailContent,
+      { status: 'failed', reason },
+      'cloudflare'
+    );
   }
 }
 
@@ -230,6 +383,112 @@ export async function sendEmailVerificationEmail({
     env,
     to: normalizedTo,
     subject,
+    htmlBody,
+    textBody,
+  });
+}
+
+export async function sendHelpConfirmationEmail({
+  env,
+  to,
+  firstName,
+  userEmail,
+  category,
+  severity,
+  subject,
+  description,
+  cc,
+  replyTo,
+}: HelpConfirmationEmailArgs): Promise<EmailDeliveryResult> {
+  const normalizedTo = to.trim().toLowerCase();
+  const normalizedFirstName = firstName.trim() || 'there';
+  const normalizedSubjectText = subject.trim() || category;
+  const emailSubject = sanitizeHeaderValue(
+    `We received your request - ${normalizedSubjectText}`
+  );
+  const normalizedDescription = truncateWithEllipsis(description.trim(), 500);
+
+  const htmlBody = await render(
+    createElement(HelpConfirmationEmailTemplate, {
+      firstName: normalizedFirstName,
+      userEmail,
+      category,
+      severity,
+      description: normalizedDescription,
+    })
+  );
+  const textBody = toPlainText(htmlBody);
+
+  return deliverEmail({
+    env,
+    to: normalizedTo,
+    cc,
+    replyTo,
+    subject: emailSubject,
+    htmlBody,
+    textBody,
+  });
+}
+
+export async function sendHelpSupportEmail({
+  env,
+  to,
+  userName,
+  userEmail,
+  userId,
+  orgName,
+  orgSlug,
+  orgId,
+  billingStatus,
+  workspaceName,
+  workspaceId,
+  pageUrl,
+  category,
+  severity,
+  subject,
+  description,
+  submittedAt,
+  userAgent,
+  screenSize,
+  referer,
+}: HelpSupportEmailArgs): Promise<EmailDeliveryResult> {
+  const normalizedTo = to.trim().toLowerCase();
+  const userDisplayName = userName?.trim() || userEmail;
+  const severityTag = supportSeverityTag(severity);
+  const categoryTag = supportCategoryTag(category);
+  const normalizedSubjectText = subject.trim() || category;
+  const emailSubject = sanitizeHeaderValue(
+    `[${severityTag}] [${categoryTag}] ${normalizedSubjectText} - ${userDisplayName} (${orgSlug})`
+  );
+
+  const htmlBody = await render(
+    createElement(HelpSupportEmailTemplate, {
+      userName,
+      userEmail,
+      userId,
+      orgName,
+      orgSlug,
+      orgId,
+      billingStatus,
+      workspaceName,
+      workspaceId,
+      pageUrl,
+      category,
+      severity: severityTag,
+      subject: normalizedSubjectText,
+      description,
+      submittedAt,
+      userAgent,
+      screenSize,
+      referer,
+    })
+  );
+  const textBody = toPlainText(htmlBody);
+
+  return deliverEmail({
+    env,
+    to: normalizedTo,
+    subject: emailSubject,
     htmlBody,
     textBody,
   });

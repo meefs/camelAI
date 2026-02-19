@@ -77,6 +77,18 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 ### Onboarding
 Incomplete users are redirected to `/onboarding` before accessing `_app` routes. For password-based accounts, email verification is required before `POST /api/onboarding/complete` succeeds. Steps are stored in localStorage during the flow, persisted to `UserDO` via `POST /api/onboarding`, finalized via `POST /api/onboarding/complete` (creates first thread, writes `~/.chiridion/profile.md`, returns redirect). Org slug step is conditional and enforced by `OrgSlugDO`.
 
+### Get Help Requests
+Users can open an in-app help dialog from the sidebar footer (`Get Help`, `CircleHelp` icon). The form posts to `POST /api/help` with category, severity, description, and client context (`pageUrl`, `screenSize`). The route validates with zod/Conform, returns success immediately, and uses `waitUntil()` to:
+1. Generate a concise subject line with Workers AI (`@cf/google/gemma-3-12b-it`)
+2. Send a user confirmation email (CC + Reply-To: `support@camelai.com`)
+3. Send an internal support-triage email to `support@camelai.com` with user/org/workspace/browser context
+4. Log non-`sent` email delivery results (`failed`/`skipped`) for observability
+
+### Dev Email Outbox
+When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbox (KV-backed) with delivery status and provider metadata. Inspect via:
+- `GET /api/dev/sent-emails?format=html` for a browsable list
+- `GET /api/dev/sent-emails/:id?format=html` for full rendered HTML preview
+
 ### Message Sending
 1. WebSocket connects to `/ws/{workspace}` → Worker validates access → forwards to `ChatThreadDO`
 2. `ChatThreadDO` opens WebSocket to sandbox `control-plane.mjs`
@@ -142,6 +154,8 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Slack | `/api/integrations/slack/oauth`, `/api/integrations/slack/callback`, `/api/integrations/slack/events` |
 | Orgs | `/api/orgs/:id/invite`, `/api/orgs/:id/check-slug`, `/api/orgs/:id/update-slug` |
 | Onboarding | `/api/onboarding`, `/api/onboarding/complete` |
+| Support | `/api/help` |
+| Dev tooling | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id` |
 | Invitations | `/api/invitations/:orgId/:invitationId` (GET/POST) |
 | Workspace FS | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}` |
 | Workspace files | `/api/workspaces/:id/{upload,download,uploads/*,outputs/*}` |
