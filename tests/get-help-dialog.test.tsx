@@ -2,6 +2,7 @@ import type { ComponentProps } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GetHelpDialog } from '@/components/get-help-dialog';
+import { HELP_DESCRIPTION_MAX_LENGTH } from '@/lib/help';
 
 let fetcherState: 'idle' | 'submitting' = 'idle';
 let fetcherData: unknown = undefined;
@@ -87,6 +88,16 @@ describe('GetHelpDialog', () => {
 
     const textarea = screen.getByLabelText('Description');
     expect(textarea).toHaveClass('max-h-[240px]');
+  });
+
+  it('enforces description max length on the textarea', () => {
+    render(<GetHelpDialog open={true} onOpenChange={() => undefined} />);
+
+    const textarea = screen.getByLabelText('Description');
+    expect(textarea).toHaveAttribute(
+      'maxlength',
+      HELP_DESCRIPTION_MAX_LENGTH.toString()
+    );
   });
 
   it('shows loading state while submitting', () => {

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { HELP_DESCRIPTION_MAX_LENGTH } from '@/lib/help';
 
 const waitUntilMock = vi.fn();
 const requireAuthContextMock = vi.fn();
@@ -132,6 +133,21 @@ describe('POST /api/help', () => {
     } as never);
 
     expect(response.status).toBe(400);
+  });
+
+  it('returns 400 when description exceeds max length', async () => {
+    const response = await action({
+      request: makeRequest({
+        category: 'bug',
+        severity: 'high',
+        description: 'x'.repeat(HELP_DESCRIPTION_MAX_LENGTH + 1),
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(400);
+    expect(sendHelpConfirmationEmailMock).not.toHaveBeenCalled();
+    expect(sendHelpSupportEmailMock).not.toHaveBeenCalled();
   });
 
   it('returns 400 for invalid category value', async () => {
@@ -272,6 +288,32 @@ describe('POST /api/help', () => {
     expect(sendHelpSupportEmailMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: 'support@camelai.com',
+      })
+    );
+  });
+
+  it('falls back to "there" when user name is whitespace-only', async () => {
+    requireAuthContextMock.mockResolvedValue({
+      ...authContext,
+      user: {
+        ...authContext.user,
+        name: '   ',
+      },
+    });
+
+    await action({
+      request: makeRequest({
+        category: 'bug',
+        severity: 'medium',
+        description: 'Agent freezes.',
+      }),
+      context: {},
+    } as never);
+    await flushWaitUntil();
+
+    expect(sendHelpConfirmationEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        firstName: 'there',
       })
     );
   });

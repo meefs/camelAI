@@ -13,6 +13,7 @@ import {
   HELP_SEVERITY_LABELS,
   SUPPORT_EMAIL,
   getHelpFormSchema,
+  normalizeHelpDescription,
 } from '@/lib/help';
 
 const HELP_SUBJECT_MODEL = '@cf/google/gemma-3-12b-it';
@@ -35,6 +36,11 @@ function normalizeSubject(value: string | undefined | null): string | null {
   const normalized = value.replace(/\s+/g, ' ').trim();
   if (!normalized) return null;
   return normalized.slice(0, 100);
+}
+
+function deriveFirstName(name: string | null | undefined): string {
+  const firstName = name?.trim().split(/\s+/).find((token) => token.length > 0);
+  return firstName || 'there';
 }
 
 function logHelpDeliveryResult(
@@ -115,15 +121,20 @@ export async function action({ request, context }: Route.ActionArgs) {
   const categoryLabel = HELP_CATEGORY_LABELS[category];
   const categorySubjectLabel = HELP_CATEGORY_SUBJECT_LABELS[category];
   const severityLabel = HELP_SEVERITY_LABELS[severity];
+  const normalizedDescription = normalizeHelpDescription(description);
   const workspace = authContext.currentWorkspace;
   const submittedAt = new Date().toISOString();
   const userAgent = request.headers.get('user-agent');
   const referer = request.headers.get('referer');
-  const firstName = authContext.user.name?.trim().split(/\s+/)[0] ?? 'there';
+  const firstName = deriveFirstName(authContext.user.name);
 
   waitUntil(
     (async () => {
-      const subject = await generateHelpSubject(env, description, categoryLabel);
+      const subject = await generateHelpSubject(
+        env,
+        normalizedDescription,
+        categoryLabel
+      );
       const [confirmationResult, supportResult] = await Promise.all([
         sendHelpConfirmationEmail({
           env,
@@ -133,7 +144,7 @@ export async function action({ request, context }: Route.ActionArgs) {
           category: categoryLabel,
           severity: severityLabel,
           subject,
-          description,
+          description: normalizedDescription,
           cc: SUPPORT_EMAIL,
           replyTo: SUPPORT_EMAIL,
         }),
@@ -153,7 +164,7 @@ export async function action({ request, context }: Route.ActionArgs) {
           category: categorySubjectLabel,
           severity: severityLabel,
           subject,
-          description,
+          description: normalizedDescription,
           submittedAt,
           userAgent,
           screenSize: screenSize ?? null,

@@ -10,6 +10,7 @@ import { toast } from "sonner"
 import {
   HELP_CATEGORY_LABELS,
   HELP_CATEGORY_VALUES,
+  HELP_DESCRIPTION_MAX_LENGTH,
   HELP_SEVERITY_LABELS,
   HELP_SEVERITY_VALUES,
   type HelpCategory,
@@ -224,6 +225,7 @@ export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           placeholder="What happened? What did you expect? Include steps to reproduce if applicable."
+          maxLength={HELP_DESCRIPTION_MAX_LENGTH}
           className="min-h-[120px] max-h-[240px]"
           aria-describedby={descriptionDescribedBy}
           aria-invalid={fields.description.errors?.length ? true : undefined}

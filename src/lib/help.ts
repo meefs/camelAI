@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export const SUPPORT_EMAIL = 'support@camelai.com';
+export const HELP_DESCRIPTION_MAX_LENGTH = 4000;
 
 export const HELP_CATEGORY_VALUES = [
   'bug',
@@ -37,10 +38,26 @@ export const HELP_SEVERITY_LABELS: Record<HelpSeverity, string> = {
   high: 'High',
 };
 
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return value.slice(0, maxLength).trimEnd();
+}
+
+export function normalizeHelpDescription(value: string): string {
+  return truncateText(value.trim(), HELP_DESCRIPTION_MAX_LENGTH);
+}
+
 export const getHelpFormSchema = z.object({
   category: z.enum(HELP_CATEGORY_VALUES),
   severity: z.enum(HELP_SEVERITY_VALUES).default('low'),
-  description: z.string().trim().min(1, 'Please describe your issue'),
+  description: z
+    .string()
+    .trim()
+    .min(1, 'Please describe your issue')
+    .max(
+      HELP_DESCRIPTION_MAX_LENGTH,
+      `Description must be ${HELP_DESCRIPTION_MAX_LENGTH} characters or less`
+    ),
   pageUrl: z.string().optional(),
   screenSize: z.string().optional(),
 });
