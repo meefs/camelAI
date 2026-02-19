@@ -67,7 +67,7 @@ export default function App() {
           </p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight">Python Notebook Preview</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Renders a bundled notebook from <code>{NOTEBOOK_PATH}</code> using copied Chiridion notebook preview components.
+            Renders a bundled notebook from <code>{NOTEBOOK_PATH}</code> using copied camelAI notebook preview components.
           </p>
           <div className="mt-4 flex items-center gap-2 text-xs">
             <span className="rounded-full border border-border bg-muted/40 px-2.5 py-1 text-muted-foreground">

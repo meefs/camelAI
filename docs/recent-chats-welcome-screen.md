@@ -29,7 +29,7 @@ The `/chat` welcome screen now includes a **Your recent chats** section, and `fi
 2. Loader fetches parsed JSONL messages.
 3. If thread has no `first_user_message`, we extract the first valid user message:
    - ignore meta/compact-summary messages
-   - strip `<chiridion system message>...</chiridion system message>` tags
+   - strip `<camelai system message>...</camelai system message>` tags
    - strip `[Name (email)]:` / `[Name]:` author prefixes
    - trim and truncate to 500 chars
 4. Loader schedules `setThreadFirstUserMessage(...)` with `waitUntil`.
