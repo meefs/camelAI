@@ -81,11 +81,13 @@ export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
   const [description, setDescription] = useState("")
   const [pageUrl, setPageUrl] = useState("")
   const [screenSize, setScreenSize] = useState("")
+  const [formSessionId, setFormSessionId] = useState(0)
+  const [lastSubmissionResult, setLastSubmissionResult] = useState<SubmissionResult<string[]> | undefined>(undefined)
+  const hasOpenedRef = useRef(false)
   const successToastShownRef = useRef(false)
 
-  const lastSubmissionResult = fetcher.data?.success ? undefined : fetcher.data?.result
-
   const [form, fields] = useForm({
+    id: `get-help-form-${formSessionId}`,
     lastResult: lastSubmissionResult,
     onValidate({ formData }) {
       return parseWithZod(formData, { schema: getHelpFormSchema })
@@ -109,6 +111,12 @@ export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
   useEffect(() => {
     if (!open) return
     successToastShownRef.current = false
+    if (hasOpenedRef.current) {
+      setFormSessionId((current) => current + 1)
+    } else {
+      hasOpenedRef.current = true
+    }
+    setLastSubmissionResult(undefined)
     const context = readPageContext()
     setCategory("bug")
     setSeverity("low")
@@ -119,6 +127,7 @@ export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
 
   useEffect(() => {
     if (fetcher.state !== "idle" || !fetcher.data) return
+    setLastSubmissionResult(fetcher.data.success ? undefined : fetcher.data.result)
     if (fetcher.data.success && !successToastShownRef.current) {
       successToastShownRef.current = true
       toast.success("Help request sent! Check your email for confirmation.")

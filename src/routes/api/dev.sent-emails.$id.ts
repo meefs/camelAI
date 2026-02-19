@@ -12,13 +12,18 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return Response.json({ error: 'Not found' }, { status: 404 });
   }
 
+  let authContext: Awaited<ReturnType<typeof requireAuthContext>>;
   try {
-    await requireAuthContext(request, context);
+    authContext = await requireAuthContext(request, context);
   } catch (error) {
     if (error instanceof Response && error.status >= 300 && error.status < 400) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
     throw error;
+  }
+
+  if (!authContext.user.is_superuser) {
+    return Response.json({ error: 'Forbidden' }, { status: 403 });
   }
 
   const id = params.id?.trim();

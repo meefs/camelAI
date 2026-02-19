@@ -1,8 +1,9 @@
 import type { ComponentProps } from 'react';
+import { parseWithZod } from '@conform-to/zod/v4';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GetHelpDialog } from '@/components/get-help-dialog';
-import { HELP_DESCRIPTION_MAX_LENGTH } from '@/lib/help';
+import { HELP_DESCRIPTION_MAX_LENGTH, getHelpFormSchema } from '@/lib/help';
 
 let fetcherState: 'idle' | 'submitting' = 'idle';
 let fetcherData: unknown = undefined;
@@ -165,5 +166,31 @@ describe('GetHelpDialog', () => {
 
     expect(form?.id).toBeTruthy();
     expect(submitButton).toHaveAttribute('form', form?.id);
+  });
+
+  it('clears stale validation errors when reopened', async () => {
+    const formData = new FormData();
+    formData.set('category', 'bug');
+    formData.set('severity', 'low');
+    formData.set('description', '   ');
+    fetcherData = {
+      result: parseWithZod(formData, { schema: getHelpFormSchema }).reply(),
+    };
+
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <GetHelpDialog open={true} onOpenChange={onOpenChange} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Please describe your issue')).toBeInTheDocument();
+    });
+
+    rerender(<GetHelpDialog open={false} onOpenChange={onOpenChange} />);
+    rerender(<GetHelpDialog open={true} onOpenChange={onOpenChange} />);
+
+    await waitFor(() => {
+      expect(screen.queryByText('Please describe your issue')).not.toBeInTheDocument();
+    });
   });
 });
