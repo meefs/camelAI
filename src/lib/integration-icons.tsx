@@ -100,3 +100,34 @@ export function IntegrationIcon({
 export function hasIntegrationIcon(type: string): boolean {
   return type in logoRegistry;
 }
+
+/**
+ * Resolve the best logo type for a connection.
+ *
+ * When integration_type is "other" (custom integrations), tries to match
+ * the display name or connection name to a known logo in the registry.
+ */
+export function resolveLogoType(
+  integrationType: string,
+  nameHints?: (string | undefined | null)[]
+): string {
+  if (integrationType in logoRegistry) return integrationType;
+
+  if (nameHints) {
+    for (const hint of nameHints) {
+      if (!hint) continue;
+      const normalized = hint.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      // Exact match after normalization (e.g. "ClickHouse" → "clickhouse")
+      if (normalized in logoRegistry) return normalized;
+
+      // Substring match — skip keys shorter than 3 chars to avoid false
+      // positives (e.g. "x" would match almost anything)
+      for (const key of Object.keys(logoRegistry)) {
+        if (key.length >= 3 && normalized.includes(key)) return key;
+      }
+    }
+  }
+
+  return integrationType;
+}
