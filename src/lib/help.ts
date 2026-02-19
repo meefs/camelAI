@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 export const SUPPORT_EMAIL = 'support@camelai.com';
 export const HELP_DESCRIPTION_MAX_LENGTH = 4000;
+export const HELP_PAGE_URL_MAX_LENGTH = 2048;
+export const HELP_SCREEN_SIZE_MAX_LENGTH = 64;
 
 export const HELP_CATEGORY_VALUES = [
   'bug',
@@ -58,8 +60,22 @@ export const getHelpFormSchema = z.object({
       HELP_DESCRIPTION_MAX_LENGTH,
       `Description must be ${HELP_DESCRIPTION_MAX_LENGTH} characters or less`
     ),
-  pageUrl: z.string().optional(),
-  screenSize: z.string().optional(),
+  pageUrl: z
+    .string()
+    .trim()
+    .max(
+      HELP_PAGE_URL_MAX_LENGTH,
+      `Page URL must be ${HELP_PAGE_URL_MAX_LENGTH} characters or less`
+    )
+    .optional(),
+  screenSize: z
+    .string()
+    .trim()
+    .max(
+      HELP_SCREEN_SIZE_MAX_LENGTH,
+      `Screen size must be ${HELP_SCREEN_SIZE_MAX_LENGTH} characters or less`
+    )
+    .optional(),
 });
 
 export type GetHelpFormValues = z.infer<typeof getHelpFormSchema>;

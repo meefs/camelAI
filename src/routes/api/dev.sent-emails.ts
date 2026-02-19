@@ -127,5 +127,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     })),
     nextCursor: listComplete ? null : (nextCursor ?? null),
     listComplete,
+  }, {
+    headers: {
+      'Cache-Control': 'no-store',
+    },
   });
 }

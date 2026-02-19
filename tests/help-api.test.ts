@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { HELP_DESCRIPTION_MAX_LENGTH } from '@/lib/help';
+import {
+  HELP_DESCRIPTION_MAX_LENGTH,
+  HELP_PAGE_URL_MAX_LENGTH,
+  HELP_SCREEN_SIZE_MAX_LENGTH,
+} from '@/lib/help';
 
 const waitUntilMock = vi.fn();
 const requireAuthContextMock = vi.fn();
@@ -141,6 +145,38 @@ describe('POST /api/help', () => {
         category: 'bug',
         severity: 'high',
         description: 'x'.repeat(HELP_DESCRIPTION_MAX_LENGTH + 1),
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(400);
+    expect(sendHelpConfirmationEmailMock).not.toHaveBeenCalled();
+    expect(sendHelpSupportEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when pageUrl exceeds max length', async () => {
+    const response = await action({
+      request: makeRequest({
+        category: 'bug',
+        severity: 'high',
+        description: 'Agent freezes',
+        pageUrl: `https://camelai.com/${'x'.repeat(HELP_PAGE_URL_MAX_LENGTH)}`,
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(400);
+    expect(sendHelpConfirmationEmailMock).not.toHaveBeenCalled();
+    expect(sendHelpSupportEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when screenSize exceeds max length', async () => {
+    const response = await action({
+      request: makeRequest({
+        category: 'bug',
+        severity: 'high',
+        description: 'Agent freezes',
+        screenSize: 'x'.repeat(HELP_SCREEN_SIZE_MAX_LENGTH + 1),
       }),
       context: {},
     } as never);

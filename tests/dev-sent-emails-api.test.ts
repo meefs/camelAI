@@ -86,6 +86,7 @@ describe('dev sent emails api authorization', () => {
     } as never);
 
     expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect(listDevEmailOutboxEntriesMock).toHaveBeenCalledTimes(1);
   });
 
