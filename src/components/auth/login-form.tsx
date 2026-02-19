@@ -9,7 +9,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { RadialGridBackground } from '@/components/ui/radial-grid-background';
 import { SlotMachinePrompt } from '@/components/ui/slot-machine-prompt';
 import { AlertCircle } from 'lucide-react';
-import { LogoIcon } from '@/components/ui/logo';
+import { FullLogo } from '@/components/ui/logo';
 import { OAuthButtons, OAuthDivider } from '@/components/auth/oauth-buttons';
 
 const inspirationalPrompts = [
@@ -59,11 +59,8 @@ export function LoginForm({ redirectTo }: LoginFormProps) {
     <div className="grid min-h-svh lg:grid-cols-2">
       <div className="flex flex-col gap-4 p-6 md:p-10">
         <div className="flex justify-center md:justify-start">
-          <Link to="/" className="flex items-center gap-2">
-            <LogoIcon />
-            <span className="text-lg font-semibold tracking-tight">
-              camelAI
-            </span>
+          <Link to="/">
+            <FullLogo className="h-6" />
           </Link>
         </div>
         <div className="flex flex-1 items-center justify-center">

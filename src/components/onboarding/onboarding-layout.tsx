@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { LogoIcon } from '@/components/ui/logo';
+import { FullLogo } from '@/components/ui/logo';
 import { cn } from '@/lib/utils';
 import { OnboardingProgress } from './onboarding-progress';
 import type { OnboardingTransitionDirection } from '@/lib/onboarding';
@@ -46,10 +46,7 @@ export function OnboardingLayout({
   return (
     <div className="mx-auto flex min-h-svh w-full max-w-4xl flex-col px-4 py-8 sm:px-6">
       <div className="mb-6 flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <LogoIcon />
-          <span>camelAI</span>
-        </div>
+        <FullLogo className="h-7" />
         <div className="flex items-center gap-2">
           {showBack && onBack ? (
             <Button type="button" variant="ghost" size="sm" onClick={onBack}>

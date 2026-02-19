@@ -8,7 +8,7 @@ import { useAuthData } from '@/hooks/use-auth-data';
 // Note: Auth is handled by the (app) layout - no need to check here
 import type { Integration } from '@/types';
 import type { IntegrationDefinition } from '@/lib/integration-registry';
-import { IntegrationIcon, hasIntegrationIcon } from '@/lib/integration-icons';
+import { IntegrationIcon, hasIntegrationIcon, resolveLogoType } from '@/lib/integration-icons';
 import { PageHeader } from '@/components/page-header';
 import { AddConnectionDialog } from './AddConnectionDialog';
 import { EditConnectionDialog } from './EditConnectionDialog';
@@ -365,7 +365,11 @@ export default function ConnectionsClient({
               <div className="mt-6 grid gap-4 md:grid-cols-2">
                 {connections.map((connection) => {
                   const typeDef = getTypeDefinition(connection.integration_type);
-                  const hasIcon = hasIntegrationIcon(connection.integration_type);
+                  const resolvedType = resolveLogoType(connection.integration_type, [
+                    (connection.config as Record<string, unknown>)?.display_name as string,
+                    connection.name,
+                  ]);
+                  const hasIcon = hasIntegrationIcon(resolvedType);
                   return (
                     <Card key={connection.id}>
                       <CardHeader className="flex flex-row items-start justify-between gap-4">
@@ -373,7 +377,7 @@ export default function ConnectionsClient({
                           <div className="flex size-10 items-center justify-center rounded-lg border">
                             {hasIcon ? (
                               <IntegrationIcon
-                                type={connection.integration_type}
+                                type={resolvedType}
                                 className="size-5"
                               />
                             ) : (

@@ -1,6 +1,6 @@
 'use client';
 
-import { IntegrationIcon } from '@/lib/integration-icons';
+import { IntegrationIcon, resolveLogoType } from '@/lib/integration-icons';
 import { cn } from '@/lib/utils';
 import type { Integration } from '@/types';
 
@@ -26,7 +26,13 @@ export function ConnectedTools({ connections, onSelect }: ConnectedToolsProps) {
               'hover:border-ring hover:shadow-md'
             )}
           >
-            <IntegrationIcon type={connection.integration_type} size={16} />
+            <IntegrationIcon
+              type={resolveLogoType(connection.integration_type, [
+                (connection.config as Record<string, unknown>)?.display_name as string,
+                connection.name,
+              ])}
+              size={16}
+            />
             <span className="text-foreground">{label}</span>
           </button>
         );
