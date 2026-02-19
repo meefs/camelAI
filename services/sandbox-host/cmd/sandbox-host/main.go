@@ -9,7 +9,7 @@ import (
 	"github.com/chiridion/sandbox-host/internal/app"
 	"github.com/chiridion/sandbox-host/internal/container"
 	"github.com/chiridion/sandbox-host/internal/fsops"
-	"github.com/chiridion/sandbox-host/internal/overlay"
+	"github.com/chiridion/sandbox-host/internal/workspace"
 	"github.com/chiridion/sandbox-host/internal/state"
 )
 
@@ -36,10 +36,10 @@ func main() {
 		}()
 	}
 
-	overlays := overlay.NewManagerFromEnv()
-	containers := container.NewManager(overlays, stateStore)
+	workspaces := workspace.NewManagerFromEnv()
+	containers := container.NewManager(workspaces, stateStore)
 	fsManager := fsops.NewManager(os.Getenv("WORKSPACES_ROOT"))
-	server := app.NewServer(cfg, containers, overlays, fsManager, stateStore)
+	server := app.NewServer(cfg, containers, workspaces, fsManager, stateStore)
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,

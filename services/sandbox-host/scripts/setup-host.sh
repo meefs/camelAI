@@ -5,7 +5,6 @@
 #   - Durable Azure Premium SSD v2 attached disk
 #   - XFS mounted at /srv/sandboxes (with prjquota enabled)
 #   - One directory per sandbox under /srv/sandboxes
-#   - Optional NVMe RAID0 cache for Docker image/layer data only
 #
 # Usage: sudo bash setup-host.sh
 #
@@ -27,8 +26,6 @@ echo "=== Chiridion Sandbox Host Setup (XFS + Premium SSD v2) ==="
 
 SANDBOXES_DIR="${SANDBOXES_DIR:-/srv/sandboxes}"
 SANDBOX_DATA_DEVICE="${SANDBOX_DATA_DEVICE:-/dev/disk/azure/data/by-lun/0}"
-ENABLE_NVME_CACHE="${ENABLE_NVME_CACHE:-1}"
-NVME_DIR="/mnt/nvme"
 DOCKER_DATA_ROOT="${SANDBOXES_DIR}/.docker"
 SANDBOX_DEFAULT_BHARD="${SANDBOX_DEFAULT_BHARD:-100g}"
 SANDBOX_DEFAULT_IHARD="${SANDBOX_DEFAULT_IHARD:-0}"
@@ -70,7 +67,7 @@ wait_for_data_device() {
 }
 
 setup_xfs_data_disk() {
-  log "[1/8] Configuring durable data disk as XFS..."
+  log "[1/7] Configuring durable data disk as XFS..."
 
   local data_device
   if ! data_device="$(resolve_data_device)"; then
@@ -114,53 +111,10 @@ setup_xfs_data_disk() {
   chmod 0700 "${SANDBOXES_DIR}/.sandbox-host"
 }
 
-setup_nvme_cache() {
-  if [ "$ENABLE_NVME_CACHE" != "1" ]; then
-    log "[2/8] NVMe cache disabled (ENABLE_NVME_CACHE=${ENABLE_NVME_CACHE})."
-    return 0
-  fi
-
-  log "[2/8] Configuring optional NVMe cache for Docker layers..."
-
-  local -a nvme_disks
-  mapfile -t nvme_disks < <(lsblk -d -n -o NAME,TYPE | awk '$2=="disk" && $1~/^nvme/ && $1!~/nvme0/ {print "/dev/"$1}')
-
-  if [ ${#nvme_disks[@]} -eq 0 ]; then
-    log "  No NVMe temp disks found; Docker data-root will remain /var/lib/docker."
-    return 0
-  fi
-
-  if mountpoint -q "$NVME_DIR" 2>/dev/null; then
-    log "  ${NVME_DIR} already mounted."
-  else
-    log "  Building RAID0 from NVMe devices: ${nvme_disks[*]}"
-    mdadm --stop /dev/md0 2>/dev/null || true
-    mdadm --create /dev/md0 \
-      --level=0 \
-      --raid-devices=${#nvme_disks[@]} \
-      "${nvme_disks[@]}" \
-      --force --run
-
-    mkfs.ext4 -F -E lazy_itable_init=0,lazy_journal_init=0 /dev/md0
-    mkdir -p "$NVME_DIR"
-    mount -o noatime,nodiratime /dev/md0 "$NVME_DIR"
-
-    sed -i '\|[[:space:]]/mnt/nvme[[:space:]]|d' /etc/fstab
-    ensure_line_in_file "/dev/md0 ${NVME_DIR} ext4 noatime,nodiratime,nofail 0 0" /etc/fstab
-    mdadm --detail --scan >> /etc/mdadm/mdadm.conf 2>/dev/null || true
-    update-initramfs -u 2>/dev/null || true
-  fi
-
-  mkdir -p "${NVME_DIR}/.docker"
-  mkdir -p "${NVME_DIR}/tmp"
-  chmod 1777 "${NVME_DIR}/tmp"
-  DOCKER_DATA_ROOT="${NVME_DIR}/.docker"
-}
-
 install_docker_and_runtime() {
   local docker_data_root="$1"
 
-  log "[3/8] Installing Docker CE..."
+  log "[2/7] Installing Docker CE..."
   if ! command -v docker >/dev/null 2>&1; then
     curl -fsSL https://get.docker.com | sh
     systemctl enable --now docker
@@ -168,7 +122,7 @@ install_docker_and_runtime() {
     log "  Docker already installed."
   fi
 
-  log "[4/8] Installing gVisor runtime (runsc)..."
+  log "[3/7] Installing gVisor runtime (runsc)..."
   if ! command -v runsc >/dev/null 2>&1; then
     curl -fsSL https://gvisor.dev/archive.key | gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" \
@@ -179,7 +133,7 @@ install_docker_and_runtime() {
     log "  gVisor already installed."
   fi
 
-  log "[5/8] Configuring Docker runtime and data-root..."
+  log "[4/7] Configuring Docker runtime and data-root..."
   cat > /etc/docker/daemon.json <<__DOCKER_DAEMON__
 {
   "runtimes": {
@@ -194,7 +148,7 @@ __DOCKER_DAEMON__
 }
 
 install_go_and_host_service() {
-  log "[6/8] Installing Go + sandbox-host service..."
+  log "[5/7] Installing Go + sandbox-host service..."
 
   local required_go_version="${REQUIRED_GO_VERSION:-1.24.0}"
   local install_go_version="${INSTALL_GO_VERSION:-1.25.7}"
@@ -273,7 +227,7 @@ __HOST_SERVICE__
 }
 
 install_firewall_service() {
-  log "[7/8] Installing firewall rules service..."
+  log "[6/7] Installing firewall rules service..."
 
   cat > /usr/local/bin/chiridion-apply-firewall.sh <<'__FIREWALL_SCRIPT__'
 #!/usr/bin/env bash
@@ -340,7 +294,7 @@ __FIREWALL_SERVICE__
 }
 
 install_cloudflared_and_acr() {
-  log "[8/8] Installing cloudflared and pre-pulling sandbox image..."
+  log "[7/7] Installing cloudflared and pre-pulling sandbox image..."
 
   if ! command -v cloudflared >/dev/null 2>&1; then
     mkdir -p --mode=0755 /usr/share/keyrings
@@ -388,7 +342,7 @@ apply_default_quotas() {
 
 main() {
   apt-get update -qq
-  apt-get install -y -qq xfsprogs mdadm curl ca-certificates gnupg lsb-release fuse3
+  apt-get install -y -qq xfsprogs curl ca-certificates gnupg lsb-release fuse3
 
   # Install rclone for R2 FUSE mounts
   if ! command -v rclone >/dev/null 2>&1; then
@@ -398,7 +352,6 @@ main() {
 
   wait_for_data_device
   setup_xfs_data_disk
-  setup_nvme_cache
   install_docker_and_runtime "$DOCKER_DATA_ROOT"
   install_go_and_host_service
   install_firewall_service
@@ -417,11 +370,7 @@ main() {
   echo "  ${SANDBOXES_DIR}/<sandbox>  - Per-sandbox persistent root"
   echo "  Default per-sandbox quota   - ${SANDBOX_DEFAULT_BHARD} (ihard=${SANDBOX_DEFAULT_IHARD})"
   echo "  ${SANDBOXES_DIR}/.sandbox-host/state.db - sandbox-host crash recovery state"
-  if [ "$DOCKER_DATA_ROOT" = "/var/lib/docker" ]; then
-    echo "  /var/lib/docker         - Docker image/layer cache"
-  else
-    echo "  ${DOCKER_DATA_ROOT}     - Docker image/layer cache (rebuildable)"
-  fi
+  echo "  ${DOCKER_DATA_ROOT}     - Docker data-root"
   echo ""
   echo "To verify:"
   echo "  findmnt ${SANDBOXES_DIR}"

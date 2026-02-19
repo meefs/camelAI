@@ -3,7 +3,7 @@
 The sandbox host runs on the Azure VM and manages:
 
 - Docker + gVisor sandbox lifecycle
-- Per-sandbox host directories under `WORKSPACES_ROOT` (no overlayfs/JuiceFS sync path)
+- Per-sandbox host directories under `WORKSPACES_ROOT`
 - Control-plane proxying (`/health`, `/chat`)
 - Worker API proxying via `/proxy/:threadId/*`
 

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chiridion/sandbox-host/internal/overlay"
+	"github.com/chiridion/sandbox-host/internal/workspace"
 	"github.com/chiridion/sandbox-host/internal/state"
 	dockercontainer "github.com/docker/docker/api/types/container"
 	dockernetwork "github.com/docker/docker/api/types/network"
@@ -50,7 +50,7 @@ type ensureWait struct {
 }
 
 type Manager struct {
-	overlays *overlay.Manager
+	workspaces *workspace.Manager
 	docker   *dockerclient.Client
 	state    *state.Store
 
@@ -78,7 +78,7 @@ type Manager struct {
 	ensureInFlight    map[string]*ensureWait
 }
 
-func NewManager(overlays *overlay.Manager, stateStore *state.Store) *Manager {
+func NewManager(workspaces *workspace.Manager, stateStore *state.Store) *Manager {
 	docker, err := dockerclient.NewClientWithOpts(
 		dockerclient.FromEnv,
 		dockerclient.WithAPIVersionNegotiation(),
@@ -94,7 +94,7 @@ func NewManager(overlays *overlay.Manager, stateStore *state.Store) *Manager {
 	containerProxyBase := normalizeProxyBaseURL(envString("CONTAINER_PROXY_BASE_URL", defaultProxyBase))
 
 	m := &Manager{
-		overlays:            overlays,
+		workspaces:          workspaces,
 		docker:              docker,
 		state:               stateStore,
 		workspacesRoot:      workspacesRoot,
@@ -346,7 +346,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 
 	_ = m.removeContainerIfExists(name, true)
 
-	if _, err := m.overlays.Ensure(name); err != nil {
+	if _, err := m.workspaces.Ensure(name); err != nil {
 		return nil, err
 	}
 	wsPath := m.workspacePath(name)

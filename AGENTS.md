@@ -17,9 +17,9 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
          │                        ▼                                      ▼
          │              ┌──────────────────┐                   ┌─────────────────┐
          │              │  Dispatcher WfP  │                   │ Premium SSD v2  │
-         │              │ (User App Hosts) │                   │ (XFS) + Optional│
-         │              └──────────────────┘                   │ NVMe cache      │
-         │                        │                            └─────────────────┘
+         │              │ (User App Hosts) │                   │ (XFS + prjquota)│
+         │              └──────────────────┘                   └─────────────────┘
+         │                        │
          ▼                        ▼
 ┌─────────────────┐     ┌──────────────────┐
 │   R2 Storage    │     │    OpenRouter    │
@@ -288,7 +288,7 @@ Sandbox names: `chiridion-{workspaceId}`. Host dir: `/srv/sandboxes/{sandboxName
 
 **Network:** Two listeners — `PORT` (80, worker control traffic) and `SANDBOX_PROXY_PORT` (8081, container egress only). VM firewall blocks containers from reaching control port.
 
-**Storage:** Premium SSD v2 managed disk (host caching `None`) mounted as XFS at `/srv/sandboxes` with `prjquota` enabled. Default sandbox quota is `100g` via XFS project quotas. Optional NVMe is used only for rebuildable caches (for example Docker layers).
+**Storage:** Premium SSD v2 managed disk mounted as XFS at `/srv/sandboxes` with `prjquota` enabled. Default sandbox quota is `100g` via XFS project quotas. Docker data-root also lives on the data disk at `/srv/sandboxes/.docker`.
 
 **R2 FUSE mounts:** Set up automatically when env vars are pushed. Uses permanent R2 credentials from sandbox-host env.
 

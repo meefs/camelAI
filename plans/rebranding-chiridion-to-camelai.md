@@ -245,7 +245,7 @@ Infrastructure code. Requires coordinated deployment with VM. Out of scope.
 | `services/sandbox-host/internal/app/server_test.go` | Go test fixtures — infrastructure |
 | `services/sandbox-host/internal/app/config.go` | Header name constants — infrastructure |
 | `services/sandbox-host/internal/container/manager.go` | Docker image name, env file path, imports — infrastructure |
-| `services/sandbox-host/internal/overlay/overlay.go` | JuiceFS database username — infrastructure |
+| `services/sandbox-host/internal/workspace/workspace.go` | XFS project quota manager — infrastructure |
 | `services/sandbox-host/Dockerfile.sandbox` | Container paths `/opt/chiridion/` — infrastructure |
 | `services/sandbox-host/README.md` | Internal dev documentation — infrastructure |
 | `services/sandbox-host/scripts/setup-host.sh` | systemd services, binary paths, firewall scripts — infrastructure |

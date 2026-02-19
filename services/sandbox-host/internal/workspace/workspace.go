@@ -1,4 +1,4 @@
-package overlay
+package workspace
 
 import (
 	"bufio"

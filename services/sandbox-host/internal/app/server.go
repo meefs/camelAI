@@ -21,7 +21,7 @@ import (
 
 	"github.com/chiridion/sandbox-host/internal/container"
 	"github.com/chiridion/sandbox-host/internal/fsops"
-	"github.com/chiridion/sandbox-host/internal/overlay"
+	"github.com/chiridion/sandbox-host/internal/workspace"
 	"github.com/chiridion/sandbox-host/internal/state"
 	"github.com/gorilla/websocket"
 )
@@ -54,7 +54,7 @@ type ProxyRoute struct {
 type Server struct {
 	cfg        Config
 	containers *container.Manager
-	overlays   *overlay.Manager
+	workspaces *workspace.Manager
 	fs         *fsops.Manager
 	state      *state.Store
 
@@ -65,7 +65,7 @@ type Server struct {
 	wsUpgrader websocket.Upgrader
 }
 
-func NewServer(cfg Config, containers *container.Manager, overlays *overlay.Manager, fsManager *fsops.Manager, stateStore *state.Store) *Server {
+func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.Manager, fsManager *fsops.Manager, stateStore *state.Store) *Server {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -81,7 +81,7 @@ func NewServer(cfg Config, containers *container.Manager, overlays *overlay.Mana
 	s := &Server{
 		cfg:          cfg,
 		containers:   containers,
-		overlays:     overlays,
+		workspaces:   workspaces,
 		fs:           fsManager,
 		state:        stateStore,
 		proxyThreads: make(map[string]*ProxyThreadContext),
@@ -227,7 +227,7 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 	}
 
 	if strings.HasPrefix(route.Subpath, "/fs/") {
-		if _, err := s.overlays.Ensure(name); err != nil {
+		if _, err := s.workspaces.Ensure(name); err != nil {
 			return err
 		}
 	}
