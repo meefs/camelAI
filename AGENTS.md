@@ -282,7 +282,7 @@ Endpoints: `/overview`, `/orgs`, `/users`, `/threads`, `/kv-keys`, `/r2/list`, `
 
 ### Sandbox Host Deployment
 
-The sandbox host runs on an Azure VM (`ssh chiridion-vm`, user `chiridion`, IP `172.173.64.214`). Deploy via rsync + SSH build + systemctl restart. Rebuild Docker image on VM and push to ACR (`crchiridionprod`).
+The sandbox host runs on an Azure VM (`ssh chiridion-vm`, user `chiridion`, IP `20.46.233.68`). Deploy via rsync + SSH build + systemctl restart. Rebuild Docker image on VM and push to ACR (`crchiridionprod`).
 
 Sandbox names: `chiridion-{workspaceId}`. Host dir: `/srv/sandboxes/{sandboxName}` → container `/home/claude`. Image: Ubuntu 24.04 with bun, node 22, git, rclone, uv. Containers use gVisor (`--runtime=runsc`).
 

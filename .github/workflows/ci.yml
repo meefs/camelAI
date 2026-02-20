@@ -40,14 +40,14 @@ jobs:
         run: |
           rsync -az --delete \
             sandbox/ \
-            chiridion@172.173.64.214:/opt/chiridion/sandbox/
+            chiridion@20.46.233.68:/opt/chiridion/sandbox/
           rsync -az \
             services/sandbox-host/Dockerfile.sandbox \
-            chiridion@172.173.64.214:/opt/chiridion/Dockerfile.sandbox
+            chiridion@20.46.233.68:/opt/chiridion/Dockerfile.sandbox
 
       - name: Build and push image to ACR
         run: |
-          ssh chiridion@172.173.64.214 '
+          ssh chiridion@20.46.233.68 '
             cd /opt/chiridion &&
             sudo docker build -t chiridion-sandbox:latest -f Dockerfile.sandbox . &&
             sudo az acr login --name crchiridionprod &&
