@@ -7,8 +7,10 @@ import { getVanityDomain } from '@/lib/app-url.server';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { ThreadEditForm } from '@/components/admin/thread-edit-form';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Download } from 'lucide-react';
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
@@ -84,6 +86,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   };
 
   const vanityDomain = await getVanityDomain(request);
+  const jsonlDownloadUrl =
+    `/api/admin/threads/${encodeURIComponent(safeThread.id)}/jsonl` +
+    `?orgId=${encodeURIComponent(org_id)}` +
+    `&workspaceId=${encodeURIComponent(workspace_id)}`;
 
   return {
     thread: safeThread,
@@ -94,6 +100,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     workspace_name,
     preview_target,
     vanityDomain,
+    jsonlDownloadUrl,
   };
 }
 
@@ -107,6 +114,7 @@ export default function AdminThreadDetailPage() {
     workspace_name,
     preview_target,
     vanityDomain,
+    jsonlDownloadUrl,
   } = useLoaderData<typeof loader>();
 
   return (
@@ -172,6 +180,17 @@ export default function AdminThreadDetailPage() {
                     <dd className="text-sm">{formatTimestamp(thread.updated_at)}</dd>
                   </div>
                 </dl>
+                <div className="mt-4 flex items-center gap-2">
+                  <Button asChild variant="outline" size="sm">
+                    <a href={jsonlDownloadUrl} download={`${thread.id}.jsonl`}>
+                      <Download className="h-4 w-4" />
+                      Download JSONL
+                    </a>
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Streamed directly from sandbox storage
+                  </span>
+                </div>
               </CardContent>
             </Card>
 
