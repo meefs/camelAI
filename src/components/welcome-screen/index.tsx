@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { Suspense, use, useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { ChevronUp, Plus } from 'lucide-react';
 import type { WorkerScriptWithCreator, Integration, Thread } from '@/types';
@@ -8,6 +8,7 @@ import type { Attachment } from '@/components/attachment-list';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { PromptInput } from '@/components/prompt-input';
 import { ConnectionPicker } from '@/components/connection-picker';
+import { Skeleton } from '@/components/ui/skeleton';
 import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
 import { IntegrationIcon } from '@/lib/integration-icons';
 import { AnimatedPlaceholder } from './animated-placeholder';
@@ -182,9 +183,9 @@ function pickRandomPrompts(allPrompts: StarterPromptItem[], count: number) {
 interface WelcomeScreenProps {
   userId: string | null;
   userName: string | null;
-  allApps: WorkerScriptWithCreator[];
+  allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
   connections: Integration[];
-  recentThreads: Thread[];
+  recentThreads: Thread[] | Promise<Thread[]>;
   renderedAt?: number;
   onPromptChange: (prompt: string) => void;
   onSubmit: () => void;
@@ -194,6 +195,112 @@ interface WelcomeScreenProps {
   onFilesSelected: (files: File[]) => void;
   onAttachmentRemove: (id: string) => void;
   isCreatingThread: boolean;
+}
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return typeof (value as Promise<T>).then === 'function';
+}
+
+function useDeferredValue<T>(value: T | Promise<T>): T {
+  return isPromiseLike(value) ? use(value) : value;
+}
+
+function RecentChatsFallback() {
+  return (
+    <section className="space-y-4">
+      <SectionHeader title="Your recent chats" linkHref="/history" />
+      <div className="flex gap-4 overflow-x-auto pb-2 no-scrollbar">
+        {Array.from({ length: 3 }).map((_, index) => (
+          <Skeleton key={index} className="h-[116px] w-[260px] shrink-0 rounded-xl" />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AppsFallback() {
+  return (
+    <section className="space-y-4">
+      <SectionHeader title="Continue building an app" linkHref="/apps" />
+      <div className="flex gap-4 overflow-x-auto pb-2 no-scrollbar">
+        {Array.from({ length: 3 }).map((_, index) => (
+          <Skeleton key={index} className="aspect-video w-[260px] shrink-0 rounded-xl" />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function DeferredRecentChatsSection({
+  recentThreads,
+  referenceTime,
+  onOpenThread,
+}: {
+  recentThreads: Thread[] | Promise<Thread[]>;
+  referenceTime: number;
+  onOpenThread: (threadId: string) => void;
+}) {
+  const resolvedRecentThreads = useDeferredValue(recentThreads);
+  if (resolvedRecentThreads.length === 0) return null;
+
+  return (
+    <section className="space-y-4">
+      <SectionHeader title="Your recent chats" linkHref="/history" />
+      <RecentChatsRow
+        threads={resolvedRecentThreads.slice(0, 4)}
+        renderedAt={referenceTime}
+        onOpenThread={onOpenThread}
+      />
+    </section>
+  );
+}
+
+function DeferredAppsSection({
+  userId,
+  allApps,
+  referenceTime,
+  onStartChatForApp,
+}: {
+  userId: string | null;
+  allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
+  referenceTime: number;
+  onStartChatForApp: (app: WorkerScriptWithCreator) => void;
+}) {
+  const resolvedApps = useDeferredValue(allApps);
+  const userApps = userId
+    ? resolvedApps.filter((app) => app.created_by === userId)
+    : [];
+  const teamApps = userId
+    ? resolvedApps.filter((app) => app.created_by !== userId)
+    : resolvedApps;
+
+  if (userApps.length > 0) {
+    return (
+      <section className="space-y-4">
+        <SectionHeader title="Continue building an app" linkHref="/apps" />
+        <AppCardsRow
+          apps={userApps.slice(0, 4)}
+          renderedAt={referenceTime}
+          onStartChat={onStartChatForApp}
+        />
+      </section>
+    );
+  }
+
+  if (teamApps.length > 0) {
+    return (
+      <section className="space-y-4">
+        <SectionHeader title="What your team is working on" linkHref="/apps" />
+        <AppCardsRow
+          apps={teamApps.slice(0, 4)}
+          renderedAt={referenceTime}
+          onStartChat={onStartChatForApp}
+        />
+      </section>
+    );
+  }
+
+  return null;
 }
 
 export function WelcomeScreen({
@@ -214,28 +321,11 @@ export function WelcomeScreen({
 }: WelcomeScreenProps) {
   const navigate = useNavigate();
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
-
-  const userApps = useMemo(() => {
-    if (!userId) return [];
-    return allApps.filter((app) => app.created_by === userId);
-  }, [allApps, userId]);
-
-  const teamApps = useMemo(() => {
-    if (!userId) return allApps;
-    return allApps.filter((app) => app.created_by !== userId);
-  }, [allApps, userId]);
-
-  const hasUserApps = userApps.length > 0;
-  const hasTeamApps = teamApps.length > 0;
   const hasConnections = connections.length > 0;
-  const hasRecentChats = recentThreads.length > 0;
 
   const handleOpenThread = useCallback((threadId: string) => {
     navigate(`/chat/${threadId}`);
   }, [navigate]);
-
-  const showUserAppsSection = hasUserApps;
-  const showTeamAppsSection = !hasUserApps && hasTeamApps;
   const [addConnectionOpen, setAddConnectionOpen] = useState(false);
 
   const allIntegrationDefs = useMemo(
@@ -294,38 +384,22 @@ export function WelcomeScreen({
         )}
       </AnimatedPlaceholder>
 
-      {hasRecentChats && (
-        <section className="space-y-4">
-          <SectionHeader title="Your recent chats" linkHref="/history" />
-          <RecentChatsRow
-            threads={recentThreads.slice(0, 4)}
-            renderedAt={referenceTime}
-            onOpenThread={handleOpenThread}
-          />
-        </section>
-      )}
+      <Suspense fallback={<RecentChatsFallback />}>
+        <DeferredRecentChatsSection
+          recentThreads={recentThreads}
+          referenceTime={referenceTime}
+          onOpenThread={handleOpenThread}
+        />
+      </Suspense>
 
-      {showUserAppsSection && (
-        <section className="space-y-4">
-          <SectionHeader title="Continue building an app" linkHref="/apps" />
-          <AppCardsRow
-            apps={userApps.slice(0, 4)}
-            renderedAt={referenceTime}
-            onStartChat={onStartChatForApp}
-          />
-        </section>
-      )}
-
-      {showTeamAppsSection && (
-        <section className="space-y-4">
-          <SectionHeader title="What your team is working on" linkHref="/apps" />
-          <AppCardsRow
-            apps={teamApps.slice(0, 4)}
-            renderedAt={referenceTime}
-            onStartChat={onStartChatForApp}
-          />
-        </section>
-      )}
+      <Suspense fallback={<AppsFallback />}>
+        <DeferredAppsSection
+          userId={userId}
+          allApps={allApps}
+          referenceTime={referenceTime}
+          onStartChatForApp={onStartChatForApp}
+        />
+      </Suspense>
 
       <section className="space-y-4">
         <SectionHeader

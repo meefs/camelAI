@@ -91,9 +91,9 @@ interface ChatProps {
   welcomeData?: {
     userId: string | null;
     userName: string | null;
-    allApps: WorkerScriptWithCreator[];
+    allApps: WorkerScriptWithCreator[] | Promise<WorkerScriptWithCreator[]>;
     connections: Integration[];
-    recentThreads: Thread[];
+    recentThreads: Thread[] | Promise<Thread[]>;
     renderedAt: number;
   };
 }
@@ -150,6 +150,19 @@ function parseMessageContent(content: string | ContentBlock[]): string | Content
 
   // Plain string content
   return content;
+}
+
+function mergeServerAndLocalMessages(
+  serverMessages: Message[],
+  localMessages: Message[]
+): Message[] {
+  const serverIds = new Set(serverMessages.map((msg) => msg.id));
+  const unsyncedLocalMessages = localMessages.filter((msg) => !serverIds.has(msg.id));
+  if (unsyncedLocalMessages.length === 0) {
+    return serverMessages;
+  }
+  return [...serverMessages, ...unsyncedLocalMessages]
+    .sort((a, b) => a.created_at - b.created_at);
 }
 
 /**
@@ -819,21 +832,34 @@ export default function Chat({
   // Only sync on initial mount or explicit refresh, not during active chat
   const prevInitialMessagesRef = useRef(initialMessages);
   const hasHadUserInteraction = useRef(false);
+  const hasSyncedInitialLoaderMessagesRef = useRef(false);
+  const hasSyncedInitialPreviewRef = useRef(false);
   useEffect(() => {
-    // Skip sync if user has interacted (sent messages) - streaming state is authoritative
-    if (hasHadUserInteraction.current) {
-      prevInitialMessagesRef.current = initialMessages;
+    const previousInitialMessages = prevInitialMessagesRef.current;
+    const initialMessagesChanged = initialMessages !== previousInitialMessages;
+    if (!initialMessagesChanged) {
       return;
     }
-    // Only sync if initialMessages actually changed and we're not streaming
-    if (
-      initialMessages !== prevInitialMessagesRef.current &&
-      !streamingMessageIdRef.current &&
-      revalidator.state === 'idle'
-    ) {
-      prevInitialMessagesRef.current = initialMessages;
-      setMessages(parsedInitialMessages);
+    if (streamingMessageIdRef.current || revalidator.state !== 'idle') {
+      return;
     }
+    prevInitialMessagesRef.current = initialMessages;
+
+    // If users send before deferred history resolves, merge history with local optimistic turns.
+    const wasAwaitingInitialHistory =
+      !hasSyncedInitialLoaderMessagesRef.current &&
+      (previousInitialMessages?.length ?? 0) === 0;
+
+    if (hasHadUserInteraction.current && !wasAwaitingInitialHistory) {
+      return;
+    }
+
+    const nextMessages = (hasHadUserInteraction.current && wasAwaitingInitialHistory)
+      ? mergeServerAndLocalMessages(parsedInitialMessages, messagesRef.current)
+      : parsedInitialMessages;
+
+    hasSyncedInitialLoaderMessagesRef.current = true;
+    setMessages(nextMessages);
   }, [initialMessages, parsedInitialMessages, setMessages, revalidator.state]);
 
   const setStreamingMessageId = useCallback((id: string | null) => {
@@ -1193,6 +1219,23 @@ export default function Chat({
     setActiveTabId(nextActiveTabId);
   }, []);
 
+  useEffect(() => {
+    if (!threadId || hasSyncedInitialPreviewRef.current) return;
+    if (previewTabsRef.current.length > 0) {
+      hasSyncedInitialPreviewRef.current = true;
+      return;
+    }
+    if (initialPreviewSession.tabs.length === 0) return;
+
+    setLocalPreviewSessionState(initialPreviewSession.tabs, initialPreviewSession.activeTabId);
+    hasSyncedInitialPreviewRef.current = true;
+  }, [
+    threadId,
+    initialPreviewSession.tabs,
+    initialPreviewSession.activeTabId,
+    setLocalPreviewSessionState,
+  ]);
+
   const cleanupClosedTabState = useCallback((tabId: string) => {
     setTabIframeKeys((prev) => {
       if (!(tabId in prev)) return prev;
@@ -1414,7 +1457,7 @@ export default function Chat({
     }
 
     // Fetch existing messages from REST API unless this is a new thread
-    let shouldFetchMessages = !isNewThread;
+    let shouldFetchMessages = !isNewThread && !isLoadingMessages;
 
     // Check sessionStorage for welcome screen pending message (survives navigation)
     const pendingPayload = sessionStorage.getItem(pendingMessageKey);
@@ -2892,7 +2935,13 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
   }, [setPreviewTargetForThread]);
 
   function sendMessage() {
-    if (!input.trim() || !shouldShowChat || !resolvedWorkspaceId || !threadId) {
+    if (
+      isLoadingMessages ||
+      !input.trim() ||
+      !shouldShowChat ||
+      !resolvedWorkspaceId ||
+      !threadId
+    ) {
       return;
     }
 
@@ -3208,6 +3257,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                 onSubmit={sendMessage}
                 onStop={stopGeneration}
                 placeholder="Type a message..."
+                isLoading={isLoadingMessages}
                 isAssistantRunning={loading || isStreaming}
                 autoFocus
                 attachments={attachments}

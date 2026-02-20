@@ -29,62 +29,74 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const userName = authContext.user?.name ?? null;
   const renderedAt = Date.now();
 
-  let allApps: WorkerScriptWithCreator[] = [];
-  if (workspaceId && authContext.currentOrg?.id) {
-    const scripts = await authEnv.ORG.get(
-      authEnv.ORG.idFromName(authContext.currentOrg.id)
-    ).listWorkerScripts();
+  const allAppsPromise: Promise<WorkerScriptWithCreator[]> = workspaceId && authContext.currentOrg?.id
+    ? (async () => {
+        const scripts = await authEnv.ORG.get(
+          authEnv.ORG.idFromName(authContext.currentOrg.id)
+        ).listWorkerScripts();
 
-    const filteredScripts = scripts
-      .filter((script) => script.workspace_id === workspaceId)
-      .sort((a, b) => b.updated_at - a.updated_at);
+        const filteredScripts = scripts
+          .filter((script) => script.workspace_id === workspaceId)
+          .sort((a, b) => b.updated_at - a.updated_at);
 
-    const creatorIds = Array.from(
-      new Set(filteredScripts.map((script) => script.created_by).filter(Boolean))
-    );
-    const creatorProfiles = await Promise.all(
-      creatorIds.map(async (id) => {
-        const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
-        return [id, profile] as const;
+        const creatorIds = Array.from(
+          new Set(filteredScripts.map((script) => script.created_by).filter(Boolean))
+        );
+        const creatorProfiles = await Promise.all(
+          creatorIds.map(async (id) => {
+            const profile = await authEnv.USER.get(authEnv.USER.idFromName(id)).getProfile();
+            return [id, profile] as const;
+          })
+        );
+        const creatorMap = new Map(creatorProfiles.filter(([, profile]) => profile !== null));
+
+        return filteredScripts.map((script) => {
+          const creator = creatorMap.get(script.created_by);
+          return {
+            script_name: script.script_name,
+            workspace_id: script.workspace_id,
+            created_by: script.created_by,
+            created_at: script.created_at,
+            updated_at: script.updated_at,
+            is_public: script.is_public,
+            preview_key: script.preview_key,
+            preview_updated_at: script.preview_updated_at,
+            preview_status: script.preview_status,
+            preview_error: script.preview_error,
+            config_path: script.config_path,
+            creator: creator
+              ? {
+                  id: creator.id,
+                  name: creator.name,
+                  email: creator.email,
+                  avatar: creator.avatar,
+                }
+              : undefined,
+          };
+        });
+      })().catch((error) => {
+        console.error('Failed to load workspace apps:', error);
+        return [];
       })
-    );
-    const creatorMap = new Map(creatorProfiles.filter(([, profile]) => profile !== null));
-
-    allApps = filteredScripts.map((script) => {
-      const creator = creatorMap.get(script.created_by);
-      return {
-        script_name: script.script_name,
-        workspace_id: script.workspace_id,
-        created_by: script.created_by,
-        created_at: script.created_at,
-        updated_at: script.updated_at,
-        is_public: script.is_public,
-        preview_key: script.preview_key,
-        preview_updated_at: script.preview_updated_at,
-        preview_status: script.preview_status,
-        preview_error: script.preview_error,
-        config_path: script.config_path,
-        creator: creator
-          ? {
-              id: creator.id,
-              name: creator.name,
-              email: creator.email,
-              avatar: creator.avatar,
-            }
-          : undefined,
-      };
-    });
-  }
+    : Promise.resolve([]);
 
   let connections: Integration[] = [];
-  let recentThreads: Thread[] = [];
+  const recentThreadsPromise: Promise<Thread[]> = workspaceId
+    ? chatDO.getRecentThreads(context, workspaceId, 6).catch((error) => {
+        console.error('Failed to load recent threads:', error);
+        return [];
+      })
+    : Promise.resolve([]);
+
   if (workspaceId) {
-    const [records, threads] = await Promise.all([
-      env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)).getIntegrations(),
-      chatDO.getRecentThreads(context, workspaceId, 6),
-    ]);
-    connections = records.map(integrationRecordToIntegration);
-    recentThreads = threads;
+    try {
+      const records = await env.WORKSPACE.get(
+        env.WORKSPACE.idFromName(workspaceId)
+      ).getIntegrations();
+      connections = records.map(integrationRecordToIntegration);
+    } catch (error) {
+      console.error('Failed to load workspace connections:', error);
+    }
   }
 
   return {
@@ -92,9 +104,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     hostname,
     userId,
     userName,
-    allApps,
+    allApps: allAppsPromise,
     connections,
-    recentThreads,
+    recentThreads: recentThreadsPromise,
     renderedAt,
   };
 }

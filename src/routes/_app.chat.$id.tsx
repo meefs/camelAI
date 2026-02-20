@@ -1,5 +1,5 @@
 import { waitUntil } from 'cloudflare:workers';
-import { Suspense, use } from 'react';
+import { Suspense, use, useEffect, useState } from 'react';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
@@ -28,6 +28,13 @@ interface ChatData {
   previewTarget: PreviewTarget | null;
 }
 
+const EMPTY_CHAT_DATA: ChatData = {
+  messages: [],
+  previewTabs: [],
+  activeTabId: null,
+  previewTarget: null,
+};
+
 function getPreviewTabId(target: PreviewTarget): string {
   if (target.kind === 'app') return `app:${target.scriptName}`;
   return `file:${target.workspaceId}:${target.source}:${target.path}`;
@@ -40,12 +47,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     return {
       threadId: params.id,
       workspaceId: null,
-      chatDataPromise: Promise.resolve({
-        messages: [],
-        previewTabs: [],
-        activeTabId: null,
-        previewTarget: null,
-      }),
+      chatDataPromise: Promise.resolve(EMPTY_CHAT_DATA),
       threadTitle: null,
       isNewThread: false,
       hostname: undefined,
@@ -67,12 +69,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
   // Create promise for slower data - NOT awaited, will be streamed
   const chatDataPromise: Promise<ChatData> = isNewThread
-    ? Promise.resolve({
-        messages: [],
-        previewTabs: [],
-        activeTabId: null,
-        previewTarget: null,
-      })
+    ? Promise.resolve(EMPTY_CHAT_DATA)
     : (async () => {
         const [messages, previewStateRaw] = await Promise.all([
           chatDO.getMessages(context, params.id, workspaceId),
@@ -148,41 +145,21 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   };
 }
 
-// Component that uses React 19's use() hook to consume the promise
-// Must be a child component to trigger Suspense properly
-function ChatWithData({
-  chatDataPromise,
+function ResolveChatData({
   threadId,
-  workspaceId,
-  threadTitle,
-  isNewThread,
-  hostname,
-  orgSlug,
+  chatDataPromise,
+  onResolved,
 }: {
-  chatDataPromise: Promise<ChatData>;
   threadId: string;
-  workspaceId: string;
-  threadTitle: string | null;
-  isNewThread: boolean;
-  hostname: string | undefined;
-  orgSlug: string;
+  chatDataPromise: Promise<ChatData>;
+  onResolved: (threadId: string, data: ChatData) => void;
 }) {
   const chatData = use(chatDataPromise);
+  useEffect(() => {
+    onResolved(threadId, chatData);
+  }, [threadId, chatData, onResolved]);
 
-  return (
-    <Chat
-      threadId={threadId}
-      workspaceId={workspaceId}
-      initialMessages={chatData?.messages ?? []}
-      threadTitle={threadTitle}
-      initialPreviewTarget={chatData?.previewTarget ?? null}
-      initialPreviewTabs={chatData?.previewTabs ?? []}
-      initialActiveTabId={chatData?.activeTabId ?? null}
-      isNewThread={isNewThread}
-      hostname={hostname}
-      orgSlug={orgSlug}
-    />
-  );
+  return null;
 }
 
 export default function ChatPage() {
@@ -200,18 +177,50 @@ export default function ChatPage() {
     return <NoWorkspacesError />;
   }
 
+  const [resolvedChatDataState, setResolvedChatDataState] = useState<{
+    threadId: string;
+    data: ChatData;
+  } | null>(() => (
+    isNewThread
+      ? { threadId, data: EMPTY_CHAT_DATA }
+      : null
+  ));
+
+  const resolvedChatData = resolvedChatDataState?.threadId === threadId
+    ? resolvedChatDataState.data
+    : null;
+  const chatData = resolvedChatData ?? EMPTY_CHAT_DATA;
+  const isLoadingMessages = !isNewThread && resolvedChatData === null;
+
   return (
-    <Suspense fallback={<ChatLoadingSkeleton />}>
-      <ChatWithData
-        chatDataPromise={chatDataPromise}
+    <>
+      <Chat
+        key={threadId}
         threadId={threadId}
         workspaceId={workspaceId}
+        initialMessages={chatData.messages}
         threadTitle={threadTitle}
+        initialPreviewTarget={chatData.previewTarget}
+        initialPreviewTabs={chatData.previewTabs}
+        initialActiveTabId={chatData.activeTabId}
         isNewThread={isNewThread}
         hostname={hostname}
         orgSlug={orgSlug}
+        isLoadingMessages={isLoadingMessages}
       />
-    </Suspense>
+      {!isNewThread && (
+        <Suspense fallback={null}>
+          <ResolveChatData
+            key={threadId}
+            threadId={threadId}
+            chatDataPromise={chatDataPromise}
+            onResolved={(resolvedThreadId, data) => {
+              setResolvedChatDataState({ threadId: resolvedThreadId, data });
+            }}
+          />
+        </Suspense>
+      )}
+    </>
   );
 }
 
