@@ -1140,14 +1140,17 @@ export async function hardDeleteAdminUser(
     })
   );
 
-  // 4. Best-effort cleanup of user sessions.
-  try {
-    await deleteKvEntriesWithPrefix(authEnv.SESSIONS, SESSION_PREFIX, (_key, value) => {
-      const parsed = parseJsonSafely(value);
-      return parsed?.user_id === userId;
-    });
-  } catch (error) {
-    warnings.push(`Failed to clean user sessions: ${toErrorMessage(error)}`);
+  // 4. Best-effort cleanup of all user sessions (regular, worker, screenshot).
+  const sessionPrefixes = [SESSION_PREFIX, WORKER_SESSION_PREFIX, SCREENSHOT_SESSION_PREFIX] as const;
+  for (const prefix of sessionPrefixes) {
+    try {
+      await deleteKvEntriesWithPrefix(authEnv.SESSIONS, prefix, (_key, value) => {
+        const parsed = parseJsonSafely(value);
+        return parsed?.user_id === userId;
+      });
+    } catch (error) {
+      warnings.push(`Failed to clean ${prefix}* sessions: ${toErrorMessage(error)}`);
+    }
   }
 
   // 5. Wipe UserDO storage.
