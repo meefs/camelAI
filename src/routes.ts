@@ -144,6 +144,8 @@ export default [
   route('api/workspaces/:id/fs/move', 'routes/api/workspaces.$id.fs.move.ts'),
   route('api/workspaces/:id/fs/create', 'routes/api/workspaces.$id.fs.create.ts'),
   route('api/workspaces/:id/fs/upload', 'routes/api/workspaces.$id.fs.upload.ts'),
+  route('api/workspaces/:id/chat/:threadId/messages/stream', 'routes/api/workspaces.$id.chat.$threadId.messages.stream.ts'),
+  route('api/workspaces/:id/chat/:threadId/first-user-message', 'routes/api/workspaces.$id.chat.$threadId.first-user-message.ts'),
 
   // Workspace file upload API route (R2-based, for chat attachments)
   route('api/workspaces/:id/upload', 'routes/api/workspaces.$id.upload.ts'),

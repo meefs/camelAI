@@ -1,7 +1,6 @@
 import type { AppLoadContext } from 'react-router';
 import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import type { Thread, Message, PaginatedResult, PaginationParams } from '@/types';
-import { parseClaudeJsonlMessages } from './chat-jsonl-parser';
 import type { PreviewTarget } from '@/types';
 import { OrgDO, type OrgThread } from '../../workers/main/src/auth';
 import { WorkspaceDO } from '../../workers/main/src/workspace';
@@ -257,36 +256,24 @@ export async function getMessages(
   threadId: string,
   workspaceId: string
 ): Promise<Message[]> {
-  // Messages are read from container's Claude JSONL file
-  // threadId is the Claude session_id
+  // Messages are parsed on sandbox-host from the container's Claude JSONL file.
+  // threadId is the Claude session_id.
   try {
     const env = getEnv(context);
     const wsInfo = await getWorkspaceInfo(env, workspaceId);
     if (!wsInfo) return [];
 
     const container = new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, wsInfo.org_id);
-
-    const candidatePaths = getThreadJsonlPathCandidates(threadId);
-
-    let jsonlPath: string | null = null;
-    for (const candidate of candidatePaths) {
-      const exists = await container.exists(candidate);
-      if (exists.exists) {
-        jsonlPath = candidate;
-        break;
-      }
-    }
-
-    if (!jsonlPath) {
+    const streamResult = await container.readThreadMessagesStream(threadId);
+    if (!streamResult.success || !streamResult.response) {
       return [];
     }
 
-    // Read the JSONL file
-    const file = await container.readFile(jsonlPath);
-    if (!file.success || !file.content?.trim()) {
+    const payload = await streamResult.response.json() as { success?: unknown; messages?: unknown };
+    if (payload.success !== true || !Array.isArray(payload.messages)) {
       return [];
     }
-    return parseClaudeJsonlMessages(file.content, threadId);
+    return payload.messages as Message[];
   } catch (e) {
     console.error('[getMessages] Error:', e);
     return [];

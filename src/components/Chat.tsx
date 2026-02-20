@@ -72,6 +72,7 @@ import {
 import { getAppUrl, getVanityDomain, getIframeDomain } from '@/lib/app-url';
 import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
 import { isManualCompactCommand } from '@/lib/slash-commands';
+import { getFirstThreadPreviewUserMessage } from '@/lib/thread-preview';
 
 interface ChatProps {
   threadId?: string;
@@ -845,6 +846,13 @@ export default function Chat({
     }
     prevInitialMessagesRef.current = initialMessages;
 
+    // History is loaded via client-side fetch; ignore empty loader updates so
+    // they do not clear already-loaded messages.
+    if (parsedInitialMessages.length === 0 && messagesRef.current.length > 0) {
+      hasSyncedInitialLoaderMessagesRef.current = true;
+      return;
+    }
+
     // If users send before deferred history resolves, merge history with local optimistic turns.
     const wasAwaitingInitialHistory =
       !hasSyncedInitialLoaderMessagesRef.current &&
@@ -952,6 +960,8 @@ export default function Chat({
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const historyFetchAbortRef = useRef<AbortController | null>(null);
+  const firstUserMessageBackfillAttemptedRef = useRef<Set<string>>(new Set());
   const sessionIdRef = useRef<string | null>(null);
   const lastEventIdRef = useRef(0);
   const connectionStartedAtRef = useRef<Map<number, number>>(new Map());
@@ -1127,12 +1137,104 @@ export default function Chat({
     window.history.replaceState(null, '', url.toString());
   }, [isNewThread, threadId]);
 
-  // Fetch messages by revalidating the loader
-  const fetchMessages = useCallback(async (_id: string) => {
-    // Revalidate the route loader to get fresh messages
-    // The new messages will flow in via initialMessages prop
-    revalidator.revalidate();
-  }, [revalidator]);
+  // Fetch message history as a single JSON payload.
+  // The worker route streams response bytes through from sandbox-host so the
+  // worker itself does not need to buffer the whole payload.
+  const backfillThreadFirstUserMessage = useCallback(async (id: string, loadedMessages: Message[]) => {
+    if (!resolvedWorkspaceId) return;
+    if (firstUserMessageBackfillAttemptedRef.current.has(id)) return;
+
+    const firstUserMessage = getFirstThreadPreviewUserMessage(loadedMessages);
+    if (!firstUserMessage) return;
+
+    firstUserMessageBackfillAttemptedRef.current.add(id);
+    try {
+      const response = await fetch(
+        `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(id)}/first-user-message`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ firstUserMessage }),
+        }
+      );
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.warn('Failed to backfill first user message:', error);
+      firstUserMessageBackfillAttemptedRef.current.delete(id);
+    }
+  }, [resolvedWorkspaceId]);
+
+  const fetchMessages = useCallback(async (id: string) => {
+    if (!resolvedWorkspaceId) return;
+
+    historyFetchAbortRef.current?.abort();
+    const abortController = new AbortController();
+    historyFetchAbortRef.current = abortController;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(
+        `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(id)}/messages/stream`,
+        {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: abortController.signal,
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `Failed to fetch messages (${response.status})`);
+      }
+
+      const payload = await response.json() as {
+        success?: unknown;
+        messages?: unknown;
+        error?: unknown;
+      };
+      if (abortController.signal.aborted) return;
+
+      const rawMessages = Array.isArray(payload.messages) ? payload.messages : [];
+      const loadedMessages: Message[] = rawMessages.flatMap((raw) => {
+        if (!raw || typeof raw !== 'object') return [];
+        const item = raw as Record<string, unknown>;
+        const messageId = typeof item.id === 'string' ? item.id : null;
+        const role = item.role === 'assistant' ? 'assistant' : item.role === 'user' ? 'user' : null;
+        const createdAt = typeof item.created_at === 'number' ? item.created_at : null;
+        if (!messageId || !role || createdAt === null) return [];
+
+        const message: Message = {
+          id: messageId,
+          thread_id: typeof item.thread_id === 'string' ? item.thread_id : id,
+          role,
+          content: parseMessageContent((item.content ?? '') as string | ContentBlock[]),
+          created_at: createdAt,
+          isMeta: item.isMeta === true,
+          sourceToolUseID: typeof item.sourceToolUseID === 'string' ? item.sourceToolUseID : undefined,
+          isCompactSummary: item.isCompactSummary === true,
+        };
+        return [message];
+      });
+
+      const mergedMessages = mergeServerAndLocalMessages(loadedMessages, messagesRef.current);
+      setMessages(mergedMessages);
+      void backfillThreadFirstUserMessage(id, mergedMessages);
+      setLoading(false);
+    } catch (error) {
+      if (abortController.signal.aborted) return;
+      console.error('Failed to fetch message history stream:', error);
+      setError('Failed to load message history');
+      setLoading(false);
+    } finally {
+      if (historyFetchAbortRef.current === abortController) {
+        historyFetchAbortRef.current = null;
+      }
+    }
+  }, [backfillThreadFirstUserMessage, resolvedWorkspaceId, setError, setMessages]);
 
   const bumpIframeKey = useCallback((tabId: string) => {
     setTabIframeKeys((prev) => ({
@@ -2049,6 +2151,11 @@ export default function Chat({
         pingIntervalRef.current = null;
       }
 
+      if (historyFetchAbortRef.current) {
+        historyFetchAbortRef.current.abort();
+        historyFetchAbortRef.current = null;
+      }
+
       clearAllIframeRefreshTimeouts();
     };
   }, [bumpConnectionId, clearAllIframeRefreshTimeouts]);
@@ -2127,6 +2234,31 @@ export default function Chat({
     // This prevents StrictMode from closing connections on remount
     // Browser closes WebSocket automatically on navigation
   }, [threadId, shouldShowChat, resolvedWorkspaceId]);
+
+  // Ensure existing threads hydrate full history once initial route loading
+  // settles. Without this fallback, the connect path can skip fetch while
+  // `isLoadingMessages` is true and never retry.
+  useEffect(() => {
+    if (!threadId || !resolvedWorkspaceId || isNewThread || isLoadingMessages) {
+      return;
+    }
+    if (historyFetchAbortRef.current) {
+      return;
+    }
+    if (pendingMessagesRef.current.length > 0) {
+      return;
+    }
+    if (messagesRef.current.length > 0) {
+      return;
+    }
+    void fetchMessages(threadId);
+  }, [
+    fetchMessages,
+    isLoadingMessages,
+    isNewThread,
+    resolvedWorkspaceId,
+    threadId,
+  ]);
 
   // Reconnect on visibility change (tab becomes visible)
   useEffect(() => {

@@ -73,6 +73,13 @@ interface ControlPlaneReadResponse {
   code?: string;
 }
 
+interface ControlPlaneThreadMessagesStreamResponse {
+  success: boolean;
+  response?: Response;
+  error?: string;
+  code?: string;
+}
+
 interface ControlPlaneExistsResponse {
   exists: boolean;
   isFile?: boolean;
@@ -459,6 +466,31 @@ export class WorkspaceContainer {
       isBinary: hasNul,
       encoding: hasNul ? 'base64' : 'utf8',
     };
+  }
+
+  async readThreadMessagesStream(threadId: string): Promise<ControlPlaneThreadMessagesStreamResponse> {
+    const trimmedThreadId = threadId.trim();
+    if (!trimmedThreadId) {
+      return { success: false, error: 'Thread ID is required', code: 'EINVAL' };
+    }
+
+    const response = await this.fetchSandbox(
+      this.sandboxUrl('/chat/messages', { threadId: trimmedThreadId }),
+      {
+        headers: { Accept: 'application/json' },
+      },
+    );
+
+    if (!response.ok) {
+      const body = await response.text();
+      return {
+        success: false,
+        error: body || 'Read thread message stream failed',
+        code: `HTTP_${response.status}`,
+      };
+    }
+
+    return { success: true, response };
   }
 
   async writeFile(path: string, content: string): Promise<ControlPlaneWriteResponse> {

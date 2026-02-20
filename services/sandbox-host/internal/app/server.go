@@ -21,8 +21,8 @@ import (
 
 	"github.com/chiridion/sandbox-host/internal/container"
 	"github.com/chiridion/sandbox-host/internal/fsops"
-	"github.com/chiridion/sandbox-host/internal/workspace"
 	"github.com/chiridion/sandbox-host/internal/state"
+	"github.com/chiridion/sandbox-host/internal/workspace"
 	"github.com/gorilla/websocket"
 )
 
@@ -226,7 +226,7 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return nil
 	}
 
-	if strings.HasPrefix(route.Subpath, "/fs/") {
+	if strings.HasPrefix(route.Subpath, "/fs/") || route.Subpath == "/chat/messages" {
 		if _, err := s.workspaces.Ensure(name); err != nil {
 			return err
 		}
@@ -249,6 +249,8 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return s.handleFSExists(w, req, name)
 	case route.Subpath == "/exec" && req.Method == http.MethodPost:
 		return s.handleExec(w, req, name, opts)
+	case route.Subpath == "/chat/messages" && req.Method == http.MethodGet:
+		return s.handleChatMessages(w, req, name)
 	case route.Subpath == "/health" && req.Method == http.MethodGet:
 		if _, err := s.containers.EnsureContainer(name, opts); err != nil {
 			return err
@@ -260,6 +262,57 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		errorJSON(w, "Not found", http.StatusNotFound)
 		return nil
 	}
+}
+
+func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, name string) error {
+	threadID := strings.TrimSpace(req.URL.Query().Get("threadId"))
+	if threadID == "" {
+		errorJSON(w, "threadId query param required", http.StatusBadRequest)
+		return nil
+	}
+	if strings.ContainsAny(threadID, `/\`) {
+		errorJSON(w, "invalid threadId", http.StatusBadRequest)
+		return nil
+	}
+
+	jsonlPath := fmt.Sprintf("/home/claude/.claude/projects/-home-claude/%s.jsonl", threadID)
+	info, err := s.fs.ReadInfo(name, jsonlPath)
+	if err != nil {
+		lower := strings.ToLower(err.Error())
+		if strings.Contains(lower, "no such file") || strings.Contains(lower, "not exist") {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"success":  true,
+				"messages": []parsedChatMessage{},
+			})
+			return nil
+		}
+		return s.handleFSError(w, err, "Chat messages unavailable")
+	}
+
+	file, err := os.Open(info.HostPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"success":  true,
+				"messages": []parsedChatMessage{},
+			})
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return err
+	}
+	messages := parseClaudeJSONLMessages(string(content), threadID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":  true,
+		"messages": messages,
+	})
+	return nil
 }
 
 func (s *Server) handleFSRead(w http.ResponseWriter, req *http.Request, name string) error {

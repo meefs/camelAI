@@ -96,6 +96,9 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 4. On reconnects, `ChatThreadDO` sends `lastSeq`, replays missed events, dedupes, resumes streaming
 5. Claude SDK stores messages in JSONL at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`
 
+### Thread Message History Retrieval
+`getMessages()` no longer parses JSONL in the Worker runtime. It now calls sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}`, and sandbox-host reads + parses the JSONL file into `Message[]` before returning it. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker streams the JSON response body through from sandbox-host without buffering the full payload in Worker memory.
+
 ### Slack Chat Ingress
 1. Slack Events API posts to `/api/integrations/slack/events` (signature-verified with `SLACK_SIGNING_SECRET`)
 2. Worker resolves workspace/integration by Slack `team_id` from KV index (`slack_team:{teamId}`)
@@ -160,6 +163,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Admin troubleshooting | `/api/admin/threads/:id/jsonl` |
 | Invitations | `/api/invitations/:orgId/:invitationId` (GET/POST) |
 | Workspace FS | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}` |
+| Workspace chat | `/api/workspaces/:id/chat/:threadId/messages/stream` |
 | Workspace files | `/api/workspaces/:id/{upload,download,uploads/*,outputs/*}` |
 | Apps | `/api/apps/:scriptName/preview` |
 | WebSocket | `/ws/{workspace}` (chat), `/ws/logs?scriptName={name}` (worker logs) |

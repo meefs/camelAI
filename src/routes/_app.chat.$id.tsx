@@ -1,11 +1,9 @@
-import { waitUntil } from 'cloudflare:workers';
 import { Suspense, use, useEffect, useState } from 'react';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getWorkerScript } from '@/lib/auth-do';
-import { getFirstThreadPreviewUserMessage } from '@/lib/thread-preview';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
@@ -20,7 +18,6 @@ export function meta({ data }: Route.MetaArgs) {
   ];
 }
 
-// Type for the combined data promise
 interface ChatData {
   messages: Message[];
   previewTabs: PreviewTarget[];
@@ -60,39 +57,20 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const isNewThread = url.searchParams.get('newThread') === '1';
   const hostname = request.headers.get('host')?.split(':')[0] || undefined;
 
-  // Get thread metadata synchronously (fast - from OrgDO)
   const thread = await chatDO.getThread(context, params.id, workspaceId);
 
-  // Get auth env for looking up app visibility
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
-  // Create promise for slower data - NOT awaited, will be streamed
   const chatDataPromise: Promise<ChatData> = isNewThread
     ? Promise.resolve(EMPTY_CHAT_DATA)
     : (async () => {
-        const [messages, previewStateRaw] = await Promise.all([
-          chatDO.getMessages(context, params.id, workspaceId),
-          chatDO.getThreadPreviewState(context, params.id).catch(() => ({
-            target: null,
-            tabs: [],
-            activeTabId: null,
-            version: 0,
-          })),
-        ]);
-
-        if (!thread?.first_user_message) {
-          const firstUserMessage = getFirstThreadPreviewUserMessage(messages);
-          if (firstUserMessage) {
-            waitUntil(
-              chatDO
-                .setThreadFirstUserMessage(context, params.id, firstUserMessage, workspaceId)
-                .catch((error) => {
-                  console.warn('[chat loader] Failed to lazy-populate first_user_message:', error);
-                })
-            );
-          }
-        }
+        const previewStateRaw = await chatDO.getThreadPreviewState(context, params.id).catch(() => ({
+          target: null,
+          tabs: [],
+          activeTabId: null,
+          version: 0,
+        }));
 
         const applyAppVisibility = async (target: PreviewTarget): Promise<PreviewTarget> => {
           if (target.kind !== 'app') {
@@ -127,7 +105,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         }
 
         return {
-          messages,
+          messages: [],
           previewTabs,
           activeTabId,
           previewTarget,
