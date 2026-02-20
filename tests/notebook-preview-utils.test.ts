@@ -179,6 +179,100 @@ describe('notebook preview utils', () => {
       expect(render.table.caption).toBe('2 rows × 3 columns');
     });
 
+    it('parses pandas tables with a trailing dimension <p> tag', () => {
+      const output: NotebookOutput = {
+        output_type: 'execute_result',
+        data: {
+          'text/html': [
+            '<div>\n',
+            '<style scoped>\n',
+            '    .dataframe tbody tr th:only-of-type { vertical-align: middle; }\n',
+            '    .dataframe tbody tr th { vertical-align: top; }\n',
+            '    .dataframe thead th { text-align: right; }\n',
+            '</style>\n',
+            '<table border="1" class="dataframe">\n',
+            '  <thead>\n',
+            '    <tr style="text-align: right;">\n',
+            '      <th></th>\n',
+            '      <th>query_id</th>\n',
+            '      <th>status</th>\n',
+            '    </tr>\n',
+            '  </thead>\n',
+            '  <tbody>\n',
+            '    <tr>\n',
+            '      <th>0</th>\n',
+            '      <td>5128764</td>\n',
+            '      <td>VALID</td>\n',
+            '    </tr>\n',
+            '    <tr>\n',
+            '      <th>1</th>\n',
+            '      <td>5128760</td>\n',
+            '      <td>VALID</td>\n',
+            '    </tr>\n',
+            '  </tbody>\n',
+            '</table>\n',
+            '<p>3122 rows × 11 columns</p>\n',
+            '</div>',
+          ],
+        },
+      };
+
+      const render = getOutputRender(output);
+
+      expect(render.kind).toBe('table');
+      if (render.kind !== 'table') {
+        throw new Error(`Expected table output, got ${render.kind}`);
+      }
+
+      expect(render.table.headers).toEqual(['', 'query_id', 'status']);
+      expect(render.table.rows).toEqual([
+        ['0', '5128764', 'VALID'],
+        ['1', '5128760', 'VALID'],
+      ]);
+      expect(render.table.indexColumns).toBe(1);
+      expect(render.table.sourceRowCount).toBe(3122);
+    });
+
+    it('preserves pandas ellipsis indicator rows and extracts source row count', () => {
+      const output: NotebookOutput = {
+        output_type: 'execute_result',
+        data: {
+          'text/html': [
+            '<div>\n',
+            '<style scoped>.dataframe { }</style>\n',
+            '<table border="1" class="dataframe">\n',
+            '  <thead><tr style="text-align: right;"><th></th><th>Name</th></tr></thead>\n',
+            '  <tbody>\n',
+            '    <tr><th>0</th><td>Alice</td></tr>\n',
+            '    <tr><th>1</th><td>Bob</td></tr>\n',
+            '    <tr><th>...</th><td>...</td></tr>\n',
+            '    <tr><th>998</th><td>Yolanda</td></tr>\n',
+            '    <tr><th>999</th><td>Zack</td></tr>\n',
+            '  </tbody>\n',
+            '</table>\n',
+            '<p>1000 rows × 1 columns</p>\n',
+            '</div>',
+          ],
+        },
+      };
+
+      const render = getOutputRender(output);
+
+      expect(render.kind).toBe('table');
+      if (render.kind !== 'table') {
+        throw new Error(`Expected table output, got ${render.kind}`);
+      }
+
+      expect(render.table.rows).toEqual([
+        ['0', 'Alice'],
+        ['1', 'Bob'],
+        ['...', '...'],
+        ['998', 'Yolanda'],
+        ['999', 'Zack'],
+      ]);
+      expect(render.table.sourceRowCount).toBe(1000);
+    });
+
     it('parses rows across multiple tbody sections', () => {
       const output: NotebookOutput = {
         output_type: 'display_data',

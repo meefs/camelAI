@@ -83,6 +83,7 @@ export function parseDelimitedTable(text: string, delimiter: string): ParsedTabl
     rows: rows.slice(1),
     indexColumns: 0,
     caption: null,
+    sourceRowCount: null,
   };
 }
 

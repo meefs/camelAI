@@ -25,12 +25,13 @@ describe('NotebookTable', () => {
       ]),
       indexColumns: 1,
       caption: '150 rows × 1 column',
+      sourceRowCount: null,
     };
 
     const { container } = render(<NotebookTable table={table} mode="report" />);
 
-    expect(screen.getByText('Showing 100 of 150 rows × 1 columns')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /download all rows as csv/i })).toBeInTheDocument();
+    expect(screen.getByText('Showing 100 of 150 rows × 1 column')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /download all 150 rows as csv/i })).toBeInTheDocument();
 
     expect(screen.getByText('Value 1')).toBeInTheDocument();
     expect(screen.getByText('Value 100')).toBeInTheDocument();
@@ -48,6 +49,7 @@ describe('NotebookTable', () => {
       rows: Array.from({ length: rowCount }, (_, index) => [`${index}`]),
       indexColumns: 0,
       caption: `${rowCount} rows × 1 column`,
+      sourceRowCount: null,
     };
 
     expect(() => {
@@ -55,7 +57,7 @@ describe('NotebookTable', () => {
     }).not.toThrow();
 
     expect(
-      screen.getByText(`Showing 100 of ${rowCount.toLocaleString()} rows × 1 columns`)
+      screen.getByText(`Showing 100 of ${rowCount.toLocaleString()} rows × 1 column`)
     ).toBeInTheDocument();
   });
 });

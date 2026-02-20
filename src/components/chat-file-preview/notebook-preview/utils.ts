@@ -773,7 +773,10 @@ function hasSignificantContentOutsidePrimaryTable(html: string, primaryTableHtml
     return false;
   }
 
-  const withoutNonRenderedBlocks = stripNonRenderedHtmlBlocks(remaining).trim();
+  const withoutNonRenderedBlocks = stripNonRenderedHtmlBlocks(remaining)
+    // Pandas appends a <p>N rows × M columns</p> summary outside the table — not significant.
+    .replace(/<p>\s*\d+\s+rows?\s*×\s*\d+\s+columns?\s*<\/p>/gi, '')
+    .trim();
 
   if (withoutNonRenderedBlocks.length === 0) {
     return false;
@@ -794,6 +797,15 @@ function formatTableDimensions(rowCount: number, columnCount: number): string {
   const rowLabel = rowCount === 1 ? 'row' : 'rows';
   const columnLabel = columnCount === 1 ? 'column' : 'columns';
   return `${rowCount} ${rowLabel} × ${columnCount} ${columnLabel}`;
+}
+
+/**
+ * Extract the total row count from a pandas dimension `<p>` tag like
+ * `<p>3122 rows × 11 columns</p>` that appears outside the `<table>`.
+ */
+function extractPandasSourceRowCount(html: string): number | null {
+  const match = html.match(/<p>\s*(\d+)\s+rows?\s*×\s*\d+\s+columns?\s*<\/p>/i);
+  return match ? parseInt(match[1], 10) : null;
 }
 
 function getTableData(output: NotebookOutput): ParsedTable | null {
@@ -848,6 +860,7 @@ function getTableData(output: NotebookOutput): ParsedTable | null {
     headers.push('');
   }
 
+  const sourceRowCount = extractPandasSourceRowCount(html);
   const dataColumns = Math.max(0, columnCount - body.indexColumns);
   const caption = extractTableCaption(tableHtml) ?? formatTableDimensions(body.rows.length, dataColumns);
 
@@ -856,6 +869,7 @@ function getTableData(output: NotebookOutput): ParsedTable | null {
     rows: body.rows,
     indexColumns: body.indexColumns,
     caption,
+    sourceRowCount,
   };
 }
 

@@ -45,15 +45,22 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
     () => Math.max(table.headers.length, getMaxRowLength(table.rows)),
     [table.headers, table.rows]
   );
-  const totalRows = table.rows.length;
-  const isTruncated = totalRows > MAX_DISPLAY_ROWS;
-  const displayRows = isTruncated ? table.rows.slice(0, MAX_DISPLAY_ROWS) : table.rows;
+  const parsedRows = table.rows.length;
+  const totalRows = table.sourceRowCount ?? parsedRows;
+  const displayCapped = parsedRows > MAX_DISPLAY_ROWS;
+  const displayRows = displayCapped ? table.rows.slice(0, MAX_DISPLAY_ROWS) : table.rows;
+  const displayedCount = displayRows.length;
   const dataColumns = Math.max(0, columnCount - table.indexColumns);
-  const fallbackCaption = `${totalRows.toLocaleString()} row${totalRows === 1 ? '' : 's'} × ${dataColumns.toLocaleString()} column${dataColumns === 1 ? '' : 's'}`;
-  const captionText = isTruncated
-    ? `Showing ${MAX_DISPLAY_ROWS.toLocaleString()} of ${totalRows.toLocaleString()} rows × ${dataColumns.toLocaleString()} columns`
-    : (table.caption ?? fallbackCaption);
-  const downloadLabel = isTruncated ? 'Download all rows as CSV' : 'Download as CSV';
+
+  const colLabel = `${dataColumns.toLocaleString()} column${dataColumns === 1 ? '' : 's'}`;
+  const captionText =
+    displayedCount < totalRows
+      ? `Showing ${displayedCount.toLocaleString()} of ${totalRows.toLocaleString()} rows × ${colLabel}`
+      : (table.caption ?? `${totalRows.toLocaleString()} row${totalRows === 1 ? '' : 's'} × ${colLabel}`);
+
+  const downloadLabel = displayCapped
+    ? `Download all ${parsedRows.toLocaleString()} rows as CSV`
+    : 'Download as CSV';
   const hasCsvData = table.headers.length > 0 || table.rows.some((row) => row.length > 0);
 
   const updateOverflowFade = useCallback(() => {
