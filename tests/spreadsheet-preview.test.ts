@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { parseDelimitedTable } from '@/components/chat-file-preview/spreadsheet-preview';
+import {
+  getSpreadsheetDelimiter,
+  parseDelimitedTable,
+} from '@/components/chat-file-preview/spreadsheet-preview';
 
 describe('spreadsheet-preview parser', () => {
+  it('chooses delimiter from extension or mime type', () => {
+    expect(getSpreadsheetDelimiter('data.tsv')).toBe('\t');
+    expect(getSpreadsheetDelimiter('data', 'text/tab-separated-values')).toBe('\t');
+    expect(getSpreadsheetDelimiter('data.csv', 'text/csv')).toBe(',');
+    expect(getSpreadsheetDelimiter('data')).toBe(',');
+  });
+
   it('returns null for empty content', () => {
     expect(parseDelimitedTable('', ',')).toBeNull();
   });
@@ -39,4 +49,3 @@ describe('spreadsheet-preview parser', () => {
     expect(table?.rows).toEqual([['alpha', '2']]);
   });
 });
-

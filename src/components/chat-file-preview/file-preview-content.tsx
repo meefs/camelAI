@@ -11,6 +11,7 @@ import type { NotebookFile } from './notebook-preview';
 import { SpreadsheetPreview } from './spreadsheet-preview';
 
 const MAX_TEXT_LINES = 500;
+const MAX_SPREADSHEET_LINES = 500;
 
 type PreviewLayout = 'dialog' | 'panel';
 
@@ -159,8 +160,12 @@ function FilePreviewContentComponent({
 
         if (previewType === 'spreadsheet') {
           if (cancelled) return;
-          setTextPreview(bodyText);
-          setLineInfo({ truncated: false, totalLines: bodyText.split('\n').length });
+          const { text: truncatedText, truncated, totalLines } = truncateTextLines(
+            bodyText,
+            MAX_SPREADSHEET_LINES
+          );
+          setTextPreview(truncatedText);
+          setLineInfo({ truncated, totalLines });
           setTextStatus('ready');
           return;
         }
@@ -343,8 +348,14 @@ function FilePreviewContentComponent({
             <SpreadsheetPreview
               content={textPreview}
               filename={filename}
+              contentType={contentType}
               layout={layout}
             />
+          )}
+          {textStatus === 'ready' && lineInfo.truncated && (
+            <p className="mt-2 px-4 text-xs text-muted-foreground">
+              Showing first {MAX_SPREADSHEET_LINES} of {lineInfo.totalLines} lines.
+            </p>
           )}
         </div>
       )}

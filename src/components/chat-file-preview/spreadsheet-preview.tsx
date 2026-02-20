@@ -9,7 +9,15 @@ import { getFileExtension } from './file-type-utils';
 interface SpreadsheetPreviewProps {
   content: string;
   filename: string;
+  contentType?: string;
   layout: 'panel' | 'dialog';
+}
+
+export function getSpreadsheetDelimiter(filename: string, contentType?: string): ',' | '\t' {
+  const normalizedContentType = contentType?.toLowerCase();
+  if (getFileExtension(filename) === 'tsv') return '\t';
+  if (normalizedContentType?.includes('tab-separated-values')) return '\t';
+  return ',';
 }
 
 export function parseDelimitedTable(text: string, delimiter: string): ParsedTable | null {
@@ -78,8 +86,8 @@ export function parseDelimitedTable(text: string, delimiter: string): ParsedTabl
   };
 }
 
-export function SpreadsheetPreview({ content, filename, layout }: SpreadsheetPreviewProps) {
-  const delimiter = getFileExtension(filename) === 'tsv' ? '\t' : ',';
+export function SpreadsheetPreview({ content, filename, contentType, layout }: SpreadsheetPreviewProps) {
+  const delimiter = getSpreadsheetDelimiter(filename, contentType);
   const table = useMemo(() => parseDelimitedTable(content, delimiter), [content, delimiter]);
 
   if (!table) {
