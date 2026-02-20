@@ -824,6 +824,16 @@ export class UserDO extends DurableObject<DOEnv> {
     return profile;
   }
 
+  /**
+   * Permanently delete all data in this UserDO.
+   * Wipes profile, org memberships, OAuth providers, onboarding, and password.
+   */
+  async hardDeleteUser(): Promise<void> {
+    this.sql.exec('DELETE FROM profile');
+    this.sql.exec('DELETE FROM orgs');
+    this.sql.exec('DELETE FROM oauth_providers');
+  }
+
   // Test helper RPC: simulate constructor migration path on an existing DO.
   async remigrate(): Promise<void> {
     this.migrate();

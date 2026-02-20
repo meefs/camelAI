@@ -1055,6 +1055,105 @@ export async function hardDeleteAdminOrg(
   };
 }
 
+// User hard delete
+// ---------------------------------------------------------------------------
+
+export interface AdminHardDeleteUserResult {
+  removed_org_memberships: number;
+  warnings: string[];
+}
+
+/**
+ * Permanently delete a user and all related records.
+ * This is superuser-only and intended for test account cleanup.
+ *
+ * Steps:
+ *  1. Fetch user profile + OAuth providers for KV key discovery.
+ *  2. Remove user from every org (OrgDO.removeMember + UserDO.removeOrg).
+ *  3. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
+ *  4. Delete user sessions from SESSIONS KV.
+ *  5. Wipe the UserDO Durable Object storage.
+ */
+export async function hardDeleteAdminUser(
+  context: AppLoadContext,
+  userId: string,
+  _actorId = 'system-admin'
+): Promise<AdminHardDeleteUserResult> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const userStub = authEnv.USER.get(authEnv.USER.idFromName(userId));
+  const warnings: string[] = [];
+
+  // 1. Fetch user data for cleanup keys.
+  const [profile, oauthProviders, orgs] = await Promise.all([
+    userStub.getProfile(),
+    userStub.getOAuthProviders(),
+    userStub.getOrgs(),
+  ]);
+
+  if (!profile) {
+    throw new Error('User not found');
+  }
+
+  // 2. Remove user from all orgs.
+  let removedOrgMemberships = 0;
+  for (const org of orgs) {
+    try {
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.org_id));
+      await orgStub.removeMember(userId, userId);
+      removedOrgMemberships++;
+    } catch (error) {
+      warnings.push(
+        `Failed to remove user from org ${org.org_id.slice(0, 8)}: ${toErrorMessage(error)}`
+      );
+    }
+  }
+
+  // 3. Delete EMAIL_TO_USER KV entries.
+  const kvKeysToDelete: string[] = [
+    `email:${profile.email.toLowerCase()}`,
+  ];
+  for (const provider of oauthProviders) {
+    kvKeysToDelete.push(`oauth:${provider.provider}:${provider.provider_id}`);
+  }
+  await Promise.all(
+    kvKeysToDelete.map(async (key) => {
+      try {
+        await authEnv.EMAIL_TO_USER.delete(key);
+      } catch (error) {
+        warnings.push(`Failed to delete EMAIL_TO_USER key "${key}": ${toErrorMessage(error)}`);
+      }
+    })
+  );
+
+  // 4. Best-effort cleanup of user sessions.
+  try {
+    await deleteKvEntriesWithPrefix(authEnv.SESSIONS, SESSION_PREFIX, (_key, value) => {
+      const parsed = parseJsonSafely(value);
+      return parsed?.user_id === userId;
+    });
+  } catch (error) {
+    warnings.push(`Failed to clean user sessions: ${toErrorMessage(error)}`);
+  }
+
+  // 5. Wipe UserDO storage.
+  try {
+    await userStub.hardDeleteUser();
+  } catch (error) {
+    if (isMissingRpcMethodError(error, 'hardDeleteUser')) {
+      throw new Error(
+        'User Durable Object is running old code (missing hardDeleteUser). Restart `bun run dev` or deploy the latest main worker, then retry delete.'
+      );
+    }
+    throw error;
+  }
+
+  return {
+    removed_org_memberships: removedOrgMemberships,
+    warnings,
+  };
+}
+
 // Admin org member functions
 export async function addAdminOrgMember(
   context: AppLoadContext,
