@@ -12,7 +12,7 @@ export function NotebookMode({ notebook, layout }: NotebookModeProps) {
   const cells = getNotebookCells(notebook);
 
   return (
-    <div className="space-y-3 p-3">
+    <div className="mx-auto max-w-[1800px] space-y-3 p-3">
       {cells.map((cell, index) => (
         cell.cell_type === 'markdown' ? (
           <NotebookMarkdownCell key={`cell-${index}`} cell={cell} />

@@ -25,6 +25,8 @@ export type PreviewType =
   | 'pdf'
   | 'notebook'
   | 'markdown'
+  | 'code'
+  | 'spreadsheet'
   | 'text'
   | 'audio'
   | 'video'
@@ -65,6 +67,32 @@ const CODE_EXTENSIONS = new Set([
 ]);
 const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi']);
+const CODE_HIGHLIGHT_MAP: Record<string, string> = {
+  js: 'javascript',
+  jsx: 'jsx',
+  ts: 'typescript',
+  tsx: 'tsx',
+  py: 'python',
+  rs: 'rust',
+  go: 'go',
+  java: 'java',
+  c: 'c',
+  cpp: 'cpp',
+  h: 'c',
+  hpp: 'cpp',
+  html: 'html',
+  css: 'css',
+  json: 'json',
+  jsonl: 'json',
+  yaml: 'yaml',
+  yml: 'yaml',
+  toml: 'toml',
+  sql: 'sql',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'shell',
+  xml: 'html',
+};
 
 export function getFileExtension(filename: string): string {
   const trimmed = filename.trim();
@@ -97,15 +125,23 @@ export function getFileCategory(filename: string, contentType?: string): FileCat
   return 'other';
 }
 
+export function getShikiLanguage(filename: string): string | null {
+  const ext = getFileExtension(filename);
+  return CODE_HIGHLIGHT_MAP[ext] ?? null;
+}
+
 export function getPreviewType(filename: string, contentType?: string): PreviewType {
   const category = getFileCategory(filename, contentType);
+  const extension = getFileExtension(filename);
   if (category === 'image') return 'image';
   if (category === 'pdf') return 'pdf';
   if (category === 'notebook') return 'notebook';
   if (category === 'audio') return 'audio';
   if (category === 'video') return 'video';
-  if (getFileExtension(filename) === 'md') return 'markdown';
-  if (category === 'code' || category === 'text' || category === 'spreadsheet') return 'text';
+  if (extension === 'md') return 'markdown';
+  if (getShikiLanguage(filename) !== null) return 'code';
+  if (category === 'spreadsheet' || SPREADSHEET_EXTENSIONS.has(extension)) return 'spreadsheet';
+  if (category === 'code' || category === 'text') return 'text';
   return 'other';
 }
 

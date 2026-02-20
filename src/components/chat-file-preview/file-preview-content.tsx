@@ -4,9 +4,11 @@ import { memo, useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
+import { CodePreview } from './code-preview';
 import { getPreviewType } from './file-type-utils';
 import { NotebookPreview } from './notebook-preview';
 import type { NotebookFile } from './notebook-preview';
+import { SpreadsheetPreview } from './spreadsheet-preview';
 
 const MAX_TEXT_LINES = 500;
 
@@ -120,7 +122,11 @@ function FilePreviewContentComponent({
 
   useEffect(() => {
     const shouldFetchText =
-      previewType === 'text' || previewType === 'notebook' || previewType === 'markdown';
+      previewType === 'text' ||
+      previewType === 'code' ||
+      previewType === 'spreadsheet' ||
+      previewType === 'notebook' ||
+      previewType === 'markdown';
     if (!shouldFetchText) return;
 
     const controller = new AbortController();
@@ -147,6 +153,14 @@ function FilePreviewContentComponent({
           }
           if (cancelled) return;
           setNotebook(parsed);
+          setTextStatus('ready');
+          return;
+        }
+
+        if (previewType === 'spreadsheet') {
+          if (cancelled) return;
+          setTextPreview(bodyText);
+          setLineInfo({ truncated: false, totalLines: bodyText.split('\n').length });
           setTextStatus('ready');
           return;
         }
@@ -279,7 +293,7 @@ function FilePreviewContentComponent({
                 className={cn(
                   'w-full min-w-0 overflow-auto text-xs',
                   layout === 'panel'
-                    ? 'h-full max-h-full'
+                    ? 'h-full max-h-full p-4'
                     : 'max-h-[60vh] rounded-md border bg-muted/30 p-3',
                   textPreview ? 'text-foreground' : 'text-muted-foreground'
                 )}
@@ -292,6 +306,45 @@ function FilePreviewContentComponent({
                 </p>
               )}
             </>
+          )}
+        </div>
+      )}
+
+      {previewType === 'code' && (
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
+          )}
+          {textStatus === 'ready' && (
+            <CodePreview
+              code={textPreview}
+              filename={filename}
+              layout={layout}
+              truncated={lineInfo.truncated}
+              totalLines={lineInfo.totalLines}
+              maxLines={MAX_TEXT_LINES}
+            />
+          )}
+        </div>
+      )}
+
+      {previewType === 'spreadsheet' && (
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
+          )}
+          {textStatus === 'ready' && (
+            <SpreadsheetPreview
+              content={textPreview}
+              filename={filename}
+              layout={layout}
+            />
           )}
         </div>
       )}
@@ -310,10 +363,12 @@ function FilePreviewContentComponent({
                 className={cn(
                   layout === 'panel'
                     ? 'h-full overflow-auto'
-                    : 'max-h-[60vh] overflow-auto p-6'
+                    : 'max-h-[60vh] overflow-auto'
                 )}
               >
-                <MarkdownRenderer content={textPreview} />
+                <div className="mx-auto max-w-3xl px-6 py-6">
+                  <MarkdownRenderer content={textPreview} />
+                </div>
               </div>
             ) : (
               <pre
