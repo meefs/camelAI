@@ -2,7 +2,7 @@
  * Claude API Proxy Route
  *
  * Proxies Anthropic API requests from the sandbox container.
- * Uses CF AI Gateway with Bedrock as primary and Anthropic as fallback.
+ * Uses CF AI Gateway with Anthropic as primary and Bedrock as fallback.
  * Authenticates via sandbox-host injected headers and tracks spend per org.
  */
 
@@ -68,16 +68,75 @@ async function recordSpend(
 type ProxyResult = { ok: true; response: Response } | { ok: false; status: number };
 
 /**
- * Try calling Bedrock via CF AI Gateway
+ * Try calling Anthropic via CF AI Gateway (primary)
  */
-async function tryBedrock(
-  body: AnthropicRequestBody,
+async function tryAnthropic(
+  bodyText: string,
+  isStreaming: boolean,
   env: RouteContext['env'],
   clientHeaders: Record<string, string>,
   onUsage?: (usage: UsageInfo) => void
 ): Promise<ProxyResult> {
   if (!env.CF_ACCOUNT_ID || !env.CF_GATEWAY_NAME || !env.CF_GATEWAY_TOKEN) {
     return { ok: false, status: 500 };
+  }
+
+  try {
+    const { url, options } = buildAnthropicGatewayRequest(bodyText, {
+      cfAccountId: env.CF_ACCOUNT_ID,
+      cfGatewayName: env.CF_GATEWAY_NAME,
+      cfGatewayToken: env.CF_GATEWAY_TOKEN,
+      clientHeaders,
+    });
+
+    const response = await fetch(url, options);
+
+    if (!response.ok) {
+      console.log('[claude-proxy] Anthropic error', { status: response.status, statusText: response.statusText });
+      return { ok: false, status: response.status };
+    }
+
+    if (isStreaming) {
+      const adapted = response.body!.pipeThrough(createAnthropicUsageExtractor(onUsage));
+      return {
+        ok: true,
+        response: new Response(adapted, {
+          status: response.status,
+          headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Provider': 'anthropic' },
+        }),
+      };
+    }
+
+    // Non-streaming: usage available immediately
+    const data = (await response.json()) as { usage?: UsageInfo };
+    if (data.usage && onUsage) onUsage(data.usage);
+    return {
+      ok: true,
+      response: new Response(JSON.stringify(data), {
+        status: response.status,
+        headers: { 'Content-Type': 'application/json', 'X-Provider': 'anthropic' },
+      }),
+    };
+  } catch (e) {
+    console.error('[claude-proxy] Anthropic exception', { error: String(e) });
+    return { ok: false, status: 0 };
+  }
+}
+
+/**
+ * Call Bedrock via CF AI Gateway (fallback)
+ */
+async function callBedrockFallback(
+  body: AnthropicRequestBody,
+  env: RouteContext['env'],
+  clientHeaders: Record<string, string>,
+  onUsage?: (usage: UsageInfo) => void
+): Promise<Response> {
+  if (!env.CF_ACCOUNT_ID || !env.CF_GATEWAY_NAME || !env.CF_GATEWAY_TOKEN) {
+    return new Response(JSON.stringify({ error: 'Gateway not configured' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   try {
@@ -92,83 +151,33 @@ async function tryBedrock(
     const response = await fetch(url, options);
 
     if (!response.ok) {
-      console.log('[claude-proxy] Bedrock error', { status: response.status, statusText: response.statusText });
-      return { ok: false, status: response.status };
+      // Both providers failed - pass through the error
+      return new Response(response.body, {
+        status: response.status,
+        headers: { 'X-Provider': 'bedrock' },
+      });
     }
 
     if (isStreaming) {
       const adapted = response.body!.pipeThrough(createBedrockStreamAdapter(onUsage));
-      return {
-        ok: true,
-        response: new Response(adapted, {
-          headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Provider': 'bedrock' },
-        }),
-      };
+      return new Response(adapted, {
+        headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Provider': 'bedrock' },
+      });
     }
 
     // Non-streaming: usage available immediately
     const data = (await response.json()) as { usage?: UsageInfo };
     if (data.usage && onUsage) onUsage(data.usage);
-    return {
-      ok: true,
-      response: new Response(JSON.stringify(data), {
-        headers: { 'Content-Type': 'application/json', 'X-Provider': 'bedrock' },
-      }),
-    };
+    return new Response(JSON.stringify(data), {
+      headers: { 'Content-Type': 'application/json', 'X-Provider': 'bedrock' },
+    });
   } catch (e) {
-    console.error('[claude-proxy] Bedrock exception', { error: String(e) });
-    return { ok: false, status: 0 };
-  }
-}
-
-/**
- * Call Anthropic via CF AI Gateway (fallback)
- */
-async function callAnthropicFallback(
-  bodyText: string,
-  isStreaming: boolean,
-  env: RouteContext['env'],
-  clientHeaders: Record<string, string>,
-  onUsage?: (usage: UsageInfo) => void
-): Promise<Response> {
-  if (!env.CF_ACCOUNT_ID || !env.CF_GATEWAY_NAME || !env.CF_GATEWAY_TOKEN) {
-    return new Response(JSON.stringify({ error: 'Gateway not configured' }), {
-      status: 500,
+    console.error('[claude-proxy] Bedrock fallback exception', { error: String(e) });
+    return new Response(JSON.stringify({ error: 'Both providers failed' }), {
+      status: 502,
       headers: { 'Content-Type': 'application/json' },
     });
   }
-
-  const { url, options } = buildAnthropicGatewayRequest(bodyText, {
-    cfAccountId: env.CF_ACCOUNT_ID,
-    cfGatewayName: env.CF_GATEWAY_NAME,
-    cfGatewayToken: env.CF_GATEWAY_TOKEN,
-    clientHeaders,
-  });
-
-  const response = await fetch(url, options);
-
-  if (isStreaming && response.ok) {
-    const adapted = response.body!.pipeThrough(createAnthropicUsageExtractor(onUsage));
-    return new Response(adapted, {
-      status: response.status,
-      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Provider': 'anthropic' },
-    });
-  }
-
-  if (response.ok) {
-    const data = (await response.json()) as { usage?: UsageInfo };
-    if (data.usage && onUsage) onUsage(data.usage);
-    return new Response(JSON.stringify(data), {
-      status: response.status,
-      headers: { 'Content-Type': 'application/json', 'X-Provider': 'anthropic' },
-    });
-  }
-
-  // Error response - pass through
-  return new Response(response.body, {
-    status: response.status,
-    headers: { 'X-Provider': 'anthropic' },
-  });
 }
 
 /**
@@ -304,17 +313,17 @@ export async function handleClaudeProxy({ req, env, ctx }: RouteContext): Promis
     waitUntil(recordSpend(env, orgId, model, provider, usage).catch(console.error));
   };
 
-  // Try Bedrock first
-  const bedrockResult = await tryBedrock(body, env, clientHeaders, trackSpend('bedrock'));
-  if (bedrockResult.ok) {
-    return bedrockResult.response;
+  // Try Anthropic first
+  const anthropicResult = await tryAnthropic(bodyText, isStreaming, env, clientHeaders, trackSpend('anthropic'));
+  if (anthropicResult.ok) {
+    return anthropicResult.response;
   }
 
-  console.log('[claude-proxy] Bedrock failed, falling back to Anthropic', {
-    status: bedrockResult.status,
+  console.log('[claude-proxy] Anthropic failed, falling back to Bedrock', {
+    status: anthropicResult.status,
     org_id: orgId,
   });
 
-  // Fallback to Anthropic
-  return callAnthropicFallback(bodyText, isStreaming, env, clientHeaders, trackSpend('anthropic'));
+  // Fallback to Bedrock
+  return callBedrockFallback(body, env, clientHeaders, trackSpend('bedrock'));
 }
