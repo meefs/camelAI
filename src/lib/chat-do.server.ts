@@ -244,6 +244,14 @@ export async function generateThreadTitle(
   }
 }
 
+export function getThreadJsonlPathCandidates(threadId: string): string[] {
+  // Claude stores sessions at ~/.claude/projects/{project-path}/{session_id}.jsonl.
+  // Current sandbox project path resolves to -home-claude.
+  return [
+    `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`,
+  ];
+}
+
 export async function getMessages(
   context: AppLoadContext,
   threadId: string,
@@ -258,11 +266,7 @@ export async function getMessages(
 
     const container = new WorkspaceContainer(env as unknown as WorkspaceContainerEnv, workspaceId, wsInfo.org_id);
 
-    // Claude stores conversations at ~/.claude/projects/{project-path}/{session_id}.jsonl
-    // Modal sandbox uses /home/claude (-home-claude).
-    const candidatePaths = [
-      `/home/claude/.claude/projects/-home-claude/${threadId}.jsonl`,
-    ];
+    const candidatePaths = getThreadJsonlPathCandidates(threadId);
 
     let jsonlPath: string | null = null;
     for (const candidate of candidatePaths) {
