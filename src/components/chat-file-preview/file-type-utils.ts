@@ -36,6 +36,7 @@ const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'b
 const PDF_EXTENSIONS = new Set(['pdf']);
 const NOTEBOOK_EXTENSIONS = new Set(['ipynb']);
 const SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv', 'xlsx', 'xls']);
+const DELIMITED_SPREADSHEET_EXTENSIONS = new Set(['csv', 'tsv']);
 const CODE_EXTENSIONS = new Set([
   'txt',
   'json',
@@ -103,14 +104,21 @@ export function getFileExtension(filename: string): string {
 
 export function getFileCategory(filename: string, contentType?: string): FileCategory {
   if (contentType) {
-    if (contentType.startsWith('image/')) return 'image';
-    if (contentType.startsWith('audio/')) return 'audio';
-    if (contentType.startsWith('video/')) return 'video';
-    if (contentType === 'application/pdf') return 'pdf';
-    if (contentType.includes('ipynb')) return 'notebook';
-    if (contentType.startsWith('text/')) return 'text';
-    if (contentType.includes('json') || contentType.includes('xml')) return 'code';
-    if (contentType.includes('csv') || contentType.includes('spreadsheet')) return 'spreadsheet';
+    const normalizedContentType = contentType.toLowerCase();
+    if (normalizedContentType.startsWith('image/')) return 'image';
+    if (normalizedContentType.startsWith('audio/')) return 'audio';
+    if (normalizedContentType.startsWith('video/')) return 'video';
+    if (normalizedContentType === 'application/pdf') return 'pdf';
+    if (normalizedContentType.includes('ipynb')) return 'notebook';
+    if (
+      normalizedContentType.includes('csv') ||
+      normalizedContentType.includes('tab-separated-values') ||
+      normalizedContentType.includes('spreadsheet')
+    ) {
+      return 'spreadsheet';
+    }
+    if (normalizedContentType.startsWith('text/')) return 'text';
+    if (normalizedContentType.includes('json') || normalizedContentType.includes('xml')) return 'code';
   }
 
   const ext = getFileExtension(filename);
@@ -133,6 +141,12 @@ export function getShikiLanguage(filename: string): string | null {
 export function getPreviewType(filename: string, contentType?: string): PreviewType {
   const category = getFileCategory(filename, contentType);
   const extension = getFileExtension(filename);
+  const normalizedContentType = contentType?.toLowerCase();
+  const isDelimitedSpreadsheet =
+    DELIMITED_SPREADSHEET_EXTENSIONS.has(extension) ||
+    normalizedContentType?.includes('csv') ||
+    normalizedContentType?.includes('tab-separated-values');
+
   if (category === 'image') return 'image';
   if (category === 'pdf') return 'pdf';
   if (category === 'notebook') return 'notebook';
@@ -140,7 +154,8 @@ export function getPreviewType(filename: string, contentType?: string): PreviewT
   if (category === 'video') return 'video';
   if (extension === 'md') return 'markdown';
   if (getShikiLanguage(filename) !== null) return 'code';
-  if (category === 'spreadsheet' || SPREADSHEET_EXTENSIONS.has(extension)) return 'spreadsheet';
+  if (isDelimitedSpreadsheet) return 'spreadsheet';
+  if (category === 'spreadsheet') return 'other';
   if (category === 'code' || category === 'text') return 'text';
   return 'other';
 }

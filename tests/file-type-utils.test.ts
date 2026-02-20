@@ -29,7 +29,20 @@ describe('file-type-utils', () => {
   it('routes spreadsheet files to spreadsheet preview and keeps plain text on text preview', () => {
     expect(getPreviewType('data.csv')).toBe('spreadsheet');
     expect(getPreviewType('data.csv', 'text/csv')).toBe('spreadsheet');
+    expect(getPreviewType('dataset', 'text/csv')).toBe('spreadsheet');
+    expect(getPreviewType('dataset', 'text/tab-separated-values')).toBe('spreadsheet');
     expect(getPreviewType('notes.log')).toBe('text');
+  });
+
+  it('falls back for binary excel formats', () => {
+    expect(getPreviewType('report.xlsx')).toBe('other');
+    expect(getPreviewType('report.xls')).toBe('other');
+    expect(
+      getPreviewType(
+        'report.xlsx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      )
+    ).toBe('other');
   });
 
   it('maps file extensions to shiki languages', () => {
