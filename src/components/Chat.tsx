@@ -1199,7 +1199,6 @@ export default function Chat({
     const abortController = new AbortController();
     historyFetchAbortRef.current = abortController;
 
-    setLoading(true);
     setError(null);
 
     try {
@@ -1249,12 +1248,10 @@ export default function Chat({
       const mergedMessages = mergeServerAndLocalMessages(loadedMessages, messagesRef.current);
       setMessages(mergedMessages);
       void backfillThreadFirstUserMessage(id, mergedMessages);
-      setLoading(false);
     } catch (error) {
       if (abortController.signal.aborted) return;
       console.error('Failed to fetch message history stream:', error);
       setError('Failed to load message history');
-      setLoading(false);
     } finally {
       if (historyFetchAbortRef.current === abortController) {
         historyFetchAbortRef.current = null;
