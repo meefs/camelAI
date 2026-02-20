@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 
 export type VoiceRecordingState = 'idle' | 'warming_up' | 'recording' | 'transcribing';
 
@@ -37,11 +37,16 @@ export function useVoiceRecording({
   const compressorRef = useRef<DynamicsCompressorNode | null>(null);
   const cancelledRef = useRef(false);
 
-  // Check browser support
-  const isSupported =
-    typeof navigator !== 'undefined' &&
-    !!navigator.mediaDevices?.getUserMedia &&
-    typeof MediaRecorder !== 'undefined';
+  // Check browser support after mount to avoid SSR hydration mismatch
+  // (server returns false, client returns true → different DOM → radix-ui crash)
+  const [isSupported, setIsSupported] = useState(false);
+  useEffect(() => {
+    setIsSupported(
+      typeof navigator !== 'undefined' &&
+      !!navigator.mediaDevices?.getUserMedia &&
+      typeof MediaRecorder !== 'undefined'
+    );
+  }, []);
 
   const cleanup = useCallback(() => {
     if (sourceRef.current) {

@@ -1,4 +1,4 @@
-import { Suspense, use, useEffect, useState } from 'react';
+import { Suspense, use, useCallback, useEffect, useState } from 'react';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
@@ -170,6 +170,10 @@ export default function ChatPage() {
   const chatData = resolvedChatData ?? EMPTY_CHAT_DATA;
   const isLoadingMessages = !isNewThread && resolvedChatData === null;
 
+  const handleResolved = useCallback((resolvedThreadId: string, data: ChatData) => {
+    setResolvedChatDataState({ threadId: resolvedThreadId, data });
+  }, []);
+
   return (
     <>
       <Chat
@@ -192,9 +196,7 @@ export default function ChatPage() {
             key={threadId}
             threadId={threadId}
             chatDataPromise={chatDataPromise}
-            onResolved={(resolvedThreadId, data) => {
-              setResolvedChatDataState({ threadId: resolvedThreadId, data });
-            }}
+            onResolved={handleResolved}
           />
         </Suspense>
       )}

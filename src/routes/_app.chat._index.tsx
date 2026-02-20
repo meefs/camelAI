@@ -99,14 +99,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     }
   }
 
+  const [allApps, recentThreads] = await Promise.all([allAppsPromise, recentThreadsPromise]);
+
   return {
     workspaceId: workspaceId ?? null,
     hostname,
     userId,
     userName,
-    allApps: allAppsPromise,
+    allApps,
     connections,
-    recentThreads: recentThreadsPromise,
+    recentThreads,
     renderedAt,
   };
 }

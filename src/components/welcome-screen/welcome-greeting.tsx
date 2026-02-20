@@ -1,6 +1,7 @@
 'use client';
 
-import { useMemo, useRef } from 'react';
+import { useMemo } from 'react';
+import { createSeededRandom, hashStringToSeed } from './deterministic-random';
 
 const GREETINGS_WITH_NAME = [
   'Hey, {name}',
@@ -21,6 +22,7 @@ const GREETINGS_WITHOUT_NAME = [
 
 interface WelcomeGreetingProps {
   userName: string | null;
+  seed: number;
 }
 
 function getFirstName(name: string) {
@@ -29,18 +31,18 @@ function getFirstName(name: string) {
   return trimmed.split(/\s+/)[0] ?? trimmed;
 }
 
-export function WelcomeGreeting({ userName }: WelcomeGreetingProps) {
-  const initialNameRef = useRef(userName);
+export function WelcomeGreeting({ userName, seed }: WelcomeGreetingProps) {
   const greeting = useMemo(() => {
-    const name = initialNameRef.current?.trim();
+    const name = userName?.trim();
     const hasName = Boolean(name);
     const pool = hasName ? GREETINGS_WITH_NAME : GREETINGS_WITHOUT_NAME;
-    const selected = pool[Math.floor(Math.random() * pool.length)];
+    const random = createSeededRandom(hashStringToSeed(`${seed}:${name ?? ''}`));
+    const selected = pool[Math.floor(random() * pool.length)] ?? pool[0];
     if (hasName && name) {
       return selected.replace('{name}', getFirstName(name));
     }
     return selected;
-  }, []);
+  }, [userName, seed]);
 
   return (
     <div className="text-center mb-8">

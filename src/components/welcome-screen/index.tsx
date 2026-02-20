@@ -12,6 +12,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { INTEGRATION_REGISTRY } from '@/lib/integration-registry';
 import { IntegrationIcon } from '@/lib/integration-icons';
 import { AnimatedPlaceholder } from './animated-placeholder';
+import { createSeededRandom, hashStringToSeed } from './deterministic-random';
 import { WelcomeGreeting } from './welcome-greeting';
 import { SectionHeader } from './section-header';
 import { StarterPrompts, type StarterPromptItem } from './starter-prompts';
@@ -171,10 +172,14 @@ const STARTER_PROMPTS: StarterPromptItem[] = [
     icon: 'Calculator',
   },
 ];
-function pickRandomPrompts(allPrompts: StarterPromptItem[], count: number) {
+function pickRandomPrompts(
+  allPrompts: StarterPromptItem[],
+  count: number,
+  random: () => number = Math.random
+) {
   const copy = [...allPrompts];
   for (let i = copy.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(random() * (i + 1));
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy.slice(0, count);
@@ -339,10 +344,16 @@ export function WelcomeScreen({
   );
 
   const [shuffleKey, setShuffleKey] = useState(0);
+  const initialPromptSeed = useMemo(
+    () => hashStringToSeed(`starter-prompts:${referenceTime}:${userId ?? 'anonymous'}`),
+    [referenceTime, userId]
+  );
   const promptsToDisplay = useMemo(
-    () => pickRandomPrompts(STARTER_PROMPTS, 4),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [shuffleKey]
+    () =>
+      shuffleKey === 0
+        ? pickRandomPrompts(STARTER_PROMPTS, 4, createSeededRandom(initialPromptSeed))
+        : pickRandomPrompts(STARTER_PROMPTS, 4),
+    [initialPromptSeed, shuffleKey]
   );
 
   const handleShufflePrompts = useCallback(() => {
@@ -364,7 +375,7 @@ export function WelcomeScreen({
 
   return (
     <div className="w-full max-w-5xl space-y-10">
-      <WelcomeGreeting userName={userName} />
+      <WelcomeGreeting userName={userName} seed={referenceTime} />
 
       <AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
         {(animatedText) => (

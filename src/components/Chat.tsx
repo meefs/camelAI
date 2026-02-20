@@ -52,6 +52,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { MessageBubble, isInterruptMessage, parseSlashCommand, parseLocalCommandStdout } from '@/components/message-bubble';
 import { LoadingDots } from '@/components/loading-dots';
+import { Skeleton } from '@/components/ui/skeleton';
 import { CompactingIndicator } from '@/components/compacting-indicator';
 import { WelcomeScreen } from '@/components/welcome-screen';
 import { FilePreviewContent, isImageFile } from '@/components/chat-file-preview';
@@ -480,6 +481,7 @@ interface ChatMessagesViewProps {
   setError: Dispatch<SetStateAction<string | null>>;
   isCompacting: boolean;
   loading: boolean;
+  isLoadingMessages: boolean;
   isStreaming: boolean;
   hasStreamingMessage: boolean;
   shouldRenderSpacer: boolean;
@@ -506,6 +508,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
   setError,
   isCompacting,
   loading,
+  isLoadingMessages,
   isStreaming,
   hasStreamingMessage,
   shouldRenderSpacer,
@@ -517,6 +520,29 @@ const ChatMessagesView = memo(function ChatMessagesView({
 }: ChatMessagesViewProps) {
   return (
     <>
+      {/* Message loading skeletons (deferred data still resolving) */}
+      {isLoadingMessages && visibleMessages.length === 0 && (
+        <>
+          <div className="flex flex-col items-end gap-1 mt-6">
+            <Skeleton className="h-16 w-3/4 rounded-3xl" />
+          </div>
+          <div className="flex flex-col gap-2 mt-4">
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-5/6" />
+            <Skeleton className="h-4 w-4/5" />
+            <Skeleton className="h-4 w-2/3" />
+          </div>
+          <div className="flex flex-col items-end gap-1 mt-6">
+            <Skeleton className="h-12 w-1/2 rounded-3xl" />
+          </div>
+          <div className="flex flex-col gap-2 mt-4">
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-11/12" />
+            <Skeleton className="h-4 w-3/4" />
+          </div>
+        </>
+      )}
+
       {visibleMessages.map(msg => {
         const isLastUserMessage = msg.id === lastUserMessageId;
         const isLastAssistantMessage = !isAwaitingAssistant && isLastMessageAssistantLike && msg.id === lastMessageId;
@@ -751,7 +777,7 @@ export default function Chat({
   // Local state for messages, streaming, and loading
   const [messages, setMessagesState] = useState<Message[]>(parsedInitialMessages);
   const [streamingMessageId, setStreamingMessageIdState] = useState<string | null>(null);
-  const [loading, setLoading] = useState(isLoadingMessages);
+  const [loading, setLoading] = useState(false);
   const [pendingMessages, setPendingMessagesState] = useState<Message[]>([]);
   const [currentTodos, setCurrentTodos] = useState<TodoItem[]>([]);
   const [pendingQuestion, setPendingQuestion] = useState<AskUserQuestionData | null>(null);
@@ -3331,6 +3357,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             setError={setError}
             isCompacting={isCompacting}
             loading={loading}
+            isLoadingMessages={isLoadingMessages}
             isStreaming={isStreaming}
             hasStreamingMessage={hasStreamingMessage}
             shouldRenderSpacer={shouldRenderSpacer}
