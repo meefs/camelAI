@@ -1095,7 +1095,19 @@ export async function hardDeleteAdminUser(
     throw new Error('User not found');
   }
 
-  // 2. Remove user from all orgs.
+  // 2. Fail early if the user owns any orgs — removing an owner via
+  //    removeMember throws, and proceeding would leave a dangling owner
+  //    reference in the OrgDO after the UserDO is wiped.
+  const ownedOrgIds = orgs.filter((o) => o.role === 'owner').map((o) => o.org_id);
+  if (ownedOrgIds.length > 0) {
+    const preview = ownedOrgIds.slice(0, 3).map((id) => id.slice(0, 8)).join(', ');
+    const suffix = ownedOrgIds.length > 3 ? ` and ${ownedOrgIds.length - 3} more` : '';
+    throw new Error(
+      `User owns ${ownedOrgIds.length} org(s) (${preview}${suffix}). Transfer ownership or delete those orgs before deleting this user.`
+    );
+  }
+
+  // 3. Remove user from all orgs.
   let removedOrgMemberships = 0;
   for (const org of orgs) {
     try {
@@ -1103,6 +1115,8 @@ export async function hardDeleteAdminUser(
       await orgStub.removeMember(userId, userId);
       removedOrgMemberships++;
     } catch (error) {
+      // Non-owner removals should not throw, but guard against unexpected
+      // failures and surface them without aborting the rest of cleanup.
       warnings.push(
         `Failed to remove user from org ${org.org_id.slice(0, 8)}: ${toErrorMessage(error)}`
       );
