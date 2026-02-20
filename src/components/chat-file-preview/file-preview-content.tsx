@@ -202,11 +202,13 @@ function FilePreviewContentComponent({
   return (
     <div className={cn('overflow-hidden', layout === 'panel' && 'h-full')}>
       {previewType === 'image' && (
-        <ImagePreview src={previewUrl} alt={filename} layout={layout} />
+        <div className={cn(layout === 'panel' && 'p-3')}>
+          <ImagePreview src={previewUrl} alt={filename} layout={layout} />
+        </div>
       )}
 
       {previewType === 'pdf' && (
-        <div className="relative min-h-[200px] h-full">
+        <div className={cn('relative min-h-[200px]', layout === 'panel' ? 'h-full p-3' : 'h-full')}>
           {mediaLoading && !mediaError && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -231,7 +233,7 @@ function FilePreviewContentComponent({
       )}
 
       {previewType === 'audio' && (
-        <div className="relative min-h-[80px]">
+        <div className={cn('relative min-h-[80px]', layout === 'panel' && 'p-3')}>
           {mediaLoading && !mediaError && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -258,7 +260,7 @@ function FilePreviewContentComponent({
       )}
 
       {previewType === 'video' && (
-        <div className="relative min-h-[200px]">
+        <div className={cn('relative min-h-[200px]', layout === 'panel' && 'p-3')}>
           {mediaLoading && !mediaError && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -422,7 +424,7 @@ function FilePreviewContentComponent({
       )}
 
       {previewType === 'other' && (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-md border border-dashed py-10 text-sm text-muted-foreground">
+        <div className={cn('flex flex-col items-center justify-center gap-3 rounded-md border border-dashed py-10 text-sm text-muted-foreground', layout === 'panel' && 'm-3')}>
           <span>No preview available for {getFilenameFromPath(filename)}.</span>
         </div>
       )}

@@ -280,7 +280,6 @@
   content: counter(line);
   counter-increment: line;
   display: inline-block;
-  width: 3rem;
   margin-right: 1rem;
   text-align: right;
   color: var(--color-muted-foreground);

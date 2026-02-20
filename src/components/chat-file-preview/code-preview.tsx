@@ -5,7 +5,7 @@ import { Check, Copy } from 'lucide-react';
 import { codeToHtml } from 'shiki';
 import { SHIKI_DEFAULT_THEMES, PRELOAD_LANGUAGES } from '@/lib/shiki-config';
 import { cn } from '@/lib/utils';
-import { getFileExtension, getShikiLanguage } from './file-type-utils';
+import { getShikiLanguage } from './file-type-utils';
 
 interface CodePreviewProps {
   code: string;
@@ -14,12 +14,6 @@ interface CodePreviewProps {
   truncated: boolean;
   totalLines: number;
   maxLines?: number;
-}
-
-function getLanguageLabel(filename: string, language: string | null): string {
-  if (language) return language;
-  const extension = getFileExtension(filename);
-  return extension || 'text';
 }
 
 export function CodePreview({
@@ -34,10 +28,6 @@ export function CodePreview({
   const [highlightedCode, setHighlightedCode] = useState<string | null>(null);
 
   const language = useMemo(() => getShikiLanguage(filename), [filename]);
-  const languageLabel = useMemo(
-    () => getLanguageLabel(filename, language),
-    [filename, language]
-  );
 
   useEffect(() => {
     let isActive = true;
@@ -88,22 +78,17 @@ export function CodePreview({
 
   return (
     <div className={cn('group/code relative', layout === 'dialog' && 'max-h-[60vh] overflow-auto')}>
-      <div className="sticky top-0 z-10 flex items-center justify-between px-3 py-1">
-        <span className="font-mono text-[11px] text-muted-foreground/50">
-          {languageLabel}
-        </span>
-        <button
-          onClick={handleCopy}
-          className="rounded-md p-1 opacity-0 transition-opacity group-hover/code:opacity-100 hover:bg-muted"
-          aria-label="Copy code"
-        >
-          {copied ? (
-            <Check className="size-3.5 text-green-500" />
-          ) : (
-            <Copy className="size-3.5 text-muted-foreground" />
-          )}
-        </button>
-      </div>
+      <button
+        onClick={handleCopy}
+        className="absolute top-2 right-2 z-10 rounded-md p-1 opacity-0 transition-opacity group-hover/code:opacity-100 hover:bg-muted"
+        aria-label="Copy code"
+      >
+        {copied ? (
+          <Check className="size-3.5 text-green-500" />
+        ) : (
+          <Copy className="size-3.5 text-muted-foreground" />
+        )}
+      </button>
 
       {highlightedCode ? (
         <div
