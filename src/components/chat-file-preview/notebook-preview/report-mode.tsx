@@ -63,50 +63,52 @@ function ReportModeComponent({ notebook, layout }: ReportModeProps) {
   const languageVersion = notebook.metadata?.language_info?.version;
 
   return (
-    <div className="notebook-report flex gap-8 px-6 py-6 @3xl:px-4">
-      <ReportSidebar entries={tocEntries} />
+    <div className="notebook-report mx-auto w-full max-w-5xl px-6 py-6">
+      <div className="flex gap-8">
+        <ReportSidebar entries={tocEntries} />
 
-      <div className="min-w-0 max-w-3xl flex-1">
-        <ReportHeader header={header} />
+        <div className="min-w-0 max-w-3xl flex-1">
+          <ReportHeader header={header} />
 
-        <div className="space-y-8">
-          {visibleCells.map(({ cell, index }) => {
-            if (cell.cell_type === 'markdown') {
-              let source = toText(cell.source);
-              if (index === header.titleCellIndex) {
-                source = removeHeaderContentFromTitleCell(source);
+          <div className="space-y-8">
+            {visibleCells.map(({ cell, index }) => {
+              if (cell.cell_type === 'markdown') {
+                let source = toText(cell.source);
+                if (index === header.titleCellIndex) {
+                  source = removeHeaderContentFromTitleCell(source);
+                }
+                if (!source.trim()) return null;
+
+                return (
+                  <ReportMarkdownCell
+                    key={`cell-${index}`}
+                    source={source}
+                    entries={tocEntriesByCell.get(index) ?? []}
+                  />
+                );
               }
-              if (!source.trim()) return null;
+
+              const outputs = Array.isArray(cell.outputs) ? cell.outputs : [];
+              if (outputs.length === 0) return null;
 
               return (
-                <ReportMarkdownCell
-                  key={`cell-${index}`}
-                  source={source}
-                  entries={tocEntriesByCell.get(index) ?? []}
-                />
+                <div key={`cell-${index}`} className="min-w-0 space-y-8">
+                  {outputs.map((output, outputIndex) => (
+                    <OutputRenderer
+                      key={`output-${index}-${outputIndex}`}
+                      output={output}
+                      mode="report"
+                      layout={layout}
+                      title={`Output ${outputIndex + 1}`}
+                    />
+                  ))}
+                </div>
               );
-            }
+            })}
+          </div>
 
-            const outputs = Array.isArray(cell.outputs) ? cell.outputs : [];
-            if (outputs.length === 0) return null;
-
-            return (
-              <div key={`cell-${index}`} className="min-w-0 space-y-8">
-                {outputs.map((output, outputIndex) => (
-                  <OutputRenderer
-                    key={`output-${index}-${outputIndex}`}
-                    output={output}
-                    mode="report"
-                    layout={layout}
-                    title={`Output ${outputIndex + 1}`}
-                  />
-                ))}
-              </div>
-            );
-          })}
+          <ReportFooter codeCellCount={codeCellCount} languageVersion={languageVersion} />
         </div>
-
-        <ReportFooter codeCellCount={codeCellCount} languageVersion={languageVersion} />
       </div>
     </div>
   );

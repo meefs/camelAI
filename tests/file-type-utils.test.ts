@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { getFileCategory, getPreviewType } from '@/components/chat-file-preview/file-type-utils';
+import {
+  getFileCategory,
+  getPreviewType,
+  getShikiLanguage,
+} from '@/components/chat-file-preview/file-type-utils';
 
 describe('file-type-utils', () => {
   it('classifies tsv as spreadsheet', () => {
@@ -13,5 +17,37 @@ describe('file-type-utils', () => {
   it('classifies markdown preview type separately from text', () => {
     expect(getPreviewType('README.md')).toBe('markdown');
     expect(getPreviewType('notes.txt')).toBe('text');
+  });
+
+  it('routes supported code files to code preview type', () => {
+    expect(getPreviewType('main.py')).toBe('code');
+    expect(getPreviewType('main.py', 'text/plain')).toBe('code');
+    expect(getPreviewType('index.ts')).toBe('code');
+    expect(getPreviewType('config.json')).toBe('code');
+  });
+
+  it('routes spreadsheet files to spreadsheet preview and keeps plain text on text preview', () => {
+    expect(getPreviewType('data.csv')).toBe('spreadsheet');
+    expect(getPreviewType('data.csv', 'text/csv')).toBe('spreadsheet');
+    expect(getPreviewType('dataset', 'text/csv')).toBe('spreadsheet');
+    expect(getPreviewType('dataset', 'text/tab-separated-values')).toBe('spreadsheet');
+    expect(getPreviewType('notes.log')).toBe('text');
+  });
+
+  it('falls back for binary excel formats', () => {
+    expect(getPreviewType('report.xlsx')).toBe('other');
+    expect(getPreviewType('report.xls')).toBe('other');
+    expect(
+      getPreviewType(
+        'report.xlsx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      )
+    ).toBe('other');
+  });
+
+  it('maps file extensions to shiki languages', () => {
+    expect(getShikiLanguage('main.py')).toBe('python');
+    expect(getShikiLanguage('app.tsx')).toBe('tsx');
+    expect(getShikiLanguage('notes.txt')).toBeNull();
   });
 });

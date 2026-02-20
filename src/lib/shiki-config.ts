@@ -15,6 +15,7 @@ export const PRELOAD_LANGUAGES: BundledLanguage[] = [
   'markdown',
   'sql',
   'yaml',
+  'toml',
   'rust',
   'go',
   'java',

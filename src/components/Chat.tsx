@@ -677,7 +677,7 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
             />
           )
         ) : (
-          <div className={cn('h-full', !isNotebookPreview && 'p-3')}>
+          <div className="h-full">
             <FilePreviewContent
               filename={previewFileName}
               previewUrl={filePreviewUrl}

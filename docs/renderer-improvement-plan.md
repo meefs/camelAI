@@ -1,6 +1,46 @@
 # Renderer Improvement Plan
 
-Three areas of polish: center the notebook report, pad the markdown preview, and add syntax-highlighted code previews for source files.
+## What is the Renderer?
+
+camelAI has a unified file renderer that powers two surfaces:
+
+1. **Chat preview panel** — when a user opens a file in the chat sidebar, `FilePreviewContent` renders it based on file type (image, PDF, notebook, markdown, plain text, audio, video)
+2. **Published pages** — when a user publishes a file to a live `*.camelai.app` URL, the same `FilePreviewContent` component renders inside a standalone app shell (`sandbox/create-worker/renderer/main.tsx`)
+
+Because both surfaces share the same component tree, any layout or styling improvements made to the renderer automatically apply everywhere — in the preview panel, in dialogs, and on published pages.
+
+```
+┌─ Chat Preview Panel ─────────────────────────────────────┐
+│                                                           │
+│  FilePreviewContent                                       │
+│   ├── previewType === 'image'     → <ImagePreview>        │
+│   ├── previewType === 'pdf'       → <iframe>              │
+│   ├── previewType === 'notebook'  → <NotebookPreview>     │
+│   │    ├── viewMode 'report'  → <ReportMode>              │
+│   │    └── viewMode 'notebook'→ <NotebookMode>            │
+│   ├── previewType === 'markdown'  → <MarkdownRenderer>    │
+│   ├── previewType === 'text'      → <pre> (plain)         │
+│   ├── previewType === 'audio'     → <audio>               │
+│   └── previewType === 'video'     → <video>               │
+│                                                           │
+│  Published Page (renderer/main.tsx)                        │
+│   └── <FilePreviewContent layout="panel" />               │
+│        (same tree — all fixes flow through)                │
+└───────────────────────────────────────────────────────────┘
+```
+
+### Key files
+
+| File | Role |
+|------|------|
+| `src/components/chat-file-preview/file-preview-content.tsx` | Routes file types to the correct renderer |
+| `src/components/chat-file-preview/file-type-utils.ts` | Determines `PreviewType` from filename/content-type |
+| `src/components/chat-file-preview/notebook-preview/index.tsx` | Notebook wrapper (mode switch, scroll root) |
+| `src/components/chat-file-preview/notebook-preview/report-mode.tsx` | Report layout (TOC sidebar + polished content) |
+| `src/components/chat-file-preview/notebook-preview/notebook-mode.tsx` | Raw cell-by-cell notebook layout |
+| `src/components/markdown-renderer.tsx` | Markdown → HTML with Shiki code blocks |
+| `src/lib/shiki-config.ts` | Shared Shiki themes + preloaded languages |
+| `sandbox/create-worker/renderer/main.tsx` | Published page shell (toolbar + `FilePreviewContent`) |
 
 ---
 
@@ -96,7 +136,76 @@ Design breakdown:
 
 ---
 
-## 2. Add Padding to the Markdown Preview
+## 2. Add Max-Width to Notebook Mode
+
+### Problem
+
+Notebook mode (the raw cell-by-cell view with code cells, execution counts, and outputs) has no max-width constraint. On wide screens, code cells and outputs stretch to fill the entire viewport, making the layout feel spreadsheet-like and hard to read.
+
+```
+Current (wide screen):                          Goal (wide screen):
+┌──────────────────────────────────────────┐   ┌──────────────────────────────────────────┐
+│┌────────────────────────────────────────┐│   │  ┌──────────────────────────────────┐    │
+││ [1] import pandas as pd               ││   │  │ [1] import pandas as pd         │    │
+│└────────────────────────────────────────┘│   │  └──────────────────────────────────┘    │
+│┌────────────────────────────────────────┐│   │  ┌──────────────────────────────────┐    │
+││ [2] df.describe()                     ││   │  │ [2] df.describe()               │    │
+││ ┌─────────────────────────────────┐   ││   │  │ ┌────────────────────────────┐  │    │
+││ │ very   wide   table ...........│   ││   │  │ │ table (scrolls if needed) │  │    │
+││ └─────────────────────────────────┘   ││   │  │ └────────────────────────────┘  │    │
+│└────────────────────────────────────────┘│   │  └──────────────────────────────────┘    │
+│   ← cells stretch full width →           │   │     ← centered, max 1800px →             │
+└──────────────────────────────────────────┘   └──────────────────────────────────────────┘
+```
+
+### Implementation
+
+**File: `src/components/chat-file-preview/notebook-preview/notebook-mode.tsx`**
+
+Currently (line 15):
+
+```tsx
+<div className="space-y-3 p-3">
+```
+
+Change to:
+
+```tsx
+<div className="mx-auto max-w-[1800px] space-y-3 p-3">
+```
+
+That's the entire change. `max-w-[1800px]` is an arbitrary Tailwind value since there's no built-in class at this size. The generous cap ensures code cells and wide outputs (charts, tables) have plenty of room, while preventing the layout from becoming unreadably wide on ultra-wide monitors. `mx-auto` centers the block when the viewport exceeds 1800px.
+
+```
+┌────────────────────── viewport (e.g. 2560px) ──────────────────────┐
+│                                                                      │
+│     ┌──────── max-w-[1800px]  mx-auto  p-3 ──────────────┐         │
+│     │                                                      │         │
+│     │  ┌─────────────────────────────────────────────┐    │         │
+│     │  │ [1]  code cell                              │    │         │
+│     │  └─────────────────────────────────────────────┘    │         │
+│     │                                                      │         │
+│     │  ┌─────────────────────────────────────────────┐    │         │
+│     │  │ [2]  code cell + outputs                    │    │         │
+│     │  └─────────────────────────────────────────────┘    │         │
+│     │                                                      │         │
+│     └──────────────────────────────────────────────────────┘         │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+At typical panel widths (400–800px) the 1800px cap never activates — content fills the width naturally. On a published page viewed on a 2560px monitor, cells center comfortably instead of stretching edge-to-edge.
+
+### Verification
+
+- Preview panel at default width: no visible change (1800px cap is irrelevant)
+- Published notebook on an ultra-wide monitor (2560px): cells centered, max 1800px
+- Notebook mode with wide table outputs: table scrolls horizontally within the 1800px container
+- Switching between Report and Notebook modes: both are now centered on wide screens
+
+---
+
+## 3. Add Padding to the Markdown Preview
 
 ### Problem
 
@@ -216,7 +325,7 @@ No changes needed. The published renderer uses `FilePreviewContent` with `layout
 
 ---
 
-## 3. Syntax-Highlighted Code Previews
+## 4. Syntax-Highlighted Code Previews
 
 ### Problem
 
@@ -485,11 +594,11 @@ Files that are in `CODE_EXTENSIONS` but NOT in `CODE_HIGHLIGHT_MAP` (e.g., `.txt
 
 ---
 
-## 4. Additional Polish Recommendations
+## 5. Additional Polish Recommendations
 
-These are smaller improvements the implementer can optionally tackle after the three main changes above.
+These are smaller improvements the implementer can optionally tackle after the four main changes above.
 
-### 4a. Spreadsheet Preview (CSV/TSV)
+### 5a. Spreadsheet Preview (CSV/TSV)
 
 Currently `.csv` and `.tsv` files render as raw text in a `<pre>` block. The notebook renderer already has a sophisticated `NotebookTable` component (`notebook-preview/notebook-table.tsx`) that handles:
 - Column alignment detection (numeric → right-align)
@@ -501,7 +610,7 @@ Currently `.csv` and `.tsv` files render as raw text in a `<pre>` block. The not
 
 This is a moderate effort but would be a significant UX improvement — structured data should look structured.
 
-### 4b. Image Preview Checkerboard Background
+### 5b. Image Preview Checkerboard Background
 
 Images with transparency (PNG, WebP) currently render on the theme background color, making it hard to see where the image ends and the background begins.
 
@@ -521,13 +630,7 @@ Images with transparency (PNG, WebP) currently render on the theme background co
 
 Low effort, nice visual improvement.
 
-### 4c. SVG Preview (Render Instead of Source)
-
-Currently `.svg` files are categorized as `'image'` and render in an `<img>` tag. This works but doesn't allow interaction. Consider:
-- Keep the current `<img>` rendering as default (safe, sandboxed)
-- No change needed — SVG rendering actually works fine as-is
-
-### 4d. Text Preview Padding Consistency
+### 5c. Text Preview Padding Consistency
 
 The plain text `<pre>` preview in panel mode has no padding (same issue as markdown). Currently at line 281:
 
@@ -552,9 +655,10 @@ This is a one-line change that improves the text preview experience.
 ## Implementation Order
 
 1. **Markdown padding** (smallest change, immediate visual improvement)
-2. **Notebook centering** (small change in one file, high impact)
-3. **Code syntax highlighting** (new component, moderate effort)
-4. **Optional polish** (4d text padding first since it's trivial, then others as desired)
+2. **Notebook report centering** (small change in one file, high impact)
+3. **Notebook mode max-width** (one-line change, high impact on published pages)
+4. **Code syntax highlighting** (new component, moderate effort)
+5. **Optional polish** (5c text padding first since it's trivial, then others as desired)
 
 ## Files Summary (All Changes)
 
@@ -562,6 +666,7 @@ This is a one-line change that improves the text preview experience.
 |------|--------|---------|
 | `src/components/chat-file-preview/file-preview-content.tsx` | Modify | Markdown padding + centering, code preview branch, text padding |
 | `src/components/chat-file-preview/notebook-preview/report-mode.tsx` | Modify | Center the report layout |
+| `src/components/chat-file-preview/notebook-preview/notebook-mode.tsx` | Modify | Add `max-w-[1800px]` + centering |
 | `src/components/chat-file-preview/file-type-utils.ts` | Modify | Add `'code'` preview type, language map |
 | `src/components/chat-file-preview/code-preview.tsx` | **New** | Syntax-highlighted code preview component |
 | `src/styles/globals.css` | Modify | Line number CSS for code previews |
@@ -575,7 +680,6 @@ This is a one-line change that improves the text preview experience.
 
 ## Not in Scope
 
-- Notebook mode layout changes (only report mode centers)
 - Markdown renderer component changes (padding is added at the container level, not inside `MarkdownRenderer`)
 - New dependencies (everything uses existing Shiki setup)
 - Published page toolbar changes (the toolbar in `renderer/main.tsx` is untouched)

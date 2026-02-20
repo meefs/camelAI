@@ -4,11 +4,14 @@ import { memo, useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
+import { CodePreview } from './code-preview';
 import { getPreviewType } from './file-type-utils';
 import { NotebookPreview } from './notebook-preview';
 import type { NotebookFile } from './notebook-preview';
+import { SpreadsheetPreview } from './spreadsheet-preview';
 
 const MAX_TEXT_LINES = 500;
+const MAX_SPREADSHEET_LINES = 500;
 
 type PreviewLayout = 'dialog' | 'panel';
 
@@ -120,7 +123,11 @@ function FilePreviewContentComponent({
 
   useEffect(() => {
     const shouldFetchText =
-      previewType === 'text' || previewType === 'notebook' || previewType === 'markdown';
+      previewType === 'text' ||
+      previewType === 'code' ||
+      previewType === 'spreadsheet' ||
+      previewType === 'notebook' ||
+      previewType === 'markdown';
     if (!shouldFetchText) return;
 
     const controller = new AbortController();
@@ -147,6 +154,18 @@ function FilePreviewContentComponent({
           }
           if (cancelled) return;
           setNotebook(parsed);
+          setTextStatus('ready');
+          return;
+        }
+
+        if (previewType === 'spreadsheet') {
+          if (cancelled) return;
+          const { text: truncatedText, truncated, totalLines } = truncateTextLines(
+            bodyText,
+            MAX_SPREADSHEET_LINES
+          );
+          setTextPreview(truncatedText);
+          setLineInfo({ truncated, totalLines });
           setTextStatus('ready');
           return;
         }
@@ -183,11 +202,13 @@ function FilePreviewContentComponent({
   return (
     <div className={cn('overflow-hidden', layout === 'panel' && 'h-full')}>
       {previewType === 'image' && (
-        <ImagePreview src={previewUrl} alt={filename} layout={layout} />
+        <div className={cn(layout === 'panel' && 'p-3')}>
+          <ImagePreview src={previewUrl} alt={filename} layout={layout} />
+        </div>
       )}
 
       {previewType === 'pdf' && (
-        <div className="relative min-h-[200px] h-full">
+        <div className={cn('relative min-h-[200px]', layout === 'panel' ? 'h-full p-3' : 'h-full')}>
           {mediaLoading && !mediaError && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -212,7 +233,7 @@ function FilePreviewContentComponent({
       )}
 
       {previewType === 'audio' && (
-        <div className="relative min-h-[80px]">
+        <div className={cn('relative min-h-[80px]', layout === 'panel' && 'p-3')}>
           {mediaLoading && !mediaError && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -239,7 +260,7 @@ function FilePreviewContentComponent({
       )}
 
       {previewType === 'video' && (
-        <div className="relative min-h-[200px]">
+        <div className={cn('relative min-h-[200px]', layout === 'panel' && 'p-3')}>
           {mediaLoading && !mediaError && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -279,7 +300,7 @@ function FilePreviewContentComponent({
                 className={cn(
                   'w-full min-w-0 overflow-auto text-xs',
                   layout === 'panel'
-                    ? 'h-full max-h-full'
+                    ? 'h-full max-h-full p-4'
                     : 'max-h-[60vh] rounded-md border bg-muted/30 p-3',
                   textPreview ? 'text-foreground' : 'text-muted-foreground'
                 )}
@@ -292,6 +313,51 @@ function FilePreviewContentComponent({
                 </p>
               )}
             </>
+          )}
+        </div>
+      )}
+
+      {previewType === 'code' && (
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
+          )}
+          {textStatus === 'ready' && (
+            <CodePreview
+              code={textPreview}
+              filename={filename}
+              layout={layout}
+              truncated={lineInfo.truncated}
+              totalLines={lineInfo.totalLines}
+              maxLines={MAX_TEXT_LINES}
+            />
+          )}
+        </div>
+      )}
+
+      {previewType === 'spreadsheet' && (
+        <div className={cn(layout === 'panel' && 'h-full overflow-auto')}>
+          {(textStatus === 'loading' || textStatus === 'idle') && (
+            <p className="p-4 text-sm text-muted-foreground">Loading preview...</p>
+          )}
+          {textStatus === 'error' && (
+            <p className="p-4 text-sm text-muted-foreground">{textErrorMessage}</p>
+          )}
+          {textStatus === 'ready' && (
+            <SpreadsheetPreview
+              content={textPreview}
+              filename={filename}
+              contentType={contentType}
+              layout={layout}
+            />
+          )}
+          {textStatus === 'ready' && lineInfo.truncated && (
+            <p className="mt-2 px-4 text-xs text-muted-foreground">
+              Showing first {MAX_SPREADSHEET_LINES} of {lineInfo.totalLines} lines.
+            </p>
           )}
         </div>
       )}
@@ -310,10 +376,12 @@ function FilePreviewContentComponent({
                 className={cn(
                   layout === 'panel'
                     ? 'h-full overflow-auto'
-                    : 'max-h-[60vh] overflow-auto p-6'
+                    : 'max-h-[60vh] overflow-auto'
                 )}
               >
-                <MarkdownRenderer content={textPreview} />
+                <div className="mx-auto max-w-3xl px-6 py-6">
+                  <MarkdownRenderer content={textPreview} />
+                </div>
               </div>
             ) : (
               <pre
@@ -356,7 +424,7 @@ function FilePreviewContentComponent({
       )}
 
       {previewType === 'other' && (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-md border border-dashed py-10 text-sm text-muted-foreground">
+        <div className={cn('flex flex-col items-center justify-center gap-3 rounded-md border border-dashed py-10 text-sm text-muted-foreground', layout === 'panel' && 'm-3')}>
           <span>No preview available for {getFilenameFromPath(filename)}.</span>
         </div>
       )}

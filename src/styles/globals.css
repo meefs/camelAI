@@ -270,6 +270,23 @@
   color: var(--shiki-dark) !important;
 }
 
+.code-preview-lines code {
+  counter-reset: line;
+  display: flex;
+  flex-direction: column;
+}
+
+.code-preview-lines .line::before {
+  content: counter(line);
+  counter-increment: line;
+  display: inline-block;
+  margin-right: 1rem;
+  text-align: right;
+  color: var(--color-muted-foreground);
+  opacity: 0.3;
+  user-select: none;
+}
+
 /* Navigation progress bar animations */
 @keyframes collapsible-down {
 	from {

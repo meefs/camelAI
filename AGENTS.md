@@ -135,6 +135,7 @@ Deploy enqueues screenshot job → Browser Rendering → JPEG stored in R2 at `a
 
 ### Notebook File Previews
 Notebook previews render in the chat preview panel with two modes: **Report** (editorial rendering with TOC, hidden code, styled outputs) and **Notebook** (full cell-by-cell with execution gutters). Supports Vega/Vega-Lite, Plotly, DataFrame tables (native React rendering capped at 100 rows with CSV download), and generic HTML in sandboxed iframes. Export options include toolbar download of raw `.ipynb` plus per-chart output downloads (SVG/PNG/CSV). Report-level PDF export is not supported.
+Report and notebook modes are width-capped and centered on wide screens (`max-w-5xl` for report, `max-w-[1800px]` for notebook) while remaining full-width on narrow panels. Markdown file previews render inside a centered `max-w-3xl` container with consistent padding. Source-code file previews (`.py`, `.ts`, `.js`, `.go`, `.rs`, `.sql`, etc.) use Shiki highlighting with line numbers and a copy button in an IDE-like full-panel layout. Spreadsheet previews (`.csv`, `.tsv`) render as styled tables via `NotebookTable`; plain text (`.txt`, `.log`) remains a raw `<pre>` preview.
 
 ### SDK Event Types
 - `system` (subtype: `init`) - Session initialization
