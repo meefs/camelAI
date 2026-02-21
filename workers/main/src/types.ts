@@ -19,7 +19,6 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   SESSIONS: KVNamespace;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
-  EMAIL?: SendEmail;
   BROWSER?: Fetcher;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -34,6 +33,7 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   SALESFORCE_CLIENT_SECRET?: string;
   INTEGRATION_SECRET_KEY: string;
   EMAIL_FROM_ADDRESS?: string;
+  RESEND_API_KEY?: string;
   // Claude API Proxy (CF AI Gateway)
   CF_GATEWAY_NAME?: string;
   CF_GATEWAY_TOKEN?: string;

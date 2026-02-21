@@ -5,14 +5,8 @@ const sendEmailMock = vi.fn().mockResolvedValue({
   messageId: 'msg_123',
 });
 
-vi.mock('@/lib/gmail.server', () => ({
+vi.mock('@/lib/resend.server', () => ({
   sendEmail: sendEmailMock,
-  isGmailConfigured: vi.fn(() => true),
-  getGmailConfig: vi.fn(() => ({
-    serviceAccountEmail: 'svc@camelai.com',
-    privateKey: 'private-key',
-    senderEmail: 'no-reply@camelai.com',
-  })),
 }));
 
 const { sendHelpConfirmationEmail, sendHelpSupportEmail } = await import(
@@ -20,11 +14,8 @@ const { sendHelpConfirmationEmail, sendHelpSupportEmail } = await import(
 );
 
 const env = {
-  EMAIL: undefined,
-  EMAIL_FROM_ADDRESS: 'no-reply@camelai.com',
-  GMAIL_SERVICE_ACCOUNT_EMAIL: 'svc@camelai.com',
-  GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: 'private-key',
-  GMAIL_SENDER_EMAIL: 'no-reply@camelai.com',
+  EMAIL_FROM_ADDRESS: 'no-reply@mail.camelai.com',
+  RESEND_API_KEY: 're_test_123',
 };
 
 describe('help email delivery', () => {

@@ -13,11 +13,8 @@ export async function sendUserVerificationEmail(args: {
     CloudflareEnv,
     | 'TOKEN_SIGNING_SECRET'
     | 'WORKER_BASE_URL'
-    | 'EMAIL'
     | 'EMAIL_FROM_ADDRESS'
-    | 'GMAIL_SERVICE_ACCOUNT_EMAIL'
-    | 'GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY'
-    | 'GMAIL_SENDER_EMAIL'
+    | 'RESEND_API_KEY'
   >;
   requestUrl: URL;
   userId: string;
@@ -46,4 +43,3 @@ export async function sendUserVerificationEmail(args: {
     expiresAt,
   });
 }
-

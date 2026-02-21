@@ -5,7 +5,7 @@ import { OrgInvitationEmailTemplate } from './email/templates/org-invitation-ema
 import { EmailVerificationEmailTemplate } from './email/templates/email-verification-email';
 import { HelpConfirmationEmailTemplate } from './email/templates/help-confirmation-email';
 import { HelpSupportEmailTemplate } from './email/templates/help-support-email';
-import { sendEmail, getGmailConfig, isGmailConfigured } from './gmail.server';
+import { sendEmail as sendResendEmail } from './resend.server';
 import {
   recordDevEmailOutboxEntry,
   type DevEmailOutboxStatus,
@@ -19,14 +19,7 @@ export interface EmailDeliveryResult {
   reason?: string;
 }
 
-type EmailEnvBindings = Pick<
-  CloudflareEnv,
-  | 'EMAIL'
-  | 'EMAIL_FROM_ADDRESS'
-  | 'GMAIL_SERVICE_ACCOUNT_EMAIL'
-  | 'GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY'
-  | 'GMAIL_SENDER_EMAIL'
-> &
+type EmailEnvBindings = Pick<CloudflareEnv, 'EMAIL_FROM_ADDRESS' | 'RESEND_API_KEY'> &
   Partial<Pick<CloudflareEnv, 'APP_KV' | 'NEXTJS_ENV'>>;
 
 interface OrgInvitationEmailArgs {
@@ -153,15 +146,6 @@ function supportSeverityTag(severity: string): string {
   return 'Low';
 }
 
-function buildEnvelopeRecipients(to: string, cc?: string): string[] {
-  const recipients = [to, cc].filter((value): value is string => Boolean(value));
-  return Array.from(
-    new Set(
-      recipients.map((value) => value.trim().toLowerCase()).filter((value) => value.length > 0)
-    )
-  );
-}
-
 async function finalizeEmailDelivery(
   env: EmailEnvBindings,
   email: {
@@ -217,37 +201,14 @@ async function deliverEmail({
     htmlBody,
   };
 
-  // Try Gmail API first (preferred for sending to external recipients)
-  if (isGmailConfigured(env)) {
-    const gmailConfig = getGmailConfig(env)!;
-    const result = await sendEmail(gmailConfig, {
-      to,
-      cc: normalizedCc,
-      replyTo: normalizedReplyTo,
-      subject,
-      textBody,
-      htmlBody,
-    });
-
-    if (result.success) {
-      return finalizeEmailDelivery(env, emailContent, { status: 'sent' }, 'gmail');
-    }
-    return finalizeEmailDelivery(
-      env,
-      emailContent,
-      { status: 'failed', reason: result.error },
-      'gmail'
-    );
-  }
-
-  // Fall back to Cloudflare email binding (only works for verified addresses)
-  if (!env.EMAIL) {
+  const resendApiKey = env.RESEND_API_KEY?.trim();
+  if (!resendApiKey) {
     return finalizeEmailDelivery(
       env,
       emailContent,
       {
         status: 'skipped',
-        reason: 'No email provider configured (Gmail API or Cloudflare EMAIL binding)',
+        reason: 'RESEND_API_KEY is not configured',
       },
       'none'
     );
@@ -262,67 +223,33 @@ async function deliverEmail({
         status: 'skipped',
         reason: 'EMAIL_FROM_ADDRESS is not configured',
       },
-      'cloudflare'
+      'none'
     );
   }
 
-  try {
-    const messageId = crypto.randomUUID();
-    const boundary = `chiridion_${messageId.replaceAll('-', '')}`;
-    const rawMessage = [
-      `From: camelAI <${sanitizeHeaderValue(from)}>`,
-      `To: ${sanitizeHeaderValue(to)}`,
-      ...(normalizedCc ? [`Cc: ${sanitizeHeaderValue(normalizedCc)}`] : []),
-      ...(normalizedReplyTo
-        ? [`Reply-To: ${sanitizeHeaderValue(normalizedReplyTo)}`]
-        : []),
-      `Subject: ${subject}`,
-      `Message-ID: <${messageId}@camelai.com>`,
-      `Date: ${new Date().toUTCString()}`,
-      'MIME-Version: 1.0',
-      `Content-Type: multipart/alternative; boundary="${boundary}"`,
-      '',
-      `--${boundary}`,
-      'Content-Type: text/plain; charset=UTF-8',
-      'Content-Transfer-Encoding: 8bit',
-      '',
+  const result = await sendResendEmail(
+    {
+      apiKey: resendApiKey,
+      fromAddress: sanitizeHeaderValue(from),
+    },
+    {
+      to,
+      cc: normalizedCc,
+      replyTo: normalizedReplyTo,
+      subject,
       textBody,
-      '',
-      `--${boundary}`,
-      'Content-Type: text/html; charset=UTF-8',
-      'Content-Transfer-Encoding: 8bit',
-      '',
       htmlBody,
-      '',
-      `--${boundary}--`,
-      '',
-    ].join('\r\n');
-
-    const cloudflareEmailModule = 'cloudflare:email';
-    const { EmailMessage } = await import(
-      /* @vite-ignore */
-      cloudflareEmailModule
-    );
-    const envelopeRecipients = buildEnvelopeRecipients(to, normalizedCc);
-    await Promise.all(
-      envelopeRecipients.map((recipient) => {
-        const message = new EmailMessage(from, recipient, rawMessage);
-        return env.EMAIL!.send(message);
-      })
-    );
-    return finalizeEmailDelivery(env, emailContent, { status: 'sent' }, 'cloudflare');
-  } catch (error) {
-    const reason =
-      error instanceof Error && error.message
-        ? error.message
-        : 'Unknown email delivery error';
-    return finalizeEmailDelivery(
-      env,
-      emailContent,
-      { status: 'failed', reason },
-      'cloudflare'
-    );
+    }
+  );
+  if (result.success) {
+    return finalizeEmailDelivery(env, emailContent, { status: 'sent' }, 'resend');
   }
+  return finalizeEmailDelivery(
+    env,
+    emailContent,
+    { status: 'failed', reason: result.error },
+    'resend'
+  );
 }
 
 export async function sendOrgInvitationEmail({

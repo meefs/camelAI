@@ -26,7 +26,7 @@
 		"CF_GATEWAY_NAME": "chiridion",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
 		"WORKER_BASE_URL": "https://dev-miguel.camelai.dev",
-		"EMAIL_FROM_ADDRESS": "no-reply@camelai.com",
+		"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 		"CF_WORKER_NAME": "chiridion-app-dev-miguel"
 		// OPENROUTER_PROVISIONING_KEY is set via secrets
 	},
@@ -47,12 +47,6 @@
 		{ "binding": "EMAIL_TO_USER", "id": "06c511f882d041ea89a98cb413f4b2f3" },
 		{ "binding": "APP_KV", "id": "e894eb2caf1641ad8870da994b992fce" },
 		{ "binding": "SESSIONS", "id": "a38773869d2e465fbf705c81fa2e01eb" }
-	],
-	"send_email": [
-		{
-			"name": "EMAIL",
-			"allowed_sender_addresses": ["no-reply@camelai.com"]
-		}
 	],
 	"queues": {
 		"producers": [

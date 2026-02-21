@@ -32,7 +32,6 @@ export interface CloudflareEnv {
   ASSETS: Fetcher;
   IMAGES: unknown; // ImagesBinding
   AI: unknown; // AI binding
-  EMAIL?: SendEmail;
   BROWSER?: Fetcher;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
 
@@ -51,13 +50,9 @@ export interface CloudflareEnv {
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
   EMAIL_FROM_ADDRESS?: string;
+  RESEND_API_KEY?: string;
   SANDBOX_HOST?: Fetcher;
   SANDBOX_HOST_URL?: string;
-
-  // Gmail API (for sending emails via Google Workspace)
-  GMAIL_SERVICE_ACCOUNT_EMAIL?: string;
-  GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY?: string;
-  GMAIL_SENDER_EMAIL?: string; // User to impersonate and send as
 }
 
 /**

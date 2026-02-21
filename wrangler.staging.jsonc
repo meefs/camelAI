@@ -26,7 +26,7 @@
 		"CF_GATEWAY_NAME": "chiridion",
 		"CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
 		"WORKER_BASE_URL": "https://staging.camelai.dev",
-		"EMAIL_FROM_ADDRESS": "no-reply@camelai.com",
+		"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 		"CF_WORKER_NAME": "chiridion-app-staging"
 		// OPENROUTER_PROVISIONING_KEY is set via secrets
 	},
@@ -47,12 +47,6 @@
 		{ "binding": "EMAIL_TO_USER", "id": "ab267c4f44b847dda8bdca400a4e1884" },
 		{ "binding": "APP_KV", "id": "e894eb2caf1641ad8870da994b992fce" },
 		{ "binding": "SESSIONS", "id": "f5ab08fdb1d7404fbc45a171217b4a27" }
-	],
-	"send_email": [
-		{
-			"name": "EMAIL",
-			"allowed_sender_addresses": ["no-reply@camelai.com"]
-		}
 	],
 	"queues": {
 		"producers": [

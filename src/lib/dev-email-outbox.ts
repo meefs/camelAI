@@ -6,7 +6,7 @@ const DEV_EMAIL_OUTBOX_DEFAULT_LIMIT = 20;
 const DEV_EMAIL_OUTBOX_MAX_LIMIT = 100;
 
 export type DevEmailOutboxStatus = 'sent' | 'skipped' | 'failed';
-export type DevEmailOutboxTransport = 'gmail' | 'cloudflare' | 'none';
+export type DevEmailOutboxTransport = 'resend' | 'none';
 
 export interface DevEmailOutboxEntry {
   id: string;

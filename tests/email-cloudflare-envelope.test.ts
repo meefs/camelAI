@@ -1,47 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const cloudflareSendMock = vi.fn().mockResolvedValue(undefined);
+const resendSendMock = vi.fn().mockResolvedValue({
+  success: true,
+  messageId: 'msg_456',
+});
 
-class MockEmailMessage {
-  from: string;
-  to: string;
-  raw: ReadableStream | string;
-
-  constructor(from: string, to: string, raw: ReadableStream | string) {
-    this.from = from;
-    this.to = to;
-    this.raw = raw;
-  }
-}
-
-vi.mock('cloudflare:email', () => ({
-  EmailMessage: MockEmailMessage,
-}));
-
-vi.mock('@/lib/gmail.server', () => ({
-  sendEmail: vi.fn(),
-  isGmailConfigured: vi.fn(() => false),
-  getGmailConfig: vi.fn(() => null),
+vi.mock('@/lib/resend.server', () => ({
+  sendEmail: resendSendMock,
 }));
 
 const { sendHelpConfirmationEmail } = await import('@/lib/email.server');
 
 const env = {
-  EMAIL: {
-    send: cloudflareSendMock,
-  },
-  EMAIL_FROM_ADDRESS: 'no-reply@camelai.com',
-  GMAIL_SERVICE_ACCOUNT_EMAIL: 'svc@camelai.com',
-  GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: 'private-key',
-  GMAIL_SENDER_EMAIL: 'no-reply@camelai.com',
+  EMAIL_FROM_ADDRESS: 'no-reply@mail.camelai.com',
+  RESEND_API_KEY: 're_test_123',
 };
 
-describe('Cloudflare email envelope recipients', () => {
+describe('Resend email delivery payload', () => {
   beforeEach(() => {
-    cloudflareSendMock.mockClear();
+    resendSendMock.mockClear();
   });
 
-  it('sends Cloudflare envelope to both To and Cc recipients', async () => {
+  it('sends to normalized recipient with cc and reply-to', async () => {
     const result = await sendHelpConfirmationEmail({
       env,
       to: 'User@Example.com',
@@ -56,15 +36,15 @@ describe('Cloudflare email envelope recipients', () => {
     });
 
     expect(result).toEqual({ status: 'sent' });
-    expect(cloudflareSendMock).toHaveBeenCalledTimes(2);
+    expect(resendSendMock).toHaveBeenCalledTimes(1);
 
-    const envelopeRecipients = cloudflareSendMock.mock.calls
-      .map(([message]) => (message as MockEmailMessage).to)
-      .sort();
-    expect(envelopeRecipients).toEqual(['support@camelai.com', 'user@example.com']);
-
-    for (const [message] of cloudflareSendMock.mock.calls) {
-      expect((message as MockEmailMessage).raw).toContain('Cc: support@camelai.com');
-    }
+    const [config, payload] = resendSendMock.mock.calls[0];
+    expect(config).toEqual({
+      apiKey: 're_test_123',
+      fromAddress: 'no-reply@mail.camelai.com',
+    });
+    expect(payload.to).toBe('user@example.com');
+    expect(payload.cc).toBe('support@camelai.com');
+    expect(payload.replyTo).toBe('support@camelai.com');
   });
 });
