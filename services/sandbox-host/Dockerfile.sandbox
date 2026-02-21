@@ -59,6 +59,17 @@ RUN cd /opt/chiridion && \
     echo '{"name":"chiridion-sandbox-runner","private":true,"type":"module"}' > package.json && \
     bun install --no-progress @anthropic-ai/claude-agent-sdk@0.2.45
 
+# Renderer build workspace (used by publish CLI at runtime)
+RUN mkdir -p /opt/chiridion-renderer
+COPY package.json /opt/chiridion-renderer/package.json
+COPY bun.lock /opt/chiridion-renderer/bun.lock
+COPY tsconfig.json /opt/chiridion-renderer/tsconfig.json
+COPY cloudflare-env.d.ts /opt/chiridion-renderer/cloudflare-env.d.ts
+COPY postcss.config.mjs /opt/chiridion-renderer/postcss.config.mjs
+COPY vite.renderer.config.ts /opt/chiridion-renderer/vite.renderer.config.ts
+RUN cd /opt/chiridion-renderer && bun install --frozen-lockfile --no-progress
+COPY src/ /opt/chiridion-renderer/src/
+
 # Copy sandbox files
 COPY sandbox/control-plane.mjs /opt/chiridion/control-plane.mjs
 COPY sandbox/memory-logger.mjs /opt/chiridion/memory-logger.mjs

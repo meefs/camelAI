@@ -7,7 +7,17 @@
  */
 
 import { spawnSync } from 'child_process';
-import { writeFileSync, readFileSync, existsSync, mkdirSync, cpSync, statSync } from 'fs';
+import {
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  cpSync,
+  statSync,
+  mkdtempSync,
+  rmSync,
+} from 'fs';
+import { tmpdir } from 'os';
 import { join, basename, resolve } from 'path';
 
 function showHelp() {
@@ -88,10 +98,55 @@ function generateWorkerJs() {
 `;
 }
 
-const RENDERER_DIST = '/usr/local/lib/create-worker/renderer-dist';
+const RENDERER_SOURCE_DIR = '/usr/local/lib/create-worker/renderer';
+const RENDERER_BUILD_CWD = '/opt/chiridion-renderer';
+const RENDERER_VITE_CONFIG = '/opt/chiridion-renderer/vite.renderer.config.ts';
 
-function copyRendererBundle(projectDir, filename) {
-  cpSync(RENDERER_DIST, join(projectDir, 'public'), { recursive: true });
+function buildRendererBundle() {
+  if (!existsSync(RENDERER_SOURCE_DIR)) {
+    console.error(`Error: Renderer source not found: ${RENDERER_SOURCE_DIR}`);
+    process.exit(1);
+  }
+  if (!existsSync(RENDERER_BUILD_CWD) || !existsSync(RENDERER_VITE_CONFIG)) {
+    console.error('Error: Renderer build tooling is not available in this sandbox image.');
+    process.exit(1);
+  }
+
+  const rendererDist = mkdtempSync(join(tmpdir(), 'chiridion-renderer-dist-'));
+
+  const buildResult = spawnSync(
+    'bun',
+    [
+      'x',
+      'vite',
+      'build',
+      '--config',
+      RENDERER_VITE_CONFIG,
+      '--root',
+      RENDERER_SOURCE_DIR,
+      '--outDir',
+      rendererDist,
+      '--emptyOutDir',
+    ],
+    { cwd: RENDERER_BUILD_CWD, stdio: 'inherit', shell: true }
+  );
+
+  if (buildResult.status !== 0) {
+    rmSync(rendererDist, { recursive: true, force: true });
+    console.error('\nRenderer build failed. Fix the renderer source and retry publish.');
+    process.exit(1);
+  }
+
+  return rendererDist;
+}
+
+function copyRendererBundle(projectDir, filename, rendererDist) {
+  if (!existsSync(rendererDist)) {
+    console.error(`Error: Renderer bundle not found: ${rendererDist}`);
+    process.exit(1);
+  }
+
+  cpSync(rendererDist, join(projectDir, 'public'), { recursive: true });
   let html = readFileSync(join(projectDir, 'public', 'index.html'), 'utf-8');
   html = html.replace('</head>', `<script>window.__FILENAME__=${JSON.stringify(filename)}</script>\n</head>`);
   html = html.replace(/<title>[^<]*<\/title>/, `<title>${filename}</title>`);
@@ -119,37 +174,46 @@ async function publish(projectName, filePath) {
   console.log(`File: ${sourceFilePath}`);
   console.log('');
 
-  console.log('Step 1/2: Generating project files...');
+  console.log('Step 1/3: Building renderer bundle...');
   let stepStart = Date.now();
-
-  mkdirSync(join(projectDir, 'public'), { recursive: true });
-  writeFileSync(join(projectDir, 'wrangler.jsonc'), generateWranglerConfig(projectName));
-  writeFileSync(join(projectDir, 'worker.js'), generateWorkerJs());
-  copyRendererBundle(projectDir, filename);
-  mkdirSync(join(projectDir, 'public', 'files'), { recursive: true });
-  cpSync(sourceFilePath, join(projectDir, 'public', 'files', filename), { force: true });
-
+  const rendererDist = buildRendererBundle();
   console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
 
-  console.log('\nStep 2/2: Deploying...');
-  stepStart = Date.now();
+  try {
+    console.log('\nStep 2/3: Generating project files...');
+    stepStart = Date.now();
 
-  const deployResult = spawnSync(
-    'wrangler',
-    ['deploy', '--dispatch-namespace', 'chiridion'],
-    { cwd: projectDir, stdio: 'inherit', shell: true }
-  );
+    mkdirSync(join(projectDir, 'public'), { recursive: true });
+    writeFileSync(join(projectDir, 'wrangler.jsonc'), generateWranglerConfig(projectName));
+    writeFileSync(join(projectDir, 'worker.js'), generateWorkerJs());
+    copyRendererBundle(projectDir, filename, rendererDist);
+    mkdirSync(join(projectDir, 'public', 'files'), { recursive: true });
+    cpSync(sourceFilePath, join(projectDir, 'public', 'files', filename), { force: true });
 
-  if (deployResult.status !== 0) {
-    console.error(
-      '\nDeploy failed. You can retry with:\n  cd ' +
-        projectName +
-        ' && wrangler deploy --dispatch-namespace chiridion'
+    console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
+
+    console.log('\nStep 3/3: Deploying...');
+    stepStart = Date.now();
+
+    const deployResult = spawnSync(
+      'wrangler',
+      ['deploy', '--dispatch-namespace', 'chiridion'],
+      { cwd: projectDir, stdio: 'inherit', shell: true }
     );
-    process.exit(1);
-  }
 
-  console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
+    if (deployResult.status !== 0) {
+      console.error(
+        '\nDeploy failed. You can retry with:\n  cd ' +
+          projectName +
+          ' && wrangler deploy --dispatch-namespace chiridion'
+      );
+      process.exit(1);
+    }
+
+    console.log(`         Done in ${formatTime(Date.now() - stepStart)}`);
+  } finally {
+    rmSync(rendererDist, { recursive: true, force: true });
+  }
 
   const totalTime = Date.now() - totalStart;
   console.log(`

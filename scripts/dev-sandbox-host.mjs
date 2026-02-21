@@ -26,6 +26,13 @@ const watchTargets = [
   resolve(repoRoot, 'sandbox/entrypoint.sh'),
   resolve(repoRoot, 'sandbox/skills'),
   resolve(repoRoot, 'sandbox/create-worker'),
+  resolve(repoRoot, 'src'),
+  resolve(repoRoot, 'package.json'),
+  resolve(repoRoot, 'bun.lock'),
+  resolve(repoRoot, 'tsconfig.json'),
+  resolve(repoRoot, 'cloudflare-env.d.ts'),
+  resolve(repoRoot, 'postcss.config.mjs'),
+  resolve(repoRoot, 'vite.renderer.config.ts'),
 ];
 
 function stripWrappingQuotes(value) {
@@ -125,13 +132,6 @@ function spawnStreaming(command, args, options = {}) {
   });
 }
 
-async function buildRendererIfNeeded() {
-  const rendererDist = resolve(repoRoot, 'sandbox/create-worker/renderer-dist');
-  if (existsSync(rendererDist)) return;
-  console.log('[dev:sandbox-host] Building renderer bundle (first run)...');
-  await spawnStreaming('bun', ['run', 'build:renderer'], { cwd: repoRoot });
-}
-
 async function buildImage(reason) {
   if (buildInFlight) {
     buildQueued = true;
@@ -139,7 +139,6 @@ async function buildImage(reason) {
   }
   buildInFlight = true;
   try {
-    await buildRendererIfNeeded();
     console.log(`[dev:sandbox-host] Building sandbox image (${reason}) -> ${imageTag}`);
     await spawnStreaming('docker', ['build', '-t', imageTag, '-f', dockerfilePath, '.'], { cwd: repoRoot });
     console.log(`[dev:sandbox-host] Image ready: ${imageTag}`);
