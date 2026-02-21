@@ -19,6 +19,8 @@ type R2MountConfig struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	BucketName      string
+	MountUID        string
+	MountGID        string
 }
 
 // LoadR2MountConfig reads the R2 mount configuration from env.
@@ -33,6 +35,8 @@ func LoadR2MountConfig() *R2MountConfig {
 	}
 
 	mountRoot := envString("R2_MOUNT_ROOT", defaultR2MountRoot())
+	mountUID := envString("R2_MOUNT_UID", "1001")
+	mountGID := envString("R2_MOUNT_GID", "1001")
 	return &R2MountConfig{
 		MountRoot:       mountRoot,
 		RcloneConfPath:  filepath.Join(os.TempDir(), "rclone-r2-host.conf"),
@@ -40,6 +44,8 @@ func LoadR2MountConfig() *R2MountConfig {
 		AccessKeyID:     accessKeyID,
 		SecretAccessKey: secretAccessKey,
 		BucketName:      bucketName,
+		MountUID:        mountUID,
+		MountGID:        mountGID,
 	}
 }
 
@@ -75,14 +81,7 @@ no_check_bucket = true
 	}
 
 	remote := fmt.Sprintf("r2:%s", cfg.BucketName)
-	cmd := exec.Command("rclone", "mount",
-		"--config", cfg.RcloneConfPath,
-		"--dir-cache-time", "5s",
-		"--vfs-cache-mode", "writes",
-		"--vfs-write-back", "0",
-		"--allow-other",
-		remote, cfg.MountRoot,
-	)
+	cmd := exec.Command("rclone", rcloneMountArgs(cfg, remote)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -118,4 +117,21 @@ func defaultR2MountRoot() string {
 		return "/mnt/r2"
 	}
 	return ""
+}
+
+func rcloneMountArgs(cfg *R2MountConfig, remote string) []string {
+	return []string{
+		"mount",
+		"--config", cfg.RcloneConfPath,
+		"--dir-cache-time", "5s",
+		"--vfs-cache-mode", "writes",
+		"--vfs-write-back", "0",
+		"--allow-other",
+		// Match ownership to the in-container "claude" user (uid/gid 1001)
+		// so /mnt/user-outputs stays writable after bind-mounting into sandboxes.
+		"--uid", cfg.MountUID,
+		"--gid", cfg.MountGID,
+		remote,
+		cfg.MountRoot,
+	}
 }
