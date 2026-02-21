@@ -151,7 +151,6 @@ For exploratory analysis, prefer delivering results as a Jupyter notebook (`.ipy
 
 ### Build notebooks incrementally
 
-- Use `NotebookEdit` for notebook changes (add/update markdown and code cells) instead of hand-editing raw JSON.
 - Keep a narrative flow:
   - markdown cell: objective and dataset context
   - code cell: data loading/cleaning
