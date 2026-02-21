@@ -60,6 +60,9 @@ infra/*.tfstate*
 test-results/
 playwright-report/
 
+# Claude Code worktrees
+.claude/worktrees
+
 # Swap files
 *.swp
 *.swo
