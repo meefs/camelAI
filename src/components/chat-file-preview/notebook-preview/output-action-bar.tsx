@@ -1,7 +1,7 @@
 'use client';
 
 import type { RefObject } from 'react';
-import { ChevronDown, Download } from 'lucide-react';
+import { ChevronDown, Download, Maximize2 } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,6 +22,8 @@ interface OutputActionBarProps {
   containerRef: RefObject<HTMLDivElement | null>;
   spec: Record<string, unknown>;
   title: string;
+  onExpand?: () => void;
+  className?: string;
 }
 
 export function OutputActionBar({
@@ -29,23 +31,39 @@ export function OutputActionBar({
   containerRef,
   spec,
   title,
+  onExpand,
+  className,
 }: OutputActionBarProps) {
   const canExportCsv = hasExtractableData(kind, spec);
   const canExportSvg = hasSvgExportSupport(kind, spec);
 
   return (
-    <div className="output-action-bar mt-1.5 flex items-center justify-end text-xs text-muted-foreground/60">
+    <div className={cn('output-action-bar mt-1.5 flex items-center justify-end text-xs text-muted-foreground/60', className)}>
+      {onExpand ? (
+        <button
+          type="button"
+          onClick={onExpand}
+          className={cn(
+            'mr-2 inline-flex shrink-0 items-center gap-1 text-xs transition-colors',
+            'text-muted-foreground/70 hover:text-foreground'
+          )}
+          aria-label="Expand chart"
+        >
+          <Maximize2 className="size-3" />
+        </button>
+      ) : null}
+
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
+            aria-label="Download chart"
             className={cn(
               'inline-flex shrink-0 items-center gap-1 text-xs transition-colors',
               'text-muted-foreground/70 hover:text-foreground'
             )}
           >
             <Download className="size-3" />
-            Download
             <ChevronDown className="size-2.5 opacity-60" />
           </button>
         </DropdownMenuTrigger>

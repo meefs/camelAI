@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { NotebookTable } from '@/components/chat-file-preview/notebook-preview/notebook-table';
 import type { ParsedTable } from '@/components/chat-file-preview/notebook-preview/types';
 
@@ -59,5 +59,22 @@ describe('NotebookTable', () => {
     expect(
       screen.getByText(`Showing 100 of ${rowCount.toLocaleString()} rows × 1 column`)
     ).toBeInTheDocument();
+  });
+
+  it('renders an expand button when onExpand is provided', () => {
+    const table: ParsedTable = {
+      headers: ['Name', 'Value'],
+      rows: [['Row 1', '10']],
+      indexColumns: 0,
+      caption: '1 row × 2 columns',
+      sourceRowCount: null,
+    };
+    const onExpand = vi.fn();
+
+    render(<NotebookTable table={table} mode="report" onExpand={onExpand} />);
+
+    const expandButton = screen.getByRole('button', { name: /expand/i });
+    fireEvent.click(expandButton);
+    expect(onExpand).toHaveBeenCalledTimes(1);
   });
 });

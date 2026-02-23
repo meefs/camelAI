@@ -73,6 +73,12 @@ RUN chmod 755 /opt/chiridion/control-plane.mjs && \
     ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker && \
     ln -sf /usr/local/lib/create-worker/publish.mjs /usr/local/bin/publish
 
+# IPython startup defaults (pandas display settings for notebook HTML output).
+# IPYTHONDIR must live outside /home/claude — that path is a bind-mounted
+# volume, so files COPY'd there at build time are shadowed at runtime.
+ENV IPYTHONDIR=/opt/ipython
+COPY sandbox/ipython-startup/ /opt/ipython/profile_default/startup/
+RUN chown -R claude:claude /opt/ipython
 
 WORKDIR /home/claude
 
