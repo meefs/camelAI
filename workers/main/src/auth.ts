@@ -825,6 +825,14 @@ export class UserDO extends DurableObject<DOEnv> {
   }
 
   /**
+   * Compatibility probe for admin hard-delete flow.
+   * Exists so callers can verify RPC availability before destructive cleanup.
+   */
+  async canHardDeleteUser(): Promise<boolean> {
+    return true;
+  }
+
+  /**
    * Permanently delete all data in this UserDO.
    * Wipes profile, org memberships, OAuth providers, onboarding, and password.
    */
