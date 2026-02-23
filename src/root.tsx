@@ -40,7 +40,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
     <html lang="en" suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1, viewport-fit=cover"
+        />
         {/* Prevent FOUC in dev: hide body until CSS loads, then CSS reveals it */}
         {import.meta.env.DEV && (
           <style dangerouslySetInnerHTML={{ __html: `body{opacity:0}` }} />
@@ -61,6 +64,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </ThemeProvider>
         <ScrollRestoration />
         <Scripts />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(r){r.forEach(function(reg){reg.unregister()})})}`,
+          }}
+        />
       </body>
     </html>
   );
@@ -105,5 +113,11 @@ export function meta(): Route.MetaDescriptors {
   return [
     { title: 'camelAI' },
     { name: 'description', content: 'AI Chat Platform' },
+    // PWA / iOS
+    { name: 'apple-mobile-web-app-capable', content: 'yes' },
+    { name: 'apple-mobile-web-app-title', content: 'camelAI' },
+    { name: 'apple-mobile-web-app-status-bar-style', content: 'black-translucent' },
+    { name: 'mobile-web-app-capable', content: 'yes' },
+    { name: 'theme-color', content: '#09090b' },
   ];
 }

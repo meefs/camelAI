@@ -1,6 +1,14 @@
 {
   "name": "camelAI",
   "short_name": "camelAI",
+  "description": "AI Chat Platform",
+  "start_url": "/",
+  "scope": "/",
+  "id": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#09090b",
+  "background_color": "#09090b",
   "icons": [
     {
       "src": "/android-chrome-192x192.png",
@@ -11,9 +19,12 @@
       "src": "/android-chrome-512x512.png",
       "sizes": "512x512",
       "type": "image/png"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
-  ],
-  "theme_color": "#09090b",
-  "background_color": "#ffffff",
-  "display": "standalone"
+  ]
 }
