@@ -45,6 +45,14 @@ export function DeleteUserDialog({
   const [error, setError] = useState<string | null>(null)
   const loading = fetcher.state !== "idle"
 
+  const handleOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen)
+    if (!nextOpen) {
+      setConfirmText("")
+      setError(null)
+    }
+  }
+
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data) {
       if (fetcher.data.success) {
@@ -73,7 +81,7 @@ export function DeleteUserDialog({
   }
 
   return (
-    <AlertDialog open={open} onOpenChange={setOpen}>
+    <AlertDialog open={open} onOpenChange={handleOpenChange}>
       <Button
         type="button"
         variant="destructive"

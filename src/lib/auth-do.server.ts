@@ -1068,11 +1068,12 @@ export interface AdminHardDeleteUserResult {
  * This is superuser-only and intended for test account cleanup.
  *
  * Steps:
- *  1. Fetch user profile + OAuth providers for KV key discovery.
- *  2. Remove user from every org (OrgDO.removeMember + UserDO.removeOrg).
- *  3. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
- *  4. Delete user sessions from SESSIONS KV.
- *  5. Wipe the UserDO Durable Object storage.
+ *  1. Fetch user profile + OAuth providers for cleanup key discovery.
+ *  2. Fail early if the user still owns any organizations.
+ *  3. Wipe the UserDO Durable Object storage (with version-skew guard).
+ *  4. Remove user from every org.
+ *  5. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
+ *  6. Delete user sessions from SESSIONS KV.
  */
 export async function hardDeleteAdminUser(
   context: AppLoadContext,
@@ -1107,7 +1108,19 @@ export async function hardDeleteAdminUser(
     );
   }
 
-  // 3. Remove user from all orgs.
+  // 3. Wipe UserDO state first so version-skew failures happen before external cleanup.
+  try {
+    await userStub.hardDeleteUser();
+  } catch (error) {
+    if (isMissingRpcMethodError(error, 'hardDeleteUser')) {
+      throw new Error(
+        'User Durable Object is running old code (missing hardDeleteUser). Restart `bun run dev` or deploy the latest main worker, then retry delete.'
+      );
+    }
+    throw error;
+  }
+
+  // 4. Remove user from all orgs.
   let removedOrgMemberships = 0;
   for (const org of orgs) {
     try {
@@ -1123,7 +1136,7 @@ export async function hardDeleteAdminUser(
     }
   }
 
-  // 3. Delete EMAIL_TO_USER KV entries.
+  // 5. Delete EMAIL_TO_USER KV entries.
   const kvKeysToDelete: string[] = [
     `email:${profile.email.toLowerCase()}`,
   ];
@@ -1140,7 +1153,7 @@ export async function hardDeleteAdminUser(
     })
   );
 
-  // 4. Best-effort cleanup of all user sessions (regular, worker, screenshot).
+  // 6. Best-effort cleanup of all user sessions (regular, worker, screenshot).
   const sessionPrefixes = [SESSION_PREFIX, WORKER_SESSION_PREFIX, SCREENSHOT_SESSION_PREFIX] as const;
   for (const prefix of sessionPrefixes) {
     try {
@@ -1151,18 +1164,6 @@ export async function hardDeleteAdminUser(
     } catch (error) {
       warnings.push(`Failed to clean ${prefix}* sessions: ${toErrorMessage(error)}`);
     }
-  }
-
-  // 5. Wipe UserDO storage.
-  try {
-    await userStub.hardDeleteUser();
-  } catch (error) {
-    if (isMissingRpcMethodError(error, 'hardDeleteUser')) {
-      throw new Error(
-        'User Durable Object is running old code (missing hardDeleteUser). Restart `bun run dev` or deploy the latest main worker, then retry delete.'
-      );
-    }
-    throw error;
   }
 
   return {
