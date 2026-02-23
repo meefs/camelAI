@@ -1070,10 +1070,11 @@ export interface AdminHardDeleteUserResult {
  * Steps:
  *  1. Fetch user profile + OAuth providers for cleanup key discovery.
  *  2. Fail early if the user still owns any organizations.
- *  3. Wipe the UserDO Durable Object storage (with version-skew guard).
- *  4. Remove user from every org.
+ *  3. Remove user from every org (must fully succeed before deletion continues).
+ *  4. Wipe the UserDO Durable Object storage (with version-skew guard).
  *  5. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
  *  6. Delete user sessions from SESSIONS KV.
+ *  7. Delete user-scoped worker auth one-time tokens from APP_KV.
  */
 export async function hardDeleteAdminUser(
   context: AppLoadContext,
@@ -1108,7 +1109,31 @@ export async function hardDeleteAdminUser(
     );
   }
 
-  // 3. Wipe UserDO state first so version-skew failures happen before external cleanup.
+  // 3. Remove user from all orgs first. If any membership cleanup fails,
+  // stop before wiping the user record to avoid orphaned org membership rows.
+  let removedOrgMemberships = 0;
+  const orgRemovalErrors: string[] = [];
+  for (const org of orgs) {
+    try {
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.org_id));
+      await orgStub.removeMember(userId, actorId);
+      removedOrgMemberships++;
+    } catch (error) {
+      orgRemovalErrors.push(
+        `${org.org_id.slice(0, 8)}: ${toErrorMessage(error)}`
+      );
+    }
+  }
+  if (orgRemovalErrors.length > 0) {
+    const preview = orgRemovalErrors.slice(0, 3).join('; ');
+    const suffix = orgRemovalErrors.length > 3 ? `; and ${orgRemovalErrors.length - 3} more` : '';
+    throw new Error(
+      `Failed to remove user from ${orgRemovalErrors.length} org(s) (${preview}${suffix}). User was not deleted. Resolve membership cleanup and retry.`
+    );
+  }
+
+  // 4. Wipe UserDO state. Do this before external KV cleanup so
+  // missing-RPC/version-skew errors do not partially de-index auth keys.
   try {
     await userStub.hardDeleteUser();
   } catch (error) {
@@ -1118,22 +1143,6 @@ export async function hardDeleteAdminUser(
       );
     }
     throw error;
-  }
-
-  // 4. Remove user from all orgs.
-  let removedOrgMemberships = 0;
-  for (const org of orgs) {
-    try {
-      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.org_id));
-      await orgStub.removeMember(userId, actorId);
-      removedOrgMemberships++;
-    } catch (error) {
-      // Non-owner removals should not throw, but guard against unexpected
-      // failures and surface them without aborting the rest of cleanup.
-      warnings.push(
-        `Failed to remove user from org ${org.org_id.slice(0, 8)}: ${toErrorMessage(error)}`
-      );
-    }
   }
 
   // 5. Delete EMAIL_TO_USER KV entries.
@@ -1164,6 +1173,17 @@ export async function hardDeleteAdminUser(
     } catch (error) {
       warnings.push(`Failed to clean ${prefix}* sessions: ${toErrorMessage(error)}`);
     }
+  }
+
+  // 7. Best-effort cleanup of pending worker auth tokens to prevent
+  // post-delete token exchange into fresh worker sessions.
+  try {
+    await deleteKvEntriesWithPrefix(authEnv.APP_KV, WORKER_AUTH_TOKEN_PREFIX, (_key, value) => {
+      const parsed = parseJsonSafely(value);
+      return parsed?.user_id === userId;
+    });
+  } catch (error) {
+    warnings.push(`Failed to clean worker auth tokens: ${toErrorMessage(error)}`);
   }
 
   return {
