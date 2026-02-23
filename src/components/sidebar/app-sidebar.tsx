@@ -51,7 +51,7 @@ export function AppSidebar(props: AppSidebarProps) {
             variant="secondary"
             className="text-[10px] tracking-wider font-semibold uppercase"
           >
-            {state === "expanded" ? "Early Access" : "Beta"}
+            Beta
           </Badge>
         </div>
       </SidebarHeader>
