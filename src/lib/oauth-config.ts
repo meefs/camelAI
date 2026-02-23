@@ -124,8 +124,12 @@ export async function exchangeCodeForTokens(
     client_secret: clientSecret,
     code,
     redirect_uri: redirectUri,
-    grant_type: 'authorization_code',
   });
+
+  // Google requires grant_type; GitHub does not use it
+  if (provider === 'google') {
+    body.set('grant_type', 'authorization_code');
+  }
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/x-www-form-urlencoded',
@@ -147,7 +151,15 @@ export async function exchangeCodeForTokens(
     throw new Error(`Token exchange failed: ${response.status} ${errorText}`);
   }
 
-  return response.json();
+  const data = await response.json() as Record<string, unknown>;
+
+  // GitHub returns 200 OK even for errors (e.g. bad_verification_code),
+  // so we must check the response body for an error field.
+  if (data.error) {
+    throw new Error(`Token exchange failed: ${data.error} - ${data.error_description || 'unknown error'}`);
+  }
+
+  return data as unknown as OAuthTokenResponse;
 }
 
 /**
