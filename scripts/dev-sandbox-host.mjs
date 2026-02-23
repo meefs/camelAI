@@ -26,12 +26,9 @@ const watchTargets = [
   resolve(repoRoot, 'sandbox/entrypoint.sh'),
   resolve(repoRoot, 'sandbox/skills'),
   resolve(repoRoot, 'sandbox/create-worker'),
-  resolve(repoRoot, 'src'),
-  resolve(repoRoot, 'package.json'),
-  resolve(repoRoot, 'bun.lock'),
-  resolve(repoRoot, 'tsconfig.json'),
-  resolve(repoRoot, 'cloudflare-env.d.ts'),
-  resolve(repoRoot, 'postcss.config.mjs'),
+  resolve(repoRoot, 'sandbox/create-worker/renderer'),
+  resolve(repoRoot, 'src/components/chat-file-preview'),
+  resolve(repoRoot, 'src/styles/globals.css'),
   resolve(repoRoot, 'vite.renderer.config.ts'),
 ];
 
@@ -132,6 +129,11 @@ function spawnStreaming(command, args, options = {}) {
   });
 }
 
+async function buildRenderer() {
+  console.log('[dev:sandbox-host] Building renderer bundle...');
+  await spawnStreaming('bun', ['run', 'build:renderer'], { cwd: repoRoot });
+}
+
 async function buildImage(reason) {
   if (buildInFlight) {
     buildQueued = true;
@@ -139,6 +141,7 @@ async function buildImage(reason) {
   }
   buildInFlight = true;
   try {
+    await buildRenderer();
     console.log(`[dev:sandbox-host] Building sandbox image (${reason}) -> ${imageTag}`);
     await spawnStreaming('docker', ['build', '-t', imageTag, '-f', dockerfilePath, '.'], { cwd: repoRoot });
     console.log(`[dev:sandbox-host] Image ready: ${imageTag}`);

@@ -25,6 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run build:renderer
+
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
@@ -37,17 +41,6 @@ jobs:
           rsync -az --delete \
             sandbox/ \
             chiridion@20.46.233.68:/opt/chiridion/sandbox/
-          rsync -az --delete \
-            src/ \
-            chiridion@20.46.233.68:/opt/chiridion/src/
-          rsync -az \
-            package.json \
-            bun.lock \
-            tsconfig.json \
-            cloudflare-env.d.ts \
-            postcss.config.mjs \
-            vite.renderer.config.ts \
-            chiridion@20.46.233.68:/opt/chiridion/
           rsync -az \
             services/sandbox-host/Dockerfile.sandbox \
             chiridion@20.46.233.68:/opt/chiridion/Dockerfile.sandbox
