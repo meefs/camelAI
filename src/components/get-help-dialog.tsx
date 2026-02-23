@@ -49,6 +49,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 interface GetHelpDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  defaultCategory?: HelpCategory
 }
 
 function severityDotClass(severity: HelpSeverity): string {
@@ -67,7 +68,7 @@ function readPageContext(): { pageUrl: string; screenSize: string } {
   }
 }
 
-export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
+export function GetHelpDialog({ open, onOpenChange, defaultCategory }: GetHelpDialogProps) {
   const isMobile = useIsMobile()
   const fetcher = useFetcher<{
     result?: SubmissionResult<string[]>;
@@ -118,7 +119,7 @@ export function GetHelpDialog({ open, onOpenChange }: GetHelpDialogProps) {
     }
     setLastSubmissionResult(undefined)
     const context = readPageContext()
-    setCategory("bug")
+    setCategory(defaultCategory ?? "bug")
     setSeverity("low")
     setDescription("")
     setPageUrl(context.pageUrl)

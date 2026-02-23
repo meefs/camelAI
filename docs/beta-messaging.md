@@ -1,25 +1,25 @@
-# Beta Messaging
+# Beta Messaging Plan
 
 ## Status
 
-February 20, 2026 — Draft v1
+February 20, 2026 — Draft v2
 
 ## Problem
 
 camelAI is in early access beta. Users should know this so they calibrate expectations and feel invited to share feedback. Right now there's no visible beta indicator anywhere in the app. We want two lightweight, non-disruptive signals:
 
-1. A **dismissible notification** on the welcome screen nudging users to share feedback
+1. A **permanent, low-profile notice** on the welcome screen nudging users to share feedback
 2. A **persistent BETA badge** in the sidebar so the beta status is always visible
 
 ---
 
 ## Design
 
-### 1. Welcome Screen Beta Banner
+### 1. Welcome Screen Beta Notice
 
-A subtle, dismissible inline banner sits between the `WelcomeGreeting` and the `PromptInput` on the new chat screen. It uses the existing shadcn `Alert` component for structure, styled to feel informational rather than alarming.
+A single line of small, muted text between the `WelcomeGreeting` and the `PromptInput`. No background, no border, no icon — just understated text that blends naturally into the greeting area.
 
-**Full welcome screen layout (showing where the banner inserts):**
+**Full welcome screen layout (showing where the notice inserts):**
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
@@ -27,11 +27,9 @@ A subtle, dismissible inline banner sits between the `WelcomeGreeting` and the `
 │                    Hey, Jane 👋                                   │  ← WelcomeGreeting
 │                What would you like to build?                      │
 │                                                                   │
-│   ┌───────────────────────────────────────────────────────────┐   │
-│   │  🧪  You're in the early access beta. Things may          │   │
-│   │      break — share feedback                          ✕    │   │  ← NEW: BetaBanner
-│   │              ^^^^^^^^^^^^^^^^^^^^                         │   │     (clickable link)
-│   └───────────────────────────────────────────────────────────┘   │
+│          You're in the early access beta. Things may              │
+│          break — share feedback                                   │  ← NEW: BetaNotice
+│                  ^^^^^^^^^^^^^^                                   │     (small muted text)
 │                                                                   │
 │   ┌───────────────────────────────────────────────────────────┐   │
 │   │  Ask anything...                                          │   │  ← PromptInput
@@ -48,100 +46,99 @@ A subtle, dismissible inline banner sits between the `WelcomeGreeting` and the `
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-**Banner close-up:**
+**Notice close-up:**
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│   🧪  You're in the early access beta. Things may break —      │
-│       share feedback                                        ✕   │
-│       ^^^^^^^^^^^^^^^                                           │
-│       underlined, clickable                                     │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+                                                        text-xs
+                                                        text-muted-foreground
+                                                        text-center
+                                                         ↓
+      You're in the early access beta. Things may break — share feedback
+                                                          ^^^^^^^^^^^^^^
+                                                          underlined, clickable
+                                                          opens GetHelpDialog
 ```
 
-#### Component: `BetaBanner`
+#### Component: `BetaNotice`
 
-**File:** `src/components/welcome-screen/beta-banner.tsx`
+**File:** `src/components/welcome-screen/beta-notice.tsx`
 
-Uses the shadcn `Alert` component with a custom dismissible layout.
+A minimal inline component. No shadcn Alert — just a `<p>` tag with small muted text.
 
 **Structure:**
 
 ```tsx
-<Alert className="...">
-  <FlaskConical className="size-4" />    {/* from lucide-react — science/beta feel */}
-  <AlertDescription>
-    You're in the early access beta. Things may break —{" "}
-    <button onClick={onFeedbackClick} className="underline underline-offset-2 ...">
-      share feedback
-    </button>
-  </AlertDescription>
-  <AlertAction>
-    <Button variant="ghost" size="icon" onClick={onDismiss}>
-      <X className="size-3.5" />
-    </Button>
-  </AlertAction>
-</Alert>
+<p className="text-center text-xs text-muted-foreground">
+  You're in the early access beta. Things may break —{" "}
+  <button
+    onClick={onFeedbackClick}
+    className="underline underline-offset-2 font-medium hover:text-foreground transition-colors"
+  >
+    share feedback
+  </button>
+</p>
 ```
 
-**Styling details:**
+**Styling rationale:**
 
-- Use the `default` Alert variant (card background with subtle border)
-- `FlaskConical` icon from lucide-react — a science beaker that communicates "experimental/beta" without feeling negative
-- "share feedback" is a `<button>` styled as an inline link: `underline underline-offset-2 font-medium hover:text-foreground text-muted-foreground transition-colors`
-- Dismiss `X` button uses `AlertAction` slot (absolute-positioned top-right) with `Button variant="ghost" size="icon"` using the `size-3.5` X icon
-- Overall banner gets subtle additional classes: `py-2.5` for comfortable but compact height
+- `text-xs` + `text-muted-foreground` — small and subdued, reads as secondary information
+- `text-center` — centers below the greeting, which is also centered
+- No background, no border, no padding — this is just a line of text, not a card or alert
+- "share feedback" uses `underline` + `font-medium` + `hover:text-foreground` to indicate it's clickable without looking like a button
+- No icon — keeps the notice as low-profile as possible
 
 **Behavior:**
 
-- **"share feedback" click** → calls `onFeedbackClick` prop, which opens the `GetHelpDialog` with the category pre-selected to `"feature"` (closest to general feedback among existing categories)
-- **Dismiss (X click)** → sets `localStorage` key `betaBannerDismissed` to `"true"`, hides the banner via local state
-- **On mount** → checks `localStorage` for `betaBannerDismissed`. If `"true"`, banner is not rendered
-- The banner is not shown if dismissed. There is no expiry — once dismissed, it stays dismissed until we remove the beta banner code entirely
+- **Not dismissible** — this notice is permanent for the duration of beta
+- **"share feedback" click** → calls `onFeedbackClick` prop, which opens the `GetHelpDialog` with the category pre-selected to `"feature"`
+- No localStorage, no state management — the component is purely presentational
 
 **Props:**
 
 ```typescript
-interface BetaBannerProps {
+interface BetaNoticeProps {
   onFeedbackClick: () => void
 }
 ```
-
-The component manages its own dismissed state internally (reads/writes localStorage). If dismissed, it returns `null`.
 
 ---
 
 ### 2. GetHelpDialog Enhancement: `defaultCategory` Prop
 
-The `GetHelpDialog` currently resets category to `"bug"` every time it opens. Add an optional `defaultCategory` prop so callers can pre-select a different category.
+The `GetHelpDialog` currently always resets category to `"bug"` when it opens (line ~122 in `get-help-dialog.tsx`). Add an optional `defaultCategory` prop so callers can pre-select a different category.
 
 **File to modify:** `src/components/get-help-dialog.tsx`
 
-**Change:**
+**Change the interface:**
 
 ```typescript
+// BEFORE
 interface GetHelpDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  defaultCategory?: HelpCategory  // NEW — defaults to "bug" if not provided
+}
+
+// AFTER
+interface GetHelpDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  defaultCategory?: HelpCategory  // NEW — optional, defaults to "bug" if omitted
 }
 ```
 
-In the `useEffect` that runs when `open` changes (the reset effect), replace the hardcoded:
+**Change the reset effect** (the `useEffect` that runs when `open` changes):
 
 ```typescript
+// BEFORE (in the useEffect body)
 setCategory("bug")
-```
 
-with:
-
-```typescript
+// AFTER
 setCategory(defaultCategory ?? "bug")
 ```
 
-No other changes to the dialog.
+**Important: preserving existing behavior.** When `defaultCategory` is not passed (which is the case for the existing sidebar GetHelpDialog), `defaultCategory` is `undefined`, and `undefined ?? "bug"` evaluates to `"bug"`. This means zero behavioral change for existing callers. The sidebar's `<GetHelpDialog open={helpOpen} onOpenChange={setHelpOpen} />` continues to work identically — category resets to "bug" on open.
+
+The `defaultValue` in the `useForm` config also references `"bug"` for the initial form state. This is fine because `useForm` only uses `defaultValue` for the initial render, and the `useEffect` runs immediately when `open` becomes `true`, overriding it. No changes to `useForm` are needed.
 
 ---
 
@@ -149,25 +146,29 @@ No other changes to the dialog.
 
 **File to modify:** `src/components/welcome-screen/index.tsx`
 
-Add a `helpOpen` state and render both the `BetaBanner` and the `GetHelpDialog`:
+Add `helpOpen` state and render both the `BetaNotice` and the `GetHelpDialog`:
 
 ```typescript
 const [helpOpen, setHelpOpen] = useState(false)
 ```
 
-Insert the `BetaBanner` between `WelcomeGreeting` and the `AnimatedPlaceholder`/`PromptInput`:
+Insert the `BetaNotice` between `WelcomeGreeting` and the `AnimatedPlaceholder`/`PromptInput`. The existing layout has a `space-y-10` container, so the notice will get the same vertical rhythm:
 
 ```tsx
-<WelcomeGreeting userName={userName} />
+<div className="w-full max-w-5xl space-y-10">
+  <WelcomeGreeting userName={userName} seed={referenceTime} />
 
-<BetaBanner onFeedbackClick={() => setHelpOpen(true)} />
+  {/* NEW: Beta notice between greeting and prompt */}
+  <BetaNotice onFeedbackClick={() => setHelpOpen(true)} />
 
-<AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
-  {/* ...existing PromptInput... */}
-</AnimatedPlaceholder>
+  <AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
+    {/* ...existing PromptInput... */}
+  </AnimatedPlaceholder>
 
-{/* ...rest of sections... */}
+  {/* ...rest of existing sections unchanged... */}
+</div>
 
+{/* NEW: GetHelpDialog for the beta notice "share feedback" link */}
 <GetHelpDialog
   open={helpOpen}
   onOpenChange={setHelpOpen}
@@ -175,13 +176,23 @@ Insert the `BetaBanner` between `WelcomeGreeting` and the `AnimatedPlaceholder`/
 />
 ```
 
-Note: The `defaultCategory="feature"` ensures that when opened from the beta banner's "share feedback" link, the category dropdown is pre-set to "Feature request". This is the closest existing category to general feedback and avoids adding a new category for a temporary beta feature.
+**Note on spacing:** The `space-y-10` (2.5rem gap) on the parent container may feel like too much space between the greeting and this small notice. If the visual gap feels excessive, the implementer should consider reducing it by adding a **negative top margin** on the `BetaNotice` wrapper, e.g. `-mt-6` to bring it closer to the greeting:
+
+```tsx
+<div className="-mt-6">
+  <BetaNotice onFeedbackClick={() => setHelpOpen(true)} />
+</div>
+```
+
+This pulls the notice up so it reads as a subtitle/tagline under the greeting rather than a separate section. The implementer should use their judgment here based on what looks best visually.
+
+**Note on `defaultCategory="feature"`:** "Feature request" is the closest existing category to general feedback. We avoid adding a new "Feedback" category for a temporary beta feature — when beta ends, we remove the notice and the new prop without touching the help form's category list.
 
 ---
 
 ### 4. Sidebar BETA Badge
 
-A `BETA` badge in the sidebar header, integrated into the `WorkspaceSwitcher` area. It should be visible in both expanded and collapsed states.
+A `BETA` badge in the sidebar header, below the `WorkspaceSwitcher`. Left-aligned in expanded state, centered in collapsed state.
 
 **Expanded sidebar:**
 
@@ -189,7 +200,9 @@ A `BETA` badge in the sidebar header, integrated into the `WorkspaceSwitcher` ar
 ┌─────────────────────────┐
 │  🐪 My Workspace        │
 │     Acme Inc             │
-│                    BETA  │  ← Badge in the header area, right-aligned
+│  ┌──────────────┐       │
+│  │ Early Access  │       │  ← Badge, left-aligned below WorkspaceSwitcher
+│  └──────────────┘       │
 ├─────────────────────────┤
 │  ◈ New Chat              │
 │  ◈ Computer              │
@@ -207,7 +220,7 @@ A `BETA` badge in the sidebar header, integrated into the `WorkspaceSwitcher` ar
 ```
 ┌──────┐
 │  🐪  │
-│ BETA │  ← Badge, compact, below the workspace avatar
+│ BETA │  ← Badge, centered in the narrow column
 ├──────┤
 │  ◈   │
 │  ◈   │
@@ -224,22 +237,25 @@ A `BETA` badge in the sidebar header, integrated into the `WorkspaceSwitcher` ar
 
 **File to modify:** `src/components/sidebar/app-sidebar.tsx`
 
-Add the `Badge` component to the `SidebarHeader`, positioned below the `WorkspaceSwitcher`. Use the shadcn `Badge` with `variant="secondary"` and the sidebar's `useSidebar()` hook to detect collapsed state.
+Import `Badge` and `useSidebar`, then add the badge below `WorkspaceSwitcher` in `SidebarHeader`.
 
 ```tsx
 import { Badge } from "@/components/ui/badge"
 import { useSidebar } from "@/components/ui/sidebar"
 
-// Inside AppSidebar:
+// Inside AppSidebar, alongside existing hooks:
 const { state } = useSidebar()  // "expanded" | "collapsed"
 ```
 
-Add a `Badge` element below `WorkspaceSwitcher` inside `SidebarHeader`:
+Update the `SidebarHeader`:
 
 ```tsx
 <SidebarHeader>
   <WorkspaceSwitcher />
-  <div className="flex justify-center px-2">
+  <div className={cn(
+    "flex px-2",
+    state === "expanded" ? "justify-start" : "justify-center"
+  )}>
     <Badge
       variant="secondary"
       className="text-[10px] tracking-wider font-semibold uppercase"
@@ -255,14 +271,10 @@ Add a `Badge` element below `WorkspaceSwitcher` inside `SidebarHeader`:
 - `variant="secondary"` — muted background (`bg-secondary text-secondary-foreground`), doesn't compete with navigation items
 - `text-[10px]` — small and tasteful, doesn't dominate the header
 - `tracking-wider` + `uppercase` + `font-semibold` — gives it a proper tag/label feel
-- In expanded state: shows "Early Access" (slightly more descriptive when space allows)
-- In collapsed state: shows "Beta" (shorter to fit the narrow icon column)
-- `flex justify-center px-2` wrapper centers the badge in both states
+- In expanded state: shows "Early Access" (more descriptive when space allows), left-aligned via `justify-start`
+- In collapsed state: shows "Beta" (shorter to fit the narrow icon column), centered via `justify-center`
+- `px-2` on the wrapper provides consistent horizontal padding that matches sidebar menu item alignment
 - The badge is **not** dismissible — it stays visible as long as the app is in beta
-
-#### Why not in the WorkspaceSwitcher itself?
-
-The `WorkspaceSwitcher` has a complex dropdown trigger layout with avatar, text, and chevron. Injecting a badge there would require fragile layout changes and could break the dropdown trigger's sizing. Placing it as a sibling element below the switcher in `SidebarHeader` is cleaner and easier to remove later.
 
 ---
 
@@ -270,38 +282,29 @@ The `WorkspaceSwitcher` has a complex dropdown trigger layout with avatar, text,
 
 | File | Purpose |
 |------|---------|
-| `src/components/welcome-screen/beta-banner.tsx` | Dismissible beta notification banner for the welcome screen |
+| `src/components/welcome-screen/beta-notice.tsx` | Permanent beta notice for the welcome screen |
 
 ## Files to Modify
 
 | File | Change |
 |------|--------|
-| `src/components/get-help-dialog.tsx` | Add optional `defaultCategory` prop; use it instead of hardcoded `"bug"` in reset effect |
-| `src/components/welcome-screen/index.tsx` | Add `helpOpen` state, render `BetaBanner` between greeting and prompt input, render `GetHelpDialog` |
+| `src/components/get-help-dialog.tsx` | Add optional `defaultCategory` prop; use it instead of hardcoded `"bug"` in the reset `useEffect` |
+| `src/components/welcome-screen/index.tsx` | Add `helpOpen` state, render `BetaNotice` between greeting and prompt input, render `GetHelpDialog` with `defaultCategory="feature"` |
 | `src/components/sidebar/app-sidebar.tsx` | Import `Badge` and `useSidebar`, add BETA badge below `WorkspaceSwitcher` in `SidebarHeader` |
 
 ## Components Used
 
 | Component | Source | Where |
 |-----------|--------|-------|
-| `Alert`, `AlertDescription`, `AlertAction` | `@/components/ui/alert` | BetaBanner |
 | `Badge` | `@/components/ui/badge` | Sidebar header |
-| `Button` | `@/components/ui/button` | BetaBanner dismiss X |
-| `FlaskConical`, `X` | `lucide-react` | BetaBanner |
-| `GetHelpDialog` | `@/components/get-help-dialog` | WelcomeScreen |
-| `useSidebar` | `@/components/ui/sidebar` | AppSidebar (for collapsed state detection) |
+| `GetHelpDialog` | `@/components/get-help-dialog` | WelcomeScreen (new instance) |
+| `useSidebar` | `@/components/ui/sidebar` | AppSidebar (for collapsed/expanded state detection) |
 
-No new component installations needed — `Alert`, `Badge`, and `Button` are all already installed.
-
-## Dismissal Persistence
-
-| Key | Storage | Value | Purpose |
-|-----|---------|-------|---------|
-| `betaBannerDismissed` | `localStorage` | `"true"` | Hides the welcome screen beta banner permanently |
+No new component installations needed — `Badge` is already installed.
 
 ## Not in Scope
 
 - Adding a new "Feedback" category to the help form (use "Feature request" for now)
 - Beta messaging in emails or other non-app surfaces
-- Expiry/reset of the dismissed state (banner stays dismissed)
 - Any backend changes — this is entirely client-side
+- Dismissal logic or localStorage — the notice is permanent

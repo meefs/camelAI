@@ -8,6 +8,7 @@ import { useAuthData } from "@/hooks/use-auth-data"
 import { GetHelpDialog } from "@/components/get-help-dialog"
 import { NavUser } from "@/components/sidebar/nav-user"
 import { WorkspaceSwitcher } from "@/components/sidebar/workspace-switcher"
+import { Badge } from "@/components/ui/badge"
 import {
   Sidebar,
   SidebarContent,
@@ -18,6 +19,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar"
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
@@ -26,6 +28,7 @@ export function AppSidebar(props: AppSidebarProps) {
   const [helpOpen, setHelpOpen] = useState(false)
   const { pathname } = useLocation()
   const { currentWorkspace } = useAuthData()
+  const { state } = useSidebar()
   const isHome = pathname === "/"
   const isHistory = pathname === "/history"
   const isConnections = pathname === "/connections"
@@ -39,6 +42,14 @@ export function AppSidebar(props: AppSidebarProps) {
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
         <WorkspaceSwitcher />
+        <div className="flex px-2 transition-[justify-content] duration-200 ease-in-out" style={{ justifyContent: state === "expanded" ? "flex-start" : "center" }}>
+          <Badge
+            variant="secondary"
+            className="text-[10px] tracking-wider font-semibold uppercase"
+          >
+            Beta
+          </Badge>
+        </div>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
