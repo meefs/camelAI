@@ -1,8 +1,8 @@
 import {
   BarChart3,
+  Bot,
   Gamepad2,
   Globe,
-  Users,
   Wrench,
 } from 'lucide-react';
 import { useOutletContext } from 'react-router';
@@ -23,7 +23,7 @@ const STARTER_ICONS: Record<OnboardingStarterProject, typeof BarChart3> = {
   data_analytics: BarChart3,
   personal_site: Globe,
   business_tool: Wrench,
-  team_productivity: Users,
+  ai_agent: Bot,
   something_fun: Gamepad2,
 };
 

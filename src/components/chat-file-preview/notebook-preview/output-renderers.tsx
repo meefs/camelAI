@@ -1,12 +1,14 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
-import type { NotebookOutput } from './types';
+import type { NotebookOutput, ParsedTable } from './types';
 import { getOutputRender } from './utils';
 import { NotebookHtmlOutput } from './html-output';
 import { PlotlyChart } from './plotly-chart';
 import { VegaLiteChart } from './vega-lite-chart';
 import { NotebookTable } from './notebook-table';
 import { OutputActionBar } from './output-action-bar';
+import { FullScreenDialog } from './full-screen-dialog';
+import { TableViewer } from './table-viewer';
 
 interface OutputRendererProps {
   output: NotebookOutput;
@@ -26,23 +28,89 @@ function ChartOutputWithActions({
   spec,
   title,
 }: ChartOutputWithActionsProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const chartTitle = title || 'Chart';
+  const inlineContainerRef = useRef<HTMLDivElement>(null);
+  const fullScreenContainerRef = useRef<HTMLDivElement>(null);
+  const [isFullScreen, setIsFullScreen] = useState(false);
+
+  const renderChart = (fullScreen: boolean) => {
+    if (kind === 'vegalite') {
+      return <VegaLiteChart spec={spec} title={chartTitle} fillContainer={fullScreen} />;
+    }
+    return (
+      <PlotlyChart
+        payload={spec}
+        title={chartTitle}
+        showModeBar={fullScreen}
+        fillContainer={fullScreen}
+      />
+    );
+  };
 
   return (
     <div className="w-full min-w-0">
-      <div ref={containerRef}>
-        {kind === 'vegalite' ? (
-          <VegaLiteChart spec={spec} title={title} />
-        ) : (
-          <PlotlyChart payload={spec} title={title} />
-        )}
+      <div ref={inlineContainerRef}>
+        {renderChart(false)}
       </div>
       <OutputActionBar
         kind={kind}
-        containerRef={containerRef}
+        containerRef={inlineContainerRef}
         spec={spec}
-        title={title}
+        title={chartTitle}
+        onExpand={() => setIsFullScreen(true)}
       />
+      {isFullScreen ? (
+        <FullScreenDialog
+          open={isFullScreen}
+          onOpenChange={setIsFullScreen}
+          title={chartTitle}
+          actions={(
+            <OutputActionBar
+              kind={kind}
+              containerRef={fullScreenContainerRef}
+              spec={spec}
+              title={chartTitle}
+              className="mt-0"
+            />
+          )}
+        >
+          <div className="flex h-full min-h-0 items-center justify-center overflow-auto p-6">
+            <div ref={fullScreenContainerRef} className="h-full w-full max-w-[1800px]">
+              {renderChart(true)}
+            </div>
+          </div>
+        </FullScreenDialog>
+      ) : null}
+    </div>
+  );
+}
+
+interface TableOutputWithActionsProps {
+  table: ParsedTable;
+  mode: 'report' | 'notebook';
+  title: string;
+}
+
+function TableOutputWithActions({ table, mode, title }: TableOutputWithActionsProps) {
+  const tableTitle = title || 'Table';
+  const [isFullScreen, setIsFullScreen] = useState(false);
+
+  return (
+    <div className="w-full min-w-0">
+      <NotebookTable
+        table={table}
+        mode={mode}
+        onExpand={() => setIsFullScreen(true)}
+      />
+      {isFullScreen ? (
+        <FullScreenDialog
+          open={isFullScreen}
+          onOpenChange={setIsFullScreen}
+          title={tableTitle}
+        >
+          <TableViewer table={table} title={tableTitle} />
+        </FullScreenDialog>
+      ) : null}
     </div>
   );
 }
@@ -80,9 +148,7 @@ export function OutputRenderer({
 
   if (render.kind === 'table') {
     return (
-      <div className="w-full min-w-0">
-        <NotebookTable table={render.table} mode={mode} />
-      </div>
+      <TableOutputWithActions table={render.table} mode={mode} title={title} />
     );
   }
 

@@ -25,7 +25,6 @@ export type OnboardingStepId =
   | 'orgSlug'
   | 'q1'
   | 'q2'
-  | 'q3'
   | 'q4'
   | 'q5'
   | 'q6';
@@ -97,7 +96,6 @@ export const STEP_PATHS: Record<OnboardingStepId, string> = {
   orgSlug: '/onboarding/org-slug',
   q1: '/onboarding/ai-familiarity',
   q2: '/onboarding/iteration-style',
-  q3: '/onboarding/stakes',
   q4: '/onboarding/design-style',
   q5: '/onboarding/starter-project',
   q6: '/onboarding/data-interests',
@@ -203,7 +201,7 @@ export const STARTER_PROJECT_OPTIONS: StarterProjectOption[] = [
   {
     value: 'data_analytics',
     title: 'Data analytics',
-    description: 'Turn spreadsheets and data into insights',
+    description: 'Upload a spreadsheets or connect a database for insights',
   },
   {
     value: 'personal_site',
@@ -211,14 +209,14 @@ export const STARTER_PROJECT_OPTIONS: StarterProjectOption[] = [
     description: 'Your corner of the internet',
   },
   {
+    value: 'ai_agent',
+    title: 'AI Agent',
+    description: 'Create your own chat or make an agent',
+  },
+  {
     value: 'business_tool',
     title: 'Business tool',
     description: 'Internal tools, dashboards, and admin panels',
-  },
-  {
-    value: 'team_productivity',
-    title: 'Team productivity',
-    description: 'Help your team work better together',
   },
   {
     value: 'something_fun',
@@ -281,7 +279,7 @@ const STARTER_PROJECT_LABELS: Record<OnboardingStarterProject, string> = {
   data_analytics: 'Data analytics',
   personal_site: 'Personal site',
   business_tool: 'Business tool',
-  team_productivity: 'Team productivity',
+  ai_agent: 'AI Agent',
   something_fun: 'Something fun',
 };
 
@@ -292,8 +290,8 @@ const STARTER_PROJECT_GUIDANCE: Record<OnboardingStarterProject, string> = {
     'They chose "Personal site". Ask about the vibe they want and what they want to showcase.',
   business_tool:
     'They chose "Business tool". Ask what workflow is painful and what data they need to manage.',
-  team_productivity:
-    "They chose \"Team productivity\". Ask about their team's current workflow and what feels clunky.",
+  ai_agent:
+    'They chose "AI Agent". Ask what kind of agent or chat experience they want to build and what it should do.',
   something_fun:
     'They chose "Something fun". Offer a few playful project ideas and jump right in.',
 };
@@ -350,7 +348,7 @@ export function getStepSequence(options: {
   if (options.aiFamiliarity === 'extensive') {
     sequence.push('q4', 'q6');
   } else {
-    sequence.push('q2', 'q3', 'q4', 'q5', 'q6');
+    sequence.push('q2', 'q4', 'q5', 'q6');
   }
 
   return sequence;
@@ -361,7 +359,6 @@ const ONBOARDING_STEP_ORDER: OnboardingStepId[] = [
   'orgSlug',
   'q1',
   'q2',
-  'q3',
   'q4',
   'q5',
   'q6',

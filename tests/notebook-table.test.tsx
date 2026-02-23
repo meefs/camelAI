@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { NotebookTable } from '@/components/chat-file-preview/notebook-preview/notebook-table';
 import type { ParsedTable } from '@/components/chat-file-preview/notebook-preview/types';
 
@@ -25,12 +25,13 @@ describe('NotebookTable', () => {
       ]),
       indexColumns: 1,
       caption: '150 rows × 1 column',
+      sourceRowCount: null,
     };
 
     const { container } = render(<NotebookTable table={table} mode="report" />);
 
-    expect(screen.getByText('Showing 100 of 150 rows × 1 columns')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /download all rows as csv/i })).toBeInTheDocument();
+    expect(screen.getByText('Showing 100 of 150 rows × 1 column')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /download all 150 rows as csv/i })).toBeInTheDocument();
 
     expect(screen.getByText('Value 1')).toBeInTheDocument();
     expect(screen.getByText('Value 100')).toBeInTheDocument();
@@ -48,6 +49,7 @@ describe('NotebookTable', () => {
       rows: Array.from({ length: rowCount }, (_, index) => [`${index}`]),
       indexColumns: 0,
       caption: `${rowCount} rows × 1 column`,
+      sourceRowCount: null,
     };
 
     expect(() => {
@@ -55,7 +57,24 @@ describe('NotebookTable', () => {
     }).not.toThrow();
 
     expect(
-      screen.getByText(`Showing 100 of ${rowCount.toLocaleString()} rows × 1 columns`)
+      screen.getByText(`Showing 100 of ${rowCount.toLocaleString()} rows × 1 column`)
     ).toBeInTheDocument();
+  });
+
+  it('renders an expand button when onExpand is provided', () => {
+    const table: ParsedTable = {
+      headers: ['Name', 'Value'],
+      rows: [['Row 1', '10']],
+      indexColumns: 0,
+      caption: '1 row × 2 columns',
+      sourceRowCount: null,
+    };
+    const onExpand = vi.fn();
+
+    render(<NotebookTable table={table} mode="report" onExpand={onExpand} />);
+
+    const expandButton = screen.getByRole('button', { name: /expand/i });
+    fireEvent.click(expandButton);
+    expect(onExpand).toHaveBeenCalledTimes(1);
   });
 });

@@ -77,6 +77,8 @@ export interface ParsedTable {
   rows: string[][];
   indexColumns: number;
   caption: string | null;
+  /** Total row count reported by pandas (from the trailing dimension `<p>` tag). */
+  sourceRowCount: number | null;
 }
 
 export type NotebookOutputRender =

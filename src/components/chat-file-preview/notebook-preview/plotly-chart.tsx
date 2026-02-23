@@ -28,6 +28,8 @@ type ThemeMode = 'light' | 'dark';
 interface PlotlyChartProps {
   payload: Record<string, unknown>;
   title: string;
+  showModeBar?: boolean;
+  fillContainer?: boolean;
 }
 
 let plotlyLoadPromise: Promise<void> | null = null;
@@ -168,7 +170,9 @@ function patchAxisTheme(
 
 function buildThemedPlotlyFigure(
   sourcePayload: Record<string, unknown>,
-  theme: ThemeMode
+  theme: ThemeMode,
+  showModeBar: boolean,
+  fillContainer: boolean
 ): {
   traces: unknown[];
   layout: Record<string, unknown>;
@@ -200,7 +204,9 @@ function buildThemedPlotlyFigure(
     delete layout.width;
   }
 
-  if (typeof layout.height === 'number' && Number.isFinite(layout.height)) {
+  if (fillContainer) {
+    delete layout.height;
+  } else if (typeof layout.height === 'number' && Number.isFinite(layout.height)) {
     layout.height = Math.max(240, Math.min(900, layout.height));
   }
 
@@ -254,19 +260,37 @@ function buildThemedPlotlyFigure(
     });
   }
 
+  const nextConfig: Record<string, unknown> = {
+    responsive: true,
+    displaylogo: false,
+    ...config,
+    displayModeBar: showModeBar,
+  };
+
+  if (showModeBar) {
+    const existingButtonsToRemove = Array.isArray(nextConfig.modeBarButtonsToRemove)
+      ? nextConfig.modeBarButtonsToRemove
+      : [];
+    nextConfig.modeBarButtonsToRemove = Array.from(new Set([
+      ...existingButtonsToRemove,
+      'sendDataToCloud',
+      'toggleSpikelines',
+    ]));
+  }
+
   return {
     traces,
     layout,
-    config: {
-      responsive: true,
-      displaylogo: false,
-      displayModeBar: false,
-      ...config,
-    },
+    config: nextConfig,
   };
 }
 
-export function PlotlyChart({ payload, title }: PlotlyChartProps) {
+export function PlotlyChart({
+  payload,
+  title,
+  showModeBar = false,
+  fillContainer = false,
+}: PlotlyChartProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<HTMLDivElement>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -322,7 +346,7 @@ export function PlotlyChart({ payload, title }: PlotlyChartProps) {
           throw new Error('Plotly is unavailable.');
         }
 
-        const themed = buildThemedPlotlyFigure(payload, theme);
+        const themed = buildThemedPlotlyFigure(payload, theme, showModeBar, fillContainer);
         plot.innerHTML = '';
         await Plotly.newPlot(plot, themed.traces, themed.layout, themed.config);
 
@@ -375,7 +399,7 @@ export function PlotlyChart({ payload, title }: PlotlyChartProps) {
         Plotly.purge(plot);
       }
     };
-  }, [payload, scheduleResize, theme]);
+  }, [fillContainer, payload, scheduleResize, showModeBar, theme]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -398,7 +422,13 @@ export function PlotlyChart({ payload, title }: PlotlyChartProps) {
   }, [scheduleResize]);
 
   return (
-    <div ref={rootRef} className="relative w-full min-w-0">
+    <div
+      ref={rootRef}
+      className={cn(
+        'relative w-full min-w-0',
+        fillContainer && 'mx-auto h-full max-w-[1800px]'
+      )}
+    >
       {isLoading ? (
         <div className="absolute inset-0">
           <PlotlyPlaceholder />
@@ -407,10 +437,12 @@ export function PlotlyChart({ payload, title }: PlotlyChartProps) {
       <div
         ref={plotRef}
         aria-label={title}
-        style={{ width: '100%', minHeight: 280 }}
+        style={fillContainer ? { width: '100%', height: '100%' } : { width: '100%', minHeight: 280 }}
         className={cn(
           'w-full min-w-0 overflow-hidden',
-          isLoading ? 'min-h-[280px] opacity-0' : 'opacity-100'
+          fillContainer
+            ? isLoading ? 'h-full opacity-0' : 'h-full opacity-100'
+            : isLoading ? 'min-h-[280px] opacity-0' : 'opacity-100'
         )}
       />
       {error ? (

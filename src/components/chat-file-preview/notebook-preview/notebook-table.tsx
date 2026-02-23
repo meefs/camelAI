@@ -1,7 +1,7 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import { Download } from 'lucide-react';
+import { Download, Maximize2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   TableBody,
@@ -15,9 +15,16 @@ import type { ParsedTable } from './types';
 interface NotebookTableProps {
   table: ParsedTable;
   mode: 'report' | 'notebook';
+  onExpand?: () => void;
 }
 
 const MAX_DISPLAY_ROWS = 100;
+const REPORT_MAX_CELL_CHARS = 50;
+
+function truncateCell(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return value.slice(0, maxChars) + '\u2026';
+}
 
 function isNumeric(value: string): boolean {
   const normalized = value.trim();
@@ -37,7 +44,7 @@ function getMaxRowLength(rows: readonly string[][]): number {
   return max;
 }
 
-export function NotebookTable({ table, mode }: NotebookTableProps) {
+export function NotebookTable({ table, mode, onExpand }: NotebookTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showOverflowFade, setShowOverflowFade] = useState(false);
   const isReport = mode === 'report';
@@ -45,15 +52,19 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
     () => Math.max(table.headers.length, getMaxRowLength(table.rows)),
     [table.headers, table.rows]
   );
-  const totalRows = table.rows.length;
-  const isTruncated = totalRows > MAX_DISPLAY_ROWS;
-  const displayRows = isTruncated ? table.rows.slice(0, MAX_DISPLAY_ROWS) : table.rows;
+  const parsedRows = table.rows.length;
+  const totalRows = table.sourceRowCount ?? parsedRows;
+  const displayCapped = parsedRows > MAX_DISPLAY_ROWS;
+  const displayRows = displayCapped ? table.rows.slice(0, MAX_DISPLAY_ROWS) : table.rows;
+  const displayedCount = displayRows.length;
   const dataColumns = Math.max(0, columnCount - table.indexColumns);
-  const fallbackCaption = `${totalRows.toLocaleString()} row${totalRows === 1 ? '' : 's'} × ${dataColumns.toLocaleString()} column${dataColumns === 1 ? '' : 's'}`;
-  const captionText = isTruncated
-    ? `Showing ${MAX_DISPLAY_ROWS.toLocaleString()} of ${totalRows.toLocaleString()} rows × ${dataColumns.toLocaleString()} columns`
-    : (table.caption ?? fallbackCaption);
-  const downloadLabel = isTruncated ? 'Download all rows as CSV' : 'Download as CSV';
+
+  const colLabel = `${dataColumns.toLocaleString()} column${dataColumns === 1 ? '' : 's'}`;
+  const captionText =
+    displayedCount < totalRows
+      ? `Showing ${displayedCount.toLocaleString()} of ${totalRows.toLocaleString()} rows × ${colLabel}`
+      : (table.caption ?? `${totalRows.toLocaleString()} row${totalRows === 1 ? '' : 's'} × ${colLabel}`);
+
   const hasCsvData = table.headers.length > 0 || table.rows.some((row) => row.length > 0);
 
   const updateOverflowFade = useCallback(() => {
@@ -143,11 +154,20 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
           isReport && 'rounded-xl border border-border/60 bg-background/50 shadow-sm'
         )}
       >
-        <div ref={scrollRef} className="min-w-0 overflow-x-auto">
+        <div
+          ref={scrollRef}
+          className={cn(
+            'min-w-0 overflow-x-auto',
+            isReport && 'max-h-[600px] overflow-y-auto'
+          )}
+        >
           <table className="w-max min-w-full border-collapse text-xs">
             {table.headers.length > 0 ? (
               <TableHeader className="[&_tr]:border-b [&_tr]:border-border/80">
-                <TableRow className="h-auto border-border/80 bg-muted/40 hover:bg-muted/40">
+                <TableRow className={cn(
+                  'h-auto border-border/80 bg-muted/40 hover:bg-muted/40',
+                  isReport && 'sticky top-0 z-10'
+                )}>
                   {table.headers.map((header, columnIndex) => {
                     const isIndexColumn = columnIndex < table.indexColumns;
                     const isLastIndexColumn =
@@ -197,7 +217,9 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
                             isLastIndexColumn && 'border-r border-border/40'
                           )}
                         >
-                          {cellValue}
+                          {isReport && cellValue.length > REPORT_MAX_CELL_CHARS ? (
+                            <span title={cellValue}>{truncateCell(cellValue, REPORT_MAX_CELL_CHARS)}</span>
+                          ) : cellValue}
                         </th>
                       );
                     }
@@ -210,7 +232,9 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
                           numericCell && 'font-mono tabular-nums text-right'
                         )}
                       >
-                        {cellValue}
+                        {isReport && cellValue.length > REPORT_MAX_CELL_CHARS ? (
+                          <span title={cellValue}>{truncateCell(cellValue, REPORT_MAX_CELL_CHARS)}</span>
+                        ) : cellValue}
                       </TableCell>
                     );
                   })}
@@ -227,21 +251,38 @@ export function NotebookTable({ table, mode }: NotebookTableProps) {
 
       <div className="mt-1.5 flex items-center justify-between gap-4 text-xs text-muted-foreground/60">
         <span>{captionText}</span>
-        <button
-          type="button"
-          onClick={downloadCsv}
-          disabled={!hasCsvData}
-          className={cn(
-            'notebook-table-download-btn',
-            'inline-flex shrink-0 items-center gap-1 text-xs transition-colors',
-            hasCsvData
-              ? 'text-muted-foreground/70 hover:text-foreground'
-              : 'cursor-not-allowed text-muted-foreground/40'
-          )}
-        >
-          <Download className="size-3" />
-          {downloadLabel}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {onExpand ? (
+            <button
+              type="button"
+              onClick={onExpand}
+              aria-label="Expand table"
+              className={cn(
+                'inline-flex shrink-0 items-center text-xs transition-colors',
+                'text-muted-foreground/70 hover:text-foreground'
+              )}
+            >
+              <Maximize2 className="size-3" />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={downloadCsv}
+            disabled={!hasCsvData}
+            aria-label={displayCapped
+              ? `Download all ${parsedRows.toLocaleString()} rows as CSV`
+              : 'Download as CSV'}
+            className={cn(
+              'notebook-table-download-btn',
+              'inline-flex shrink-0 items-center text-xs transition-colors',
+              hasCsvData
+                ? 'text-muted-foreground/70 hover:text-foreground'
+                : 'cursor-not-allowed text-muted-foreground/40'
+            )}
+          >
+            <Download className="size-3" />
+          </button>
+        </div>
       </div>
     </div>
   );

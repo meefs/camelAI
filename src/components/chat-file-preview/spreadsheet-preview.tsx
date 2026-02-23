@@ -1,8 +1,10 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { FullScreenDialog } from './notebook-preview/full-screen-dialog';
 import { NotebookTable } from './notebook-preview/notebook-table';
+import { TableViewer } from './notebook-preview/table-viewer';
 import type { ParsedTable } from './notebook-preview/types';
 import { getFileExtension } from './file-type-utils';
 
@@ -83,12 +85,14 @@ export function parseDelimitedTable(text: string, delimiter: string): ParsedTabl
     rows: rows.slice(1),
     indexColumns: 0,
     caption: null,
+    sourceRowCount: null,
   };
 }
 
 export function SpreadsheetPreview({ content, filename, contentType, layout }: SpreadsheetPreviewProps) {
   const delimiter = getSpreadsheetDelimiter(filename, contentType);
   const table = useMemo(() => parseDelimitedTable(content, delimiter), [content, delimiter]);
+  const [isFullScreen, setIsFullScreen] = useState(false);
 
   if (!table) {
     return (
@@ -104,8 +108,21 @@ export function SpreadsheetPreview({ content, filename, contentType, layout }: S
   }
 
   return (
-    <div className={cn('p-4', layout === 'dialog' && 'max-h-[60vh] overflow-auto')}>
-      <NotebookTable table={table} mode="notebook" />
-    </div>
+    <>
+      <div className={cn('p-4', layout === 'dialog' && 'max-h-[60vh] overflow-auto')}>
+        <NotebookTable
+          table={table}
+          mode="notebook"
+          onExpand={() => setIsFullScreen(true)}
+        />
+      </div>
+      <FullScreenDialog
+        open={isFullScreen}
+        onOpenChange={setIsFullScreen}
+        title={filename}
+      >
+        <TableViewer table={table} title={filename} />
+      </FullScreenDialog>
+    </>
   );
 }

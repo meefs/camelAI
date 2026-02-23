@@ -26,7 +26,6 @@ export default [
     route('org-slug', 'routes/_onboarding.org-slug.tsx'),
     route('ai-familiarity', 'routes/_onboarding.q1.tsx'),
     route('iteration-style', 'routes/_onboarding.q2.tsx'),
-    route('stakes', 'routes/_onboarding.q3.tsx'),
     route('design-style', 'routes/_onboarding.q4.tsx'),
     route('starter-project', 'routes/_onboarding.q5.tsx'),
     route('data-interests', 'routes/_onboarding.q6.tsx'),

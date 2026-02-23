@@ -131,6 +131,7 @@ async function ensureVegaLibrariesLoaded(): Promise<void> {
 interface VegaLiteChartProps {
   spec: Record<string, unknown>;
   title: string;
+  fillContainer?: boolean;
 }
 
 type ThemeMode = 'light' | 'dark';
@@ -156,7 +157,8 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function buildThemedSpec(
   sourceSpec: Record<string, unknown>,
-  theme: ThemeMode
+  theme: ThemeMode,
+  fillContainer: boolean
 ): Record<string, unknown> {
   const nextSpec = cloneSpec(sourceSpec);
   const dark = theme === 'dark';
@@ -168,11 +170,15 @@ function buildThemedSpec(
   // Force responsive sizing regardless of python-side fixed width.
   nextSpec.width = 'container';
 
-  const sourceWidth = typeof sourceSpec.width === 'number' ? sourceSpec.width : null;
-  const sourceHeight = typeof sourceSpec.height === 'number' ? sourceSpec.height : null;
-  if (sourceWidth !== null && sourceHeight !== null && sourceWidth === sourceHeight) {
-    // For square charts (donut/pie), remove fixed height when width becomes container.
-    delete nextSpec.height;
+  if (fillContainer) {
+    nextSpec.height = 'container';
+  } else {
+    const sourceWidth = typeof sourceSpec.width === 'number' ? sourceSpec.width : null;
+    const sourceHeight = typeof sourceSpec.height === 'number' ? sourceSpec.height : null;
+    if (sourceWidth !== null && sourceHeight !== null && sourceWidth === sourceHeight) {
+      // For square charts (donut/pie), remove fixed height when width becomes container.
+      delete nextSpec.height;
+    }
   }
 
   if (nextSpec.padding == null) {
@@ -251,7 +257,7 @@ function hasArcMark(spec: Record<string, unknown>): boolean {
   });
 }
 
-export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
+export function VegaLiteChart({ spec, title, fillContainer = false }: VegaLiteChartProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<VegaView | null>(null);
@@ -261,7 +267,7 @@ export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeMode>(() => getCurrentTheme());
   const isArcChart = hasArcMark(spec);
-  const containerMinHeight = isArcChart ? 380 : 320;
+  const containerMinHeight = fillContainer ? null : (isArcChart ? 380 : 320);
 
   const scheduleViewResize = () => {
     if (resizeRafRef.current !== null) {
@@ -314,7 +320,7 @@ export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
         if (!container) return;
 
         container.innerHTML = '';
-        const themedSpec = buildThemedSpec(spec, theme);
+        const themedSpec = buildThemedSpec(spec, theme, fillContainer);
         // Wait one frame so flex/layout sizing resolves before embed reads container width.
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         const result = await embed(container, themedSpec, {
@@ -367,7 +373,7 @@ export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
       viewRef.current?.finalize?.();
       viewRef.current = null;
     };
-  }, [spec, theme]);
+  }, [fillContainer, spec, theme]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -387,10 +393,16 @@ export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
         resizeObserverRef.current = null;
       }
     };
-  }, [spec, theme]);
+  }, [fillContainer, spec, theme]);
 
   return (
-    <div ref={rootRef} className="relative w-full min-w-0">
+    <div
+      ref={rootRef}
+      className={cn(
+        'relative w-full min-w-0',
+        fillContainer && 'mx-auto h-full max-w-[1800px]'
+      )}
+    >
       {isLoading ? (
         <div className="absolute inset-0">
           <PlotlyPlaceholder />
@@ -399,10 +411,14 @@ export function VegaLiteChart({ spec, title }: VegaLiteChartProps) {
       <div
         ref={containerRef}
         aria-label={title}
-        style={{ width: '100%', minHeight: containerMinHeight }}
+        style={fillContainer
+          ? { width: '100%', height: '100%' }
+          : { width: '100%', minHeight: containerMinHeight ?? undefined }}
         className={cn(
           'w-full min-w-0 overflow-hidden',
-          isLoading ? 'opacity-0' : 'opacity-100'
+          fillContainer
+            ? isLoading ? 'h-full opacity-0' : 'h-full opacity-100'
+            : isLoading ? 'opacity-0' : 'opacity-100'
         )}
       />
       {error ? (
