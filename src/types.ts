@@ -282,7 +282,7 @@ export type OnboardingStarterProject =
   | 'data_analytics'
   | 'personal_site'
   | 'business_tool'
-  | 'team_productivity'
+  | 'ai_agent'
   | 'something_fun';
 export type OnboardingFileType = 'csv' | 'excel' | 'sqlite' | 'json';
 

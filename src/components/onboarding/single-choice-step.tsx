@@ -21,7 +21,7 @@ type SingleChoiceField =
 type SingleChoiceValue<TField extends SingleChoiceField> =
   NonNullable<OnboardingPreferences[TField]>;
 
-type SingleChoiceStepId = Extract<OnboardingStepId, 'q1' | 'q2' | 'q3' | 'q5'>;
+type SingleChoiceStepId = Extract<OnboardingStepId, 'q1' | 'q2' | 'q5'>;
 
 interface SingleChoiceContext {
   answers: OnboardingPreferences;
