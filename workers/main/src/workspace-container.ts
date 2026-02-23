@@ -19,12 +19,16 @@
  */
 import { mapCredentialsToEnvVars } from './integration-env';
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { decryptOpenRouterKey } from './openrouter-keys';
+import type { OrgDO } from './auth';
 import type { WorkspaceDO } from './workspace';
 
 export interface WorkspaceContainerEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  ORG?: DurableObjectNamespace<OrgDO>;
   R2_BUCKET: R2Bucket;
   INTEGRATION_SECRET_KEY: string;
+  OPENROUTER_API_KEY?: string; // Default/fallback OpenRouter key
 
   SANDBOX_HOST?: Fetcher;
   SANDBOX_HOST_URL?: string;
@@ -379,6 +383,27 @@ export class WorkspaceContainer {
         Object.assign(integrationEnvVars, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
       }
       decryptAndMapMs = Date.now() - decryptStartedAt;
+
+      // Include OPENROUTER_API_KEY: prefer per-org key, fall back to default only when no org key exists
+      let hasOrgOpenRouterKey = false;
+      if (this.env.ORG) {
+        try {
+          const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId));
+          const keyRecord = await orgStub.getOpenRouterKeyRecord();
+          if (keyRecord) {
+            hasOrgOpenRouterKey = true;
+            const openRouterKey = await decryptOpenRouterKey(keyRecord.key_encrypted, this.env.INTEGRATION_SECRET_KEY);
+            integrationEnvVars.OPENROUTER_API_KEY = openRouterKey;
+          }
+        } catch (e) {
+          // Don't fall back to default — a provisioned key that fails to decrypt
+          // indicates a config problem that should surface, not be silently masked
+          console.error('[WorkspaceContainer] Failed to get per-org OpenRouter key:', e);
+        }
+      }
+      if (!hasOrgOpenRouterKey && this.env.OPENROUTER_API_KEY) {
+        integrationEnvVars.OPENROUTER_API_KEY = this.env.OPENROUTER_API_KEY;
+      }
 
       console.log(
         `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`

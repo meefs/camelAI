@@ -702,6 +702,36 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           };
         });
 
+        // Always include OpenRouter as a platform-provided integration if available
+        // and no user-configured openrouter integration exists.
+        // Check both the default key and per-org provisioned key.
+        const hasUserOpenRouter = result.some(i => i.type === 'openrouter');
+        if (!hasUserOpenRouter && (!category || category === 'ai_services')) {
+          let hasOpenRouterKey = Boolean(this.env.OPENROUTER_API_KEY);
+          if (!hasOpenRouterKey && this.orgId) {
+            try {
+              hasOpenRouterKey = await this.getOrgStub().hasOpenRouterKey();
+            } catch {
+              // Ignore — org stub may fail if auth context is incomplete
+            }
+          }
+          if (hasOpenRouterKey) {
+            result.push({
+              id: 'platform:openrouter',
+              type: 'openrouter',
+              name: 'OpenRouter (platform default)',
+              category: 'ai_services',
+              auth_method: 'platform',
+              has_credentials: true,
+              created_at: new Date(0).toISOString(),
+              updated_at: new Date(0).toISOString(),
+              env_var_prefix: 'OPENROUTER',
+              env_vars: ['OPENROUTER_API_KEY'],
+              display_name: undefined,
+            });
+          }
+        }
+
         return this.textResponse({ count: result.length, integrations: result });
       }
     );

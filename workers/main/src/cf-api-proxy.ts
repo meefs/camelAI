@@ -173,6 +173,7 @@ export interface CfApiProxyEnv {
   CHAT_THREAD: DurableObjectNamespace;
   WORKER_BASE_URL?: string;
   SANDBOX_PROXY_SECRET?: string;
+  OPENROUTER_API_KEY?: string; // Default/fallback OpenRouter key
 }
 
 export interface DeploySideEffectsInfo {
@@ -737,7 +738,7 @@ async function syncDispatchScriptSecrets(
     Object.assign(secretsToSync, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
   }
 
-  // Get OpenRouter API key from OrgDO
+  // Get OpenRouter API key: prefer per-org key, fall back to default only when no org key exists
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const keyRecord = await orgStub.getOpenRouterKeyRecord();
   if (keyRecord) {
@@ -745,8 +746,13 @@ async function syncDispatchScriptSecrets(
       const openRouterKey = await decryptOpenRouterKey(keyRecord.key_encrypted, env.INTEGRATION_SECRET_KEY);
       secretsToSync.OPENROUTER_API_KEY = openRouterKey;
     } catch (e) {
+      // Don't fall back to default — a provisioned key that fails to decrypt
+      // indicates a config problem that should surface, not be silently masked
       console.error('[cf-api-proxy] Failed to decrypt OpenRouter key for script secrets:', e);
     }
+  } else if (env.OPENROUTER_API_KEY) {
+    // No org key provisioned — use platform default
+    secretsToSync.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
   }
 
   // Create data proxy token for deployed workers
