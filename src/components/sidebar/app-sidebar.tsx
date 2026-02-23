@@ -21,7 +21,6 @@ import {
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { cn } from "@/lib/utils"
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar>;
 
@@ -43,10 +42,7 @@ export function AppSidebar(props: AppSidebarProps) {
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
         <WorkspaceSwitcher />
-        <div className={cn(
-          "flex px-2",
-          state === "expanded" ? "justify-start" : "justify-center"
-        )}>
+        <div className="flex px-2 transition-[justify-content] duration-200 ease-in-out" style={{ justifyContent: state === "expanded" ? "flex-start" : "center" }}>
           <Badge
             variant="secondary"
             className="text-[10px] tracking-wider font-semibold uppercase"
