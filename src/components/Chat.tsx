@@ -101,14 +101,11 @@ interface ChatProps {
   };
 }
 
-function consumeBootModalFlag(isNewThread: boolean): boolean {
+function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
   if (typeof window === 'undefined' || !isNewThread) return false;
 
   try {
-    const flag = sessionStorage.getItem('showBootModal');
-    if (!flag) return false;
-    sessionStorage.removeItem('showBootModal');
-    return true;
+    return Boolean(sessionStorage.getItem('showBootModal'));
   } catch {
     return false;
   }
@@ -798,8 +795,17 @@ export default function Chat({
   const [connectionSetupPrompt, setConnectionSetupPrompt] = useState<ConnectionSetupPromptData | null>(null);
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const [bugReportStatus, setBugReportStatus] = useState<BugReportStatus>('idle');
-  const [bootModalOpen, setBootModalOpen] = useState(() => consumeBootModalFlag(isNewThread));
+  const [bootModalOpen, setBootModalOpen] = useState(() => shouldShowBootModalFromStorage(isNewThread));
   const [bugReportError, setBugReportError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!bootModalOpen) return;
+    try {
+      sessionStorage.removeItem('showBootModal');
+    } catch {
+      // Ignore storage failures; modal behavior should stay resilient.
+    }
+  }, [bootModalOpen]);
   // Compaction in-progress indicator
   const [isCompacting, setIsCompactingState] = useState(false);
   const setIsCompacting = useCallback((value: boolean) => {
