@@ -1075,7 +1075,8 @@ export interface AdminHardDeleteUserResult {
  *  5. Wipe the UserDO Durable Object storage.
  *  6. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
  *  7. Delete user sessions from SESSIONS KV.
- *  8. Delete user-scoped worker auth one-time tokens from APP_KV.
+ *  8. Delete workspace-level ACL rows for this user.
+ *  9. Delete user-scoped worker auth one-time tokens from APP_KV.
  */
 export async function hardDeleteAdminUser(
   context: AppLoadContext,
@@ -1227,7 +1228,26 @@ export async function hardDeleteAdminUser(
     }
   }
 
-  // 8. Best-effort cleanup of pending worker auth tokens to prevent
+  // 8. Best-effort cleanup of explicit workspace ACL rows for this user.
+  // Setting access to "full" deletes the override row in WorkspaceDO.
+  for (const org of orgs) {
+    try {
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.org_id));
+      const workspaces = await orgStub.getWorkspaces(true);
+      await Promise.all(
+        workspaces.map(async (workspace) => {
+          const workspaceStub = authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspace.id));
+          await workspaceStub.setMemberAccess(userId, 'full', actorId);
+        })
+      );
+    } catch (error) {
+      warnings.push(
+        `Failed to clean workspace ACL rows in org ${org.org_id.slice(0, 8)}: ${toErrorMessage(error)}`
+      );
+    }
+  }
+
+  // 9. Best-effort cleanup of pending worker auth tokens to prevent
   // post-delete token exchange into fresh worker sessions.
   try {
     await deleteKvEntriesWithPrefix(authEnv.APP_KV, WORKER_AUTH_TOKEN_PREFIX, (_key, value) => {
