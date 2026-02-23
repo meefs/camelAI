@@ -1074,7 +1074,7 @@ export interface AdminHardDeleteUserResult {
  *  4. Remove user from every org (must fully succeed before deletion continues).
  *  5. Wipe the UserDO Durable Object storage.
  *  6. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
- *  7. Delete user sessions from SESSIONS KV.
+ *  7. Delete user sessions from SESSIONS KV and related screenshot sessions.
  *  8. Delete workspace-level ACL rows for this user across all org workspaces.
  *  9. Delete user-scoped worker auth one-time tokens from APP_KV.
  */
@@ -1215,17 +1215,41 @@ export async function hardDeleteAdminUser(
     })
   );
 
-  // 7. Best-effort cleanup of all user sessions (regular, worker, screenshot).
-  const sessionPrefixes = [SESSION_PREFIX, WORKER_SESSION_PREFIX, SCREENSHOT_SESSION_PREFIX] as const;
+  // 7. Best-effort cleanup of user sessions.
+  // Screenshot sessions are org-scoped (not reliably user-scoped), so they are
+  // cleaned separately using relevant org IDs.
+  const screenshotSessionOrgIds = new Set<string>(orgs.map((org) => org.org_id));
+  const sessionPrefixes = [SESSION_PREFIX, WORKER_SESSION_PREFIX] as const;
   for (const prefix of sessionPrefixes) {
     try {
       await deleteKvEntriesWithPrefix(authEnv.SESSIONS, prefix, (_key, value) => {
         const parsed = parseJsonSafely(value);
-        return parsed?.user_id === userId;
+        if (parsed?.user_id !== userId) {
+          return false;
+        }
+        if (typeof parsed?.org_id === 'string') {
+          screenshotSessionOrgIds.add(parsed.org_id);
+        }
+        return true;
       });
     } catch (error) {
       warnings.push(`Failed to clean ${prefix}* sessions: ${toErrorMessage(error)}`);
     }
+  }
+
+  try {
+    await deleteKvEntriesWithPrefix(authEnv.SESSIONS, SCREENSHOT_SESSION_PREFIX, (_key, value) => {
+      const parsed = parseJsonSafely(value);
+      if (parsed?.user_id === userId) {
+        return true;
+      }
+      if (typeof parsed?.org_id !== 'string') {
+        return false;
+      }
+      return screenshotSessionOrgIds.has(parsed.org_id);
+    });
+  } catch (error) {
+    warnings.push(`Failed to clean ${SCREENSHOT_SESSION_PREFIX}* sessions: ${toErrorMessage(error)}`);
   }
 
   // 8. Best-effort cleanup of explicit workspace ACL rows for this user.
