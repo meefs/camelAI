@@ -109,7 +109,7 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		proxyPort:           proxyPort,
 		idleTimeout:         time.Duration(envInt("IDLE_TIMEOUT_MS", 30_000)) * time.Millisecond,
 		reaperInterval:      10 * time.Second,
-		r2MountRoot:         envString("R2_MOUNT_ROOT", defaultR2MountRoot()),
+		r2MountRoot:         "/mnt/r2",
 		r2BucketName:        envString("R2_BUCKET_NAME", ""),
 		r2RcloneConfPath:    envString("R2_RCLONE_CONF", filepath.Join(os.TempDir(), "rclone-r2-host.conf")),
 		healthPollInterval:  maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
@@ -1130,13 +1130,6 @@ func defaultContainerProxyHost() string {
 		return "172.17.0.1"
 	}
 	return "host.docker.internal"
-}
-
-func defaultR2MountRoot() string {
-	if runtime.GOOS == "linux" {
-		return "/mnt/r2"
-	}
-	return ""
 }
 
 func normalizeProxyBaseURL(raw string) string {

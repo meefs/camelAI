@@ -200,9 +200,9 @@ install_go_and_host_service() {
   cat > /etc/systemd/system/chiridion-sandbox-host.service <<__HOST_SERVICE__
 [Unit]
 Description=Chiridion Sandbox Host
-After=local-fs.target docker.service chiridion-sandbox-firewall.service
+After=local-fs.target docker.service chiridion-sandbox-firewall.service chiridion-rclone-r2.service
 Requires=docker.service
-Wants=chiridion-sandbox-firewall.service
+Wants=chiridion-sandbox-firewall.service chiridion-rclone-r2.service
 
 [Service]
 Type=simple
@@ -293,6 +293,43 @@ WantedBy=multi-user.target
 __FIREWALL_SERVICE__
 }
 
+install_rclone_r2_service() {
+  log "Installing rclone R2 FUSE mount service..."
+
+  cat > /etc/systemd/system/chiridion-rclone-r2.service <<'__RCLONE_SERVICE__'
+[Unit]
+Description=Chiridion R2 FUSE mount (rclone)
+After=local-fs.target network-online.target
+Wants=network-online.target
+Before=chiridion-sandbox-host.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/chiridion/sandbox-host.env
+ExecStartPre=/bin/bash -c '\
+  fusermount -uz /mnt/r2 2>/dev/null || true; \
+  mkdir -p /mnt/r2; \
+  printf "[r2]\ntype = s3\nprovider = Cloudflare\naccess_key_id = %%s\nsecret_access_key = %%s\nendpoint = https://%%s.r2.cloudflarestorage.com\nno_check_bucket = true\n" \
+    "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" "$R2_ACCOUNT_ID" \
+    > /tmp/rclone-r2-host.conf; \
+  chmod 600 /tmp/rclone-r2-host.conf'
+ExecStart=/usr/bin/rclone mount \
+    --config /tmp/rclone-r2-host.conf \
+    --dir-cache-time 5s \
+    --vfs-cache-mode writes \
+    --vfs-write-back 0 \
+    --allow-other \
+    --uid 1001 --gid 1001 \
+    r2:${R2_BUCKET_NAME} /mnt/r2
+Restart=always
+RestartSec=3
+ExecStop=/bin/fusermount -uz /mnt/r2
+
+[Install]
+WantedBy=multi-user.target
+__RCLONE_SERVICE__
+}
+
 install_cloudflared_and_acr() {
   log "[7/7] Installing cloudflared and pre-pulling sandbox image..."
 
@@ -355,11 +392,13 @@ main() {
   install_docker_and_runtime "$DOCKER_DATA_ROOT"
   install_go_and_host_service
   install_firewall_service
+  install_rclone_r2_service
   install_cloudflared_and_acr
   apply_default_quotas
 
   systemctl daemon-reload
   systemctl enable --now chiridion-sandbox-firewall 2>/dev/null || true
+  systemctl enable --now chiridion-rclone-r2 2>/dev/null || true
   systemctl enable --now chiridion-sandbox-host 2>/dev/null || true
 
   echo ""
@@ -375,6 +414,7 @@ main() {
   echo "To verify:"
   echo "  findmnt ${SANDBOXES_DIR}"
   echo "  xfs_info ${SANDBOXES_DIR}"
+  echo "  systemctl status chiridion-rclone-r2"
   echo "  systemctl status chiridion-sandbox-host"
 }
 
