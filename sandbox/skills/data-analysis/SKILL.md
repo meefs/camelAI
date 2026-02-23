@@ -143,6 +143,8 @@ plt.savefig("barplot.png")
 
 When outputting tabular data in notebooks, use plain pandas DataFrames — not `df.style` (pandas Styler). The rendering environment handles table styling automatically with theme-aware colors, index columns, and overflow handling.
 
+**Never output tables as raw HTML** (e.g., manually constructing `<table>` tags or using `IPython.display.HTML("<table>...")`). Always use pandas DataFrames for tabular output — the rendering environment detects DataFrames automatically and applies theme-aware styling, sortable columns, row filtering, and CSV export. Raw HTML tables bypass all of this and render unstyled in an iframe.
+
 The sandbox pre-configures pandas to show up to 200 rows and 200 characters per cell in notebook HTML output. You do not need to add `pd.set_option` calls for display limits unless the user asks for different values.
 
 Only use `df.style` when the user explicitly requests conditional formatting, cell-level color coding, or other per-cell visual logic that can't be achieved with a plain table.

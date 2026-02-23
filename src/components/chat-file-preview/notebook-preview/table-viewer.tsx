@@ -42,9 +42,24 @@ const CELL_PADDING_PX = 24;
 const SORT_ICON_PX = 28;
 const MIN_COLUMN_WIDTH = 60;
 
+function isMissingNumericValue(value: string): boolean {
+  const normalized = value.trim();
+  const lower = normalized.toLowerCase();
+  return (
+    normalized.length === 0
+    || normalized === '...'
+    || normalized === '…'
+    || lower === 'none'
+    || lower === 'nan'
+    || lower === 'nat'
+    || lower === 'null'
+    || lower === '<na>'
+  );
+}
+
 function isNumeric(value: string): boolean {
   const normalized = value.trim();
-  if (!normalized || normalized === '...' || normalized === 'NaN' || normalized === 'None') {
+  if (isMissingNumericValue(normalized)) {
     return false;
   }
   return /^-?[\d,]+(?:\.\d+)?(?:[eE][+-]?\d+)?%?$/.test(normalized);
@@ -60,7 +75,7 @@ function isNumericColumn(rows: readonly string[][], columnIndex: number): boolea
   let sawNumeric = false;
   for (const row of rows) {
     const value = row[columnIndex] ?? '';
-    if (!value.trim()) continue;
+    if (isMissingNumericValue(value)) continue;
     if (!isNumeric(value)) return false;
     sawNumeric = true;
   }

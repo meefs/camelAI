@@ -62,4 +62,29 @@ describe('TableViewer', () => {
     renderedRows = container.querySelectorAll('tbody tr');
     expect(renderedRows[0]).toHaveTextContent('Bravo');
   });
+
+  it('ignores pandas ellipsis placeholders when detecting numeric columns', () => {
+    const table: ParsedTable = {
+      headers: ['Index', 'Value'],
+      rows: [
+        ['0', '100'],
+        ['1', '2'],
+        ['...', '...'],
+        ['2', '50'],
+      ],
+      indexColumns: 1,
+      caption: null,
+      sourceRowCount: 1000,
+    };
+
+    const { container } = render(<TableViewer table={table} title="Numeric values" />);
+    const sortButton = screen.getByRole('button', { name: /value/i });
+
+    fireEvent.click(sortButton);
+
+    const sortedValues = Array.from(container.querySelectorAll('tbody tr')).map((row) =>
+      row.querySelector('td')?.textContent ?? ''
+    );
+    expect(sortedValues).toEqual(['2', '50', '100', '...']);
+  });
 });
