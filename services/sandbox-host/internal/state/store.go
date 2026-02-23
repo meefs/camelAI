@@ -16,20 +16,6 @@ type Store struct {
 	db *sql.DB
 }
 
-type ContainerRecord struct {
-	Name              string
-	ContainerID       string
-	HostPort          int
-	ContainerIP       string
-	Status            string
-	CreatedAt         time.Time
-	LastAccessedAt    time.Time
-	ActiveWebSockets  int
-	InFlightProxyReqs int
-	OrgID             string
-	WorkspaceID       string
-}
-
 type ProxyThreadRecord struct {
 	Key           string
 	ContainerName string
@@ -86,20 +72,6 @@ func (s *Store) Close() error {
 
 func (s *Store) initSchema(ctx context.Context) error {
 	statements := []string{
-		`CREATE TABLE IF NOT EXISTS containers (
-			name TEXT PRIMARY KEY,
-			container_id TEXT NOT NULL,
-			host_port INTEGER NOT NULL,
-			container_ip TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL,
-			created_at_ms INTEGER NOT NULL,
-			last_accessed_at_ms INTEGER NOT NULL,
-			active_websockets INTEGER NOT NULL,
-			in_flight_proxy_reqs INTEGER NOT NULL,
-			org_id TEXT NOT NULL DEFAULT '',
-			workspace_id TEXT NOT NULL DEFAULT '',
-			updated_at_ms INTEGER NOT NULL
-		)`,
 		`CREATE TABLE IF NOT EXISTS proxy_threads (
 			key TEXT PRIMARY KEY,
 			container_name TEXT NOT NULL,
@@ -122,106 +94,6 @@ func (s *Store) initSchema(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func (s *Store) UpsertContainer(record ContainerRecord) error {
-	if s == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO containers (
-			name, container_id, host_port, container_ip, status,
-			created_at_ms, last_accessed_at_ms, active_websockets,
-			in_flight_proxy_reqs, org_id, workspace_id, updated_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
-			container_id=excluded.container_id,
-			host_port=excluded.host_port,
-			container_ip=excluded.container_ip,
-			status=excluded.status,
-			created_at_ms=excluded.created_at_ms,
-			last_accessed_at_ms=excluded.last_accessed_at_ms,
-			active_websockets=excluded.active_websockets,
-			in_flight_proxy_reqs=excluded.in_flight_proxy_reqs,
-			org_id=excluded.org_id,
-			workspace_id=excluded.workspace_id,
-			updated_at_ms=excluded.updated_at_ms
-	`,
-		record.Name,
-		record.ContainerID,
-		record.HostPort,
-		record.ContainerIP,
-		record.Status,
-		record.CreatedAt.UnixMilli(),
-		record.LastAccessedAt.UnixMilli(),
-		record.ActiveWebSockets,
-		record.InFlightProxyReqs,
-		record.OrgID,
-		record.WorkspaceID,
-		time.Now().UTC().UnixMilli(),
-	)
-	return err
-}
-
-func (s *Store) DeleteContainer(name string) error {
-	if s == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM containers WHERE name = ?`, name)
-	return err
-}
-
-func (s *Store) LoadContainers() ([]ContainerRecord, error) {
-	if s == nil {
-		return nil, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			name, container_id, host_port, container_ip, status,
-			created_at_ms, last_accessed_at_ms, active_websockets,
-			in_flight_proxy_reqs, org_id, workspace_id
-		FROM containers
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]ContainerRecord, 0)
-	for rows.Next() {
-		var r ContainerRecord
-		var createdAtMs, lastAccessedAtMs int64
-		if err := rows.Scan(
-			&r.Name,
-			&r.ContainerID,
-			&r.HostPort,
-			&r.ContainerIP,
-			&r.Status,
-			&createdAtMs,
-			&lastAccessedAtMs,
-			&r.ActiveWebSockets,
-			&r.InFlightProxyReqs,
-			&r.OrgID,
-			&r.WorkspaceID,
-		); err != nil {
-			return nil, err
-		}
-		r.CreatedAt = time.UnixMilli(createdAtMs).UTC()
-		r.LastAccessedAt = time.UnixMilli(lastAccessedAtMs).UTC()
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (s *Store) UpsertProxyThread(record ProxyThreadRecord) error {

@@ -559,9 +559,17 @@ func (s *Server) handleChatProxy(
 	upstreamDialer.HandshakeTimeout = 10 * time.Second
 	upstreamConn, _, err := upstreamDialer.Dial(targetWSURL, nil)
 	if err != nil {
-		_ = clientConn.Close()
-		s.containers.RemoveWebSocket(name, "chat_client_ws_close", 1011, "upstream dial failed")
-		return err
+		// Port may be stale (container restarted). Refresh from Docker and retry once.
+		refreshedPort, refreshErr := s.containers.RefreshControlPlanePort(name, opts)
+		if refreshErr == nil && refreshedPort != port {
+			targetWSURL = fmt.Sprintf("ws://127.0.0.1:%d/chat", refreshedPort)
+			upstreamConn, _, err = upstreamDialer.Dial(targetWSURL, nil)
+		}
+		if err != nil {
+			_ = clientConn.Close()
+			s.containers.RemoveWebSocket(name, "chat_client_ws_close", 1011, "upstream dial failed")
+			return err
+		}
 	}
 	log.Printf("[SandboxHost] chat session upstream connected container=%s thread=%s target=%s", name, threadID, targetWSURL)
 

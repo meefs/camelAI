@@ -37,7 +37,7 @@ func main() {
 	}
 
 	workspaces := workspace.NewManagerFromEnv()
-	containers := container.NewManager(workspaces, stateStore)
+	containers := container.NewManager(workspaces)
 	fsManager := fsops.NewManager(os.Getenv("WORKSPACES_ROOT"))
 	server := app.NewServer(cfg, containers, workspaces, fsManager, stateStore)
 

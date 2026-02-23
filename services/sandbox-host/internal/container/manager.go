@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/chiridion/sandbox-host/internal/workspace"
-	"github.com/chiridion/sandbox-host/internal/state"
 	dockercontainer "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	dockernetwork "github.com/docker/docker/api/types/network"
 	dockerclient "github.com/docker/docker/client"
 	dockererrdefs "github.com/docker/docker/errdefs"
@@ -43,6 +43,11 @@ type ContainerRecord struct {
 	WorkspaceID       string
 }
 
+const (
+	labelOrgID       = "com.chiridion.org-id"
+	labelWorkspaceID = "com.chiridion.workspace-id"
+)
+
 type ensureWait struct {
 	done chan struct{}
 	rec  *ContainerRecord
@@ -51,8 +56,7 @@ type ensureWait struct {
 
 type Manager struct {
 	workspaces *workspace.Manager
-	docker   *dockerclient.Client
-	state    *state.Store
+	docker     *dockerclient.Client
 
 	workspacesRoot      string
 	sandboxImage        string
@@ -78,7 +82,7 @@ type Manager struct {
 	ensureInFlight    map[string]*ensureWait
 }
 
-func NewManager(workspaces *workspace.Manager, stateStore *state.Store) *Manager {
+func NewManager(workspaces *workspace.Manager) *Manager {
 	docker, err := dockerclient.NewClientWithOpts(
 		dockerclient.FromEnv,
 		dockerclient.WithAPIVersionNegotiation(),
@@ -96,7 +100,6 @@ func NewManager(workspaces *workspace.Manager, stateStore *state.Store) *Manager
 	m := &Manager{
 		workspaces:          workspaces,
 		docker:              docker,
-		state:               stateStore,
 		workspacesRoot:      workspacesRoot,
 		sandboxImage:        envString("SANDBOX_IMAGE", "chiridion-sandbox:latest"),
 		containerMemory:     envString("CONTAINER_MEMORY", "16g"),
@@ -119,7 +122,7 @@ func NewManager(workspaces *workspace.Manager, stateStore *state.Store) *Manager
 		ensureInFlight:      make(map[string]*ensureWait),
 	}
 
-	m.loadPersistedState()
+	m.discoverRunningContainers()
 
 	go m.runIdleReaper()
 
@@ -311,13 +314,21 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 				delete(m.containers, name)
 			}
 			m.mu.Unlock()
-			m.deleteContainerState(name)
 		}
 	}
 
-	if running, _ := m.isRunning(name); running {
-		port, containerIP := m.getHostPortAndIP(name)
+	if inspect, err := m.inspectContainer(name, 30*time.Second); err == nil && inspect.State != nil && inspect.State.Running {
+		port := hostPortFromInspect(inspect, m.controlPlanePort)
+		containerIP := containerIPFromInspect(inspect)
 		if port > 0 {
+			orgID := opts.OrgID
+			workspaceID := opts.WorkspaceID
+			if orgID == "" {
+				orgID = labelFromInspect(inspect, labelOrgID)
+			}
+			if workspaceID == "" {
+				workspaceID = labelFromInspect(inspect, labelWorkspaceID)
+			}
 			rec := &ContainerRecord{
 				Name:              name,
 				ContainerID:       name,
@@ -328,8 +339,8 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 				LastAccessedAt:    nowMillis(),
 				ActiveWebSockets:  0,
 				InFlightProxyReqs: 0,
-				OrgID:             opts.OrgID,
-				WorkspaceID:       opts.WorkspaceID,
+				OrgID:             orgID,
+				WorkspaceID:       workspaceID,
 			}
 			m.mu.Lock()
 			m.containers[name] = rec
@@ -339,7 +350,6 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			m.mu.Unlock()
 			log.Printf("[ContainerManager] reconnected to existing container %s (port=%d)", name, port)
 			m.trace("ensure_container_reconnected_existing", map[string]any{"name": name, "container": rec})
-			m.upsertContainerState(rec)
 			return copyRecord(rec), nil
 		}
 	}
@@ -428,6 +438,10 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		ExposedPorts: nat.PortSet{
 			controlPlanePort: {},
 		},
+		Labels: map[string]string{
+			labelOrgID:       opts.OrgID,
+			labelWorkspaceID: opts.WorkspaceID,
+		},
 	}
 	hostConfig := &dockercontainer.HostConfig{
 		Runtime:     m.containerRuntime,
@@ -502,7 +516,6 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 
 	log.Printf("[ContainerManager] created container %s (id=%s, port=%d)", name, containerID, port)
 	m.trace("ensure_container_create_success", map[string]any{"name": name, "container": rec})
-	m.upsertContainerState(rec)
 	return copyRecord(rec), nil
 }
 
@@ -530,12 +543,12 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 				delete(m.containers, name)
 			}
 			m.mu.Unlock()
-			m.deleteContainerState(name)
 		}
 	}
 
-	if running, _ := m.isRunning(name); running {
-		port, containerIP := m.getHostPortAndIP(name)
+	if inspect, err := m.inspectContainer(name, 30*time.Second); err == nil && inspect.State != nil && inspect.State.Running {
+		port := hostPortFromInspect(inspect, m.controlPlanePort)
+		containerIP := containerIPFromInspect(inspect)
 		if port > 0 {
 			rec := &ContainerRecord{
 				Name:              name,
@@ -547,6 +560,8 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 				LastAccessedAt:    nowMillis(),
 				ActiveWebSockets:  0,
 				InFlightProxyReqs: 0,
+				OrgID:             labelFromInspect(inspect, labelOrgID),
+				WorkspaceID:       labelFromInspect(inspect, labelWorkspaceID),
 			}
 			m.mu.Lock()
 			m.containers[name] = rec
@@ -555,7 +570,6 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 			}
 			m.mu.Unlock()
 			m.trace("get_container_reconnected", map[string]any{"name": name, "container": rec})
-			m.upsertContainerState(rec)
 			return copyRecord(rec), nil
 		}
 	}
@@ -595,7 +609,6 @@ func (m *Manager) TerminateContainer(name, reason string) (bool, error) {
 		}
 		delete(m.containers, name)
 		m.mu.Unlock()
-		m.deleteContainerState(name)
 
 		log.Printf("[ContainerManager] terminated container %s", name)
 		m.trace("terminate_container_success", map[string]any{"name": name, "reason": reason})
@@ -636,6 +649,66 @@ func (m *Manager) GetControlPlanePort(name string, opts EnsureContainerOptions) 
 		return ensured.HostPort, nil
 	}
 	return reconnected.HostPort, nil
+}
+
+// RefreshControlPlanePort re-inspects Docker for the container's actual port,
+// updates the in-memory record, and returns the fresh port. Use this when an
+// upstream dial fails to recover from a stale cached port.
+func (m *Manager) RefreshControlPlanePort(name string, opts EnsureContainerOptions) (int, error) {
+	actualPort, actualIP := m.getHostPortAndIP(name)
+	if actualPort > 0 {
+		m.mu.Lock()
+		rec := m.containers[name]
+		if rec != nil {
+			if rec.HostPort != actualPort {
+				log.Printf("[ContainerManager] port refreshed for %s: %d -> %d", name, rec.HostPort, actualPort)
+				rec.HostPort = actualPort
+			}
+			if actualIP != "" && rec.ContainerIP != actualIP {
+				if rec.ContainerIP != "" {
+					m.unindexContainerIPLocked(rec.ContainerIP)
+				}
+				rec.ContainerIP = actualIP
+				m.indexContainerIPLocked(actualIP, name)
+			}
+			rec.LastAccessedAt = nowMillis()
+			m.mu.Unlock()
+			return actualPort, nil
+		}
+		m.mu.Unlock()
+		return actualPort, nil
+	}
+
+	// Container gone — save live-session counters, remove stale record, and recreate.
+	m.mu.Lock()
+	var savedActiveWS, savedInFlight int
+	if rec := m.containers[name]; rec != nil {
+		savedActiveWS = rec.ActiveWebSockets
+		savedInFlight = rec.InFlightProxyReqs
+		if rec.ContainerIP != "" {
+			m.unindexContainerIPLocked(rec.ContainerIP)
+		}
+		delete(m.containers, name)
+	}
+	m.mu.Unlock()
+
+	log.Printf("[ContainerManager] container gone during port refresh for %s; recreating", name)
+	ensured, err := m.EnsureContainer(name, opts)
+	if err != nil {
+		return 0, err
+	}
+
+	// Restore counters so active sessions survive recreation.
+	if savedActiveWS > 0 || savedInFlight > 0 {
+		m.mu.Lock()
+		if rec := m.containers[name]; rec != nil {
+			rec.ActiveWebSockets = savedActiveWS
+			rec.InFlightProxyReqs = savedInFlight
+		}
+		m.mu.Unlock()
+	}
+
+	return ensured.HostPort, nil
 }
 
 func (m *Manager) ListContainers() []ContainerRecord {
@@ -870,71 +943,76 @@ func (m *Manager) removeContainerIfExists(name string, force bool) error {
 	return err
 }
 
-func (m *Manager) loadPersistedState() {
-	if m.state == nil {
+func (m *Manager) discoverRunningContainers() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	list, err := m.docker.ContainerList(ctx, dockercontainer.ListOptions{
+		Filters: filters.NewArgs(filters.Arg("label", labelOrgID)),
+	})
+	if err != nil {
+		log.Printf("[ContainerManager] failed to discover running containers: %v", err)
 		return
 	}
 
-	containers, err := m.state.LoadContainers()
-	if err != nil {
-		log.Printf("[ContainerManager] failed to load persisted containers: %v", err)
-	} else {
+	discovered := 0
+	for _, c := range list {
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		if name == "" {
+			continue
+		}
+
+		inspect, inspectErr := m.inspectContainer(name, 30*time.Second)
+		if inspectErr != nil {
+			log.Printf("[ContainerManager] failed to inspect discovered container %s: %v", name, inspectErr)
+			continue
+		}
+		if inspect.State == nil || !inspect.State.Running {
+			continue
+		}
+
+		port := hostPortFromInspect(inspect, m.controlPlanePort)
+		containerIP := containerIPFromInspect(inspect)
+		if port == 0 {
+			continue
+		}
+
+		rec := &ContainerRecord{
+			Name:              name,
+			ContainerID:       name,
+			HostPort:          port,
+			ContainerIP:       containerIP,
+			Status:            "running",
+			CreatedAt:         nowMillis(),
+			LastAccessedAt:    nowMillis(),
+			ActiveWebSockets:  0,
+			InFlightProxyReqs: 0,
+			OrgID:             labelFromInspect(inspect, labelOrgID),
+			WorkspaceID:       labelFromInspect(inspect, labelWorkspaceID),
+		}
+
 		m.mu.Lock()
-		for _, persisted := range containers {
-			rec := &ContainerRecord{
-				Name:              persisted.Name,
-				ContainerID:       persisted.ContainerID,
-				HostPort:          persisted.HostPort,
-				ContainerIP:       persisted.ContainerIP,
-				Status:            persisted.Status,
-				CreatedAt:         persisted.CreatedAt.UnixMilli(),
-				LastAccessedAt:    persisted.LastAccessedAt.UnixMilli(),
-				ActiveWebSockets:  0, // cannot survive process crash safely
-				InFlightProxyReqs: 0, // cannot survive process crash safely
-				OrgID:             persisted.OrgID,
-				WorkspaceID:       persisted.WorkspaceID,
-			}
-			m.containers[rec.Name] = rec
-			if rec.ContainerIP != "" {
-				m.indexContainerIPLocked(rec.ContainerIP, rec.Name)
-			}
+		m.containers[name] = rec
+		if containerIP != "" {
+			m.indexContainerIPLocked(containerIP, name)
 		}
 		m.mu.Unlock()
-		if len(containers) > 0 {
-			log.Printf("[ContainerManager] restored %d persisted container record(s)", len(containers))
-		}
+		discovered++
 	}
 
-}
-
-func (m *Manager) upsertContainerState(rec *ContainerRecord) {
-	if m.state == nil || rec == nil {
-		return
-	}
-	if err := m.state.UpsertContainer(state.ContainerRecord{
-		Name:              rec.Name,
-		ContainerID:       rec.ContainerID,
-		HostPort:          rec.HostPort,
-		ContainerIP:       rec.ContainerIP,
-		Status:            rec.Status,
-		CreatedAt:         time.UnixMilli(rec.CreatedAt).UTC(),
-		LastAccessedAt:    time.UnixMilli(rec.LastAccessedAt).UTC(),
-		ActiveWebSockets:  rec.ActiveWebSockets,
-		InFlightProxyReqs: rec.InFlightProxyReqs,
-		OrgID:             rec.OrgID,
-		WorkspaceID:       rec.WorkspaceID,
-	}); err != nil {
-		log.Printf("[ContainerManager] failed to persist container %s: %v", rec.Name, err)
+	if discovered > 0 {
+		log.Printf("[ContainerManager] discovered %d running container(s) from Docker", discovered)
 	}
 }
 
-func (m *Manager) deleteContainerState(name string) {
-	if m.state == nil || strings.TrimSpace(name) == "" {
-		return
+func labelFromInspect(inspect dockercontainer.InspectResponse, key string) string {
+	if inspect.Config == nil || inspect.Config.Labels == nil {
+		return ""
 	}
-	if err := m.state.DeleteContainer(name); err != nil {
-		log.Printf("[ContainerManager] failed to delete container state for %s: %v", name, err)
-	}
+	return inspect.Config.Labels[key]
 }
 
 func hostPortFromInspect(inspect dockercontainer.InspectResponse, controlPlanePort int) int {

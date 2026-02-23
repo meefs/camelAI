@@ -15,33 +15,6 @@ func TestStoreRoundTripAndDelete(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	container := ContainerRecord{
-		Name:              "sandbox-a",
-		ContainerID:       "abc123",
-		HostPort:          18080,
-		ContainerIP:       "172.17.0.2",
-		Status:            "running",
-		CreatedAt:         now.Add(-time.Minute),
-		LastAccessedAt:    now,
-		ActiveWebSockets:  1,
-		InFlightProxyReqs: 2,
-		OrgID:             "org-1",
-		WorkspaceID:       "ws-1",
-	}
-	if err := store.UpsertContainer(container); err != nil {
-		t.Fatalf("upsert container: %v", err)
-	}
-
-	containers, err := store.LoadContainers()
-	if err != nil {
-		t.Fatalf("load containers: %v", err)
-	}
-	if len(containers) != 1 {
-		t.Fatalf("expected 1 container, got %d", len(containers))
-	}
-	if containers[0].Name != container.Name || containers[0].HostPort != container.HostPort {
-		t.Fatalf("unexpected container record: %+v", containers[0])
-	}
 
 	thread := ProxyThreadRecord{
 		Key:           "sandbox-a::thread-1",
@@ -68,9 +41,6 @@ func TestStoreRoundTripAndDelete(t *testing.T) {
 	if err := store.DeleteProxyThread(thread.Key); err != nil {
 		t.Fatalf("delete proxy thread: %v", err)
 	}
-	if err := store.DeleteContainer(container.Name); err != nil {
-		t.Fatalf("delete container: %v", err)
-	}
 
 	threads, err = store.LoadProxyThreads()
 	if err != nil {
@@ -78,12 +48,5 @@ func TestStoreRoundTripAndDelete(t *testing.T) {
 	}
 	if len(threads) != 0 {
 		t.Fatalf("expected no proxy threads, got %d", len(threads))
-	}
-	containers, err = store.LoadContainers()
-	if err != nil {
-		t.Fatalf("reload containers: %v", err)
-	}
-	if len(containers) != 0 {
-		t.Fatalf("expected no containers, got %d", len(containers))
 	}
 }
