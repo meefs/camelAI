@@ -11,8 +11,7 @@
 		"dev": "react-router dev",
 		"preview": "bun run build && vite preview",
 		"test": "vitest",
-		"typecheck": "bun run cf-typegen && react-router typegen && tsc -b",
-		"shadcn": "shadcn"
+		"typecheck": "bun run cf-typegen && react-router typegen && tsc -b"
 	},
 	"dependencies": {
 		"@ai-sdk/react": "^3.0.0",
@@ -58,7 +57,6 @@
 		"@types/react-is": "^19",
 		"@vitest/runner": "^3.2.0",
 		"@vitest/snapshot": "^3.2.0",
-		"shadcn": "^2.5.0",
 		"tailwindcss": "^4.1.13",
 		"typescript": "^5.9.2",
 		"vite": "8.0.0-beta.11",

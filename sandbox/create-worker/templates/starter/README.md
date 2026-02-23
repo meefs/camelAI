@@ -147,10 +147,10 @@ See `workers/tests/example-do.test.ts` for a complete example.
 
 ## Adding shadcn/ui Components
 
-The shadcn CLI is globally installed. Use `shadcn add`, NOT `npx shadcn`:
+Use `bunx` to run the shadcn CLI:
 
 ```bash
-shadcn add button card input
+bunx --bun shadcn@latest add button card input
 ```
 
 Components install to `app/components/ui/`.

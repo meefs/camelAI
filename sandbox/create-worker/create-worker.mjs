@@ -345,7 +345,7 @@ Next steps:
   bun run deploy   # Deploy to Cloudflare
 
 Add shadcn components:
-  bun run shadcn add button card input
+  bunx --bun shadcn@latest add button card input
 
 <system-reminder>
 IMPORTANT: Read \`${projectName}/CLAUDE.md\` for a quick reference on the template structure, key files, and how to enable features like Durable Objects and AI chat.

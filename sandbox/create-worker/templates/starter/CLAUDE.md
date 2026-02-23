@@ -109,7 +109,7 @@ export default function MyComponent({ loaderData }: Route.ComponentProps) {
 bun dev                    # Local development
 bun run deploy             # Deploy to Cloudflare
 bun run test               # Run Vitest tests
-bun run shadcn add <name>  # Add UI components
+bunx --bun shadcn@latest add <name>  # Add UI components
 ```
 
 ## Common Data Libraries
@@ -184,4 +184,4 @@ export async function loader({ context }: Route.LoaderArgs) {
 - **useAgent uses `name`, not `id`**: `useAgent({ agent: "Chat", name: sessionId })`
 - **Generate session IDs in loaders**, not in component body (causes re-render issues)
 - **Use MarkdownRenderer for AI output** - AI responses are markdown-formatted
-- **Use `bun run shadcn add`** - not `npx shadcn`
+- **Use `bunx --bun shadcn@latest add`** - not `npx shadcn` or `bun run shadcn`

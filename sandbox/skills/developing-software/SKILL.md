@@ -14,7 +14,7 @@ This skill guides deployment of production software to Cloudflare's edge network
 2. **Deploy Cloudflare Workers** - The infrastructure is already configured for Worker deployments
 3. **Use Durable Objects with SQLite backends** - This is the primary persistence mechanism
 4. **Use React Router 7 framework mode for fullstack web apps** - It is the successor to Remix; default to route `loader()`/`action()` patterns, not SPA-style client data fetching
-5. **Use shadcn/ui for frontend components** - Use `bun run shadcn add <component>` to add components
+5. **Use shadcn/ui for frontend components** - Use `bunx --bun shadcn@latest add <component>` to add components
 
 ## Using Agent Teams for Parallel Development
 
@@ -444,7 +444,7 @@ cd my-app
 bun install
 
 # Add shadcn/ui components
-bun run shadcn add button card form input
+bunx --bun shadcn@latest add button card form input
 
 # Local development
 bun dev
@@ -461,7 +461,7 @@ The template includes:
 - TypeScript
 - Cloudflare Worker entry in `workers/app.ts`
 - Server data/mutation patterns via route `loader()` and `action()`
-- wrangler and shadcn as local dependencies
+- wrangler as a local dependency
 
 ### Wrangler Configuration for React + Vite
 
