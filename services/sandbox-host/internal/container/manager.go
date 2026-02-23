@@ -412,8 +412,8 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			outputsDir := filepath.Join(m.r2MountRoot, prefix, "user-outputs")
 			if waitForR2Dir(uploadsDir, 10*time.Second) && waitForR2Dir(outputsDir, 10*time.Second) {
 				binds = append(binds,
-					uploadsDir+":/mnt/user-uploads:ro",
-					outputsDir+":/mnt/user-outputs",
+					uploadsDir+":/mnt/user-uploads:ro,rslave",
+					outputsDir+":/mnt/user-outputs:rslave",
 				)
 				log.Printf("[ContainerManager] R2 bind mounts added for %s", prefix)
 			} else {
