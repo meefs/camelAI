@@ -277,6 +277,7 @@ export default function OnboardingLayout() {
         }
       }
       clearStoredProgress();
+      try { sessionStorage.setItem('showBootModal', '1'); } catch {}
       navigate(data.redirectTo || '/chat');
     },
     [

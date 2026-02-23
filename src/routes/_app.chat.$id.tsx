@@ -155,6 +155,17 @@ export default function ChatPage() {
     return <NoWorkspacesError />;
   }
 
+  const [showBootModal] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    if (!isNewThread) return false;
+    const flag = sessionStorage.getItem('showBootModal');
+    if (flag) {
+      sessionStorage.removeItem('showBootModal');
+      return true;
+    }
+    return false;
+  });
+
   const [resolvedChatDataState, setResolvedChatDataState] = useState<{
     threadId: string;
     data: ChatData;
@@ -189,6 +200,7 @@ export default function ChatPage() {
         hostname={hostname}
         orgSlug={orgSlug}
         isLoadingMessages={isLoadingMessages}
+        showBootModal={showBootModal}
       />
       {!isNewThread && (
         <Suspense fallback={null}>

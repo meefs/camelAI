@@ -34,6 +34,7 @@ import {
   type ConnectionSetupResponse,
 } from '@/components/connection-setup-prompt';
 import { BugReportDialog, type BugReportStatus } from '@/components/bug-report-dialog';
+import { OnboardingLoadingModal } from '@/components/onboarding-loading-modal';
 import type { Attachment } from '@/components/attachment-list';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -90,6 +91,8 @@ interface ChatProps {
   orgSlug?: string;
   /** True when messages are still loading (deferred data) */
   isLoadingMessages?: boolean;
+  /** Show the post-onboarding boot modal */
+  showBootModal?: boolean;
   welcomeData?: {
     userId: string | null;
     userName: string | null;
@@ -748,6 +751,7 @@ export default function Chat({
   orgSlug,
   isLoadingMessages = false,
   welcomeData,
+  showBootModal = false,
 }: ChatProps) {
   const navigate = useNavigate();
   const revalidator = useRevalidator();
@@ -784,6 +788,7 @@ export default function Chat({
   const [connectionSetupPrompt, setConnectionSetupPrompt] = useState<ConnectionSetupPromptData | null>(null);
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const [bugReportStatus, setBugReportStatus] = useState<BugReportStatus>('idle');
+  const [bootModalOpen, setBootModalOpen] = useState(showBootModal);
   const [bugReportError, setBugReportError] = useState<string | null>(null);
   // Compaction in-progress indicator
   const [isCompacting, setIsCompactingState] = useState(false);
@@ -3561,6 +3566,14 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         status={bugReportStatus}
         error={bugReportError}
       />
+
+      {/* Post-onboarding boot sequence modal */}
+      {bootModalOpen && (
+        <OnboardingLoadingModal
+          open={bootModalOpen}
+          onDismiss={() => setBootModalOpen(false)}
+        />
+      )}
     </TooltipProvider>
   );
 }
