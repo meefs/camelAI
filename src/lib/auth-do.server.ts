@@ -1078,7 +1078,7 @@ export interface AdminHardDeleteUserResult {
 export async function hardDeleteAdminUser(
   context: AppLoadContext,
   userId: string,
-  _actorId = 'system-admin'
+  actorId = 'system-admin'
 ): Promise<AdminHardDeleteUserResult> {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
@@ -1125,7 +1125,7 @@ export async function hardDeleteAdminUser(
   for (const org of orgs) {
     try {
       const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.org_id));
-      await orgStub.removeMember(userId, userId);
+      await orgStub.removeMember(userId, actorId);
       removedOrgMemberships++;
     } catch (error) {
       // Non-owner removals should not throw, but guard against unexpected
