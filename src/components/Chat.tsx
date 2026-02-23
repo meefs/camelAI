@@ -91,8 +91,6 @@ interface ChatProps {
   orgSlug?: string;
   /** True when messages are still loading (deferred data) */
   isLoadingMessages?: boolean;
-  /** Show the post-onboarding boot modal */
-  showBootModal?: boolean;
   welcomeData?: {
     userId: string | null;
     userName: string | null;
@@ -101,6 +99,19 @@ interface ChatProps {
     recentThreads: Thread[] | Promise<Thread[]>;
     renderedAt: number;
   };
+}
+
+function consumeBootModalFlag(isNewThread: boolean): boolean {
+  if (typeof window === 'undefined' || !isNewThread) return false;
+
+  try {
+    const flag = sessionStorage.getItem('showBootModal');
+    if (!flag) return false;
+    sessionStorage.removeItem('showBootModal');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -751,7 +762,6 @@ export default function Chat({
   orgSlug,
   isLoadingMessages = false,
   welcomeData,
-  showBootModal = false,
 }: ChatProps) {
   const navigate = useNavigate();
   const revalidator = useRevalidator();
@@ -788,7 +798,7 @@ export default function Chat({
   const [connectionSetupPrompt, setConnectionSetupPrompt] = useState<ConnectionSetupPromptData | null>(null);
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const [bugReportStatus, setBugReportStatus] = useState<BugReportStatus>('idle');
-  const [bootModalOpen, setBootModalOpen] = useState(showBootModal);
+  const [bootModalOpen, setBootModalOpen] = useState(() => consumeBootModalFlag(isNewThread));
   const [bugReportError, setBugReportError] = useState<string | null>(null);
   // Compaction in-progress indicator
   const [isCompacting, setIsCompactingState] = useState(false);
