@@ -34,6 +34,7 @@ import {
   type ConnectionSetupResponse,
 } from '@/components/connection-setup-prompt';
 import { BugReportDialog, type BugReportStatus } from '@/components/bug-report-dialog';
+import { OnboardingLoadingModal } from '@/components/onboarding-loading-modal';
 import type { Attachment } from '@/components/attachment-list';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -98,6 +99,16 @@ interface ChatProps {
     recentThreads: Thread[] | Promise<Thread[]>;
     renderedAt: number;
   };
+}
+
+function shouldShowBootModalFromStorage(isNewThread: boolean): boolean {
+  if (typeof window === 'undefined' || !isNewThread) return false;
+
+  try {
+    return Boolean(sessionStorage.getItem('showBootModal'));
+  } catch {
+    return false;
+  }
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -784,7 +795,17 @@ export default function Chat({
   const [connectionSetupPrompt, setConnectionSetupPrompt] = useState<ConnectionSetupPromptData | null>(null);
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const [bugReportStatus, setBugReportStatus] = useState<BugReportStatus>('idle');
+  const [bootModalOpen, setBootModalOpen] = useState(() => shouldShowBootModalFromStorage(isNewThread));
   const [bugReportError, setBugReportError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!bootModalOpen) return;
+    try {
+      sessionStorage.removeItem('showBootModal');
+    } catch {
+      // Ignore storage failures; modal behavior should stay resilient.
+    }
+  }, [bootModalOpen]);
   // Compaction in-progress indicator
   const [isCompacting, setIsCompactingState] = useState(false);
   const setIsCompacting = useCallback((value: boolean) => {
@@ -3561,6 +3582,14 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         status={bugReportStatus}
         error={bugReportError}
       />
+
+      {/* Post-onboarding boot sequence modal */}
+      {bootModalOpen && (
+        <OnboardingLoadingModal
+          open={bootModalOpen}
+          onDismiss={() => setBootModalOpen(false)}
+        />
+      )}
     </TooltipProvider>
   );
 }
