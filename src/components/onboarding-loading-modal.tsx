@@ -2,8 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
-  DialogOverlay,
-  DialogPortal,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 
@@ -81,19 +79,17 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
 
   return (
     <Dialog open={open} modal>
-      <DialogPortal>
-        <DialogOverlay className="bg-black/80 backdrop-blur-sm" />
-        <DialogContent
-          showCloseButton={false}
-          onPointerDownOutside={(e) => e.preventDefault()}
-          onEscapeKeyDown={(e) => e.preventDefault()}
-          className={cn(
-            'sm:max-w-md',
-            'bg-zinc-950 text-zinc-300 ring-zinc-800',
-            'font-mono text-[13px] leading-relaxed',
-            'p-6',
-          )}
-        >
+      <DialogContent
+        showCloseButton={false}
+        onPointerDownOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        className={cn(
+          'sm:max-w-md',
+          'bg-zinc-950 text-zinc-300 ring-zinc-800',
+          'font-mono text-[13px] leading-relaxed',
+          'p-6',
+        )}
+      >
           {/* Status header */}
           <div className="flex items-center gap-2.5 mb-5">
             <div
@@ -156,8 +152,7 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
             <span>camelAI</span>
             <span>one-time setup</span>
           </div>
-        </DialogContent>
-      </DialogPortal>
+      </DialogContent>
     </Dialog>
   );
 }
