@@ -23,7 +23,8 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin s
 
 # Python 3.13 (managed by uv)
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
-ENV UV_CACHE_DIR=/opt/uv-cache
+# Build-time seed cache (copied into persistent workspace cache at container startup).
+ENV UV_CACHE_DIR=/opt/uv-cache-seed
 RUN uv python install 3.13 && \
     ln -sf $(uv python find 3.13) /usr/local/bin/python && \
     ln -sf $(uv python find 3.13) /usr/local/bin/python3
@@ -45,6 +46,10 @@ RUN uv venv /tmp/warmup --python 3.13 && \
         pillow \
         tqdm && \
     rm -rf /tmp/warmup
+
+# Runtime defaults: persistent workspace cache + fast linking into .venv.
+ENV UV_CACHE_DIR=/home/claude/.cache/uv
+ENV UV_LINK_MODE=hardlink
 
 # Wrangler CLI (npm puts binaries in /usr/local/bin/ — accessible to all users)
 RUN npm install -g wrangler --loglevel=warn

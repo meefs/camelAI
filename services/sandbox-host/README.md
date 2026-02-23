@@ -27,6 +27,7 @@ Each sandbox maps to a leaf directory:
 
 - Host: `/srv/sandboxes/<sandbox-id>`
 - Container bind mount: `/home/claude`
+- Python env behavior: sandbox image prewarms a seed cache at `/opt/uv-cache-seed`; entrypoint syncs that into persistent workspace cache at `/home/claude/.cache/uv`; runtime uses `UV_LINK_MODE=hardlink` so installs are fast while both cache and `.venv` survive container restarts.
 
 Recommended host mount options:
 
