@@ -1075,7 +1075,7 @@ export interface AdminHardDeleteUserResult {
  *  5. Wipe the UserDO Durable Object storage.
  *  6. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
  *  7. Delete user sessions from SESSIONS KV.
- *  8. Delete workspace-level ACL rows for this user.
+ *  8. Delete workspace-level ACL rows for this user across all org workspaces.
  *  9. Delete user-scoped worker auth one-time tokens from APP_KV.
  */
 export async function hardDeleteAdminUser(
@@ -1230,9 +1230,21 @@ export async function hardDeleteAdminUser(
 
   // 8. Best-effort cleanup of explicit workspace ACL rows for this user.
   // Setting access to "full" deletes the override row in WorkspaceDO.
-  for (const org of orgs) {
+  // Scan all orgs (not just current user memberships) so orphaned users are
+  // also cleaned up after prior membership-removal flows.
+  const workspaceAclOrgIds = new Set<string>(orgs.map((org) => org.org_id));
+  try {
+    const allOrgIds = await collectAllOrgIds(env);
+    for (const orgId of allOrgIds) {
+      workspaceAclOrgIds.add(orgId);
+    }
+  } catch (error) {
+    warnings.push(`Failed to enumerate orgs for ACL cleanup: ${toErrorMessage(error)}`);
+  }
+
+  for (const orgId of workspaceAclOrgIds) {
     try {
-      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.org_id));
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       const workspaces = await orgStub.getWorkspaces(true);
       await Promise.all(
         workspaces.map(async (workspace) => {
@@ -1242,7 +1254,7 @@ export async function hardDeleteAdminUser(
       );
     } catch (error) {
       warnings.push(
-        `Failed to clean workspace ACL rows in org ${org.org_id.slice(0, 8)}: ${toErrorMessage(error)}`
+        `Failed to clean workspace ACL rows in org ${orgId.slice(0, 8)}: ${toErrorMessage(error)}`
       );
     }
   }
