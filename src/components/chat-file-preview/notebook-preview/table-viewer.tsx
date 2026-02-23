@@ -35,6 +35,7 @@ interface ResizeState {
 type SortDirection = 'asc' | 'desc' | null;
 
 const MAX_DISPLAY_ROWS = 500;
+const COLUMN_WIDTH_SAMPLE_ROWS = MAX_DISPLAY_ROWS;
 const DEFAULT_MAX_COLUMN_WIDTH = 200;
 const DEFAULT_INDEX_COLUMN_WIDTH = 120;
 const CHAR_WIDTH_PX = 7.5;
@@ -170,6 +171,14 @@ export function TableViewer({ table, title }: TableViewerProps) {
     () => Array.from({ length: columnCount }, (_, index) => table.headers[index] ?? `Column ${index + 1}`),
     [columnCount, table.headers]
   );
+  const widthSampleRows = useMemo(
+    () => (
+      table.rows.length > COLUMN_WIDTH_SAMPLE_ROWS
+        ? table.rows.slice(0, COLUMN_WIDTH_SAMPLE_ROWS)
+        : table.rows
+    ),
+    [table.rows]
+  );
 
   useEffect(() => {
     const timeout = setTimeout(() => {
@@ -194,10 +203,10 @@ export function TableViewer({ table, title }: TableViewerProps) {
     for (let i = 0; i < columnCount; i++) {
       const isIndex = i < table.indexColumns;
       const maxW = isIndex ? DEFAULT_INDEX_COLUMN_WIDTH : DEFAULT_MAX_COLUMN_WIDTH;
-      defaults[i] = estimateColumnWidth(table.headers[i] ?? '', table.rows, i, isIndex, maxW);
+      defaults[i] = estimateColumnWidth(table.headers[i] ?? '', widthSampleRows, i, isIndex, maxW);
     }
     setColumnWidths(defaults);
-  }, [columnCount, table.indexColumns, table.headers, table.rows]);
+  }, [columnCount, table.indexColumns, table.headers, widthSampleRows]);
 
   const sortedRows = useMemo(() => {
     if (sortColumn == null || sortDirection == null || sortColumn < table.indexColumns) {

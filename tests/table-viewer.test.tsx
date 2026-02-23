@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { TableViewer } from '@/components/chat-file-preview/notebook-preview/table-viewer';
 import type { ParsedTable } from '@/components/chat-file-preview/notebook-preview/types';
 
@@ -86,5 +86,27 @@ describe('TableViewer', () => {
       row.querySelector('td')?.textContent ?? ''
     );
     expect(sortedValues).toEqual(['2', '50', '100', '...']);
+  });
+
+  it('ignores rows beyond the render cap when estimating initial column widths', async () => {
+    const rows: string[][] = Array.from({ length: 501 }, (_, index) => [
+      String(index),
+      index === 500 ? 'x'.repeat(200) : 'x',
+    ]);
+    const table: ParsedTable = {
+      headers: ['Index', 'Value'],
+      rows,
+      indexColumns: 1,
+      caption: null,
+      sourceRowCount: null,
+    };
+
+    const { container } = render(<TableViewer table={table} title="Width sample" />);
+    const dataColumn = container.querySelectorAll('col')[1];
+    expect(dataColumn).toBeTruthy();
+
+    await waitFor(() => {
+      expect(dataColumn?.style.width).toBe('90px');
+    });
   });
 });
