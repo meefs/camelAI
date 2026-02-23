@@ -203,7 +203,7 @@ export const STARTER_PROJECT_OPTIONS: StarterProjectOption[] = [
   {
     value: 'data_analytics',
     title: 'Data analytics',
-    description: 'Turn spreadsheets and data into insights',
+    description: 'Upload a spreadsheets or connect a database for insights',
   },
   {
     value: 'personal_site',
