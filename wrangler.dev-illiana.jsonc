@@ -50,10 +50,12 @@
 	],
 	"queues": {
 		"producers": [
-			{ "binding": "APP_SCREENSHOT_QUEUE", "queue": "chiridion-app-screenshots-dev-illiana" }
+			{ "binding": "APP_SCREENSHOT_QUEUE", "queue": "chiridion-app-screenshots-dev-illiana" },
+			{ "binding": "SLACK_EVENTS_QUEUE", "queue": "chiridion-app-slack-events-dev-illiana" }
 		],
 		"consumers": [
-			{ "queue": "chiridion-app-screenshots-dev-illiana" }
+			{ "queue": "chiridion-app-screenshots-dev-illiana" },
+			{ "queue": "chiridion-app-slack-events-dev-illiana" }
 		]
 	},
 	"services": [

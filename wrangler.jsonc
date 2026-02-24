@@ -72,11 +72,18 @@
 			{
 				"binding": "APP_SCREENSHOT_QUEUE",
 				"queue": "chiridion-app-screenshots-local"
+			},
+			{
+				"binding": "SLACK_EVENTS_QUEUE",
+				"queue": "chiridion-app-slack-events-local"
 			}
 		],
 		"consumers": [
 			{
 				"queue": "chiridion-app-screenshots-local"
+			},
+			{
+				"queue": "chiridion-app-slack-events-local"
 			}
 		]
 	},
@@ -195,11 +202,18 @@
 					{
 						"binding": "APP_SCREENSHOT_QUEUE",
 						"queue": "chiridion-app-screenshots"
+					},
+					{
+						"binding": "SLACK_EVENTS_QUEUE",
+						"queue": "chiridion-app-slack-events"
 					}
 				],
 				"consumers": [
 					{
 						"queue": "chiridion-app-screenshots"
+					},
+					{
+						"queue": "chiridion-app-slack-events"
 					}
 				]
 			},
@@ -299,11 +313,18 @@
 					{
 						"binding": "APP_SCREENSHOT_QUEUE",
 						"queue": "chiridion-app-screenshots-staging"
+					},
+					{
+						"binding": "SLACK_EVENTS_QUEUE",
+						"queue": "chiridion-app-slack-events-staging"
 					}
 				],
 				"consumers": [
 					{
 						"queue": "chiridion-app-screenshots-staging"
+					},
+					{
+						"queue": "chiridion-app-slack-events-staging"
 					}
 				]
 			},
@@ -398,11 +419,18 @@
 					{
 						"binding": "APP_SCREENSHOT_QUEUE",
 						"queue": "chiridion-app-screenshots-dev-miguel"
+					},
+					{
+						"binding": "SLACK_EVENTS_QUEUE",
+						"queue": "chiridion-app-slack-events-dev-miguel"
 					}
 				],
 				"consumers": [
 					{
 						"queue": "chiridion-app-screenshots-dev-miguel"
+					},
+					{
+						"queue": "chiridion-app-slack-events-dev-miguel"
 					}
 				]
 			},
@@ -497,11 +525,18 @@
 					{
 						"binding": "APP_SCREENSHOT_QUEUE",
 						"queue": "chiridion-app-screenshots-dev-illiana"
+					},
+					{
+						"binding": "SLACK_EVENTS_QUEUE",
+						"queue": "chiridion-app-slack-events-dev-illiana"
 					}
 				],
 				"consumers": [
 					{
 						"queue": "chiridion-app-screenshots-dev-illiana"
+					},
+					{
+						"queue": "chiridion-app-slack-events-dev-illiana"
 					}
 				]
 			},

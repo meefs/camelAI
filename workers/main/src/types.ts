@@ -11,6 +11,7 @@ import type { McpEnv } from './mcp-handler.js';
 import type { WorkspaceDO } from './workspace.js';
 import type { WorkerLogsDO } from './worker-logs-do.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
+import type { SlackEventQueueMessage } from './slack-types.js';
 
 export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv, CfApiProxyEnv, McpEnv {
   ASSETS: Fetcher;
@@ -19,6 +20,7 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   SESSIONS: KVNamespace;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;
+  SLACK_EVENTS_QUEUE?: Queue<SlackEventQueueMessage>;
   BROWSER?: Fetcher;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;

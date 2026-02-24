@@ -8,14 +8,13 @@ display_information:
     and help automate workflows in your Slack workspace.
 
 features:
+  app_home:
+    home_tab_enabled: true
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
   bot_user:
     display_name: camelAI
     always_online: true
-  slash_commands:
-    - command: /camelai
-      description: Interact with camelAI assistant
-      usage_hint: "[message or command]"
-      should_escape: false
 
 oauth_config:
   redirect_urls:
@@ -85,8 +84,7 @@ oauth_config:
       # Workflows
       - workflow.steps:execute
 
-      # App management
-      - commands
+      # App events
       - app_mentions:read
 
       # Metadata

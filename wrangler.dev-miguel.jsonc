@@ -50,10 +50,12 @@
 	],
 	"queues": {
 		"producers": [
-			{ "binding": "APP_SCREENSHOT_QUEUE", "queue": "chiridion-app-screenshots-dev-miguel" }
+			{ "binding": "APP_SCREENSHOT_QUEUE", "queue": "chiridion-app-screenshots-dev-miguel" },
+			{ "binding": "SLACK_EVENTS_QUEUE", "queue": "chiridion-app-slack-events-dev-miguel" }
 		],
 		"consumers": [
-			{ "queue": "chiridion-app-screenshots-dev-miguel" }
+			{ "queue": "chiridion-app-screenshots-dev-miguel" },
+			{ "queue": "chiridion-app-slack-events-dev-miguel" }
 		]
 	},
 	"services": [

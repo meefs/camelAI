@@ -13,6 +13,7 @@ import { getWorkspaceStub, getOrgStub, getThreadStub } from '../helpers/stubs.js
 import { redirect, text } from '../helpers/response.js';
 import type { ConnectionSetupResponse } from '../durable-objects.js';
 import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from '../cf-api-proxy.js';
+import type { SlackEventCallbackPayload } from '../slack-types.js';
 
 // RPC interface for MCP DO callback
 interface ChiridionMcpRpc {
@@ -59,28 +60,10 @@ interface SlackExternalTurnResponse {
   error?: string;
 }
 
-interface SlackEventCallbackPayload {
-  type?: string;
-  challenge?: string;
-  team_id?: string;
-  event_id?: string;
-  authorizations?: Array<{ user_id?: string }>;
-  event?: {
-    type?: string;
-    subtype?: string;
-    channel?: string;
-    channel_type?: string;
-    text?: string;
-    user?: string;
-    bot_id?: string;
-    ts?: string;
-    thread_ts?: string;
-  };
-}
-
 const SLACK_TEAM_INDEX_PREFIX = 'slack_team:';
 const SLACK_THREAD_MAP_PREFIX = 'slack_thread:';
 const SLACK_EVENT_DEDUPE_PREFIX = 'slack_event:';
+const SLACK_MESSAGE_DEDUPE_PREFIX = 'slack_message:';
 const SLACK_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
 const DEFAULT_EXTERNAL_TURN_TIMEOUT_MS = 2 * 60 * 1000;
 
@@ -104,6 +87,23 @@ function getSlackMappingRootTs(
 
 function getSlackReplyThreadTs(event: NonNullable<SlackEventCallbackPayload['event']>): string {
   return (event.thread_ts || event.ts || '').trim();
+}
+
+function getSlackMessageDedupeKey(payload: SlackEventCallbackPayload): string | null {
+  const event = payload.event;
+  const teamId = payload.team_id?.trim();
+  if (!event || !teamId) return null;
+  if (event.type !== 'message' && event.type !== 'app_mention') return null;
+  if (event.subtype) return null;
+
+  const channelId = event.channel?.trim() || '';
+  const userId = event.user?.trim() || '';
+  const eventTs = (event.ts || '').trim();
+  if (!channelId || !userId || !eventTs) return null;
+
+  // Slack may emit both app_mention and message.* for a single @mention post.
+  // Dedupe by message identity (not event_id) so we only process once.
+  return `${SLACK_MESSAGE_DEDUPE_PREFIX}${teamId}:${channelId}:${userId}:${eventTs}`;
 }
 
 function timingSafeEqual(a: string, b: string): boolean {
@@ -790,7 +790,7 @@ async function dispatchSlackTurnOutcome(
   }
 }
 
-async function processSlackEventCallback(
+export async function processSlackEventCallback(
   env: RouteContext['env'],
   payload: SlackEventCallbackPayload
 ): Promise<void> {
@@ -894,11 +894,36 @@ export async function handleSlackEvents({ req, env, ctx }: RouteContext): Promis
     await env.APP_KV.put(dedupeKey, '1', { expirationTtl: SLACK_EVENT_DEDUPE_TTL_SECONDS });
   }
 
-  ctx.waitUntil(
-    processSlackEventCallback(env, payload).catch((error) => {
-      console.error('[slack-events] failed to process callback', error);
-    })
-  );
+  const messageDedupeKey = getSlackMessageDedupeKey(payload);
+  if (messageDedupeKey) {
+    const seenMessage = await env.APP_KV.get(messageDedupeKey);
+    if (seenMessage) {
+      return text('ok', 200);
+    }
+    await env.APP_KV.put(messageDedupeKey, '1', { expirationTtl: SLACK_EVENT_DEDUPE_TTL_SECONDS });
+  }
+
+  if (env.SLACK_EVENTS_QUEUE) {
+    try {
+      await env.SLACK_EVENTS_QUEUE.send({
+        payload,
+        received_at: Date.now(),
+      });
+    } catch (error) {
+      console.error('[slack-events] failed to enqueue event callback', error);
+      ctx.waitUntil(
+        processSlackEventCallback(env, payload).catch((callbackError) => {
+          console.error('[slack-events] failed to process callback fallback', callbackError);
+        })
+      );
+    }
+  } else {
+    ctx.waitUntil(
+      processSlackEventCallback(env, payload).catch((error) => {
+        console.error('[slack-events] failed to process callback', error);
+      })
+    );
+  }
 
   return text('ok', 200);
 }

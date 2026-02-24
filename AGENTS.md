@@ -101,10 +101,11 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 
 ### Slack Chat Ingress
 1. Slack Events API posts to `/api/integrations/slack/events` (signature-verified with `SLACK_SIGNING_SECRET`)
-2. Worker resolves workspace/integration by Slack `team_id` from KV index (`slack_team:{teamId}`)
-3. Worker maps Slack thread (`team/channel/root_ts`) to camelAI thread ID (`slack_thread:*`) and creates thread if needed
-4. `ChatThreadDO` ingests Slack turns through internal HTTP endpoints (`/external-message`, `/external-question-response`)
-5. AskUserQuestion prompts are returned to Slack thread replies and next Slack message is treated as tool input
+2. Worker dedupes by Slack `event_id` and message identity (`team/channel/user/ts`), enqueues to `SLACK_EVENTS_QUEUE`, and returns `200` immediately
+3. Queue consumer resolves workspace/integration by Slack `team_id` from KV index (`slack_team:{teamId}`)
+4. Queue consumer maps Slack thread (`team/channel/root_ts`) to camelAI thread ID (`slack_thread:*`) and creates thread if needed
+5. `ChatThreadDO` ingests Slack turns through internal HTTP endpoints (`/external-message`, `/external-question-response`)
+6. AskUserQuestion prompts are returned to Slack thread replies and next Slack message is treated as tool input
 
 ### Sandbox Proxy Auth
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.

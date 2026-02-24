@@ -15,6 +15,8 @@
 import { createRequestHandler } from 'react-router';
 import type { Env, Route } from './types.js';
 import { handleScreenshotQueue, type AppScreenshotJob } from './screenshot-queue.js';
+import { handleSlackEventsQueue } from './slack-events-queue.js';
+import type { SlackEventQueueMessage } from './slack-types.js';
 
 // Route handlers
 import { handleCfProxy } from './routes/cf-proxy.js';
@@ -134,7 +136,15 @@ export default {
     return reactRouterHandler(req, { cloudflare: { env, ctx } });
   },
 
-  async queue(batch: MessageBatch<AppScreenshotJob>, env: Env): Promise<void> {
-    return handleScreenshotQueue(batch, env);
+  async queue(batch: MessageBatch<AppScreenshotJob | SlackEventQueueMessage>, env: Env): Promise<void> {
+    if (batch.queue.startsWith('chiridion-app-screenshots')) {
+      return handleScreenshotQueue(batch as MessageBatch<AppScreenshotJob>, env);
+    }
+    if (batch.queue.startsWith('chiridion-app-slack-events')) {
+      return handleSlackEventsQueue(batch as MessageBatch<SlackEventQueueMessage>, env);
+    }
+
+    console.warn('[queue] unhandled queue batch', { queue: batch.queue, size: batch.messages.length });
+    batch.ackAll();
   },
 } satisfies ExportedHandler<Env>;

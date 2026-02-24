@@ -6,18 +6,15 @@
     "long_description": "camelAI is an AI coding assistant that can interact with your Slack workspace. This integration allows camelAI to read messages, post updates, manage channels, and help automate workflows in your Slack workspace."
   },
   "features": {
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
     "bot_user": {
       "display_name": "camelAI",
       "always_online": true
-    },
-    "slash_commands": [
-      {
-        "command": "/camelai",
-        "description": "Interact with camelAI assistant",
-        "usage_hint": "[message or command]",
-        "should_escape": false
-      }
-    ]
+    }
   },
   "oauth_config": {
     "redirect_urls": [
@@ -66,7 +63,6 @@
         "canvases:read",
         "canvases:write",
         "workflow.steps:execute",
-        "commands",
         "app_mentions:read",
         "metadata.message:read",
         "links:read",
