@@ -16,6 +16,19 @@ const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
 const TOKEN_BATCH_WINDOW_MS = 15 * 60 * 1000;
 // Fallback alarm delay if the alarm handler fails catastrophically (1 hour)
 const TOKEN_REFRESH_FALLBACK_MS = 60 * 60 * 1000;
+// Retry delay for transient token refresh failures (15 minutes)
+const TOKEN_REFRESH_RETRY_MS = 15 * 60 * 1000;
+
+/**
+ * Thrown when a token refresh fails permanently (e.g. revoked token, invalid_grant).
+ * The integration's token_expires_at should be cleared so the alarm stops retrying.
+ */
+class PermanentRefreshError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PermanentRefreshError';
+  }
+}
 const BIGQUERY_INTEGRATION_TYPE = 'bigquery';
 
 export type WorkspaceAccessLevel = 'full' | 'none';
@@ -733,7 +746,24 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
             needsSync = true;
           } catch (err) {
             console.error(`[WorkspaceDO] Failed to refresh token for ${integration.integration_type}:`, err);
-            // Continue with other tokens even if one fails
+            if (err instanceof PermanentRefreshError) {
+              // Permanently invalid (e.g. revoked token) — stop retrying this integration
+              this.sql.exec(
+                `UPDATE integrations SET token_expires_at = NULL, updated_at = ? WHERE id = ?`,
+                Date.now(),
+                integration.id
+              );
+              console.warn(`[WorkspaceDO] Disabled token refresh for ${integration.integration_type} integration ${integration.id} (permanent failure). User must re-authorize.`);
+            } else {
+              // Transient failure — push retry into the future to avoid tight loop
+              this.sql.exec(
+                `UPDATE integrations SET token_expires_at = ?, updated_at = ? WHERE id = ?`,
+                now + TOKEN_REFRESH_RETRY_MS,
+                Date.now(),
+                integration.id
+              );
+              console.warn(`[WorkspaceDO] Will retry ${integration.integration_type} integration ${integration.id} in 15 minutes`);
+            }
           }
         }
       }
@@ -914,7 +944,13 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Notion token refresh failed: ${response.status} ${errorText}`);
+      const message = `Notion token refresh failed: ${response.status} ${errorText}`;
+      // 4xx = permanent (invalid_grant, revoked token, bad credentials)
+      // 5xx / other = transient (Notion outage, rate limit)
+      if (response.status >= 400 && response.status < 500) {
+        throw new PermanentRefreshError(message);
+      }
+      throw new Error(message);
     }
 
     const data = (await response.json()) as {
