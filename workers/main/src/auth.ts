@@ -1448,11 +1448,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (changed) {
       await this.setInfo(info);
     }
-    try {
-      await this.indexOrg(info.id);
-    } catch {
-      // Non-fatal; org index can be repaired opportunistically.
-    }
     return info;
   }
 
