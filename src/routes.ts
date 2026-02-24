@@ -115,6 +115,7 @@ export default [
     ),
     route('qaml-backdoor/apps', 'routes/_admin.apps.tsx'),
     route('qaml-backdoor/apps/:scriptName', 'routes/_admin.apps.$scriptName.tsx'),
+    route('qaml-backdoor/logs', 'routes/_admin.logs.tsx'),
     route('qaml-backdoor/invitations', 'routes/_admin.invitations.tsx'),
   ]),
 

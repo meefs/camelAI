@@ -636,20 +636,27 @@ async function syncDispatchScriptSettings(
 ): Promise<void> {
   const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
-    `/scripts/${encodeURIComponent(scriptName)}/script-settings`;
+    `/scripts/${encodeURIComponent(scriptName)}/settings`;
 
   const headers = {
     Authorization: `Bearer ${apiToken}`,
-    'Content-Type': 'application/json',
   };
 
-  const body = {
+  const settings = {
     tail_consumers: [
       { service: tailWorkerName }
     ]
   };
 
-  const resp = await fetch(url, { method: 'PATCH', headers, body: JSON.stringify(body) });
+  // Cloudflare expects multipart settings updates with a "settings" JSON part.
+  const formData = new FormData();
+  formData.set(
+    'settings',
+    new Blob([JSON.stringify(settings)], { type: 'application/json' }),
+    'settings.json'
+  );
+
+  const resp = await fetch(url, { method: 'PATCH', headers, body: formData });
   if (!resp.ok) {
     const text = await resp.text();
     console.error('[cf-api-proxy] failed to set tail_consumers', {

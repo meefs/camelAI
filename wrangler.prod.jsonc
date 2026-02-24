@@ -19,18 +19,19 @@
 		}
 	],
 	"vars": {
-		"R2_BUCKET_NAME": "chiridion-sandbox",
-		"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-		"R2_MOUNT_DIR": "/home/claude",
-		"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
-		"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
-		"CF_GATEWAY_NAME": "chiridion",
-		"CF_DISPATCH_NAMESPACE": "chiridion-platform",
-		"WORKER_BASE_URL": "https://camelai.dev",
-		"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-		"CF_WORKER_NAME": "chiridion-app"
-		// OPENROUTER_PROVISIONING_KEY is set via secrets
-	},
+			"R2_BUCKET_NAME": "chiridion-sandbox",
+			"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+			"R2_MOUNT_DIR": "/home/claude",
+			"R2_PARENT_ACCESS_KEY_ID": "4f8fdc386b4ccb9f4a2bea3c77c8ad95",
+			"CF_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
+			"CF_GATEWAY_NAME": "chiridion",
+			"CF_DISPATCH_NAMESPACE": "chiridion-platform",
+			"WORKER_BASE_URL": "https://camelai.dev",
+			"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
+			"CF_WORKER_NAME": "chiridion-app",
+			"TAIL_WORKER_NAME": "chiridion-user-logs-tail"
+			// OPENROUTER_PROVISIONING_KEY is set via secrets
+		},
 	"assets": {
 		"binding": "ASSETS",
 		"directory": "build/client"
@@ -79,7 +80,8 @@
 			{ "name": "ORG", "class_name": "OrgDO" },
 			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" }
+			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
+			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" }
 		]
 	},
 	"migrations": [
@@ -95,6 +97,7 @@
 		{ "tag": "v10", "new_sqlite_classes": ["OrgSlugDO"] },
 		{ "tag": "v11", "new_sqlite_classes": ["MssqlProxy"] },
 		{ "tag": "v12", "deleted_classes": ["MssqlProxy"], "new_sqlite_classes": ["DataProxy"] },
-		{ "tag": "v13", "deleted_classes": ["ThreadSandbox"] }
+		{ "tag": "v13", "deleted_classes": ["ThreadSandbox"] },
+		{ "tag": "v14", "new_sqlite_classes": ["WorkerLogsDO"] }
 	]
 }

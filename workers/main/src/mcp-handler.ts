@@ -19,10 +19,12 @@ import { validateSandboxProxy } from './sandbox-auth';
 import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
 import { captureScreenshotRaw } from './screenshot-queue';
 import { createScreenshotToken } from './worker-auth';
+import type { WorkerLogsDO } from './worker-logs-do';
 
 export interface McpEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
+  WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
   APP_KV: KVNamespace;
   BROWSER?: Fetcher;
   SANDBOX_PROXY_SECRET?: string;
@@ -627,6 +629,67 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             error: result.error || 'Failed to capture screenshot',
           });
         }
+      }
+    );
+
+    // Get recent logs for a deployed app
+    this.server.tool(
+      'get_latest_logs',
+      'Get recent runtime logs for a deployed app in the current workspace. Returns console and exception events captured by the tail worker.',
+      {
+        script_name: z.string().min(1).describe('The app/worker script name to fetch logs for.'),
+        limit: z.number().int().min(1).max(500).optional().describe('Maximum number of log entries to return (default 100, max 500).'),
+        since_ms: z.number().int().min(0).optional().describe('Optional lower-bound timestamp in milliseconds; only logs newer than this are returned.'),
+      },
+      async ({ script_name, limit = 100, since_ms }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+
+        const orgStub = this.getOrgStub();
+        const script: WorkerScript | null = await orgStub.getWorkerScript(script_name);
+        if (!script) {
+          return this.textResponse({ success: false, error: `App '${script_name}' not found` });
+        }
+        if (script.workspace_id !== workspaceId) {
+          return this.textResponse({ success: false, error: `App '${script_name}' belongs to a different workspace` });
+        }
+
+        const orgSlug = await this.getOrgSlug();
+        // Security: do not fall back to unscoped legacy keys when an org slug exists.
+        const storageKey = orgSlug ? `${script_name}--${orgSlug}` : script_name;
+        const logsStub = this.env.WORKER_LOGS.get(this.env.WORKER_LOGS.idFromName(storageKey));
+        const [logs, stats] = await Promise.all([
+          logsStub.getLogs({ limit, since: since_ms }),
+          logsStub.getStats(),
+        ]);
+
+        return this.textResponse({
+          success: true,
+          script: {
+            name: script_name,
+            storage_key: storageKey,
+            dispatch_name: storageKey,
+          },
+          count: logs.length,
+          limit,
+          since_ms: since_ms ?? null,
+          stats: {
+            total_log_count: stats.logCount,
+            last_log_at_ms: stats.lastLogAt,
+            last_log_at: stats.lastLogAt ? new Date(stats.lastLogAt).toISOString() : null,
+          },
+          logs: logs.map((entry) => ({
+            id: entry.id,
+            timestamp_ms: entry.timestamp,
+            timestamp: new Date(entry.timestamp).toISOString(),
+            level: entry.level,
+            message: entry.message,
+            exception: entry.exception,
+            script_version: entry.scriptVersion,
+          })),
+        });
       }
     );
 

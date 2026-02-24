@@ -7,6 +7,7 @@ import {
   Mail,
   MessageSquare,
   Rocket,
+  Terminal,
   Users,
 } from 'lucide-react';
 import { Link } from 'react-router';
@@ -58,6 +59,11 @@ const modelRoutes = [
     label: 'Apps',
     href: '/qaml-backdoor/apps',
     icon: Rocket,
+  },
+  {
+    label: 'Logs',
+    href: '/qaml-backdoor/logs',
+    icon: Terminal,
   },
   {
     label: 'Invitations',

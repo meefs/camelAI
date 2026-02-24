@@ -131,6 +131,9 @@ SDK `<task-notification>` user-role payloads are parsed client-side, merged into
 ### MCP Prompt Replay
 MCP-driven prompts (connection setup, bug reports) are persisted in `ChatThreadDO` and replayed to newly connected clients. Prompts expire (30m for connections, 5m for bug reports).
 
+### MCP App Logs Tool
+The MCP server exposes `get_latest_logs`, which retrieves recent tail-captured runtime logs for a deployed app in the current workspace. It validates script ownership, resolves the dispatch script key (`{script}--{org-slug}`), and reads from `WorkerLogsDO` (with legacy key fallback).
+
 ### Integration Token Refresh
 OAuth integrations with expiring tokens are refreshed by `WorkspaceDO` alarms. Updated credentials are pushed to both sandbox runtimes and deployed workers.
 
@@ -302,7 +305,7 @@ Sandbox names: `chiridion-{workspaceId}`. Host dir: `/srv/sandboxes/{sandboxName
 
 ### Observability
 
-SSR errors logged to Workers Analytics Engine (`ERROR_ANALYTICS` binding, `chiridion_errors` dataset). Live logs: `npx wrangler tail --env <env>`.
+SSR errors logged to Workers Analytics Engine (`ERROR_ANALYTICS` binding, `chiridion_errors` dataset). Live logs: `npx wrangler tail --env <env>`. Superusers can also inspect recent tail-captured app logs in QAML Backdoor at `/qaml-backdoor/logs`.
 
 ## Known Issues
 
