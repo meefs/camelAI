@@ -899,9 +899,9 @@ class ChatSession {
   }
 
   async handleCanUseTool(toolName, input, opts) {
-    if (toolName !== 'AskUserQuestion') return { behavior: 'allow' };
+    if (toolName !== 'AskUserQuestion') return { behavior: 'allow', updatedInput: input };
     const questions = input?.questions;
-    if (!Array.isArray(questions) || questions.length === 0) return { behavior: 'allow' };
+    if (!Array.isArray(questions) || questions.length === 0) return { behavior: 'allow', updatedInput: input };
 
     const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const toolUseId = opts?.toolUseID;
