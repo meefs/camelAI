@@ -2287,9 +2287,28 @@ export default function Chat({
       connectWebSocketRef.current?.(threadId);
     }
 
-    // No cleanup function - we handle cleanup explicitly when threadId changes
-    // This prevents StrictMode from closing connections on remount
-    // Browser closes WebSocket automatically on navigation
+    // Cleanup on unmount or dep change: close the WebSocket to prevent orphaned
+    // connections. Browsers only auto-close WebSockets on full page navigations,
+    // NOT on SPA client-side route changes. Without this, navigating from
+    // /chat/threadA → /new leaves the old WS alive (code 1006 after ~15s),
+    // and the lingering connection slows down new WS establishment.
+    return () => {
+      connectionIdRef.current++;
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      connectedThreadIdRef.current = null;
+      connectedWorkspaceIdRef.current = null;
+    };
   }, [threadId, shouldShowChat, resolvedWorkspaceId]);
 
   // Ensure existing threads hydrate full history once initial route loading
