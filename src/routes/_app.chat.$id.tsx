@@ -18,6 +18,45 @@ export function meta({ data }: Route.MetaArgs) {
   ];
 }
 
+/**
+ * Client loader that short-circuits the server round trip for new thread
+ * navigations. When navigating from the welcome screen with ?newThread=1,
+ * the pending-message sessionStorage entry already contains workspaceId and
+ * orgSlug — everything the page needs. This eliminates a full
+ * requireAuthContext() + getThread() server call (~400ms).
+ */
+export async function clientLoader({ serverLoader, params, request }: Route.ClientLoaderArgs) {
+  const url = new URL(request.url);
+
+  if (url.searchParams.get('newThread') === '1') {
+    try {
+      const stored = sessionStorage.getItem('pendingMessage:newThread');
+      if (stored) {
+        const parsed = JSON.parse(stored) as {
+          threadId?: string;
+          workspaceId?: string;
+          orgSlug?: string;
+        };
+        if (parsed.threadId === params.id && parsed.workspaceId) {
+          return {
+            threadId: params.id,
+            workspaceId: parsed.workspaceId,
+            chatDataPromise: Promise.resolve(EMPTY_CHAT_DATA),
+            threadTitle: null,
+            isNewThread: true,
+            hostname: window.location.hostname,
+            orgSlug: parsed.orgSlug,
+          };
+        }
+      }
+    } catch {
+      // Fall through to server loader on any error
+    }
+  }
+
+  return serverLoader();
+}
+
 interface ChatData {
   messages: Message[];
   previewTabs: PreviewTarget[];
@@ -57,7 +96,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const isNewThread = url.searchParams.get('newThread') === '1';
   const hostname = request.headers.get('host')?.split(':')[0] || undefined;
 
-  const thread = await chatDO.getThread(context, params.id, workspaceId);
+  // Skip fetching thread metadata for new threads — we just created it and it has no title yet
+  const thread = isNewThread ? null : await chatDO.getThread(context, params.id, workspaceId);
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);

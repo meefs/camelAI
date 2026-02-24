@@ -269,7 +269,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const orgStub = this.env.ORG.get(
       this.env.ORG.idFromName(orgId)
     ) as unknown as OrgDO;
-    await orgStub.addWorkspace(id, name, now, createdBy);
+    await orgStub.addWorkspace(id, name, now, createdBy, avatar);
 
     return info;
   }
@@ -310,6 +310,18 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     await this.setInfo(info);
     if (Object.keys(changes).length > 0) {
       this.log('workspace_updated', actorId, undefined, { changes });
+
+      // Sync name/avatar changes to OrgDO for workspace summaries
+      const orgUpdates: { name?: string; avatar_color?: string; avatar_content?: string } = {};
+      if (changes.name) orgUpdates.name = info.name;
+      if (changes.avatar_color) orgUpdates.avatar_color = info.avatar.color;
+      if (changes.avatar_content) orgUpdates.avatar_content = info.avatar.content;
+      if (Object.keys(orgUpdates).length > 0) {
+        const orgStub = this.env.ORG.get(
+          this.env.ORG.idFromName(info.org_id)
+        ) as unknown as OrgDO;
+        await orgStub.updateWorkspaceInfo(info.id, orgUpdates);
+      }
     }
     return info;
   }

@@ -6,7 +6,7 @@ import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
 import type { OnboardingPreferences } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
-import { getUserOrgs, listUserWorkspacesAcrossOrgs, listOrgWorkspaces } from './auth-do';
+import { getUserOrgs, listUserWorkspaceSummariesAcrossOrgs, listOrgWorkspaces } from './auth-do';
 
 // Request-scoped cache for auth context to avoid duplicate DO RPC calls
 // when multiple loaders call requireAuthContext() in the same request
@@ -37,6 +37,8 @@ export interface AuthContext extends UserContext {
   allWorkspaces: WorkspaceWithAccess[];
   /** Total workspaces in org (includes ones user may not have access to) */
   orgWorkspaceCount: number;
+  /** Email verification status (bundled from UserDO bootstrap) */
+  emailVerification: { required: boolean; verified: boolean };
 }
 
 /**
@@ -174,12 +176,9 @@ async function getAuthContextUncached(
     user: profile,
   };
 
-  // Get all workspaces across all orgs (for workspace switcher)
-  const allWorkspaces = await listUserWorkspacesAcrossOrgs(
-    authEnv,
-    userContext.session.user_id,
-    orgs
-  );
+  // Get all workspaces across all orgs (for workspace switcher).
+  // Uses lightweight OrgDO summaries to avoid cold-starting every WorkspaceDO.
+  const allWorkspaces = await listUserWorkspaceSummariesAcrossOrgs(authEnv, orgs);
 
   // Workspaces in the current org only (for settings/management).
   // Derive from allWorkspaces to avoid duplicate current-org RPC traversal.
@@ -223,6 +222,7 @@ async function getAuthContextUncached(
     workspaces,
     allWorkspaces,
     orgWorkspaceCount,
+    emailVerification: authBootstrap.emailVerification,
   };
 }
 

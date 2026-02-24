@@ -568,6 +568,15 @@ export async function listUserWorkspaces(env: AuthEnv, userId: string, orgId: st
   return workspaces.map((workspace) => ({ ...workspace, access_level: 'full' as const }));
 }
 
+/**
+ * List org workspaces skipping membership check — caller must have already
+ * validated that the user belongs to the org (e.g. via getUserOrgs).
+ */
+async function listOrgWorkspacesForMember(env: AuthEnv, orgId: string): Promise<WorkspaceWithAccess[]> {
+  const workspaces = await listOrgWorkspaces(env, orgId);
+  return workspaces.map((workspace) => ({ ...workspace, access_level: 'full' as const }));
+}
+
 export async function listUserWorkspacesAcrossOrgs(
   env: AuthEnv,
   userId: string,
@@ -576,10 +585,46 @@ export async function listUserWorkspacesAcrossOrgs(
   const memberships = orgs ?? (await getUserOrgs(env, userId));
   if (memberships.length === 0) return [];
 
+  // When orgs are pre-validated (passed in), skip redundant isOrgMember checks
   const workspaces = await Promise.all(
-    memberships.map((membership) => listUserWorkspaces(env, userId, membership.org_id))
+    orgs
+      ? memberships.map((membership) => listOrgWorkspacesForMember(env, membership.org_id))
+      : memberships.map((membership) => listUserWorkspaces(env, userId, membership.org_id))
   );
   return workspaces.flat();
+}
+
+/**
+ * Fetch lightweight workspace summaries directly from OrgDO, avoiding
+ * WorkspaceDO cold starts. Used for the workspace switcher on page load.
+ */
+export async function listUserWorkspaceSummariesAcrossOrgs(
+  env: AuthEnv,
+  orgs: OrgMembership[]
+): Promise<WorkspaceWithAccess[]> {
+  if (orgs.length === 0) return [];
+
+  const perOrg = await Promise.all(
+    orgs.map(async (membership) => {
+      const orgStub = env.ORG.get(env.ORG.idFromName(membership.org_id));
+      const summaries = await orgStub.getWorkspaceSummaries();
+      return summaries.map((s) => ({
+        id: s.id,
+        org_id: membership.org_id,
+        name: s.name,
+        description: null,
+        created_by: s.created_by,
+        created_at: s.created_at,
+        avatar: { color: s.avatar_color, content: s.avatar_content },
+        archived: false,
+        archived_at: null,
+        archived_by: null,
+        compute_tier: 'standard' as const,
+        access_level: 'full' as const,
+      }));
+    })
+  );
+  return perOrg.flat();
 }
 
 export async function getWorkspace(env: AuthEnv, workspaceId: string): Promise<Workspace | null> {
@@ -598,13 +643,11 @@ export async function createWorkspace(
 ): Promise<Workspace> {
   const workspaceId = crypto.randomUUID();
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  // WorkspaceDO.createWorkspace registers with OrgDO internally (addWorkspace)
   const info = await stub.createWorkspace(workspaceId, orgId, name, createdBy, description ?? null);
 
-  // Register workspace with org
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  await orgStub.addWorkspace(workspaceId, name, info.created_at, createdBy);
-
   // Grant full access to all existing org members
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
   const members = await orgStub.getMembers();
   await Promise.all(
     members.map(async (member) => {

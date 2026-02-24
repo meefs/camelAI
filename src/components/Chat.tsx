@@ -1655,14 +1655,19 @@ export default function Chat({
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const workspaceIdForConnection = resolvedWorkspaceId;
     const wsUrl = `${protocol}//${wsHost}/ws/${workspaceIdForConnection}?threadId=${encodeURIComponent(id)}`;
+    const wsCreatedAt = Date.now();
+    console.log(`[Chat WS] creating connection cid=${thisConnectionId} thread=${id} isReconnect=${isReconnect} attempt=${reconnectAttempts.current}`);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
+      const onopenDelay = Date.now() - wsCreatedAt;
       // Ignore if this connection was superseded
       if (connectionIdRef.current !== thisConnectionId) {
+        console.warn(`[Chat WS] onopen SUPPRESSED cid=${thisConnectionId} current=${connectionIdRef.current} onopenDelayMs=${onopenDelay}`);
         return;
       }
+      console.log(`[Chat WS] onopen cid=${thisConnectionId} onopenDelayMs=${onopenDelay}`);
       reconnectAttempts.current = 0;
 
       // Start ping interval to detect connection issues early
@@ -2088,11 +2093,14 @@ export default function Chat({
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      const lifetimeMs = Date.now() - wsCreatedAt;
       // Ignore if this connection was superseded by a new one
       if (connectionIdRef.current !== thisConnectionId) {
+        console.log(`[Chat WS] onclose SUPPRESSED cid=${thisConnectionId} current=${connectionIdRef.current} code=${event.code} lifetimeMs=${lifetimeMs}`);
         return;
       }
+      console.log(`[Chat WS] onclose cid=${thisConnectionId} code=${event.code} reason=${event.reason} lifetimeMs=${lifetimeMs}`);
 
       // Clear ping interval
       if (pingIntervalRef.current) {
@@ -2109,18 +2117,22 @@ export default function Chat({
       if (reconnectAttempts.current < maxAttempts) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
         reconnectAttempts.current++;
+        console.log(`[Chat WS] scheduling reconnect cid=${thisConnectionId} attempt=${reconnectAttempts.current}/${maxAttempts} delayMs=${delay}`);
         reconnectTimeoutRef.current = setTimeout(() => {
           // Check again that we haven't been superseded
           if (connectionIdRef.current === thisConnectionId) {
             connectWebSocket(id, true);
           }
         }, delay);
+      } else {
+        console.warn(`[Chat WS] max reconnect attempts reached cid=${thisConnectionId}`);
       }
     };
 
     ws.onerror = () => {
       // Ignore errors from superseded connections
       if (connectionIdRef.current !== thisConnectionId) {
+        console.log(`[Chat WS] onerror SUPPRESSED cid=${thisConnectionId} current=${connectionIdRef.current}`);
         return;
       }
     };
@@ -2222,6 +2234,7 @@ export default function Chat({
 
   // Connect when threadId changes
   useEffect(() => {
+    console.log(`[Chat WS effect] threadId=${threadId} shouldShowChat=${shouldShowChat} resolvedWorkspaceId=${resolvedWorkspaceId} connectedThread=${connectedThreadIdRef.current} connectedWorkspace=${connectedWorkspaceIdRef.current}`);
     if (!shouldShowChat || !resolvedWorkspaceId) {
       // No threadId or workspace - cleanup any existing connection
       if (connectedThreadIdRef.current) {
@@ -2671,6 +2684,8 @@ export default function Chat({
             JSON.stringify({
               message: messageWithContext,
               threadId: data.thread.id,
+              workspaceId: resolvedWorkspaceId,
+              orgSlug: currentOrg?.slug,
             })
           );
           navigate(`/chat/${data.thread.id}?newThread=1`);
@@ -2687,7 +2702,7 @@ export default function Chat({
         pendingNewChatRef.current = null;
       }
     }
-  }, [createThreadFetcher.state, createThreadFetcher.data, navigate]);
+  }, [createThreadFetcher.state, createThreadFetcher.data, navigate, resolvedWorkspaceId, currentOrg]);
 
   const handleStartChatForApp = useCallback((app: WorkerScriptWithCreator) => {
     if (!resolvedWorkspaceId) {

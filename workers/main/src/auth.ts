@@ -212,6 +212,7 @@ export interface UserAuthBootstrap {
   profile: User | null;
   onboarding: OnboardingPreferences | null;
   orgs: UserOrg[];
+  emailVerification: { required: boolean; verified: boolean };
 }
 
 export type OAuthProvider = 'google' | 'github';
@@ -542,12 +543,17 @@ export class UserDO extends DurableObject<DOEnv> {
   }
 
   async getAuthBootstrap(): Promise<UserAuthBootstrap> {
-    const [profile, onboarding, orgs] = await Promise.all([
+    const [profile, onboarding, orgs, passwordHash] = await Promise.all([
       this.getProfile(),
       this.getOnboarding(),
       this.getOrgs(),
+      this.getPasswordHash(),
     ]);
-    return { profile, onboarding, orgs };
+    const emailVerification = {
+      required: Boolean(passwordHash),
+      verified: profile?.email_verified_at != null,
+    };
+    return { profile, onboarding, orgs, emailVerification };
   }
 
   async setProfile(profile: User): Promise<void> {
@@ -1251,7 +1257,27 @@ export class OrgDO extends DurableObject<DOEnv> {
       }
     }
 
-    const CURRENT_SCHEMA_VERSION = 15;
+    if (version < 16) {
+      // V16: Store workspace avatar data in OrgDO for summary queries
+      // (avoids cold-starting every WorkspaceDO just to render the switcher)
+      try {
+        this.sql.exec("ALTER TABLE workspaces ADD COLUMN avatar_color TEXT DEFAULT '#6366f1'");
+      } catch {
+        // Column may already exist
+      }
+      try {
+        this.sql.exec("ALTER TABLE workspaces ADD COLUMN avatar_content TEXT DEFAULT '?'");
+      } catch {
+        // Column may already exist
+      }
+      try {
+        this.sql.exec("ALTER TABLE workspaces ADD COLUMN created_by TEXT DEFAULT ''");
+      } catch {
+        // Column may already exist
+      }
+    }
+
+    const CURRENT_SCHEMA_VERSION = 16;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -2104,14 +2130,42 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
   }
 
-  async addWorkspace(workspaceId: string, name: string, createdAt: number, actorId: string): Promise<void> {
+  async addWorkspace(
+    workspaceId: string,
+    name: string,
+    createdAt: number,
+    actorId: string,
+    avatar?: { color: string; content: string }
+  ): Promise<void> {
+    const avatarColor = avatar?.color ?? '#6366f1';
+    const avatarContent = avatar?.content ?? '?';
     this.sql.exec(
-      'INSERT INTO workspaces (id, name, created_at, archived) VALUES (?, ?, ?, 0) ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at',
+      `INSERT INTO workspaces (id, name, created_at, archived, avatar_color, avatar_content, created_by)
+       VALUES (?, ?, ?, 0, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at,
+         avatar_color = excluded.avatar_color, avatar_content = excluded.avatar_content, created_by = excluded.created_by`,
       workspaceId,
       name,
-      createdAt
+      createdAt,
+      avatarColor,
+      avatarContent,
+      actorId
     );
     this.log('workspace_created', actorId, workspaceId, { name });
+  }
+
+  async updateWorkspaceInfo(
+    workspaceId: string,
+    updates: { name?: string; avatar_color?: string; avatar_content?: string }
+  ): Promise<void> {
+    const setClauses: string[] = [];
+    const params: (string | number)[] = [];
+    if (updates.name !== undefined) { setClauses.push('name = ?'); params.push(updates.name); }
+    if (updates.avatar_color !== undefined) { setClauses.push('avatar_color = ?'); params.push(updates.avatar_color); }
+    if (updates.avatar_content !== undefined) { setClauses.push('avatar_content = ?'); params.push(updates.avatar_content); }
+    if (setClauses.length === 0) return;
+    params.push(workspaceId);
+    this.sql.exec(`UPDATE workspaces SET ${setClauses.join(', ')} WHERE id = ?`, ...params);
   }
 
   async archiveWorkspace(workspaceId: string): Promise<void> {
@@ -2125,6 +2179,30 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
     return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces WHERE archived = 0 ORDER BY created_at ASC')
       .toArray() as unknown as Array<{ id: string; name: string; created_at: number; archived: number }>;
+  }
+
+  async getWorkspaceSummaries(): Promise<Array<{
+    id: string;
+    name: string;
+    created_at: number;
+    created_by: string;
+    avatar_color: string;
+    avatar_content: string;
+  }>> {
+    return this.sql.exec(
+      `SELECT id, name, created_at,
+              COALESCE(created_by, '') as created_by,
+              COALESCE(avatar_color, '#6366f1') as avatar_color,
+              COALESCE(avatar_content, '?') as avatar_content
+       FROM workspaces WHERE archived = 0 ORDER BY created_at ASC`
+    ).toArray() as unknown as Array<{
+      id: string;
+      name: string;
+      created_at: number;
+      created_by: string;
+      avatar_color: string;
+      avatar_content: string;
+    }>;
   }
 
   async transferOwnership(actorId: string, newOwnerId: string): Promise<void> {

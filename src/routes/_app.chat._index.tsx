@@ -2,7 +2,7 @@ import { waitUntil } from 'cloudflare:workers';
 import { useEffect, useRef } from 'react';
 import { useLoaderData, useRevalidator } from 'react-router';
 import type { Route } from './+types/_app.chat._index';
-import { requireAuthContext } from '@/lib/auth.server';
+import { requireAuthContext, requireSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv, integrationRecordToIntegration } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
@@ -80,7 +80,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       })
     : Promise.resolve([]);
 
-  let connections: Integration[] = [];
   const recentThreadsPromise: Promise<Thread[]> = workspaceId
     ? chatDO.getRecentThreads(context, workspaceId, 6).catch((error) => {
         console.error('Failed to load recent threads:', error);
@@ -88,18 +87,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       })
     : Promise.resolve([]);
 
-  if (workspaceId) {
-    try {
-      const records = await env.WORKSPACE.get(
-        env.WORKSPACE.idFromName(workspaceId)
-      ).getIntegrations();
-      connections = records.map(integrationRecordToIntegration);
-    } catch (error) {
-      console.error('Failed to load workspace connections:', error);
-    }
-  }
+  const connectionsPromise: Promise<Integration[]> = workspaceId
+    ? env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId))
+        .getIntegrations()
+        .then((records) => records.map(integrationRecordToIntegration))
+        .catch((error) => {
+          console.error('Failed to load workspace connections:', error);
+          return [];
+        })
+    : Promise.resolve([]);
 
-  const [allApps, recentThreads] = await Promise.all([allAppsPromise, recentThreadsPromise]);
+  const [allApps, recentThreads, connections] = await Promise.all([
+    allAppsPromise,
+    recentThreadsPromise,
+    connectionsPromise,
+  ]);
 
   return {
     workspaceId: workspaceId ?? null,
@@ -114,11 +116,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
-  const authContext = await requireAuthContext(request, context);
+  // Use lightweight session check instead of full requireAuthContext() to avoid
+  // expensive DO RPCs (getAuthBootstrap, getUserOrgs, listWorkspaces, etc.)
+  // that add ~200-300ms. The session already has user_id, org_id, workspace_id.
+  const { session } = await requireSession(request, context);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
 
-  if (!authContext.currentWorkspace?.id) {
+  if (!session.workspace_id) {
     return Response.json({ error: 'No workspace selected' }, { status: 400 });
   }
 
@@ -132,9 +137,9 @@ export async function action({ request, context }: Route.ActionArgs) {
 
       const thread = await chatDO.createThread(
         context,
-        authContext.currentWorkspace.id,
+        session.workspace_id,
         undefined, // title will be generated asynchronously
-        authContext.user?.id,
+        session.user_id,
         firstMessage || undefined
       );
 
@@ -143,7 +148,7 @@ export async function action({ request, context }: Route.ActionArgs) {
         const previewApps = previewAppsRaw.split(',').filter(Boolean);
         if (previewApps.length > 0) {
           const scriptName = previewApps[0];
-          const script = await getWorkerScript(authEnv, authContext.currentOrg.id, scriptName);
+          const script = await getWorkerScript(authEnv, session.org_id, scriptName);
           await chatDO.setThreadPreviewTarget(context, thread.id, {
             kind: 'app',
             scriptName,
@@ -158,7 +163,7 @@ export async function action({ request, context }: Route.ActionArgs) {
           chatDO.generateThreadTitle(
             context,
             thread.id,
-            authContext.currentWorkspace.id,
+            session.workspace_id,
             firstMessage
           )
         );
