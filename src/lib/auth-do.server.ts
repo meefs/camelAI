@@ -69,6 +69,28 @@ async function collectAllOrgIds(env: CloudflareEnv): Promise<Set<string>> {
   return orgIds;
 }
 
+// Helper: Collect all org IDs from raw user membership rows, including archived orgs.
+async function collectAllOrgIdsIncludingArchived(env: CloudflareEnv): Promise<Set<string>> {
+  const authEnv = getAuthEnv(env);
+  const userIds = await collectAllUserIds(env);
+  const orgIds = new Set<string>();
+
+  await Promise.all(
+    userIds.map(async (userId) => {
+      try {
+        const userOrgs = await authEnv.USER.get(authEnv.USER.idFromName(userId)).getOrgs();
+        for (const org of userOrgs) {
+          orgIds.add(org.org_id);
+        }
+      } catch {
+        // User may not exist
+      }
+    })
+  );
+
+  return orgIds;
+}
+
 async function collectOrgIdsFromOrgIndex(env: CloudflareEnv): Promise<Set<string>> {
   const orgIds = new Set<string>();
   let cursor: string | undefined;
@@ -1162,7 +1184,7 @@ export async function hardDeleteAdminUser(
       collectOrgIdsForUserFromKvPrefix(authEnv.SESSIONS, WORKER_SESSION_PREFIX, userId),
       collectOrgIdsForUserFromKvPrefix(authEnv.APP_KV, WORKER_AUTH_TOKEN_PREFIX, userId),
       collectOrgIdsFromOrgIndex(env),
-      collectAllOrgIds(env),
+      collectAllOrgIdsIncludingArchived(env),
     ]);
 
   for (const orgId of sessionOrgHints) userScopedOrgHints.add(orgId);
