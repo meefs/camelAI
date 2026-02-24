@@ -1069,14 +1069,15 @@ export interface AdminHardDeleteUserResult {
  *
  * Steps:
  *  1. Fetch user profile + OAuth providers for cleanup key discovery.
- *  2. Fail early if the user still owns any organizations.
- *  3. Verify UserDO hard-delete capability before cross-DO mutations.
- *  4. Remove user from every org (must fully succeed before deletion continues).
- *  5. Wipe the UserDO Durable Object storage.
- *  6. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
- *  7. Delete user sessions from SESSIONS KV and related screenshot sessions.
- *  8. Delete workspace-level ACL rows for this user across all org workspaces.
- *  9. Delete user-scoped worker auth one-time tokens from APP_KV.
+ *  2. Discover memberships from OrgDOs across all known orgs.
+ *  3. Fail early if the user still owns any organizations.
+ *  4. Verify UserDO hard-delete capability before cross-DO mutations.
+ *  5. Remove user from every org membership found in OrgDO.
+ *  6. Wipe the UserDO Durable Object storage.
+ *  7. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
+ *  8. Delete user sessions from SESSIONS KV and related screenshot sessions.
+ *  9. Delete workspace-level ACL rows for this user across all org workspaces.
+ *  10. Delete user-scoped worker auth one-time tokens from APP_KV.
  */
 export async function hardDeleteAdminUser(
   context: AppLoadContext,
@@ -1089,7 +1090,7 @@ export async function hardDeleteAdminUser(
   const warnings: string[] = [];
 
   // 1. Fetch user data for cleanup keys.
-  const [profile, oauthProviders, orgs] = await Promise.all([
+  const [profile, oauthProviders, userOrgs] = await Promise.all([
     userStub.getProfile(),
     userStub.getOAuthProviders(),
     userStub.getOrgs(),
@@ -1099,10 +1100,46 @@ export async function hardDeleteAdminUser(
     throw new Error('User not found');
   }
 
-  // 2. Fail early if the user owns any orgs — removing an owner via
-  //    removeMember throws, and proceeding would leave a dangling owner
-  //    reference in the OrgDO after the UserDO is wiped.
-  const ownedOrgIds = orgs.filter((o) => o.role === 'owner').map((o) => o.org_id);
+  // 2. Discover memberships from OrgDO as the source of truth so cleanup
+  // does not rely on UserDO<->OrgDO consistency.
+  const allKnownOrgIds = new Set<string>(userOrgs.map((org) => org.org_id));
+  try {
+    const discoveredOrgIds = await collectAllOrgIds(env);
+    for (const orgId of discoveredOrgIds) {
+      allKnownOrgIds.add(orgId);
+    }
+  } catch (error) {
+    throw new Error(
+      `Failed to enumerate organizations before user delete: ${toErrorMessage(error)}`
+    );
+  }
+
+  const orgMemberships: Array<{ org_id: string; role: OrgRole }> = [];
+  const orgMembershipProbeErrors: string[] = [];
+  for (const orgId of allKnownOrgIds) {
+    try {
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+      const member = await orgStub.getMember(userId);
+      if (!member) continue;
+      orgMemberships.push({ org_id: orgId, role: member.role });
+    } catch (error) {
+      orgMembershipProbeErrors.push(`${orgId.slice(0, 8)}: ${toErrorMessage(error)}`);
+    }
+  }
+  if (orgMembershipProbeErrors.length > 0) {
+    const preview = orgMembershipProbeErrors.slice(0, 3).join('; ');
+    const suffix = orgMembershipProbeErrors.length > 3
+      ? `; and ${orgMembershipProbeErrors.length - 3} more`
+      : '';
+    throw new Error(
+      `Failed to verify org memberships in ${orgMembershipProbeErrors.length} org(s) (${preview}${suffix}). User was not deleted.`
+    );
+  }
+
+  // 3. Fail early if the user owns any orgs — removing an owner via
+  // removeMember throws, and proceeding would leave a dangling owner
+  // reference in the OrgDO after the UserDO is wiped.
+  const ownedOrgIds = orgMemberships.filter((o) => o.role === 'owner').map((o) => o.org_id);
   if (ownedOrgIds.length > 0) {
     const preview = ownedOrgIds.slice(0, 3).map((id) => id.slice(0, 8)).join(', ');
     const suffix = ownedOrgIds.length > 3 ? ` and ${ownedOrgIds.length - 3} more` : '';
@@ -1111,7 +1148,7 @@ export async function hardDeleteAdminUser(
     );
   }
 
-  // 3. Ensure the target UserDO has the hard-delete RPC before mutating org state.
+  // 4. Ensure the target UserDO has the hard-delete RPC before mutating org state.
   try {
     await userStub.canHardDeleteUser();
   } catch (error) {
@@ -1126,12 +1163,12 @@ export async function hardDeleteAdminUser(
     throw error;
   }
 
-  // 4. Remove user from all orgs first. If any membership cleanup fails,
+  // 5. Remove user from all orgs first. If any membership cleanup fails,
   // stop before wiping the user record to avoid orphaned org membership rows.
   let removedOrgMembershipsCount = 0;
   const removedOrgMemberships: Array<{ org_id: string; role: OrgRole }> = [];
   const orgRemovalErrors: string[] = [];
-  for (const org of orgs) {
+  for (const org of orgMemberships) {
     try {
       const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.org_id));
       await orgStub.removeMember(userId, actorId);
@@ -1167,7 +1204,7 @@ export async function hardDeleteAdminUser(
     );
   }
 
-  // 5. Wipe UserDO state. If this fails, restore removed org memberships.
+  // 6. Wipe UserDO state. If this fails, restore removed org memberships.
   try {
     await userStub.hardDeleteUser();
   } catch (error) {
@@ -1198,7 +1235,7 @@ export async function hardDeleteAdminUser(
     );
   }
 
-  // 6. Delete EMAIL_TO_USER KV entries.
+  // 7. Delete EMAIL_TO_USER KV entries.
   const kvKeysToDelete: string[] = [
     `email:${profile.email.toLowerCase()}`,
   ];
@@ -1215,10 +1252,24 @@ export async function hardDeleteAdminUser(
     })
   );
 
-  // 7. Best-effort cleanup of user sessions.
+  // Purge any stale oauth:* indexes that still point to this user (covers
+  // partial signup/login failures where UserDO provider rows were not written).
+  try {
+    await deleteKvEntriesWithPrefix(authEnv.EMAIL_TO_USER, 'oauth:', (_key, value) => {
+      if (value === userId) {
+        return true;
+      }
+      const parsed = parseJsonSafely(value);
+      return parsed?.user_id === userId;
+    });
+  } catch (error) {
+    warnings.push(`Failed to clean oauth:* EMAIL_TO_USER mappings: ${toErrorMessage(error)}`);
+  }
+
+  // 8. Best-effort cleanup of user sessions.
   // Screenshot sessions are org-scoped (not reliably user-scoped), so they are
   // cleaned separately using relevant org IDs.
-  const screenshotSessionOrgIds = new Set<string>(orgs.map((org) => org.org_id));
+  const screenshotSessionOrgIds = new Set<string>(orgMemberships.map((org) => org.org_id));
   const sessionPrefixes = [SESSION_PREFIX, WORKER_SESSION_PREFIX] as const;
   for (const prefix of sessionPrefixes) {
     try {
@@ -1252,21 +1303,9 @@ export async function hardDeleteAdminUser(
     warnings.push(`Failed to clean ${SCREENSHOT_SESSION_PREFIX}* sessions: ${toErrorMessage(error)}`);
   }
 
-  // 8. Best-effort cleanup of explicit workspace ACL rows for this user.
+  // 9. Best-effort cleanup of explicit workspace ACL rows for this user.
   // Setting access to "full" deletes the override row in WorkspaceDO.
-  // Scan all orgs (not just current user memberships) so orphaned users are
-  // also cleaned up after prior membership-removal flows.
-  const workspaceAclOrgIds = new Set<string>(orgs.map((org) => org.org_id));
-  try {
-    const allOrgIds = await collectAllOrgIds(env);
-    for (const orgId of allOrgIds) {
-      workspaceAclOrgIds.add(orgId);
-    }
-  } catch (error) {
-    warnings.push(`Failed to enumerate orgs for ACL cleanup: ${toErrorMessage(error)}`);
-  }
-
-  for (const orgId of workspaceAclOrgIds) {
+  for (const orgId of allKnownOrgIds) {
     try {
       const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       const workspaces = await orgStub.getWorkspaces(true);
@@ -1283,7 +1322,7 @@ export async function hardDeleteAdminUser(
     }
   }
 
-  // 9. Best-effort cleanup of pending worker auth tokens to prevent
+  // 10. Best-effort cleanup of pending worker auth tokens to prevent
   // post-delete token exchange into fresh worker sessions.
   try {
     await deleteKvEntriesWithPrefix(authEnv.APP_KV, WORKER_AUTH_TOKEN_PREFIX, (_key, value) => {
