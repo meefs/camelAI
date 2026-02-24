@@ -3,27 +3,22 @@
  */
 
 import type { RouteContext } from '../types.js';
-import { requireSession } from '../helpers/auth.js';
+import { requireChatWebSocketAccess } from '../helpers/auth.js';
 import { getThreadStub } from '../helpers/stubs.js';
 import { text } from '../helpers/response.js';
 
 export async function handleChatWebSocket({ req, env, url }: RouteContext): Promise<Response> {
-  const threadId = url.searchParams.get('threadId');
-  if (!threadId) {
+  const threadIdFromUrl = url.searchParams.get('threadId');
+  if (!threadIdFromUrl) {
     return text('Missing threadId', 400);
   }
 
-  // 1. Session lookup (KV) — session is server-created and trusted
-  const auth = await requireSession(req, env);
-  if ('error' in auth) return auth.error;
+  const access = await requireChatWebSocketAccess(req, env, threadIdFromUrl);
+  if ('error' in access) return access.error;
 
-  const { session } = auth;
-  const { org_id: orgId, workspace_id: workspaceId } = session;
-  if (!orgId) return text('No organization selected', 400);
-  if (!workspaceId) return text('No workspace selected', 400);
+  const { session, orgId, workspaceId, threadId } = access;
 
-  // 2. Forward directly to ChatThreadDO — skip WorkspaceDO/OrgDO validation hops.
-  //    Session data is trusted (set server-side at login), same trust model as SSR loaders.
+  // Forward to ChatThreadDO with validated context.
   const headers = new Headers(req.headers);
   headers.delete('X-Chiridion-User-Name');
   headers.delete('X-Chiridion-User-Email');

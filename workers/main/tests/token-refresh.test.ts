@@ -20,6 +20,7 @@ import {
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000; // 10 minutes
 const TOKEN_BATCH_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const TOKEN_REFRESH_FALLBACK_MS = 60 * 60 * 1000; // 1 hour
+const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000; // 2 minutes
 
 // Extended env type that includes INTEGRATION_SECRET_KEY
 interface TokenRefreshTestEnv extends TestEnv {
@@ -403,6 +404,107 @@ describe('OAuth Token Refresh', () => {
         expect(syncContainerSpy).toHaveBeenCalledTimes(1);
         expect(syncWorkersSpy).toHaveBeenCalledTimes(1);
       });
+    });
+
+    it('uses Retry-After when Notion returns 429 during token refresh', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Rate Limit Owner');
+      const { org } = await createOrg(testEnv, 'Rate Limit Org', userId);
+      const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+      const workspace = workspaces[0];
+      expect(workspace).toBeDefined();
+
+      const now = Date.now();
+      const tokenExpiresAt = now + 60 * 1000; // within alarm batch window
+      const integrationId = await createOAuthIntegration(workspace.id, userId, 'notion', tokenExpiresAt, {
+        access_token: 'soon-token',
+        refresh_token: 'soon-refresh',
+        expires_at: tokenExpiresAt,
+      });
+
+      const id = testEnv.WORKSPACE.idFromName(workspace.id);
+      const stub = testEnv.WORKSPACE.get(id);
+
+      await runInDurableObject(stub, async (instance) => {
+        const target = instance as unknown as {
+          alarm: () => Promise<void>;
+          env: {
+            NOTION_CLIENT_ID?: string;
+            NOTION_CLIENT_SECRET?: string;
+          };
+        };
+
+        target.env.NOTION_CLIENT_ID = 'test-client-id';
+        target.env.NOTION_CLIENT_SECRET = 'test-client-secret';
+
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+          new Response(JSON.stringify({ error: 'rate_limited' }), {
+            status: 429,
+            headers: { 'Retry-After': '90' },
+          })
+        );
+        try {
+          await target.alarm();
+        } finally {
+          fetchSpy.mockRestore();
+        }
+      });
+
+      const updated = await getIntegrationRecord(workspace.id, integrationId);
+      expect(updated?.token_expires_at).not.toBeNull();
+      const retryDelayMs = (updated?.token_expires_at ?? 0) - now;
+      expect(retryDelayMs).toBeGreaterThanOrEqual(70 * 1000);
+      expect(retryDelayMs).toBeLessThanOrEqual(110 * 1000);
+    });
+
+    it('uses default rate-limit backoff when Notion 429 omits Retry-After', async () => {
+      const email = testEmail();
+      const { userId } = await createUser(testEnv, email, 'password123', 'Rate Limit Default Owner');
+      const { org } = await createOrg(testEnv, 'Rate Limit Default Org', userId);
+      const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
+      const workspace = workspaces[0];
+      expect(workspace).toBeDefined();
+
+      const now = Date.now();
+      const tokenExpiresAt = now + 60 * 1000; // within alarm batch window
+      const integrationId = await createOAuthIntegration(workspace.id, userId, 'notion', tokenExpiresAt, {
+        access_token: 'soon-token',
+        refresh_token: 'soon-refresh',
+        expires_at: tokenExpiresAt,
+      });
+
+      const id = testEnv.WORKSPACE.idFromName(workspace.id);
+      const stub = testEnv.WORKSPACE.get(id);
+
+      await runInDurableObject(stub, async (instance) => {
+        const target = instance as unknown as {
+          alarm: () => Promise<void>;
+          env: {
+            NOTION_CLIENT_ID?: string;
+            NOTION_CLIENT_SECRET?: string;
+          };
+        };
+
+        target.env.NOTION_CLIENT_ID = 'test-client-id';
+        target.env.NOTION_CLIENT_SECRET = 'test-client-secret';
+
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+          new Response(JSON.stringify({ error: 'rate_limited' }), {
+            status: 429,
+          })
+        );
+        try {
+          await target.alarm();
+        } finally {
+          fetchSpy.mockRestore();
+        }
+      });
+
+      const updated = await getIntegrationRecord(workspace.id, integrationId);
+      expect(updated?.token_expires_at).not.toBeNull();
+      const retryDelayMs = (updated?.token_expires_at ?? 0) - now;
+      expect(retryDelayMs).toBeGreaterThanOrEqual(TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS - 20 * 1000);
+      expect(retryDelayMs).toBeLessThanOrEqual(TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS + 40 * 1000);
     });
   });
 

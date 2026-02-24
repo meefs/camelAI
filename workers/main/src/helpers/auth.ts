@@ -98,29 +98,43 @@ export async function requireChatWebSocketAccess(
 
   try {
     const wsStub = getWorkspaceStub(env, workspaceId);
-    const validation = await wsStub.validateChatThreadAccess(userId, orgId, threadId);
-    if (!validation.ok) {
-      switch (validation.reason) {
-        case 'workspace_not_found':
+    const orgStub = getOrgStub(env, orgId);
+    const [{ info: wsInfo, memberAccess }, orgValidation] = await Promise.all([
+      wsStub.getInfoAndMemberAccess(userId),
+      orgStub.validateChatThreadAccess(userId, workspaceId, threadId),
+    ]);
+
+    if (!wsInfo || wsInfo.archived) {
+      return { error: text('Workspace not found', 404) };
+    }
+    if (wsInfo.org_id !== orgId) {
+      return { error: text('Forbidden', 403) };
+    }
+
+    if (!orgValidation.ok) {
+      switch (orgValidation.reason) {
         case 'org_not_found':
           return { error: text('Workspace not found', 404) };
         case 'thread_not_found':
           return { error: text('Thread not found', 404) };
-        case 'workspace_org_mismatch':
         case 'forbidden':
         default:
           return { error: text('Forbidden', 403) };
       }
     }
 
+    if ((memberAccess?.access_level ?? 'full') !== 'full') {
+      return { error: text('Forbidden', 403) };
+    }
+
     return {
       session,
-      orgId: validation.orgId,
-      orgSlug: validation.orgSlug,
-      workspaceId: validation.workspaceId,
+      orgId: orgValidation.orgId,
+      orgSlug: orgValidation.orgSlug,
+      workspaceId: wsInfo.id,
       userId,
       wsStub,
-      threadId: validation.threadId,
+      threadId: orgValidation.threadId,
     };
   } catch {
     return { error: text('Forbidden', 403) };

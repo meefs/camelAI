@@ -1,24 +1,29 @@
 import { waitUntil } from 'cloudflare:workers';
 import type { Route } from './+types/workspaces.$id.chat.threads';
-import { requireSession } from '@/lib/auth.server';
+import { requireSessionWorkspaceAccess } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
 import * as chatDO from '@/lib/chat-do.server';
 
 /**
- * Lightweight thread creation endpoint that uses session-only auth
- * instead of the full requireAuthContext() waterfall.
+ * Lightweight thread creation endpoint that validates workspace access
+ * without loading full auth context.
  */
 export async function action({ request, context, params }: Route.ActionArgs) {
-  const { session } = await requireSession(request, context);
+  if (request.method !== 'POST') {
+    return Response.json({ error: 'Method not allowed' }, { status: 405 });
+  }
+
+  const { session, orgId, workspaceId, userId } = await requireSessionWorkspaceAccess(
+    request,
+    context,
+    params.id,
+    { requireWrite: true }
+  );
 
   if (session.workspace_id !== params.id) {
     return Response.json({ error: 'Workspace mismatch' }, { status: 403 });
-  }
-
-  if (request.method !== 'POST') {
-    return Response.json({ error: 'Method not allowed' }, { status: 405 });
   }
 
   const body = await request.json() as {
@@ -28,9 +33,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
   const thread = await chatDO.createThread(
     context,
-    session.workspace_id,
+    workspaceId,
     undefined,
-    session.user_id,
+    userId,
     body.firstMessage || undefined
   );
 
@@ -41,7 +46,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     const previewApps = body.previewApps.split(',').filter(Boolean);
     if (previewApps.length > 0) {
       const scriptName = previewApps[0];
-      const script = await getWorkerScript(authEnv, session.org_id, scriptName);
+      const script = await getWorkerScript(authEnv, orgId, scriptName);
       await chatDO.setThreadPreviewTarget(context, thread.id, {
         kind: 'app',
         scriptName,
@@ -56,7 +61,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       chatDO.generateThreadTitle(
         context,
         thread.id,
-        session.workspace_id,
+        workspaceId,
         body.firstMessage
       )
     );

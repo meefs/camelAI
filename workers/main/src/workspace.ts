@@ -18,6 +18,12 @@ const TOKEN_BATCH_WINDOW_MS = 15 * 60 * 1000;
 const TOKEN_REFRESH_FALLBACK_MS = 60 * 60 * 1000;
 // Retry delay for transient token refresh failures (15 minutes)
 const TOKEN_REFRESH_RETRY_MS = 15 * 60 * 1000;
+// Minimum retry delay to avoid tight loops on malformed retry hints
+const TOKEN_REFRESH_RETRY_MIN_MS = 30 * 1000;
+// Maximum retry delay to avoid effectively disabling refresh for too long
+const TOKEN_REFRESH_RETRY_MAX_MS = 60 * 60 * 1000;
+// Fallback when rate-limited but provider omits Retry-After
+const TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS = 2 * 60 * 1000;
 
 /**
  * Thrown when a token refresh fails permanently (e.g. revoked token, invalid_grant).
@@ -28,6 +34,45 @@ class PermanentRefreshError extends Error {
     super(message);
     this.name = 'PermanentRefreshError';
   }
+}
+
+/**
+ * Thrown when a refresh failure is transient and provides a specific retry timestamp.
+ * Alarm handling can use retryAtMs to avoid both tight loops and overly long backoffs.
+ */
+class RetryableRefreshError extends Error {
+  retryAtMs: number;
+
+  constructor(message: string, retryAtMs: number) {
+    super(message);
+    this.name = 'RetryableRefreshError';
+    this.retryAtMs = retryAtMs;
+  }
+}
+
+function parseRetryAfterToRetryAtMs(retryAfterHeader: string | null, nowMs: number): number | null {
+  if (!retryAfterHeader) return null;
+  const trimmed = retryAfterHeader.trim();
+  if (!trimmed) return null;
+
+  // RFC 9110: Retry-After can be delay-seconds or HTTP-date.
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return nowMs + Math.floor(seconds * 1000);
+  }
+
+  const absolute = Date.parse(trimmed);
+  if (Number.isFinite(absolute)) {
+    return absolute;
+  }
+
+  return null;
+}
+
+function clampRetryAtMs(retryAtMs: number, nowMs: number): number {
+  const min = nowMs + TOKEN_REFRESH_RETRY_MIN_MS;
+  const max = nowMs + TOKEN_REFRESH_RETRY_MAX_MS;
+  return Math.max(min, Math.min(max, Math.floor(retryAtMs)));
 }
 const BIGQUERY_INTEGRATION_TYPE = 'bigquery';
 
@@ -282,7 +327,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const orgStub = this.env.ORG.get(
       this.env.ORG.idFromName(orgId)
     ) as unknown as OrgDO;
-    await orgStub.addWorkspace(id, name, now, createdBy, avatar);
+    await orgStub.addWorkspace(id, name, now, createdBy);
 
     return info;
   }
@@ -323,18 +368,6 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     await this.setInfo(info);
     if (Object.keys(changes).length > 0) {
       this.log('workspace_updated', actorId, undefined, { changes });
-
-      // Sync name/avatar changes to OrgDO for workspace summaries
-      const orgUpdates: { name?: string; avatar_color?: string; avatar_content?: string } = {};
-      if (changes.name) orgUpdates.name = info.name;
-      if (changes.avatar_color) orgUpdates.avatar_color = info.avatar.color;
-      if (changes.avatar_content) orgUpdates.avatar_content = info.avatar.content;
-      if (Object.keys(orgUpdates).length > 0) {
-        const orgStub = this.env.ORG.get(
-          this.env.ORG.idFromName(info.org_id)
-        ) as unknown as OrgDO;
-        await orgStub.updateWorkspaceInfo(info.id, orgUpdates);
-      }
     }
     return info;
   }
@@ -382,6 +415,17 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       userId
     ).toArray() as unknown as WorkspaceMember[];
     return rows[0] || null;
+  }
+
+  async getInfoAndMemberAccess(userId: string): Promise<{
+    info: Workspace | null;
+    memberAccess: WorkspaceMember | null;
+  }> {
+    const [info, memberAccess] = await Promise.all([
+      this.getInfo(),
+      this.getMemberAccess(userId),
+    ]);
+    return { info, memberAccess };
   }
 
   async listMembers(): Promise<WorkspaceMember[]> {
@@ -755,14 +799,18 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
               );
               console.warn(`[WorkspaceDO] Disabled token refresh for ${integration.integration_type} integration ${integration.id} (permanent failure). User must re-authorize.`);
             } else {
-              // Transient failure — push retry into the future to avoid tight loop
+              // Transient failure — push retry into the future to avoid tight loops.
+              const retryAtMs = err instanceof RetryableRefreshError
+                ? clampRetryAtMs(err.retryAtMs, now)
+                : now + TOKEN_REFRESH_RETRY_MS;
               this.sql.exec(
                 `UPDATE integrations SET token_expires_at = ?, updated_at = ? WHERE id = ?`,
-                now + TOKEN_REFRESH_RETRY_MS,
+                retryAtMs,
                 Date.now(),
                 integration.id
               );
-              console.warn(`[WorkspaceDO] Will retry ${integration.integration_type} integration ${integration.id} in 15 minutes`);
+              const retryDelaySec = Math.round((retryAtMs - now) / 1000);
+              console.warn(`[WorkspaceDO] Will retry ${integration.integration_type} integration ${integration.id} in ${retryDelaySec}s`);
             }
           }
         }
@@ -943,12 +991,21 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     });
 
     if (!response.ok) {
+      const now = Date.now();
       const errorText = await response.text();
       const message = `Notion token refresh failed: ${response.status} ${errorText}`;
-      // 4xx = permanent (invalid_grant, revoked token, bad credentials)
-      // 5xx / other = transient (Notion outage, rate limit)
-      if (response.status >= 400 && response.status < 500) {
+      // Most 4xx are permanent (invalid_grant, revoked token, bad credentials).
+      // 429 is rate limiting and should be retried as transient.
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
         throw new PermanentRefreshError(message);
+      }
+      if (response.status === 429) {
+        const retryAfter = parseRetryAfterToRetryAtMs(response.headers.get('Retry-After'), now);
+        const retryAtMs = clampRetryAtMs(
+          retryAfter ?? (now + TOKEN_REFRESH_RATE_LIMIT_DEFAULT_MS),
+          now
+        );
+        throw new RetryableRefreshError(message, retryAtMs);
       }
       throw new Error(message);
     }

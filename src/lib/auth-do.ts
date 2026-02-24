@@ -595,39 +595,6 @@ export async function listUserWorkspacesAcrossOrgs(
   return workspaces.flat();
 }
 
-/**
- * Fetch lightweight workspace summaries directly from OrgDO, avoiding
- * WorkspaceDO cold starts. Used for the workspace switcher on page load.
- */
-export async function listUserWorkspaceSummariesAcrossOrgs(
-  env: AuthEnv,
-  orgs: OrgMembership[]
-): Promise<WorkspaceWithAccess[]> {
-  if (orgs.length === 0) return [];
-
-  const perOrg = await Promise.all(
-    orgs.map(async (membership) => {
-      const orgStub = env.ORG.get(env.ORG.idFromName(membership.org_id));
-      const summaries = await orgStub.getWorkspaceSummaries();
-      return summaries.map((s) => ({
-        id: s.id,
-        org_id: membership.org_id,
-        name: s.name,
-        description: null,
-        created_by: s.created_by,
-        created_at: s.created_at,
-        avatar: { color: s.avatar_color, content: s.avatar_content },
-        archived: false,
-        archived_at: null,
-        archived_by: null,
-        compute_tier: 'standard' as const,
-        access_level: 'full' as const,
-      }));
-    })
-  );
-  return perOrg.flat();
-}
-
 export async function getWorkspace(env: AuthEnv, workspaceId: string): Promise<Workspace | null> {
   const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
   const info = await stub.getInfo();

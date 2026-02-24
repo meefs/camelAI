@@ -2,11 +2,11 @@ import { redirect, type AppLoadContext } from 'react-router';
 import { getEnv } from './cloudflare.server';
 import { getSessionIdFromRequest } from './cookies.server';
 import { getSession as getSessionKV, updateSession } from '../../workers/main/src/session-kv';
-import type { Organization, OrgMembership, WorkspaceWithAccess } from '@/types';
+import type { Organization, OrgMembership, WorkspaceAccessLevel, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
 import type { OnboardingPreferences } from '@/types';
 import { type AuthEnv, type SessionData, getAuthEnv } from './auth-helpers';
-import { getUserOrgs, listUserWorkspaceSummariesAcrossOrgs, listOrgWorkspaces } from './auth-do';
+import { getUserOrgs, listUserWorkspacesAcrossOrgs, listOrgWorkspaces } from './auth-do';
 
 // Request-scoped cache for auth context to avoid duplicate DO RPC calls
 // when multiple loaders call requireAuthContext() in the same request
@@ -39,6 +39,13 @@ export interface AuthContext extends UserContext {
   orgWorkspaceCount: number;
   /** Email verification status (bundled from UserDO bootstrap) */
   emailVerification: { required: boolean; verified: boolean };
+}
+
+export interface SessionWorkspaceAccessContext extends SessionContext {
+  orgId: string;
+  workspaceId: string;
+  userId: string;
+  access: WorkspaceAccessLevel;
 }
 
 /**
@@ -74,6 +81,63 @@ export async function requireSession(
   }
 
   return sessionContext;
+}
+
+/**
+ * Require workspace access using session + targeted DO checks (no full auth context).
+ */
+export async function requireSessionWorkspaceAccess(
+  request: Request,
+  context: AppLoadContext,
+  workspaceIdOverride?: string,
+  options: { requireWrite?: boolean } = {}
+): Promise<SessionWorkspaceAccessContext> {
+  const sessionContext = await requireSession(request, context);
+  const { session } = sessionContext;
+  const orgId = session.org_id;
+  const workspaceId = workspaceIdOverride ?? session.workspace_id;
+  const userId = session.user_id;
+
+  if (!orgId) {
+    throw Response.json({ error: 'No organization selected' }, { status: 400 });
+  }
+  if (!workspaceId) {
+    throw Response.json({ error: 'No workspace selected' }, { status: 400 });
+  }
+
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const wsStub = authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId));
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+
+  const [workspaceInfo, memberAccess, isMember] = await Promise.all([
+    wsStub.getInfo(),
+    wsStub.getMemberAccess(userId),
+    orgStub.isMember(userId),
+  ]);
+
+  if (!workspaceInfo || workspaceInfo.archived || workspaceInfo.org_id !== orgId) {
+    throw Response.json({ error: 'Workspace not found' }, { status: 404 });
+  }
+  if (!isMember) {
+    throw Response.json({ error: 'Workspace not found' }, { status: 404 });
+  }
+
+  const access = memberAccess?.access_level ?? 'full';
+  if (access === 'none') {
+    throw Response.json({ error: 'Workspace not found' }, { status: 404 });
+  }
+  if (options.requireWrite && access !== 'full') {
+    throw Response.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  return {
+    ...sessionContext,
+    orgId,
+    workspaceId,
+    userId,
+    access,
+  };
 }
 
 /**
@@ -177,8 +241,11 @@ async function getAuthContextUncached(
   };
 
   // Get all workspaces across all orgs (for workspace switcher).
-  // Uses lightweight OrgDO summaries to avoid cold-starting every WorkspaceDO.
-  const allWorkspaces = await listUserWorkspaceSummariesAcrossOrgs(authEnv, orgs);
+  const allWorkspaces = await listUserWorkspacesAcrossOrgs(
+    authEnv,
+    sessionContext.session.user_id,
+    orgs
+  );
 
   // Workspaces in the current org only (for settings/management).
   // Derive from allWorkspaces to avoid duplicate current-org RPC traversal.

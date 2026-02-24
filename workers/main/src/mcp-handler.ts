@@ -85,6 +85,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
    * Override fetch to extract auth context from headers before processing
    */
   async fetch(request: Request): Promise<Response> {
+    const t0 = performance.now();
     // Extract auth context from headers (set by handleMcpRequest)
     this.orgId = request.headers.get(AUTH_HEADER_ORG_ID);
     this.userId = request.headers.get(AUTH_HEADER_USER_ID);
@@ -92,7 +93,9 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
     this.threadId = request.headers.get(AUTH_HEADER_THREAD_ID);
 
     // Call parent fetch to handle MCP protocol
-    return super.fetch(request);
+    const response = await super.fetch(request);
+    console.log(`[MCP DO] ${request.method} fetch completed in ${(performance.now() - t0).toFixed(0)}ms`);
+    return response;
   }
 
   /**
@@ -1269,6 +1272,8 @@ export async function handleMcpRequest(
     });
   }
 
+  const t0 = performance.now();
+
   // Authenticate via sandbox host proxy
   const proxyAuth = validateSandboxProxy(request, env);
   if (!proxyAuth.valid) {
@@ -1292,5 +1297,7 @@ export async function handleMcpRequest(
     // @ts-expect-error - duplex is required for streaming bodies
     duplex: 'half',
   });
-  return ChiridionMcp.serve('/mcp').fetch(authenticatedRequest, env, ctx);
+  const response = await ChiridionMcp.serve('/mcp').fetch(authenticatedRequest, env, ctx);
+  console.log(`[MCP] ${request.method} ${url.pathname} → ${response.status} in ${(performance.now() - t0).toFixed(0)}ms`);
+  return response;
 }

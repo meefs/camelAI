@@ -1257,27 +1257,49 @@ export class OrgDO extends DurableObject<DOEnv> {
       }
     }
 
-    if (version < 16) {
-      // V16: Store workspace avatar data in OrgDO for summary queries
-      // (avoids cold-starting every WorkspaceDO just to render the switcher)
+    if (version < 17) {
+      // V17: Roll back abandoned V16 workspace summary columns (avatar/content/created_by)
+      // so OrgDO workspace schema returns to id/name/created_at/archived only.
       try {
-        this.sql.exec("ALTER TABLE workspaces ADD COLUMN avatar_color TEXT DEFAULT '#6366f1'");
-      } catch {
-        // Column may already exist
-      }
-      try {
-        this.sql.exec("ALTER TABLE workspaces ADD COLUMN avatar_content TEXT DEFAULT '?'");
-      } catch {
-        // Column may already exist
-      }
-      try {
-        this.sql.exec("ALTER TABLE workspaces ADD COLUMN created_by TEXT DEFAULT ''");
-      } catch {
-        // Column may already exist
+        const workspaceColumns = this.sql.exec<{ name: string }>('PRAGMA table_info(workspaces)').toArray();
+        const names = new Set(workspaceColumns.map((row) => row.name));
+        const hasLegacySummaryColumns = (
+          names.has('avatar_color') ||
+          names.has('avatar_content') ||
+          names.has('created_by')
+        );
+
+        if (hasLegacySummaryColumns) {
+          this.sql.exec('BEGIN');
+          try {
+            this.sql.exec('DROP TABLE IF EXISTS workspaces_v17_rollback');
+            this.sql.exec(`
+              CREATE TABLE workspaces_v17_rollback (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0
+              )
+            `);
+            this.sql.exec(`
+              INSERT INTO workspaces_v17_rollback (id, name, created_at, archived)
+              SELECT id, name, created_at, archived FROM workspaces
+            `);
+            this.sql.exec('DROP TABLE workspaces');
+            this.sql.exec('ALTER TABLE workspaces_v17_rollback RENAME TO workspaces');
+            this.sql.exec('COMMIT');
+          } catch (err) {
+            this.sql.exec('ROLLBACK');
+            throw err;
+          }
+        }
+      } catch (err) {
+        console.error('[OrgDO] V17 rollback migration failed:', err);
+        throw err;
       }
     }
 
-    const CURRENT_SCHEMA_VERSION = 16;
+    const CURRENT_SCHEMA_VERSION = 17;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -2134,38 +2156,15 @@ export class OrgDO extends DurableObject<DOEnv> {
     workspaceId: string,
     name: string,
     createdAt: number,
-    actorId: string,
-    avatar?: { color: string; content: string }
+    actorId: string
   ): Promise<void> {
-    const avatarColor = avatar?.color ?? '#6366f1';
-    const avatarContent = avatar?.content ?? '?';
     this.sql.exec(
-      `INSERT INTO workspaces (id, name, created_at, archived, avatar_color, avatar_content, created_by)
-       VALUES (?, ?, ?, 0, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at,
-         avatar_color = excluded.avatar_color, avatar_content = excluded.avatar_content, created_by = excluded.created_by`,
+      'INSERT INTO workspaces (id, name, created_at, archived) VALUES (?, ?, ?, 0) ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at',
       workspaceId,
       name,
-      createdAt,
-      avatarColor,
-      avatarContent,
-      actorId
+      createdAt
     );
     this.log('workspace_created', actorId, workspaceId, { name });
-  }
-
-  async updateWorkspaceInfo(
-    workspaceId: string,
-    updates: { name?: string; avatar_color?: string; avatar_content?: string }
-  ): Promise<void> {
-    const setClauses: string[] = [];
-    const params: (string | number)[] = [];
-    if (updates.name !== undefined) { setClauses.push('name = ?'); params.push(updates.name); }
-    if (updates.avatar_color !== undefined) { setClauses.push('avatar_color = ?'); params.push(updates.avatar_color); }
-    if (updates.avatar_content !== undefined) { setClauses.push('avatar_content = ?'); params.push(updates.avatar_content); }
-    if (setClauses.length === 0) return;
-    params.push(workspaceId);
-    this.sql.exec(`UPDATE workspaces SET ${setClauses.join(', ')} WHERE id = ?`, ...params);
   }
 
   async archiveWorkspace(workspaceId: string): Promise<void> {
@@ -2179,30 +2178,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
     return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces WHERE archived = 0 ORDER BY created_at ASC')
       .toArray() as unknown as Array<{ id: string; name: string; created_at: number; archived: number }>;
-  }
-
-  async getWorkspaceSummaries(): Promise<Array<{
-    id: string;
-    name: string;
-    created_at: number;
-    created_by: string;
-    avatar_color: string;
-    avatar_content: string;
-  }>> {
-    return this.sql.exec(
-      `SELECT id, name, created_at,
-              COALESCE(created_by, '') as created_by,
-              COALESCE(avatar_color, '#6366f1') as avatar_color,
-              COALESCE(avatar_content, '?') as avatar_content
-       FROM workspaces WHERE archived = 0 ORDER BY created_at ASC`
-    ).toArray() as unknown as Array<{
-      id: string;
-      name: string;
-      created_at: number;
-      created_by: string;
-      avatar_color: string;
-      avatar_content: string;
-    }>;
   }
 
   async transferOwnership(actorId: string, newOwnerId: string): Promise<void> {

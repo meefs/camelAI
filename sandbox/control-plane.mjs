@@ -1047,15 +1047,29 @@ class ChatSession {
     }
 
     this.initPromise = (async () => {
+      const t0 = performance.now();
       this.userProfile = await loadUserProfile().catch(() => null);
+      const tProfile = performance.now();
       const fileExists = await this.sessionFileExists();
+      const tFileCheck = performance.now();
       const options = this.getQueryOptions(fileExists);
+      const hasMcp = Boolean(options.mcpServers && Object.keys(options.mcpServers).length > 0);
       const messageStream = this.createMessageStream();
       this.activeQuery = query({ prompt: messageStream, options });
+      const tQuery = performance.now();
       this.queryIterator = this.activeQuery[Symbol.asyncIterator]();
+      const tIterator = performance.now();
       traceControlPlane('session_query_initialized', {
         threadId: this.threadId,
         fileExists,
+        hasMcp,
+        timings: {
+          profileMs: Math.round(tProfile - t0),
+          fileCheckMs: Math.round(tFileCheck - tProfile),
+          queryCreateMs: Math.round(tQuery - tFileCheck),
+          iteratorMs: Math.round(tIterator - tQuery),
+          totalMs: Math.round(tIterator - t0),
+        },
       });
     })();
 
