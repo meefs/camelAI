@@ -1270,8 +1270,7 @@ export class OrgDO extends DurableObject<DOEnv> {
         );
 
         if (hasLegacySummaryColumns) {
-          this.sql.exec('BEGIN');
-          try {
+          this.ctx.storage.transactionSync(() => {
             this.sql.exec('DROP TABLE IF EXISTS workspaces_v17_rollback');
             this.sql.exec(`
               CREATE TABLE workspaces_v17_rollback (
@@ -1287,11 +1286,7 @@ export class OrgDO extends DurableObject<DOEnv> {
             `);
             this.sql.exec('DROP TABLE workspaces');
             this.sql.exec('ALTER TABLE workspaces_v17_rollback RENAME TO workspaces');
-            this.sql.exec('COMMIT');
-          } catch (err) {
-            this.sql.exec('ROLLBACK');
-            throw err;
-          }
+          });
         }
       } catch (err) {
         console.error('[OrgDO] V17 rollback migration failed:', err);
