@@ -1519,7 +1519,6 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     try {
       await this.setInfo(info);
-      await this.indexOrg(id);
 
       // Add creator as owner
       await this.addMember(createdBy, 'owner', createdBy);
@@ -1537,6 +1536,12 @@ export class OrgDO extends DurableObject<DOEnv> {
         createdBy,
         null
       );
+
+      try {
+        await this.indexOrg(id);
+      } catch {
+        // Best-effort indexing; do not fail org creation on APP_KV hiccups.
+      }
 
       return { org: info, defaultWorkspaceId: workspaceId };
     } catch (error) {

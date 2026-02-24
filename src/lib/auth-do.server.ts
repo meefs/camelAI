@@ -1122,7 +1122,8 @@ export interface AdminHardDeleteUserResult {
  *
  * Steps:
  *  1. Fetch user profile + OAuth providers for cleanup key discovery.
- *  2. Build org probe candidates from org registry + user-scoped hints.
+ *  2. Build org probe candidates from org registry + user-scoped hints,
+ *     and backfill missing org registry entries from legacy membership data.
  *  3. Fail early if the user still owns any organizations.
  *  4. Verify UserDO hard-delete capability before cross-DO mutations.
  *  5. Remove user from every org membership found in OrgDO.
@@ -1155,19 +1156,37 @@ export async function hardDeleteAdminUser(
 
   // 2. Build candidate org IDs without relying solely on UserDO<->OrgDO sync.
   const userScopedOrgHints = new Set<string>(userOrgs.map((org) => org.org_id));
-  const [sessionOrgHints, workerSessionOrgHints, workerAuthTokenOrgHints, indexedOrgIds] =
+  const [sessionOrgHints, workerSessionOrgHints, workerAuthTokenOrgHints, indexedOrgIds, legacyOrgIds] =
     await Promise.all([
       collectOrgIdsForUserFromKvPrefix(authEnv.SESSIONS, SESSION_PREFIX, userId),
       collectOrgIdsForUserFromKvPrefix(authEnv.SESSIONS, WORKER_SESSION_PREFIX, userId),
       collectOrgIdsForUserFromKvPrefix(authEnv.APP_KV, WORKER_AUTH_TOKEN_PREFIX, userId),
       collectOrgIdsFromOrgIndex(env),
+      collectAllOrgIds(env),
     ]);
 
   for (const orgId of sessionOrgHints) userScopedOrgHints.add(orgId);
   for (const orgId of workerSessionOrgHints) userScopedOrgHints.add(orgId);
   for (const orgId of workerAuthTokenOrgHints) userScopedOrgHints.add(orgId);
 
+  const missingIndexedOrgIds = Array.from(legacyOrgIds).filter((orgId) => !indexedOrgIds.has(orgId));
+  if (missingIndexedOrgIds.length > 0) {
+    try {
+      await Promise.all(
+        missingIndexedOrgIds.map((orgId) => authEnv.APP_KV.put(`${ORG_INDEX_PREFIX}${orgId}`, '1'))
+      );
+      for (const orgId of missingIndexedOrgIds) {
+        indexedOrgIds.add(orgId);
+      }
+    } catch (error) {
+      warnings.push(`Failed to backfill org index entries: ${toErrorMessage(error)}`);
+    }
+  }
+
   const allProbeOrgIds = new Set<string>(indexedOrgIds);
+  for (const orgId of legacyOrgIds) {
+    allProbeOrgIds.add(orgId);
+  }
   for (const orgId of userScopedOrgHints) {
     allProbeOrgIds.add(orgId);
   }
