@@ -1151,7 +1151,7 @@ export interface AdminHardDeleteUserResult {
  *  5. Remove user from every org membership found in OrgDO.
  *  6. Wipe the UserDO Durable Object storage.
  *  7. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
- *  8. Delete user sessions from SESSIONS KV and related screenshot sessions.
+ *  8. Delete user sessions from SESSIONS KV and user-bound screenshot sessions.
  *  9. Delete workspace-level ACL rows for this user across all org workspaces.
  *  10. Delete user-scoped worker auth one-time tokens from APP_KV.
  */
@@ -1366,8 +1366,8 @@ export async function hardDeleteAdminUser(
   }
 
   // 8. Best-effort cleanup of user sessions.
-  // Screenshot sessions are org-scoped (not reliably user-scoped), so they are
-  // cleaned separately using relevant org IDs.
+  // Screenshot sessions may be org-scoped and shared across users. Only
+  // delete screenshot sessions explicitly bound to this user_id.
   const screenshotSessionOrgIds = new Set<string>(orgMemberships.map((org) => org.org_id));
   const sessionPrefixes = [SESSION_PREFIX, WORKER_SESSION_PREFIX] as const;
   for (const prefix of sessionPrefixes) {
@@ -1390,16 +1390,10 @@ export async function hardDeleteAdminUser(
   try {
     await deleteKvEntriesWithPrefix(authEnv.SESSIONS, SCREENSHOT_SESSION_PREFIX, (_key, value) => {
       const parsed = parseJsonSafely(value);
-      if (parsed?.user_id === userId) {
-        return true;
-      }
-      if (typeof parsed?.org_id !== 'string') {
-        return false;
-      }
-      return screenshotSessionOrgIds.has(parsed.org_id);
+      return parsed?.user_id === userId;
     });
   } catch (error) {
-    warnings.push(`Failed to clean ${SCREENSHOT_SESSION_PREFIX}* sessions: ${toErrorMessage(error)}`);
+    warnings.push(`Failed to clean user-bound ${SCREENSHOT_SESSION_PREFIX}* sessions: ${toErrorMessage(error)}`);
   }
 
   // 9. Best-effort cleanup of explicit workspace ACL rows for this user.
