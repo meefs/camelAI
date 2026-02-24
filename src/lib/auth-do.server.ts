@@ -69,9 +69,29 @@ async function collectAllOrgIds(env: CloudflareEnv): Promise<Set<string>> {
   return orgIds;
 }
 
+async function collectOrgIdsFromOrgIndex(env: CloudflareEnv): Promise<Set<string>> {
+  const orgIds = new Set<string>();
+  let cursor: string | undefined;
+
+  while (true) {
+    const list = await env.APP_KV.list({ prefix: ORG_INDEX_PREFIX, cursor });
+    for (const key of list.keys) {
+      const orgId = key.name.slice(ORG_INDEX_PREFIX.length);
+      if (orgId) {
+        orgIds.add(orgId);
+      }
+    }
+    if (list.list_complete || !list.cursor) break;
+    cursor = list.cursor;
+  }
+
+  return orgIds;
+}
+
 const SCRIPT_PREFIX = 'script:';
 const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
 const SPEND_PREFIX = 'spend:';
+const ORG_INDEX_PREFIX = 'org_index:';
 const API_TOKEN_PREFIX = 'tok_';
 const SESSION_PREFIX = 'session:';
 const WORKER_SESSION_PREFIX = 'worker_session:';
@@ -140,6 +160,39 @@ async function deleteKvEntriesWithPrefix(
   }
 
   return deleted;
+}
+
+async function collectOrgIdsForUserFromKvPrefix(
+  kv: KVNamespace,
+  prefix: string,
+  userId: string
+): Promise<Set<string>> {
+  const orgIds = new Set<string>();
+  let cursor: string | undefined;
+
+  while (true) {
+    const listed = await kv.list({ prefix, cursor });
+    const keys = listed.keys.map((entry) => entry.name);
+    if (keys.length > 0) {
+      const values = await Promise.all(keys.map((key) => kv.get(key)));
+      for (const value of values) {
+        const parsed = parseJsonSafely(value);
+        if (parsed?.user_id !== userId) {
+          continue;
+        }
+        if (typeof parsed?.org_id === 'string' && parsed.org_id.length > 0) {
+          orgIds.add(parsed.org_id);
+        }
+      }
+    }
+
+    if (listed.list_complete || !listed.cursor) {
+      break;
+    }
+    cursor = listed.cursor;
+  }
+
+  return orgIds;
 }
 
 async function deleteR2Prefix(bucket: R2Bucket, prefix: string): Promise<number> {
@@ -1069,7 +1122,7 @@ export interface AdminHardDeleteUserResult {
  *
  * Steps:
  *  1. Fetch user profile + OAuth providers for cleanup key discovery.
- *  2. Discover memberships from OrgDOs across all known orgs.
+ *  2. Build org probe candidates from org registry + user-scoped hints.
  *  3. Fail early if the user still owns any organizations.
  *  4. Verify UserDO hard-delete capability before cross-DO mutations.
  *  5. Remove user from every org membership found in OrgDO.
@@ -1100,23 +1153,28 @@ export async function hardDeleteAdminUser(
     throw new Error('User not found');
   }
 
-  // 2. Discover memberships from OrgDO as the source of truth so cleanup
-  // does not rely on UserDO<->OrgDO consistency.
-  const allKnownOrgIds = new Set<string>(userOrgs.map((org) => org.org_id));
-  try {
-    const discoveredOrgIds = await collectAllOrgIds(env);
-    for (const orgId of discoveredOrgIds) {
-      allKnownOrgIds.add(orgId);
-    }
-  } catch (error) {
-    throw new Error(
-      `Failed to enumerate organizations before user delete: ${toErrorMessage(error)}`
-    );
+  // 2. Build candidate org IDs without relying solely on UserDO<->OrgDO sync.
+  const userScopedOrgHints = new Set<string>(userOrgs.map((org) => org.org_id));
+  const [sessionOrgHints, workerSessionOrgHints, workerAuthTokenOrgHints, indexedOrgIds] =
+    await Promise.all([
+      collectOrgIdsForUserFromKvPrefix(authEnv.SESSIONS, SESSION_PREFIX, userId),
+      collectOrgIdsForUserFromKvPrefix(authEnv.SESSIONS, WORKER_SESSION_PREFIX, userId),
+      collectOrgIdsForUserFromKvPrefix(authEnv.APP_KV, WORKER_AUTH_TOKEN_PREFIX, userId),
+      collectOrgIdsFromOrgIndex(env),
+    ]);
+
+  for (const orgId of sessionOrgHints) userScopedOrgHints.add(orgId);
+  for (const orgId of workerSessionOrgHints) userScopedOrgHints.add(orgId);
+  for (const orgId of workerAuthTokenOrgHints) userScopedOrgHints.add(orgId);
+
+  const allProbeOrgIds = new Set<string>(indexedOrgIds);
+  for (const orgId of userScopedOrgHints) {
+    allProbeOrgIds.add(orgId);
   }
 
   const orgMemberships: Array<{ org_id: string; role: OrgRole }> = [];
   const orgMembershipProbeErrors: string[] = [];
-  for (const orgId of allKnownOrgIds) {
+  for (const orgId of allProbeOrgIds) {
     try {
       const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       const member = await orgStub.getMember(userId);
@@ -1305,7 +1363,15 @@ export async function hardDeleteAdminUser(
 
   // 9. Best-effort cleanup of explicit workspace ACL rows for this user.
   // Setting access to "full" deletes the override row in WorkspaceDO.
-  for (const orgId of allKnownOrgIds) {
+  const workspaceAclOrgIds = new Set<string>(orgMemberships.map((org) => org.org_id));
+  for (const orgId of screenshotSessionOrgIds) {
+    workspaceAclOrgIds.add(orgId);
+  }
+  for (const orgId of userScopedOrgHints) {
+    workspaceAclOrgIds.add(orgId);
+  }
+
+  for (const orgId of workspaceAclOrgIds) {
     try {
       const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
       const workspaces = await orgStub.getWorkspaces(true);

@@ -37,6 +37,7 @@ function isSuperuserEmail(email: string | null): boolean {
 }
 
 const ORG_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,22}[a-z0-9]$/;
+const ORG_INDEX_PREFIX = 'org_index:';
 
 function normalizeOrgSlugBase(name: string): string {
   return name
@@ -867,6 +868,18 @@ export class OrgDO extends DurableObject<DOEnv> {
     });
   }
 
+  private getOrgIndexKey(orgId: string): string {
+    return `${ORG_INDEX_PREFIX}${orgId}`;
+  }
+
+  private async indexOrg(orgId: string): Promise<void> {
+    await this.env.APP_KV.put(this.getOrgIndexKey(orgId), '1');
+  }
+
+  private async unindexOrg(orgId: string): Promise<void> {
+    await this.env.APP_KV.delete(this.getOrgIndexKey(orgId));
+  }
+
   private migrate() {
     // Read version from sync KV, falling back to legacy SQL table for existing DOs.
     let version = this.ctx.storage.kv.get<number>('schemaVersion') ?? null;
@@ -1435,6 +1448,11 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (changed) {
       await this.setInfo(info);
     }
+    try {
+      await this.indexOrg(info.id);
+    } catch {
+      // Non-fatal; org index can be repaired opportunistically.
+    }
     return info;
   }
 
@@ -1501,6 +1519,7 @@ export class OrgDO extends DurableObject<DOEnv> {
 
     try {
       await this.setInfo(info);
+      await this.indexOrg(id);
 
       // Add creator as owner
       await this.addMember(createdBy, 'owner', createdBy);
@@ -1522,6 +1541,11 @@ export class OrgDO extends DurableObject<DOEnv> {
       return { org: info, defaultWorkspaceId: workspaceId };
     } catch (error) {
       await releaseExactSlug(this.env.ORG_SLUG, id, slug);
+      try {
+        await this.unindexOrg(id);
+      } catch {
+        // Best-effort rollback for org index.
+      }
       throw error;
     }
   }
@@ -2222,6 +2246,11 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
 
     await releaseExactSlug(this.env.ORG_SLUG, info.id, info.slug);
+    try {
+      await this.unindexOrg(info.id);
+    } catch {
+      // Best-effort cleanup; stale index only affects enumeration.
+    }
 
     this.sql.exec('DELETE FROM org_info WHERE key = ?', 'data');
     this.sql.exec('DELETE FROM members');
