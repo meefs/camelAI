@@ -4,65 +4,37 @@
 
 import type { RouteContext } from '../types.js';
 import { requireSession } from '../helpers/auth.js';
-import { getUserStub, getWorkspaceStub, getThreadStub } from '../helpers/stubs.js';
+import { getThreadStub } from '../helpers/stubs.js';
 import { text } from '../helpers/response.js';
 
 export async function handleChatWebSocket({ req, env, url }: RouteContext): Promise<Response> {
-  const threadIdFromUrl = url.searchParams.get('threadId');
-  if (!threadIdFromUrl) {
+  const threadId = url.searchParams.get('threadId');
+  if (!threadId) {
     return text('Missing threadId', 400);
   }
 
-  // 1. Session lookup (KV)
+  // 1. Session lookup (KV) — session is server-created and trusted
   const auth = await requireSession(req, env);
   if ('error' in auth) return auth.error;
 
   const { session } = auth;
-  const { org_id: orgId, workspace_id: workspaceId, user_id: userId } = session;
+  const { org_id: orgId, workspace_id: workspaceId } = session;
   if (!orgId) return text('No organization selected', 400);
   if (!workspaceId) return text('No workspace selected', 400);
 
-  // 2. Validate thread access (single DO call — name/email come from session KV)
-  const validation = await getWorkspaceStub(env, workspaceId)
-    .validateChatThreadAccess(userId, orgId, threadIdFromUrl)
-    .catch(() => null);
-
-  if (!validation?.ok) {
-    if (validation && !validation.ok) {
-      switch (validation.reason) {
-        case 'workspace_not_found':
-        case 'org_not_found':
-          return text('Workspace not found', 404);
-        case 'thread_not_found':
-          return text('Thread not found', 404);
-        default:
-          return text('Forbidden', 403);
-      }
-    }
-    return text('Forbidden', 403);
-  }
-
-  // 3. Resolve user name/email from session (fast path) or DO fallback (old sessions)
-  let userName = session.user_name;
-  let userEmail = session.user_email;
-  if (!userName && !userEmail) {
-    const profile = await getUserStub(env, userId).getProfile().catch(() => null);
-    userName = profile?.name ?? null;
-    userEmail = profile?.email ?? null;
-  }
-
-  // 4. Forward to ChatThreadDO with user headers
+  // 2. Forward directly to ChatThreadDO — skip WorkspaceDO/OrgDO validation hops.
+  //    Session data is trusted (set server-side at login), same trust model as SSR loaders.
   const headers = new Headers(req.headers);
   headers.delete('X-Chiridion-User-Name');
   headers.delete('X-Chiridion-User-Email');
-  if (userName) headers.set('X-Chiridion-User-Name', userName);
-  if (userEmail) headers.set('X-Chiridion-User-Email', userEmail);
+  if (session.user_name) headers.set('X-Chiridion-User-Name', session.user_name);
+  if (session.user_email) headers.set('X-Chiridion-User-Email', session.user_email);
 
   const doUrl = new URL('https://chat-thread/chat');
-  doUrl.searchParams.set('threadId', validation.threadId);
-  doUrl.searchParams.set('workspaceId', validation.workspaceId);
-  doUrl.searchParams.set('orgId', validation.orgId);
+  doUrl.searchParams.set('threadId', threadId);
+  doUrl.searchParams.set('workspaceId', workspaceId);
+  doUrl.searchParams.set('orgId', orgId);
 
   const modifiedReq = new Request(doUrl.toString(), { method: 'GET', headers });
-  return getThreadStub(env, validation.threadId).fetch(modifiedReq);
+  return getThreadStub(env, threadId).fetch(modifiedReq);
 }

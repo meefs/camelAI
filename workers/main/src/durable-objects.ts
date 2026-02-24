@@ -450,6 +450,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         return new Response('Not found', { status: 404 });
       }
 
+      // Ownership check: if this thread already has a stored orgId, reject
+      // connections from a different org. Prevents cross-org access via leaked thread UUIDs.
+      const incomingOrgId = url.searchParams.get('orgId')?.trim() || '';
+      if (this.chatContext?.orgId && incomingOrgId && this.chatContext.orgId !== incomingOrgId) {
+        this.trace('ws_upgrade_rejected_org_mismatch', {
+          storedOrgId: this.chatContext.orgId,
+          incomingOrgId,
+        });
+        return new Response('Forbidden', { status: 403 });
+      }
+
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
       this.captureChatContextFromRequest(url, request);
