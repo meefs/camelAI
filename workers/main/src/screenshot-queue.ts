@@ -173,7 +173,7 @@ export async function captureScreenshot(
 
     await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
     await waitForReadySignal(page);
-    await page.waitForTimeout(POST_LOAD_DELAY_MS);
+    await new Promise((resolve) => setTimeout(resolve, POST_LOAD_DELAY_MS));
     await page.evaluate(() => window.scrollTo(0, 0));
 
     const image = (await page.screenshot({
@@ -326,7 +326,7 @@ export async function captureScreenshotRaw(
 
         await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
         await waitForReadySignal(page);
-        await page.waitForTimeout(POST_LOAD_DELAY_MS);
+        await new Promise((resolve) => setTimeout(resolve, POST_LOAD_DELAY_MS));
         await page.evaluate(() => window.scrollTo(0, 0));
 
         return (await page.screenshot({
