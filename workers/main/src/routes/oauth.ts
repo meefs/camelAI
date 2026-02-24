@@ -69,6 +69,8 @@ export async function handleOAuthCallback({ env, url, match }: RouteContext): Pr
       workspace_id: workspaceId,
       created_at: Date.now(),
       last_accessed: Date.now(),
+      user_name: userInfo.name || null,
+      user_email: userInfo.email || null,
     });
 
     return redirect(stateData.redirect_url || '/', sessionId, secure, url.hostname);

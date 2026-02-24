@@ -74,9 +74,10 @@ export async function createSession(
   env: AuthEnv,
   userId: string,
   orgId: string,
-  workspaceId: string | null = null
+  workspaceId: string | null = null,
+  userInfo?: { name?: string | null; email?: string | null }
 ): Promise<{ sessionId: string; sessionData: SessionData }> {
-  return createNewSessionKV(env.SESSIONS, userId, orgId, workspaceId);
+  return createNewSessionKV(env.SESSIONS, userId, orgId, workspaceId, userInfo);
 }
 
 export async function destroySession(env: AuthEnv, sessionId: string): Promise<void> {

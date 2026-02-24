@@ -12,6 +12,21 @@ import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { Integration, Thread, WorkerScriptWithCreator } from '@/types';
 import { useAuthData } from '@/hooks/use-auth-data';
 
+/**
+ * Skip loader revalidation after createThread — the user is navigating away
+ * immediately, so re-fetching the welcome screen data is wasted work.
+ */
+export function shouldRevalidate({
+  formData,
+  defaultShouldRevalidate,
+}: {
+  formData?: FormData;
+  defaultShouldRevalidate: boolean;
+}) {
+  if (formData?.get('intent') === 'createThread') return false;
+  return defaultShouldRevalidate;
+}
+
 export function meta() {
   return [
     { title: 'New Chat - camelAI' },

@@ -8,6 +8,23 @@ import type { AuthState } from '@/types';
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state';
 
+/**
+ * Skip revalidation after createThread — the layout auth state hasn't changed
+ * and requireAuthContext() is expensive (~200-300ms of DO RPCs).
+ * Use defaultShouldRevalidate as fallback so navigations within the layout
+ * (where no params changed) also skip the expensive loader.
+ */
+export function shouldRevalidate({
+  formData,
+  defaultShouldRevalidate,
+}: {
+  formData?: FormData;
+  defaultShouldRevalidate: boolean;
+}) {
+  if (formData?.get('intent') === 'createThread') return false;
+  return defaultShouldRevalidate;
+}
+
 export async function loader({ request, context }: Route.LoaderArgs) {
   // Auth check - redirects to /login if not authenticated
   const authContext = await requireAuthContext(request, context);

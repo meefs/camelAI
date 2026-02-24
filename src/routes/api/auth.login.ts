@@ -71,7 +71,10 @@ export async function action({ request, context }: Route.ActionArgs) {
       workspaceId = workspaces[0]?.id ?? null;
     }
 
-    const { sessionId } = await createSession(authEnv, userResult.userId, orgId, workspaceId);
+    const { sessionId } = await createSession(authEnv, userResult.userId, orgId, workspaceId, {
+      name: userResult.user.name,
+      email: userResult.user.email,
+    });
 
     return Response.json(
       { success: true },

@@ -22,16 +22,10 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
   if (!orgId) return text('No organization selected', 400);
   if (!workspaceId) return text('No workspace selected', 400);
 
-  // 2. Run validateChatThreadAccess + getProfile in parallel
-  //    Both are independent DO calls that only need data from the session.
-  const [validation, profile] = await Promise.all([
-    getWorkspaceStub(env, workspaceId)
-      .validateChatThreadAccess(userId, orgId, threadIdFromUrl)
-      .catch(() => null),
-    getUserStub(env, userId)
-      .getProfile()
-      .catch(() => null),
-  ]);
+  // 2. Validate thread access (single DO call — name/email come from session KV)
+  const validation = await getWorkspaceStub(env, workspaceId)
+    .validateChatThreadAccess(userId, orgId, threadIdFromUrl)
+    .catch(() => null);
 
   if (!validation?.ok) {
     if (validation && !validation.ok) {
@@ -48,12 +42,21 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
     return text('Forbidden', 403);
   }
 
-  // 3. Forward to ChatThreadDO with user headers
+  // 3. Resolve user name/email from session (fast path) or DO fallback (old sessions)
+  let userName = session.user_name;
+  let userEmail = session.user_email;
+  if (!userName && !userEmail) {
+    const profile = await getUserStub(env, userId).getProfile().catch(() => null);
+    userName = profile?.name ?? null;
+    userEmail = profile?.email ?? null;
+  }
+
+  // 4. Forward to ChatThreadDO with user headers
   const headers = new Headers(req.headers);
   headers.delete('X-Chiridion-User-Name');
   headers.delete('X-Chiridion-User-Email');
-  if (profile?.name) headers.set('X-Chiridion-User-Name', profile.name);
-  if (profile?.email) headers.set('X-Chiridion-User-Email', profile.email);
+  if (userName) headers.set('X-Chiridion-User-Name', userName);
+  if (userEmail) headers.set('X-Chiridion-User-Email', userEmail);
 
   const doUrl = new URL('https://chat-thread/chat');
   doUrl.searchParams.set('threadId', validation.threadId);

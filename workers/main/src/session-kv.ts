@@ -9,6 +9,8 @@ export interface SessionData {
   workspace_id: string | null;
   created_at: number;
   last_accessed: number;
+  user_name?: string | null;
+  user_email?: string | null;
 }
 
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
@@ -42,7 +44,8 @@ export async function createNewSession(
   kv: KVNamespace,
   userId: string,
   orgId: string,
-  workspaceId: string | null
+  workspaceId: string | null,
+  userInfo?: { name?: string | null; email?: string | null }
 ): Promise<{ sessionId: string; sessionData: SessionData }> {
   const sessionId = crypto.randomUUID();
   const now = Date.now();
@@ -52,6 +55,8 @@ export async function createNewSession(
     workspace_id: workspaceId,
     created_at: now,
     last_accessed: now,
+    user_name: userInfo?.name ?? null,
+    user_email: userInfo?.email ?? null,
   };
   await createSession(kv, sessionId, sessionData);
   return { sessionId, sessionData };

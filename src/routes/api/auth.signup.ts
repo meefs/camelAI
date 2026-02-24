@@ -47,7 +47,10 @@ export async function action({ request, context }: Route.ActionArgs) {
     const { userId, user } = await createUser(authEnv, email, password, name ?? null);
     const orgName = name || email.split('@')[0];
     const { org, defaultWorkspaceId } = await createOrg(authEnv, orgName, userId);
-    const { sessionId } = await createSession(authEnv, userId, org.id, defaultWorkspaceId);
+    const { sessionId } = await createSession(authEnv, userId, org.id, defaultWorkspaceId, {
+      name: user.name,
+      email: user.email,
+    });
 
     waitUntil(
       sendUserVerificationEmail({

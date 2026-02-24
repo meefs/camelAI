@@ -143,6 +143,7 @@ export default [
   route('api/workspaces/:id/fs/move', 'routes/api/workspaces.$id.fs.move.ts'),
   route('api/workspaces/:id/fs/create', 'routes/api/workspaces.$id.fs.create.ts'),
   route('api/workspaces/:id/fs/upload', 'routes/api/workspaces.$id.fs.upload.ts'),
+  route('api/workspaces/:id/chat/threads', 'routes/api/workspaces.$id.chat.threads.ts'),
   route('api/workspaces/:id/chat/:threadId/messages/stream', 'routes/api/workspaces.$id.chat.$threadId.messages.stream.ts'),
   route('api/workspaces/:id/chat/:threadId/first-user-message', 'routes/api/workspaces.$id.chat.$threadId.first-user-message.ts'),
 
