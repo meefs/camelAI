@@ -59,7 +59,7 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
 
 This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, the `shadcn-components` skill will auto-activate.**
 
-- **Style:** radix-mira, zinc, Inter font, 0.5rem radius, Lucide icons
+- **Style:** radix-mira, zinc, Figtree font, 0.5rem radius, Lucide icons
 - **Install:** `npx shadcn@latest add <component>`
 - **Styling:** Use `cn()` from `@/lib/utils`, theme vars in `globals.css`
 - **Catalog:** `docs/shadcn-components.md` has the full component list by category

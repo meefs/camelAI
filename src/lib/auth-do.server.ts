@@ -69,9 +69,51 @@ async function collectAllOrgIds(env: CloudflareEnv): Promise<Set<string>> {
   return orgIds;
 }
 
+// Helper: Collect all org IDs from raw user membership rows, including archived orgs.
+async function collectAllOrgIdsIncludingArchived(env: CloudflareEnv): Promise<Set<string>> {
+  const authEnv = getAuthEnv(env);
+  const userIds = await collectAllUserIds(env);
+  const orgIds = new Set<string>();
+
+  await Promise.all(
+    userIds.map(async (userId) => {
+      try {
+        const userOrgs = await authEnv.USER.get(authEnv.USER.idFromName(userId)).getOrgs();
+        for (const org of userOrgs) {
+          orgIds.add(org.org_id);
+        }
+      } catch {
+        // User may not exist
+      }
+    })
+  );
+
+  return orgIds;
+}
+
+async function collectOrgIdsFromOrgIndex(env: CloudflareEnv): Promise<Set<string>> {
+  const orgIds = new Set<string>();
+  let cursor: string | undefined;
+
+  while (true) {
+    const list = await env.APP_KV.list({ prefix: ORG_INDEX_PREFIX, cursor });
+    for (const key of list.keys) {
+      const orgId = key.name.slice(ORG_INDEX_PREFIX.length);
+      if (orgId) {
+        orgIds.add(orgId);
+      }
+    }
+    if (list.list_complete || !list.cursor) break;
+    cursor = list.cursor;
+  }
+
+  return orgIds;
+}
+
 const SCRIPT_PREFIX = 'script:';
 const SCRIPT_ORG_PREFIX_LEGACY = 'script_org:';
 const SPEND_PREFIX = 'spend:';
+const ORG_INDEX_PREFIX = 'org_index:';
 const API_TOKEN_PREFIX = 'tok_';
 const SESSION_PREFIX = 'session:';
 const WORKER_SESSION_PREFIX = 'worker_session:';
@@ -140,6 +182,39 @@ async function deleteKvEntriesWithPrefix(
   }
 
   return deleted;
+}
+
+async function collectOrgIdsForUserFromKvPrefix(
+  kv: KVNamespace,
+  prefix: string,
+  userId: string
+): Promise<Set<string>> {
+  const orgIds = new Set<string>();
+  let cursor: string | undefined;
+
+  while (true) {
+    const listed = await kv.list({ prefix, cursor });
+    const keys = listed.keys.map((entry) => entry.name);
+    if (keys.length > 0) {
+      const values = await Promise.all(keys.map((key) => kv.get(key)));
+      for (const value of values) {
+        const parsed = parseJsonSafely(value);
+        if (parsed?.user_id !== userId) {
+          continue;
+        }
+        if (typeof parsed?.org_id === 'string' && parsed.org_id.length > 0) {
+          orgIds.add(parsed.org_id);
+        }
+      }
+    }
+
+    if (listed.list_complete || !listed.cursor) {
+      break;
+    }
+    cursor = listed.cursor;
+  }
+
+  return orgIds;
 }
 
 async function deleteR2Prefix(bucket: R2Bucket, prefix: string): Promise<number> {
@@ -1051,6 +1126,316 @@ export async function hardDeleteAdminOrg(
     deleted_workspaces: workspaceIds.length,
     deleted_apps: scriptNames.length,
     removed_memberships: removedMemberships,
+    warnings,
+  };
+}
+
+// User hard delete
+// ---------------------------------------------------------------------------
+
+export interface AdminHardDeleteUserResult {
+  removed_org_memberships: number;
+  warnings: string[];
+}
+
+/**
+ * Permanently delete a user and all related records.
+ * This is superuser-only and intended for test account cleanup.
+ *
+ * Steps:
+ *  1. Fetch user profile + OAuth providers for cleanup key discovery.
+ *  2. Build org probe candidates from org registry + user-scoped hints,
+ *     and backfill missing org registry entries from legacy membership data.
+ *  3. Fail early if the user still owns any organizations.
+ *  4. Verify UserDO hard-delete capability before cross-DO mutations.
+ *  5. Remove user from every org membership found in OrgDO.
+ *  6. Wipe the UserDO Durable Object storage.
+ *  7. Delete EMAIL_TO_USER KV entries (email + oauth provider keys).
+ *  8. Delete user sessions from SESSIONS KV and user-bound screenshot sessions.
+ *  9. Delete workspace-level ACL rows for this user across all org workspaces.
+ *  10. Delete user-scoped worker auth one-time tokens from APP_KV.
+ */
+export async function hardDeleteAdminUser(
+  context: AppLoadContext,
+  userId: string,
+  actorId = 'system-admin'
+): Promise<AdminHardDeleteUserResult> {
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const userStub = authEnv.USER.get(authEnv.USER.idFromName(userId));
+  const warnings: string[] = [];
+
+  // 1. Fetch user data for cleanup keys.
+  const [profile, oauthProviders, userOrgs] = await Promise.all([
+    userStub.getProfile(),
+    userStub.getOAuthProviders(),
+    userStub.getOrgs(),
+  ]);
+
+  if (!profile) {
+    throw new Error('User not found');
+  }
+
+  // 2. Build candidate org IDs without relying solely on UserDO<->OrgDO sync.
+  const userScopedOrgHints = new Set<string>(userOrgs.map((org) => org.org_id));
+  const [sessionOrgHints, workerSessionOrgHints, workerAuthTokenOrgHints, indexedOrgIds, legacyOrgIds] =
+    await Promise.all([
+      collectOrgIdsForUserFromKvPrefix(authEnv.SESSIONS, SESSION_PREFIX, userId),
+      collectOrgIdsForUserFromKvPrefix(authEnv.SESSIONS, WORKER_SESSION_PREFIX, userId),
+      collectOrgIdsForUserFromKvPrefix(authEnv.APP_KV, WORKER_AUTH_TOKEN_PREFIX, userId),
+      collectOrgIdsFromOrgIndex(env),
+      collectAllOrgIdsIncludingArchived(env),
+    ]);
+
+  for (const orgId of sessionOrgHints) userScopedOrgHints.add(orgId);
+  for (const orgId of workerSessionOrgHints) userScopedOrgHints.add(orgId);
+  for (const orgId of workerAuthTokenOrgHints) userScopedOrgHints.add(orgId);
+
+  const missingIndexedOrgIds = Array.from(legacyOrgIds).filter((orgId) => !indexedOrgIds.has(orgId));
+  if (missingIndexedOrgIds.length > 0) {
+    try {
+      await Promise.all(
+        missingIndexedOrgIds.map((orgId) => authEnv.APP_KV.put(`${ORG_INDEX_PREFIX}${orgId}`, '1'))
+      );
+      for (const orgId of missingIndexedOrgIds) {
+        indexedOrgIds.add(orgId);
+      }
+    } catch (error) {
+      warnings.push(`Failed to backfill org index entries: ${toErrorMessage(error)}`);
+    }
+  }
+
+  const allProbeOrgIds = new Set<string>(indexedOrgIds);
+  for (const orgId of legacyOrgIds) {
+    allProbeOrgIds.add(orgId);
+  }
+  for (const orgId of userScopedOrgHints) {
+    allProbeOrgIds.add(orgId);
+  }
+
+  const orgMemberships: Array<{ org_id: string; role: OrgRole }> = [];
+  const orgMembershipProbeErrors: string[] = [];
+  for (const orgId of allProbeOrgIds) {
+    try {
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+      const member = await orgStub.getMember(userId);
+      if (!member) continue;
+      orgMemberships.push({ org_id: orgId, role: member.role });
+    } catch (error) {
+      orgMembershipProbeErrors.push(`${orgId.slice(0, 8)}: ${toErrorMessage(error)}`);
+    }
+  }
+  if (orgMembershipProbeErrors.length > 0) {
+    const preview = orgMembershipProbeErrors.slice(0, 3).join('; ');
+    const suffix = orgMembershipProbeErrors.length > 3
+      ? `; and ${orgMembershipProbeErrors.length - 3} more`
+      : '';
+    throw new Error(
+      `Failed to verify org memberships in ${orgMembershipProbeErrors.length} org(s) (${preview}${suffix}). User was not deleted.`
+    );
+  }
+
+  // 3. Fail early if the user owns any orgs — removing an owner via
+  // removeMember throws, and proceeding would leave a dangling owner
+  // reference in the OrgDO after the UserDO is wiped.
+  const ownedOrgIds = orgMemberships.filter((o) => o.role === 'owner').map((o) => o.org_id);
+  if (ownedOrgIds.length > 0) {
+    const preview = ownedOrgIds.slice(0, 3).map((id) => id.slice(0, 8)).join(', ');
+    const suffix = ownedOrgIds.length > 3 ? ` and ${ownedOrgIds.length - 3} more` : '';
+    throw new Error(
+      `User owns ${ownedOrgIds.length} org(s) (${preview}${suffix}). Transfer ownership or delete those orgs before deleting this user.`
+    );
+  }
+
+  // 4. Ensure the target UserDO has the hard-delete RPC before mutating org state.
+  try {
+    await userStub.canHardDeleteUser();
+  } catch (error) {
+    if (
+      isMissingRpcMethodError(error, 'canHardDeleteUser') ||
+      isMissingRpcMethodError(error, 'hardDeleteUser')
+    ) {
+      throw new Error(
+        'User Durable Object is running old code (missing hardDeleteUser). Restart `bun run dev` or deploy the latest main worker, then retry delete.'
+      );
+    }
+    throw error;
+  }
+
+  // 5. Remove user from all orgs first. If any membership cleanup fails,
+  // stop before wiping the user record to avoid orphaned org membership rows.
+  let removedOrgMembershipsCount = 0;
+  const removedOrgMemberships: Array<{ org_id: string; role: OrgRole }> = [];
+  const orgRemovalErrors: string[] = [];
+  for (const org of orgMemberships) {
+    try {
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.org_id));
+      await orgStub.removeMember(userId, actorId);
+      removedOrgMemberships.push({ org_id: org.org_id, role: org.role });
+      removedOrgMembershipsCount++;
+    } catch (error) {
+      orgRemovalErrors.push(
+        `${org.org_id.slice(0, 8)}: ${toErrorMessage(error)}`
+      );
+    }
+  }
+  if (orgRemovalErrors.length > 0) {
+    const rollbackErrors: string[] = [];
+    for (const membership of removedOrgMemberships) {
+      try {
+        const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(membership.org_id));
+        await orgStub.addMember(userId, membership.role, actorId);
+      } catch (rollbackError) {
+        rollbackErrors.push(
+          `${membership.org_id.slice(0, 8)}: ${toErrorMessage(rollbackError)}`
+        );
+      }
+    }
+
+    const preview = orgRemovalErrors.slice(0, 3).join('; ');
+    const suffix = orgRemovalErrors.length > 3 ? `; and ${orgRemovalErrors.length - 3} more` : '';
+    const rollbackSummary =
+      rollbackErrors.length > 0
+        ? ` Also failed to restore ${rollbackErrors.length} removed membership(s) (${rollbackErrors.slice(0, 3).join('; ')}${rollbackErrors.length > 3 ? `; and ${rollbackErrors.length - 3} more` : ''}). Manual repair required.`
+        : '';
+    throw new Error(
+      `Failed to remove user from ${orgRemovalErrors.length} org(s) (${preview}${suffix}). User was not deleted. Resolve membership cleanup and retry.${rollbackSummary}`
+    );
+  }
+
+  // 6. Wipe UserDO state. If this fails, restore removed org memberships.
+  try {
+    await userStub.hardDeleteUser();
+  } catch (error) {
+    const rollbackErrors: string[] = [];
+    for (const membership of removedOrgMemberships) {
+      try {
+        const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(membership.org_id));
+        await orgStub.addMember(userId, membership.role, actorId);
+      } catch (rollbackError) {
+        rollbackErrors.push(
+          `${membership.org_id.slice(0, 8)}: ${toErrorMessage(rollbackError)}`
+        );
+      }
+    }
+
+    const rollbackSummary =
+      rollbackErrors.length > 0
+        ? `Also failed to restore ${rollbackErrors.length} org membership(s) (${rollbackErrors.slice(0, 3).join('; ')}${rollbackErrors.length > 3 ? `; and ${rollbackErrors.length - 3} more` : ''}). Manual repair required.`
+        : 'Removed org memberships were restored.';
+
+    if (isMissingRpcMethodError(error, 'hardDeleteUser')) {
+      throw new Error(
+        `User Durable Object is running old code (missing hardDeleteUser). Restart \`bun run dev\` or deploy the latest main worker, then retry delete. ${rollbackSummary}`
+      );
+    }
+    throw new Error(
+      `Failed to wipe UserDO state: ${toErrorMessage(error)} ${rollbackSummary}`
+    );
+  }
+
+  // 7. Delete EMAIL_TO_USER KV entries.
+  const kvKeysToDelete: string[] = [
+    `email:${profile.email.toLowerCase()}`,
+  ];
+  for (const provider of oauthProviders) {
+    kvKeysToDelete.push(`oauth:${provider.provider}:${provider.provider_id}`);
+  }
+  await Promise.all(
+    kvKeysToDelete.map(async (key) => {
+      try {
+        await authEnv.EMAIL_TO_USER.delete(key);
+      } catch (error) {
+        warnings.push(`Failed to delete EMAIL_TO_USER key "${key}": ${toErrorMessage(error)}`);
+      }
+    })
+  );
+
+  // Purge any stale oauth:* indexes that still point to this user (covers
+  // partial signup/login failures where UserDO provider rows were not written).
+  try {
+    await deleteKvEntriesWithPrefix(authEnv.EMAIL_TO_USER, 'oauth:', (_key, value) => {
+      if (value === userId) {
+        return true;
+      }
+      const parsed = parseJsonSafely(value);
+      return parsed?.user_id === userId;
+    });
+  } catch (error) {
+    warnings.push(`Failed to clean oauth:* EMAIL_TO_USER mappings: ${toErrorMessage(error)}`);
+  }
+
+  // 8. Best-effort cleanup of user sessions.
+  // Screenshot sessions may be org-scoped and shared across users. Only
+  // delete screenshot sessions explicitly bound to this user_id.
+  const screenshotSessionOrgIds = new Set<string>(orgMemberships.map((org) => org.org_id));
+  const sessionPrefixes = [SESSION_PREFIX, WORKER_SESSION_PREFIX] as const;
+  for (const prefix of sessionPrefixes) {
+    try {
+      await deleteKvEntriesWithPrefix(authEnv.SESSIONS, prefix, (_key, value) => {
+        const parsed = parseJsonSafely(value);
+        if (parsed?.user_id !== userId) {
+          return false;
+        }
+        if (typeof parsed?.org_id === 'string') {
+          screenshotSessionOrgIds.add(parsed.org_id);
+        }
+        return true;
+      });
+    } catch (error) {
+      warnings.push(`Failed to clean ${prefix}* sessions: ${toErrorMessage(error)}`);
+    }
+  }
+
+  try {
+    await deleteKvEntriesWithPrefix(authEnv.SESSIONS, SCREENSHOT_SESSION_PREFIX, (_key, value) => {
+      const parsed = parseJsonSafely(value);
+      return parsed?.user_id === userId;
+    });
+  } catch (error) {
+    warnings.push(`Failed to clean user-bound ${SCREENSHOT_SESSION_PREFIX}* sessions: ${toErrorMessage(error)}`);
+  }
+
+  // 9. Best-effort cleanup of explicit workspace ACL rows for this user.
+  // Setting access to "full" deletes the override row in WorkspaceDO.
+  const workspaceAclOrgIds = new Set<string>(orgMemberships.map((org) => org.org_id));
+  for (const orgId of screenshotSessionOrgIds) {
+    workspaceAclOrgIds.add(orgId);
+  }
+  for (const orgId of userScopedOrgHints) {
+    workspaceAclOrgIds.add(orgId);
+  }
+
+  for (const orgId of workspaceAclOrgIds) {
+    try {
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+      const workspaces = await orgStub.getWorkspaces(true);
+      await Promise.all(
+        workspaces.map(async (workspace) => {
+          const workspaceStub = authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspace.id));
+          await workspaceStub.setMemberAccess(userId, 'full', actorId);
+        })
+      );
+    } catch (error) {
+      warnings.push(
+        `Failed to clean workspace ACL rows in org ${orgId.slice(0, 8)}: ${toErrorMessage(error)}`
+      );
+    }
+  }
+
+  // 10. Best-effort cleanup of pending worker auth tokens to prevent
+  // post-delete token exchange into fresh worker sessions.
+  try {
+    await deleteKvEntriesWithPrefix(authEnv.APP_KV, WORKER_AUTH_TOKEN_PREFIX, (_key, value) => {
+      const parsed = parseJsonSafely(value);
+      return parsed?.user_id === userId;
+    });
+  } catch (error) {
+    warnings.push(`Failed to clean worker auth tokens: ${toErrorMessage(error)}`);
+  }
+
+  return {
+    removed_org_memberships: removedOrgMembershipsCount,
     warnings,
   };
 }

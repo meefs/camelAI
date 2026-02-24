@@ -37,6 +37,7 @@ function isSuperuserEmail(email: string | null): boolean {
 }
 
 const ORG_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,22}[a-z0-9]$/;
+const ORG_INDEX_PREFIX = 'org_index:';
 
 function normalizeOrgSlugBase(name: string): string {
   return name
@@ -830,6 +831,24 @@ export class UserDO extends DurableObject<DOEnv> {
     return profile;
   }
 
+  /**
+   * Compatibility probe for admin hard-delete flow.
+   * Exists so callers can verify RPC availability before destructive cleanup.
+   */
+  async canHardDeleteUser(): Promise<boolean> {
+    return true;
+  }
+
+  /**
+   * Permanently delete all data in this UserDO.
+   * Wipes profile, org memberships, OAuth providers, onboarding, and password.
+   */
+  async hardDeleteUser(): Promise<void> {
+    this.sql.exec('DELETE FROM profile');
+    this.sql.exec('DELETE FROM orgs');
+    this.sql.exec('DELETE FROM oauth_providers');
+  }
+
   // Test helper RPC: simulate constructor migration path on an existing DO.
   async remigrate(): Promise<void> {
     this.migrate();
@@ -853,6 +872,18 @@ export class OrgDO extends DurableObject<DOEnv> {
     ctx.blockConcurrencyWhile(async () => {
       this.migrate();
     });
+  }
+
+  private getOrgIndexKey(orgId: string): string {
+    return `${ORG_INDEX_PREFIX}${orgId}`;
+  }
+
+  private async indexOrg(orgId: string): Promise<void> {
+    await this.env.APP_KV.put(this.getOrgIndexKey(orgId), '1');
+  }
+
+  private async unindexOrg(orgId: string): Promise<void> {
+    await this.env.APP_KV.delete(this.getOrgIndexKey(orgId));
   }
 
   private migrate() {
@@ -1544,9 +1575,20 @@ export class OrgDO extends DurableObject<DOEnv> {
         null
       );
 
+      try {
+        await this.indexOrg(id);
+      } catch {
+        // Best-effort indexing; do not fail org creation on APP_KV hiccups.
+      }
+
       return { org: info, defaultWorkspaceId: workspaceId };
     } catch (error) {
       await releaseExactSlug(this.env.ORG_SLUG, id, slug);
+      try {
+        await this.unindexOrg(id);
+      } catch {
+        // Best-effort rollback for org index.
+      }
       throw error;
     }
   }
@@ -2252,6 +2294,11 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
 
     await releaseExactSlug(this.env.ORG_SLUG, info.id, info.slug);
+    try {
+      await this.unindexOrg(info.id);
+    } catch {
+      // Best-effort cleanup; stale index only affects enumeration.
+    }
 
     this.sql.exec('DELETE FROM org_info WHERE key = ?', 'data');
     this.sql.exec('DELETE FROM members');

@@ -58,6 +58,15 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return { success: true };
   }
 
+  if (intent === 'hardDeleteUser') {
+    try {
+      const result = await adminDO.hardDeleteAdminUser(context, userId, 'system-admin');
+      return { success: true, warnings: result.warnings };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Failed to permanently delete user' };
+    }
+  }
+
   if (intent === 'updateUser') {
     const name = formData.get('name') as string;
     const avatarColor = formData.get('avatarColor') as string;
@@ -350,6 +359,7 @@ export default function AdminUserDetailPage() {
               userEmail={user.email}
               hasMemberships={orgs.length > 0}
               isOrphaned={user.is_orphaned}
+              orgCount={orgs.length}
             />
           </div>
         </div>
