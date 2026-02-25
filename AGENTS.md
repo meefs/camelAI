@@ -165,7 +165,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Onboarding | `/api/onboarding`, `/api/onboarding/complete` |
 | Support | `/api/help` |
 | Dev tooling | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id` |
-| Admin troubleshooting | `/api/admin/threads/:id/jsonl` |
+| Admin troubleshooting | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages` |
 | Invitations | `/api/invitations/:orgId/:invitationId` (GET/POST) |
 | Workspace FS | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}` |
 | Workspace chat | `/api/workspaces/:id/chat/:threadId/messages/stream` |

@@ -440,6 +440,15 @@ export async function adminGetWorkspacesPaginated(
   return getAdminIndex(env).getWorkspacesPaginated(offset, limit, search) as Promise<any>;
 }
 
+export async function adminGetWorkspacesByOrg(
+  context: AppLoadContext,
+  orgId: string
+): Promise<AdminWorkspaceSummary[]> {
+  const env = getEnv(context);
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getWorkspacesByOrg(orgId) as Promise<any>;
+}
+
 export async function adminGetThreadsPaginated(
   context: AppLoadContext,
   params: PaginationParams = {}
@@ -458,6 +467,66 @@ export async function adminGetAppsPaginated(
   const { offset = 0, limit = 50, search } = params;
   await ensureAdminIndexReady(env);
   return getAdminIndex(env).getAppsPaginated(offset, limit, search) as Promise<any>;
+}
+
+export async function adminGetThreadContextById(
+  context: AppLoadContext,
+  threadId: string
+): Promise<AdminThreadWithContext | null> {
+  const env = getEnv(context);
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getThreadContextById(threadId) as Promise<any>;
+}
+
+export async function adminGetOrgRecentActivity(
+  context: AppLoadContext,
+  orgId: string,
+  options: {
+    threadLimit?: number;
+    appLimit?: number;
+    includeCounts?: boolean;
+  } = {}
+): Promise<{
+  threads: AdminThreadWithContext[];
+  apps: AdminAppSummary[];
+  threadCount: number | null;
+  appCount: number | null;
+}> {
+  const env = getEnv(context);
+  await ensureAdminIndexReady(env);
+
+  const threadLimit = Math.max(1, Math.min(100, Math.floor(options.threadLimit ?? 10)));
+  const appLimit = Math.max(1, Math.min(100, Math.floor(options.appLimit ?? 10)));
+  const includeCounts = options.includeCounts ?? true;
+
+  if (!includeCounts) {
+    return getAdminIndex(env).getOrgRecentActivity(
+      orgId,
+      threadLimit,
+      appLimit,
+      false
+    ) as Promise<any>;
+  }
+
+  try {
+    return await getAdminIndex(env).getOrgRecentActivity(
+      orgId,
+      threadLimit,
+      appLimit,
+      true
+    ) as Promise<any>;
+  } catch (error) {
+    console.warn(
+      '[adminGetOrgRecentActivity] falling back to countless recent activity:',
+      error
+    );
+    return getAdminIndex(env).getOrgRecentActivity(
+      orgId,
+      threadLimit,
+      appLimit,
+      false
+    ) as Promise<any>;
+  }
 }
 
 export async function adminGetInvitationsPaginated(
@@ -485,44 +554,36 @@ export async function adminGetThreadWithMessages(
 } | null> {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const orgIds = await collectAllOrgIds(env);
+  const threadContext = await adminGetThreadContextById(context, threadId);
+  if (!threadContext) return null;
 
-  for (const orgId of orgIds) {
-    try {
-      const thread = await authEnv.ORG.get(authEnv.ORG.idFromName(orgId)).getThread(threadId);
-      if (thread) {
-        const [orgInfo, workspaces, messages, preview_target] = await Promise.all([
-          authDO.getOrg(authEnv, orgId),
-          authDO.listOrgWorkspaces(authEnv, orgId),
-          getThreadMessages(context, threadId, thread.workspace_id),
-          getThreadPreviewTarget(context, threadId),
-        ]);
-
-        const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
-
-        return {
-          thread: {
-            id: thread.id,
-            title: thread.title || 'Untitled',
-            created_by: thread.created_by,
-            created_at: thread.created_at,
-            updated_at: thread.updated_at,
-            source: thread.source ?? 'web',
-          },
-          messages,
-          org_id: orgId,
-          workspace_id: thread.workspace_id,
-          org_name: orgInfo?.name || 'Unknown',
-          workspace_name: workspaceMap.get(thread.workspace_id) || 'Unknown',
-          preview_target,
-        };
-      }
-    } catch {
-      // Continue searching
-    }
+  const orgId = threadContext.org_id;
+  const thread = await authEnv.ORG.get(authEnv.ORG.idFromName(orgId)).getThread(threadId);
+  if (!thread || thread.workspace_id !== threadContext.workspace_id) {
+    return null;
   }
 
-  return null;
+  const [messages, preview_target] = await Promise.all([
+    getThreadMessages(context, threadId, thread.workspace_id),
+    getThreadPreviewTarget(context, threadId),
+  ]);
+
+  return {
+    thread: {
+      id: thread.id,
+      title: thread.title || 'Untitled',
+      created_by: thread.created_by,
+      created_at: thread.created_at,
+      updated_at: thread.updated_at,
+      source: thread.source ?? 'web',
+    },
+    messages,
+    org_id: orgId,
+    workspace_id: thread.workspace_id,
+    org_name: threadContext.org_name || 'Unknown',
+    workspace_name: threadContext.workspace_name || 'Unknown',
+    preview_target,
+  };
 }
 
 export async function adminGetWorkspaceDetail(

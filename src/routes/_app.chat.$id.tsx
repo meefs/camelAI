@@ -1,9 +1,10 @@
 import { Suspense, use, useCallback, useEffect, useState } from 'react';
-import { useLoaderData } from 'react-router';
+import { redirect, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app.chat.$id';
-import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
+import { requireAuthContext, requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getWorkerScript } from '@/lib/auth-do';
+import { getOrg, getWorkerScript } from '@/lib/auth-do';
+import * as authDO from '@/lib/auth-do.server';
 import * as chatDO from '@/lib/chat-do.server';
 import Chat from '@/components/Chat';
 import { ChatLoadingSkeleton } from '@/components/chat/chat-loading';
@@ -46,6 +47,7 @@ export async function clientLoader({ serverLoader, params, request }: Route.Clie
             isNewThread: true,
             hostname: window.location.hostname,
             orgSlug: parsed.orgSlug,
+            readOnly: false,
           };
         }
       }
@@ -76,7 +78,96 @@ function getPreviewTabId(target: PreviewTarget): string {
   return `file:${target.workspaceId}:${target.source}:${target.path}`;
 }
 
+function buildPreviewChatDataPromise(
+  context: Route.LoaderArgs['context'],
+  authEnv: ReturnType<typeof getAuthEnv>,
+  orgId: string,
+  threadId: string
+): Promise<ChatData> {
+  return (async () => {
+    const previewStateRaw = await chatDO.getThreadPreviewState(context, threadId).catch(() => ({
+      target: null,
+      tabs: [],
+      activeTabId: null,
+      version: 0,
+    }));
+
+    const applyAppVisibility = async (target: PreviewTarget): Promise<PreviewTarget> => {
+      if (target.kind !== 'app') {
+        return target;
+      }
+      const script = await getWorkerScript(authEnv, orgId, target.scriptName);
+      if (!script) {
+        return target;
+      }
+      return {
+        ...target,
+        isPublic: script.is_public,
+      };
+    };
+
+    const fallbackTabs = previewStateRaw.tabs.length > 0
+      ? previewStateRaw.tabs
+      : (previewStateRaw.target ? [previewStateRaw.target] : []);
+    const previewTabs = await Promise.all(fallbackTabs.map(applyAppVisibility));
+    const tabIds = new Set(previewTabs.map(getPreviewTabId));
+
+    let activeTabId = previewStateRaw.activeTabId;
+    if (!activeTabId || !tabIds.has(activeTabId)) {
+      activeTabId = previewTabs[0] ? getPreviewTabId(previewTabs[0]) : null;
+    }
+
+    let previewTarget = activeTabId
+      ? (previewTabs.find((tab) => getPreviewTabId(tab) === activeTabId) ?? null)
+      : null;
+    if (!previewTarget && previewStateRaw.target) {
+      previewTarget = await applyAppVisibility(previewStateRaw.target);
+    }
+
+    return {
+      messages: [],
+      previewTabs,
+      activeTabId,
+      previewTarget,
+    };
+  })();
+}
+
 export async function loader({ request, context, params }: Route.LoaderArgs) {
+  const url = new URL(request.url);
+  const isAdminReadonly = url.searchParams.get('adminReadonly') === '1';
+  const hostname = request.headers.get('host')?.split(':')[0] || undefined;
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+
+  if (isAdminReadonly) {
+    await requireSuperuser(request, context);
+
+    const threadContext = await authDO.adminGetThreadContextById(context, params.id);
+    if (!threadContext) {
+      throw redirect('/qaml-backdoor/threads');
+    }
+
+    const thread = await chatDO.getThread(context, params.id, threadContext.workspace_id);
+    const org = await getOrg(authEnv, threadContext.org_id);
+
+    return {
+      threadId: params.id,
+      workspaceId: threadContext.workspace_id,
+      chatDataPromise: buildPreviewChatDataPromise(
+        context,
+        authEnv,
+        threadContext.org_id,
+        params.id
+      ),
+      threadTitle: thread?.title ?? threadContext.title ?? null,
+      isNewThread: false,
+      hostname,
+      orgSlug: org?.slug,
+      readOnly: true,
+    };
+  }
+
   const authContext = await requireAuthContext(request, context);
 
   if (!authContext.currentWorkspace?.id) {
@@ -87,70 +178,20 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       threadTitle: null,
       isNewThread: false,
       hostname: undefined,
+      readOnly: false,
     };
   }
 
   const workspaceId = authContext.currentWorkspace.id;
   const orgId = authContext.currentOrg.id;
-  const url = new URL(request.url);
   const isNewThread = url.searchParams.get('newThread') === '1';
-  const hostname = request.headers.get('host')?.split(':')[0] || undefined;
 
   // Skip fetching thread metadata for new threads — we just created it and it has no title yet
   const thread = isNewThread ? null : await chatDO.getThread(context, params.id, workspaceId);
 
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-
   const chatDataPromise: Promise<ChatData> = isNewThread
     ? Promise.resolve(EMPTY_CHAT_DATA)
-    : (async () => {
-        const previewStateRaw = await chatDO.getThreadPreviewState(context, params.id).catch(() => ({
-          target: null,
-          tabs: [],
-          activeTabId: null,
-          version: 0,
-        }));
-
-        const applyAppVisibility = async (target: PreviewTarget): Promise<PreviewTarget> => {
-          if (target.kind !== 'app') {
-            return target;
-          }
-          const script = await getWorkerScript(authEnv, orgId, target.scriptName);
-          if (!script) {
-            return target;
-          }
-          return {
-            ...target,
-            isPublic: script.is_public,
-          };
-        };
-
-        const fallbackTabs = previewStateRaw.tabs.length > 0
-          ? previewStateRaw.tabs
-          : (previewStateRaw.target ? [previewStateRaw.target] : []);
-        const previewTabs = await Promise.all(fallbackTabs.map(applyAppVisibility));
-        const tabIds = new Set(previewTabs.map(getPreviewTabId));
-
-        let activeTabId = previewStateRaw.activeTabId;
-        if (!activeTabId || !tabIds.has(activeTabId)) {
-          activeTabId = previewTabs[0] ? getPreviewTabId(previewTabs[0]) : null;
-        }
-
-        let previewTarget = activeTabId
-          ? (previewTabs.find((tab) => getPreviewTabId(tab) === activeTabId) ?? null)
-          : null;
-        if (!previewTarget && previewStateRaw.target) {
-          previewTarget = await applyAppVisibility(previewStateRaw.target);
-        }
-
-        return {
-          messages: [],
-          previewTabs,
-          activeTabId,
-          previewTarget,
-        };
-      })();
+    : buildPreviewChatDataPromise(context, authEnv, orgId, params.id);
 
   return {
     threadId: params.id,
@@ -160,6 +201,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     isNewThread,
     hostname,
     orgSlug: authContext.currentOrg.slug,
+    readOnly: false,
   };
 }
 
@@ -189,6 +231,7 @@ export default function ChatPage() {
     isNewThread,
     hostname,
     orgSlug,
+    readOnly,
   } = useLoaderData<typeof loader>();
 
   if (!workspaceId) {
@@ -229,6 +272,7 @@ export default function ChatPage() {
         hostname={hostname}
         orgSlug={orgSlug}
         isLoadingMessages={isLoadingMessages}
+        readOnly={readOnly}
       />
       {!isNewThread && (
         <Suspense fallback={null}>

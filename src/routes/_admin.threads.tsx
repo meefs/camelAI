@@ -5,6 +5,7 @@ import * as authDO from '@/lib/auth-do.server';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
 import { AdminSearch } from '@/components/admin/admin-search';
+import { Button } from '@/components/ui/button';
 import {
   Table,
   TableBody,
@@ -87,12 +88,13 @@ export default function AdminThreadsPage() {
                   <TableHead>Organization</TableHead>
                   <TableHead>Workspace</TableHead>
                   <TableHead>Updated</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {threads.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                       No threads found
                     </TableCell>
                   </TableRow>
@@ -111,7 +113,7 @@ export default function AdminThreadsPage() {
                         </Link>
                       </TableCell>
                       <TableCell className="text-muted-foreground capitalize">
-                        {thread.source}
+                        {thread.source ?? 'web'}
                       </TableCell>
                       <TableCell>
                         <Link
@@ -137,6 +139,17 @@ export default function AdminThreadsPage() {
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {formatTimestamp(thread.updated_at)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button asChild variant="outline" size="sm">
+                          <Link
+                            to={`/chat/${thread.id}?adminReadonly=1`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            View as User
+                          </Link>
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))

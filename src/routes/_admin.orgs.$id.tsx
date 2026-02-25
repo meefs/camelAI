@@ -1,4 +1,4 @@
-import { Link, useLoaderData, redirect, useFetcher } from 'react-router';
+import { Link, useLoaderData, redirect } from 'react-router';
 import type { Route } from './+types/_admin.orgs.$id';
 import { requireSuperuser, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
@@ -59,12 +59,16 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     throw redirect('/qaml-backdoor/orgs');
   }
 
-  const [members, invitations, workspacePage] = await Promise.all([
+  const [members, invitations, workspaces, recentActivity] = await Promise.all([
     getOrgMembers(authEnv, id),
     getOrgInvitations(authEnv, id),
-    adminDO.adminGetWorkspacesPaginated(context, { offset: 0, limit: 500 }),
+    adminDO.adminGetWorkspacesByOrg(context, id),
+    adminDO.adminGetOrgRecentActivity(context, id, {
+      threadLimit: 10,
+      appLimit: 10,
+      includeCounts: true,
+    }),
   ]);
-  const workspaces = workspacePage.items.filter((workspace) => workspace.org_id === id);
 
   // Create plain object for Client Component
   const safeOrg = {
@@ -91,6 +95,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     members,
     invitations,
     workspaces,
+    recentThreads: recentActivity.threads,
+    recentApps: recentActivity.apps,
+    threadCount: recentActivity.threadCount,
+    appCount: recentActivity.appCount,
     memberOptions,
   };
 }
@@ -161,9 +169,17 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 }
 
 export default function AdminOrgDetailPage() {
-  const { org, members, invitations, workspaces, memberOptions } = useLoaderData<typeof loader>();
-  const fetcher = useFetcher();
-
+  const {
+    org,
+    members,
+    invitations,
+    workspaces,
+    recentThreads,
+    recentApps,
+    threadCount,
+    appCount,
+    memberOptions,
+  } = useLoaderData<typeof loader>();
   return (
     <>
       <AdminPageHeader
@@ -313,6 +329,117 @@ export default function AdminOrgDetailPage() {
                             <Badge variant={workspace.archived ? 'secondary' : 'outline'}>
                               {workspace.archived ? 'Archived' : 'Active'}
                             </Badge>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Recent Threads</CardTitle>
+                <CardDescription>
+                  {threadCount === null
+                    ? `${recentThreads.length} recent ${recentThreads.length === 1 ? 'thread' : 'threads'}`
+                    : `${threadCount} total ${threadCount === 1 ? 'thread' : 'threads'} (showing latest ${recentThreads.length})`}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {recentThreads.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No threads</p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Thread</TableHead>
+                        <TableHead>Workspace</TableHead>
+                        <TableHead>Updated</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {recentThreads.map((thread) => (
+                        <TableRow key={thread.id}>
+                          <TableCell>
+                            <Link
+                              to={`/qaml-backdoor/threads/${thread.id}`}
+                              className="hover:underline"
+                            >
+                              <div className="font-medium">{thread.title || 'Untitled'}</div>
+                              <div className="text-xs text-muted-foreground font-mono">
+                                {thread.id.slice(0, 8)}...
+                              </div>
+                            </Link>
+                          </TableCell>
+                          <TableCell>
+                            <Link
+                              to={`/qaml-backdoor/workspaces/${thread.workspace_id}`}
+                              className="text-sm hover:underline"
+                            >
+                              {thread.workspace_name || thread.workspace_id}
+                            </Link>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {formatTimestamp(thread.updated_at)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Recent Apps</CardTitle>
+                <CardDescription>
+                  {appCount === null
+                    ? `${recentApps.length} recent ${recentApps.length === 1 ? 'app' : 'apps'}`
+                    : `${appCount} total ${appCount === 1 ? 'app' : 'apps'} (showing latest ${recentApps.length})`}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {recentApps.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No apps</p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>App</TableHead>
+                        <TableHead>Workspace</TableHead>
+                        <TableHead>Visibility</TableHead>
+                        <TableHead>Updated</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {recentApps.map((app) => (
+                        <TableRow key={app.script_name}>
+                          <TableCell>
+                            <Link
+                              to={`/qaml-backdoor/apps/${encodeURIComponent(app.script_name)}`}
+                              className="hover:underline font-mono"
+                            >
+                              {app.script_name}
+                            </Link>
+                          </TableCell>
+                          <TableCell>
+                            <Link
+                              to={`/qaml-backdoor/workspaces/${app.workspace_id}`}
+                              className="text-sm hover:underline"
+                            >
+                              {app.workspace_name || app.workspace_id}
+                            </Link>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={app.is_public ? 'default' : 'secondary'}>
+                              {app.is_public ? 'Public' : 'Private'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {formatTimestamp(app.updated_at)}
                           </TableCell>
                         </TableRow>
                       ))}
