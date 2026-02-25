@@ -142,6 +142,19 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
   }
 
   /**
+   * Refresh the integration env file consumed by live Claude sessions
+   * (pointed to by CLAUDE_ENV_FILE).
+   */
+  private async refreshWorkspaceIntegrationEnvFile(workspaceId: string, orgId: string): Promise<boolean> {
+    try {
+      return await new WorkspaceContainer(this.env, workspaceId, orgId).refreshIntegrationEnvVars();
+    } catch (err) {
+      console.error('[MCP] Failed to refresh workspace integration env file:', err);
+      return false;
+    }
+  }
+
+  /**
    * RPC method called by ChatThreadDO when user completes connection setup.
    * Resolves the pending promise for the corresponding request.
    * Also cleans up persisted storage for hibernation recovery.
@@ -923,14 +936,15 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             userId
           );
 
-          // Push updated env vars to running container (fire-and-forget)
-          new WorkspaceContainer(this.env, workspaceId, orgId)
-            .refreshIntegrationEnvVars()
-            .catch(() => {});
+          // Kick off worker secret sync immediately so deployed workers are not
+          // blocked by sandbox env-file refresh latency.
+          this.ctx.waitUntil(
+            syncAllWorkspaceWorkerSecrets(this.env as unknown as CfApiProxyEnv, workspaceId, orgId)
+              .catch((err) => console.error('[MCP] Failed to sync secrets to workers:', err))
+          );
 
-          // Sync secrets to all deployed workers in this workspace (fire-and-forget)
-          syncAllWorkspaceWorkerSecrets(this.env as unknown as CfApiProxyEnv, workspaceId, orgId)
-            .catch((err) => console.error('[MCP] Failed to sync secrets to workers:', err));
+          // Refresh live integration env file in the sandbox.
+          const envFileRefreshed = await this.refreshWorkspaceIntegrationEnvFile(workspaceId, orgId);
 
           const envVarPrefix = `INT_${normalizeEnvVarName(integration_type)}_${normalizeEnvVarName(name)}`;
           const envVarSuffixes = getEnvVarSuffixesForType(integration_type);
@@ -943,6 +957,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
               category: definition.category,
               env_var_prefix: envVarPrefix,
               env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
+              env_file_refreshed: envFileRefreshed,
             },
             message: `Integration '${name}' created successfully. Environment variables: ${envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`).join(', ')}`,
           });
@@ -1115,6 +1130,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           // This happens when user completes OAuth flow in browser
           if (credentials._oauth_completed && credentials.integration_id) {
             const integrationId = credentials.integration_id as string;
+            const envFileRefreshed = await this.refreshWorkspaceIntegrationEnvFile(workspaceId, orgId);
             const envVarPrefix = `INT_${normalizeEnvVarName(type)}_${normalizeEnvVarName(name)}`;
             const envVarSuffixes = getEnvVarSuffixesForType(type);
             return this.textResponse({
@@ -1126,6 +1142,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
                 category: intDefinition.category,
                 env_var_prefix: envVarPrefix,
                 env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
+                env_file_refreshed: envFileRefreshed,
               },
               message: `Integration '${name}' connected successfully via OAuth. Environment variables: ${envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`).join(', ')}`,
             });
@@ -1159,14 +1176,15 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             userId
           );
 
-          // Push updated env vars to running container (fire-and-forget)
-          new WorkspaceContainer(this.env, workspaceId, orgId)
-            .refreshIntegrationEnvVars()
-            .catch(() => {});
+          // Kick off worker secret sync immediately so deployed workers are not
+          // blocked by sandbox env-file refresh latency.
+          this.ctx.waitUntil(
+            syncAllWorkspaceWorkerSecrets(this.env as unknown as CfApiProxyEnv, workspaceId, orgId)
+              .catch((err) => console.error('[MCP] Failed to sync secrets to workers:', err))
+          );
 
-          // Sync secrets to all deployed workers in this workspace (fire-and-forget)
-          syncAllWorkspaceWorkerSecrets(this.env as unknown as CfApiProxyEnv, workspaceId, orgId)
-            .catch((err) => console.error('[MCP] Failed to sync secrets to workers:', err));
+          // Refresh live integration env file in the sandbox.
+          const envFileRefreshed = await this.refreshWorkspaceIntegrationEnvFile(workspaceId, orgId);
 
           // For dynamic "other" integrations, generate env var suffixes from field names
           const dynamicFields = type === 'other' && dynamicSchema?.fields ? dynamicSchema.fields : undefined;
@@ -1181,6 +1199,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
               category: definition.category,
               env_var_prefix: envVarPrefix,
               env_vars: envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`),
+              env_file_refreshed: envFileRefreshed,
             },
             message: `Integration '${name}' created successfully via user prompt. Environment variables: ${envVarSuffixes.map(suffix => `${envVarPrefix}_${suffix}`).join(', ')}`,
           });
