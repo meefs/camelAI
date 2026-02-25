@@ -4,6 +4,7 @@ import type { WorkspaceDO } from '../../workers/main/src/workspace';
 import type { ChatThreadDO } from '../../workers/main/src/durable-objects';
 import type { OrgSlugDO } from '../../workers/main/src/org-slug-registry';
 import type { WorkerLogsDO } from '../../workers/main/src/worker-logs-do';
+import type { AdminIndexDO } from '../../workers/main/src/admin-index-do';
 
 /**
  * Cloudflare environment bindings available in React Router loaders/actions.
@@ -16,6 +17,7 @@ export interface CloudflareEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   ORG_SLUG: DurableObjectNamespace<OrgSlugDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  ADMIN_INDEX: DurableObjectNamespace<AdminIndexDO>;
   MCP_OBJECT: DurableObjectNamespace;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
 

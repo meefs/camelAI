@@ -244,9 +244,11 @@ async function deleteR2Prefix(bucket: R2Bucket, prefix: string): Promise<number>
 
 // Admin overview functions
 function getAdminIndex(env: CloudflareEnv) {
-  const authEnv = getAuthEnv(env);
-  // Using 'any' cast for ADMIN_INDEX as DOEnv is declared in auth.ts but we access it via authEnv
-  return (authEnv as any).ADMIN_INDEX.get((authEnv as any).ADMIN_INDEX.idFromName('admin_index'));
+  const namespace = (env as any).ADMIN_INDEX;
+  if (!namespace) {
+    throw new Error('ADMIN_INDEX binding is not configured');
+  }
+  return namespace.get(namespace.idFromName('admin_index')) as any;
 }
 
 async function waitForAdminIndexSync(authEnv: AuthEnv): Promise<void> {
