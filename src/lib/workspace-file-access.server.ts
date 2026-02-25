@@ -10,16 +10,23 @@ export async function resolveWorkspaceFileReadOrgId(
   const workspace = await getWorkspace(authEnv, workspaceId);
   if (!workspace) return null;
 
+  let superuser: boolean | null = null;
+  const isSuperuser = async (): Promise<boolean> => {
+    if (superuser !== null) return superuser;
+    const userProfile = await authEnv.USER.get(authEnv.USER.idFromName(userId)).getProfile();
+    superuser = Boolean(userProfile?.is_superuser);
+    return superuser;
+  };
+
   if (workspace.org_id === sessionOrgId) {
     const access = await getWorkspaceAccess(authEnv, workspaceId, userId);
-    if (access === 'none') {
-      return null;
+    if (access !== 'none') {
+      return workspace.org_id;
     }
-    return workspace.org_id;
+    return (await isSuperuser()) ? workspace.org_id : null;
   }
 
-  const userProfile = await authEnv.USER.get(authEnv.USER.idFromName(userId)).getProfile();
-  if (!userProfile?.is_superuser) {
+  if (!(await isSuperuser())) {
     return null;
   }
 

@@ -55,9 +55,10 @@ describe('resolveWorkspaceFileReadOrgId', () => {
     expect(getProfileMock).not.toHaveBeenCalled();
   });
 
-  it('blocks same-org users with no workspace access', async () => {
+  it('blocks same-org non-superusers with no workspace access', async () => {
     getWorkspaceMock.mockResolvedValue({ id: 'ws_123', org_id: 'org_a' });
     getWorkspaceAccessMock.mockResolvedValue('none');
+    getProfileMock.mockResolvedValue({ id: 'user_1', is_superuser: false });
 
     const result = await resolveWorkspaceFileReadOrgId(
       authEnv,
@@ -67,7 +68,25 @@ describe('resolveWorkspaceFileReadOrgId', () => {
     );
 
     expect(result).toBeNull();
-    expect(getProfileMock).not.toHaveBeenCalled();
+    expect(userIdFromNameMock).toHaveBeenCalledWith('user_1');
+    expect(getProfileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows same-org superusers with no workspace access', async () => {
+    getWorkspaceMock.mockResolvedValue({ id: 'ws_123', org_id: 'org_a' });
+    getWorkspaceAccessMock.mockResolvedValue('none');
+    getProfileMock.mockResolvedValue({ id: 'user_1', is_superuser: true });
+
+    const result = await resolveWorkspaceFileReadOrgId(
+      authEnv,
+      'ws_123',
+      'org_a',
+      'user_1'
+    );
+
+    expect(result).toBe('org_a');
+    expect(userIdFromNameMock).toHaveBeenCalledWith('user_1');
+    expect(getProfileMock).toHaveBeenCalledTimes(1);
   });
 
   it('blocks cross-org non-superusers', async () => {
