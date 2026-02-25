@@ -67,6 +67,70 @@ describe('requireWorkspaceAccess superuser override', () => {
     expect(getProfileMock).not.toHaveBeenCalled();
   });
 
+  it('allows same-org read access for superusers when workspace access is none', async () => {
+    getWorkspaceMock.mockResolvedValue({
+      id: 'ws_123',
+      org_id: 'org_current',
+    });
+    getWorkspaceAccessMock.mockResolvedValue('none');
+    getProfileMock.mockResolvedValue({
+      id: 'user_123',
+      is_superuser: true,
+    });
+
+    const result = await requireWorkspaceAccess(
+      new Request('https://camelai.com/api/workspaces/ws_123/fs/list'),
+      {} as never,
+      'ws_123'
+    );
+
+    expect(result.orgId).toBe('org_current');
+    expect(result.workspaceId).toBe('ws_123');
+    expect(result.access).toBe('full');
+    expect(getWorkspaceAccessMock).toHaveBeenCalledWith(expect.anything(), 'ws_123', 'user_123');
+  });
+
+  it('rejects same-org write access for superusers when workspace access is none', async () => {
+    getWorkspaceMock.mockResolvedValue({
+      id: 'ws_123',
+      org_id: 'org_current',
+    });
+    getWorkspaceAccessMock.mockResolvedValue('none');
+    getProfileMock.mockResolvedValue({
+      id: 'user_123',
+      is_superuser: true,
+    });
+
+    await expect(
+      requireWorkspaceAccess(
+        new Request('https://camelai.com/api/workspaces/ws_123/fs/write'),
+        {} as never,
+        'ws_123',
+        { requireWrite: true }
+      )
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('rejects same-org access for non-superusers when workspace access is none', async () => {
+    getWorkspaceMock.mockResolvedValue({
+      id: 'ws_123',
+      org_id: 'org_current',
+    });
+    getWorkspaceAccessMock.mockResolvedValue('none');
+    getProfileMock.mockResolvedValue({
+      id: 'user_123',
+      is_superuser: false,
+    });
+
+    await expect(
+      requireWorkspaceAccess(
+        new Request('https://camelai.com/api/workspaces/ws_123/fs/list'),
+        {} as never,
+        'ws_123'
+      )
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
   it('allows cross-org read access for superusers', async () => {
     getWorkspaceMock.mockResolvedValue({
       id: 'ws_foreign',

@@ -49,12 +49,19 @@ export async function requireWorkspaceAccess(
     throw Response.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
-  const isCrossOrgWorkspace = workspace.org_id !== sessionContext.session.org_id;
-  if (isCrossOrgWorkspace) {
+  let superuser: boolean | null = null;
+  const isSuperuser = async (): Promise<boolean> => {
+    if (superuser !== null) return superuser;
     const userProfile = await authEnv.USER
       .get(authEnv.USER.idFromName(sessionContext.session.user_id))
       .getProfile();
-    if (!userProfile?.is_superuser) {
+    superuser = Boolean(userProfile?.is_superuser);
+    return superuser;
+  };
+
+  const isCrossOrgWorkspace = workspace.org_id !== sessionContext.session.org_id;
+  if (isCrossOrgWorkspace) {
+    if (!(await isSuperuser())) {
       throw Response.json({ error: 'Workspace not found' }, { status: 404 });
     }
     if (options.requireWrite) {
@@ -71,7 +78,19 @@ export async function requireWorkspaceAccess(
 
   const access = await getWorkspaceAccess(authEnv, workspaceId, sessionContext.session.user_id);
   if (access === 'none') {
-    throw Response.json({ error: 'Workspace not found' }, { status: 404 });
+    if (!(await isSuperuser())) {
+      throw Response.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+    if (options.requireWrite) {
+      throw Response.json({ error: 'Read-only workspace access' }, { status: 403 });
+    }
+
+    return {
+      userId: sessionContext.session.user_id,
+      orgId: workspace.org_id,
+      workspaceId,
+      access: 'full',
+    };
   }
   if (options.requireWrite && access !== 'full') {
     throw Response.json({ error: 'Read-only workspace access' }, { status: 403 });
