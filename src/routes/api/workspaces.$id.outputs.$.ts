@@ -1,9 +1,9 @@
 import type { Route } from './+types/workspaces.$id.outputs.$';
 import { getSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getWorkspace, getWorkspaceAccess } from '@/lib/auth-do';
 import type { AuthEnv } from '@/lib/auth-helpers';
 import { buildWorkspaceScopedR2Key } from '@/lib/workspace-r2-paths';
+import { resolveWorkspaceFileReadOrgId } from '@/lib/workspace-file-access.server';
 
 // Common MIME types for file serving
 const MIME_TYPES: Record<string, string> = {
@@ -121,19 +121,17 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const env = getEnv(context);
     const authEnv = env as unknown as AuthEnv;
 
-    // Verify workspace access
-    const workspace = await getWorkspace(authEnv, workspaceId);
-    if (!workspace || workspace.org_id !== sessionContext.session.org_id) {
-      return Response.json({ error: 'Workspace not found' }, { status: 404 });
-    }
-
-    const access = await getWorkspaceAccess(authEnv, workspaceId, sessionContext.session.user_id);
-    if (access === 'none') {
+    const orgId = await resolveWorkspaceFileReadOrgId(
+      authEnv,
+      workspaceId,
+      sessionContext.session.org_id,
+      sessionContext.session.user_id
+    );
+    if (!orgId) {
       return Response.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
     // Construct R2 key
-    const orgId = sessionContext.session.org_id;
     const r2Key = buildWorkspaceScopedR2Key(
       orgId,
       workspaceId,

@@ -61,6 +61,10 @@ describe('route config', () => {
       routes as RouteNode[],
       'api/admin/threads/:id/jsonl'
     );
+    const adminThreadMessagesRoute = findRouteByPath(
+      routes as RouteNode[],
+      'api/admin/threads/:id/messages'
+    );
 
     expect(orgInviteRoute).not.toBeNull();
     expect(invitationRoute).not.toBeNull();
@@ -68,5 +72,6 @@ describe('route config', () => {
     expect(devSentEmailsRoute).not.toBeNull();
     expect(devSentEmailByIdRoute).not.toBeNull();
     expect(adminThreadJsonlRoute).not.toBeNull();
+    expect(adminThreadMessagesRoute).not.toBeNull();
   });
 });

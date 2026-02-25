@@ -27,6 +27,7 @@ import { getEnv, type CloudflareEnv } from './cloudflare.server';
 import { type AuthEnv, getAuthEnv } from './auth-helpers';
 import * as authDO from './auth-do';
 import { getMessages as getThreadMessages, getThreadPreviewTarget } from './chat-do.server';
+import { deriveCheapRecentActivityCounts } from './admin-recent-activity';
 import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 
 // Helper: Collect all user IDs from KV
@@ -484,7 +485,7 @@ export async function adminGetOrgRecentActivity(
   options: {
     threadLimit?: number;
     appLimit?: number;
-    includeCounts?: boolean;
+    includeCounts?: boolean | 'cheap';
   } = {}
 ): Promise<{
   threads: AdminThreadWithContext[];
@@ -497,9 +498,9 @@ export async function adminGetOrgRecentActivity(
 
   const threadLimit = Math.max(1, Math.min(100, Math.floor(options.threadLimit ?? 10)));
   const appLimit = Math.max(1, Math.min(100, Math.floor(options.appLimit ?? 10)));
-  const includeCounts = options.includeCounts ?? true;
+  const includeCounts = options.includeCounts ?? 'cheap';
 
-  if (!includeCounts) {
+  if (includeCounts === false) {
     return getAdminIndex(env).getOrgRecentActivity(
       orgId,
       threadLimit,
@@ -508,25 +509,37 @@ export async function adminGetOrgRecentActivity(
     ) as Promise<any>;
   }
 
-  try {
-    return await getAdminIndex(env).getOrgRecentActivity(
+  if (includeCounts === true) {
+    return getAdminIndex(env).getOrgRecentActivity(
       orgId,
       threadLimit,
       appLimit,
       true
     ) as Promise<any>;
-  } catch (error) {
-    console.warn(
-      '[adminGetOrgRecentActivity] falling back to countless recent activity:',
-      error
-    );
-    return getAdminIndex(env).getOrgRecentActivity(
-      orgId,
-      threadLimit,
-      appLimit,
-      false
-    ) as Promise<any>;
   }
+
+  const recent = await getAdminIndex(env).getOrgRecentActivity(
+    orgId,
+    threadLimit,
+    appLimit,
+    false
+  ) as {
+    threads: AdminThreadWithContext[];
+    apps: AdminAppSummary[];
+  };
+  const cheapCounts = deriveCheapRecentActivityCounts({
+    recentThreadCount: recent.threads.length,
+    threadLimit,
+    recentAppCount: recent.apps.length,
+    appLimit,
+  });
+
+  return {
+    threads: recent.threads,
+    apps: recent.apps,
+    threadCount: cheapCounts.threadCount,
+    appCount: cheapCounts.appCount,
+  };
 }
 
 export async function adminGetInvitationsPaginated(

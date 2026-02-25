@@ -29,6 +29,9 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', {
   timeStyle: 'short',
 });
 
+const RECENT_THREAD_LIMIT = 10;
+const RECENT_APP_LIMIT = 10;
+
 function formatTimestamp(value: number) {
   return dateFormatter.format(new Date(value));
 }
@@ -64,11 +67,18 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     getOrgInvitations(authEnv, id),
     adminDO.adminGetWorkspacesByOrg(context, id),
     adminDO.adminGetOrgRecentActivity(context, id, {
-      threadLimit: 10,
-      appLimit: 10,
-      includeCounts: true,
+      threadLimit: RECENT_THREAD_LIMIT,
+      appLimit: RECENT_APP_LIMIT,
+      includeCounts: 'cheap',
     }),
   ]);
+
+  const threadCountFromWorkspaces = workspaces.reduce((sum, workspace) => {
+    return sum + (Number.isFinite(workspace.thread_count) ? workspace.thread_count : 0);
+  }, 0);
+  const derivedThreadCount = Number.isFinite(threadCountFromWorkspaces)
+    ? threadCountFromWorkspaces
+    : recentActivity.threadCount;
 
   // Create plain object for Client Component
   const safeOrg = {
@@ -97,7 +107,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     workspaces,
     recentThreads: recentActivity.threads,
     recentApps: recentActivity.apps,
-    threadCount: recentActivity.threadCount,
+    threadCount: derivedThreadCount,
     appCount: recentActivity.appCount,
     memberOptions,
   };
