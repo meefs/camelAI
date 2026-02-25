@@ -467,7 +467,39 @@ export async function adminGetAppsPaginated(
   const env = getEnv(context);
   const { offset = 0, limit = 50, search } = params;
   await ensureAdminIndexReady(env);
-  return getAdminIndex(env).getAppsPaginated(offset, limit, search) as Promise<any>;
+  const paged = await (getAdminIndex(env).getAppsPaginated(offset, limit, search) as Promise<PaginatedResult<AdminAppSummary>>);
+  const missingSlugOrgIds = Array.from(
+    new Set(
+      paged.items
+        .filter((app) => !app.org_slug)
+        .map((app) => app.org_id)
+        .filter((orgId): orgId is string => typeof orgId === 'string' && orgId.length > 0)
+    )
+  );
+  if (missingSlugOrgIds.length === 0) {
+    return paged;
+  }
+
+  const authEnv = getAuthEnv(env);
+  const slugEntries = await Promise.all(
+    missingSlugOrgIds.map(async (orgId) => {
+      try {
+        const org = await authDO.getOrg(authEnv, orgId);
+        return [orgId, org?.slug ?? null] as const;
+      } catch {
+        return [orgId, null] as const;
+      }
+    })
+  );
+  const orgSlugById = new Map<string, string | null>(slugEntries);
+
+  return {
+    ...paged,
+    items: paged.items.map((app) => ({
+      ...app,
+      org_slug: app.org_slug ?? orgSlugById.get(app.org_id) ?? null,
+    })),
+  };
 }
 
 export async function adminGetThreadContextById(
