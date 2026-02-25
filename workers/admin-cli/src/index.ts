@@ -28,12 +28,15 @@ import type {
 } from '../../main/src/auth';
 import type { WorkspaceDO, Workspace } from '../../main/src/workspace';
 
+import type { AdminIndexDO } from '../../main/src/admin-index-do';
+
 interface Env {
 	EMAIL_TO_USER: KVNamespace;
 	R2: R2Bucket;
 	ORG: DurableObjectNamespace<OrgDO>;
 	USER: DurableObjectNamespace<UserDO>;
 	WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+	ADMIN_INDEX: DurableObjectNamespace<AdminIndexDO>;
 	TARGET_HOST: string;
 }
 

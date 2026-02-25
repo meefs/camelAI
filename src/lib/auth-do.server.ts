@@ -118,6 +118,11 @@ const API_TOKEN_PREFIX = 'tok_';
 const SESSION_PREFIX = 'session:';
 const WORKER_SESSION_PREFIX = 'worker_session:';
 const SCREENSHOT_SESSION_PREFIX = 'screenshot_session:';
+const ADMIN_INDEX_SYNC_KEY = 'admin_index_synced';
+const ADMIN_INDEX_SYNC_READY = '1';
+const ADMIN_INDEX_SYNC_IN_PROGRESS = 'syncing';
+const ADMIN_INDEX_SYNC_WAIT_MS = 10_000;
+const ADMIN_INDEX_SYNC_POLL_MS = 200;
 const SCREENSHOT_TOKEN_PREFIX = 'screenshot_token:';
 const WORKER_AUTH_STATE_PREFIX = 'wauth_state:';
 const WORKER_AUTH_TOKEN_PREFIX = 'wauth_token:';
@@ -238,140 +243,150 @@ async function deleteR2Prefix(bucket: R2Bucket, prefix: string): Promise<number>
 }
 
 // Admin overview functions
+function getAdminIndex(env: CloudflareEnv) {
+  const authEnv = getAuthEnv(env);
+  // Using 'any' cast for ADMIN_INDEX as DOEnv is declared in auth.ts but we access it via authEnv
+  return (authEnv as any).ADMIN_INDEX.get((authEnv as any).ADMIN_INDEX.idFromName('admin_index'));
+}
+
+async function waitForAdminIndexSync(authEnv: AuthEnv): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < ADMIN_INDEX_SYNC_WAIT_MS) {
+    const syncState = await authEnv.APP_KV.get(ADMIN_INDEX_SYNC_KEY);
+    if (syncState === ADMIN_INDEX_SYNC_READY) {
+      return;
+    }
+    if (syncState !== ADMIN_INDEX_SYNC_IN_PROGRESS) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, ADMIN_INDEX_SYNC_POLL_MS));
+  }
+}
+
+async function performInitialAdminSync(env: CloudflareEnv) {
+  const authEnv = getAuthEnv(env);
+  const syncState = await authEnv.APP_KV.get(ADMIN_INDEX_SYNC_KEY);
+  if (syncState === ADMIN_INDEX_SYNC_READY) {
+    return;
+  }
+  if (syncState === ADMIN_INDEX_SYNC_IN_PROGRESS) {
+    await waitForAdminIndexSync(authEnv);
+    return;
+  }
+
+  await authEnv.APP_KV.put(ADMIN_INDEX_SYNC_KEY, ADMIN_INDEX_SYNC_IN_PROGRESS, { expirationTtl: 300 });
+
+  try {
+    const adminIndex = getAdminIndex(env);
+    const userIds = await collectAllUserIds(env);
+    
+    // Process users
+    for (const userId of userIds) {
+      const profile = await authEnv.USER.get(authEnv.USER.idFromName(userId)).getProfile();
+      if (!profile) {
+        continue;
+      }
+      const orgs = await authDO.getUserOrgs(authEnv, userId);
+      await adminIndex.handleEvent({
+        type: 'user_upsert',
+        payload: {
+          ...profile,
+          org_count: orgs.length,
+        },
+      });
+    }
+
+    // Process orgs
+    const orgIds = await collectAllOrgIds(env);
+    for (const orgId of orgIds) {
+      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+      const [info, members, workspaces, scripts, threads, invitations] = await Promise.all([
+        authDO.getOrg(authEnv, orgId),
+        authDO.getOrgMembers(authEnv, orgId),
+        authDO.listOrgWorkspaces(authEnv, orgId),
+        orgStub.listWorkerScripts(),
+        orgStub.getThreads(),
+        authDO.getOrgInvitations(authEnv, orgId),
+      ]);
+
+      if (info) {
+        await adminIndex.handleEvent({
+          type: 'org_upsert',
+          payload: {
+            ...info,
+            member_count: members.length,
+            workspace_count: workspaces.length,
+          },
+        });
+      }
+
+      const integrationCounts = await Promise.all(
+        workspaces.map(async (ws) => [ws.id, (await authDO.listWorkspaceIntegrations(authEnv, ws.id)).length] as const)
+      );
+      const integrationCountByWorkspace = new Map<string, number>(integrationCounts);
+
+      for (const ws of workspaces) {
+        await adminIndex.handleEvent({
+          type: 'workspace_upsert',
+          payload: {
+            ...ws,
+            integration_count: integrationCountByWorkspace.get(ws.id) ?? 0,
+          },
+        });
+      }
+
+      for (const script of scripts) {
+        await adminIndex.handleEvent({ type: 'app_upsert', payload: { ...script, org_id: orgId } });
+      }
+
+      for (const thread of threads) {
+        await adminIndex.handleEvent({ type: 'thread_upsert', payload: { ...thread, org_id: orgId } });
+      }
+
+      for (const inv of invitations) {
+        await adminIndex.handleEvent({ type: 'invitation_upsert', payload: { ...inv, org_id: orgId } });
+      }
+    }
+
+    await authEnv.APP_KV.put(ADMIN_INDEX_SYNC_KEY, ADMIN_INDEX_SYNC_READY);
+  } catch (err) {
+    await authEnv.APP_KV.delete(ADMIN_INDEX_SYNC_KEY);
+    throw err;
+  }
+}
+
+async function ensureAdminIndexReady(env: CloudflareEnv): Promise<void> {
+  const authEnv = getAuthEnv(env);
+  const syncState = await authEnv.APP_KV.get(ADMIN_INDEX_SYNC_KEY);
+  if (syncState === ADMIN_INDEX_SYNC_READY) {
+    return;
+  }
+
+  await performInitialAdminSync(env);
+
+  const postSyncState = await authEnv.APP_KV.get(ADMIN_INDEX_SYNC_KEY);
+  if (postSyncState !== ADMIN_INDEX_SYNC_READY) {
+    await waitForAdminIndexSync(authEnv);
+  }
+}
+
 export async function getAdminOverview(context: AppLoadContext): Promise<AdminOverview> {
   const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const userIds = await collectAllUserIds(env);
-  const seenOrgIds = new Set<string>();
-  let membershipCount = 0;
-  let orphanedUsers = 0;
 
-  const users: AdminUserSummary[] = [];
-
-  await Promise.all(
-    userIds.map(async (userId) => {
-      try {
-        const [profile, orgs] = await Promise.all([
-          authEnv.USER.get(authEnv.USER.idFromName(userId)).getProfile(),
-          authDO.getUserOrgs(authEnv, userId),
-        ]);
-
-        if (profile) {
-          const isOrphaned = profile.is_orphaned || false;
-          if (isOrphaned) orphanedUsers++;
-
-          users.push({
-            id: profile.id,
-            email: profile.email,
-            name: profile.name,
-            avatar: profile.avatar || { color: '#666', content: profile.email[0].toUpperCase() },
-            created_at: profile.created_at,
-            org_count: orgs.length,
-            is_superuser: profile.is_superuser,
-            is_orphaned: isOrphaned,
-          });
-
-          membershipCount += orgs.length;
-          for (const org of orgs) {
-            seenOrgIds.add(org.org_id);
-          }
-        }
-      } catch {
-        // User may not exist
-      }
-    })
-  );
-
-  // Count workspaces and integrations across all orgs
-  let totalWorkspaces = 0;
-  let totalIntegrations = 0;
-
-  await Promise.all(
-    Array.from(seenOrgIds).map(async (orgId) => {
-      try {
-        const workspaces = await authDO.listOrgWorkspaces(authEnv, orgId);
-        totalWorkspaces += workspaces.length;
-
-        // Count integrations per workspace
-        for (const ws of workspaces) {
-          try {
-            const integrations = await authDO.listWorkspaceIntegrations(authEnv, ws.id);
-            totalIntegrations += integrations.length;
-          } catch {
-            // Workspace may not have integrations
-          }
-        }
-      } catch {
-        // Org may not exist
-      }
-    })
-  );
-
-  return {
-    users,
-    total_users: users.length,
-    total_orgs: seenOrgIds.size,
-    total_memberships: membershipCount,
-    total_workspaces: totalWorkspaces,
-    total_integrations: totalIntegrations,
-    orphaned_users: orphanedUsers,
-  };
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getOverview();
 }
 
 export async function adminGetAllThreads(context: AppLoadContext): Promise<AdminThreadWithContext[]> {
   const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const orgIds = await collectAllOrgIds(env);
-  const threads: AdminThreadWithContext[] = [];
-
-  await Promise.all(
-    Array.from(orgIds).map(async (orgId) => {
-      try {
-        const [info, orgThreads, workspaces] = await Promise.all([
-          authDO.getOrg(authEnv, orgId),
-          authEnv.ORG.get(authEnv.ORG.idFromName(orgId)).getThreads(),
-          authDO.listOrgWorkspaces(authEnv, orgId),
-        ]);
-
-        if (info) {
-          const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
-
-          for (const thread of orgThreads) {
-            threads.push({
-              ...thread,
-              org_id: orgId,
-              org_name: info.name,
-              workspace_name: workspaceMap.get(thread.workspace_id) || 'unknown',
-            });
-          }
-        }
-      } catch {
-        // Org may not exist
-      }
-    })
-  );
-
-  return threads;
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getAllThreads() as Promise<AdminThreadWithContext[]>;
 }
 
 export async function adminGetAppCount(context: AppLoadContext): Promise<number> {
   const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const orgIds = await collectAllOrgIds(env);
-  let count = 0;
-
-  await Promise.all(
-    Array.from(orgIds).map(async (orgId) => {
-      try {
-        const scripts = await authEnv.ORG.get(authEnv.ORG.idFromName(orgId)).listWorkerScripts();
-        count += scripts.length;
-      } catch {
-        // Org may not exist
-      }
-    })
-  );
-
-  return count;
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getAppCount();
 }
 
 // Paginated admin functions
@@ -408,48 +423,9 @@ export async function adminGetOrgsPaginated(
   params: PaginationParams = {}
 ): Promise<PaginatedResult<Organization & { member_count: number; workspace_count: number }>> {
   const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const orgIds = await collectAllOrgIds(env);
   const { offset = 0, limit = 50, search } = params;
-
-  const orgs: Array<Organization & { member_count: number; workspace_count: number }> = [];
-
-  await Promise.all(
-    Array.from(orgIds).map(async (orgId) => {
-      try {
-        const [info, members, workspaces] = await Promise.all([
-          authDO.getOrg(authEnv, orgId),
-          authDO.getOrgMembers(authEnv, orgId),
-          authDO.listOrgWorkspaces(authEnv, orgId),
-        ]);
-
-        if (info) {
-          orgs.push({
-            ...info,
-            member_count: members.length,
-            workspace_count: workspaces.length,
-          });
-        }
-      } catch {
-        // Org may not exist
-      }
-    })
-  );
-
-  // Apply search filter
-  let items = orgs;
-  if (search) {
-    const lowerSearch = search.toLowerCase();
-    items = items.filter((o) => o.name.toLowerCase().includes(lowerSearch));
-  }
-
-  // Sort by created_at descending
-  items.sort((a, b) => b.created_at - a.created_at);
-
-  const total = items.length;
-  const paged = items.slice(offset, offset + limit);
-
-  return { items: paged, total, offset, limit };
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getOrgsPaginated(offset, limit, search) as Promise<any>;
 }
 
 export async function adminGetWorkspacesPaginated(
@@ -457,118 +433,19 @@ export async function adminGetWorkspacesPaginated(
   params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminWorkspaceSummary>> {
   const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const orgIds = await collectAllOrgIds(env);
   const { offset = 0, limit = 50, search } = params;
-
-  // Maps for counts
-  const threadCountByWorkspace = new Map<string, number>();
-  const integrationCountByWorkspace = new Map<string, number>();
-
-  // First pass: collect workspaces and counts
-  const entries: Array<{
-    workspace: Awaited<ReturnType<typeof authDO.listOrgWorkspaces>>[0];
-    org_id: string;
-    org_name: string;
-  }> = [];
-
-  await Promise.all(
-    Array.from(orgIds).map(async (orgId) => {
-      try {
-        const [orgInfo, orgWorkspaces, threads] = await Promise.all([
-          authDO.getOrg(authEnv, orgId),
-          authDO.listOrgWorkspaces(authEnv, orgId),
-          authEnv.ORG.get(authEnv.ORG.idFromName(orgId)).getThreads(),
-        ]);
-
-        if (orgInfo) {
-          // Count threads by workspace
-          for (const thread of threads) {
-            const count = threadCountByWorkspace.get(thread.workspace_id) ?? 0;
-            threadCountByWorkspace.set(thread.workspace_id, count + 1);
-          }
-
-          for (const ws of orgWorkspaces) {
-            entries.push({
-              workspace: ws,
-              org_id: orgId,
-              org_name: orgInfo.name,
-            });
-          }
-        }
-      } catch {
-        // Org may not exist
-      }
-    })
-  );
-
-  // Fetch integration counts for each workspace
-  await Promise.all(
-    entries.map(async (entry) => {
-      try {
-        const integrations = await authDO.listWorkspaceIntegrations(authEnv, entry.workspace.id);
-        integrationCountByWorkspace.set(entry.workspace.id, integrations.length);
-      } catch {
-        integrationCountByWorkspace.set(entry.workspace.id, 0);
-      }
-    })
-  );
-
-  // Build final workspace list
-  const workspaces: AdminWorkspaceSummary[] = entries.map((entry) => ({
-    ...entry.workspace,
-    org_id: entry.org_id,
-    org_name: entry.org_name,
-    thread_count: threadCountByWorkspace.get(entry.workspace.id) ?? 0,
-    integration_count: integrationCountByWorkspace.get(entry.workspace.id) ?? 0,
-  }));
-
-  // Apply search filter
-  let items = workspaces;
-  if (search) {
-    const lowerSearch = search.toLowerCase();
-    items = items.filter(
-      (w) =>
-        w.name.toLowerCase().includes(lowerSearch) ||
-        w.org_name.toLowerCase().includes(lowerSearch)
-    );
-  }
-
-  // Sort by created_at descending
-  items.sort((a, b) => b.created_at - a.created_at);
-
-  const total = items.length;
-  const paged = items.slice(offset, offset + limit);
-
-  return { items: paged, total, offset, limit };
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getWorkspacesPaginated(offset, limit, search) as Promise<any>;
 }
 
 export async function adminGetThreadsPaginated(
   context: AppLoadContext,
   params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminThreadWithContext>> {
-  const threads = await adminGetAllThreads(context);
+  const env = getEnv(context);
   const { offset = 0, limit = 50, search } = params;
-
-  // Apply search filter
-  let items = threads;
-  if (search) {
-    const lowerSearch = search.toLowerCase();
-    items = items.filter(
-      (t) =>
-        t.title?.toLowerCase().includes(lowerSearch) ||
-        t.org_name.toLowerCase().includes(lowerSearch) ||
-        t.workspace_name.toLowerCase().includes(lowerSearch)
-    );
-  }
-
-  // Sort by updated_at descending
-  items.sort((a, b) => b.updated_at - a.updated_at);
-
-  const total = items.length;
-  const paged = items.slice(offset, offset + limit);
-
-  return { items: paged, total, offset, limit };
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getThreadsPaginated(offset, limit, search) as Promise<any>;
 }
 
 export async function adminGetAppsPaginated(
@@ -576,88 +453,9 @@ export async function adminGetAppsPaginated(
   params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminAppSummary>> {
   const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const orgIds = await collectAllOrgIds(env);
   const { offset = 0, limit = 50, search } = params;
-
-  // First pass: collect all scripts with org/workspace info
-  const entries: Array<{
-    script: authDO.WorkerScript;
-    org_id: string;
-    org_name: string;
-    workspace_name: string;
-  }> = [];
-
-  await Promise.all(
-    Array.from(orgIds).map(async (orgId) => {
-      try {
-        const [orgInfo, scripts, workspaces] = await Promise.all([
-          authDO.getOrg(authEnv, orgId),
-          authEnv.ORG.get(authEnv.ORG.idFromName(orgId)).listWorkerScripts(),
-          authDO.listOrgWorkspaces(authEnv, orgId),
-        ]);
-
-        if (orgInfo) {
-          const workspaceMap = new Map(workspaces.map((ws) => [ws.id, ws.name]));
-          for (const script of scripts) {
-            entries.push({
-              script,
-              org_id: orgId,
-              org_name: orgInfo.name,
-              workspace_name: workspaceMap.get(script.workspace_id) || 'unknown',
-            });
-          }
-        }
-      } catch {
-        // Org may not exist
-      }
-    })
-  );
-
-  // Batch fetch creator info
-  const creatorIds = [...new Set(entries.map((e) => e.script.created_by).filter(Boolean))];
-  const creators = await authDO.getUsersByIds(authEnv, creatorIds);
-  const creatorMap = new Map(creators.map((c) => [c.id, c]));
-
-  // Build final app list with creator info
-  const apps: AdminAppSummary[] = entries.map((entry) => {
-    const creator = creatorMap.get(entry.script.created_by);
-    return {
-      script_name: entry.script.script_name,
-      org_id: entry.org_id,
-      org_name: entry.org_name,
-      workspace_id: entry.script.workspace_id,
-      workspace_name: entry.workspace_name,
-      created_by: entry.script.created_by,
-      created_by_name: creator?.name ?? null,
-      created_by_email: creator?.email ?? null,
-      created_at: entry.script.created_at,
-      updated_at: entry.script.updated_at,
-      is_public: entry.script.is_public,
-      preview_status: entry.script.preview_status,
-      preview_error: entry.script.preview_error,
-    };
-  });
-
-  // Apply search filter (include creator info in search)
-  let items = apps;
-  if (search) {
-    const lowerSearch = search.toLowerCase();
-    items = items.filter((a) =>
-      [a.script_name, a.org_name, a.workspace_name, a.created_by_name ?? '', a.created_by_email ?? '']
-        .join(' ')
-        .toLowerCase()
-        .includes(lowerSearch)
-    );
-  }
-
-  // Sort by updated_at descending
-  items.sort((a, b) => b.updated_at - a.updated_at);
-
-  const total = items.length;
-  const paged = items.slice(offset, offset + limit);
-
-  return { items: paged, total, offset, limit };
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getAppsPaginated(offset, limit, search) as Promise<any>;
 }
 
 export async function adminGetInvitationsPaginated(
@@ -665,77 +463,9 @@ export async function adminGetInvitationsPaginated(
   params: PaginationParams = {}
 ): Promise<PaginatedResult<AdminInvitation>> {
   const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
-  const orgIds = await collectAllOrgIds(env);
   const { offset = 0, limit = 50, search } = params;
-
-  // First pass: collect all invitations with org info
-  const entries: Array<{
-    inv: Awaited<ReturnType<typeof authDO.getOrgInvitations>>[0];
-    org_id: string;
-    org_name: string;
-  }> = [];
-
-  await Promise.all(
-    Array.from(orgIds).map(async (orgId) => {
-      try {
-        const [orgInfo, orgInvitations] = await Promise.all([
-          authDO.getOrg(authEnv, orgId),
-          authDO.getOrgInvitations(authEnv, orgId),
-        ]);
-
-        if (orgInfo) {
-          for (const inv of orgInvitations) {
-            entries.push({
-              inv,
-              org_id: orgId,
-              org_name: orgInfo.name,
-            });
-          }
-        }
-      } catch {
-        // Org may not exist
-      }
-    })
-  );
-
-  // Batch fetch inviter info
-  const inviterIds = [...new Set(entries.map((e) => e.inv.invited_by).filter(Boolean))];
-  const inviters = await authDO.getUsersByIds(authEnv, inviterIds);
-  const inviterMap = new Map(inviters.map((u) => [u.id, u]));
-
-  // Build final invitation list with inviter info
-  const invitations: AdminInvitation[] = entries.map((entry) => {
-    const inviter = inviterMap.get(entry.inv.invited_by);
-    return {
-      ...entry.inv,
-      org_id: entry.org_id,
-      org_name: entry.org_name,
-      inviter_email: inviter?.email ?? entry.inv.invited_by,
-      inviter_name: inviter?.name ?? null,
-    };
-  });
-
-  // Apply search filter
-  let items = invitations;
-  if (search) {
-    const lowerSearch = search.toLowerCase();
-    items = items.filter(
-      (i) =>
-        i.email.toLowerCase().includes(lowerSearch) ||
-        i.org_name.toLowerCase().includes(lowerSearch) ||
-        (i.inviter_email?.toLowerCase().includes(lowerSearch)) ||
-        (i.inviter_name?.toLowerCase().includes(lowerSearch))
-    );
-  }
-
-  // Sort by created_at descending
-  items.sort((a, b) => b.created_at - a.created_at);
-
-  const total = items.length;
-  const paged = items.slice(offset, offset + limit);
-
-  return { items: paged, total, offset, limit };
+  await ensureAdminIndexReady(env);
+  return getAdminIndex(env).getInvitationsPaginated(offset, limit, search) as Promise<any>;
 }
 
 // Admin detail functions

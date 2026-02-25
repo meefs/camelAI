@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
 import type { Workspace } from '../../../src/types';
 import type { OrgDO } from './auth';
+import { dispatchAdminEvent } from './auth';
 import { decryptCredentials, encryptCredentials } from '../../../src/lib/integration-crypto';
 import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
 import { mintBigQueryAccessTokenFromServiceAccount } from './google-service-account';
@@ -267,6 +268,27 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     );
   }
 
+  private getActiveIntegrationCount(): number {
+    try {
+      const rawCount = this.sql.exec('SELECT COUNT(*) as count FROM integrations WHERE deleted_at IS NULL').next().value?.count;
+      const count = typeof rawCount === 'number' ? rawCount : Number(rawCount ?? 0);
+      return Number.isFinite(count) ? count : 0;
+    } catch {
+      // integrations table may not be available during early migration paths.
+      return 0;
+    }
+  }
+
+  private dispatchWorkspaceUpsert(info: Workspace): void {
+    dispatchAdminEvent(this.ctx as any, this.env as any, {
+      type: 'workspace_upsert',
+      payload: {
+        ...info,
+        integration_count: this.getActiveIntegrationCount(),
+      },
+    });
+  }
+
   async getInfo(): Promise<Workspace | null> {
     const rows = this.sql.exec('SELECT value FROM workspace_info WHERE key = ?', 'data').toArray();
     if (rows.length === 0) return null;
@@ -296,6 +318,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       'data',
       JSON.stringify(info)
     );
+    this.dispatchWorkspaceUpsert(info);
   }
 
   async createWorkspace(
@@ -632,6 +655,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     if (resolvedTokenExpiresAt) {
       await this.scheduleNextTokenRefresh();
     }
+
+    const info = await this.getInfo();
+    if (info) {
+      this.dispatchWorkspaceUpsert(info);
+    }
   }
 
   async updateIntegration(
@@ -697,6 +725,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const now = Date.now();
     this.sql.exec('UPDATE integrations SET deleted_at = ?, updated_at = ? WHERE id = ?', now, now, id);
     this.log('integration_deleted', actorId, id);
+
+    const info = await this.getInfo();
+    if (info) {
+      this.dispatchWorkspaceUpsert(info);
+    }
   }
 
   async getAuditLog(limit = 100, offset = 0): Promise<WorkspaceAuditLogEntry[]> {

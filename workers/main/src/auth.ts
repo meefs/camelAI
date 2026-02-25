@@ -21,6 +21,7 @@ export interface DOEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   ORG_SLUG: DurableObjectNamespace<OrgSlugDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  ADMIN_INDEX: DurableObjectNamespace<import('./admin-index-do.js').AdminIndexDO>;
   EMAIL_TO_USER: KVNamespace;
   APP_KV: KVNamespace; // Also used for spend tracking with prefix "spend:"
 }
@@ -72,6 +73,20 @@ function isValidOrgSlug(slug: string): boolean {
 function ensureValidOrgSlug(slug: string): void {
   if (!isValidOrgSlug(slug)) {
     throw new Error('invalid_slug_format');
+  }
+}
+
+import type { AdminEventType } from './admin-index-do.js';
+
+export function dispatchAdminEvent(ctx: DurableObjectState, env: DOEnv, event: AdminEventType) {
+  try {
+    ctx.waitUntil(
+      env.ADMIN_INDEX.get(env.ADMIN_INDEX.idFromName('admin_index'))
+        .handleEvent(event)
+        .catch(err => console.error('AdminIndex sync failed:', err))
+    );
+  } catch (err) {
+    console.error('Failed to dispatch to AdminIndex', err);
   }
 }
 
@@ -563,6 +578,7 @@ export class UserDO extends DurableObject<DOEnv> {
       'data',
       JSON.stringify(profile)
     );
+    dispatchAdminEvent(this.ctx, this.env, { type: 'user_upsert', payload: profile });
   }
 
   async getPasswordHash(): Promise<string | null> {
@@ -742,10 +758,14 @@ export class UserDO extends DurableObject<DOEnv> {
       now,
       lastWorkspaceId
     );
+    const profile = await this.getProfile();
+    if (profile) dispatchAdminEvent(this.ctx, this.env, { type: 'user_org_delta', payload: { user_id: profile.id, delta: 1 } });
   }
 
   async removeOrg(orgId: string): Promise<void> {
     this.sql.exec('DELETE FROM orgs WHERE org_id = ?', orgId);
+    const profile = await this.getProfile();
+    if (profile) dispatchAdminEvent(this.ctx, this.env, { type: 'user_org_delta', payload: { user_id: profile.id, delta: -1 } });
   }
 
   async updateOrgRole(orgId: string, role: OrgRole): Promise<void> {
@@ -1528,6 +1548,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       'data',
       JSON.stringify(info)
     );
+    dispatchAdminEvent(this.ctx, this.env, { type: 'org_upsert', payload: info });
   }
 
   async createOrg(id: string, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
@@ -1697,6 +1718,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
     if (!existing) {
       this.log('member_added', actorId, userId, { role });
+      const info = await this.getInfo();
+      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'org_member_delta', payload: { org_id: info.id, delta: 1 } });
     }
   }
 
@@ -1708,6 +1731,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec('DELETE FROM members WHERE user_id = ?', userId);
     if (existing) {
       this.log('member_removed', actorId, userId, { role: existing.role });
+      const info = await this.getInfo();
+      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'org_member_delta', payload: { org_id: info.id, delta: -1 } });
     }
     this.ensureOwnerExists(actorId);
   }
@@ -1848,11 +1873,14 @@ export class OrgDO extends DurableObject<DOEnv> {
       workspaceAccess ? JSON.stringify(workspaceAccess) : null
     );
 
+    const info = await this.getInfo();
+    if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'invitation_upsert', payload: { ...invitation, org_id: info.id } });
     return invitation;
   }
 
   async deleteInvitation(id: string): Promise<void> {
     this.sql.exec('DELETE FROM invitations WHERE id = ?', id);
+    dispatchAdminEvent(this.ctx, this.env, { type: 'invitation_delete', payload: { id } });
   }
 
   async updateInvitationWorkspaceAccess(
@@ -1879,6 +1907,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     // Delete the invitation (single use)
     await this.deleteInvitation(invitationId);
 
+    dispatchAdminEvent(this.ctx, this.env, { type: 'invitation_delete', payload: { id: invitationId } });
     return invitation;
   }
 
@@ -2021,7 +2050,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       configPath ?? null
     );
     this.log('worker_script_registered', createdBy, scriptName, { workspace_id: workspaceId, config_path: configPath });
-    return {
+    const newScript = {
       script_name: scriptName,
       workspace_id: workspaceId,
       created_by: createdBy,
@@ -2030,10 +2059,13 @@ export class OrgDO extends DurableObject<DOEnv> {
       is_public: true,
       preview_key: null,
       preview_updated_at: null,
-      preview_status: 'pending',
+      preview_status: 'pending' as WorkerScriptPreviewStatus,
       preview_error: null,
       config_path: configPath ?? null,
     };
+    const info = await this.getInfo();
+    if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...newScript, org_id: info.id } });
+    return newScript;
   }
 
   async getWorkerScript(scriptName: string): Promise<WorkerScript | null> {
@@ -2107,6 +2139,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     const script = await this.getWorkerScript(scriptName);
     if (script) {
       this.log('worker_script_touched', actorId, scriptName);
+      const info = await this.getInfo();
+      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...script, org_id: info.id } });
     }
     return script;
   }
@@ -2122,11 +2156,14 @@ export class OrgDO extends DurableObject<DOEnv> {
       scriptName
     );
     this.log('worker_script_visibility_changed', actorId, scriptName, { is_public: isPublic });
-    return {
+    const updated = {
       ...existing,
       is_public: isPublic,
       updated_at: now,
     };
+    const info = await this.getInfo();
+    if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...updated, org_id: info.id } });
+    return updated;
   }
 
   async updateWorkerScriptPreview(
@@ -2159,6 +2196,8 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
 
     const script = await this.getWorkerScript(scriptName);
+    const info = await this.getInfo();
+    if (info && script) dispatchAdminEvent(this.ctx, this.env, { type: 'app_upsert', payload: { ...script, org_id: info.id } });
     return { script, updated: true, stale: false };
   }
 
@@ -2167,6 +2206,11 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (!existing) return false;
     this.sql.exec('DELETE FROM worker_scripts WHERE script_name = ?', scriptName);
     this.log('worker_script_deleted', actorId, scriptName, { workspace_id: existing.workspace_id });
+    const info = await this.getInfo();
+    dispatchAdminEvent(this.ctx, this.env, {
+      type: 'app_delete',
+      payload: { script_name: scriptName, org_id: info?.id ?? null },
+    });
     return true;
   }
 
@@ -2517,7 +2561,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       threadSource
     );
     this.log('thread_created', creator, id, { workspace_id: workspaceId, title: t, source: threadSource });
-    return {
+    const thread = {
       id,
       workspace_id: workspaceId,
       title: t,
@@ -2528,6 +2572,10 @@ export class OrgDO extends DurableObject<DOEnv> {
       user_message_count: 0,
       first_user_message: msg,
     };
+    this.getInfo().then(info => {
+      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'thread_upsert', payload: { ...thread, org_id: info.id } });
+    });
+    return thread;
   }
 
   /**
@@ -2551,11 +2599,17 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (actorId) {
       this.log('thread_updated', actorId, id, { title });
     }
-    return {
+    const updated = {
       ...existing,
       title,
       updated_at: now,
     };
+    this.getInfo().then((info) => {
+      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'thread_upsert', payload: { ...updated, org_id: info.id } });
+    }).catch((err) => {
+      console.error('Failed to sync thread update to AdminIndex', err);
+    });
+    return updated;
   }
 
   /**
@@ -2607,12 +2661,18 @@ export class OrgDO extends DurableObject<DOEnv> {
       this.log('thread_admin_updated', actorId, id, updates);
     }
 
-    return {
+    const updated = {
       ...existing,
       title: updates.title ?? existing.title,
       created_by: updates.created_by ?? existing.created_by,
       updated_at: now,
     };
+    this.getInfo().then((info) => {
+      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'thread_upsert', payload: { ...updated, org_id: info.id } });
+    }).catch((err) => {
+      console.error('Failed to sync admin thread update to AdminIndex', err);
+    });
+    return updated;
   }
 
   /**
@@ -2625,6 +2685,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (actorId) {
       this.log('thread_deleted', actorId, id, { workspace_id: existing.workspace_id });
     }
+    dispatchAdminEvent(this.ctx, this.env, { type: 'thread_delete', payload: { id, workspace_id: existing.workspace_id } });
     return true;
   }
 
@@ -2632,12 +2693,24 @@ export class OrgDO extends DurableObject<DOEnv> {
    * Touch a thread (update its updated_at timestamp and increment user message count)
    */
   touchThread(id: string): void {
+    const existing = this.getThread(id);
+    if (!existing) return;
     const now = Date.now();
     this.sql.exec(
       'UPDATE threads SET updated_at = ?, user_message_count = user_message_count + 1 WHERE id = ?',
       now,
       id
     );
+    const updated = {
+      ...existing,
+      updated_at: now,
+      user_message_count: existing.user_message_count + 1,
+    };
+    this.getInfo().then((info) => {
+      if (info) dispatchAdminEvent(this.ctx, this.env, { type: 'thread_upsert', payload: { ...updated, org_id: info.id } });
+    }).catch((err) => {
+      console.error('Failed to sync thread touch to AdminIndex', err);
+    });
   }
 
   async validateChatThreadAccess(

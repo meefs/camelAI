@@ -47,6 +47,7 @@ export { OrgSlugDO } from './org-slug-registry.js';
 export { WorkspaceDO } from './workspace.js';
 export { WorkerLogsDO } from './worker-logs-do.js';
 export { R2VirtualBucket } from './r2-virtual-bucket.js';
+export { AdminIndexDO } from './admin-index-do.js';
 
 // Extend React Router's AppLoadContext
 declare module 'react-router' {
