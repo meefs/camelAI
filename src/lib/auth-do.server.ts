@@ -667,6 +667,7 @@ export async function adminGetAppDetail(
           ...script,
           org_id: orgId,
           org_name: orgInfo?.name || 'Unknown',
+          org_slug: orgInfo?.slug ?? null,
           workspace_name: workspaceMap.get(script.workspace_id) || 'Unknown',
           created_by_name: creator?.name ?? null,
           created_by_email: creator?.email ?? null,

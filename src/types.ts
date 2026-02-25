@@ -365,6 +365,7 @@ export interface AdminAppSummary {
   workspace_name: string;
   org_id: string;
   org_name: string;
+  org_slug: string | null;
   created_by: string;
   created_by_name: string | null;
   created_by_email: string | null;

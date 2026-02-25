@@ -469,7 +469,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
   }
 
   async getAppsPaginated(offset: number, limit: number, search?: string) {
-    let query = 'SELECT a.*, o.name as org_name, w.name as workspace_name, u.name as created_by_name, u.email as created_by_email FROM apps a LEFT JOIN orgs o ON a.org_id = o.id LEFT JOIN workspaces w ON a.workspace_id = w.id LEFT JOIN users u ON a.created_by = u.id';
+    let query = 'SELECT a.*, o.name as org_name, o.slug as org_slug, w.name as workspace_name, u.name as created_by_name, u.email as created_by_email FROM apps a LEFT JOIN orgs o ON a.org_id = o.id LEFT JOIN workspaces w ON a.workspace_id = w.id LEFT JOIN users u ON a.created_by = u.id';
     const params: any[] = [];
     if (search) {
       query += ' WHERE a.script_name LIKE ? OR o.name LIKE ? OR w.name LIKE ? OR u.name LIKE ? OR u.email LIKE ?';
@@ -531,7 +531,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     const resolvedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
     return Array.from(
       this.sql.exec(
-        `SELECT a.*, o.name as org_name, w.name as workspace_name, u.name as created_by_name, u.email as created_by_email
+        `SELECT a.*, o.name as org_name, o.slug as org_slug, w.name as workspace_name, u.name as created_by_name, u.email as created_by_email
          FROM apps a
          LEFT JOIN orgs o ON a.org_id = o.id
          LEFT JOIN workspaces w ON a.workspace_id = w.id

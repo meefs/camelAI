@@ -28,6 +28,12 @@ function formatTimestamp(value: number) {
   return dateFormatter.format(new Date(value));
 }
 
+function getAdminAppHost(scriptName: string, orgSlug: string | null, vanityDomain: string) {
+  return orgSlug
+    ? `${scriptName}--${orgSlug}.${vanityDomain}`
+    : `${scriptName}.${vanityDomain}`;
+}
+
 export function meta() {
   return [
     { title: 'Apps - Admin - camelAI' },
@@ -103,92 +109,95 @@ export default function AdminAppsPage() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  apps.map((app) => (
-                    <TableRow key={app.script_name}>
-                      <TableCell>
-                        <div className="space-y-1">
+                  apps.map((app) => {
+                    const appHost = getAdminAppHost(app.script_name, app.org_slug, vanityDomain);
+                    return (
+                      <TableRow key={app.script_name}>
+                        <TableCell>
+                          <div className="space-y-1">
+                            <Link
+                              to={`/qaml-backdoor/apps/${encodeURIComponent(app.script_name)}`}
+                              className="block hover:underline"
+                            >
+                              <div className="font-medium text-foreground font-mono">
+                                {app.script_name}
+                              </div>
+                            </Link>
+                            <a
+                              href={`https://${appHost}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs text-primary hover:underline font-mono"
+                            >
+                              {appHost}
+                            </a>
+                          </div>
+                        </TableCell>
+                        <TableCell>
                           <Link
-                            to={`/qaml-backdoor/apps/${encodeURIComponent(app.script_name)}`}
-                            className="block hover:underline"
+                            to={`/qaml-backdoor/orgs/${app.org_id}`}
+                            className="hover:underline"
                           >
-                            <div className="font-medium text-foreground font-mono">
-                              {app.script_name}
+                            <div className="font-medium">{app.org_name}</div>
+                            <div className="text-xs text-muted-foreground font-mono">
+                              {app.org_id.slice(0, 8)}...
                             </div>
                           </Link>
-                          <a
-                            href={`https://${app.script_name}.${vanityDomain}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-xs text-primary hover:underline font-mono"
+                        </TableCell>
+                        <TableCell>
+                          <Link
+                            to={`/qaml-backdoor/workspaces/${app.workspace_id}`}
+                            className="hover:underline"
                           >
-                            {app.script_name}.{vanityDomain}
-                          </a>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Link
-                          to={`/qaml-backdoor/orgs/${app.org_id}`}
-                          className="hover:underline"
-                        >
-                          <div className="font-medium">{app.org_name}</div>
-                          <div className="text-xs text-muted-foreground font-mono">
-                            {app.org_id.slice(0, 8)}...
-                          </div>
-                        </Link>
-                      </TableCell>
-                      <TableCell>
-                        <Link
-                          to={`/qaml-backdoor/workspaces/${app.workspace_id}`}
-                          className="hover:underline"
-                        >
-                          <div className="font-medium">{app.workspace_name}</div>
-                          <div className="text-xs text-muted-foreground font-mono">
-                            {app.workspace_id.slice(0, 8)}...
-                          </div>
-                        </Link>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={app.is_public ? 'default' : 'secondary'}>
-                          {app.is_public ? 'Public' : 'Private'}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <div className="space-y-1">
-                          <Badge
-                            variant={
-                              app.preview_status === 'ready'
-                                ? 'default'
-                                : app.preview_status === 'failed'
-                                  ? 'destructive'
-                                  : app.preview_status === 'pending'
-                                    ? 'secondary'
-                                    : 'outline'
-                            }
-                          >
-                            {app.preview_status ?? 'Unknown'}
+                            <div className="font-medium">{app.workspace_name}</div>
+                            <div className="text-xs text-muted-foreground font-mono">
+                              {app.workspace_id.slice(0, 8)}...
+                            </div>
+                          </Link>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={app.is_public ? 'default' : 'secondary'}>
+                            {app.is_public ? 'Public' : 'Private'}
                           </Badge>
-                          {app.preview_status === 'failed' && app.preview_error ? (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span
-                                  className="block max-w-[240px] truncate text-xs text-muted-foreground font-mono"
-                                  tabIndex={0}
-                                >
+                        </TableCell>
+                        <TableCell>
+                          <div className="space-y-1">
+                            <Badge
+                              variant={
+                                app.preview_status === 'ready'
+                                  ? 'default'
+                                  : app.preview_status === 'failed'
+                                    ? 'destructive'
+                                    : app.preview_status === 'pending'
+                                      ? 'secondary'
+                                      : 'outline'
+                              }
+                            >
+                              {app.preview_status ?? 'Unknown'}
+                            </Badge>
+                            {app.preview_status === 'failed' && app.preview_error ? (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span
+                                    className="block max-w-[240px] truncate text-xs text-muted-foreground font-mono"
+                                    tabIndex={0}
+                                  >
+                                    {app.preview_error}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-xs break-words font-mono">
                                   {app.preview_error}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-xs break-words font-mono">
-                                {app.preview_error}
-                              </TooltipContent>
-                            </Tooltip>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {formatTimestamp(app.updated_at)}
-                      </TableCell>
-                    </TableRow>
-                  ))
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {formatTimestamp(app.updated_at)}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
                 )}
               </TableBody>
             </Table>
