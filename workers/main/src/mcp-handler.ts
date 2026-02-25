@@ -870,7 +870,7 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           .describe('Credential fields as an object (e.g., api_key, api_secret, client_id, client_secret). These are encrypted at rest.'),
       },
       async ({ integration_type, name, config = {}, credentials = {} }) => {
-        const { userId, workspaceId } = this.requireAuth();
+        const { orgId, userId, workspaceId } = this.requireAuth();
         if (!workspaceId) {
           return this.textResponse({ error: 'No workspace context available' });
         }
