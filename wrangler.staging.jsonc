@@ -80,7 +80,8 @@
 			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
 			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
-			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" }
+			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
+			{ "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" }
 		]
 	},
 	"migrations": [
@@ -97,6 +98,7 @@
 		{ "tag": "v11", "new_sqlite_classes": ["MssqlProxy"] },
 		{ "tag": "v12", "deleted_classes": ["MssqlProxy"], "new_sqlite_classes": ["DataProxy"] },
 		{ "tag": "v13", "deleted_classes": ["ThreadSandbox"] },
-		{ "tag": "v14", "new_sqlite_classes": ["WorkerLogsDO"] }
+		{ "tag": "v14", "new_sqlite_classes": ["WorkerLogsDO"] },
+		{ "tag": "v15", "new_sqlite_classes": ["AdminIndexDO"] }
 	]
 }
