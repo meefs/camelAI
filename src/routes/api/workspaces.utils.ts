@@ -45,8 +45,28 @@ export async function requireWorkspaceAccess(
   const authEnv = env as unknown as AuthEnv;
 
   const workspace = await getWorkspace(authEnv, workspaceId);
-  if (!workspace || workspace.org_id !== sessionContext.session.org_id) {
+  if (!workspace) {
     throw Response.json({ error: 'Workspace not found' }, { status: 404 });
+  }
+
+  const isCrossOrgWorkspace = workspace.org_id !== sessionContext.session.org_id;
+  if (isCrossOrgWorkspace) {
+    const userProfile = await authEnv.USER
+      .get(authEnv.USER.idFromName(sessionContext.session.user_id))
+      .getProfile();
+    if (!userProfile?.is_superuser) {
+      throw Response.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+    if (options.requireWrite) {
+      throw Response.json({ error: 'Read-only workspace access' }, { status: 403 });
+    }
+
+    return {
+      userId: sessionContext.session.user_id,
+      orgId: workspace.org_id,
+      workspaceId,
+      access: 'full',
+    };
   }
 
   const access = await getWorkspaceAccess(authEnv, workspaceId, sessionContext.session.user_id);
@@ -59,7 +79,7 @@ export async function requireWorkspaceAccess(
 
   return {
     userId: sessionContext.session.user_id,
-    orgId: sessionContext.session.org_id,
+    orgId: workspace.org_id,
     workspaceId,
     access,
   };

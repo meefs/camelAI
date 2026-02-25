@@ -3327,13 +3327,18 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
   const fileExternalOpenUrl = useMemo(() => {
     if (previewTarget?.kind !== 'file') return '';
     if (previewTarget.source === 'workspace') {
-      return `/computer/${previewTarget.workspaceId}?file=${encodeURIComponent(previewTarget.path)}`;
+      const query = new URLSearchParams();
+      query.set('file', previewTarget.path);
+      if (readOnly) {
+        query.set('adminReadonly', '1');
+      }
+      return `/computer/${previewTarget.workspaceId}?${query.toString()}`;
     }
     const normalizedPath = previewTarget.path.replace(/^\/+/, '');
     const encodedPath = encodePathSegments(normalizedPath);
     const route = previewTarget.source === 'upload' ? 'uploads' : 'outputs';
     return `/api/workspaces/${previewTarget.workspaceId}/${route}/${encodedPath}`;
-  }, [previewTarget, encodePathSegments]);
+  }, [previewTarget, encodePathSegments, readOnly]);
 
   const handlePreviewRefresh = useCallback(() => {
     if (!previewTarget) return;
