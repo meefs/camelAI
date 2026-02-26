@@ -128,6 +128,8 @@ const SCREENSHOT_TOKEN_PREFIX = 'screenshot_token:';
 const WORKER_AUTH_STATE_PREFIX = 'wauth_state:';
 const WORKER_AUTH_TOKEN_PREFIX = 'wauth_token:';
 const PREVIEW_PREFIX = 'app-previews/';
+const ORG_MEMBERSHIP_PROBE_CONCURRENCY = 20;
+const ORG_MEMBERSHIP_MUTATION_CONCURRENCY = 8;
 
 function parseJsonSafely(value: string | null): Record<string, unknown> | null {
   if (!value) return null;
@@ -154,6 +156,30 @@ function isMissingRpcMethodError(error: unknown, methodName: string): boolean {
     error instanceof TypeError &&
     error.message.includes(`does not implement "${methodName}"`)
   );
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const runWorker = async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]);
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+  return results;
 }
 
 async function deleteKvEntriesWithPrefix(
@@ -1054,15 +1080,30 @@ export async function hardDeleteAdminUser(
 
   const orgMemberships: Array<{ org_id: string; role: OrgRole }> = [];
   const orgMembershipProbeErrors: string[] = [];
-  for (const orgId of allProbeOrgIds) {
-    try {
-      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-      const member = await orgStub.getMember(userId);
-      if (!member) continue;
-      orgMemberships.push({ org_id: orgId, role: member.role });
-    } catch (error) {
-      orgMembershipProbeErrors.push(`${orgId.slice(0, 8)}: ${toErrorMessage(error)}`);
+  const orgProbeResults = await mapWithConcurrency(
+    Array.from(allProbeOrgIds),
+    ORG_MEMBERSHIP_PROBE_CONCURRENCY,
+    async (orgId) => {
+      try {
+        const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+        const member = await orgStub.getMember(userId);
+        if (!member) {
+          return null;
+        }
+        return { org_id: orgId, role: member.role } as { org_id: string; role: OrgRole };
+      } catch (error) {
+        return `${orgId.slice(0, 8)}: ${toErrorMessage(error)}`;
+      }
     }
+  );
+
+  for (const result of orgProbeResults) {
+    if (!result) continue;
+    if (typeof result === 'string') {
+      orgMembershipProbeErrors.push(result);
+      continue;
+    }
+    orgMemberships.push(result);
   }
   if (orgMembershipProbeErrors.length > 0) {
     const preview = orgMembershipProbeErrors.slice(0, 3).join('; ');
@@ -1103,20 +1144,31 @@ export async function hardDeleteAdminUser(
 
   // 5. Remove user from all orgs first. If any membership cleanup fails,
   // stop before wiping the user record to avoid orphaned org membership rows.
-  let removedOrgMembershipsCount = 0;
   const removedOrgMemberships: Array<{ org_id: string; role: OrgRole }> = [];
   const orgRemovalErrors: string[] = [];
-  for (const org of orgMemberships) {
-    try {
-      const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.org_id));
-      await orgStub.removeMember(userId, actorId);
-      removedOrgMemberships.push({ org_id: org.org_id, role: org.role });
-      removedOrgMembershipsCount++;
-    } catch (error) {
-      orgRemovalErrors.push(
-        `${org.org_id.slice(0, 8)}: ${toErrorMessage(error)}`
-      );
+  const removalResults = await mapWithConcurrency(
+    orgMemberships,
+    ORG_MEMBERSHIP_MUTATION_CONCURRENCY,
+    async (org) => {
+      try {
+        const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(org.org_id));
+        await orgStub.removeMember(userId, actorId);
+        return { ok: true as const, org };
+      } catch (error) {
+        return {
+          ok: false as const,
+          error: `${org.org_id.slice(0, 8)}: ${toErrorMessage(error)}`,
+        };
+      }
     }
+  );
+
+  for (const result of removalResults) {
+    if (result.ok) {
+      removedOrgMemberships.push({ org_id: result.org.org_id, role: result.org.role });
+      continue;
+    }
+    orgRemovalErrors.push(result.error);
   }
   if (orgRemovalErrors.length > 0) {
     const rollbackErrors: string[] = [];
@@ -1171,6 +1223,13 @@ export async function hardDeleteAdminUser(
     throw new Error(
       `Failed to wipe UserDO state: ${toErrorMessage(error)} ${rollbackSummary}`
     );
+  }
+
+  // Keep AdminIndexDO aligned with UserDO + EMAIL_TO_USER cleanup.
+  try {
+    await getAdminIndex(env).handleEvent({ type: 'user_delete', payload: { id: userId } });
+  } catch (error) {
+    warnings.push(`Failed to remove user from admin index: ${toErrorMessage(error)}`);
   }
 
   // 7. Delete EMAIL_TO_USER KV entries.
@@ -1274,7 +1333,7 @@ export async function hardDeleteAdminUser(
   }
 
   return {
-    removed_org_memberships: removedOrgMembershipsCount,
+    removed_org_memberships: removedOrgMemberships.length,
     warnings,
   };
 }
