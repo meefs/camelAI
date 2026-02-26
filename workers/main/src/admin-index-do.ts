@@ -3,6 +3,7 @@ import type { DOEnv } from './auth';
 
 export type AdminEventType =
   | { type: 'user_upsert'; payload: any }
+  | { type: 'user_delete'; payload: { id: string } }
   | { type: 'org_upsert'; payload: any }
   | { type: 'workspace_upsert'; payload: any }
   | { type: 'thread_upsert'; payload: any }
@@ -198,6 +199,9 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
           `, u.id, u.email, u.name, u.avatar?.color || '', u.avatar?.content || '', u.created_at, u.is_superuser ? 1 : 0, u.is_orphaned ? 1 : 0, orgCount, u.id);
           break;
         }
+        case 'user_delete':
+          this.sql.exec('DELETE FROM users WHERE id = ?', event.payload.id);
+          break;
         case 'org_upsert': {
           const o = event.payload;
           const slug = typeof o.slug === 'string' && o.slug.trim().length > 0 ? o.slug : null;
