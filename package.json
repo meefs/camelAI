@@ -43,7 +43,6 @@
 		"@anthropic-ai/bedrock-sdk": "^0.26.0",
 		"@anthropic-ai/foundry-sdk": "^0.2.0",
 		"@anthropic-ai/sdk": "^0.71.2",
-		"@cloudflare/containers": "^0.1.0",
 		"@cloudflare/vite-plugin": "^1.25.4",
 		"@conform-to/react": "^1.15.1",
 		"@conform-to/zod": "^1.15.1",

@@ -381,7 +381,6 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			"CLOUDFLARE_API_BASE_URL="+m.containerProxyBase+"/client/v4",
 			"CLOUDFLARE_API_TOKEN=proxy",
 			"DATA_PROXY_URL="+m.containerProxyBase+"/api",
-			"DATA_PROXY_TOKEN=proxy",
 			"MCP_SERVER_URL="+m.containerProxyBase+"/mcp",
 			"CLOUDFLARE_ACCOUNT_ID=chiridion",
 			"WRANGLER_SEND_METRICS=false",

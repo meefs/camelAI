@@ -45,6 +45,33 @@ export async function loader({ context }: Route.LoaderArgs) {
 }
 ```
 
+### SQL Data Proxy Service Binding
+
+The starter includes a `DATA_PROXY` service binding.
+
+- Local dev: binding points to `LocalDataProxyService` (`workers/data-proxy.ts`), which forwards to `DATA_PROXY_URL` when set
+- camelAI deploy: platform rewrites `DATA_PROXY` to its internal service binding
+
+```typescript
+export async function loader({ context }: Route.LoaderArgs) {
+  const result = await context.cloudflare.env.DATA_PROXY.mysqlQuery({
+    mode: "read",
+    host: "db.example.com",
+    user: "user",
+    password: "pass",
+    database: "analytics",
+    query: "SELECT * FROM orders WHERE customer_id = ?",
+    params: [123],
+  });
+
+  if (!result.ok) {
+    throw new Error(result.error.message);
+  }
+
+  return { rows: result.data.recordset ?? [] };
+}
+```
+
 ### Durable Object with SQLite
 
 ```typescript

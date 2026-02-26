@@ -50,6 +50,8 @@
 	 */
 	"vars": {
 		"VALUE_FROM_CLOUDFLARE": "Starter template running on Cloudflare"
+		// Optional local fallback for template DATA_PROXY shim:
+		// "DATA_PROXY_URL": "http://host.docker.internal:8081/proxy/<thread-id>/api"
 	},
 
 	/**
@@ -65,8 +67,11 @@
 	"assets": { "directory": "./public/", "binding": "ASSETS" },
 
 	/**
-	 * Service Bindings (communicate between multiple Workers)
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
+	 * DATA_PROXY service binding:
+	 * - Locally, this binds to the template's LocalDataProxyService entrypoint.
+	 * - In camelAI deploys, this binding is virtualized/replaced with platform DataProxyService.
 	 */
-	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
+	"services": [
+		{ "binding": "DATA_PROXY", "service": "starter", "entrypoint": "LocalDataProxyService" }
+	]
 }

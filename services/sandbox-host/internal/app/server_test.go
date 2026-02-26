@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,6 +230,48 @@ func TestShouldPreserveAuthorization(t *testing.T) {
 	}
 	if shouldPreserveAuthorization("/api/claude/v1/messages") {
 		t.Fatal("did not expect non-CF path to preserve Authorization")
+	}
+}
+
+func TestForwardDataProxyRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/data-proxy/postgres/query" {
+			t.Fatalf("unexpected upstream path: %s", req.URL.Path)
+		}
+		if req.Header.Get("X-Chiridion-Org-Id") != "org-1" {
+			t.Fatalf("missing org forwarding header: %q", req.Header.Get("X-Chiridion-Org-Id"))
+		}
+		if req.Header.Get("X-Chiridion-Workspace-Id") != "ws-1" {
+			t.Fatalf("missing workspace forwarding header: %q", req.Header.Get("X-Chiridion-Workspace-Id"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"recordset":[{"value":1}]}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{DataProxyUpstreamURL: upstream.URL},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces/org-1/ws-1/data-proxy/postgres/query", strings.NewReader(`{"query":"select 1"}`))
+	rec := httptest.NewRecorder()
+	route := WorkspaceRoute{
+		OrgID:       "org-1",
+		WorkspaceID: "ws-1",
+		Subpath:     "/data-proxy/postgres/query",
+	}
+
+	if err := server.forwardDataProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardDataProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != `{"recordset":[{"value":1}]}` {
+		t.Fatalf("unexpected body: %q", got)
 	}
 }
 

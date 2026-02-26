@@ -13,6 +13,7 @@ type Config struct {
 	ListenAddr                 string
 	ProxyPort                  int
 	ProxyListenAddr            string
+	DataProxyUpstreamURL       string
 	IdleTimeout                time.Duration
 	ReadHeaderTimeout          time.Duration
 	WriteTimeout               time.Duration
@@ -28,9 +29,19 @@ type Config struct {
 	StateDBPath                string
 }
 
+type DataProxyServiceConfig struct {
+	Port              int
+	ListenAddr        string
+	IdleTimeout       time.Duration
+	ReadHeaderTimeout time.Duration
+	WriteTimeout      time.Duration
+	HandlerConfig     DataProxyHandlerConfig
+}
+
 func LoadConfig() Config {
 	controlPort := envInt("PORT", defaultByPlatform(80, 4400))
 	proxyPort := envInt("SANDBOX_PROXY_PORT", defaultByPlatform(8081, 4401))
+	dataProxyPort := envInt("DATA_PROXY_PORT", defaultByPlatform(8090, 8090))
 	idleSecs := maxInt(10, envInt("SANDBOX_HOST_IDLE_TIMEOUT_SECS", 120))
 	activeTTLms := maxInt(30_000, envInt("PROXY_SESSION_ACTIVE_TTL_MS", 30*60_000))
 	closeGraceMs := maxInt(5_000, envInt("PROXY_SESSION_CLOSE_GRACE_MS", 10*60_000))
@@ -41,6 +52,7 @@ func LoadConfig() Config {
 		ListenAddr:                 ":" + strconv.Itoa(controlPort),
 		ProxyPort:                  proxyPort,
 		ProxyListenAddr:            ":" + strconv.Itoa(proxyPort),
+		DataProxyUpstreamURL:       envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
 		IdleTimeout:                time.Duration(idleSecs) * time.Second,
 		ReadHeaderTimeout:          15 * time.Second,
 		WriteTimeout:               0,
@@ -54,6 +66,23 @@ func LoadConfig() Config {
 		HeaderThreadID:             "x-chiridion-thread-id",
 		HeaderSandboxSecret:        "x-sandbox-secret",
 		StateDBPath:                envString("SANDBOX_HOST_STATE_DB", defaultStateDBPath()),
+	}
+}
+
+func LoadDataProxyServiceConfig() DataProxyServiceConfig {
+	dataProxyPort := envInt("DATA_PROXY_PORT", defaultByPlatform(8090, 8090))
+	idleSecs := maxInt(10, envInt("DATA_PROXY_IDLE_TIMEOUT_SECS", 120))
+	requestLimit := envInt64("DATA_PROXY_MAX_REQUEST_BYTES", defaultDataProxyRequestLimitBytes)
+
+	return DataProxyServiceConfig{
+		Port:              dataProxyPort,
+		ListenAddr:        ":" + strconv.Itoa(dataProxyPort),
+		IdleTimeout:       time.Duration(idleSecs) * time.Second,
+		ReadHeaderTimeout: 15 * time.Second,
+		WriteTimeout:      0,
+		HandlerConfig: DataProxyHandlerConfig{
+			RequestBodyLimitBytes: requestLimit,
+		},
 	}
 }
 
@@ -88,6 +117,18 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envInt64(key string, fallback int64) int64 {
+	raw := envString(key, "")
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		return fallback
 	}

@@ -4,6 +4,7 @@ import { createRequestHandler } from "react-router";
 // Export Durable Objects so Cloudflare can instantiate them
 // Add new DOs here after creating them in workers/
 export { ExampleDO } from "./example-do";
+export { LocalDataProxyService } from "./data-proxy";
 // export { Chat } from "./chat";
 
 /**

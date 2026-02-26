@@ -1,9 +1,11 @@
 package app
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -251,6 +253,8 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return s.handleExec(w, req, name, opts)
 	case route.Subpath == "/chat/messages" && req.Method == http.MethodGet:
 		return s.handleChatMessages(w, req, name)
+	case strings.HasPrefix(route.Subpath, "/data-proxy/"):
+		return s.forwardDataProxyRequest(w, req, route)
 	case route.Subpath == "/health" && req.Method == http.MethodGet:
 		if _, err := s.containers.EnsureContainer(name, opts); err != nil {
 			return err
@@ -312,6 +316,45 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		"success":  true,
 		"messages": messages,
 	})
+	return nil
+}
+
+func (s *Server) forwardDataProxyRequest(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) error {
+	base := strings.TrimRight(strings.TrimSpace(s.cfg.DataProxyUpstreamURL), "/")
+	if base == "" {
+		errorJSON(w, "Data proxy upstream not configured", http.StatusServiceUnavailable)
+		return nil
+	}
+
+	targetURL := base + route.Subpath
+	if req.URL.RawQuery != "" {
+		targetURL += "?" + req.URL.RawQuery
+	}
+
+	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, req.Body)
+	if err != nil {
+		return err
+	}
+	copyHeaders(forwardReq.Header, req.Header)
+	forwardReq.Header.Set("X-Chiridion-Org-Id", route.OrgID)
+	forwardReq.Header.Set("X-Chiridion-Workspace-Id", route.WorkspaceID)
+
+	resp, err := s.httpClient.Do(forwardReq)
+	if err != nil {
+		errorJSON(w, "Data proxy upstream unavailable", http.StatusServiceUnavailable)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	copyHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+
+	if err := copyResponseBody(w, resp.Body); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 

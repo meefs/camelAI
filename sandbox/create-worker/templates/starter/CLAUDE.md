@@ -99,6 +99,7 @@ export default function MyComponent({ loaderData }: Route.ComponentProps) {
 | `wrangler.jsonc` | Cloudflare config - bindings, migrations, secrets |
 | `workers/app.ts` | Worker entry point - exports Durable Objects |
 | `workers/example-do.ts` | Example Durable Object with SQLite |
+| `workers/data-proxy.ts` | Local `DATA_PROXY` service shim (virtualized on deploy) |
 | `workers/chat.ts` | Pre-configured AI chat agent (commented out) |
 | `app/routes/` | React Router routes with loaders/actions |
 | `app/schemas/` | Zod schemas shared between routes and DOs |
@@ -145,6 +146,32 @@ R2 buckets are available for storing files, images, and any unstructured data. Y
 3. Use in loaders/actions: `context.cloudflare.env.MY_BUCKET.put(key, data)`
 
 Multiple buckets with any names are supported — just add more entries to the array. Use project-specific bucket names (e.g. `myapp-uploads` not just `uploads`) to avoid collisions with other projects.
+
+### SQL Data Proxy (`DATA_PROXY`)
+
+The template includes a `DATA_PROXY` service binding by default.
+
+- Local dev: `DATA_PROXY` resolves to `LocalDataProxyService` in `workers/data-proxy.ts`
+- camelAI deploy: platform rewrites this binding to the internal `DataProxyService`
+
+Example in a loader/action:
+
+```typescript
+const result = await context.cloudflare.env.DATA_PROXY.postgresQuery({
+  mode: "read",
+  host: "db.example.com",
+  user: "user",
+  password: "pass",
+  database: "analytics",
+  query: "SELECT * FROM users WHERE id = $1",
+  params: [123],
+});
+
+if (!result.ok) throw new Error(result.error.message);
+return { rows: result.data.recordset ?? [] };
+```
+
+For local fallback over HTTP, set `DATA_PROXY_URL` in `wrangler.jsonc` vars or `.dev.vars`.
 
 ### AI Chat Agent
 

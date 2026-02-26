@@ -228,23 +228,124 @@ predictions = model.predict(X_test)
 
 | Package | Purpose | Status |
 |---------|---------|--------|
+| `requests` | Call built-in SQL data proxy (`DATA_PROXY_URL`) from sandbox scripts | cached |
 | `sqlalchemy` | Python ORM and database toolkit | cached |
 | `psycopg` | PostgreSQL driver | cached |
 | `pymysql` | MySQL driver | `uv add pymysql` |
 | `google-cloud-bigquery` | BigQuery client | cached |
 | `google-auth` | Google authentication (used for BigQuery tokens) | cached |
 
+### SQL Server / PostgreSQL / MySQL (Primary: Worker `DATA_PROXY` service binding)
+
+For deployed/user-uploaded Cloudflare Workers, use the `DATA_PROXY` service binding first.
+This is the most important path because Workers may not be able to use native DB drivers/TCP connectivity directly.
+
+Read example:
+
+```typescript
+const readResult = await context.cloudflare.env.DATA_PROXY.postgresQuery({
+  mode: "read",
+  host: "db.example.com",
+  user: "user",
+  password: "pass",
+  database: "analytics",
+  query: "SELECT id, email FROM users WHERE id = $1 LIMIT 100",
+  params: [123],
+});
+
+if (!readResult.ok) throw new Error(readResult.error.message);
+const rows = readResult.data.recordset ?? [];
+```
+
+Modify example:
+
+```typescript
+const modifyResult = await context.cloudflare.env.DATA_PROXY.postgresQuery({
+  mode: "modify",
+  host: "db.example.com",
+  user: "user",
+  password: "pass",
+  database: "analytics",
+  query: "UPDATE users SET last_seen_at = NOW() WHERE id = $1",
+  params: [123],
+});
+
+if (!modifyResult.ok) throw new Error(modifyResult.error.message);
+const affected = modifyResult.data.rowsAffected?.[0] ?? 0;
+```
+
+Supported query methods:
+- `DATA_PROXY.mssqlQuery(...)` (named params, e.g. `@id`)
+- `DATA_PROXY.postgresQuery(...)` (positional params array)
+- `DATA_PROXY.mysqlQuery(...)` (positional params array)
+- All query calls require `mode: "read"` or `mode: "modify"` (no auto-detection).
+
+### Sandbox/container scripts (secondary: `DATA_PROXY_URL`)
+
+Inside sandbox/container scripts, you can call the HTTP proxy via `DATA_PROXY_URL`.
+No bearer token is required; requests are authenticated by sandbox-host identity headers.
+Keep queries bounded (`LIMIT`, selective `WHERE`) to avoid very large responses.
+
+```python
+import os
+import pandas as pd
+import requests
+
+data_proxy_url = os.environ["DATA_PROXY_URL"].rstrip("/")
+
+postgres = requests.post(
+    f"{data_proxy_url}/postgres/query",
+    json={
+        "mode": "read",
+        "host": "your-postgres-host",
+        "user": "username",
+        "password": "password",
+        "database": "analytics",
+        "query": "SELECT * FROM users WHERE id = $1 ORDER BY id LIMIT 100",
+        "params": [123],
+        "sslmode": "require",
+    },
+    timeout=60,
+).json()
+
+df = pd.DataFrame(postgres.get("recordset", []))
+print(df.head())
+
+postgres_modify = requests.post(
+    f"{data_proxy_url}/postgres/query",
+    json={
+        "mode": "modify",
+        "host": "your-postgres-host",
+        "user": "username",
+        "password": "password",
+        "database": "analytics",
+        "query": "UPDATE users SET last_seen_at = NOW() WHERE id = $1",
+        "params": [123],
+        "sslmode": "require",
+    },
+    timeout=60,
+).json()
+
+rows_affected = (postgres_modify.get("rowsAffected") or [0])[0]
+print(rows_affected)
+```
+
+### Direct drivers (preferred local fallback in containers)
+
+For sandbox/container code, native drivers are the primary fallback when proxy access is unnecessary.
+Use this path when the user explicitly asks for direct connectivity or when local direct access is simpler.
+
 ```python
 from sqlalchemy import create_engine
 import pandas as pd
 
-# PostgreSQL
-engine = create_engine("postgresql+psycopg://user:pass@host/db")
-df = pd.read_sql("SELECT * FROM users", engine)
+# PostgreSQL direct
+pg_engine = create_engine("postgresql+psycopg://user:pass@host/db")
+pg_df = pd.read_sql("SELECT * FROM users", pg_engine)
 
-# MySQL
-engine = create_engine("mysql+pymysql://user:pass@host/db")
-df = pd.read_sql("SELECT * FROM orders", engine)
+# MySQL direct
+mysql_engine = create_engine("mysql+pymysql://user:pass@host/db")
+mysql_df = pd.read_sql("SELECT * FROM orders", mysql_engine)
 ```
 
 ### BigQuery
@@ -273,81 +374,6 @@ df = client.query("SELECT * FROM dataset.table").to_dataframe()
 ```
 
 **Do NOT** use `bigquery.Client.from_service_account_json()` or try to read a service account JSON file. The raw service account key is never available in the container — only the derived access token is exposed.
-
-### MS SQL Server
-
-MS SQL Server connections use the **camelAI Data Proxy API**. Direct drivers like `pymssql` or `pyodbc` are not available in the container. Instead, use the HTTP API with a signed token.
-
-When you need to query MS SQL Server, a `DATA_PROXY_TOKEN` environment variable is available for authentication.
-
-```python
-import os
-import requests
-
-token = os.environ["DATA_PROXY_TOKEN"]
-base_url = os.environ.get("DATA_PROXY_URL", "https://camelai.dev/api")
-
-response = requests.post(
-    f"{base_url}/mssql/query",
-    headers={
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    },
-    json={
-        "server": "your-server.database.windows.net",
-        "user": "username",
-        "password": "password",
-        "database": "mydb",
-        "query": "SELECT * FROM users WHERE id = @id",
-        "params": {"id": 123},
-        "encrypt": True  # Use TLS (required for Azure SQL)
-    }
-)
-
-result = response.json()
-# result["recordset"] = [{"id": 123, "name": "John", ...}]
-# result["rowsAffected"] = [1]
-```
-
-**Request Options:**
-| Field | Required | Description |
-|-------|----------|-------------|
-| `server` | Yes | SQL Server hostname |
-| `user` | Yes | Username |
-| `password` | Yes | Password |
-| `query` | Yes | SQL query with `@param` placeholders |
-| `database` | No | Database name (default: `master`) |
-| `port` | No | Port (default: `1433`) |
-| `params` | No | Parameter values for the query |
-| `encrypt` | No | Use TLS (default: `true`) |
-| `trustServerCertificate` | No | Trust self-signed certs (default: `true`) |
-| `timeout` | No | Query timeout in ms (default: `30000`) |
-
-**Transactions:** For atomic multi-statement operations, wrap queries in `BEGIN TRANSACTION`/`COMMIT`:
-```python
-response = requests.post(
-    f"{base_url}/mssql/query",
-    headers={
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    },
-    json={
-        "server": "your-server.database.windows.net",
-        "user": "username",
-        "password": "password",
-        "database": "mydb",
-        "query": """
-            BEGIN TRANSACTION;
-            INSERT INTO orders (id, amount) VALUES (@id, @amt);
-            UPDATE inventory SET qty = qty - 1 WHERE product_id = @pid;
-            COMMIT;
-        """,
-        "params": {"id": 1, "amt": 100, "pid": 42}
-    }
-)
-```
-
-**Note:** The `usql sqlserver://` CLI also works for interactive exploration but the HTTP API is preferred for programmatic access within scripts.
 
 ## File Formats
 

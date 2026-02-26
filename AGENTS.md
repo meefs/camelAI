@@ -125,6 +125,15 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 - `claude-proxy` (`/api/claude/v1/messages` and `/api/claude/v1/messages/count_tokens`) accepts only sandbox-host injected auth (no signed-token fallback path).
 - Proxy thread mappings are session-based: active while chat WS is open; on close they enter close-grace (`PROXY_SESSION_CLOSE_GRACE_MS`) and then are cleaned up.
 
+### Data Proxy (SQL Server, PostgreSQL, MySQL)
+- User uploaded workers declare a `service` binding named `DATA_PROXY`; during deploy, `cf-api-proxy` rewrites it to an internal service entrypoint (`DataProxyService`) scoped with `{orgId, workspaceId}` props.
+- `DataProxyService` methods (`mssqlQuery`, `postgresQuery`, `mysqlQuery`, `health`) return plain JSON objects (`{ ok, data }` / `{ ok, error }`) rather than `Response`.
+- Worker-side JSON parsing enforces a configurable max response body size (`DATA_PROXY_MAX_RESPONSE_BYTES`, default `8 MiB`) to prevent unbounded memory usage.
+- `DataProxyService` forwards through the existing `SANDBOX_HOST` VPC binding to workspace-scoped control routes (`/v1/workspaces/{orgId}/{workspaceId}/data-proxy/*`).
+- sandbox-host forwards those routes to a dedicated localhost `chiridion-data-proxy` Go process (separate systemd service with tighter resource limits).
+- `chiridion-data-proxy` returns JSON responses and streams row serialization internally to avoid materializing full recordsets in sidecar memory.
+- Sandbox containers receive `DATA_PROXY_URL` (no token). Requests are authenticated by sandbox-host injected headers (`x-sandbox-secret`, org/workspace/thread IDs), same model used by other container proxy routes.
+
 ### Slash Commands
 Users send Claude SDK slash commands as their entire message. `ChatThreadDO.formatAttributedUserMessage()` strips the author prefix. Supported: `/compact`, `/context`, `/debug`, `/insights`, `/security-review`. Allowlist in `ChatThreadDO.SLASH_COMMANDS` (`workers/main/src/durable-objects.ts`).
 

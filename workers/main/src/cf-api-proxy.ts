@@ -16,10 +16,14 @@ import type { WorkspaceDO } from './workspace.js';
 
 // Secrets managed by Chiridion (will be cleaned up if removed)
 const MANAGED_SECRET_PREFIXES = ['INT_'];
-const MANAGED_SECRET_NAMES = ['OPENROUTER_API_KEY', 'DATA_PROXY_TOKEN'];
+const MANAGED_SECRET_NAMES = ['OPENROUTER_API_KEY'];
+const VIRTUAL_DATA_PROXY_BINDING_NAME = 'DATA_PROXY';
 
 function isManagedSecret(name: string): boolean {
-  return MANAGED_SECRET_NAMES.includes(name) || MANAGED_SECRET_PREFIXES.some(p => name.startsWith(p));
+  return (
+    MANAGED_SECRET_NAMES.includes(name) ||
+    MANAGED_SECRET_PREFIXES.some(p => name.startsWith(p))
+  );
 }
 
 // =============================================================================
@@ -35,7 +39,6 @@ const FORBIDDEN_BINDING_TYPES = new Set([
   'd1',                     // D1 database
   // r2_bucket is NOT forbidden — it's transparently replaced with a virtual R2 service binding
   'queue',                  // Queue producer
-  'service',                // Service bindings to other workers
   'analytics_engine',       // Analytics Engine
   'hyperdrive',             // Hyperdrive database connections
   'vectorize',              // Vectorize vector indexes
@@ -97,6 +100,19 @@ export function validateBindings(bindings: WorkerBinding[]): BindingValidationRe
 
   for (const binding of bindings) {
     const { type, name } = binding;
+
+    // Allow only a single virtual service binding shape for data proxy.
+    if (type === 'service') {
+      if (name === VIRTUAL_DATA_PROXY_BINDING_NAME) {
+        continue;
+      }
+      forbiddenBindings.push({
+        name,
+        type,
+        reason: `Service binding "${name}" is not allowed. Only "${VIRTUAL_DATA_PROXY_BINDING_NAME}" is permitted and will be virtualized by the platform.`,
+      });
+      continue;
+    }
 
     // Check completely forbidden types
     if (FORBIDDEN_BINDING_TYPES.has(type)) {
@@ -460,20 +476,22 @@ function parseMultipartUploads(body: ArrayBuffer, contentType: string) {
 }
 
 /**
- * Transform r2_bucket bindings in the multipart upload body by finding the raw
+ * Transform virtualized bindings in the multipart upload body by finding the raw
  * metadata JSON (already extracted by parseMultipartUploads) in the body bytes
  * and replacing it with modified metadata. This avoids fragile multipart parsing
  * and works regardless of line ending conventions.
  */
-function transformR2Bindings(
+function transformVirtualBindings(
   body: ArrayBuffer,
   rawMetadataJson: string,
   bindings: WorkerBinding[],
   workspaceId: string,
+  orgId: string,
   workerServiceName: string
 ): ArrayBuffer {
   const r2Bindings = bindings.filter(b => b.type === 'r2_bucket');
-  if (r2Bindings.length === 0) return body;
+  const dataProxyBindings = bindings.filter(b => b.type === 'service' && b.name === VIRTUAL_DATA_PROXY_BINDING_NAME);
+  if (r2Bindings.length === 0 && dataProxyBindings.length === 0) return body;
 
   // Parse and transform the metadata
   let metadata: WorkerMetadata;
@@ -486,16 +504,7 @@ function transformR2Bindings(
 
   if (!metadata.bindings) return body;
 
-  metadata.bindings = metadata.bindings.map(binding => {
-    if (binding.type !== 'r2_bucket') return binding;
-    return {
-      type: 'service',
-      name: binding.name,
-      service: workerServiceName,
-      entrypoint: 'R2VirtualBucket',
-      props: { workspaceId, bucketName: binding.bucket_name ?? binding.name },
-    };
-  });
+  metadata.bindings = mapVirtualizedBindings(metadata.bindings, workspaceId, orgId, workerServiceName);
 
   const newMetadataJson = JSON.stringify(metadata);
 
@@ -532,15 +541,48 @@ function transformR2Bindings(
   result.set(newBytes, before.length);
   result.set(after, before.length + newBytes.length);
 
-  console.log('[cf-api-proxy] transformed R2 bindings to virtual buckets', {
+  console.log('[cf-api-proxy] transformed virtual bindings', {
     workspaceId,
+    orgId,
     workerServiceName,
-    bindings: r2Bindings.map(b => ({ name: b.name, bucket_name: b.bucket_name })),
+    r2Bindings: r2Bindings.map(b => ({ name: b.name, bucket_name: b.bucket_name })),
+    dataProxyBindings: dataProxyBindings.map(b => ({ name: b.name })),
     originalSize: body.byteLength,
     newSize: result.length,
   });
 
   return result.buffer as ArrayBuffer;
+}
+
+export function mapVirtualizedBindings(
+  bindings: WorkerBinding[],
+  workspaceId: string,
+  orgId: string,
+  workerServiceName: string
+): WorkerBinding[] {
+  return bindings.map(binding => {
+    if (binding.type === 'r2_bucket') {
+      return {
+        type: 'service',
+        name: binding.name,
+        service: workerServiceName,
+        entrypoint: 'R2VirtualBucket',
+        props: { workspaceId, bucketName: binding.bucket_name ?? binding.name },
+      };
+    }
+
+    if (binding.type === 'service' && binding.name === VIRTUAL_DATA_PROXY_BINDING_NAME) {
+      return {
+        type: 'service',
+        name: binding.name,
+        service: workerServiceName,
+        entrypoint: 'DataProxyService',
+        props: { workspaceId, orgId },
+      };
+    }
+
+    return binding;
+  });
 }
 
 async function callCloudflareApi<T>(
@@ -760,26 +802,6 @@ async function syncDispatchScriptSecrets(
   } else if (env.OPENROUTER_API_KEY) {
     // No org key provisioned — use platform default
     secretsToSync.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
-  }
-
-  // Create data proxy token for deployed workers
-  const orgSlug = await orgStub.getSlug();
-  if (orgSlug && env.TOKEN_SIGNING_SECRET) {
-    try {
-      // Token expires in 24 hours - will be refreshed on next deploy
-      const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
-      const dataProxyToken = await createSignedToken(env.TOKEN_SIGNING_SECRET, {
-        org_id: orgId,
-        org_slug: orgSlug,
-        scopes: ['data-proxy'],
-        exp: Date.now() + TOKEN_TTL_MS,
-        workspace_id: workspaceId,
-        name: `data-proxy-worker-${scriptName}`,
-      });
-      secretsToSync.DATA_PROXY_TOKEN = dataProxyToken;
-    } catch (e) {
-      console.error('[cf-api-proxy] Failed to create data proxy token for script secrets:', e);
-    }
   }
 
   const secretEntries = Object.entries(secretsToSync);
@@ -1275,6 +1297,31 @@ export async function proxyCloudflareApi(
             bindingCount: jsonBody.bindings.length,
             bindingTypes: [...new Set(jsonBody.bindings.map(b => b.type))],
           });
+
+          if (env.CF_WORKER_NAME) {
+            const transformedBindings = mapVirtualizedBindings(
+              jsonBody.bindings,
+              workspaceId,
+              orgId,
+              env.CF_WORKER_NAME
+            );
+            const changed = transformedBindings.some((binding, idx) => {
+              const original = jsonBody.bindings?.[idx];
+              return JSON.stringify(binding) !== JSON.stringify(original);
+            });
+            if (changed) {
+              jsonBody.bindings = transformedBindings;
+              body = new TextEncoder().encode(JSON.stringify(jsonBody)).buffer as ArrayBuffer;
+              headers.set('Content-Length', String(body.byteLength));
+              console.log('[cf-api-proxy] transformed JSON bindings to virtual bindings', {
+                method,
+                path: pathname,
+                scriptName: originalScriptName,
+                orgId,
+                workspaceId,
+              });
+            }
+          }
         }
       } catch (e) {
         // If we can't parse the JSON, let Cloudflare handle the error
@@ -1307,13 +1354,20 @@ export async function proxyCloudflareApi(
     }
   }
 
-  // Transform r2_bucket bindings into virtual R2 service bindings.
+  // Transform virtualized bindings into internal service bindings.
   if (body && isUploadRequest(pathname, method) && env.CF_WORKER_NAME) {
     const contentType = request.headers.get('Content-Type') ?? '';
     if (contentType.toLowerCase().includes('multipart/form-data')) {
       const uploadInfo2 = parseMultipartUploads(body, contentType);
       if (uploadInfo2?.rawMetadataJson && uploadInfo2?.bindings) {
-        body = transformR2Bindings(body, uploadInfo2.rawMetadataJson, uploadInfo2.bindings, workspaceId, env.CF_WORKER_NAME);
+        body = transformVirtualBindings(
+          body,
+          uploadInfo2.rawMetadataJson,
+          uploadInfo2.bindings,
+          workspaceId,
+          orgId,
+          env.CF_WORKER_NAME
+        );
         headers.set('Content-Length', String(body.byteLength));
       }
     }

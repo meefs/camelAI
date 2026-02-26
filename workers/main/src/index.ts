@@ -35,18 +35,22 @@ import {
 import { handleChatWebSocket } from './routes/websocket.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
 import { handleClaudeProxy, handleCountTokens } from './routes/claude-proxy.js';
+import {
+  handleMssqlQuery,
+  handleMysqlQuery,
+  handlePostgresQuery,
+} from './routes/data-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
-import { handleMssqlQuery, handleDataProxyHealth } from './routes/data-proxy.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
-export { DataProxy } from './data-proxy.js';
 export { ChatThreadDO } from './durable-objects.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
 export { WorkspaceDO } from './workspace.js';
 export { WorkerLogsDO } from './worker-logs-do.js';
 export { R2VirtualBucket } from './r2-virtual-bucket.js';
+export { DataProxyService } from './data-proxy-service.js';
 export { AdminIndexDO } from './admin-index-do.js';
 
 // Extend React Router's AppLoadContext
@@ -67,6 +71,9 @@ const routes: Route[] = [
   // Claude API Proxy (for sandbox containers)
   { method: 'POST', path: /^\/api\/claude\/v1\/messages\/count_tokens$/, handler: handleCountTokens },
   { method: 'POST', path: /^\/api\/claude\/v1\/messages$/, handler: handleClaudeProxy },
+  { method: 'POST', path: /^\/api\/mssql\/query$/, handler: handleMssqlQuery },
+  { method: 'POST', path: /^\/api\/postgres\/query$/, handler: handlePostgresQuery },
+  { method: 'POST', path: /^\/api\/mysql\/query$/, handler: handleMysqlQuery },
 
   // MCP
   { method: 'ALL', path: /^\/mcp(\/|$)/, handler: handleMcp },
@@ -89,10 +96,6 @@ const routes: Route[] = [
   { method: 'GET', path: /^\/api\/integrations\/notion\/callback$/, handler: handleNotionOAuthCallback },
   { method: 'GET', path: /^\/api\/integrations\/salesforce\/oauth$/, handler: handleSalesforceOAuthStart },
   { method: 'GET', path: /^\/api\/integrations\/salesforce\/callback$/, handler: handleSalesforceOAuthCallback },
-
-  // Data Proxy API (requires 'data-proxy' scope token)
-  { method: 'POST', path: /^\/api\/mssql\/query$/, handler: handleMssqlQuery },
-  { method: 'GET', path: /^\/api\/data-proxy\/health$/, handler: handleDataProxyHealth },
 
   // WebSocket routes
   { method: 'GET', path: /^\/ws\/logs$/, handler: handleLogsWebSocket, websocket: true },

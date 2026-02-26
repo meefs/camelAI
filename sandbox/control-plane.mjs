@@ -171,6 +171,7 @@ This is your workspace. Files persist between sessions. You can build, deploy, a
 | \`THREAD_ID\` | Current chat thread |
 | \`ANTHROPIC_API_KEY\` | Proxy token for LLM calls |
 | \`CLOUDFLARE_API_TOKEN\` | Deploy token (workspace-scoped) |
+| \`DATA_PROXY_URL\` | Thread-scoped SQL proxy base URL (SQL Server/PostgreSQL/MySQL; sandbox-authenticated) |
 | \`INT_*\` | Integration credentials (e.g., \`INT_STRIPE_SECRET_KEY\`) |
 
 Integration credentials auto-sync to deployed workers as secrets.

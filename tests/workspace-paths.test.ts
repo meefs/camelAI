@@ -4,9 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('cloudflare:workers', () => ({
   DurableObject: class {},
 }));
-vi.mock('@cloudflare/containers', () => ({
-  Container: class {},
-}));
 
 const {
   normalizeWhitespace,

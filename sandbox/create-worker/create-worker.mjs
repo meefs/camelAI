@@ -307,6 +307,11 @@ async function createProject(projectName, options) {
     let wranglerConfig = readFileSync(wranglerPath, 'utf-8');
     // Replace the name field (JSONC so can't use JSON.parse)
     wranglerConfig = wranglerConfig.replace(/"name":\s*"[^"]+"/, `"name": "${projectName}"`);
+    // Keep the starter DATA_PROXY local self-binding pointed at the generated worker name.
+    wranglerConfig = wranglerConfig.replace(
+      /("binding":\s*"DATA_PROXY"[\s\S]*?"service":\s*)"[^"]+"/,
+      `$1"${projectName}"`
+    );
     writeFileSync(wranglerPath, wranglerConfig);
   }
 

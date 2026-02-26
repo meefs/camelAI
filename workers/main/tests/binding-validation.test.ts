@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateBindings, type WorkerBinding } from '../src/cf-api-proxy.js';
+import { mapVirtualizedBindings, validateBindings, type WorkerBinding } from '../src/cf-api-proxy.js';
 
 describe('Worker Binding Validation', () => {
   describe('validateBindings', () => {
@@ -137,6 +137,15 @@ describe('Worker Binding Validation', () => {
       expect(result.forbiddenBindings).toHaveLength(1);
       expect(result.forbiddenBindings[0]?.name).toBe('MY_QUEUE');
       expect(result.forbiddenBindings[0]?.type).toBe('queue');
+    });
+
+    it('allows virtual DATA_PROXY service binding (rewritten at deploy time)', () => {
+      const bindings: WorkerBinding[] = [
+        { type: 'service', name: 'DATA_PROXY', service: 'placeholder' },
+      ];
+      const result = validateBindings(bindings);
+      expect(result.valid).toBe(true);
+      expect(result.forbiddenBindings).toHaveLength(0);
     });
 
     it('blocks service bindings', () => {
@@ -294,6 +303,59 @@ describe('Worker Binding Validation', () => {
       const result = validateBindings(bindings);
       expect(result.valid).toBe(true);
       expect(result.forbiddenBindings).toHaveLength(0);
+    });
+  });
+
+  describe('mapVirtualizedBindings', () => {
+    it('rewrites R2 and DATA_PROXY bindings to internal service entrypoints', () => {
+      const bindings: WorkerBinding[] = [
+        { type: 'r2_bucket', name: 'FILES', bucket_name: 'workspace-files' },
+        { type: 'service', name: 'DATA_PROXY', service: 'placeholder' },
+        { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
+      ];
+
+      const transformed = mapVirtualizedBindings(bindings, 'ws_123', 'org_456', 'chiridion-app');
+
+      expect(transformed).toEqual([
+        {
+          type: 'service',
+          name: 'FILES',
+          service: 'chiridion-app',
+          entrypoint: 'R2VirtualBucket',
+          props: { workspaceId: 'ws_123', bucketName: 'workspace-files' },
+        },
+        {
+          type: 'service',
+          name: 'DATA_PROXY',
+          service: 'chiridion-app',
+          entrypoint: 'DataProxyService',
+          props: { workspaceId: 'ws_123', orgId: 'org_456' },
+        },
+        { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
+      ]);
+    });
+
+    it('rewrites starter local DATA_PROXY shim binding to internal DataProxyService', () => {
+      const bindings: WorkerBinding[] = [
+        {
+          type: 'service',
+          name: 'DATA_PROXY',
+          service: 'starter',
+          entrypoint: 'LocalDataProxyService',
+        },
+      ];
+
+      const transformed = mapVirtualizedBindings(bindings, 'ws_abc', 'org_xyz', 'chiridion-app');
+
+      expect(transformed).toEqual([
+        {
+          type: 'service',
+          name: 'DATA_PROXY',
+          service: 'chiridion-app',
+          entrypoint: 'DataProxyService',
+          props: { workspaceId: 'ws_abc', orgId: 'org_xyz' },
+        },
+      ]);
     });
   });
 });

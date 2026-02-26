@@ -187,22 +187,57 @@ install_go_and_host_service() {
     log "  Installed $(go version)"
   fi
 
-  local script_dir service_dir host_binary_path
+  local script_dir service_dir host_binary_path data_proxy_binary_path
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   service_dir="$(cd "${script_dir}/.." && pwd)"
   host_binary_path="/usr/local/bin/chiridion-sandbox-host"
+  data_proxy_binary_path="/usr/local/bin/chiridion-data-proxy"
   local quota_tool_path="/usr/local/bin/chiridion-xfs-project-quota"
 
   go build -C "${service_dir}" -o "${host_binary_path}" ./cmd/sandbox-host
+  go build -C "${service_dir}" -o "${data_proxy_binary_path}" ./cmd/data-proxy
   chmod 0755 "${host_binary_path}"
+  chmod 0755 "${data_proxy_binary_path}"
   install -m 0755 "${service_dir}/scripts/xfs-project-quota.sh" "${quota_tool_path}"
+
+  cat > /etc/systemd/system/chiridion-data-proxy.service <<__DATA_PROXY_SERVICE__
+[Unit]
+Description=Chiridion SQL Data Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${service_dir}
+ExecStart=${data_proxy_binary_path}
+Restart=always
+RestartSec=2
+Environment=DATA_PROXY_PORT=8090
+Environment=DATA_PROXY_MAX_REQUEST_BYTES=1048576
+EnvironmentFile=-/etc/chiridion/sandbox-host.env
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryHigh=768M
+MemoryMax=1024M
+CPUQuota=200%
+TasksMax=256
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+__DATA_PROXY_SERVICE__
 
   cat > /etc/systemd/system/chiridion-sandbox-host.service <<__HOST_SERVICE__
 [Unit]
 Description=Chiridion Sandbox Host
-After=local-fs.target docker.service chiridion-sandbox-firewall.service chiridion-rclone-r2.service
+After=local-fs.target docker.service chiridion-sandbox-firewall.service chiridion-rclone-r2.service chiridion-data-proxy.service
 Requires=docker.service
-Wants=chiridion-sandbox-firewall.service chiridion-rclone-r2.service
+Wants=chiridion-sandbox-firewall.service chiridion-rclone-r2.service chiridion-data-proxy.service
 
 [Service]
 Type=simple
@@ -219,6 +254,8 @@ Environment=CONTAINER_RUNTIME=runsc
 Environment=SANDBOX_ENABLE_PROJECT_QUOTA=1
 Environment=SANDBOX_DEFAULT_BHARD=${SANDBOX_DEFAULT_BHARD}
 Environment=SANDBOX_DEFAULT_IHARD=${SANDBOX_DEFAULT_IHARD}
+Environment=DATA_PROXY_PORT=8090
+Environment=DATA_PROXY_UPSTREAM_URL=http://127.0.0.1:8090
 EnvironmentFile=-/etc/chiridion/sandbox-host.env
 
 [Install]
@@ -397,6 +434,7 @@ main() {
   apply_default_quotas
 
   systemctl daemon-reload
+  systemctl enable --now chiridion-data-proxy 2>/dev/null || true
   systemctl enable --now chiridion-sandbox-firewall 2>/dev/null || true
   systemctl enable --now chiridion-rclone-r2 2>/dev/null || true
   systemctl enable --now chiridion-sandbox-host 2>/dev/null || true
@@ -415,6 +453,7 @@ main() {
   echo "  findmnt ${SANDBOXES_DIR}"
   echo "  xfs_info ${SANDBOXES_DIR}"
   echo "  systemctl status chiridion-rclone-r2"
+  echo "  systemctl status chiridion-data-proxy"
   echo "  systemctl status chiridion-sandbox-host"
 }
 

@@ -14,7 +14,8 @@ const watchImage = process.env.SANDBOX_WATCH_IMAGE !== '0';
 const watchDebounceMs = Number.parseInt(process.env.SANDBOX_WATCH_DEBOUNCE_MS || '1500', 10) || 1500;
 
 let shuttingDown = false;
-let goProc = null;
+let sandboxHostProc = null;
+let dataProxyProc = null;
 let buildInFlight = false;
 let buildQueued = false;
 let debounceTimer = null;
@@ -205,9 +206,13 @@ function startWatchers() {
   return closeFns;
 }
 
-function stopGoProcess(signal = 'SIGTERM') {
-  if (!goProc || goProc.killed) return;
-  goProc.kill(signal);
+function stopGoProcesses(signal = 'SIGTERM') {
+  if (sandboxHostProc && !sandboxHostProc.killed) {
+    sandboxHostProc.kill(signal);
+  }
+  if (dataProxyProc && !dataProxyProc.killed) {
+    dataProxyProc.kill(signal);
+  }
 }
 
 async function main() {
@@ -263,7 +268,13 @@ async function main() {
     console.warn('[dev:sandbox-host] R2 credential vars are incomplete; containers will start without R2 mounts.');
   }
 
-  goProc = spawn('go', ['run', './cmd/sandbox-host'], {
+  dataProxyProc = spawn('go', ['run', './cmd/data-proxy'], {
+    cwd: sandboxHostDir,
+    stdio: 'inherit',
+    env,
+  });
+
+  sandboxHostProc = spawn('go', ['run', './cmd/sandbox-host'], {
     cwd: sandboxHostDir,
     stdio: 'inherit',
     env,
@@ -275,13 +286,17 @@ async function main() {
     if (debounceTimer) clearTimeout(debounceTimer);
     for (const close of closeWatchers) close();
     console.log(`[dev:sandbox-host] Shutting down (${signalName})`);
-    stopGoProcess('SIGTERM');
+    stopGoProcesses('SIGTERM');
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  goProc.on('exit', (code, signal) => {
+  const handleChildExit = (label, code, signal) => {
+    if (!shuttingDown) {
+      console.error(`[dev:sandbox-host] ${label} exited (${signal ? `signal ${signal}` : `code ${code ?? 0}`})`);
+      shutdown(`${label}-exit`);
+    }
     for (const close of closeWatchers) close();
     if (debounceTimer) clearTimeout(debounceTimer);
     if (signal) {
@@ -289,7 +304,10 @@ async function main() {
       return;
     }
     process.exitCode = code ?? 0;
-  });
+  };
+
+  sandboxHostProc.on('exit', (code, signal) => handleChildExit('sandbox-host', code, signal));
+  dataProxyProc.on('exit', (code, signal) => handleChildExit('data-proxy', code, signal));
 }
 
 main().catch((err) => {
