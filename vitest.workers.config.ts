@@ -15,7 +15,7 @@ export default defineWorkersConfig({
     include: ['workers/**/tests/**/*.test.ts'],
     poolOptions: {
       workers: {
-        isolatedStorage: true,
+        isolatedStorage: false,
         remoteBindings: false,
         wrangler: { configPath: './wrangler.test.jsonc' },
         miniflare: {
