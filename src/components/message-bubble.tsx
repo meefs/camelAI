@@ -599,7 +599,7 @@ export function MessageBubble({
           </div>
         )}
         {hasCleanContent && (
-          <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
+          <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground text-base">
             <ContentBlockRenderer content={cleanedContent} skillSheets={skillSheets} />
           </div>
         )}
@@ -642,7 +642,7 @@ export function MessageBubble({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="max-w-none space-y-4">
+      <div className="max-w-none space-y-4 text-base">
         {hasContent && (
           <ContentBlockRenderer content={message.content} isStreaming={isStreaming} skillSheets={skillSheets} />
         )}
