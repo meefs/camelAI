@@ -40,8 +40,6 @@
 		"build:renderer": "vite build --config vite.renderer.config.ts"
 	},
 	"dependencies": {
-		"@anthropic-ai/bedrock-sdk": "^0.26.0",
-		"@anthropic-ai/foundry-sdk": "^0.2.0",
 		"@anthropic-ai/sdk": "^0.71.2",
 		"@cloudflare/vite-plugin": "^1.25.4",
 		"@conform-to/react": "^1.15.1",
@@ -52,7 +50,6 @@
 		"@react-email/render": "^2.0.4",
 		"@react-router/cloudflare": "^7.13.1",
 		"@shikijs/rehype": "^3.20.0",
-		"agents": "^0.5.1",
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
 		"cookie": "^1.0.2",
@@ -73,8 +70,6 @@
 		"zod": "^4.3.5"
 	},
 	"devDependencies": {
-		"@anthropic-ai/claude-agent-sdk": "0.2.41",
-		"@ast-grep/cli": "^0.40.5",
 		"@cloudflare/puppeteer": "^1.0.6",
 		"@cloudflare/vitest-pool-workers": "^0.12.16",
 		"@eslint/eslintrc": "^3",
