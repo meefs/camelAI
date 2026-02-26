@@ -236,7 +236,7 @@ export function ConnectionSetupPrompt({
   return (
     <Dialog open onOpenChange={() => {}}>
       <DialogContent
-        className="sm:max-w-lg"
+        className="sm:max-w-lg overflow-hidden"
         showCloseButton={false}
         onInteractOutside={(event) => event.preventDefault()}
         onEscapeKeyDown={(event) => event.preventDefault()}
@@ -246,13 +246,13 @@ export function ConnectionSetupPrompt({
             <Plug className="size-5" />
             Add {displayName}
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="break-words">
             {description}
           </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit}>
-          <div className="max-h-[60vh] overflow-y-auto pr-4">
+          <div className="max-h-[60vh] overflow-y-auto pr-4 min-w-0">
             <div className="grid gap-4 py-2">
               {error && (
                 <Alert variant="destructive">
@@ -263,7 +263,7 @@ export function ConnectionSetupPrompt({
 
               {/* Instructions for dynamic integrations (rendered as markdown) */}
               {instructions && (
-                <div className="rounded-md border bg-muted/50 p-3 text-sm">
+                <div className="rounded-md border bg-muted/50 p-3 text-sm overflow-x-auto">
                   <MarkdownRenderer content={instructions} />
                 </div>
               )}
@@ -306,7 +306,7 @@ export function ConnectionSetupPrompt({
                         placeholder={field.placeholder}
                       />
                       {field.description && (
-                        <p className="text-xs text-muted-foreground">{field.description}</p>
+                        <p className="text-xs text-muted-foreground break-words">{field.description}</p>
                       )}
                     </div>
                   ))}

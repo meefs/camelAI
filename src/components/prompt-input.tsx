@@ -263,7 +263,7 @@ export function PromptInput({
             onFocus={onFocus}
             onBlur={onBlur}
             className={cn(
-              'text-base p-3.5 max-h-96 overflow-y-auto',
+              'text-base md:text-base p-3.5 max-h-96 overflow-y-auto',
               isActiveRecording && 'opacity-50'
             )}
             style={{ minHeight }}
