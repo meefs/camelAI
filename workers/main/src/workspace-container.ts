@@ -346,7 +346,7 @@ export class WorkspaceContainer {
           .replace(/\\/g, '\\\\')
           .replace(/"/g, '\\"')
           .replace(/\n/g, '\\n');
-        lines.push(`${key}="${escaped}"`);
+        lines.push(`export ${key}="${escaped}"`);
       }
       const content = lines.join('\n') + '\n';
       const result = await this.writeFile(INTEGRATION_ENV_FILE_PATH, content);
@@ -362,7 +362,10 @@ export class WorkspaceContainer {
     }
   }
 
-  async fetchIntegrationEnvVars(): Promise<Record<string, string>> {
+  private async fetchIntegrationEnvVarsWithStatus(): Promise<{
+    envVars: Record<string, string>;
+    success: boolean;
+  }> {
     const workspaceId = this.workspaceId;
     const integrationEnvVars: Record<string, string> = {};
     const startedAt = Date.now();
@@ -408,14 +411,19 @@ export class WorkspaceContainer {
       console.log(
         `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`
       );
+      return { envVars: integrationEnvVars, success: true };
     } catch (e) {
       console.error('[WorkspaceContainer] Failed to fetch integration env vars:', e);
       console.log(
         `[WorkspaceContainer] fetchIntegrationEnvVars workspace=${workspaceId} failed=true integrations=${integrationCount} getIntegrationsMs=${getIntegrationsMs} decryptMapMs=${decryptAndMapMs} totalMs=${Date.now() - startedAt}`
       );
+      return { envVars: integrationEnvVars, success: false };
     }
+  }
 
-    return integrationEnvVars;
+  async fetchIntegrationEnvVars(): Promise<Record<string, string>> {
+    const { envVars } = await this.fetchIntegrationEnvVarsWithStatus();
+    return envVars;
   }
 
   async pushIntegrationEnvVars(envVars: Record<string, string>): Promise<boolean> {
@@ -423,7 +431,13 @@ export class WorkspaceContainer {
   }
 
   async refreshIntegrationEnvVars(): Promise<boolean> {
-    const envVars = await this.fetchIntegrationEnvVars();
+    const { envVars, success } = await this.fetchIntegrationEnvVarsWithStatus();
+    if (!success) {
+      console.warn(
+        `[WorkspaceContainer] refreshIntegrationEnvVars: skipping env file write due to fetch failure workspace=${this.workspaceId}`
+      );
+      return false;
+    }
     return this.pushIntegrationEnvVars(envVars);
   }
 
