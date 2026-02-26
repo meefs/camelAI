@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -271,6 +272,78 @@ func TestForwardDataProxyRequest(t *testing.T) {
 		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
 	}
 	if got := rec.Body.String(); got != `{"recordset":[{"value":1}]}` {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
+func TestForwardOpenAIProxyRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/compat/chat/completions" {
+			t.Fatalf("unexpected upstream path: %s", req.URL.Path)
+		}
+		if req.Header.Get("Authorization") != "Bearer gateway-token" {
+			t.Fatalf("unexpected authorization header: %q", req.Header.Get("Authorization"))
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode upstream body: %v", err)
+		}
+		if payload["model"] != "dynamic/auto" {
+			t.Fatalf("expected model rewrite to dynamic/auto, got: %v", payload["model"])
+		}
+
+		metadata := req.Header.Get("cf-aig-metadata")
+		if strings.TrimSpace(metadata) == "" {
+			t.Fatal("expected cf-aig-metadata header")
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(metadata), &parsed); err != nil {
+			t.Fatalf("invalid cf-aig-metadata JSON: %v", err)
+		}
+		if parsed["uid"] != "org-1:ws-1:user-1:thread-1" {
+			t.Fatalf("unexpected uid in metadata: %+v", parsed["uid"])
+		}
+		chiridion, ok := parsed["chiridion"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing chiridion metadata: %+v", parsed)
+		}
+		if chiridion["orgId"] != "org-1" || chiridion["workspaceId"] != "ws-1" || chiridion["userId"] != "user-1" || chiridion["threadId"] != "thread-1" {
+			t.Fatalf("unexpected chiridion metadata: %+v", chiridion)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_test","object":"chat.completion"}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			OpenAIProxyUpstreamURL: upstream.URL + "/compat",
+			OpenAIProxyAuthToken:   "gateway-token",
+		},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces/org-1/ws-1/openai-proxy/v1/chat/completions", strings.NewReader(`{"model":"@cf/meta/llama-3.1-8b-instruct"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Chiridion-User-Id", "user-1")
+	req.Header.Set("X-Chiridion-Thread-Id", "thread-1")
+	rec := httptest.NewRecorder()
+	route := WorkspaceRoute{
+		OrgID:       "org-1",
+		WorkspaceID: "ws-1",
+		Subpath:     "/openai-proxy/v1/chat/completions",
+	}
+
+	if err := server.forwardOpenAIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardOpenAIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"id":"chatcmpl_test","object":"chat.completion"}` {
 		t.Fatalf("unexpected body: %q", got)
 	}
 }

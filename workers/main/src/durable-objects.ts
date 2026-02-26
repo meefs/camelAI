@@ -144,6 +144,7 @@ interface ChatContextState {
   threadId: string;
   workspaceId: string;
   orgId: string;
+  userId: string | null;
   userName: string | null;
   userEmail: string | null;
 }
@@ -232,6 +233,7 @@ const RUNNER_RECONNECT_GRACE_MS = 30_000;
 
 const HEADER_USER_NAME = 'X-Chiridion-User-Name';
 const HEADER_USER_EMAIL = 'X-Chiridion-User-Email';
+const HEADER_USER_ID = 'X-Chiridion-User-Id';
 
 const CAMELAI_SYSTEM_MESSAGE_REGEX =
   /<camelai system message>([\s\S]*?)<\/camelai system message>/gi;
@@ -410,7 +412,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       const storedContext = ctx.storage.kv.get<ChatContextState>(CHAT_CONTEXT_KEY);
       if (storedContext && storedContext.threadId && storedContext.workspaceId && storedContext.orgId) {
-        this.chatContext = storedContext;
+        this.chatContext = {
+          ...storedContext,
+          userId: storedContext.userId ?? null,
+          userName: storedContext.userName ?? null,
+          userEmail: storedContext.userEmail ?? null,
+        };
       }
 
       const storedTodos = ctx.storage.kv.get<unknown[]>(CHAT_TODOS_KEY);
@@ -994,6 +1001,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     const queryWorkspaceId = url.searchParams.get('workspaceId')?.trim() || '';
     const queryOrgId = url.searchParams.get('orgId')?.trim() || '';
 
+    const userId = request.headers.get(HEADER_USER_ID);
     const userName = request.headers.get(HEADER_USER_NAME);
     const userEmail = request.headers.get(HEADER_USER_EMAIL);
 
@@ -1016,6 +1024,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       threadId,
       workspaceId,
       orgId,
+      userId: userId || prev?.userId || null,
       userName: userName || prev?.userName || null,
       userEmail: userEmail || prev?.userEmail || null,
     };
@@ -1025,6 +1034,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       threadId,
       workspaceId,
       orgId,
+      userIdPresent: Boolean(this.chatContext.userId),
       userNamePresent: Boolean(this.chatContext.userName),
       userEmailPresent: Boolean(this.chatContext.userEmail),
     });
@@ -1413,6 +1423,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       threadId,
       workspaceId,
       orgId,
+      userId: this.chatContext?.userId ?? null,
       userName: typeof payload.userName === 'string' && payload.userName.trim()
         ? payload.userName.trim()
         : (this.chatContext?.userName ?? null),
@@ -1558,6 +1569,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       // Open WebSocket to the control plane's /chat endpoint.
       const chatWs = await container.connectChatWebSocket({
         threadId: context.threadId,
+        userId: context.userId ?? undefined,
       });
       this.attachRunnerSocket(chatWs);
       this.trace('ensure_runner_ws_connected');

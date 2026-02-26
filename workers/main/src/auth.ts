@@ -355,15 +355,6 @@ export interface ProxyUsageInput {
   cache_read_input_tokens?: number;
 }
 
-export interface OpenRouterKeyRecord {
-  key_hash: string; // First 8 chars of key for identification
-  key_encrypted: string; // AES-GCM encrypted key
-  name: string;
-  limit: number | null; // Credits limit (null = unlimited)
-  created_at: number;
-  updated_at: number;
-}
-
 /**
  * Migration Pattern for Durable Objects
  * ======================================
@@ -1227,22 +1218,6 @@ export class OrgDO extends DurableObject<DOEnv> {
       } catch {
         // Column already exists
       }
-    }
-
-    if (version < 10) {
-      // V10: Add OpenRouter API key storage for per-org LLM access
-      this.sql.exec(`
-        CREATE TABLE IF NOT EXISTS openrouter_key (
-          id INTEGER PRIMARY KEY CHECK (id = 1),
-          key_hash TEXT NOT NULL,
-          key_encrypted TEXT NOT NULL,
-          name TEXT NOT NULL,
-          openrouter_key_id TEXT,
-          limit_credits INTEGER,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
-        )
-      `);
     }
 
     if (version < 11) {
@@ -2353,7 +2328,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     this.sql.exec('DELETE FROM worker_scripts');
     this.sql.exec('DELETE FROM threads');
     this.sql.exec('DELETE FROM proxy_usage');
-    this.sql.exec('DELETE FROM openrouter_key');
 
     console.log('[OrgDO] hard deleted org', {
       orgId: info.id,
@@ -2834,75 +2808,5 @@ export class OrgDO extends DurableObject<DOEnv> {
   async recordSpend(orgId: string, costCents: number): Promise<void> {
     const { recordSpendToKV } = await import('./lib/cost-calculation.js');
     await recordSpendToKV(this.env.APP_KV, orgId, costCents);
-  }
-
-  // OpenRouter API key methods
-
-  /**
-   * Get the OpenRouter API key for this org (encrypted).
-   * Returns null if no key has been provisioned yet.
-   */
-  getOpenRouterKeyRecord(): OpenRouterKeyRecord | null {
-    const rows = this.sql.exec(`
-      SELECT key_hash, key_encrypted, name, limit_credits, created_at, updated_at
-      FROM openrouter_key WHERE id = 1
-    `).toArray() as unknown as Array<{
-      key_hash: string;
-      key_encrypted: string;
-      name: string;
-      limit_credits: number | null;
-      created_at: number;
-      updated_at: number;
-    }>;
-    if (rows.length === 0) return null;
-    const row = rows[0];
-    return {
-      key_hash: row.key_hash,
-      key_encrypted: row.key_encrypted,
-      name: row.name,
-      limit: row.limit_credits,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    };
-  }
-
-  /**
-   * Store an OpenRouter API key for this org.
-   * The key should already be encrypted before calling this method.
-   */
-  setOpenRouterKey(
-    keyHash: string,
-    keyEncrypted: string,
-    name: string,
-    openrouterKeyId: string | null,
-    limitCredits: number | null
-  ): void {
-    const now = Date.now();
-    this.sql.exec(`
-      INSERT INTO openrouter_key (id, key_hash, key_encrypted, name, openrouter_key_id, limit_credits, created_at, updated_at)
-      VALUES (1, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        key_hash = excluded.key_hash,
-        key_encrypted = excluded.key_encrypted,
-        name = excluded.name,
-        openrouter_key_id = excluded.openrouter_key_id,
-        limit_credits = excluded.limit_credits,
-        updated_at = excluded.updated_at
-    `, keyHash, keyEncrypted, name, openrouterKeyId, limitCredits, now, now);
-  }
-
-  /**
-   * Check if this org has an OpenRouter API key.
-   */
-  hasOpenRouterKey(): boolean {
-    const rows = this.sql.exec('SELECT 1 FROM openrouter_key WHERE id = 1').toArray();
-    return rows.length > 0;
-  }
-
-  /**
-   * Delete the OpenRouter API key for this org.
-   */
-  deleteOpenRouterKey(): void {
-    this.sql.exec('DELETE FROM openrouter_key WHERE id = 1');
   }
 }

@@ -46,9 +46,20 @@
 	// ],
 
 	/**
+	 * Workers AI
+	 * https://developers.cloudflare.com/workers-ai/
+	 *
+	 * Optional: declare a native AI binding for `workers-ai-provider`
+	 * (`createWorkersAI({ binding: env.AI })`).
+	 * In camelAI deploys, this is virtualized and rewritten to the platform AI entrypoint.
+	 */
+	// "ai": { "binding": "AI" },
+
+	/**
 	 * Runtime variables available in loader/action context via context.cloudflare.env
 	 */
 	"vars": {
+		"AI_VIRTUAL_MODEL": "dynamic/auto",
 		"VALUE_FROM_CLOUDFLARE": "Starter template running on Cloudflare"
 		// Optional local fallback for template DATA_PROXY shim:
 		// "DATA_PROXY_URL": "http://host.docker.internal:8081/proxy/<thread-id>/api"

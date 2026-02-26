@@ -170,15 +170,24 @@ describe('Worker Binding Validation', () => {
       expect(result.forbiddenBindings[0]?.type).toBe('analytics_engine');
     });
 
-    it('blocks ai bindings', () => {
+    it('allows ai bindings (transformed to virtual AI binding at deploy time)', () => {
       const bindings: WorkerBinding[] = [
         { type: 'ai', name: 'AI' },
+      ];
+      const result = validateBindings(bindings);
+      expect(result.valid).toBe(true);
+      expect(result.forbiddenBindings).toHaveLength(0);
+    });
+
+    it('blocks AI service binding (native ai binding must be used)', () => {
+      const bindings: WorkerBinding[] = [
+        { type: 'service', name: 'AI', service: 'placeholder' },
       ];
       const result = validateBindings(bindings);
       expect(result.valid).toBe(false);
       expect(result.forbiddenBindings).toHaveLength(1);
       expect(result.forbiddenBindings[0]?.name).toBe('AI');
-      expect(result.forbiddenBindings[0]?.type).toBe('ai');
+      expect(result.forbiddenBindings[0]?.type).toBe('service');
     });
 
     it('blocks browser rendering bindings', () => {
@@ -307,14 +316,15 @@ describe('Worker Binding Validation', () => {
   });
 
   describe('mapVirtualizedBindings', () => {
-    it('rewrites R2 and DATA_PROXY bindings to internal service entrypoints', () => {
+    it('rewrites R2, DATA_PROXY, and AI bindings to internal service entrypoints', () => {
       const bindings: WorkerBinding[] = [
         { type: 'r2_bucket', name: 'FILES', bucket_name: 'workspace-files' },
         { type: 'service', name: 'DATA_PROXY', service: 'placeholder' },
+        { type: 'ai', name: 'AI' },
         { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
       ];
 
-      const transformed = mapVirtualizedBindings(bindings, 'ws_123', 'org_456', 'chiridion-app');
+      const transformed = mapVirtualizedBindings(bindings, 'ws_123', 'org_456', 'user_789', 'chiridion-app');
 
       expect(transformed).toEqual([
         {
@@ -331,6 +341,13 @@ describe('Worker Binding Validation', () => {
           entrypoint: 'DataProxyService',
           props: { workspaceId: 'ws_123', orgId: 'org_456' },
         },
+        {
+          type: 'service',
+          name: 'AI',
+          service: 'chiridion-app',
+          entrypoint: 'AIVirtualBinding',
+          props: { workspaceId: 'ws_123', orgId: 'org_456', userId: 'user_789' },
+        },
         { type: 'plain_text', name: 'APP_ENV', text: 'prod' },
       ]);
     });
@@ -345,7 +362,7 @@ describe('Worker Binding Validation', () => {
         },
       ];
 
-      const transformed = mapVirtualizedBindings(bindings, 'ws_abc', 'org_xyz', 'chiridion-app');
+      const transformed = mapVirtualizedBindings(bindings, 'ws_abc', 'org_xyz', undefined, 'chiridion-app');
 
       expect(transformed).toEqual([
         {
@@ -357,5 +374,6 @@ describe('Worker Binding Validation', () => {
         },
       ]);
     });
+
   });
 });

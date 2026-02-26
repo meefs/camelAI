@@ -9,21 +9,16 @@ import { waitUntil } from 'cloudflare:workers';
 import { isSignedToken, validateSignedToken, createSignedToken } from './signed-tokens.js';
 import { mapCredentialsToEnvVars } from './integration-env.js';
 import { decryptCredentials } from '../../../src/lib/integration-crypto.js';
-import { decryptOpenRouterKey } from './openrouter-keys.js';
 import { validateSandboxProxy } from './sandbox-auth.js';
 import type { OrgDO } from './auth.js';
 import type { WorkspaceDO } from './workspace.js';
 
 // Secrets managed by Chiridion (will be cleaned up if removed)
 const MANAGED_SECRET_PREFIXES = ['INT_'];
-const MANAGED_SECRET_NAMES = ['OPENROUTER_API_KEY'];
 const VIRTUAL_DATA_PROXY_BINDING_NAME = 'DATA_PROXY';
 
 function isManagedSecret(name: string): boolean {
-  return (
-    MANAGED_SECRET_NAMES.includes(name) ||
-    MANAGED_SECRET_PREFIXES.some(p => name.startsWith(p))
-  );
+  return MANAGED_SECRET_PREFIXES.some(p => name.startsWith(p));
 }
 
 // =============================================================================
@@ -43,7 +38,6 @@ const FORBIDDEN_BINDING_TYPES = new Set([
   'hyperdrive',             // Hyperdrive database connections
   'vectorize',              // Vectorize vector indexes
   'browser',                // Browser Rendering API
-  'ai',                     // Workers AI
   'mtls_certificate',       // mTLS certificates
   'dispatch_namespace',     // Workers for Platforms dispatch
   'send_email',             // Email sending
@@ -53,6 +47,7 @@ const FORBIDDEN_BINDING_TYPES = new Set([
 /** Binding types that pass validation but are transformed before forwarding to CF API */
 const TRANSFORMED_BINDING_TYPES = new Set([
   'r2_bucket',              // Replaced with virtual R2 service binding
+  'ai',                     // Replaced with virtual AI binding
 ]);
 
 /** Binding types that are always allowed (safe, self-contained) */
@@ -189,7 +184,6 @@ export interface CfApiProxyEnv {
   CHAT_THREAD: DurableObjectNamespace;
   WORKER_BASE_URL?: string;
   SANDBOX_PROXY_SECRET?: string;
-  OPENROUTER_API_KEY?: string; // Default/fallback OpenRouter key
 }
 
 export interface DeploySideEffectsInfo {
@@ -487,11 +481,13 @@ function transformVirtualBindings(
   bindings: WorkerBinding[],
   workspaceId: string,
   orgId: string,
+  userId: string | undefined,
   workerServiceName: string
 ): ArrayBuffer {
   const r2Bindings = bindings.filter(b => b.type === 'r2_bucket');
   const dataProxyBindings = bindings.filter(b => b.type === 'service' && b.name === VIRTUAL_DATA_PROXY_BINDING_NAME);
-  if (r2Bindings.length === 0 && dataProxyBindings.length === 0) return body;
+  const aiBindings = bindings.filter(b => b.type === 'ai');
+  if (r2Bindings.length === 0 && dataProxyBindings.length === 0 && aiBindings.length === 0) return body;
 
   // Parse and transform the metadata
   let metadata: WorkerMetadata;
@@ -504,7 +500,7 @@ function transformVirtualBindings(
 
   if (!metadata.bindings) return body;
 
-  metadata.bindings = mapVirtualizedBindings(metadata.bindings, workspaceId, orgId, workerServiceName);
+  metadata.bindings = mapVirtualizedBindings(metadata.bindings, workspaceId, orgId, userId, workerServiceName);
 
   const newMetadataJson = JSON.stringify(metadata);
 
@@ -547,6 +543,7 @@ function transformVirtualBindings(
     workerServiceName,
     r2Bindings: r2Bindings.map(b => ({ name: b.name, bucket_name: b.bucket_name })),
     dataProxyBindings: dataProxyBindings.map(b => ({ name: b.name })),
+    aiBindings: aiBindings.map(b => ({ name: b.name })),
     originalSize: body.byteLength,
     newSize: result.length,
   });
@@ -558,6 +555,7 @@ export function mapVirtualizedBindings(
   bindings: WorkerBinding[],
   workspaceId: string,
   orgId: string,
+  userId: string | undefined,
   workerServiceName: string
 ): WorkerBinding[] {
   return bindings.map(binding => {
@@ -578,6 +576,20 @@ export function mapVirtualizedBindings(
         service: workerServiceName,
         entrypoint: 'DataProxyService',
         props: { workspaceId, orgId },
+      };
+    }
+
+    if (binding.type === 'ai') {
+      const props: Record<string, string> = { workspaceId, orgId };
+      if (userId) {
+        props.userId = userId;
+      }
+      return {
+        type: 'service',
+        name: binding.name,
+        service: workerServiceName,
+        entrypoint: 'AIVirtualBinding',
+        props,
       };
     }
 
@@ -817,23 +829,6 @@ async function syncDispatchScriptSecrets(
     Object.assign(secretsToSync, mapCredentialsToEnvVars(record.name, record.integration_type, credentials, config));
   }
 
-  // Get OpenRouter API key: prefer per-org key, fall back to default only when no org key exists
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  const keyRecord = await orgStub.getOpenRouterKeyRecord();
-  if (keyRecord) {
-    try {
-      const openRouterKey = await decryptOpenRouterKey(keyRecord.key_encrypted, env.INTEGRATION_SECRET_KEY);
-      secretsToSync.OPENROUTER_API_KEY = openRouterKey;
-    } catch (e) {
-      // Don't fall back to default — a provisioned key that fails to decrypt
-      // indicates a config problem that should surface, not be silently masked
-      console.error('[cf-api-proxy] Failed to decrypt OpenRouter key for script secrets:', e);
-    }
-  } else if (env.OPENROUTER_API_KEY) {
-    // No org key provisioned — use platform default
-    secretsToSync.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
-  }
-
   const secretEntries = Object.entries(secretsToSync);
 
   if (secretEntries.length === 0) {
@@ -984,12 +979,14 @@ export async function proxyCloudflareApi(
   let orgId: string;
   let orgSlug: string | undefined;
   let workspaceId: string;
+  let userId: string | undefined;
   let threadId: string | undefined;
 
   const proxyAuth = validateSandboxProxy(request, env);
   if (proxyAuth.valid) {
     orgId = proxyAuth.orgId;
     workspaceId = proxyAuth.workspaceId;
+    userId = proxyAuth.userId;
 
     // Look up org_slug from OrgDO (needed for script namespacing)
     const orgStub = env.ORG.get(env.ORG.idFromName(orgId)) as DurableObjectStub<OrgDO>;
@@ -1060,6 +1057,7 @@ export async function proxyCloudflareApi(
     orgId = tokenPayload.org_id;
     orgSlug = tokenPayload.org_slug;
     workspaceId = tokenPayload.workspace_id;
+    userId = tokenPayload.user_id;
     threadId = tokenPayload.thread_id;
 
     // Require org_slug for deploy operations
@@ -1250,7 +1248,7 @@ export async function proxyCloudflareApi(
             10005,
             `Deploy blocked: Your worker contains forbidden bindings: ${forbiddenList}. ` +
             `User workers can only use environment variables and Durable Objects defined in the same script. ` +
-            `External resources (KV, D1, R2, Queues, etc.) are not allowed.`,
+            `External resources (KV, D1, Queues, etc.) are not allowed unless virtualized by the platform (R2, DATA_PROXY, AI).`,
             403
           );
         }
@@ -1317,7 +1315,7 @@ export async function proxyCloudflareApi(
               10005,
               `Settings update blocked: Request contains forbidden bindings: ${forbiddenList}. ` +
               `User workers can only use environment variables and Durable Objects defined in the same script. ` +
-              `External resources (KV, D1, R2, Queues, etc.) are not allowed.`,
+              `External resources (KV, D1, Queues, etc.) are not allowed unless virtualized by the platform (R2, DATA_PROXY, AI).`,
               403
             );
           }
@@ -1333,6 +1331,7 @@ export async function proxyCloudflareApi(
               jsonBody.bindings,
               workspaceId,
               orgId,
+              userId,
               env.CF_WORKER_NAME
             );
             const changed = transformedBindings.some((binding, idx) => {
@@ -1396,6 +1395,7 @@ export async function proxyCloudflareApi(
           uploadInfo2.bindings,
           workspaceId,
           orgId,
+          userId,
           env.CF_WORKER_NAME
         );
         headers.set('Content-Length', String(body.byteLength));

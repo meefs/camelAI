@@ -7,13 +7,7 @@ import {
   type StreamTextOnFinishCallback,
   type ToolSet,
 } from "ai";
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-
-function getOpenRouter(apiKey: string) {
-  return createOpenRouter({
-    apiKey,
-  });
-}
+import { createWorkersAI } from "workers-ai-provider";
 
 /**
  * Chat Agent Durable Object using Cloudflare Agents SDK.
@@ -53,15 +47,12 @@ export class Chat extends AIChatAgent<Env> {
     onFinish: StreamTextOnFinishCallback<ToolSet>,
     options?: { abortSignal?: AbortSignal }
   ): Promise<Response> {
-    const openrouter = getOpenRouter(this.env.OPENROUTER_API_KEY);
+    const workersai = createWorkersAI({ binding: (this.env as unknown as { AI: unknown }).AI as any });
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
         const result = streamText({
-          model: openrouter("openrouter/auto", {
-            // Uncomment to enable web search:
-            // plugins: [{ id: "web" }],
-          }),
+          model: workersai("auto", {}),
           // Pass the FULL conversation history to maintain context
           // This includes all user messages and all previous AI responses
           messages: await convertToModelMessages(this.messages),

@@ -173,17 +173,36 @@ return { rows: result.data.recordset ?? [] };
 
 For local fallback over HTTP, set `DATA_PROXY_URL` in `wrangler.jsonc` vars or `.dev.vars`.
 
+### Virtual AI Binding (`AI`)
+
+You can use Cloudflare-style AI calls in user workers with a native AI binding:
+
+```jsonc
+"ai": { "binding": "AI" }
+```
+
+Then call it in loaders/actions with the Workers AI provider:
+
+```typescript
+import { createWorkersAI } from "workers-ai-provider";
+
+const workersai = createWorkersAI({ binding: context.cloudflare.env.AI });
+
+const result = await generateText({
+  model: workersai("auto", {}),
+  messages: [{ role: "user", content: "Hello!" }],
+});
+```
+
+In camelAI deploys, this binding is virtualized and rewritten to an internal platform entrypoint through Cloudflare AI Gateway. Model routing is platform-controlled.
+
 ### AI Chat Agent
 
 The template has a complete AI chat setup - just uncomment:
 
-1. **wrangler.jsonc**: Uncomment `Chat` binding and add to migrations
+1. **wrangler.jsonc**: Uncomment `Chat` binding, add to migrations, and add `"ai": { "binding": "AI" }`
 2. **workers/app.ts**: Uncomment `routeAgentRequest` and `Chat` export
 3. **app/routes.ts**: Add `route("chat", "routes/chat.tsx")`
-
-**No API key setup needed** - `OPENROUTER_API_KEY` is automatically available:
-- In deployed workers via `env.OPENROUTER_API_KEY`
-- In your bash environment via `$OPENROUTER_API_KEY` (for ad hoc scripts/testing)
 
 ## Common Patterns
 

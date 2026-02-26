@@ -6,6 +6,7 @@ The sandbox host runs on the Azure VM and manages:
 - Per-sandbox host directories under `WORKSPACES_ROOT`
 - Control-plane proxying (`/health`, `/chat`)
 - Data proxy forwarding (`/v1/workspaces/{orgId}/{workspaceId}/data-proxy/*`)
+- OpenAI proxy forwarding (`/v1/workspaces/{orgId}/{workspaceId}/openai-proxy/v1/*`)
 - Worker API proxying via `/proxy/:threadId/*`
 
 Requires Go 1.24+.
@@ -22,6 +23,17 @@ Data proxy:
 - sandbox-host forwards `/v1/workspaces/{orgId}/{workspaceId}/data-proxy/*` to the sidecar over localhost (`DATA_PROXY_UPSTREAM_URL`, default `http://127.0.0.1:8090`).
 - Query responses are JSON. The sidecar serializes row results incrementally to avoid materializing full recordsets in process memory.
 - Sandbox containers receive `DATA_PROXY_URL` (no token). Calls flow through `/proxy/:threadId/*` and are authenticated by sandbox-host injected identity headers.
+
+OpenAI proxy:
+
+- OpenAI-compatible requests are handled directly by sandbox-host control routes (no separate sidecar service).
+- sandbox-host forwards `/v1/workspaces/{orgId}/{workspaceId}/openai-proxy/v1/*` to Cloudflare AI Gateway.
+- For `/v1/chat/completions`, sandbox-host forces `model: "dynamic/auto"` to match platform virtual AI binding behavior.
+- Configure either:
+  - `OPENAI_PROXY_UPSTREAM_URL` + `OPENAI_PROXY_AUTH_TOKEN`, or
+  - `CF_ACCOUNT_ID` + `CF_GATEWAY_NAME` + `CF_GATEWAY_TOKEN` (auto-derives upstream URL as `.../compat`).
+- sandbox-host injects `cf-aig-metadata` containing workspace/org/thread context (`uid`, `chiridion.orgId`, `chiridion.workspaceId`, `chiridion.threadId`) for per-tenant rate limits/spend controls.
+- Sandbox containers receive `OPENAI_PROXY_URL` and `OPENAI_BASE_URL` (no real API key required; `OPENAI_API_KEY=proxy`).
 
 VM firewall rules block `docker0` traffic to `PORT` and only allow `docker0` to `SANDBOX_PROXY_PORT`.
 
@@ -73,6 +85,14 @@ bun run dev:sandbox-host
 - watches sandbox image inputs and rebuilds on change by default (`SANDBOX_WATCH_IMAGE=0` to disable)
 - loads local secrets from process env first, then `.dev.vars`, then `infra/terraform.tfvars`/`infra/*.auto.tfvars` when present
 - `publish` builds the renderer bundle at runtime inside the container (no prebuilt `sandbox/create-worker/renderer-dist` required)
+
+Force local image refresh options:
+
+- `SANDBOX_IMAGE_VERSION=dev-2 bun run dev:sandbox-host` to bump the local image tag (`chiridion-sandbox:dev-2`).
+- `SANDBOX_BUILD_NO_CACHE=1 bun run dev:sandbox-host` to force Docker rebuild without layer cache.
+- `SANDBOX_IMAGE=<custom-tag> bun run dev:sandbox-host` to use a fully custom image ref.
+
+When the configured image ref changes, sandbox-host now recreates workspace containers instead of reusing stale ones.
 
 For R2 host-level FUSE mounts, set `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, and `R2_BUCKET_NAME`.
 The sandbox-host mounts R2 on the host and bind-mounts per-workspace directories into containers.

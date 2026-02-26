@@ -10,6 +10,7 @@
 
 	// Default: query staging environment
 	"vars": {
+		"AI_VIRTUAL_MODEL": "dynamic/auto",
 		"TARGET_HOST": "https://staging.camelai.dev"
 	},
 	"kv_namespaces": [
@@ -41,6 +42,7 @@
 		// Query production environment
 		"prod": {
 			"vars": {
+				"AI_VIRTUAL_MODEL": "dynamic/auto",
 				"TARGET_HOST": "https://camelai.dev"
 			},
 			"kv_namespaces": [
@@ -72,6 +74,7 @@
 		// Query dev-illiana environment
 		"dev-illiana": {
 			"vars": {
+				"AI_VIRTUAL_MODEL": "dynamic/auto",
 				"TARGET_HOST": "https://dev-illiana.camelai.dev"
 			},
 			"kv_namespaces": [
@@ -103,6 +106,7 @@
 		// Query dev-miguel environment
 		"dev-miguel": {
 			"vars": {
+				"AI_VIRTUAL_MODEL": "dynamic/auto",
 				"TARGET_HOST": "https://dev-miguel.camelai.dev"
 			},
 			"kv_namespaces": [

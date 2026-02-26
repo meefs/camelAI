@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -33,6 +34,7 @@ type ProxyThreadContext struct {
 	ContainerName string
 	OrgID         string
 	WorkspaceID   string
+	UserID        string
 	ThreadID      string
 	WorkerBaseURL string
 	CreatedAt     time.Time
@@ -255,6 +257,8 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return s.handleChatMessages(w, req, name)
 	case strings.HasPrefix(route.Subpath, "/data-proxy/"):
 		return s.forwardDataProxyRequest(w, req, route)
+	case strings.HasPrefix(route.Subpath, "/openai-proxy/"):
+		return s.forwardOpenAIProxyRequest(w, req, route)
 	case route.Subpath == "/health" && req.Method == http.MethodGet:
 		if _, err := s.containers.EnsureContainer(name, opts); err != nil {
 			return err
@@ -356,6 +360,146 @@ func (s *Server) forwardDataProxyRequest(w http.ResponseWriter, req *http.Reques
 		return err
 	}
 	return nil
+}
+
+func (s *Server) forwardOpenAIProxyRequest(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) error {
+	base := strings.TrimRight(strings.TrimSpace(s.cfg.OpenAIProxyUpstreamURL), "/")
+	if base == "" {
+		errorJSON(w, "OpenAI proxy upstream not configured", http.StatusServiceUnavailable)
+		return nil
+	}
+	token := strings.TrimSpace(s.cfg.OpenAIProxyAuthToken)
+	if token == "" {
+		errorJSON(w, "OpenAI proxy auth token not configured", http.StatusServiceUnavailable)
+		return nil
+	}
+
+	upstreamPath := strings.TrimPrefix(route.Subpath, "/openai-proxy")
+	normalizedUpstreamPath, ok := normalizeOpenAIProxyUpstreamPath(upstreamPath)
+	if !ok {
+		errorJSON(w, "Invalid OpenAI proxy path", http.StatusBadRequest)
+		return nil
+	}
+
+	bodyReader, err := rewriteOpenAIProxyBody(req, normalizedUpstreamPath)
+	if err != nil {
+		return err
+	}
+
+	targetURL := base + normalizedUpstreamPath
+	if req.URL.RawQuery != "" {
+		targetURL += "?" + req.URL.RawQuery
+	}
+
+	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, bodyReader)
+	if err != nil {
+		return err
+	}
+	copyHeaders(forwardReq.Header, req.Header)
+	forwardReq.Header.Del("Host")
+	forwardReq.Header.Del("Authorization")
+	forwardReq.Header.Del("Content-Length")
+	forwardReq.Header.Set("Authorization", "Bearer "+token)
+	forwardReq.Header.Set("cf-aig-metadata", buildAIGatewayMetadata(route, req))
+	applyStreamingRequestHeaders(forwardReq.Header)
+
+	resp, err := s.httpClient.Do(forwardReq)
+	if err != nil {
+		errorJSON(w, "OpenAI proxy upstream unavailable", http.StatusServiceUnavailable)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	copyHeaders(w.Header(), resp.Header)
+	applyStreamingResponseHeaders(w.Header(), resp.Header.Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+
+	if err := copyResponseBody(w, resp.Body); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+const forcedGatewayModel = "dynamic/auto"
+
+func normalizeOpenAIProxyUpstreamPath(path string) (string, bool) {
+	if !strings.HasPrefix(path, "/v1/") && path != "/v1" {
+		return "", false
+	}
+	normalized := strings.TrimPrefix(path, "/v1")
+	if normalized == "" || normalized == "/" {
+		return "", false
+	}
+	return normalized, true
+}
+
+func rewriteOpenAIProxyBody(req *http.Request, upstreamPath string) (io.Reader, error) {
+	if req.Method == http.MethodGet || req.Method == http.MethodHead {
+		return nil, nil
+	}
+	if req.Body == nil {
+		return nil, nil
+	}
+
+	rawBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	if len(rawBody) == 0 {
+		return bytes.NewReader(rawBody), nil
+	}
+	if upstreamPath != "/chat/completions" {
+		return bytes.NewReader(rawBody), nil
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		// Keep passthrough behavior for non-JSON payloads; upstream will validate.
+		return bytes.NewReader(rawBody), nil
+	}
+
+	payload["model"] = forcedGatewayModel
+	rewritten, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(rewritten), nil
+}
+
+func buildAIGatewayMetadata(route WorkspaceRoute, req *http.Request) string {
+	userID := strings.TrimSpace(req.Header.Get("X-Chiridion-User-Id"))
+	threadID := strings.TrimSpace(req.Header.Get("X-Chiridion-Thread-Id"))
+	uidParts := []string{route.OrgID, route.WorkspaceID}
+	if userID != "" {
+		uidParts = append(uidParts, userID)
+	}
+	uid := strings.Join(uidParts, ":")
+	if threadID != "" {
+		uid = uid + ":" + threadID
+	}
+
+	chiridion := map[string]string{
+		"orgId":       route.OrgID,
+		"workspaceId": route.WorkspaceID,
+		"threadId":    threadID,
+	}
+	if userID != "" {
+		chiridion["userId"] = userID
+	}
+
+	payload := map[string]any{
+		"uid":       uid,
+		"chiridion": chiridion,
+	}
+
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return `{"uid":"unknown"}`
+	}
+	return string(encoded)
 }
 
 func (s *Server) handleFSRead(w http.ResponseWriter, req *http.Request, name string) error {
@@ -515,6 +659,7 @@ func (s *Server) handleChatProxy(
 		errorJSON(w, "Missing thread ID", http.StatusBadRequest)
 		return nil
 	}
+	userID := strings.TrimSpace(req.Header.Get(s.cfg.HeaderUserID))
 
 	workerBaseURL := normalizeWorkerBaseURL(firstNonEmpty(req.Header.Get(s.cfg.HeaderWorkerBaseURL), s.cfg.WorkerBaseURL))
 	if workerBaseURL == "" {
@@ -540,6 +685,7 @@ func (s *Server) handleChatProxy(
 		ContainerName: name,
 		OrgID:         route.OrgID,
 		WorkspaceID:   route.WorkspaceID,
+		UserID:        userID,
 		ThreadID:      threadID,
 		WorkerBaseURL: workerBaseURL,
 		CreatedAt:     createdAt,
@@ -835,6 +981,7 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 	headers.Del("x-sandbox-secret")
 	headers.Del("x-chiridion-org-id")
 	headers.Del("x-chiridion-workspace-id")
+	headers.Del("x-chiridion-user-id")
 	headers.Del("x-chiridion-thread-id")
 	headers.Del("x-chiridion-mcp-identity")
 	headers.Del("Host")
@@ -844,6 +991,9 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 	headers.Set("X-Sandbox-Secret", s.cfg.SandboxProxySecret)
 	headers.Set("X-Chiridion-Org-Id", threadContext.OrgID)
 	headers.Set("X-Chiridion-Workspace-Id", threadContext.WorkspaceID)
+	if strings.TrimSpace(threadContext.UserID) != "" {
+		headers.Set("X-Chiridion-User-Id", threadContext.UserID)
+	}
 	headers.Set("X-Chiridion-Thread-Id", threadContext.ThreadID)
 	applyStreamingRequestHeaders(headers)
 	forwardReq.Header = headers
@@ -1009,6 +1159,7 @@ func (s *Server) loadProxyThreadsFromState() {
 			ContainerName: record.ContainerName,
 			OrgID:         record.OrgID,
 			WorkspaceID:   record.WorkspaceID,
+			UserID:        record.UserID,
 			ThreadID:      record.ThreadID,
 			WorkerBaseURL: record.WorkerBaseURL,
 			CreatedAt:     record.CreatedAt,
@@ -1045,6 +1196,7 @@ func (s *Server) upsertProxyThreadState(thread *ProxyThreadContext) {
 		ContainerName: thread.ContainerName,
 		OrgID:         thread.OrgID,
 		WorkspaceID:   thread.WorkspaceID,
+		UserID:        thread.UserID,
 		ThreadID:      thread.ThreadID,
 		WorkerBaseURL: thread.WorkerBaseURL,
 		CreatedAt:     thread.CreatedAt.UTC(),

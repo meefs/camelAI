@@ -6,6 +6,7 @@
 	"compatibility_flags": ["nodejs_compat"],
 	// Local dev defaults - skip auth and use local namespace
 	"vars": {
+		"AI_VIRTUAL_MODEL": "dynamic/auto",
 		"SKIP_AUTH": "true",
 		// Temporary migration mode. "legacy-open" fails closed except for legacy hostnames.
 		"DISPATCHER_MISSING_REGISTRY_MODE": "legacy-open"
@@ -151,6 +152,7 @@
 				{ "pattern": "*.local.camelai.app/*", "zone_name": "camelai.app" }
 			],
 			"vars": {
+				"AI_VIRTUAL_MODEL": "dynamic/auto",
 				"SKIP_AUTH": "true"
 			},
 			"dispatch_namespaces": [

@@ -18,6 +18,7 @@
 		}
 	],
 	"vars": {
+		"AI_VIRTUAL_MODEL": "dynamic/auto",
 			"R2_BUCKET_NAME": "chiridion-sandbox",
 			"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 			"R2_MOUNT_DIR": "/home/claude",
@@ -29,7 +30,6 @@
 			"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 			"CF_WORKER_NAME": "chiridion-app-dev-illiana",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-illiana"
-			// OPENROUTER_PROVISIONING_KEY is set via secrets
 		},
 	"assets": {
 		"binding": "ASSETS",

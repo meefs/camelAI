@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -21,6 +22,7 @@ type ProxyThreadRecord struct {
 	ContainerName string
 	OrgID         string
 	WorkspaceID   string
+	UserID        string
 	ThreadID      string
 	WorkerBaseURL string
 	CreatedAt     time.Time
@@ -77,6 +79,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 			container_name TEXT NOT NULL,
 			org_id TEXT NOT NULL,
 			workspace_id TEXT NOT NULL,
+			user_id TEXT NOT NULL DEFAULT '',
 			thread_id TEXT NOT NULL,
 			worker_base_url TEXT NOT NULL,
 			created_at_ms INTEGER NOT NULL,
@@ -93,7 +96,43 @@ func (s *Store) initSchema(ctx context.Context) error {
 			return fmt.Errorf("init schema: %w", err)
 		}
 	}
+	if err := s.ensureTableColumn(ctx, "proxy_threads", "user_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("init schema ensure user_id column: %w", err)
+	}
 	return nil
+}
+
+func (s *Store) ensureTableColumn(ctx context.Context, tableName, columnName, columnDDL string) error {
+	query := fmt.Sprintf("PRAGMA table_info(%s)", tableName)
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			colType    string
+			notNull    int
+			defaultVal sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &primaryKey); err != nil {
+			return err
+		}
+		if strings.EqualFold(name, columnName) {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	alter := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, columnName, columnDDL)
+	_, err = s.db.ExecContext(ctx, alter)
+	return err
 }
 
 func (s *Store) UpsertProxyThread(record ProxyThreadRecord) error {
@@ -110,13 +149,14 @@ func (s *Store) UpsertProxyThread(record ProxyThreadRecord) error {
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO proxy_threads (
-			key, container_name, org_id, workspace_id, thread_id, worker_base_url,
+			key, container_name, org_id, workspace_id, user_id, thread_id, worker_base_url,
 			created_at_ms, last_seen_at_ms, expires_at_ms, closed_at_ms, updated_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET
 			container_name=excluded.container_name,
 			org_id=excluded.org_id,
 			workspace_id=excluded.workspace_id,
+			user_id=excluded.user_id,
 			thread_id=excluded.thread_id,
 			worker_base_url=excluded.worker_base_url,
 			created_at_ms=excluded.created_at_ms,
@@ -129,6 +169,7 @@ func (s *Store) UpsertProxyThread(record ProxyThreadRecord) error {
 		record.ContainerName,
 		record.OrgID,
 		record.WorkspaceID,
+		record.UserID,
 		record.ThreadID,
 		record.WorkerBaseURL,
 		record.CreatedAt.UnixMilli(),
@@ -158,7 +199,7 @@ func (s *Store) LoadProxyThreads() ([]ProxyThreadRecord, error) {
 	defer cancel()
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT key, container_name, org_id, workspace_id, thread_id, worker_base_url,
+		SELECT key, container_name, org_id, workspace_id, user_id, thread_id, worker_base_url,
 		       created_at_ms, last_seen_at_ms, expires_at_ms, closed_at_ms
 		FROM proxy_threads
 	`)
@@ -177,6 +218,7 @@ func (s *Store) LoadProxyThreads() ([]ProxyThreadRecord, error) {
 			&r.ContainerName,
 			&r.OrgID,
 			&r.WorkspaceID,
+			&r.UserID,
 			&r.ThreadID,
 			&r.WorkerBaseURL,
 			&createdAtMs,

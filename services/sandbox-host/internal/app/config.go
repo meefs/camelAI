@@ -1,10 +1,12 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,6 +16,8 @@ type Config struct {
 	ProxyPort                  int
 	ProxyListenAddr            string
 	DataProxyUpstreamURL       string
+	OpenAIProxyUpstreamURL     string
+	OpenAIProxyAuthToken       string
 	IdleTimeout                time.Duration
 	ReadHeaderTimeout          time.Duration
 	WriteTimeout               time.Duration
@@ -25,6 +29,7 @@ type Config struct {
 	TraceSandboxHost           bool
 	HeaderWorkerBaseURL        string
 	HeaderThreadID             string
+	HeaderUserID               string
 	HeaderSandboxSecret        string
 	StateDBPath                string
 }
@@ -42,6 +47,16 @@ func LoadConfig() Config {
 	controlPort := envInt("PORT", defaultByPlatform(80, 4400))
 	proxyPort := envInt("SANDBOX_PROXY_PORT", defaultByPlatform(8081, 4401))
 	dataProxyPort := envInt("DATA_PROXY_PORT", defaultByPlatform(8090, 8090))
+	cfAccountID := strings.TrimSpace(envString("CF_ACCOUNT_ID", ""))
+	cfGatewayName := strings.TrimSpace(envString("CF_GATEWAY_NAME", ""))
+	defaultOpenAIProxyUpstreamURL := ""
+	if cfAccountID != "" && cfGatewayName != "" {
+		defaultOpenAIProxyUpstreamURL = fmt.Sprintf(
+			"https://gateway.ai.cloudflare.com/v1/%s/%s/compat",
+			cfAccountID,
+			cfGatewayName,
+		)
+	}
 	idleSecs := maxInt(10, envInt("SANDBOX_HOST_IDLE_TIMEOUT_SECS", 120))
 	activeTTLms := maxInt(30_000, envInt("PROXY_SESSION_ACTIVE_TTL_MS", 30*60_000))
 	closeGraceMs := maxInt(5_000, envInt("PROXY_SESSION_CLOSE_GRACE_MS", 10*60_000))
@@ -53,6 +68,8 @@ func LoadConfig() Config {
 		ProxyPort:                  proxyPort,
 		ProxyListenAddr:            ":" + strconv.Itoa(proxyPort),
 		DataProxyUpstreamURL:       envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
+		OpenAIProxyUpstreamURL:     envString("OPENAI_PROXY_UPSTREAM_URL", defaultOpenAIProxyUpstreamURL),
+		OpenAIProxyAuthToken:       firstNonEmpty(envString("OPENAI_PROXY_AUTH_TOKEN", ""), envString("CF_GATEWAY_TOKEN", "")),
 		IdleTimeout:                time.Duration(idleSecs) * time.Second,
 		ReadHeaderTimeout:          15 * time.Second,
 		WriteTimeout:               0,
@@ -64,6 +81,7 @@ func LoadConfig() Config {
 		TraceSandboxHost:           envString("TRACE_SANDBOX_HOST", "") == "1",
 		HeaderWorkerBaseURL:        "x-chiridion-worker-base-url",
 		HeaderThreadID:             "x-chiridion-thread-id",
+		HeaderUserID:               "x-chiridion-user-id",
 		HeaderSandboxSecret:        "x-sandbox-secret",
 		StateDBPath:                envString("SANDBOX_HOST_STATE_DB", defaultStateDBPath()),
 	}

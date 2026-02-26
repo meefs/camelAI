@@ -49,8 +49,6 @@ export interface CloudflareEnv {
   CF_DISPATCH_NAMESPACE: string;
   CF_API_TOKEN?: string;
   WORKER_BASE_URL: string;
-  OPENROUTER_API_KEY: string; // Fallback global key
-  OPENROUTER_PROVISIONING_KEY?: string; // Parent key for creating per-org keys
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
   EMAIL_FROM_ADDRESS?: string;

@@ -16,12 +16,14 @@ export async function handleChatWebSocket({ req, env, url }: RouteContext): Prom
   const access = await requireChatWebSocketAccess(req, env, threadIdFromUrl);
   if ('error' in access) return access.error;
 
-  const { session, orgId, workspaceId, threadId } = access;
+  const { session, orgId, workspaceId, threadId, userId } = access;
 
   // Forward to ChatThreadDO with validated context.
   const headers = new Headers(req.headers);
+  headers.delete('X-Chiridion-User-Id');
   headers.delete('X-Chiridion-User-Name');
   headers.delete('X-Chiridion-User-Email');
+  headers.set('X-Chiridion-User-Id', userId);
   if (session.user_name) headers.set('X-Chiridion-User-Name', session.user_name);
   if (session.user_email) headers.set('X-Chiridion-User-Email', session.user_email);
 

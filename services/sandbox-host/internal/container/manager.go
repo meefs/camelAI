@@ -296,15 +296,34 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	m.mu.Unlock()
 
 	if cached != nil {
-		if running, _ := m.isRunning(name); running {
-			m.mu.Lock()
-			if current := m.containers[name]; current != nil {
-				current.LastAccessedAt = nowMillis()
+		inspect, inspectErr := m.inspectContainer(name, 30*time.Second)
+		if inspectErr == nil && inspect.State != nil && inspect.State.Running {
+			if !m.matchesConfiguredImage(inspect) {
+				m.trace("ensure_container_image_mismatch_cached", map[string]any{
+					"name":            name,
+					"configuredImage": m.sandboxImage,
+					"containerImage":  configuredImageFromInspect(inspect),
+				})
+				log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
+				_ = m.removeContainerIfExists(name, true)
+				m.mu.Lock()
+				if existing := m.containers[name]; existing != nil {
+					if existing.ContainerIP != "" {
+						m.unindexContainerIPLocked(existing.ContainerIP)
+					}
+					delete(m.containers, name)
+				}
 				m.mu.Unlock()
-				m.trace("ensure_container_cache_hit", map[string]any{"name": name, "container": current})
-				return copyRecord(current), nil
+			} else {
+				m.mu.Lock()
+				if current := m.containers[name]; current != nil {
+					current.LastAccessedAt = nowMillis()
+					m.mu.Unlock()
+					m.trace("ensure_container_cache_hit", map[string]any{"name": name, "container": current})
+					return copyRecord(current), nil
+				}
+				m.mu.Unlock()
 			}
-			m.mu.Unlock()
 		} else {
 			m.mu.Lock()
 			if existing := m.containers[name]; existing != nil {
@@ -318,39 +337,49 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	}
 
 	if inspect, err := m.inspectContainer(name, 30*time.Second); err == nil && inspect.State != nil && inspect.State.Running {
-		port := hostPortFromInspect(inspect, m.controlPlanePort)
-		containerIP := containerIPFromInspect(inspect)
-		if port > 0 {
-			orgID := opts.OrgID
-			workspaceID := opts.WorkspaceID
-			if orgID == "" {
-				orgID = labelFromInspect(inspect, labelOrgID)
+		if !m.matchesConfiguredImage(inspect) {
+			m.trace("ensure_container_image_mismatch_existing", map[string]any{
+				"name":            name,
+				"configuredImage": m.sandboxImage,
+				"containerImage":  configuredImageFromInspect(inspect),
+			})
+			log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
+			_ = m.removeContainerIfExists(name, true)
+		} else {
+			port := hostPortFromInspect(inspect, m.controlPlanePort)
+			containerIP := containerIPFromInspect(inspect)
+			if port > 0 {
+				orgID := opts.OrgID
+				workspaceID := opts.WorkspaceID
+				if orgID == "" {
+					orgID = labelFromInspect(inspect, labelOrgID)
+				}
+				if workspaceID == "" {
+					workspaceID = labelFromInspect(inspect, labelWorkspaceID)
+				}
+				rec := &ContainerRecord{
+					Name:              name,
+					ContainerID:       name,
+					HostPort:          port,
+					ContainerIP:       containerIP,
+					Status:            "running",
+					CreatedAt:         nowMillis(),
+					LastAccessedAt:    nowMillis(),
+					ActiveWebSockets:  0,
+					InFlightProxyReqs: 0,
+					OrgID:             orgID,
+					WorkspaceID:       workspaceID,
+				}
+				m.mu.Lock()
+				m.containers[name] = rec
+				if containerIP != "" {
+					m.indexContainerIPLocked(containerIP, name)
+				}
+				m.mu.Unlock()
+				log.Printf("[ContainerManager] reconnected to existing container %s (port=%d)", name, port)
+				m.trace("ensure_container_reconnected_existing", map[string]any{"name": name, "container": rec})
+				return copyRecord(rec), nil
 			}
-			if workspaceID == "" {
-				workspaceID = labelFromInspect(inspect, labelWorkspaceID)
-			}
-			rec := &ContainerRecord{
-				Name:              name,
-				ContainerID:       name,
-				HostPort:          port,
-				ContainerIP:       containerIP,
-				Status:            "running",
-				CreatedAt:         nowMillis(),
-				LastAccessedAt:    nowMillis(),
-				ActiveWebSockets:  0,
-				InFlightProxyReqs: 0,
-				OrgID:             orgID,
-				WorkspaceID:       workspaceID,
-			}
-			m.mu.Lock()
-			m.containers[name] = rec
-			if containerIP != "" {
-				m.indexContainerIPLocked(containerIP, name)
-			}
-			m.mu.Unlock()
-			log.Printf("[ContainerManager] reconnected to existing container %s (port=%d)", name, port)
-			m.trace("ensure_container_reconnected_existing", map[string]any{"name": name, "container": rec})
-			return copyRecord(rec), nil
 		}
 	}
 
@@ -381,6 +410,9 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			"CLOUDFLARE_API_BASE_URL="+m.containerProxyBase+"/client/v4",
 			"CLOUDFLARE_API_TOKEN=proxy",
 			"DATA_PROXY_URL="+m.containerProxyBase+"/api",
+			"OPENAI_PROXY_URL="+m.containerProxyBase+"/api/openai",
+			"OPENAI_BASE_URL="+m.containerProxyBase+"/api/openai/v1",
+			"OPENAI_API_KEY=proxy",
 			"MCP_SERVER_URL="+m.containerProxyBase+"/mcp",
 			"CLOUDFLARE_ACCOUNT_ID=chiridion",
 			"WRANGLER_SEND_METRICS=false",
@@ -546,6 +578,16 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 	}
 
 	if inspect, err := m.inspectContainer(name, 30*time.Second); err == nil && inspect.State != nil && inspect.State.Running {
+		if !m.matchesConfiguredImage(inspect) {
+			m.trace("get_container_image_mismatch_existing", map[string]any{
+				"name":            name,
+				"configuredImage": m.sandboxImage,
+				"containerImage":  configuredImageFromInspect(inspect),
+			})
+			log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
+			_ = m.removeContainerIfExists(name, true)
+			return nil, nil
+		}
 		port := hostPortFromInspect(inspect, m.controlPlanePort)
 		containerIP := containerIPFromInspect(inspect)
 		if port > 0 {
@@ -1012,6 +1054,17 @@ func labelFromInspect(inspect dockercontainer.InspectResponse, key string) strin
 		return ""
 	}
 	return inspect.Config.Labels[key]
+}
+
+func configuredImageFromInspect(inspect dockercontainer.InspectResponse) string {
+	if inspect.Config == nil {
+		return ""
+	}
+	return strings.TrimSpace(inspect.Config.Image)
+}
+
+func (m *Manager) matchesConfiguredImage(inspect dockercontainer.InspectResponse) bool {
+	return configuredImageFromInspect(inspect) == strings.TrimSpace(m.sandboxImage)
 }
 
 func hostPortFromInspect(inspect dockercontainer.InspectResponse, controlPlanePort int) int {

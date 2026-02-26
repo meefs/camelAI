@@ -530,19 +530,26 @@ export default [
 
 ## AI-Powered Apps
 
-The template includes pre-configured AI chat capabilities using the Vercel AI SDK with OpenRouter. **The code is commented out by default**—just uncomment to enable:
+The template includes pre-configured AI chat capabilities using the Vercel AI SDK with Cloudflare Workers AI via the platform-virtualized `AI` binding. **The code is commented out by default**—just uncomment to enable:
 
 1. In `wrangler.jsonc`: Uncomment the `Chat` DO binding and migration
-2. In `workers/app.ts`: Uncomment the `Chat` export and `routeAgentRequest` call
-3. In `app/routes.ts`: Add the chat route
+2. In `wrangler.jsonc`: Add the native AI binding: `"ai": { "binding": "AI" }`
+3. In `workers/app.ts`: Uncomment the `Chat` export and `routeAgentRequest` call
+4. In `app/routes.ts`: Add the chat route
 
 Features include:
 - Automatic conversation history persistence
 - Resumable streaming via WebSockets
 - Tool use and function calling
-- Web search plugin for real-time information
 
 **See [AI-APPS.md](AI-APPS.md) for setup, customization, and common pitfalls.**
+
+### camelAI AI Access Patterns
+
+- **In deployed workers:** Prefer `env.AI` with `workers-ai-provider` (`createWorkersAI({ binding: env.AI })`).
+- **In container scripts/services:** Use the OpenAI-compatible local proxy via `OPENAI_BASE_URL` and `OPENAI_API_KEY=proxy`.
+- **Model routing:** The platform virtualized AI binding currently routes through Cloudflare AI Gateway with platform-controlled model selection.
+- **Token caps:** Avoid setting `max_tokens` unless the user explicitly needs a hard output cap. Thinking/reasoning tokens count toward that budget and can cut answers off early. If required, set a generous cap and call out truncation risk.
 
 ## R2 Object Storage
 
@@ -644,6 +651,31 @@ export async function loader({ context, params }: Route.LoaderArgs) {
 | Large binary assets | R2 |
 | User uploads | R2 |
 | Session/config data | SQLite KV |
+
+## Virtual AI Binding
+
+User workers can use a Cloudflare-style AI binding. Add this to `wrangler.jsonc`:
+
+```jsonc
+{
+  "ai": { "binding": "AI" }
+}
+```
+
+Use it with the Workers AI provider:
+
+```typescript
+import { createWorkersAI } from "workers-ai-provider";
+
+const workersai = createWorkersAI({ binding: context.cloudflare.env.AI });
+
+const result = await generateText({
+  model: workersai("auto", {}),
+  prompt: "Summarize this document.",
+});
+```
+
+On camelAI deploys, the platform virtualizes this binding and routes requests through Cloudflare AI Gateway with platform-controlled model routing.
 
 ## Best Practices
 

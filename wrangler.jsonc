@@ -10,6 +10,7 @@
 	},
 	// Local dev defaults (overridden by prod/staging/dev-* envs)
 	"vars": {
+		"AI_VIRTUAL_MODEL": "dynamic/auto",
 		"R2_BUCKET_NAME": "chiridion-sandbox",
 		"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 		"R2_MOUNT_DIR": "/home/claude",
@@ -22,7 +23,6 @@
 		"BEDROCK_REGION": "us-west-2",
 		"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com"
 		// CF_GATEWAY_TOKEN is set via .dev.vars
-		// OPENROUTER_PROVISIONING_KEY (for per-org keys) is set via .dev.vars
 	},
 	"assets": {
 		"binding": "ASSETS",
@@ -144,6 +144,7 @@
 				}
 			],
 			"vars": {
+				"AI_VIRTUAL_MODEL": "dynamic/auto",
 				"R2_BUCKET_NAME": "chiridion-sandbox",
 				"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"R2_MOUNT_DIR": "/home/claude",
@@ -157,7 +158,6 @@
 				"BEDROCK_REGION": "us-west-2",
 				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com"
 				// CF_GATEWAY_TOKEN is set via secrets
-				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
 			"images": {
 				"binding": "IMAGES"
@@ -247,6 +247,7 @@
 				}
 			],
 			"vars": {
+				"AI_VIRTUAL_MODEL": "dynamic/auto",
 				"R2_BUCKET_NAME": "chiridion-sandbox",
 				"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"R2_MOUNT_DIR": "/home/claude",
@@ -260,7 +261,6 @@
 				"BEDROCK_REGION": "us-west-2",
 				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com"
 				// CF_GATEWAY_TOKEN is set via secrets
-				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
 			"assets": {
 				"binding": "ASSETS",
@@ -353,6 +353,7 @@
 				}
 			],
 			"vars": {
+				"AI_VIRTUAL_MODEL": "dynamic/auto",
 				"R2_BUCKET_NAME": "chiridion-sandbox",
 				"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"R2_MOUNT_DIR": "/home/claude",
@@ -366,7 +367,6 @@
 				"BEDROCK_REGION": "us-west-2",
 				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com"
 				// CF_GATEWAY_TOKEN is set via secrets
-				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
 			"assets": {
 				"binding": "ASSETS",
@@ -460,6 +460,7 @@
 				}
 			],
 			"vars": {
+				"AI_VIRTUAL_MODEL": "dynamic/auto",
 				"R2_BUCKET_NAME": "chiridion-sandbox",
 				"R2_ACCOUNT_ID": "85bbd288051330fb51ee1c86031a299b",
 				"R2_MOUNT_DIR": "/home/claude",
@@ -473,7 +474,6 @@
 				"BEDROCK_REGION": "us-west-2",
 				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com"
 				// CF_GATEWAY_TOKEN is set via secrets
-				// OPENROUTER_PROVISIONING_KEY is set via secrets
 			},
 			"assets": {
 				"binding": "ASSETS",

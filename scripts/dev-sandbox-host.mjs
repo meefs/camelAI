@@ -7,11 +7,16 @@ import { resolve } from 'node:path';
 const repoRoot = process.cwd();
 const sandboxHostDir = resolve(repoRoot, 'services/sandbox-host');
 const dockerfilePath = resolve(repoRoot, 'services/sandbox-host/Dockerfile.sandbox');
-const imageTag = (process.env.SANDBOX_IMAGE || 'chiridion-sandbox:latest').trim() || 'chiridion-sandbox:latest';
+const configuredImageTag = (process.env.SANDBOX_IMAGE || 'chiridion-sandbox:latest').trim() || 'chiridion-sandbox:latest';
+const imageVersion = (process.env.SANDBOX_IMAGE_VERSION || '').trim();
+const imageTag = process.env.SANDBOX_IMAGE
+  ? configuredImageTag
+  : (imageVersion ? `chiridion-sandbox:${imageVersion}` : configuredImageTag);
 const localPersistRoot = resolve(repoRoot, '.sandbox-host');
 
 const watchImage = process.env.SANDBOX_WATCH_IMAGE !== '0';
 const watchDebounceMs = Number.parseInt(process.env.SANDBOX_WATCH_DEBOUNCE_MS || '1500', 10) || 1500;
+const buildNoCache = process.env.SANDBOX_BUILD_NO_CACHE === '1';
 
 let shuttingDown = false;
 let sandboxHostProc = null;
@@ -144,7 +149,12 @@ async function buildImage(reason) {
   try {
     await buildRenderer();
     console.log(`[dev:sandbox-host] Building sandbox image (${reason}) -> ${imageTag}`);
-    await spawnStreaming('docker', ['build', '-t', imageTag, '-f', dockerfilePath, '.'], { cwd: repoRoot });
+    const args = ['build', '-t', imageTag, '-f', dockerfilePath];
+    if (buildNoCache) {
+      args.push('--no-cache');
+    }
+    args.push('.');
+    await spawnStreaming('docker', args, { cwd: repoRoot });
     console.log(`[dev:sandbox-host] Image ready: ${imageTag}`);
   } catch (err) {
     console.error(`[dev:sandbox-host] Image build failed (${reason}):`, err instanceof Error ? err.message : String(err));
@@ -216,6 +226,12 @@ function stopGoProcesses(signal = 'SIGTERM') {
 }
 
 async function main() {
+  if (!process.env.SANDBOX_IMAGE && imageVersion) {
+    console.log(`[dev:sandbox-host] Using versioned local sandbox image tag: ${imageTag}`);
+  }
+  if (buildNoCache) {
+    console.log('[dev:sandbox-host] Docker build cache disabled (SANDBOX_BUILD_NO_CACHE=1).');
+  }
   await buildImage('startup');
 
   const closeWatchers = startWatchers();
@@ -249,6 +265,25 @@ async function main() {
     }
   }
 
+  const gatewayMappings = [
+    ['CF_ACCOUNT_ID', 'cf_account_id'],
+    ['CF_GATEWAY_NAME', 'cf_gateway_name'],
+    ['CF_GATEWAY_TOKEN', 'cf_gateway_token'],
+    ['OPENAI_PROXY_UPSTREAM_URL', 'openai_proxy_upstream_url'],
+    ['OPENAI_PROXY_AUTH_TOKEN', 'openai_proxy_auth_token'],
+  ];
+  let loadedGatewayFromDevVars = false;
+  let loadedGatewayFromTfvars = false;
+  for (const [envKey, tfKey] of gatewayMappings) {
+    if (applyEnvFallback(env, envKey, devVars[envKey])) {
+      loadedGatewayFromDevVars = true;
+      continue;
+    }
+    if (applyEnvFallback(env, envKey, tfVars[tfKey])) {
+      loadedGatewayFromTfvars = true;
+    }
+  }
+
   if (loadedSandboxProxyFromDevVars) {
     console.log('[dev:sandbox-host] Loaded SANDBOX_PROXY_SECRET from .dev.vars');
   } else if (loadedSandboxProxyFromTfvars) {
@@ -260,12 +295,20 @@ async function main() {
   } else if (loadedR2FromTfvars) {
     console.log('[dev:sandbox-host] Loaded R2_* mount credentials from infra tfvars');
   }
+  if (loadedGatewayFromDevVars) {
+    console.log('[dev:sandbox-host] Loaded AI Gateway vars from .dev.vars');
+  } else if (loadedGatewayFromTfvars) {
+    console.log('[dev:sandbox-host] Loaded AI Gateway vars from infra tfvars');
+  }
   if (!env.SANDBOX_PROXY_SECRET) {
     console.warn('[dev:sandbox-host] SANDBOX_PROXY_SECRET is not set; proxy calls from sandbox to worker will fail.');
   }
   const hasAllR2Vars = Boolean(env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_ACCOUNT_ID && env.R2_BUCKET_NAME);
   if (!hasAllR2Vars) {
     console.warn('[dev:sandbox-host] R2 credential vars are incomplete; containers will start without R2 mounts.');
+  }
+  if (!env.OPENAI_PROXY_AUTH_TOKEN && !env.CF_GATEWAY_TOKEN) {
+    console.warn('[dev:sandbox-host] OPENAI proxy auth token is not set; OPENAI proxy requests will fail.');
   }
 
   dataProxyProc = spawn('go', ['run', './cmd/data-proxy'], {

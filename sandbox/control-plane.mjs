@@ -172,9 +172,19 @@ This is your workspace. Files persist between sessions. You can build, deploy, a
 | \`ANTHROPIC_API_KEY\` | Proxy token for LLM calls |
 | \`CLOUDFLARE_API_TOKEN\` | Deploy token (workspace-scoped) |
 | \`DATA_PROXY_URL\` | Thread-scoped SQL proxy base URL (SQL Server/PostgreSQL/MySQL; sandbox-authenticated) |
+| \`OPENAI_PROXY_URL\` | Thread-scoped OpenAI-compatible proxy base URL (Cloudflare AI Gateway passthrough) |
+| \`OPENAI_BASE_URL\` | OpenAI SDK-compatible base URL (\`.../v1\`) for chat/embeddings/responses |
+| \`OPENAI_API_KEY\` | Placeholder API key for OpenAI-compatible clients (\`proxy\`) |
 | \`INT_*\` | Integration credentials (e.g., \`INT_STRIPE_SECRET_KEY\`) |
 
 Integration credentials auto-sync to deployed workers as secrets.
+
+AI access patterns:
+- In the container/runtime, use the local OpenAI-compatible proxy (\`OPENAI_BASE_URL\` + \`OPENAI_API_KEY=proxy\`) for SDK calls.
+- For chat completions through this local proxy, model selection is platform-controlled and currently forced to \`dynamic/auto\`.
+- In deployed workers, prefer native \`env.AI\` via the Workers AI provider. In camelAI this AI binding is virtualized through Cloudflare AI Gateway and routes to a platform-selected model configured by \`AI_VIRTUAL_MODEL\` (default \`dynamic/auto\`).
+- Avoid setting \`max_tokens\` unless the user explicitly asks for a hard cap. Reasoning/thinking tokens count toward that budget and can truncate responses before completion.
+- If you must set \`max_tokens\`, choose a conservative high value with enough headroom for thinking + final output, and warn the user when truncation risk remains.
 </environment_variables>
 </environment>
 
@@ -245,6 +255,7 @@ All deployable software runs as Cloudflare Workers. The infrastructure is pre-co
 3. Deploy with: \`wrangler deploy --dispatch-namespace chiridion\`
 4. For any web app with UI, use \`create-worker\` to scaffold from the camelAI starter template
 5. To publish any file (notebook, markdown, CSV, etc.) as a standalone app, use \`publish <name> --file <path>\`
+6. For AI in deployed workers, use \`env.AI\` (or \`createWorkersAI({ binding: env.AI })\`) instead of embedding third-party model API keys in worker code.
 
 The starter template includes React Router 7 + shadcn/ui pre-configured. Only skip the template for pure API workers with no frontend.
 </cloudflare_workers>
@@ -941,7 +952,7 @@ class ChatSession {
     };
     const proxyThreadId = this.threadId;
     if (proxyThreadId) {
-      for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'MCP_SERVER_URL']) {
+      for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'OPENAI_PROXY_URL', 'OPENAI_BASE_URL', 'MCP_SERVER_URL']) {
         const value = mergedEnv[key];
         if (typeof value === 'string' && value.length > 0) {
           mergedEnv[key] = withThreadProxyPath(value, proxyThreadId);

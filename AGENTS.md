@@ -22,8 +22,8 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
          │                        │
          ▼                        ▼
 ┌─────────────────┐     ┌──────────────────┐
-│   R2 Storage    │     │    OpenRouter    │
-│  (Files/Assets) │     │   (LLM Access)   │
+│   R2 Storage    │     │ Cloudflare AI GW │
+│  (Files/Assets) │     │ (LLM Access)     │
 └─────────────────┘     └──────────────────┘
 ```
 
@@ -122,7 +122,7 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 ### Sandbox Proxy Auth
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.
 - Sandbox-host injects `x-sandbox-secret`, `x-chiridion-org-id`, `x-chiridion-workspace-id`, and `x-chiridion-thread-id` on upstream worker requests.
-- `claude-proxy` (`/api/claude/v1/messages` and `/api/claude/v1/messages/count_tokens`) accepts only sandbox-host injected auth (no signed-token fallback path).
+- `claude-proxy` (`/api/claude/v1/messages` and `/api/claude/v1/messages/count_tokens`) and OpenAI proxy (`/api/openai/v1/*`) accept only sandbox-host injected auth (no signed-token fallback path).
 - Proxy thread mappings are session-based: active while chat WS is open; on close they enter close-grace (`PROXY_SESSION_CLOSE_GRACE_MS`) and then are cleaned up.
 
 ### Data Proxy (SQL Server, PostgreSQL, MySQL)
@@ -133,6 +133,20 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 - sandbox-host forwards those routes to a dedicated localhost `chiridion-data-proxy` Go process (separate systemd service with tighter resource limits).
 - `chiridion-data-proxy` returns JSON responses and streams row serialization internally to avoid materializing full recordsets in sidecar memory.
 - Sandbox containers receive `DATA_PROXY_URL` (no token). Requests are authenticated by sandbox-host injected headers (`x-sandbox-secret`, org/workspace/thread IDs), same model used by other container proxy routes.
+
+### OpenAI-Compatible Gateway Proxy
+- Sandbox containers call OpenAI-compatible routes at `OPENAI_PROXY_URL` / `OPENAI_BASE_URL` (no real API key required; `OPENAI_API_KEY=proxy`).
+- Worker route `/api/openai/v1/*` validates sandbox proxy headers, derives org/workspace/thread identity, and forwards through sandbox-host control route `/v1/workspaces/{orgId}/{workspaceId}/openai-proxy/v1/*`.
+- sandbox-host control route forwards to Cloudflare AI Gateway and injects `cf-aig-metadata` with tenant context (`uid`, `chiridion.orgId`, `chiridion.workspaceId`, `chiridion.threadId`) so gateway-side rate limits/spend policies can be scoped per tenant.
+- For `/v1/chat/completions`, sandbox-host enforces `model: "dynamic/auto"` to mirror virtual AI binding behavior.
+
+### Virtual AI Binding
+- User uploaded workers can declare a native `ai` binding (for example `AI`) and the deploy pipeline rewrites it to an internal service entrypoint (`AIVirtualBinding`) scoped with `{orgId, workspaceId}` props.
+- `AIVirtualBinding.run(model, input, options?)` routes through Cloudflare AI Gateway over HTTP (`/compat/chat/completions`) when gateway config is present (`CF_ACCOUNT_ID` + `CF_GATEWAY_NAME` + `CF_GATEWAY_TOKEN`/`AI_GATEWAY_AUTH_TOKEN`).
+- Virtual binding model selection is configured by `AI_VIRTUAL_MODEL` (default `dynamic/auto`). Caller-supplied model arguments and top-level `input.model` values are ignored.
+- Streaming requests (`stream: true`) are passed through as a streaming response body (SSE) instead of JSON parsing.
+- Gateway requests include `cf-aig-metadata` with tenant context (`uid=orgId:workspaceId`, plus structured `chiridion` fields) so gateway-side spend/rate-limit policies can be scoped per tenant.
+- If gateway config is absent, `AIVirtualBinding` fails fast (no non-gateway fallback path).
 
 ### Slash Commands
 Users send Claude SDK slash commands as their entire message. `ChatThreadDO.formatAttributedUserMessage()` strips the author prefix. Supported: `/compact`, `/context`, `/debug`, `/insights`, `/security-review`. Allowlist in `ChatThreadDO.SLASH_COMMANDS` (`workers/main/src/durable-objects.ts`).
@@ -191,6 +205,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Workspace FS | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}` |
 | Workspace chat | `/api/workspaces/:id/chat/:threadId/messages/stream` |
 | Workspace files | `/api/workspaces/:id/{upload,download,uploads/*,outputs/*}` |
+| Sandbox container proxy APIs | `/api/{mssql,postgres,mysql}/query`, `/api/openai/v1/*` |
 | Apps | `/api/apps/:scriptName/preview` |
 | WebSocket | `/ws/{workspace}` (chat), `/ws/logs?scriptName={name}` (worker logs) |
 | MCP | `/mcp` (streamable HTTP), `/mcp/health` |
@@ -200,7 +215,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | DO | Scope | Purpose |
 |----|-------|---------|
 | `UserDO` | per user | Profile, password, OAuth providers, org memberships, onboarding state |
-| `OrgDO` | per org | Members, invitations, threads, worker scripts, integrations, API tokens, OpenRouter key |
+| `OrgDO` | per org | Members, invitations, threads, worker scripts, integrations, API tokens |
 | `OrgSlugDO` | per slug | Atomic slug ownership (`claim`/`getOwner`/`release`) |
 | `WorkspaceDO` | per workspace | Metadata, members, integrations, audit logs, token refresh alarms |
 | `ChatThreadDO` | per thread | WebSocket state, preview target, todo/prompt persistence |
@@ -268,8 +283,7 @@ bun run build        # Production build → build/client/ + build/server/
 
 Create `.dev.vars`:
 ```
-OPENROUTER_API_KEY=your_openrouter_key_here
-OPENROUTER_PROVISIONING_KEY=your_provisioning_key_here
+CF_GATEWAY_TOKEN=your_gateway_token_here
 WORKER_BASE_URL=https://your-ngrok-subdomain.ngrok-free.app
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
@@ -332,6 +346,6 @@ SSR errors logged to Workers Analytics Engine (`ERROR_ANALYTICS` binding, `chiri
 
 1. **Durable Objects not working locally**: Use `bun run dev` (wrangler-based dev)
 2. **Streaming not working**: Ensure `includePartialMessages: true` in `sandbox/control-plane.mjs`
-3. **API key not found**: Check `.dev.vars` has `OPENROUTER_API_KEY`
+3. **Gateway token not found**: Check `.dev.vars` has `CF_GATEWAY_TOKEN`
 4. **Session not persisting**: Check cookies and DO worker is running
 5. **Type errors after route changes**: Run `bun run typecheck` to regenerate types

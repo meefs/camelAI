@@ -21,6 +21,7 @@ func TestStoreRoundTripAndDelete(t *testing.T) {
 		ContainerName: "sandbox-a",
 		OrgID:         "org-1",
 		WorkspaceID:   "ws-1",
+		UserID:        "user-1",
 		ThreadID:      "thread-1",
 		WorkerBaseURL: "https://worker.example.com",
 		CreatedAt:     now,
@@ -36,6 +37,9 @@ func TestStoreRoundTripAndDelete(t *testing.T) {
 	}
 	if len(threads) != 1 || threads[0].Key != thread.Key {
 		t.Fatalf("unexpected proxy threads: %+v", threads)
+	}
+	if threads[0].UserID != "user-1" {
+		t.Fatalf("unexpected user id: %+v", threads[0])
 	}
 
 	if err := store.DeleteProxyThread(thread.Key); err != nil {

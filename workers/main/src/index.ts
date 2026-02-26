@@ -8,6 +8,7 @@
  * - /api/integrations/slack/* → Slack OAuth
  * - /api/integrations/slack/events → Slack Events API webhook
  * - /api/threads/:id/preview → Thread preview API
+ * - /api/openai/v1/* → OpenAI-compatible AI Gateway proxy for sandbox containers
  * - /ws/:workspace → Chat WebSocket (forwarded to ChatThreadDO)
  * - * → React Router SSR
  */
@@ -40,6 +41,7 @@ import {
   handleMysqlQuery,
   handlePostgresQuery,
 } from './routes/data-proxy.js';
+import { handleOpenAIProxy } from './routes/openai-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 
 // Re-exports for wrangler
@@ -51,6 +53,7 @@ export { WorkspaceDO } from './workspace.js';
 export { WorkerLogsDO } from './worker-logs-do.js';
 export { R2VirtualBucket } from './r2-virtual-bucket.js';
 export { DataProxyService } from './data-proxy-service.js';
+export { AIVirtualBinding } from './ai-virtual-binding.js';
 export { AdminIndexDO } from './admin-index-do.js';
 
 // Extend React Router's AppLoadContext
@@ -74,6 +77,7 @@ const routes: Route[] = [
   { method: 'POST', path: /^\/api\/mssql\/query$/, handler: handleMssqlQuery },
   { method: 'POST', path: /^\/api\/postgres\/query$/, handler: handlePostgresQuery },
   { method: 'POST', path: /^\/api\/mysql\/query$/, handler: handleMysqlQuery },
+  { method: 'ALL', path: /^\/api\/openai\/v1(\/|$)/, handler: handleOpenAIProxy },
 
   // MCP
   { method: 'ALL', path: /^\/mcp(\/|$)/, handler: handleMcp },
