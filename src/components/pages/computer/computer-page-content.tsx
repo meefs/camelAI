@@ -108,6 +108,7 @@ const EditorLoadingFallback = () => (
 
 interface ComputerPageContentProps {
   workspaceId: string;
+  readOnly?: boolean;
 }
 
 type FsNode = {
@@ -321,7 +322,10 @@ function getFileIcon(path: string): React.ComponentType<{ className?: string }> 
   return ICON_BY_EXTENSION[ext] ?? File;
 }
 
-export default function ComputerPageContent({ workspaceId }: ComputerPageContentProps) {
+export default function ComputerPageContent({
+  workspaceId,
+  readOnly = false,
+}: ComputerPageContentProps) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { resolvedTheme } = useTheme();
@@ -395,6 +399,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const readOnlyHintTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingEnabledRef = useRef(editingEnabled);
   const initialFileHandledRef = useRef<string | null>(null);
+  const canMutate = editingEnabled && !readOnly;
 
   const copyToClipboard = useCallback(async (value: string) => {
     try {
@@ -429,13 +434,14 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
 
   // Redirect if viewing a different workspace than current
   useEffect(() => {
+    if (readOnly) return;
     if (currentWorkspace?.id && currentWorkspace.id !== workspaceId) {
       navigate(`/computer/${currentWorkspace.id}`);
     }
-  }, [currentWorkspace?.id, workspaceId, navigate]);
+  }, [currentWorkspace?.id, workspaceId, navigate, readOnly]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || readOnly) return;
     const uniqueTabs = Array.from(new Set(openTabs.map((tab) => tab.path)));
     const data = {
       openTabs: uniqueTabs,
@@ -443,7 +449,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       editingEnabled,
     };
     localStorage.setItem(storageKey, JSON.stringify(data));
-  }, [openTabs, activePath, editingEnabled, hydrated, storageKey]);
+  }, [openTabs, activePath, editingEnabled, hydrated, storageKey, readOnly]);
 
   useEffect(() => {
     activePathRef.current = activePath;
@@ -455,6 +461,12 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       setReadOnlyHintOpen(false);
     }
   }, [editingEnabled]);
+
+  useEffect(() => {
+    if (readOnly && editingEnabled) {
+      setEditingEnabled(false);
+    }
+  }, [readOnly, editingEnabled]);
 
   useEffect(() => {
     return () => {
@@ -494,7 +506,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         if (typeof parsed.activePath === 'string') {
           setActivePath(parsed.activePath);
         }
-        if (typeof parsed.editingEnabled === 'boolean') {
+        if (typeof parsed.editingEnabled === 'boolean' && !readOnly) {
           setEditingEnabled(parsed.editingEnabled);
         }
       } catch (error) {
@@ -502,7 +514,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       }
     }
     setHydrated(true);
-  }, [storageKey]);
+  }, [storageKey, readOnly]);
 
 
   const clearDragState = useCallback(() => {
@@ -963,6 +975,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
 
   const saveFile = useCallback(
     async (path: string, force?: boolean) => {
+      if (!canMutate) return;
       const model = modelsRef.current.get(path);
       if (!model || model.isDisposed()) return;
 
@@ -1028,7 +1041,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         });
       }
     },
-    [apiBase, updateTab]
+    [apiBase, canMutate, updateTab]
   );
 
   const downloadFile = useCallback(
@@ -1076,7 +1089,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
 
   const uploadFiles = useCallback(
     async (files: FileList | File[], targetPath: string = ROOT_PATH) => {
-      if (!editingEnabled) return;
+      if (!canMutate) return;
 
       for (const file of Array.from(files)) {
         // Check file size before uploading
@@ -1125,7 +1138,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         }
       }
     },
-    [apiBase, editingEnabled, loadDirectory, openFile]
+    [apiBase, canMutate, loadDirectory, openFile]
   );
 
   const handleFileInputChange = useCallback(
@@ -1141,9 +1154,10 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   );
 
   const triggerUpload = useCallback((targetPath: string = ROOT_PATH) => {
+    if (!canMutate) return;
     setUploadTargetPath(targetPath);
     fileInputRef.current?.click();
-  }, []);
+  }, [canMutate]);
 
   useEffect(() => {
     saveFileRef.current = saveFile;
@@ -1350,6 +1364,10 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
 
   const handleDrop = useCallback(
     async (targetPath: string, sourcePath: string) => {
+      if (!canMutate) {
+        clearDragState();
+        return;
+      }
       const normalizedTarget = normalizePath(targetPath);
       const normalizedSource = normalizePath(sourcePath);
       if (normalizedTarget === normalizedSource) {
@@ -1382,7 +1400,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
         clearDragState();
       }
     },
-    [apiBase, clearDragState, loadDirectory, remapOpenResources]
+    [apiBase, canMutate, clearDragState, loadDirectory, remapOpenResources]
   );
 
   const closeDialog = useCallback(() => {
@@ -1393,6 +1411,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   }, []);
 
   const openDialog = useCallback((state: DialogState) => {
+    if (!canMutate) return;
     setDialogSubmitting(false);
     setDialogError(null);
     setDialogState(state);
@@ -1401,10 +1420,10 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       return;
     }
     setDialogName('');
-  }, []);
+  }, [canMutate]);
 
   const handleConfirmDialog = useCallback(async () => {
-    if (!dialogState || dialogSubmitting) return;
+    if (!canMutate || !dialogState || dialogSubmitting) return;
     const requiresName =
       dialogState.type === 'new-file' ||
       dialogState.type === 'new-folder' ||
@@ -1525,6 +1544,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
     }
   }, [
     apiBase,
+    canMutate,
     dialogName,
     dialogState,
     dialogSubmitting,
@@ -1537,12 +1557,13 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   ]);
 
   const handleEnableEditing = useCallback(() => {
+    if (readOnly) return;
     setConfirmEditOpen(true);
-  }, []);
+  }, [readOnly]);
 
   const editorOptions = useMemo<monacoEditor.editor.IStandaloneEditorConstructionOptions>(
     () => ({
-      readOnly: !editingEnabled,
+      readOnly: !canMutate,
       readOnlyMessage: { value: '' },
       minimap: { enabled: false },
       fontSize: 13,
@@ -1559,7 +1580,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
       inlayHints: { enabled: 'off' },
       contextmenu: false,
     }),
-    [editingEnabled]
+    [canMutate]
   );
 
   const activeTab = useMemo(
@@ -1662,7 +1683,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
   const hasSearchTerm = searchTerm.trim().length > 0;
   const showSearchLoading = hasSearchTerm && (searchLoading || !searchIndexLoaded);
   const dragSource = dragSourcePathRef.current;
-  const dragEnabled = editingEnabled;
+  const dragEnabled = canMutate;
   const canDropToRoot =
     dragEnabled && isDragging && dragSource !== null && canDropInto(ROOT_PATH, dragSource);
   const isRootDragOver = dragOverPath === ROOT_PATH;
@@ -1710,19 +1731,21 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                   </Tooltip>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
+                      disabled={!canMutate}
                       onSelect={() => openDialog({ type: 'new-file', parentPath: ROOT_PATH })}
                     >
                       New file
                     </DropdownMenuItem>
                     <DropdownMenuItem
+                      disabled={!canMutate}
                       onSelect={() => openDialog({ type: 'new-folder', parentPath: ROOT_PATH })}
                     >
                       New folder
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      disabled={!editingEnabled}
+                      disabled={!canMutate}
                       onSelect={() => {
-                        if (!editingEnabled) return;
+                        if (!canMutate) return;
                         triggerUpload(ROOT_PATH);
                       }}
                     >
@@ -1950,7 +1973,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                             >
                               {!dragEnabled && dragBlockedPath === node.path && (
                                 <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-md border border-border bg-background/90 px-2 py-0.5 text-[10px] font-medium text-foreground">
-                                  Enable editing to move
+                                  {readOnly ? 'Admin read-only mode' : 'Enable editing to move'}
                                 </span>
                               )}
                               {isDragOver && (
@@ -1980,6 +2003,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                           {isDirectory && (
                             <>
                               <ContextMenuItem
+                                disabled={!canMutate}
                                 onSelect={() =>
                                   openDialog({ type: 'new-file', parentPath: node.path })
                                 }
@@ -1987,6 +2011,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                                 New file
                               </ContextMenuItem>
                               <ContextMenuItem
+                                disabled={!canMutate}
                                 onSelect={() =>
                                   openDialog({ type: 'new-folder', parentPath: node.path })
                                 }
@@ -1994,9 +2019,9 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                                 New folder
                               </ContextMenuItem>
                               <ContextMenuItem
-                                disabled={!editingEnabled}
+                                disabled={!canMutate}
                                 onSelect={() => {
-                                  if (!editingEnabled) return;
+                                  if (!canMutate) return;
                                   triggerUpload(node.path);
                                 }}
                               >
@@ -2005,7 +2030,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                               <ContextMenuSeparator />
                             </>
                           )}
-                          {!editingEnabled && (
+                          {!editingEnabled && !readOnly && (
                             <>
                               <ContextMenuItem onSelect={handleEnableEditing}>
                                 Enable editing...
@@ -2016,18 +2041,18 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                           {node.path !== ROOT_PATH && (
                             <>
                               <ContextMenuItem
-                                disabled={!editingEnabled}
+                                disabled={!canMutate}
                                 onSelect={() => {
-                                  if (!editingEnabled) return;
+                                  if (!canMutate) return;
                                   openDialog({ type: 'rename', path: node.path });
                                 }}
                               >
                                 Rename
                               </ContextMenuItem>
                               <ContextMenuItem
-                                disabled={!editingEnabled}
+                                disabled={!canMutate}
                                 onSelect={() => {
-                                  if (!editingEnabled) return;
+                                  if (!canMutate) return;
                                   openDialog({
                                     type: 'delete',
                                     path: node.path,
@@ -2109,7 +2134,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                 </BreadcrumbList>
               </Breadcrumb>
               <div className="flex flex-wrap items-center gap-3">
-                {!editingEnabled && (
+                {!canMutate && (
                   <Badge variant="secondary" className="text-[11px]">
                     Read-only
                   </Badge>
@@ -2120,10 +2145,12 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                   </Badge>
                 )}
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span>Enable editing</span>
+                  <span>{readOnly ? 'Admin read-only mode' : 'Enable editing'}</span>
                   <Switch
-                    checked={editingEnabled}
+                    checked={canMutate}
+                    disabled={readOnly}
                     onCheckedChange={(checked) => {
+                      if (readOnly) return;
                       if (checked) {
                         handleEnableEditing();
                         return;
@@ -2141,7 +2168,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                       void saveFile(activePath);
                     }
                   }}
-                  disabled={!activePath || !editingEnabled}
+                  disabled={!activePath || !canMutate}
                 >
                   <Save className="mr-2 size-4" />
                   Save
@@ -2243,12 +2270,14 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
               )}
               {activeTab && !activeTab.isTooLarge && !activeTab.isBinary && !activeTab.notFound && (
                 <div className="relative h-full">
-                  {readOnlyHintOpen && !editingEnabled && (
+                  {readOnlyHintOpen && !canMutate && (
                     <div className="pointer-events-none absolute right-4 top-4 z-10">
                       <Alert className="w-[240px] border-border/60 bg-background/95 shadow-lg">
                         <AlertTitle>Read-only</AlertTitle>
                         <AlertDescription>
-                          Enable editing to modify files.
+                          {readOnly
+                            ? 'Admin read-only mode is enabled for this view.'
+                            : 'Enable editing to modify files.'}
                         </AlertDescription>
                       </Alert>
                     </div>
@@ -2316,6 +2345,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
             </Button>
             <Button
               onClick={() => {
+                if (readOnly) return;
                 setEditingEnabled(true);
                 setConfirmEditOpen(false);
               }}
@@ -2441,6 +2471,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
               variant={dialogState?.type === 'delete' ? 'destructive' : 'default'}
               onClick={handleConfirmDialog}
               disabled={
+                !canMutate ||
                 dialogSubmitting ||
                 ((dialogState?.type === 'new-file' ||
                   dialogState?.type === 'new-folder' ||
@@ -2523,6 +2554,7 @@ export default function ComputerPageContent({ workspaceId }: ComputerPageContent
                   Reload from disk
                 </Button>
                 <Button
+                  disabled={!canMutate}
                   onClick={() => {
                     void saveFile(conflictState.path, true);
                     setConflictState(null);

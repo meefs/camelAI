@@ -91,6 +91,8 @@ interface ChatProps {
   orgSlug?: string;
   /** True when messages are still loading (deferred data) */
   isLoadingMessages?: boolean;
+  /** Superuser admin read-only viewer */
+  readOnly?: boolean;
   welcomeData?: {
     userId: string | null;
     userName: string | null;
@@ -758,6 +760,7 @@ export default function Chat({
   hostname,
   orgSlug,
   isLoadingMessages = false,
+  readOnly = false,
   welcomeData,
 }: ChatProps) {
   const navigate = useNavigate();
@@ -1122,7 +1125,7 @@ export default function Chat({
   const connectionIdRef = useRef(0);
   // Ref to hold stable connect function for effect
   const connectWebSocketRef = useRef<((id: string, isReconnect?: boolean) => void) | null>(null);
-  const resolvedWorkspaceId = currentWorkspace?.id ?? workspaceId;
+  const resolvedWorkspaceId = readOnly ? workspaceId : (currentWorkspace?.id ?? workspaceId);
   const resolvedWelcomeData = welcomeData ?? {
     userId: user?.id ?? null,
     userName: user?.name ?? null,
@@ -1188,6 +1191,7 @@ export default function Chat({
   // The worker route streams response bytes through from sandbox-host so the
   // worker itself does not need to buffer the whole payload.
   const backfillThreadFirstUserMessage = useCallback(async (id: string, loadedMessages: Message[]) => {
+    if (readOnly) return;
     if (!resolvedWorkspaceId) return;
     if (firstUserMessageBackfillAttemptedRef.current.has(id)) return;
 
@@ -1211,10 +1215,10 @@ export default function Chat({
       console.warn('Failed to backfill first user message:', error);
       firstUserMessageBackfillAttemptedRef.current.delete(id);
     }
-  }, [resolvedWorkspaceId]);
+  }, [readOnly, resolvedWorkspaceId]);
 
   const fetchMessages = useCallback(async (id: string) => {
-    if (!resolvedWorkspaceId) return;
+    if (!readOnly && !resolvedWorkspaceId) return;
 
     historyFetchAbortRef.current?.abort();
     const abortController = new AbortController();
@@ -1223,14 +1227,14 @@ export default function Chat({
     setError(null);
 
     try {
-      const response = await fetch(
-        `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(id)}/messages/stream`,
-        {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-          signal: abortController.signal,
-        }
-      );
+      const url = readOnly
+        ? `/api/admin/threads/${encodeURIComponent(id)}/messages`
+        : `/api/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/chat/${encodeURIComponent(id)}/messages/stream`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: abortController.signal,
+      });
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -1278,7 +1282,7 @@ export default function Chat({
         historyFetchAbortRef.current = null;
       }
     }
-  }, [backfillThreadFirstUserMessage, resolvedWorkspaceId, setError, setMessages]);
+  }, [backfillThreadFirstUserMessage, readOnly, resolvedWorkspaceId, setError, setMessages]);
 
   const bumpIframeKey = useCallback((tabId: string) => {
     setTabIframeKeys((prev) => ({
@@ -2152,6 +2156,8 @@ export default function Chat({
   // Navigate to /chat when workspace switches while viewing a thread
   // This ensures the user doesn't stay on a thread from a different workspace
   useEffect(() => {
+    if (readOnly) return;
+
     const prevWorkspaceId = prevWorkspaceIdRef.current;
     const nextWorkspaceId = currentWorkspace?.id;
 
@@ -2165,7 +2171,7 @@ export default function Chat({
     if (prevWorkspaceId && nextWorkspaceId && prevWorkspaceId !== nextWorkspaceId && threadId) {
       navigate('/chat');
     }
-  }, [currentWorkspace?.id, threadId, navigate]);
+  }, [currentWorkspace?.id, threadId, navigate, readOnly]);
 
   // Cleanup on unmount to avoid orphaned WebSockets or reconnect timers
   useEffect(() => {
@@ -2222,6 +2228,26 @@ export default function Chat({
 
   // Connect when threadId changes
   useEffect(() => {
+    if (readOnly) {
+      connectionIdRef.current++;
+      connectedThreadIdRef.current = null;
+      connectedWorkspaceIdRef.current = null;
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      setReady(false);
+      return;
+    }
+
     if (!shouldShowChat || !resolvedWorkspaceId) {
       // No threadId or workspace - cleanup any existing connection
       if (connectedThreadIdRef.current) {
@@ -2296,7 +2322,7 @@ export default function Chat({
       connectedThreadIdRef.current = null;
       connectedWorkspaceIdRef.current = null;
     };
-  }, [threadId, shouldShowChat, resolvedWorkspaceId]);
+  }, [threadId, shouldShowChat, resolvedWorkspaceId, readOnly]);
 
   // Ensure existing threads hydrate full history once initial route loading
   // settles. Without this fallback, the connect path can skip fetch while
@@ -2326,6 +2352,7 @@ export default function Chat({
   // Reconnect on visibility change (tab becomes visible)
   useEffect(() => {
     const handleVisibilityChange = () => {
+      if (readOnly) return;
       if (document.visibilityState === 'visible' && shouldShowChat && resolvedWorkspaceId) {
         // Check if main WebSocket is dead
         const needsReconnect = !wsRef.current ||
@@ -2347,7 +2374,7 @@ export default function Chat({
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [threadId, shouldShowChat, resolvedWorkspaceId]);
+  }, [threadId, shouldShowChat, resolvedWorkspaceId, readOnly]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const container = scrollContainerRef.current;
@@ -3096,6 +3123,16 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
   const setPreviewTargetForThread = useCallback((target: PreviewTarget | null) => {
     if (!threadId) return;
 
+    if (readOnly) {
+      if (target === null) {
+        resetPreviewTabsState();
+        setMobileView('chat');
+        return;
+      }
+      openTabForTarget(target, { sync: false });
+      return;
+    }
+
     const socket = wsRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       if (target === null) {
@@ -3117,6 +3154,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     openTabForTarget(target, { sync: true });
   }, [
     threadId,
+    readOnly,
     resetPreviewTabsState,
     openTabForTarget,
     syncPreviewTabsStateBestEffort,
@@ -3132,6 +3170,9 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
   }, [setPreviewTargetForThread]);
 
   function sendMessage() {
+    if (readOnly) {
+      return;
+    }
     if (
       isLoadingMessages ||
       !input.trim() ||
@@ -3286,13 +3327,18 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
   const fileExternalOpenUrl = useMemo(() => {
     if (previewTarget?.kind !== 'file') return '';
     if (previewTarget.source === 'workspace') {
-      return `/computer/${previewTarget.workspaceId}?file=${encodeURIComponent(previewTarget.path)}`;
+      const query = new URLSearchParams();
+      query.set('file', previewTarget.path);
+      if (readOnly) {
+        query.set('adminReadonly', '1');
+      }
+      return `/computer/${previewTarget.workspaceId}?${query.toString()}`;
     }
     const normalizedPath = previewTarget.path.replace(/^\/+/, '');
     const encodedPath = encodePathSegments(normalizedPath);
     const route = previewTarget.source === 'upload' ? 'uploads' : 'outputs';
     return `/api/workspaces/${previewTarget.workspaceId}/${route}/${encodedPath}`;
-  }, [previewTarget, encodePathSegments]);
+  }, [previewTarget, encodePathSegments, readOnly]);
 
   const handlePreviewRefresh = useCallback(() => {
     if (!previewTarget) return;
@@ -3315,15 +3361,17 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
   }, [previewTarget, appPreviewVanityUrl, fileExternalOpenUrl]);
 
   const handlePreviewBugReportOpen = useCallback(() => {
+    if (readOnly) return;
     setBugReportOpen(true);
     setBugReportStatus('idle');
     setBugReportError(null);
-  }, []);
+  }, [readOnly]);
 
   const showMobilePreview = previewTabs.length > 0 && mobileView === 'preview';
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
   const isAdmin = currentMembership?.role === 'owner' || currentMembership?.role === 'admin';
   const previewShareButton = useMemo(() => {
+    if (readOnly) return undefined;
     if (previewTarget?.kind !== 'app') return undefined;
     return (
       <ShareStatusButton
@@ -3334,7 +3382,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         onStatusChange={setAppIsPublic}
       />
     );
-  }, [previewTarget, threadId, appIsPublic, isAdmin, setAppIsPublic]);
+  }, [readOnly, previewTarget, threadId, appIsPublic, isAdmin, setAppIsPublic]);
   const previewPanelBody = (
     <PreviewPanelShell
       previewTabs={previewTabs}
@@ -3369,6 +3417,13 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       <PageHeader
         breadcrumbs={chatBreadcrumbs}
       />
+      {readOnly && (
+        <div className="mx-auto w-full max-w-3xl px-4 md:px-6 pt-3">
+          <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            Read-only admin view. Messaging is disabled for this thread.
+          </div>
+        </div>
+      )}
       {/* Chat Body - Single Scroll Container */}
       <div
         ref={scrollContainerRef}
@@ -3409,63 +3464,64 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
         </div>
       </div>
 
-      {/* Sticky Composer */}
-      <div className="sticky bottom-0 z-20 shrink-0">
-        {/* Scroll to bottom button */}
-        <div className="relative">
-          <Button
-            variant="outline"
-            size="icon"
-            className={cn(
-              "absolute -top-12 left-1/2 -translate-x-1/2 rounded-full shadow-md transition-all duration-200",
-              "bg-background/80 backdrop-blur-sm border-border/50",
-              showScrollButton ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
-            )}
-            onClick={() => scrollToBottom('smooth')}
-          >
-            <ArrowDown className="h-4 w-4" />
-          </Button>
-        </div>
-        {/* Gradient fade above composer */}
-        <div
-          className="absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent pointer-events-none"
-          aria-hidden="true"
-        />
-        {/* Composer container */}
-        <div className="bg-background">
-          <div className="pt-2 pb-4 px-4">
-            <div className="max-w-3xl mx-auto w-full">
-              {pendingQuestion && (
-                <AskUserQuestion
-                  data={pendingQuestion}
-                  onSubmit={handleQuestionResponse}
-                  className="mb-3"
-                />
+      {!readOnly && (
+        <div className="sticky bottom-0 z-20 shrink-0">
+          {/* Scroll to bottom button */}
+          <div className="relative">
+            <Button
+              variant="outline"
+              size="icon"
+              className={cn(
+                "absolute -top-12 left-1/2 -translate-x-1/2 rounded-full shadow-md transition-all duration-200",
+                "bg-background/80 backdrop-blur-sm border-border/50",
+                showScrollButton ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
               )}
-              {currentTodos.length > 0 && (
-                <FloatingTodoList
-                  todos={currentTodos}
-                  isStreaming={isStreaming}
-                  className="mb-3"
+              onClick={() => scrollToBottom('smooth')}
+            >
+              <ArrowDown className="h-4 w-4" />
+            </Button>
+          </div>
+          {/* Gradient fade above composer */}
+          <div
+            className="absolute inset-x-0 bottom-full h-8 bg-gradient-to-t from-background to-transparent pointer-events-none"
+            aria-hidden="true"
+          />
+          {/* Composer container */}
+          <div className="bg-background">
+            <div className="pt-2 pb-4 px-4">
+              <div className="max-w-3xl mx-auto w-full">
+                {pendingQuestion && (
+                  <AskUserQuestion
+                    data={pendingQuestion}
+                    onSubmit={handleQuestionResponse}
+                    className="mb-3"
+                  />
+                )}
+                {currentTodos.length > 0 && (
+                  <FloatingTodoList
+                    todos={currentTodos}
+                    isStreaming={isStreaming}
+                    className="mb-3"
+                  />
+                )}
+                <PromptInput
+                  value={input}
+                  onChange={setInput}
+                  onSubmit={sendMessage}
+                  onStop={stopGeneration}
+                  placeholder="Type a message..."
+                  isLoading={isLoadingMessages}
+                  isAssistantRunning={loading || isStreaming}
+                  autoFocus
+                  attachments={attachments}
+                  onFilesSelected={handleFilesSelected}
+                  onAttachmentRemove={handleAttachmentRemove}
                 />
-              )}
-              <PromptInput
-                value={input}
-                onChange={setInput}
-                onSubmit={sendMessage}
-                onStop={stopGeneration}
-                placeholder="Type a message..."
-                isLoading={isLoadingMessages}
-                isAssistantRunning={loading || isStreaming}
-                autoFocus
-                attachments={attachments}
-                onFilesSelected={handleFilesSelected}
-                onAttachmentRemove={handleAttachmentRemove}
-              />
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </>
   );
 
@@ -3476,12 +3532,12 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
           {shouldShowChat ? (
             <div
               className="flex-1 min-h-0 relative flex flex-col"
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
+              onDragOver={readOnly ? undefined : handleDragOver}
+              onDragLeave={readOnly ? undefined : handleDragLeave}
+              onDrop={readOnly ? undefined : handleDrop}
             >
               {/* Drag overlay */}
-              {isDragOver && (
+              {!readOnly && isDragOver && (
                 <div className="absolute inset-0 z-50 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded-lg m-2">
                   <div className="bg-background/90 backdrop-blur-sm px-6 py-4 rounded-xl shadow-lg">
                     <span className="text-lg font-medium text-primary">Drop files here to upload</span>

@@ -99,6 +99,18 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 ### Thread Message History Retrieval
 `getMessages()` no longer parses JSONL in the Worker runtime. It now calls sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}`, and sandbox-host reads + parses the JSONL file into `Message[]` before returning it. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker streams the JSON response body through from sandbox-host without buffering the full payload in Worker memory.
 
+### QAML Backdoor Read-Only Thread View
+Superusers can open `/chat/:threadId?adminReadonly=1` from qaml-backdoor thread list/detail via **View as User** (opens in a new tab). Read-only mode:
+- loads messages from `GET /api/admin/threads/:id/messages` (which proxies sandbox-host parsed JSONL response)
+- disables composer/send and chat websocket connection
+- keeps preview panel enabled for QC inspection of generated files/apps
+
+### QAML Backdoor Org Detail Panels
+Org detail (`/qaml-backdoor/orgs/:id`) includes:
+- **Recent Threads**: latest 10 by `updated_at` (newest first)
+- **Recent Apps**: latest 10 by `updated_at` (newest first)
+- Counts are shown only when cheap to derive (no heavy count queries on page load)
+
 ### Slack Chat Ingress
 1. Slack Events API posts to `/api/integrations/slack/events` (signature-verified with `SLACK_SIGNING_SECRET`)
 2. Worker dedupes by Slack `event_id` and message identity (`team/channel/user/ts`), enqueues to `SLACK_EVENTS_QUEUE`, and returns `200` immediately
@@ -165,7 +177,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Onboarding | `/api/onboarding`, `/api/onboarding/complete` |
 | Support | `/api/help` |
 | Dev tooling | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id` |
-| Admin troubleshooting | `/api/admin/threads/:id/jsonl` |
+| Admin troubleshooting | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages` |
 | Invitations | `/api/invitations/:orgId/:invitationId` (GET/POST) |
 | Workspace FS | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}` |
 | Workspace chat | `/api/workspaces/:id/chat/:threadId/messages/stream` |

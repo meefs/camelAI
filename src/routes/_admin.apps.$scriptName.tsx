@@ -22,6 +22,12 @@ function formatTimestamp(value: number) {
   return dateFormatter.format(new Date(value));
 }
 
+function getAdminAppHost(scriptName: string, orgSlug: string | null, vanityDomain: string) {
+  return orgSlug
+    ? `${scriptName}--${orgSlug}.${vanityDomain}`
+    : `${scriptName}.${vanityDomain}`;
+}
+
 export function meta({ data }: Route.MetaArgs) {
   return [
     { title: data?.app ? `${data.app.script_name} - Admin - camelAI` : 'App - Admin - camelAI' },
@@ -100,6 +106,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     workspace_name: app.workspace_name,
     org_id: app.org_id,
     org_name: app.org_name,
+    org_slug: app.org_slug,
     created_by: app.created_by,
     created_by_name: app.created_by_name,
     created_by_email: app.created_by_email,
@@ -117,6 +124,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
 export default function AdminAppDetailPage() {
   const { app, vanityDomain } = useLoaderData<typeof loader>();
+  const appHost = getAdminAppHost(app.script_name, app.org_slug, vanityDomain);
 
   return (
     <>
@@ -146,12 +154,12 @@ export default function AdminAppDetailPage() {
                     <dt className="text-sm font-medium text-muted-foreground">Live URL</dt>
                     <dd>
                       <a
-                        href={`https://${app.script_name}.${vanityDomain}`}
+                        href={`https://${appHost}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-sm text-primary hover:underline inline-flex items-center gap-1"
                       >
-                        {app.script_name}.{vanityDomain}
+                        {appHost}
                         <ExternalLink className="h-3 w-3" />
                       </a>
                     </dd>

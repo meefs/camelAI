@@ -182,6 +182,15 @@ export default function AdminThreadDetailPage() {
                 </dl>
                 <div className="mt-4 flex items-center gap-2">
                   <Button asChild variant="outline" size="sm">
+                    <Link
+                      to={`/chat/${thread.id}?adminReadonly=1`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      View as User
+                    </Link>
+                  </Button>
+                  <Button asChild variant="outline" size="sm">
                     <a href={jsonlDownloadUrl} download={`${thread.id}.jsonl`}>
                       <Download className="h-4 w-4" />
                       Download JSONL

@@ -34,6 +34,13 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     return `${orgId}:${scriptName}`;
   }
 
+  private getOrgSlugSelectExpression(): string {
+    const orgColumns = this.sql
+      .exec<{ name: string }>('PRAGMA table_info(orgs)')
+      .toArray();
+    return orgColumns.some((column) => column.name === 'slug') ? 'o.slug' : 'NULL';
+  }
+
   private migrate() {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS users (
@@ -50,6 +57,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       CREATE TABLE IF NOT EXISTS orgs (
         id TEXT PRIMARY KEY,
         name TEXT,
+        slug TEXT,
         created_at INTEGER,
         archived INTEGER,
         billing_status TEXT,
@@ -104,6 +112,9 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
         created_at INTEGER,
         expires_at INTEGER
       );
+      CREATE INDEX IF NOT EXISTS idx_threads_org_updated_at ON threads(org_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_apps_org_updated_at ON apps(org_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_workspaces_org_created_at ON workspaces(org_id, created_at DESC);
     `);
 
     const appColumns = this.sql.exec<{ name: string }>('PRAGMA table_info(apps)').toArray();
@@ -138,6 +149,13 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     const workspaceColumns = new Set(
       this.sql.exec<{ name: string }>('PRAGMA table_info(workspaces)').toArray().map((col) => col.name)
     );
+    const orgColumns = new Set(
+      this.sql.exec<{ name: string }>('PRAGMA table_info(orgs)').toArray().map((col) => col.name)
+    );
+    if (!orgColumns.has('slug')) {
+      this.sql.exec('ALTER TABLE orgs ADD COLUMN slug TEXT');
+    }
+
     if (!workspaceColumns.has('description')) {
       this.sql.exec('ALTER TABLE workspaces ADD COLUMN description TEXT');
     }
@@ -182,6 +200,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
         }
         case 'org_upsert': {
           const o = event.payload;
+          const slug = typeof o.slug === 'string' && o.slug.trim().length > 0 ? o.slug : null;
           const memberCount =
             typeof o.member_count === 'number' && Number.isFinite(o.member_count)
               ? o.member_count
@@ -191,13 +210,13 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
               ? o.workspace_count
               : null;
           this.sql.exec(`
-            INSERT INTO orgs (id, name, created_at, archived, billing_status, created_by, member_count, workspace_count)
-            VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, COALESCE((SELECT member_count FROM orgs WHERE id = ?), 0)), COALESCE(?, COALESCE((SELECT workspace_count FROM orgs WHERE id = ?), 0)))
+            INSERT INTO orgs (id, name, slug, created_at, archived, billing_status, created_by, member_count, workspace_count)
+            VALUES (?, ?, COALESCE(?, (SELECT slug FROM orgs WHERE id = ?)), ?, ?, ?, ?, COALESCE(?, COALESCE((SELECT member_count FROM orgs WHERE id = ?), 0)), COALESCE(?, COALESCE((SELECT workspace_count FROM orgs WHERE id = ?), 0)))
             ON CONFLICT(id) DO UPDATE SET
-              name=excluded.name, archived=excluded.archived, billing_status=excluded.billing_status,
+              name=excluded.name, slug=COALESCE(excluded.slug, orgs.slug), archived=excluded.archived, billing_status=excluded.billing_status,
               member_count=COALESCE(excluded.member_count, orgs.member_count),
               workspace_count=COALESCE(excluded.workspace_count, orgs.workspace_count)
-          `, o.id, o.name, o.created_at, o.archived ? 1 : 0, o.billing_status, o.created_by, memberCount, o.id, workspaceCount, o.id);
+          `, o.id, o.name, slug, o.id, o.created_at, o.archived ? 1 : 0, o.billing_status, o.created_by, memberCount, o.id, workspaceCount, o.id);
           break;
         }
         case 'workspace_upsert': {
@@ -439,8 +458,35 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     return { items, total, offset, limit };
   }
 
+  async getWorkspacesByOrg(orgId: string) {
+    const items = Array.from(
+      this.sql.exec(
+        `SELECT w.*, o.name as org_name
+         FROM workspaces w
+         LEFT JOIN orgs o ON w.org_id = o.id
+         WHERE w.org_id = ?
+         ORDER BY w.created_at DESC`,
+        orgId
+      )
+    ).map((w: any) => ({
+      ...w,
+      description: w.description ?? null,
+      avatar: {
+        color: w.avatar_color || '#666',
+        content: w.avatar_content || 'W',
+      },
+      archived: w.archived === 1,
+      archived_at: w.archived_at ?? null,
+      archived_by: w.archived_by ?? null,
+      compute_tier: w.compute_tier ?? 'standard',
+    }));
+
+    return items;
+  }
+
   async getAppsPaginated(offset: number, limit: number, search?: string) {
-    let query = 'SELECT a.*, o.name as org_name, w.name as workspace_name, u.name as created_by_name, u.email as created_by_email FROM apps a LEFT JOIN orgs o ON a.org_id = o.id LEFT JOIN workspaces w ON a.workspace_id = w.id LEFT JOIN users u ON a.created_by = u.id';
+    const orgSlugExpr = this.getOrgSlugSelectExpression();
+    let query = `SELECT a.*, o.name as org_name, ${orgSlugExpr} as org_slug, w.name as workspace_name, u.name as created_by_name, u.email as created_by_email FROM apps a LEFT JOIN orgs o ON a.org_id = o.id LEFT JOIN workspaces w ON a.workspace_id = w.id LEFT JOIN users u ON a.created_by = u.id`;
     const params: any[] = [];
     if (search) {
       query += ' WHERE a.script_name LIKE ? OR o.name LIKE ? OR w.name LIKE ? OR u.name LIKE ? OR u.email LIKE ?';
@@ -465,6 +511,94 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     const total = this.sql.exec(countQuery, ...countParams).next().value?.count || 0;
 
     return { items, total, offset, limit };
+  }
+
+  async getThreadContextById(threadId: string) {
+    const row = this.sql.exec(
+      `SELECT t.*, o.name as org_name, w.name as workspace_name
+       FROM threads t
+       LEFT JOIN orgs o ON t.org_id = o.id
+       LEFT JOIN workspaces w ON t.workspace_id = w.id
+       WHERE t.id = ?
+       LIMIT 1`,
+      threadId
+    ).toArray()[0] as any;
+
+    return row || null;
+  }
+
+  async getOrgRecentThreads(orgId: string, limit = 10) {
+    const resolvedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    return Array.from(
+      this.sql.exec(
+        `SELECT t.*, o.name as org_name, w.name as workspace_name
+         FROM threads t
+         LEFT JOIN orgs o ON t.org_id = o.id
+         LEFT JOIN workspaces w ON t.workspace_id = w.id
+         WHERE t.org_id = ?
+         ORDER BY t.updated_at DESC
+         LIMIT ?`,
+        orgId,
+        resolvedLimit
+      )
+    );
+  }
+
+  async getOrgRecentApps(orgId: string, limit = 10) {
+    const resolvedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const orgSlugExpr = this.getOrgSlugSelectExpression();
+    return Array.from(
+      this.sql.exec(
+        `SELECT a.*, o.name as org_name, ${orgSlugExpr} as org_slug, w.name as workspace_name, u.name as created_by_name, u.email as created_by_email
+         FROM apps a
+         LEFT JOIN orgs o ON a.org_id = o.id
+         LEFT JOIN workspaces w ON a.workspace_id = w.id
+         LEFT JOIN users u ON a.created_by = u.id
+         WHERE a.org_id = ?
+         ORDER BY a.updated_at DESC
+         LIMIT ?`,
+        orgId,
+        resolvedLimit
+      )
+    ).map((a: any) => ({
+      ...a,
+      is_public: a.is_public === 1,
+    }));
+  }
+
+  async getOrgThreadCount(orgId: string) {
+    return this.sql.exec(
+      'SELECT COUNT(*) as count FROM threads WHERE org_id = ?',
+      orgId
+    ).next().value?.count || 0;
+  }
+
+  async getOrgAppCount(orgId: string) {
+    return this.sql.exec(
+      'SELECT COUNT(*) as count FROM apps WHERE org_id = ?',
+      orgId
+    ).next().value?.count || 0;
+  }
+
+  async getOrgRecentActivity(
+    orgId: string,
+    threadLimit = 10,
+    appLimit = 10,
+    includeCounts = true
+  ) {
+    const [threads, apps, threadCount, appCount] = await Promise.all([
+      this.getOrgRecentThreads(orgId, threadLimit),
+      this.getOrgRecentApps(orgId, appLimit),
+      includeCounts ? this.getOrgThreadCount(orgId) : Promise.resolve(null),
+      includeCounts ? this.getOrgAppCount(orgId) : Promise.resolve(null),
+    ]);
+
+    return {
+      threads,
+      apps,
+      threadCount,
+      appCount,
+    };
   }
 
   async getInvitationsPaginated(offset: number, limit: number, search?: string) {
