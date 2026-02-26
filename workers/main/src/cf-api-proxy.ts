@@ -588,11 +588,32 @@ export function mapVirtualizedBindings(
 async function callCloudflareApi<T>(
   url: string,
   init: RequestInit,
-  context: string
+  context: string,
+  options?: { suppressMissingWorkerWarning?: boolean }
 ): Promise<T | null> {
+  const isMissingWorkerError = (status: number, errors: unknown[]): boolean =>
+    status === 404 &&
+    errors.some((error) => {
+      if (!error || typeof error !== 'object') return false;
+      const code = (error as { code?: unknown }).code;
+      return code === 10007;
+    });
+
   const resp = await fetch(url, init);
   if (!resp.ok) {
     const bodyText = await resp.text();
+    let errors: unknown[] = [];
+    try {
+      const parsed = JSON.parse(bodyText) as { errors?: unknown };
+      errors = Array.isArray(parsed.errors) ? parsed.errors : [];
+    } catch {
+      // Non-JSON response body: keep default empty errors array
+    }
+
+    if (options?.suppressMissingWorkerWarning && isMissingWorkerError(resp.status, errors)) {
+      return null;
+    }
+
     console.warn(`[cf-api] ${context} failed`, {
       status: resp.status,
       statusText: resp.statusText,
@@ -602,6 +623,10 @@ async function callCloudflareApi<T>(
   }
   const data = await resp.json() as { success?: boolean; result?: T; errors?: unknown[] };
   if (data.success === false) {
+    const errors = Array.isArray(data.errors) ? data.errors : [];
+    if (options?.suppressMissingWorkerWarning && isMissingWorkerError(resp.status, errors)) {
+      return null;
+    }
     console.warn(`[cf-api] ${context} returned error`, { errors: data.errors });
     return null;
   }
@@ -618,7 +643,12 @@ async function listDispatchScriptSecrets(
     `/workers/dispatch/namespaces/${encodeURIComponent(dispatchNamespace)}` +
     `/scripts/${encodeURIComponent(scriptName)}/secrets`;
   const headers = { Authorization: `Bearer ${apiToken}` };
-  return (await callCloudflareApi<Array<{ name: string }>>(url, { method: 'GET', headers }, 'list script secrets')) ?? [];
+  return (await callCloudflareApi<Array<{ name: string }>>(
+    url,
+    { method: 'GET', headers },
+    'list script secrets',
+    { suppressMissingWorkerWarning: true }
+  )) ?? [];
 }
 
 async function upsertDispatchScriptSecret(
