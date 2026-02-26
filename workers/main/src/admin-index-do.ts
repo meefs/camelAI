@@ -42,6 +42,13 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     return orgColumns.some((column) => column.name === 'slug') ? 'o.slug' : 'NULL';
   }
 
+  private isUserHardDeleted(userId: string): boolean {
+    const rows = this.sql
+      .exec('SELECT 1 FROM deleted_users WHERE id = ? LIMIT 1', userId)
+      .toArray();
+    return rows.length > 0;
+  }
+
   private migrate() {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS users (
@@ -112,6 +119,10 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
         status TEXT,
         created_at INTEGER,
         expires_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS deleted_users (
+        id TEXT PRIMARY KEY,
+        deleted_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_threads_org_updated_at ON threads(org_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_apps_org_updated_at ON apps(org_id, updated_at DESC);
@@ -185,6 +196,9 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       switch (event.type) {
         case 'user_upsert': {
           const u = event.payload;
+          if (this.isUserHardDeleted(u.id)) {
+            break;
+          }
           const orgCount =
             typeof u.org_count === 'number' && Number.isFinite(u.org_count)
               ? u.org_count
@@ -200,6 +214,11 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
           break;
         }
         case 'user_delete':
+          this.sql.exec(
+            'INSERT OR REPLACE INTO deleted_users (id, deleted_at) VALUES (?, ?)',
+            event.payload.id,
+            Date.now()
+          );
           this.sql.exec('DELETE FROM users WHERE id = ?', event.payload.id);
           break;
         case 'org_upsert': {

@@ -43,4 +43,32 @@ describe('hardDeleteAdminUser', () => {
 
     await waitForAdminIndexUserPresence(userId, false);
   });
+
+  it('ignores stale user_upsert events after delete', async () => {
+    const email = `hard-delete-race-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+    const { userId } = await createUser(testEnv, email, 'password123', 'Race User');
+    const adminIndex = testEnv.ADMIN_INDEX.get(testEnv.ADMIN_INDEX.idFromName('admin_index'));
+
+    await waitForAdminIndexUserPresence(userId, true);
+
+    await hardDeleteAdminUser(makeContext(), userId, 'system-admin');
+    await waitForAdminIndexUserPresence(userId, false);
+
+    // Simulate out-of-order delivery: stale upsert arrives after delete.
+    await adminIndex.handleEvent({
+      type: 'user_upsert',
+      payload: {
+        id: userId,
+        email,
+        name: 'Race User',
+        avatar: { color: '#111111', content: 'R' },
+        created_at: Date.now(),
+        is_superuser: false,
+        is_orphaned: true,
+        org_count: 0,
+      },
+    });
+
+    await waitForAdminIndexUserPresence(userId, false);
+  });
 });
