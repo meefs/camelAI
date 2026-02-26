@@ -5,20 +5,6 @@ VM="chiridion-vm"
 REMOTE_BUILD="/tmp/chiridion-build"
 LOCAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Services: name -> Go package path and binary output
-declare -A SERVICES=(
-  [sandbox-host]="./cmd/sandbox-host/"
-  [data-proxy]="./cmd/data-proxy/"
-)
-declare -A BINARIES=(
-  [sandbox-host]="/usr/local/bin/chiridion-sandbox-host"
-  [data-proxy]="/usr/local/bin/chiridion-data-proxy"
-)
-declare -A UNITS=(
-  [sandbox-host]="chiridion-sandbox-host"
-  [data-proxy]="chiridion-data-proxy"
-)
-
 usage() {
   echo "Usage: $0 [sandbox-host|data-proxy|all]"
   echo ""
@@ -29,6 +15,26 @@ usage() {
   exit 1
 }
 
+# Resolve service config by name
+service_pkg() {
+  case "$1" in
+    sandbox-host) echo "./cmd/sandbox-host/" ;;
+    data-proxy)   echo "./cmd/data-proxy/" ;;
+  esac
+}
+service_bin() {
+  case "$1" in
+    sandbox-host) echo "/usr/local/bin/chiridion-sandbox-host" ;;
+    data-proxy)   echo "/usr/local/bin/chiridion-data-proxy" ;;
+  esac
+}
+service_unit() {
+  case "$1" in
+    sandbox-host) echo "chiridion-sandbox-host" ;;
+    data-proxy)   echo "chiridion-data-proxy" ;;
+  esac
+}
+
 TARGET="${1:-all}"
 
 if [[ "$TARGET" != "all" && "$TARGET" != "sandbox-host" && "$TARGET" != "data-proxy" ]]; then
@@ -37,7 +43,7 @@ fi
 
 # Build target list
 if [[ "$TARGET" == "all" ]]; then
-  TARGETS=("sandbox-host" "data-proxy")
+  TARGETS=(sandbox-host data-proxy)
 else
   TARGETS=("$TARGET")
 fi
@@ -48,9 +54,9 @@ rsync -az --delete \
   "$VM:$REMOTE_BUILD/services/sandbox-host/"
 
 for svc in "${TARGETS[@]}"; do
-  pkg="${SERVICES[$svc]}"
-  bin="${BINARIES[$svc]}"
-  unit="${UNITS[$svc]}"
+  pkg="$(service_pkg "$svc")"
+  bin="$(service_bin "$svc")"
+  unit="$(service_unit "$svc")"
 
   echo "==> Building $svc..."
   ssh "$VM" "cd $REMOTE_BUILD/services/sandbox-host && sudo go build -o $bin $pkg"
