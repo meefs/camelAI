@@ -173,6 +173,9 @@ resource "azurerm_linux_virtual_machine" "sandbox" {
     r2_secret_access_key     = var.r2_secret_access_key
     r2_account_id            = var.r2_account_id
     r2_bucket_name           = var.r2_bucket_name
+    cf_account_id            = var.cf_account_id
+    cf_gateway_name          = var.cf_gateway_name
+    cf_gateway_token         = var.cf_gateway_token
   }))
 
   identity {

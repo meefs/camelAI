@@ -395,10 +395,7 @@ func (s *Server) forwardOpenAIProxyRequest(w http.ResponseWriter, req *http.Requ
 	if err != nil {
 		return err
 	}
-	copyHeaders(forwardReq.Header, req.Header)
-	forwardReq.Header.Del("Host")
-	forwardReq.Header.Del("Authorization")
-	forwardReq.Header.Del("Content-Length")
+	forwardReq.Header = sanitizeOpenAIProxyUpstreamHeaders(req.Header)
 	forwardReq.Header.Set("Authorization", "Bearer "+token)
 	forwardReq.Header.Set("cf-aig-metadata", buildAIGatewayMetadata(route, req))
 	applyStreamingRequestHeaders(forwardReq.Header)
@@ -1482,6 +1479,40 @@ func copyHeaders(dst, src http.Header) {
 			dst.Add(key, value)
 		}
 	}
+}
+
+func sanitizeOpenAIProxyUpstreamHeaders(src http.Header) http.Header {
+	headers := cloneHeaders(src)
+
+	// Never forward internal auth/identity or transport-managed headers.
+	headers.Del("Host")
+	headers.Del("Authorization")
+	headers.Del("Content-Length")
+	headers.Del("X-Sandbox-Secret")
+	headers.Del("X-Chiridion-Org-Id")
+	headers.Del("X-Chiridion-Workspace-Id")
+	headers.Del("X-Chiridion-User-Id")
+	headers.Del("X-Chiridion-Thread-Id")
+
+	// Drop client IP/proxy chain headers so gateway/provider receives clean origin metadata.
+	for _, key := range []string{
+		"Forwarded",
+		"X-Forwarded-For",
+		"X-Forwarded-Host",
+		"X-Forwarded-Proto",
+		"X-Real-Ip",
+		"True-Client-Ip",
+		"CF-Connecting-Ip",
+		"Cf-Connecting-Ip",
+		"CF-Ray",
+		"Cf-Ray",
+		"Cdn-Loop",
+		"Via",
+	} {
+		headers.Del(key)
+	}
+
+	return headers
 }
 
 func decodeJSON(req *http.Request, target any) error {

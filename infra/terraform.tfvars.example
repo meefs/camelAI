@@ -24,3 +24,8 @@ r2_access_key_id          = "replace-with-r2-access-key-id"
 r2_secret_access_key      = "replace-with-r2-secret-access-key"
 r2_account_id             = "85bbd288051330fb51ee1c86031a299b"
 r2_bucket_name            = "chiridion-sandbox"
+
+# AI Gateway credentials for sandbox-host OpenAI-compatible proxy
+cf_account_id             = "85bbd288051330fb51ee1c86031a299b"
+cf_gateway_name           = "chiridion"
+cf_gateway_token          = "replace-with-cf-gateway-token"

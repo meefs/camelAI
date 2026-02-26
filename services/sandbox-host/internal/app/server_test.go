@@ -284,6 +284,15 @@ func TestForwardOpenAIProxyRequest(t *testing.T) {
 		if req.Header.Get("Authorization") != "Bearer gateway-token" {
 			t.Fatalf("unexpected authorization header: %q", req.Header.Get("Authorization"))
 		}
+		if req.Header.Get("X-Forwarded-For") != "" {
+			t.Fatalf("unexpected forwarded-for header: %q", req.Header.Get("X-Forwarded-For"))
+		}
+		if req.Header.Get("CF-Connecting-IP") != "" {
+			t.Fatalf("unexpected cf-connecting-ip header: %q", req.Header.Get("CF-Connecting-IP"))
+		}
+		if req.Header.Get("X-Sandbox-Secret") != "" {
+			t.Fatalf("unexpected internal sandbox header: %q", req.Header.Get("X-Sandbox-Secret"))
+		}
 		var payload map[string]any
 		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
 			t.Fatalf("failed to decode upstream body: %v", err)
@@ -328,6 +337,9 @@ func TestForwardOpenAIProxyRequest(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces/org-1/ws-1/openai-proxy/v1/chat/completions", strings.NewReader(`{"model":"@cf/meta/llama-3.1-8b-instruct"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", "198.41.214.162")
+	req.Header.Set("CF-Connecting-IP", "203.0.113.5")
+	req.Header.Set("X-Sandbox-Secret", "internal")
 	req.Header.Set("X-Chiridion-User-Id", "user-1")
 	req.Header.Set("X-Chiridion-Thread-Id", "thread-1")
 	rec := httptest.NewRecorder()

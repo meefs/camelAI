@@ -25,6 +25,9 @@ write_files:
       R2_SECRET_ACCESS_KEY=${r2_secret_access_key}
       R2_ACCOUNT_ID=${r2_account_id}
       R2_BUCKET_NAME=${r2_bucket_name}
+      CF_ACCOUNT_ID=${cf_account_id}
+      CF_GATEWAY_NAME=${cf_gateway_name}
+      CF_GATEWAY_TOKEN=${cf_gateway_token}
 
 runcmd:
   - bash -c '. /etc/chiridion/storage.env && export SANDBOX_DATA_DEVICE CLOUDFLARED_TUNNEL_TOKEN ACR_LOGIN_SERVER && bash /opt/chiridion/sandbox-host/scripts/setup-host.sh'

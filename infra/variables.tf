@@ -111,3 +111,19 @@ variable "r2_bucket_name" {
   type        = string
   default     = "chiridion-sandbox"
 }
+
+variable "cf_account_id" {
+  description = "Cloudflare account ID used for AI Gateway routing in sandbox-host"
+  type        = string
+}
+
+variable "cf_gateway_name" {
+  description = "Cloudflare AI Gateway name used by sandbox-host OpenAI proxy"
+  type        = string
+}
+
+variable "cf_gateway_token" {
+  description = "Cloudflare AI Gateway token used by sandbox-host OpenAI proxy"
+  type        = string
+  sensitive   = true
+}
