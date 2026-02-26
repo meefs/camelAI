@@ -518,8 +518,11 @@ export async function removeOrgMember(env: AuthEnv, orgId: string, userId: strin
 }
 
 export async function updateOrgMemberRole(env: AuthEnv, orgId: string, userId: string, role: OrgRole, actorId: string): Promise<void> {
-  const stub = env.ORG.get(env.ORG.idFromName(orgId));
-  await stub.updateMemberRole(userId, role, actorId);
+  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
+  await orgStub.updateMemberRole(userId, role, actorId);
+
+  const userStub = env.USER.get(env.USER.idFromName(userId));
+  await userStub.updateOrgRole(orgId, role);
 }
 
 export async function transferOrgOwnership(env: AuthEnv, orgId: string, newOwnerId: string, actorId: string): Promise<void> {

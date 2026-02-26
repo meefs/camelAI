@@ -24,6 +24,7 @@ import {
   adminTransferOrgOwnership as prodAdminTransferOrgOwnership,
   createWorkspace as prodCreateWorkspace,
   removeOrgMember as prodRemoveOrgMember,
+  updateOrgMemberRole as prodUpdateOrgMemberRole,
   archiveOrg as prodArchiveOrg,
   checkUserOrphaned as prodCheckUserOrphaned,
   listOrgWorkspaces as prodListOrgWorkspaces,
@@ -291,11 +292,13 @@ export async function updateOrgMemberRole(
   role: OrgRole,
   actorId: string
 ): Promise<void> {
-  const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
-  await orgStub.updateMemberRole(userId, role, actorId);
-
-  const userStub = env.USER.get(env.USER.idFromName(userId));
-  await userStub.updateOrgRole(orgId, role);
+  return prodUpdateOrgMemberRole(
+    env as unknown as AuthEnv,
+    orgId,
+    userId,
+    role,
+    actorId
+  );
 }
 
 export async function tryUpdateOrgMemberRole(
