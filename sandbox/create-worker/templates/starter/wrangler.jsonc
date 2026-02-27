@@ -53,7 +53,7 @@
 	 * (`createWorkersAI({ binding: env.AI })`).
 	 * In camelAI deploys, this is virtualized and rewritten to the platform AI entrypoint.
 	 */
-	// "ai": { "binding": "AI" },
+	"ai": { "binding": "AI" },
 
 	/**
 	 * Runtime variables available in loader/action context via context.cloudflare.env

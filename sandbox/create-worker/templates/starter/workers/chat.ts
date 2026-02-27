@@ -47,7 +47,7 @@ export class Chat extends AIChatAgent<Env> {
     onFinish: StreamTextOnFinishCallback<ToolSet>,
     options?: { abortSignal?: AbortSignal }
   ): Promise<Response> {
-    const workersai = createWorkersAI({ binding: (this.env as unknown as { AI: unknown }).AI as any });
+    const workersai = createWorkersAI({ binding: this.env.AI });
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
