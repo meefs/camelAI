@@ -4,9 +4,6 @@ sandbox/skills/developing-software/templates/*/.bun
 sandbox/skills/developing-software/templates/*/.pnp.cjs
 sandbox/skills/developing-software/templates/*/.pnp.loader.mjs
 
-# Ignore session-search node_modules (native modules must be compiled in container)
-sandbox/session-search/node_modules
-
 # Ignore local development artifacts
 node_modules
 .wrangler

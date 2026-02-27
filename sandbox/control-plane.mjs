@@ -468,7 +468,6 @@ function withThreadProxyPath(rawUrl, threadId) {
   }
 }
 
-
 // ─── Chat Session ──────────────────────────────────────────
 
 class ChatSession {
