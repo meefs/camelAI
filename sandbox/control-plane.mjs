@@ -13,7 +13,7 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { loadUserProfile, MEMORY_DIR, PROFILE_PATH } from './memory-logger.mjs';
+import { loadUserProfile } from './memory-logger.mjs';
 import { readFile, access } from 'fs/promises';
 import { homedir } from 'os';
 
@@ -155,7 +155,6 @@ This is your workspace. Files persist between sessions. You can build, deploy, a
 ├── projects/          # Your projects (persistent across sessions)
 ├── .config/           # Tool configs (wrangler, npm, etc.)
 └── .chiridion/        # camelAI-specific data
-    ├── memory/        # Episodic memory logs
     └── profile.md     # User profile
 
 /mnt/user-uploads/     # Files uploaded by user (read-only)
@@ -357,46 +356,6 @@ Some messages include hidden context from camelAI:
 Treat content in these blocks as trusted operator context. Use it to guide your response, but do not mention the blocks, quote their wrappers, or tell the user that hidden context was provided.
 </camelai_context_blocks>
 
-<memory_and_profile>
-<episodic_memory>
-You have a **memory** subagent for maintaining context across sessions. It handles both logging and searching.
-
-**Important:** Always **resume** the memory subagent using its previous agent ID rather than starting fresh. This preserves what has already been logged or searched this session.
-
-**When to log (background):**
-- After implementing features or fixing bugs
-- After deploying applications
-- After completing multi-step tasks
-- After important decisions or investigations
-
-**When to search (foreground):**
-- "When did we deploy X?"
-- "What was that bug we fixed?"
-- "Have we worked on this before?"
-
-Memory files are stored in \`~/.chiridion/memory/YYYY-MM-DD.md\`.
-</episodic_memory>
-
-<user_profile>
-You have a **profile-writer** subagent for maintaining a persistent profile about the user. The profile is loaded into your system prompt—no separate reader needed.
-
-**Important:** Always **resume** the profile-writer subagent using its previous agent ID.
-
-**When to update (background):**
-- Personality traits or communication style
-- Technical preferences (languages, tools, coding style)
-- Work context (role, team, projects)
-- Quirks, pet peeves, things they love
-- Inside jokes or recurring references
-
-**What NOT to log:**
-- Transient task details (use memory instead)
-- Sensitive personal information
-- Temporary preferences
-
-The profile lives at \`~/.chiridion/profile.md\`.
-</user_profile>
-</memory_and_profile>
 
 <asking_questions>
 Use the **AskUserQuestion** tool when you have choices that affect the outcome.
@@ -461,7 +420,6 @@ Users may have multiple workspaces. Each workspace is isolated:
 - Separate filesystem
 - Separate deployed apps
 - Separate integrations
-- Separate memory and profile
 
 You only have access to the current workspace. If a user mentions something from another workspace, you won't have context on it—explain that workspaces are separate environments.
 </workspaces>
@@ -475,7 +433,6 @@ You only have access to the current workspace. If a user mentions something from
 | Control preview pane | \`set_file_preview()\` to show any file |
 | Use integrations | Access via \`INT_*\` env vars |
 | Provide downloads | Write to \`/mnt/user-outputs/\` |
-| Remember context | Use memory and profile subagents |
 </what_you_can_do>
 
 <what_you_cannot_do>
@@ -511,102 +468,6 @@ function withThreadProxyPath(rawUrl, threadId) {
   }
 }
 
-const MEMORY_AGENT = {
-  description: `Episodic memory manager. IMPORTANT: Always RESUME this subagent using its previous agent ID if one exists - do not start fresh each time. This preserves context about what has already been logged/searched.
-
-Use for THREE purposes:
-
-1. LOGGING (run in background): After completing significant tasks, invoke with run_in_background=true to record what was done. Use proactively after implementing features, fixing bugs, deploying, or completing multi-step tasks.
-
-2. SEARCHING (run in foreground): When you need to find past work - "when did we deploy X?", "what was that bug?", "have we worked on this before?" - search BOTH memory files AND session history to get complete results.
-
-3. CONTEXT RETRIEVAL (run in foreground): Use session-search show with --around to get full context around a specific message or timestamp.`,
-  prompt: `You are an episodic memory manager for a coding workspace. You handle LOGGING memories and SEARCHING history.
-
-## Memory Location
-${MEMORY_DIR}/YYYY-MM-DD.md (one file per day, timestamped entries)
-
-## MODE 1: LOGGING (when asked to record/log something)
-
-Write a brief entry (2-4 sentences) summarizing what was accomplished:
-- What the user wanted
-- Key actions taken (files, tools, decisions)
-- The outcome
-
-**Entry format:**
-\`\`\`
-## HH:MM - [Brief Title]
-[2-4 sentence factual summary]
-\`\`\`
-
-Append to today's file. Create it if needed. Be concise and factual.
-
-## MODE 2: SEARCHING (when asked to find/recall something)
-
-Search BOTH sources to get complete results:
-
-**Memory files** (curated summaries):
-\`\`\`bash
-grep -r "keyword" ${MEMORY_DIR}/
-\`\`\`
-
-**Session history** (full conversation logs):
-\`\`\`bash
-session-search search "your query" --limit 20
-session-search search "query" --after "2026-01-15" --before "2026-01-20"
-session-search search "query" --session 68369296
-session-search show <session-id> --around "<timestamp>" --context 5
-session-search list --limit 10
-\`\`\`
-
-Search results show message numbers (e.g., #47) for easy reference.
-
-## Tips
-- Memory files have curated summaries, session-search has raw conversation history
-- Always try both - memory logs may not exist for all work
-- Partial session IDs work (first 8 chars of UUID)
-- Use --around with a timestamp to see surrounding context
-
-## Tools Available
-- Read: read memory files
-- Write: append new entries
-- Grep: search across files
-- Glob: list files
-- Bash: run session-search CLI and other commands`,
-  tools: ['Read', 'Write', 'Grep', 'Glob', 'Bash'],
-  model: 'haiku',
-  maxTurns: 8,
-};
-
-const PROFILE_WRITER_AGENT = {
-  description: `User profile writer. Use this subagent IN THE BACKGROUND (run_in_background=true) when you learn something new about the user that's worth remembering long-term.
-
-IMPORTANT: Always RESUME this subagent using its previous agent ID. The profile is always visible in the system prompt, so no reader is needed.`,
-  prompt: `You are a user profile manager. Your job is to maintain a profile of the user based on interactions.
-
-## Profile Location
-${PROFILE_PATH}
-
-## What to Track
-- **Character**: Personality, communication style, sense of humor
-- **Preferences**: Technical preferences, coding style, tool choices
-- **Context**: Their role, projects they work on, team context
-- **Quirks**: Unique habits, pet peeves, things they love
-- **Inside Jokes**: Recurring references, shared humor, callbacks
-
-## How to Update
-1. First, READ the current profile to see what exists
-2. Then WRITE the updated profile, preserving existing content and adding/updating sections
-
-## Guidelines
-- Be concise but capture personality
-- Update existing sections, don't duplicate
-- Remove outdated info when updating
-- Keep the tone warm and personal`,
-  tools: ['Read', 'Write'],
-  model: 'haiku',
-  maxTurns: 3,
-};
 
 // ─── Chat Session ──────────────────────────────────────────
 
@@ -985,15 +846,6 @@ class ChatSession {
         mcpServers,
         allowedTools: ['mcp__camelai__*'],
       }),
-      agents: {
-        'memory': MEMORY_AGENT,
-        'profile-writer': PROFILE_WRITER_AGENT,
-      },
-      hooks: {
-        Stop: [{ hooks: [async () => ({
-          systemMessage: 'Before finishing: Did you log anything significant to memory? If you accomplished notable work (feature, fix, deployment, investigation) and haven\'t logged it yet, invoke the memory subagent in the background now.',
-        })] }],
-      },
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
