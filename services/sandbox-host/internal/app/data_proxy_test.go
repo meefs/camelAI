@@ -1,6 +1,8 @@
 package app
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -158,5 +160,91 @@ func TestHandleDataProxyMySQLQueryRejectsNonArrayParams(t *testing.T) {
 	}
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestBeginReadTransactionUsesReadOnlyWhenSupported(t *testing.T) {
+	calls := 0
+	tx, err := beginReadTransaction(func(opts *sql.TxOptions) (*sql.Tx, error) {
+		calls++
+		if opts == nil || !opts.ReadOnly {
+			t.Fatalf("expected first call with read-only transaction options")
+		}
+		return &sql.Tx{}, nil
+	})
+	if err != nil {
+		t.Fatalf("beginReadTransaction returned error: %v", err)
+	}
+	if tx == nil {
+		t.Fatalf("expected transaction, got nil")
+	}
+	if calls != 1 {
+		t.Fatalf("unexpected begin attempts: got=%d want=1", calls)
+	}
+}
+
+func TestBeginReadTransactionFallsBackWhenReadOnlyUnsupported(t *testing.T) {
+	calls := 0
+	tx, err := beginReadTransaction(func(opts *sql.TxOptions) (*sql.Tx, error) {
+		calls++
+		if calls == 1 {
+			if opts == nil || !opts.ReadOnly {
+				t.Fatalf("expected first call with read-only transaction options")
+			}
+			return nil, errors.New("read transactions are not supported")
+		}
+		if opts != nil {
+			t.Fatalf("expected fallback call without transaction options")
+		}
+		return &sql.Tx{}, nil
+	})
+	if err != nil {
+		t.Fatalf("beginReadTransaction returned error: %v", err)
+	}
+	if tx == nil {
+		t.Fatalf("expected fallback transaction, got nil")
+	}
+	if calls != 2 {
+		t.Fatalf("unexpected begin attempts: got=%d want=2", calls)
+	}
+}
+
+func TestBeginReadTransactionReturnsOriginalErrorWhenNotReadOnlyUnsupported(t *testing.T) {
+	expectedErr := errors.New("network broke")
+	calls := 0
+	tx, err := beginReadTransaction(func(opts *sql.TxOptions) (*sql.Tx, error) {
+		calls++
+		return nil, expectedErr
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected original error, got: %v", err)
+	}
+	if tx != nil {
+		t.Fatalf("expected nil transaction on error")
+	}
+	if calls != 1 {
+		t.Fatalf("unexpected begin attempts: got=%d want=1", calls)
+	}
+}
+
+func TestIsReadOnlyTransactionUnsupportedError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "mssql phrasing", err: errors.New("read transactions are not supported"), want: true},
+		{name: "hyphenated", err: errors.New("Read-Only transactions are not supported"), want: true},
+		{name: "spaced", err: errors.New("read only transactions are not supported"), want: true},
+		{name: "different error", err: errors.New("permission denied"), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isReadOnlyTransactionUnsupportedError(tc.err)
+			if got != tc.want {
+				t.Fatalf("unexpected result: got=%v want=%v", got, tc.want)
+			}
+		})
 	}
 }

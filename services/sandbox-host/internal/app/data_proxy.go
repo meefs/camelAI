@@ -355,7 +355,9 @@ func executeSQLQuery(
 
 	// Read mode runs inside a transaction that is always rolled back.
 	// This provides a safety net when callers cannot guarantee read-only credentials.
-	tx, err := db.BeginTx(queryCtx, &sql.TxOptions{ReadOnly: true})
+	tx, err := beginReadTransaction(func(opts *sql.TxOptions) (*sql.Tx, error) {
+		return db.BeginTx(queryCtx, opts)
+	})
 	if err != nil {
 		return err
 	}
@@ -381,6 +383,27 @@ func executeSQLQuery(
 
 	writeJSON(w, http.StatusOK, sqlQueryResponse{Recordset: recordset})
 	return nil
+}
+
+func beginReadTransaction(begin func(opts *sql.TxOptions) (*sql.Tx, error)) (*sql.Tx, error) {
+	tx, err := begin(&sql.TxOptions{ReadOnly: true})
+	if err == nil {
+		return tx, nil
+	}
+	if !isReadOnlyTransactionUnsupportedError(err) {
+		return nil, err
+	}
+	return begin(nil)
+}
+
+func isReadOnlyTransactionUnsupportedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "read transactions are not supported") ||
+		strings.Contains(lower, "read-only transactions are not supported") ||
+		strings.Contains(lower, "read only transactions are not supported")
 }
 
 func parseSQLQueryMode(raw string) (sqlQueryMode, bool) {
