@@ -64,55 +64,70 @@ export default function OnboardingLayout() {
   const loaderData = useLoaderData<typeof loader>() as OnboardingLoaderData;
   const navigate = useNavigate();
   const completedRef = useRef(false);
+  const completeOnboardingRequestRef = useRef<Promise<void> | null>(null);
 
   const completeOnboarding = useCallback(async () => {
-    const response = await fetch('/api/onboarding/complete', {
-      method: 'POST',
-    });
+    if (completeOnboardingRequestRef.current) {
+      return completeOnboardingRequestRef.current;
+    }
 
-    if (!response.ok) {
-      let errorMessage = 'Failed to complete onboarding';
-      try {
-        const data = (await response.json()) as { error?: string };
-        if (data.error) {
-          errorMessage = data.error;
+    const completeRequest = (async () => {
+      const response = await fetch('/api/onboarding/complete', {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to complete onboarding';
+        try {
+          const data = (await response.json()) as { error?: string };
+          if (data.error) {
+            errorMessage = data.error;
+          }
+        } catch {
+          // Ignore parse failures and keep default error message.
         }
-      } catch {
-        // Ignore parse failures and keep default error message.
+        throw new Error(errorMessage);
       }
-      throw new Error(errorMessage);
-    }
 
-    const data = (await response.json()) as {
-      redirectTo?: string;
-      threadId?: string;
-      onboardingSystemMessage?: string | null;
-    };
+      const data = (await response.json()) as {
+        redirectTo?: string;
+        threadId?: string;
+        onboardingSystemMessage?: string | null;
+      };
 
-    const threadId = data.threadId?.trim();
-    const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
+      const threadId = data.threadId?.trim();
+      const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
 
-    if (threadId && onboardingSystemMessage) {
+      if (threadId && onboardingSystemMessage) {
+        try {
+          sessionStorage.setItem(
+            PENDING_NEW_THREAD_MESSAGE_KEY,
+            JSON.stringify({
+              message: `<camelai system message>${onboardingSystemMessage}</camelai system message>`,
+              threadId,
+            })
+          );
+        } catch (error) {
+          console.error('Failed to persist onboarding prefill message:', error);
+        }
+      }
+
       try {
-        sessionStorage.setItem(
-          PENDING_NEW_THREAD_MESSAGE_KEY,
-          JSON.stringify({
-            message: `<camelai system message>${onboardingSystemMessage}</camelai system message>`,
-            threadId,
-          })
-        );
-      } catch (error) {
-        console.error('Failed to persist onboarding prefill message:', error);
+        sessionStorage.setItem('showBootModal', '1');
+      } catch {
+        // Ignore storage failures.
       }
-    }
+
+      navigate(data.redirectTo || '/chat');
+    })();
+
+    completeOnboardingRequestRef.current = completeRequest;
 
     try {
-      sessionStorage.setItem('showBootModal', '1');
-    } catch {
-      // Ignore storage failures.
+      await completeRequest;
+    } finally {
+      completeOnboardingRequestRef.current = null;
     }
-
-    navigate(data.redirectTo || '/chat');
   }, [navigate]);
 
   const needsWelcomeScreen =

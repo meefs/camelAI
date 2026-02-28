@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useFetcher, useLoaderData, useLocation, useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.welcome';
 import { getAuthEnv, requireSession } from '@/lib/auth.server';
@@ -95,13 +95,15 @@ export default function OnboardingWelcomeRoute() {
   const context = useOutletContext<OnboardingRouteContext>();
   const location = useLocation();
   const [error, setError] = useState<string | null>(null);
+  const [isCompleting, setIsCompleting] = useState(false);
+  const completionStartedRef = useRef(false);
   const verificationFetcher = useFetcher<{ success?: boolean; error?: string }>();
   const { orgName, teamContext } =
     useLoaderData<typeof loader>() as WelcomeLoaderData;
 
   const isTeamWelcome = context.teamMode;
   const emailVerificationRequired =
-    !isTeamWelcome && context.emailVerificationRequired && !context.emailVerified;
+    context.emailVerificationRequired && !context.emailVerified;
   const emailVerifiedFromLink =
     new URLSearchParams(location.search).get('emailVerified') === '1';
   const verificationSent =
@@ -191,12 +193,19 @@ export default function OnboardingWelcomeRoute() {
           <Button
             type="button"
             size="lg"
-            disabled={emailVerificationRequired}
+            disabled={emailVerificationRequired || isCompleting}
             onClick={async () => {
+              if (completionStartedRef.current) {
+                return;
+              }
+              completionStartedRef.current = true;
+              setIsCompleting(true);
               setError(null);
               try {
                 await context.completeOnboarding();
               } catch (nextError) {
+                completionStartedRef.current = false;
+                setIsCompleting(false);
                 setError(
                   nextError instanceof Error
                     ? nextError.message
@@ -205,7 +214,7 @@ export default function OnboardingWelcomeRoute() {
               }
             }}
           >
-            Get Started
+            {isCompleting ? 'Getting Started...' : 'Get Started'}
           </Button>
         </div>
       </div>
