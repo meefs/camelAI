@@ -108,7 +108,7 @@ When building AI agents that have access to tools, **prefer codemode** over plai
 ### Codemode (Recommended for Agents with Tools)
 
 ```typescript
-import { tool, streamText, stepCountIs } from "ai";
+import { tool, streamText } from "ai";
 import { z } from "zod";
 import { DynamicWorkerExecutor } from "@cloudflare/codemode";
 import { createCodeTool } from "@cloudflare/codemode/ai";
@@ -135,7 +135,7 @@ const result = streamText({
   model: workersai("auto", {}),
   messages: await convertToModelMessages(this.messages),
   tools: { codemode: codeTool },
-  stopWhen: stepCountIs(10),
+
 });
 ```
 
@@ -156,11 +156,9 @@ const result = streamText({
       execute: async ({ city }) => ({ city, temperature: 72 }),
     }),
   },
-  stopWhen: stepCountIs(10),
+
 });
 ```
-
-> **Note:** AI SDK v6 replaced `maxSteps` with `stopWhen: stepCountIs(N)`. Import `stepCountIs` from `"ai"`.
 
 ## Stateless Route Example
 
@@ -249,4 +247,4 @@ const imageDataUrl = result.choices[0].message.images?.[0]?.image_url?.url;
 6. Use Zod for tool parameter validation.
 7. Use `MarkdownRenderer` for assistant output.
 8. Use `outputSchema` on tools when using codemode for proper type generation.
-9. Use `stopWhen: stepCountIs(N)` instead of the deprecated `maxSteps`.
+
