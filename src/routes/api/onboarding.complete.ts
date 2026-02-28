@@ -3,6 +3,8 @@ import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
 
+const ONBOARDING_THREAD_LOOKUP_LIMIT = 100;
+
 const ONBOARDING_SYSTEM_MESSAGE = `This user just signed up and landed in their first chat. This is their very
 first interaction with camelAI.
 
@@ -65,13 +67,44 @@ export async function action({ request, context }: Route.ActionArgs) {
     );
   }
 
+  const firstName = authContext.user.name?.trim().split(/\s+/)[0] || 'Your';
+  const onboardingThreadTitle = `${firstName}'s first chat`;
+
+  if (authContext.onboarding?.completed_at) {
+    try {
+      const { items } = await chatDO.getThreadsPaginated(context, workspaceId, {
+        offset: 0,
+        limit: ONBOARDING_THREAD_LOOKUP_LIMIT,
+      });
+      const existingThread = items.find(
+        (thread) =>
+          thread.created_by === authContext.user.id &&
+          thread.title === onboardingThreadTitle
+      );
+      if (existingThread) {
+        return Response.json({
+          success: true,
+          threadId: existingThread.id,
+          onboardingSystemMessage: ONBOARDING_SYSTEM_MESSAGE,
+          redirectTo: `/chat/${existingThread.id}?newThread=1`,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to look up existing onboarding thread:', error);
+    }
+
+    return Response.json({
+      success: true,
+      redirectTo: '/chat',
+    });
+  }
+
   await userStub.updateOnboarding({ completed_at: Date.now() });
 
-  const firstName = authContext.user.name?.trim().split(/\s+/)[0] || 'Your';
   const thread = await chatDO.createThread(
     context,
     workspaceId,
-    `${firstName}'s first chat`,
+    onboardingThreadTitle,
     authContext.user.id
   );
 
