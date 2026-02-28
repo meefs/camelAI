@@ -34,9 +34,7 @@ describe('HelpConfirmationEmailTemplate', () => {
       })
     );
 
-    expect(html).toContain(
-      'https://imagedelivery.net/0Ey8LwpQ4ATeP19F21mqig/8aaa14e7-fb26-4349-0b00-d836888f0900/w=800'
-    );
+    expect(html).toContain('https://camelai.dev/camelAI-fullname-logo-lightmode.png');
     expect(html).toContain('alt="camelAI"');
   });
 

@@ -63,40 +63,15 @@ useEffect(() => {
 
 ---
 
-### 2. Logo not rendering in local dev email preview
+### 2. Logo not rendering in email (FIXED)
 
-**Severity: Medium** — Affects both local dev and potentially production (SVG email client support is patchy).
+**Resolution:** The logo now uses a PNG hosted on the production domain at `https://camelai.dev/camelAI-fullname-logo-lightmode.png`. The PNG was generated from the SVG source (`public/camelAI-fullname-logo-lightmode.svg`) for broad email client compatibility (Gmail, Outlook, etc. all support PNG).
 
-The `<Img>` tag currently points to `${baseUrl}/camelAI-fullname-logo-lightmode.svg`, which resolves to the ngrok URL in local dev. Ngrok's free tier interposes a browser warning page, blocking the image load.
-
-**On inline SVG in emails:** This is a **no-go**. Gmail, Outlook, and Yahoo all strip `<svg>` elements from email HTML. The current `<img src="...svg">` approach is better, but SVG-via-img still fails in Outlook desktop (Windows).
-
-**Recommended fix:** Use the logo hosted on Cloudflare Images. This is a permanent CDN URL that works everywhere — local dev, production, and all email clients (it serves a rasterized image, not SVG):
+The previous Cloudflare Images URL (`imagedelivery.net/...`) was returning "image not found", breaking the logo for all email clients.
 
 ```typescript
-const CAMELAI_LOGO_URL =
-  'https://imagedelivery.net/0Ey8LwpQ4ATeP19F21mqig/8aaa14e7-fb26-4349-0b00-d836888f0900/w=800';
+const CAMELAI_LOGO_URL = 'https://camelai.dev/camelAI-fullname-logo-lightmode.png';
 ```
-
-Update `src/lib/email/templates/help-confirmation-email.tsx`:
-
-```typescript
-<Img
-  src={CAMELAI_LOGO_URL}
-  alt="camelAI"
-  width={160}
-  height={39}
-  style={{ margin: '0' }}
-/>
-```
-
-This change:
-- Removes the dependency on `baseUrl` for the logo (the `baseUrl` prop can be removed from the template if it's only used for the logo)
-- Works in local dev (no ngrok interstitial)
-- Works in production (CDN-hosted, fast, globally cached)
-- Works in all email clients including Outlook desktop (rasterized image, not SVG)
-
-Also update `sendHelpConfirmationEmail` in `email.server.ts` — if `baseUrl` is no longer needed by the template, it can be removed from the function args and interface.
 
 ---
 
