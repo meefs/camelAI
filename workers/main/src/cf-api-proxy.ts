@@ -987,6 +987,7 @@ export async function proxyCloudflareApi(
     orgId = proxyAuth.orgId;
     workspaceId = proxyAuth.workspaceId;
     userId = proxyAuth.userId;
+    threadId = proxyAuth.threadId;
 
     // Look up org_slug from OrgDO (needed for script namespacing)
     const orgStub = env.ORG.get(env.ORG.idFromName(orgId)) as DurableObjectStub<OrgDO>;

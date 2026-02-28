@@ -13,6 +13,7 @@ export interface SandboxProxyIdentity {
   orgId: string;
   workspaceId: string;
   userId?: string;
+  threadId?: string;
 }
 
 export interface SandboxProxyInvalid {
@@ -40,5 +41,6 @@ export function validateSandboxProxy(
     return { valid: false };
   }
   const userId = request.headers.get('x-chiridion-user-id')?.trim() || undefined;
-  return { valid: true, orgId, workspaceId, userId };
+  const threadId = request.headers.get('x-chiridion-thread-id')?.trim() || undefined;
+  return { valid: true, orgId, workspaceId, userId, threadId };
 }
