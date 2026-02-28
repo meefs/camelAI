@@ -18,6 +18,7 @@ function isContentBlock(value: unknown): value is ContentBlock {
     type === 'tool_use' ||
     type === 'tool_result' ||
     type === 'thinking' ||
+    type === 'redacted_thinking' ||
     type === 'teammate_message' ||
     type === 'task_notification'
   );
@@ -46,6 +47,7 @@ export function normalizeToolResultContent(content: unknown): string {
       .map(block => {
         if (block.type === 'text') return block.text;
         if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+        if (block.type === 'redacted_thinking') return '[Thinking redacted]';
         if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${safeJsonStringify(block.input)}`;
         if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
         if (block.type === 'teammate_message') return `[Update from ${block.teammateId}]\n${block.content}`;

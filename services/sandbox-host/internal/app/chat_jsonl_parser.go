@@ -392,23 +392,23 @@ func mergeContentBlocks(existing any, incoming any) any {
 		return merged
 	}
 
-	toolResults := make([]any, 0, len(existingBlocks))
+	preserved := make([]any, 0, len(existingBlocks))
 	for _, block := range existingBlocks {
 		blockMap, ok := asMap(block)
 		if !ok {
 			continue
 		}
 		blockType, _ := asString(blockMap["type"])
-		if blockType == "tool_result" {
-			toolResults = append(toolResults, block)
+		if blockType == "tool_result" || blockType == "thinking" || blockType == "redacted_thinking" {
+			preserved = append(preserved, block)
 		}
 	}
-	if len(toolResults) == 0 {
+	if len(preserved) == 0 {
 		return incoming
 	}
 
-	merged := make([]any, 0, len(toolResults)+len(incomingBlocks))
-	merged = append(merged, toolResults...)
+	merged := make([]any, 0, len(preserved)+len(incomingBlocks))
+	merged = append(merged, preserved...)
 	merged = append(merged, incomingBlocks...)
 	return merged
 }

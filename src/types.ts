@@ -56,6 +56,11 @@ export interface ToolResultBlock {
 export interface ThinkingBlock {
   type: 'thinking';
   thinking: string;
+  signature?: string;
+}
+
+export interface RedactedThinkingBlock {
+  type: 'redacted_thinking';
 }
 
 export interface TeammateMessageBlock {
@@ -77,6 +82,7 @@ export type ContentBlock =
   | ToolUseBlock
   | ToolResultBlock
   | ThinkingBlock
+  | RedactedThinkingBlock
   | TeammateMessageBlock
   | TaskNotificationBlock;
 
