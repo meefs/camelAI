@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Outlet, redirect, useLoaderData, useNavigate } from 'react-router';
 import type { Route } from './+types/_onboarding';
 import { getAuthEnv, requireSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { hasCompletedOnboarding } from '@/lib/onboarding';
+import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 
 interface OnboardingLoaderData {
   userEmail: string;
@@ -15,6 +18,32 @@ interface OnboardingLoaderData {
 }
 
 const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
+const AUTO_COMPLETE_MAX_ATTEMPTS = 3;
+const AUTO_COMPLETE_RETRY_DELAY_MS = 600;
+
+type CompleteOnboardingError = Error & { status?: number };
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryAutoComplete(error: unknown): boolean {
+  const status =
+    typeof error === 'object' && error !== null && 'status' in error
+      ? (error as { status?: number }).status
+      : undefined;
+  if (status == null) {
+    return true;
+  }
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function getAutoCompleteErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message.trim();
+  }
+  return 'Failed to complete onboarding. Please try again.';
+}
 
 export interface OnboardingRouteContext {
   completeOnboarding: () => Promise<void>;
@@ -64,10 +93,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   } satisfies OnboardingLoaderData;
 }
 
-export default function OnboardingLayout() {
+export default function OnboardingRoute() {
   const loaderData = useLoaderData<typeof loader>() as OnboardingLoaderData;
   const navigate = useNavigate();
-  const completedRef = useRef(false);
+  const [autoCompleteError, setAutoCompleteError] = useState<string | null>(null);
+  const [isAutoCompleting, setIsAutoCompleting] = useState(false);
+  const [autoCompleteRunId, setAutoCompleteRunId] = useState(0);
+  const autoCompleteRunStartedRef = useRef<number | null>(null);
   const completeOnboardingRequestRef = useRef<Promise<void> | null>(null);
   const skipToChat = useCallback(() => {
     navigate('/chat');
@@ -93,7 +125,9 @@ export default function OnboardingLayout() {
         } catch {
           // Ignore parse failures and keep default error message.
         }
-        throw new Error(errorMessage);
+        const error = new Error(errorMessage) as CompleteOnboardingError;
+        error.status = response.status;
+        throw error;
       }
 
       const data = (await response.json()) as {
@@ -140,18 +174,87 @@ export default function OnboardingLayout() {
   const needsWelcomeScreen =
     loaderData.teamMode || loaderData.emailVerificationRequired;
 
+  const runAutoComplete = useCallback(async () => {
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= AUTO_COMPLETE_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        await completeOnboarding();
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= AUTO_COMPLETE_MAX_ATTEMPTS || !shouldRetryAutoComplete(error)) {
+          break;
+        }
+        await sleep(AUTO_COMPLETE_RETRY_DELAY_MS * attempt);
+      }
+    }
+    throw lastError ?? new Error('Failed to complete onboarding');
+  }, [completeOnboarding]);
+
   useEffect(() => {
-    if (needsWelcomeScreen || completedRef.current) {
+    if (needsWelcomeScreen) {
       return;
     }
+    if (autoCompleteRunStartedRef.current === autoCompleteRunId) {
+      return;
+    }
+    autoCompleteRunStartedRef.current = autoCompleteRunId;
 
-    completedRef.current = true;
-    completeOnboarding().catch(() => {
-      navigate('/chat');
-    });
-  }, [completeOnboarding, navigate, needsWelcomeScreen]);
+    let cancelled = false;
+    setAutoCompleteError(null);
+    setIsAutoCompleting(true);
+
+    runAutoComplete()
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setAutoCompleteError(getAutoCompleteErrorMessage(error));
+      })
+      .finally(() => {
+        if (cancelled) {
+          return;
+        }
+        setIsAutoCompleting(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [autoCompleteRunId, needsWelcomeScreen, runAutoComplete]);
 
   if (!needsWelcomeScreen) {
+    if (autoCompleteError) {
+      return (
+        <OnboardingLayout>
+          <div className="space-y-6 text-center">
+            <div className="space-y-2">
+              <h1 className="text-3xl font-semibold tracking-tight">
+                We couldn&apos;t finish onboarding
+              </h1>
+              <p className="text-muted-foreground">
+                Retry and we&apos;ll set up your first chat.
+              </p>
+            </div>
+            <Alert variant="destructive" className="text-left">
+              <AlertDescription>{autoCompleteError}</AlertDescription>
+            </Alert>
+            <div className="pt-2">
+              <Button
+                type="button"
+                size="lg"
+                disabled={isAutoCompleting}
+                onClick={() => {
+                  setAutoCompleteRunId((previous) => previous + 1);
+                }}
+              >
+                {isAutoCompleting ? 'Retrying...' : 'Try again'}
+              </Button>
+            </div>
+          </div>
+        </OnboardingLayout>
+      );
+    }
     return (
       <div className="flex h-screen items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
