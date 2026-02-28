@@ -24,7 +24,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const resolvedPath = await resolveContainerPath(container, path);
     const containerPath = resolvedPath ?? toContainerPath(path);
     const recursive = parseBooleanParam(url.searchParams.get('recursive'), false);
-    const includeHidden = parseBooleanParam(url.searchParams.get('includeHidden'), true);
+    const includeHiddenParam = url.searchParams.get('includeHidden');
+    const includeHidden = includeHiddenParam === null
+      ? !recursive
+      : parseBooleanParam(includeHiddenParam, true);
 
     const listing = await container.listFiles(containerPath, { recursive, includeHidden });
     if (listing.success === false) {

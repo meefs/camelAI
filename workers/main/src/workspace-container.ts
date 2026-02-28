@@ -310,8 +310,13 @@ export class WorkspaceContainer {
 
   private async listFilesWithLegacyWalk(root: string, includeHidden: boolean): Promise<ControlPlaneListResponse> {
     const files: ControlPlaneListResponse['files'] = [];
+    const queue: string[] = [root];
+    const enqueued = new Set<string>([root]);
+    let cursor = 0;
+    let activeWorkers = 0;
+    const workerCount = 8;
 
-    const walk = async (current: string): Promise<void> => {
+    const processDirectory = async (current: string): Promise<string[]> => {
       const response = await this.fetchSandbox(
         this.sandboxUrl('/fs/list', { path: current }),
       );
@@ -327,6 +332,7 @@ export class WorkspaceContainer {
 
       const payload = await response.json();
       const entries = this.parseFsListEntries(payload);
+      const childDirectories: string[] = [];
       for (const entry of entries) {
         if (!includeHidden && entry.name.startsWith('.')) continue;
         const absolutePath = this.joinFsPath(current, entry.name);
@@ -346,12 +352,42 @@ export class WorkspaceContainer {
         });
 
         if (entry.type === 'directory') {
-          await walk(absolutePath);
+          childDirectories.push(absolutePath);
         }
       }
+      return childDirectories;
     };
 
-    await walk(root);
+    const waitForTick = async () =>
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (true) {
+        if (cursor >= queue.length) {
+          if (activeWorkers === 0) break;
+          await waitForTick();
+          continue;
+        }
+
+        const current = queue[cursor];
+        cursor += 1;
+        if (!current) continue;
+
+        activeWorkers += 1;
+        try {
+          const childDirectories = await processDirectory(current);
+          for (const childPath of childDirectories) {
+            if (enqueued.has(childPath)) continue;
+            enqueued.add(childPath);
+            queue.push(childPath);
+          }
+        } finally {
+          activeWorkers -= 1;
+        }
+      }
+    });
+
+    await Promise.all(workers);
     return {
       success: true,
       files,
