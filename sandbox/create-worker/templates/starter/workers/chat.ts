@@ -4,10 +4,15 @@ import {
   createUIMessageStream,
   createUIMessageStreamResponse,
   convertToModelMessages,
+  stepCountIs,
   type StreamTextOnFinishCallback,
   type ToolSet,
+  // tool,
 } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
+// import { z } from "zod";
+// import { DynamicWorkerExecutor } from "@cloudflare/codemode";
+// import { createCodeTool } from "@cloudflare/codemode/ai";
 
 /**
  * Chat Agent Durable Object using Cloudflare Agents SDK.
@@ -49,6 +54,20 @@ export class Chat extends AIChatAgent<Env> {
   ): Promise<Response> {
     const workersai = createWorkersAI({ binding: this.env.AI });
 
+    // --- Codemode (recommended for agents with tools) ---
+    // Uncomment to enable codemode tool orchestration:
+    //
+    // const myTools = {
+    //   getWeather: tool({
+    //     description: "Get weather for a city",
+    //     parameters: z.object({ city: z.string() }),
+    //     outputSchema: z.object({ city: z.string(), temperature: z.number() }),
+    //     execute: async ({ city }) => ({ city, temperature: 72 }),
+    //   }),
+    // };
+    // const executor = new DynamicWorkerExecutor({ loader: this.env.LOADER });
+    // const codeTool = createCodeTool({ tools: myTools, executor });
+
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
         const result = streamText({
@@ -57,6 +76,8 @@ export class Chat extends AIChatAgent<Env> {
           // This includes all user messages and all previous AI responses
           messages: await convertToModelMessages(this.messages),
           system: "You are a helpful AI assistant.",
+          // tools: { codemode: codeTool },  // Uncomment to enable codemode
+          // stopWhen: stepCountIs(10),       // Uncomment for multi-step tool use
           onFinish,
           abortSignal: options?.abortSignal,
         });

@@ -695,12 +695,12 @@ Three model routes are available via `workersai(routeName, {})` in deployed work
 
 Default to `auto` unless the use case clearly requires search or image generation. Apps can use multiple routes for different features. Model selection is supported in both deployed workers and the container proxy.
 
-### Codemode (Tool Orchestration)
+### Codemode (Tool Orchestration — Preferred for Agents with Tools)
 
-The starter template includes `@cloudflare/codemode`, which lets the LLM write TypeScript code that orchestrates multiple tools in a single turn. It requires:
+When building AI agents that have access to tools, **prefer codemode** over plain tool calling. Codemode lets the LLM orchestrate multiple tools in a single turn by writing TypeScript code, which is faster and more capable than sequential one-tool-at-a-time calling. It requires:
 - `worker_loaders` binding (`env.LOADER`) — ephemeral isolate runtime
 
-Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools for typed code generation. Use `stopWhen: stepCountIs(N)` (not the deprecated `maxSteps`) for multi-step tool use.
+Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools for typed code generation. Use `stopWhen: stepCountIs(N)` (not the deprecated `maxSteps`) for multi-step tool use. Use plain tool calling only for simple cases with one or two tools that don't need chaining.
 
 **See [AI-APPS.md](AI-APPS.md) for full codemode setup and examples.**
 

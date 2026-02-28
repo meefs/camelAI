@@ -101,12 +101,51 @@ const resp = await client.chat.completions.create({
 });
 ```
 
-## Tools Example
+## Tools and Agents
+
+When building AI agents that have access to tools, **prefer codemode** over plain tool calling. Codemode lets the LLM orchestrate multiple tools in a single turn by writing TypeScript code, which is faster and more capable than sequential one-tool-at-a-time calling.
+
+### Codemode (Recommended for Agents with Tools)
 
 ```typescript
 import { tool, streamText, stepCountIs } from "ai";
 import { z } from "zod";
+import { DynamicWorkerExecutor } from "@cloudflare/codemode";
+import { createCodeTool } from "@cloudflare/codemode/ai";
 
+const myTools = {
+  getWeather: tool({
+    description: "Get weather for a city",
+    parameters: z.object({ city: z.string() }),
+    outputSchema: z.object({ city: z.string(), temperature: z.number() }),
+    execute: async ({ city }) => ({ city, temperature: 72 }),
+  }),
+  formatReport: tool({
+    description: "Format a weather report",
+    parameters: z.object({ city: z.string(), temperature: z.number() }),
+    outputSchema: z.string(),
+    execute: async ({ city, temperature }) => `It's ${temperature}°F in ${city}.`,
+  }),
+};
+
+const executor = new DynamicWorkerExecutor({ loader: env.LOADER });
+const codeTool = createCodeTool({ tools: myTools, executor });
+
+const result = streamText({
+  model: workersai("auto", {}),
+  messages: await convertToModelMessages(this.messages),
+  tools: { codemode: codeTool },
+  stopWhen: stepCountIs(10),
+});
+```
+
+With codemode, the LLM can chain tools in one step: `const weather = await getWeather({ city: "Paris" }); return await formatReport(weather);` — instead of making separate round-trips for each tool call.
+
+### Plain Tool Calling (Simple Cases)
+
+For agents with one or two simple tools that don't need chaining, plain tool calling is fine:
+
+```typescript
 const result = streamText({
   model: workersai("auto", {}),
   messages: await convertToModelMessages(this.messages),
@@ -143,57 +182,16 @@ export async function action({ request, context }) {
 }
 ```
 
-## Codemode (Tool Orchestration)
+## Codemode Reference
 
-`@cloudflare/codemode` lets the LLM write TypeScript code that orchestrates multiple tools in a single turn, instead of calling them one-by-one. This is pre-configured in the starter template.
+`@cloudflare/codemode` is pre-configured in the starter template (`worker_loaders` + `SELF` bindings in `wrangler.jsonc`). See the [Tools and Agents](#tools-and-agents) section above for usage examples.
 
 ### How It Works
 
 1. You define tools with `outputSchema` so the generated code gets proper types
 2. `createCodeTool` wraps your tools into a single "code" tool the LLM can call
 3. `DynamicWorkerExecutor` runs the LLM-generated code in an ephemeral Worker isolate
-4. The LLM writes code like `const sum = await add({ a: 5, b: 3 }); await multiply({ a: sum, b: 10 });`
-
-### Setup
-
-The starter template already includes `worker_loaders` and `SELF` bindings in `wrangler.jsonc`. To use codemode:
-
-```typescript
-import { tool, generateText, stepCountIs } from "ai";
-import { z } from "zod";
-import { DynamicWorkerExecutor } from "@cloudflare/codemode";
-import { createCodeTool } from "@cloudflare/codemode/ai";
-
-// Define tools with outputSchema for typed code generation
-const myTools = {
-  add: tool({
-    description: "Add two numbers",
-    parameters: z.object({ a: z.number(), b: z.number() }),
-    outputSchema: z.number(),
-    execute: async ({ a, b }) => a + b,
-  }),
-  formatCurrency: tool({
-    description: "Format a number as currency",
-    parameters: z.object({ amount: z.number(), currency: z.string() }),
-    outputSchema: z.string(),
-    execute: async ({ amount, currency }) =>
-      new Intl.NumberFormat("en-US", { style: "currency", currency }).format(amount),
-  }),
-};
-
-// Create executor and code tool
-const executor = new DynamicWorkerExecutor({
-  loader: env.LOADER,
-});
-const codeTool = createCodeTool({ tools: myTools, executor });
-
-const { text } = await generateText({
-  model: workersai("auto", {}),
-  tools: { codemode: codeTool },
-  stopWhen: stepCountIs(10),
-  prompt: "Add 100 and 50, then format the result as EUR currency",
-});
-```
+4. The LLM writes code like `const weather = await getWeather({ city: "Paris" }); return await formatReport(weather);`
 
 ### Key Points
 
@@ -243,11 +241,12 @@ const imageDataUrl = result.choices[0].message.images?.[0]?.image_url?.url;
 
 ## Best Practices
 
-1. Use `workersai("auto", {})` as the default model selection.
-2. Keep system prompts explicit and task-scoped.
-3. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
-4. Stream responses for chat UX.
-5. Use Zod for tool parameter validation.
-6. Use `MarkdownRenderer` for assistant output.
-7. Use `outputSchema` on tools when using codemode for proper type generation.
-8. Use `stopWhen: stepCountIs(N)` instead of the deprecated `maxSteps`.
+1. **Prefer codemode for agents with tools** — lets the LLM chain multiple tools in a single turn instead of sequential round-trips.
+2. Use `workersai("auto", {})` as the default model selection.
+3. Keep system prompts explicit and task-scoped.
+4. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
+5. Stream responses for chat UX.
+6. Use Zod for tool parameter validation.
+7. Use `MarkdownRenderer` for assistant output.
+8. Use `outputSchema` on tools when using codemode for proper type generation.
+9. Use `stopWhen: stepCountIs(N)` instead of the deprecated `maxSteps`.
