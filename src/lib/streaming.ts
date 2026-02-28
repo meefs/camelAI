@@ -48,12 +48,18 @@ export interface SDKEvent {
       partial_json?: string;
       /** Compaction summary content (delivered as a single chunk) */
       content?: string;
+      /** Thinking block text chunk (thinking_delta) */
+      thinking?: string;
+      /** Thinking block signature (signature_delta) */
+      signature?: string;
     };
     content_block?: {
       type: string;
       text?: string;
       id?: string;
       name?: string;
+      thinking?: string;
+      signature?: string;
     };
   };
 }
@@ -104,8 +110,15 @@ export function applyStreamingEventToMessage(
       newContent[index] = { type: 'text', text: block.text || '' };
       return { ...message, content: newContent, isStreaming: true };
     }
-    if (block?.type === 'thinking') {
-      newContent[index] = { type: 'thinking', thinking: (block as { thinking?: string }).thinking || '' };
+    if (block?.type === 'thinking' || block?.type === 'redacted_thinking') {
+      const thinkingBlock: ContentBlock = {
+        type: 'thinking',
+        thinking: block.thinking || '',
+      };
+      if (block.signature) {
+        thinkingBlock.signature = block.signature;
+      }
+      newContent[index] = thinkingBlock;
       return { ...message, content: newContent, isStreaming: true };
     }
     return { ...message, isStreaming: true };
@@ -140,6 +153,32 @@ export function applyStreamingEventToMessage(
       }
       return { ...message, content: newContent };
     }
+
+    if (evt.delta?.type === 'thinking_delta' && evt.delta.thinking) {
+      const newContent = [...content];
+      const index = typeof evt.index === 'number' ? blockOffset + evt.index : newContent.length - 1;
+      const target = newContent[index];
+      if (target?.type === 'thinking') {
+        newContent[index] = {
+          ...target,
+          thinking: (target.thinking || '') + evt.delta.thinking,
+        };
+      }
+      return { ...message, content: newContent };
+    }
+
+    if (evt.delta?.type === 'signature_delta' && evt.delta.signature) {
+      const newContent = [...content];
+      const index = typeof evt.index === 'number' ? blockOffset + evt.index : newContent.length - 1;
+      const target = newContent[index];
+      if (target?.type === 'thinking') {
+        newContent[index] = {
+          ...target,
+          signature: (target.signature || '') + evt.delta.signature,
+        };
+      }
+      return { ...message, content: newContent };
+    }
   }
 
   if (evt?.type === 'content_block_stop') {
@@ -160,20 +199,30 @@ export function applyStreamingEventToMessage(
   }
 
   if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
-    // Clear internal offset when streaming completes
-    const rest = { ...message };
-    delete (rest as { _blockOffset?: number })._blockOffset;
-    return { ...rest, isStreaming: false };
+    return finalizeStreamingMessage(message);
   }
 
   if (evt?.type === 'message_stop') {
-    // Clear internal offset when streaming completes
-    const rest = { ...message };
-    delete (rest as { _blockOffset?: number })._blockOffset;
-    return { ...rest, isStreaming: false };
+    return finalizeStreamingMessage(message);
   }
 
   return message;
+}
+
+/**
+ * Finalize a streaming message: remove empty thinking blocks, clear internal
+ * offset tracking, and mark as no longer streaming.
+ */
+export function finalizeStreamingMessage(message: Message): Message {
+  const content: ContentBlock[] = Array.isArray(message.content)
+    ? message.content
+    : [];
+  const cleanedContent = content.filter(
+    block => block.type !== 'thinking' || block.thinking.trim().length > 0
+  );
+  const rest = { ...message };
+  delete (rest as { _blockOffset?: number })._blockOffset;
+  return { ...rest, content: cleanedContent, isStreaming: false };
 }
 
 function isToolResultBlock(block: ContentBlock): block is ToolResultBlock {

@@ -51,4 +51,11 @@ describe('contentToString', () => {
     ];
     expect(contentToString(blocks)).toBe('[Task completed] Report generation finished.');
   });
+
+  it('serializes redacted thinking blocks explicitly', () => {
+    const blocks: ContentBlock[] = [
+      { type: 'redacted_thinking' },
+    ];
+    expect(contentToString(blocks)).toBe('[Thinking redacted]');
+  });
 });

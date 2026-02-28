@@ -60,6 +60,124 @@ func TestParseClaudeJSONLMessagesMetaAndCompactSummary(t *testing.T) {
 	}
 }
 
+func TestParseClaudeJSONLMessagesThinkingPreserved(t *testing.T) {
+	ts1 := "2026-01-02T03:04:05.000Z"
+	ts2 := "2026-01-02T03:04:06.000Z"
+	resultTS := "2026-01-02T03:04:07.000Z"
+
+	jsonl := fmt.Sprintf(
+		`{"type":"user","uuid":"u1","timestamp":"%s","message":{"content":[{"type":"text","text":"hello"}]}}
+{"type":"assistant","timestamp":"%s","message":{"id":"a1","content":[{"type":"thinking","thinking":"Let me analyze this","signature":"sig123"}]}}
+{"type":"assistant","timestamp":"%s","message":{"id":"a1","content":[{"type":"text","text":"Here is my response"}]}}
+{"type":"result","timestamp":"%s"}`,
+		ts1, ts1, ts2, resultTS)
+
+	messages := parseClaudeJSONLMessages(jsonl, "thread-1")
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+
+	assistantMsg := messages[1]
+	contentBlocks, ok := asSlice(assistantMsg.Content)
+	if !ok {
+		t.Fatalf("expected content to be a slice")
+	}
+	if len(contentBlocks) != 2 {
+		t.Fatalf("expected 2 content blocks (thinking + text), got %d", len(contentBlocks))
+	}
+
+	thinkingBlock, _ := asMap(contentBlocks[0])
+	blockType, _ := asString(thinkingBlock["type"])
+	if blockType != "thinking" {
+		t.Fatalf("expected first block type 'thinking', got %q", blockType)
+	}
+	thinkingText, _ := asString(thinkingBlock["thinking"])
+	if thinkingText != "Let me analyze this" {
+		t.Fatalf("expected thinking text preserved, got %q", thinkingText)
+	}
+
+	textBlock, _ := asMap(contentBlocks[1])
+	textType, _ := asString(textBlock["type"])
+	if textType != "text" {
+		t.Fatalf("expected second block type 'text', got %q", textType)
+	}
+}
+
+func TestParseClaudeJSONLMessagesThinkingTextToolUsePreserved(t *testing.T) {
+	ts := "2026-01-02T03:04:05.000Z"
+	resultTS := "2026-01-02T03:04:07.000Z"
+
+	jsonl := fmt.Sprintf(
+		`{"type":"user","uuid":"u1","timestamp":"%s","message":{"content":[{"type":"text","text":"hello"}]}}
+{"type":"assistant","timestamp":"%s","message":{"id":"a1","content":[{"type":"thinking","thinking":"reasoning"}]}}
+{"type":"assistant","timestamp":"%s","message":{"id":"a1","content":[{"type":"text","text":"response"},{"type":"tool_use","id":"tool1","name":"bash","input":{"cmd":"ls"}}]}}
+{"type":"result","timestamp":"%s"}`,
+		ts, ts, ts, resultTS)
+
+	messages := parseClaudeJSONLMessages(jsonl, "thread-1")
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+
+	contentBlocks, ok := asSlice(messages[1].Content)
+	if !ok {
+		t.Fatalf("expected content to be a slice")
+	}
+	if len(contentBlocks) != 3 {
+		t.Fatalf("expected 3 content blocks (thinking + text + tool_use), got %d", len(contentBlocks))
+	}
+
+	types := make([]string, len(contentBlocks))
+	for i, block := range contentBlocks {
+		blockMap, _ := asMap(block)
+		types[i], _ = asString(blockMap["type"])
+	}
+	expected := []string{"thinking", "text", "tool_use"}
+	for i, exp := range expected {
+		if types[i] != exp {
+			t.Fatalf("block %d: expected type %q, got %q (all types: %v)", i, exp, types[i], types)
+		}
+	}
+}
+
+func TestParseClaudeJSONLMessagesThinkingNotDuplicatedOnCumulativeSnapshot(t *testing.T) {
+	ts1 := "2026-01-02T03:04:05.000Z"
+	ts2 := "2026-01-02T03:04:06.000Z"
+	resultTS := "2026-01-02T03:04:07.000Z"
+
+	jsonl := fmt.Sprintf(
+		`{"type":"user","uuid":"u1","timestamp":"%s","message":{"content":[{"type":"text","text":"hello"}]}}
+{"type":"assistant","timestamp":"%s","message":{"id":"a1","content":[{"type":"thinking","thinking":"Let me analyze this","signature":"sig123"}]}}
+{"type":"assistant","timestamp":"%s","message":{"id":"a1","content":[{"type":"thinking","thinking":"Let me analyze this","signature":"sig123"},{"type":"text","text":"Here is my response"}]}}
+{"type":"result","timestamp":"%s"}`,
+		ts1, ts1, ts2, resultTS)
+
+	messages := parseClaudeJSONLMessages(jsonl, "thread-1")
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+
+	contentBlocks, ok := asSlice(messages[1].Content)
+	if !ok {
+		t.Fatalf("expected content to be a slice")
+	}
+	if len(contentBlocks) != 2 {
+		t.Fatalf("expected 2 content blocks (thinking + text), got %d", len(contentBlocks))
+	}
+
+	first, _ := asMap(contentBlocks[0])
+	firstType, _ := asString(first["type"])
+	if firstType != "thinking" {
+		t.Fatalf("expected first block type 'thinking', got %q", firstType)
+	}
+
+	second, _ := asMap(contentBlocks[1])
+	secondType, _ := asString(second["type"])
+	if secondType != "text" {
+		t.Fatalf("expected second block type 'text', got %q", secondType)
+	}
+}
+
 func mustParseRFC3339Millis(t *testing.T, value string) int64 {
 	t.Helper()
 	parsed, err := time.Parse(time.RFC3339Nano, value)

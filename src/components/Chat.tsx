@@ -67,6 +67,7 @@ import {
   type SDKEvent,
   applyStreamingEventToMessage,
   attachToolResultsToMessages,
+  finalizeStreamingMessage,
   mergeTaskNotifications,
   normalizeToolResultMessages,
   mergeTeammateMessages,
@@ -130,6 +131,7 @@ function isContentBlock(value: unknown): value is ContentBlock {
     type === 'tool_use' ||
     type === 'tool_result' ||
     type === 'thinking' ||
+    type === 'redacted_thinking' ||
     type === 'teammate_message' ||
     type === 'task_notification'
   );
@@ -1826,7 +1828,7 @@ export default function Chat({
               setStreamingMessageId(nextMsgId);
               setMessages(prev => {
                 const finalized = prev.map(msg =>
-                  msg.id === activeStreamingMsg.id ? { ...msg, isStreaming: false } : msg
+                  msg.id === activeStreamingMsg.id ? finalizeStreamingMessage(msg) : msg
                 );
                 const newMsg: Message = {
                   id: nextMsgId,
@@ -2033,7 +2035,7 @@ export default function Chat({
               ? parsedResultTimestamp
               : Date.now();
             setMessages(prev => prev.map(msg =>
-              msg.id === msgId ? { ...msg, isStreaming: false, created_at: completedAt } : msg
+              msg.id === msgId ? { ...finalizeStreamingMessage(msg), created_at: completedAt } : msg
             ));
           }
           setStreamingMessageId(null);
@@ -2075,7 +2077,7 @@ export default function Chat({
         const msgId = streamingMessageIdRef.current;
         if (msgId) {
           setMessages(prev => prev.map(msg =>
-            msg.id === msgId ? { ...msg, isStreaming: false } : msg
+            msg.id === msgId ? finalizeStreamingMessage(msg) : msg
           ));
         }
         setStreamingMessageId(null);

@@ -362,6 +362,20 @@ func hasTextBlocks(content any) bool {
 	return false
 }
 
+func hasBlockType(blocks []any, expectedType string) bool {
+	for _, block := range blocks {
+		blockMap, ok := asMap(block)
+		if !ok {
+			continue
+		}
+		blockType, _ := asString(blockMap["type"])
+		if blockType == expectedType {
+			return true
+		}
+	}
+	return false
+}
+
 func mergeContentBlocks(existing any, incoming any) any {
 	existingBlocks, okExisting := asSlice(existing)
 	incomingBlocks, okIncoming := asSlice(incoming)
@@ -392,23 +406,41 @@ func mergeContentBlocks(existing any, incoming any) any {
 		return merged
 	}
 
-	toolResults := make([]any, 0, len(existingBlocks))
+	incomingHasToolResult := hasBlockType(incomingBlocks, "tool_result")
+	incomingHasThinking := hasBlockType(incomingBlocks, "thinking")
+	incomingHasRedactedThinking := hasBlockType(incomingBlocks, "redacted_thinking")
+
+	preserved := make([]any, 0, len(existingBlocks))
 	for _, block := range existingBlocks {
 		blockMap, ok := asMap(block)
 		if !ok {
 			continue
 		}
 		blockType, _ := asString(blockMap["type"])
-		if blockType == "tool_result" {
-			toolResults = append(toolResults, block)
+		switch blockType {
+		case "tool_result":
+			if incomingHasToolResult {
+				continue
+			}
+		case "thinking":
+			if incomingHasThinking {
+				continue
+			}
+		case "redacted_thinking":
+			if incomingHasRedactedThinking {
+				continue
+			}
+		default:
+			continue
 		}
+		preserved = append(preserved, block)
 	}
-	if len(toolResults) == 0 {
+	if len(preserved) == 0 {
 		return incoming
 	}
 
-	merged := make([]any, 0, len(toolResults)+len(incomingBlocks))
-	merged = append(merged, toolResults...)
+	merged := make([]any, 0, len(preserved)+len(incomingBlocks))
+	merged = append(merged, preserved...)
 	merged = append(merged, incomingBlocks...)
 	return merged
 }

@@ -187,6 +187,7 @@ function normalizeToolResultContent(content: unknown): string {
       .map(block => {
         if (block.type === 'text') return block.text;
         if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+        if (block.type === 'redacted_thinking') return '[Thinking redacted]';
         if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${safeJsonStringify(block.input)}`;
         if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
         if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
@@ -217,7 +218,7 @@ function hasVisibleContent(content: string | ContentBlock[]): boolean {
     if (block.type === 'text') {
       return stripSystemMessageTags(block.text).length > 0;
     }
-    // Other block types (tool_use, tool_result, thinking) are always visible
+    // Other block types (tool_use, tool_result, thinking, redacted_thinking) are always visible
     return true;
   });
 }
@@ -231,6 +232,7 @@ export function contentToString(content: string | ContentBlock[]): string {
       if (block.type === 'tool_use') return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
       if (block.type === 'tool_result') return `[Result]\n${normalizeToolResultContent(block.content)}`;
       if (block.type === 'thinking') return `[Thinking]\n${block.thinking}`;
+      if (block.type === 'redacted_thinking') return '[Thinking redacted]';
       if (block.type === 'teammate_message') return `[Update from ${block.teammateId}]\n${block.content}`;
       if (block.type === 'task_notification') return `[Task ${block.status}] ${block.summary}`;
       return '';
@@ -293,6 +295,15 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
         kind: 'other',
         key: `thinking-${index}`,
         node: <ThinkingBlock thinking={block.thinking} />,
+      });
+      return;
+    }
+
+    if (block.type === 'redacted_thinking') {
+      items.push({
+        kind: 'other',
+        key: `redacted-thinking-${index}`,
+        node: <ThinkingBlock thinking="This thinking content was redacted by the model." />,
       });
       return;
     }
