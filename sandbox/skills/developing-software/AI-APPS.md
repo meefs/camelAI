@@ -108,7 +108,7 @@ When building AI agents that have access to tools, **prefer codemode** over plai
 ### Codemode (Recommended for Agents with Tools)
 
 ```typescript
-import { tool, streamText } from "ai";
+import { tool, streamText, stepCountIs } from "ai";
 import { z } from "zod";
 import { DynamicWorkerExecutor } from "@cloudflare/codemode";
 import { createCodeTool } from "@cloudflare/codemode/ai";
@@ -135,7 +135,7 @@ const result = streamText({
   model: workersai("auto", {}),
   messages: await convertToModelMessages(this.messages),
   tools: { codemode: codeTool },
-
+  stopWhen: stepCountIs(100),
 });
 ```
 
@@ -156,6 +156,7 @@ const result = streamText({
       execute: async ({ city }) => ({ city, temperature: 72 }),
     }),
   },
+  stopWhen: stepCountIs(100),
 
 });
 ```

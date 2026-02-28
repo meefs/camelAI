@@ -4,7 +4,7 @@ import {
   createUIMessageStream,
   createUIMessageStreamResponse,
   convertToModelMessages,
-
+  stepCountIs,
   type StreamTextOnFinishCallback,
   type ToolSet,
   // tool,
@@ -76,7 +76,7 @@ export class Chat extends AIChatAgent<Env> {
           messages: await convertToModelMessages(this.messages),
           system: "You are a helpful AI assistant.",
           // tools: { codemode: codeTool },
-
+          // stopWhen: stepCountIs(100),
           onFinish,
           abortSignal: options?.abortSignal,
         });

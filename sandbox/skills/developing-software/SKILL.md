@@ -700,7 +700,7 @@ Default to `auto` unless the use case clearly requires search or image generatio
 When building AI agents that have access to tools, **prefer codemode** over plain tool calling. Codemode lets the LLM orchestrate multiple tools in a single turn by writing TypeScript code, which is faster and more capable than sequential one-tool-at-a-time calling. It requires:
 - `worker_loaders` binding (`env.LOADER`) — ephemeral isolate runtime
 
-Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools for typed code generation. Use plain tool calling only for simple cases with one or two tools that don't need chaining.
+Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools for typed code generation. Always set `stopWhen: stepCountIs(100)` for multi-step tool use. Use plain tool calling only for simple cases with one or two tools that don't need chaining.
 
 **See [AI-APPS.md](AI-APPS.md) for full codemode setup and examples.**
 
