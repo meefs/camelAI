@@ -76,7 +76,9 @@ export class Chat extends AIChatAgent<Env> {
           messages: await convertToModelMessages(this.messages),
           system: "You are a helpful AI assistant.",
           // tools: { codemode: codeTool },
-          // stopWhen: stepCountIs(100),
+          // Enable multi-step tool use: without this, AI calls a tool but never
+          // gets a chance to respond with text using the tool results (default is 1 step).
+          stopWhen: stepCountIs(10),
           onFinish,
           abortSignal: options?.abortSignal,
         });

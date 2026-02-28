@@ -31,9 +31,11 @@ export default defineConfig(({ command }) => ({
       },
     },
   },
-  // Polyfill __filename for @cloudflare/codemode (uses zod-to-ts → TypeScript compiler)
+  // Polyfill globals for @cloudflare/codemode (uses zod-to-ts → TypeScript compiler)
+  // __filename: TypeScript compiler reads it; process.argv: TS calls process.argv.slice()
   define: {
     __filename: "'index.ts'",
+    "process.argv": "['node', 'index.ts']",
   },
   // Disable dep discovery during builds to avoid WebSocket error in @cloudflare/vite-plugin
   optimizeDeps: command === "build" ? { noDiscovery: true } : {},
