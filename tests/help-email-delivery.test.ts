@@ -44,7 +44,7 @@ describe('help email delivery', () => {
     expect(payload.replyTo).toBe('support@camelai.com');
     expect(payload.subject).toBe('We received your request - Agent freezes on upload');
     expect(payload.htmlBody).toContain(
-      'https://imagedelivery.net/0Ey8LwpQ4ATeP19F21mqig/8aaa14e7-fb26-4349-0b00-d836888f0900/w=800'
+      'https://camelai.dev/camelAI-fullname-logo-lightmode.png'
     );
   });
 

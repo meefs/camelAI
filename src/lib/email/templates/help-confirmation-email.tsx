@@ -18,8 +18,7 @@ export interface HelpConfirmationEmailTemplateProps {
   description: string;
 }
 
-const CAMELAI_LOGO_URL =
-  'https://imagedelivery.net/0Ey8LwpQ4ATeP19F21mqig/8aaa14e7-fb26-4349-0b00-d836888f0900/w=800';
+const CAMELAI_LOGO_URL = 'https://camelai.dev/camelAI-fullname-logo-lightmode.png';
 
 const containerStyle = {
   fontFamily:
