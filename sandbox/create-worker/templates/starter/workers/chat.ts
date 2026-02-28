@@ -7,12 +7,12 @@ import {
   stepCountIs,
   type StreamTextOnFinishCallback,
   type ToolSet,
-  /* tool, */
+  // tool,
 } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
-/* import { z } from "zod"; */
-/* import { DynamicWorkerExecutor } from "@cloudflare/codemode"; */
-/* import { createCodeTool } from "@cloudflare/codemode/ai"; */
+// import { z } from "zod";
+// import { DynamicWorkerExecutor } from "@cloudflare/codemode";
+// import { createCodeTool } from "@cloudflare/codemode/ai";
 
 /**
  * Chat Agent Durable Object using Cloudflare Agents SDK.
@@ -75,8 +75,8 @@ export class Chat extends AIChatAgent<Env> {
           // This includes all user messages and all previous AI responses
           messages: await convertToModelMessages(this.messages),
           system: "You are a helpful AI assistant.",
-          /* tools: { codemode: codeTool }, */
-          /* stopWhen: stepCountIs(10), */
+          // tools: { codemode: codeTool },
+          // stopWhen: stepCountIs(10),
           onFinish,
           abortSignal: options?.abortSignal,
         });
