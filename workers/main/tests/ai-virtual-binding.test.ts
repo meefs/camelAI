@@ -1,9 +1,10 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
+  extractModelFromInput,
+  mapModelToGateway,
   resolveGatewaySettings,
   resolveVirtualModel,
   runViaGatewayHTTP,
-  stripTopLevelModel,
 } from '../src/ai-virtual-binding.js';
 
 describe('resolveGatewaySettings', () => {
@@ -41,29 +42,68 @@ describe('resolveGatewaySettings', () => {
   });
 });
 
-describe('stripTopLevelModel', () => {
-  it('removes top-level model field from object input', () => {
-    expect(stripTopLevelModel({
-      model: '@cf/bad/override',
+describe('extractModelFromInput', () => {
+  it('extracts model field from object input', () => {
+    const result = extractModelFromInput({
+      model: 'auto_search',
       messages: [{ role: 'user', content: 'hello' }],
-    })).toEqual({
+    });
+    expect(result.model).toBe('auto_search');
+    expect(result.input).toEqual({
       messages: [{ role: 'user', content: 'hello' }],
     });
   });
 
-  it('returns input unchanged when no model field exists', () => {
+  it('returns undefined model when no model field exists', () => {
     const input = { messages: [{ role: 'user', content: 'hello' }] };
-    expect(stripTopLevelModel(input)).toBe(input);
+    const result = extractModelFromInput(input);
+    expect(result.model).toBeUndefined();
+    expect(result.input).toBe(input);
+  });
+
+  it('returns undefined model for non-string model values', () => {
+    const result = extractModelFromInput({ model: 42, messages: [] });
+    expect(result.model).toBeUndefined();
+  });
+
+  it('passes through non-object input unchanged', () => {
+    expect(extractModelFromInput(null)).toEqual({ model: undefined, input: null });
+    expect(extractModelFromInput('hello')).toEqual({ model: undefined, input: 'hello' });
+    expect(extractModelFromInput([1, 2])).toEqual({ model: undefined, input: [1, 2] });
+  });
+});
+
+describe('mapModelToGateway', () => {
+  it('maps auto to dynamic/auto', () => {
+    expect(mapModelToGateway('auto')).toBe('dynamic/auto');
+  });
+
+  it('maps auto_search to dynamic/auto_search', () => {
+    expect(mapModelToGateway('auto_search')).toBe('dynamic/auto_search');
+  });
+
+  it('maps auto_image to dynamic/auto_image', () => {
+    expect(mapModelToGateway('auto_image')).toBe('dynamic/auto_image');
+  });
+
+  it('falls back to dynamic/auto for unknown models', () => {
+    expect(mapModelToGateway('@cf/bad/model')).toBe('dynamic/auto');
+    expect(mapModelToGateway('gpt-4')).toBe('dynamic/auto');
+    expect(mapModelToGateway('')).toBe('dynamic/auto');
+  });
+
+  it('trims whitespace before matching', () => {
+    expect(mapModelToGateway('  auto_search  ')).toBe('dynamic/auto_search');
   });
 });
 
 describe('resolveVirtualModel', () => {
   it('uses AI_VIRTUAL_MODEL when configured', () => {
-    expect(resolveVirtualModel({ AI_VIRTUAL_MODEL: 'smart' })).toBe('smart');
+    expect(resolveVirtualModel({ AI_VIRTUAL_MODEL: 'auto_search' })).toBe('auto_search');
   });
 
-  it('falls back to dynamic/auto when unset', () => {
-    expect(resolveVirtualModel({ AI_VIRTUAL_MODEL: '' })).toBe('dynamic/auto');
+  it('falls back to auto when unset', () => {
+    expect(resolveVirtualModel({ AI_VIRTUAL_MODEL: '' })).toBe('auto');
   });
 });
 
@@ -72,7 +112,7 @@ describe('runViaGatewayHTTP', () => {
     vi.restoreAllMocks();
   });
 
-  it('calls compat chat completions endpoint and hardcodes model to dynamic/auto', async () => {
+  it('calls compat chat completions endpoint with dynamic/auto model', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
         id: 'chatcmpl_1',
@@ -89,7 +129,6 @@ describe('runViaGatewayHTTP', () => {
       },
       { orgId: 'org_1', workspaceId: 'ws_1', userId: 'user_1' },
       {
-        model: '@cf/ignored/hint',
         messages: [{ role: 'user', content: 'hello' }],
       },
       'dynamic/auto',
@@ -116,6 +155,44 @@ describe('runViaGatewayHTTP', () => {
     const body = JSON.parse(String(init.body)) as { model?: string; messages?: unknown[] };
     expect(body.model).toBe('dynamic/auto');
     expect(Array.isArray(body.messages)).toBe(true);
+  });
+
+  it('sends dynamic/auto_search when that model is passed', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'chatcmpl_2' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+
+    await runViaGatewayHTTP(
+      { accountID: 'acct_1', gatewayID: 'gw_1', authToken: 'tok_1' },
+      { orgId: 'org_1', workspaceId: 'ws_1' },
+      { messages: [{ role: 'user', content: 'search' }] },
+      'dynamic/auto_search',
+    );
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body)) as { model: string };
+    expect(body.model).toBe('dynamic/auto_search');
+  });
+
+  it('sends dynamic/auto_image when that model is passed', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'chatcmpl_3' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+
+    await runViaGatewayHTTP(
+      { accountID: 'acct_1', gatewayID: 'gw_1', authToken: 'tok_1' },
+      { orgId: 'org_1', workspaceId: 'ws_1' },
+      { messages: [{ role: 'user', content: 'image' }] },
+      'dynamic/auto_image',
+    );
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body)) as { model: string };
+    expect(body.model).toBe('dynamic/auto_image');
   });
 
   it('throws gateway error message for non-2xx responses', async () => {

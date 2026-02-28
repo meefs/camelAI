@@ -148,7 +148,27 @@ describe('Worker Binding Validation', () => {
       expect(result.forbiddenBindings).toHaveLength(0);
     });
 
-    it('blocks service bindings', () => {
+    it('blocks SELF service binding', () => {
+      const bindings: WorkerBinding[] = [
+        { type: 'service', name: 'SELF', service: 'starter', entrypoint: 'InternetProxy' },
+      ];
+      const result = validateBindings(bindings);
+      expect(result.valid).toBe(false);
+      expect(result.forbiddenBindings).toHaveLength(1);
+      expect(result.forbiddenBindings[0]?.name).toBe('SELF');
+      expect(result.forbiddenBindings[0]?.type).toBe('service');
+    });
+
+    it('allows worker_loader bindings (codemode DynamicWorkerExecutor)', () => {
+      const bindings: WorkerBinding[] = [
+        { type: 'worker_loader', name: 'LOADER' },
+      ];
+      const result = validateBindings(bindings);
+      expect(result.valid).toBe(true);
+      expect(result.forbiddenBindings).toHaveLength(0);
+    });
+
+    it('blocks other service bindings', () => {
       const bindings: WorkerBinding[] = [
         { type: 'service', name: 'OTHER_WORKER' },
       ];

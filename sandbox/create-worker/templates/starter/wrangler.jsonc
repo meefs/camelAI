@@ -59,7 +59,7 @@
 	 * Runtime variables available in loader/action context via context.cloudflare.env
 	 */
 	"vars": {
-		"AI_VIRTUAL_MODEL": "dynamic/auto",
+		"AI_VIRTUAL_MODEL": "auto",
 		"VALUE_FROM_CLOUDFLARE": "Starter template running on Cloudflare"
 		// Optional local fallback for template DATA_PROXY shim:
 		// "DATA_PROXY_URL": "http://host.docker.internal:8081/proxy/<thread-id>/api"
@@ -78,9 +78,14 @@
 	"assets": { "directory": "./public/", "binding": "ASSETS" },
 
 	/**
-	 * DATA_PROXY service binding:
-	 * - Locally, this binds to the template's LocalDataProxyService entrypoint.
-	 * - In camelAI deploys, this binding is virtualized/replaced with platform DataProxyService.
+	 * Worker Loaders (required for @cloudflare/codemode)
+	 * Enables DynamicWorkerExecutor to run LLM-generated code in ephemeral isolates.
+	 */
+	"worker_loaders": [{ "binding": "LOADER" }],
+
+	/**
+	 * Service bindings
+	 * - DATA_PROXY: locally binds to LocalDataProxyService; virtualized on camelAI deploy
 	 */
 	"services": [
 		{ "binding": "DATA_PROXY", "service": "starter", "entrypoint": "LocalDataProxyService" }

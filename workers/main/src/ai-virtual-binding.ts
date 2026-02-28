@@ -14,6 +14,16 @@ interface AIVirtualBindingProps {
   userId?: string;
 }
 
+const ALLOWED_MODEL_ALIASES = new Set(['auto', 'auto_search', 'auto_image']);
+
+export function mapModelToGateway(alias: string): string {
+  const trimmed = alias.trim();
+  if (ALLOWED_MODEL_ALIASES.has(trimmed)) {
+    return `dynamic/${trimmed}`;
+  }
+  return 'dynamic/auto';
+}
+
 /**
  * Virtual AI binding for user-uploaded workers.
  *
@@ -21,9 +31,13 @@ interface AIVirtualBindingProps {
  * maps it to this entrypoint for tenant-safe routing through the platform worker.
  */
 export class AIVirtualBinding extends WorkerEntrypoint<AIVirtualBindingEnv, AIVirtualBindingProps> {
-  async run(_model: string, input: unknown, _options?: unknown): Promise<unknown> {
-    const sanitizedInput = stripTopLevelModel(input);
-    const virtualModel = resolveVirtualModel(this.env);
+  async run(model: string, input: unknown, _options?: unknown): Promise<unknown> {
+    const { model: inputModel, input: sanitizedInput } = extractModelFromInput(input);
+    const envDefault = resolveVirtualModel(this.env);
+
+    // Resolve alias: caller param → input body model → env default — first in allowlist wins
+    const resolvedAlias = pickAllowedAlias(model, inputModel, envDefault);
+    const gatewayModel = mapModelToGateway(resolvedAlias);
 
     const gatewaySettings = resolveGatewaySettings(this.env);
     if (!gatewaySettings) {
@@ -32,28 +46,37 @@ export class AIVirtualBinding extends WorkerEntrypoint<AIVirtualBindingEnv, AIVi
       );
     }
 
-    return runViaGatewayHTTP(gatewaySettings, this.ctx.props, sanitizedInput, virtualModel);
+    return runViaGatewayHTTP(gatewaySettings, this.ctx.props, sanitizedInput, gatewayModel);
   }
 }
 
-const DEFAULT_VIRTUAL_MODEL = 'dynamic/auto';
+const DEFAULT_VIRTUAL_MODEL = 'auto';
 
 export function resolveVirtualModel(env: Pick<AIVirtualBindingEnv, 'AI_VIRTUAL_MODEL'>): string {
   const configured = env.AI_VIRTUAL_MODEL?.trim();
   return configured || DEFAULT_VIRTUAL_MODEL;
 }
 
-export function stripTopLevelModel(input: unknown): unknown {
+function pickAllowedAlias(...candidates: (string | undefined)[]): string {
+  for (const c of candidates) {
+    if (c && ALLOWED_MODEL_ALIASES.has(c.trim())) {
+      return c.trim();
+    }
+  }
+  return DEFAULT_VIRTUAL_MODEL;
+}
+
+export function extractModelFromInput(input: unknown): { model: string | undefined; input: unknown } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    return input;
+    return { model: undefined, input };
   }
   const obj = input as Record<string, unknown>;
   if (!('model' in obj)) {
-    return input;
+    return { model: undefined, input };
   }
 
-  const { model: _ignoredModel, ...rest } = obj;
-  return rest;
+  const { model, ...rest } = obj;
+  return { model: typeof model === 'string' ? model : undefined, input: rest };
 }
 
 export interface GatewaySettings {
@@ -113,7 +136,7 @@ export async function runViaGatewayHTTP(
   settings: GatewaySettings,
   props: AIVirtualBindingProps,
   input: unknown,
-  model: string = DEFAULT_VIRTUAL_MODEL
+  model: string = 'dynamic/auto'
 ): Promise<unknown> {
   const headers = new Headers();
   headers.set('Authorization', `Bearer ${settings.authToken}`);

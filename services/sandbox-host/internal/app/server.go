@@ -420,7 +420,19 @@ func (s *Server) forwardOpenAIProxyRequest(w http.ResponseWriter, req *http.Requ
 	return nil
 }
 
-const forcedGatewayModel = "dynamic/auto"
+var allowedModelAliases = map[string]bool{
+	"auto":        true,
+	"auto_search": true,
+	"auto_image":  true,
+}
+
+func resolveGatewayModel(requestModel string) string {
+	trimmed := strings.TrimSpace(requestModel)
+	if allowedModelAliases[trimmed] {
+		return "dynamic/" + trimmed
+	}
+	return "dynamic/auto"
+}
 
 func normalizeOpenAIProxyUpstreamPath(path string) (string, bool) {
 	if !strings.HasPrefix(path, "/v1/") && path != "/v1" {
@@ -458,7 +470,8 @@ func rewriteOpenAIProxyBody(req *http.Request, upstreamPath string) (io.Reader, 
 		return bytes.NewReader(rawBody), nil
 	}
 
-	payload["model"] = forcedGatewayModel
+	callerModel, _ := payload["model"].(string)
+	payload["model"] = resolveGatewayModel(callerModel)
 	rewritten, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err

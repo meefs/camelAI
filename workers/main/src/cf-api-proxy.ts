@@ -59,6 +59,7 @@ const ALLOWED_BINDING_TYPES = new Set([
   'text_blob',              // Text blobs (bundled)
   'data_blob',              // Data blobs (bundled)
   'assets',                 // Static assets (bundled with worker)
+  'worker_loader',          // Worker loaders for codemode (ephemeral isolates, no external resource access)
 ]);
 
 export interface WorkerBinding {
@@ -96,7 +97,7 @@ export function validateBindings(bindings: WorkerBinding[]): BindingValidationRe
   for (const binding of bindings) {
     const { type, name } = binding;
 
-    // Allow only a single virtual service binding shape for data proxy.
+    // Allow virtual DATA_PROXY service binding (platform-virtualized at deploy time).
     if (type === 'service') {
       if (name === VIRTUAL_DATA_PROXY_BINDING_NAME) {
         continue;
@@ -104,7 +105,7 @@ export function validateBindings(bindings: WorkerBinding[]): BindingValidationRe
       forbiddenBindings.push({
         name,
         type,
-        reason: `Service binding "${name}" is not allowed. Only "${VIRTUAL_DATA_PROXY_BINDING_NAME}" is permitted and will be virtualized by the platform.`,
+        reason: `Service binding "${name}" is not allowed. Only "${VIRTUAL_DATA_PROXY_BINDING_NAME}" is permitted.`,
       });
       continue;
     }

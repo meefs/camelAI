@@ -171,7 +171,7 @@ This is your workspace. Files persist between sessions. You can build, deploy, a
 | \`ANTHROPIC_API_KEY\` | Proxy token for LLM calls |
 | \`CLOUDFLARE_API_TOKEN\` | Deploy token (workspace-scoped) |
 | \`DATA_PROXY_URL\` | Thread-scoped SQL proxy base URL (SQL Server/PostgreSQL/MySQL; sandbox-authenticated) |
-| \`OPENAI_PROXY_URL\` | Thread-scoped OpenAI-compatible proxy base URL (Cloudflare AI Gateway passthrough) |
+| \`OPENAI_PROXY_URL\` | Thread-scoped OpenAI-compatible proxy base URL |
 | \`OPENAI_BASE_URL\` | OpenAI SDK-compatible base URL (\`.../v1\`) for chat/embeddings/responses |
 | \`OPENAI_API_KEY\` | Placeholder API key for OpenAI-compatible clients (\`proxy\`) |
 | \`INT_*\` | Integration credentials (e.g., \`INT_STRIPE_SECRET_KEY\`) |
@@ -180,10 +180,18 @@ Integration credentials auto-sync to deployed workers as secrets.
 
 AI access patterns:
 - In the container/runtime, use the local OpenAI-compatible proxy (\`OPENAI_BASE_URL\` + \`OPENAI_API_KEY=proxy\`) for SDK calls.
-- For chat completions through this local proxy, model selection is platform-controlled and currently forced to \`dynamic/auto\`.
-- In deployed workers, prefer native \`env.AI\` via the Workers AI provider. In camelAI this AI binding is virtualized through Cloudflare AI Gateway and routes to a platform-selected model configured by \`AI_VIRTUAL_MODEL\` (default \`dynamic/auto\`).
+- For chat completions through this local proxy, pass one of the supported model aliases (\`auto\`, \`auto_search\`, \`auto_image\`) as the \`model\` field. Unknown models fall back to \`auto\`.
+- In deployed workers, prefer native \`env.AI\` via the Workers AI provider. In camelAI this AI binding is virtualized by the platform and routes to a model configured by \`AI_VIRTUAL_MODEL\` (default \`auto\`).
 - Avoid setting \`max_tokens\` unless the user explicitly asks for a hard cap. Reasoning/thinking tokens count toward that budget and can truncate responses before completion.
 - If you must set \`max_tokens\`, choose a conservative high value with enough headroom for thinking + final output, and warn the user when truncation risk remains.
+
+Model routes (use with \`workersai(routeName, {})\` in deployed workers, or \`model: "routeName"\` in the container OpenAI-compatible proxy):
+- \`auto\` — Default. Text generation + tool calling. Use for general-purpose AI features.
+- \`auto_search\` — Enables Google Search grounding. Use when the app needs real-time or current information (news, live prices, recent events, fact-checking, up-to-date answers). The model can cite web sources inline.
+- \`auto_image\` — Enables image generation. Use when the app needs to create images from text prompts (avatars, illustrations, thumbnails, creative content). Generated images are returned in \`response.messages[].images[]\`.
+Always default to \`auto\` unless the user's use case clearly requires search grounding or image generation. Model selection is supported in both deployed workers and the container proxy. An app can use multiple routes for different features (e.g., \`auto\` for chat, \`auto_search\` for a "research" mode, \`auto_image\` for an image creator).
+
+Codemode (\`@cloudflare/codemode\`): Available in the starter template for deployed workers. Lets the LLM write TypeScript code that orchestrates multiple tools in a single turn instead of calling them one-by-one. Uses \`worker_loaders\` binding + \`DynamicWorkerExecutor\`.
 </environment_variables>
 </environment>
 

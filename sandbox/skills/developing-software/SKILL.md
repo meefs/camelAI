@@ -462,6 +462,8 @@ The template includes:
 - Cloudflare Worker entry in `workers/app.ts`
 - Server data/mutation patterns via route `loader()` and `action()`
 - wrangler as a local dependency
+- `@cloudflare/codemode` for LLM tool orchestration (active by default)
+- `worker_loaders` binding for codemode runtime
 
 ### Wrangler Configuration for React + Vite
 
@@ -476,7 +478,11 @@ The template creates this `wrangler.jsonc`:
   "assets": {
     "directory": "./public/",
     "binding": "ASSETS"
-  }
+  },
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "services": [
+    { "binding": "DATA_PROXY", "service": "my-app", "entrypoint": "LocalDataProxyService" }
+  ]
 }
 ```
 
@@ -548,7 +554,7 @@ Features include:
 
 - **In deployed workers:** Prefer `env.AI` with `workers-ai-provider` (`createWorkersAI({ binding: env.AI })`).
 - **In container scripts/services:** Use the OpenAI-compatible local proxy via `OPENAI_BASE_URL` and `OPENAI_API_KEY=proxy`.
-- **Model routing:** The platform virtualized AI binding currently routes through Cloudflare AI Gateway with platform-controlled model selection.
+- **Model routing:** The platform virtualizes the AI binding with platform-controlled model selection.
 - **Token caps:** Avoid setting `max_tokens` unless the user explicitly needs a hard output cap. Thinking/reasoning tokens count toward that budget and can cut answers off early. If required, set a generous cap and call out truncation risk.
 
 ## R2 Object Storage
@@ -675,7 +681,28 @@ const result = await generateText({
 });
 ```
 
-On camelAI deploys, the platform virtualizes this binding and routes requests through Cloudflare AI Gateway with platform-controlled model routing.
+On camelAI deploys, the platform virtualizes this binding with platform-controlled model routing.
+
+### Model Routes
+
+Three model routes are available via `workersai(routeName, {})` in deployed workers, or `model: "routeName"` in the container OpenAI-compatible proxy:
+
+| Route | Purpose | When to Use |
+|-------|---------|-------------|
+| `auto` | Text generation + tool calling | Default for all general-purpose AI features |
+| `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, prices, events, fact-checking |
+| `auto_image` | Image generation from text prompts | App needs to create images: avatars, illustrations, thumbnails |
+
+Default to `auto` unless the use case clearly requires search or image generation. Apps can use multiple routes for different features. Model selection is supported in both deployed workers and the container proxy.
+
+### Codemode (Tool Orchestration)
+
+The starter template includes `@cloudflare/codemode`, which lets the LLM write TypeScript code that orchestrates multiple tools in a single turn. It requires:
+- `worker_loaders` binding (`env.LOADER`) — ephemeral isolate runtime
+
+Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools for typed code generation. Use `stopWhen: stepCountIs(N)` (not the deprecated `maxSteps`) for multi-step tool use.
+
+**See [AI-APPS.md](AI-APPS.md) for full codemode setup and examples.**
 
 ## Best Practices
 
