@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Check } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -12,8 +13,8 @@ const BOOT_LINES = [
     subtitle: 'Your files live here permanently — even between sessions',
   },
   {
-    text: 'Loading onboarding context',
-    subtitle: 'Claude already knows what you want to build',
+    text: 'Starting first conversation',
+    subtitle: 'Claude will ask a couple questions to get you started',
   },
   {
     text: 'Enabling live publishing',
@@ -140,7 +141,7 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
                   <span className="text-emerald-400 shrink-0">&bull;</span>
                   <span className="text-zinc-100 font-medium">
                     Your machine is ready
-                    <span className="ml-1.5 text-emerald-400">&check;</span>
+                    <Check className="ml-1.5 inline h-3.5 w-3.5 text-emerald-400" />
                   </span>
                 </div>
               </div>

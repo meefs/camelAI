@@ -167,52 +167,36 @@ function toOnboardingPreferences(raw: unknown): OnboardingPreferences | null {
     return null;
   }
 
-  const value = raw as OnboardingPreferences;
-  if (!value.data_interests || typeof value.data_interests !== 'object') {
-    return null;
-  }
-
+  const value = raw as Partial<OnboardingPreferences> & Record<string, unknown>;
+  const completedAt =
+    typeof value.completed_at === 'number' || value.completed_at === null
+      ? value.completed_at
+      : null;
   return {
-    ai_familiarity: value.ai_familiarity ?? null,
-    iteration_style: value.iteration_style ?? null,
-    stakes: value.stakes ?? null,
-    design_style: value.design_style ?? null,
-    starter_project: value.starter_project ?? null,
-    data_interests: {
-      files: Array.isArray(value.data_interests.files)
-        ? value.data_interests.files
-        : [],
-      integrations: Array.isArray(value.data_interests.integrations)
-        ? value.data_interests.integrations
-        : [],
-    },
-    completed_at: value.completed_at ?? null,
+    completed_at: completedAt ?? null,
   };
 }
 
 function getDefaultOnboardingPreferences(): OnboardingPreferences {
   return {
-    ai_familiarity: null,
-    iteration_style: null,
-    stakes: null,
-    design_style: null,
-    starter_project: null,
-    data_interests: {
-      files: [],
-      integrations: [],
-    },
     completed_at: null,
   };
+}
+
+function normalizeCompletedAt(
+  value: OnboardingPreferences['completed_at']
+): OnboardingPreferences['completed_at'] {
+  if (value === null) {
+    return null;
+  }
+
+  return Number.isFinite(value) ? value : null;
 }
 
 function sanitizeOnboardingPreferences(input: OnboardingPreferences): OnboardingPreferences {
   const next = toOnboardingPreferences(input) ?? getDefaultOnboardingPreferences();
   return {
-    ...next,
-    data_interests: {
-      files: Array.from(new Set(next.data_interests.files)),
-      integrations: Array.from(new Set(next.data_interests.integrations)),
-    },
+    completed_at: normalizeCompletedAt(next.completed_at),
   };
 }
 

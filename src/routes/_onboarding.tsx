@@ -1,93 +1,58 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Outlet,
-  redirect,
-  useLoaderData,
-  useLocation,
-  useNavigate,
-  type ShouldRevalidateFunctionArgs,
-} from 'react-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import { Outlet, redirect, useLoaderData, useNavigate } from 'react-router';
 import type { Route } from './+types/_onboarding';
 import { getAuthEnv, requireSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getVanityDomain } from '@/lib/app-url';
-import {
-  ONBOARDING_PROGRESS_STORAGE_KEY_PREFIX,
-  DEFAULT_ONBOARDING_PREFERENCES,
-  type OnboardingProgressState,
-  type OnboardingStepId,
-  type OnboardingTransitionDirection,
-  STEP_PATHS,
-  getOnboardingProgressStorageKey,
-  getNearestValidStep,
-  getStepIndex,
-  getStepSequence,
-  hasCompletedOnboarding,
-  normalizePreferences,
-  stepIdFromPath,
-} from '@/lib/onboarding';
-import type { OnboardingPreferences } from '@/types';
+import { hasCompletedOnboarding } from '@/lib/onboarding';
+import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 
 interface OnboardingLoaderData {
-  userId: string;
   userEmail: string;
-  orgId: string;
-  onboarding: OnboardingPreferences | null;
-  teamWelcomeOnly: boolean;
-  vanityDomain: string;
   teamMode: boolean;
+  onboardingComplete: boolean;
   emailVerificationRequired: boolean;
   emailVerified: boolean;
 }
 
 const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
+const AUTO_COMPLETE_MAX_ATTEMPTS = 3;
+const AUTO_COMPLETE_RETRY_DELAY_MS = 600;
 
-export interface OnboardingRouteContext extends OnboardingLoaderData {
-  answers: OnboardingPreferences;
-  showOrgSlugStep: boolean;
-  setShowOrgSlugStep: (show: boolean) => void;
-  pendingOrgSlug: string | null;
-  setPendingOrgSlug: (slug: string | null) => void;
-  transitionDirection: OnboardingTransitionDirection;
-  updateAnswers: (updates: Partial<OnboardingPreferences>) => void;
-  currentStep: OnboardingStepId;
-  sequence: OnboardingStepId[];
-  currentStepIndex: number;
-  totalSteps: number;
-  skipToChat: () => void;
-  saveOnboarding: (overrides?: Partial<OnboardingPreferences>) => Promise<OnboardingPreferences>;
-  completeOnboarding: (overrides?: Partial<OnboardingPreferences>) => Promise<void>;
-  clearStoredProgress: () => void;
+type CompleteOnboardingError = Error & { status?: number };
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function mergeAnswers(
-  current: OnboardingPreferences,
-  updates: Partial<OnboardingPreferences>
-): OnboardingPreferences {
-  return normalizePreferences({
-    ...current,
-    ...updates,
-    data_interests: {
-      files: updates.data_interests?.files ?? current.data_interests.files,
-      integrations:
-        updates.data_interests?.integrations ?? current.data_interests.integrations,
-    },
-  });
-}
-
-function readStoredProgress(storageKey: string): OnboardingProgressState | null {
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as OnboardingProgressState;
-    if (!parsed || typeof parsed !== 'object') return null;
-    if (typeof parsed.currentStep !== 'string') return null;
-    if (!parsed.answers || typeof parsed.answers !== 'object') return null;
-    if (typeof parsed.startedAt !== 'number') return null;
-    return parsed;
-  } catch {
-    return null;
+function shouldRetryAutoComplete(error: unknown): boolean {
+  const status =
+    typeof error === 'object' && error !== null && 'status' in error
+      ? (error as { status?: number }).status
+      : undefined;
+  if (status == null) {
+    return true;
   }
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function getAutoCompleteErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message.trim();
+  }
+  return 'Failed to complete onboarding. Please try again.';
+}
+
+export interface OnboardingRouteContext {
+  completeOnboarding: () => Promise<void>;
+  skipToChat: () => void;
+  teamMode: boolean;
+  onboardingComplete: boolean;
+  userEmail: string;
+  emailVerificationRequired: boolean;
+  emailVerified: boolean;
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -112,148 +77,57 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const teamMode = url.searchParams.get('team') === '1';
   const onboarding = authBootstrap.onboarding;
   const onboardingComplete = hasCompletedOnboarding(onboarding);
-  const isEmailVerifiedOrNotRequired =
-    !emailVerificationStatus.required || emailVerificationStatus.verified;
+  const emailVerificationRequired =
+    emailVerificationStatus.required && !emailVerificationStatus.verified;
 
-  if (onboardingComplete && !teamMode && isEmailVerifiedOrNotRequired) {
+  if (onboardingComplete && !teamMode && !emailVerificationRequired) {
     throw redirect('/chat');
   }
 
   return {
-    userId: authBootstrap.profile.id,
     userEmail: authBootstrap.profile.email,
-    orgId: sessionContext.session.org_id,
-    onboarding,
-    teamWelcomeOnly: onboardingComplete && teamMode,
-    vanityDomain: getVanityDomain(request.headers.get('host')?.split(':')[0]),
     teamMode,
-    emailVerificationRequired: emailVerificationStatus.required,
+    onboardingComplete,
+    emailVerificationRequired,
     emailVerified: emailVerificationStatus.verified,
   } satisfies OnboardingLoaderData;
 }
 
-export function shouldRevalidate({
-  currentUrl,
-  nextUrl,
-  formMethod,
-  defaultShouldRevalidate,
-}: ShouldRevalidateFunctionArgs): boolean {
-  if (formMethod && formMethod.toUpperCase() !== 'GET') {
-    return defaultShouldRevalidate;
-  }
-
-  const currentOnboarding = currentUrl.pathname.startsWith('/onboarding');
-  const nextOnboarding = nextUrl.pathname.startsWith('/onboarding');
-  if (!currentOnboarding || !nextOnboarding) {
-    return defaultShouldRevalidate;
-  }
-
-  const currentTeam = currentUrl.searchParams.get('team');
-  const nextTeam = nextUrl.searchParams.get('team');
-  if (currentTeam !== nextTeam) {
-    return defaultShouldRevalidate;
-  }
-
-  return false;
-}
-
-export default function OnboardingLayout() {
+export default function OnboardingRoute() {
   const loaderData = useLoaderData<typeof loader>() as OnboardingLoaderData;
-  const location = useLocation();
   const navigate = useNavigate();
-  const [answers, setAnswers] = useState<OnboardingPreferences>(() =>
-    normalizePreferences(loaderData.onboarding ?? DEFAULT_ONBOARDING_PREFERENCES)
-  );
-  const [showOrgSlugStep, setShowOrgSlugStepState] = useState<boolean>(() =>
-    location.pathname === STEP_PATHS.orgSlug
-  );
-  const [pendingOrgSlugState, setPendingOrgSlugState] = useState<string | null>(null);
-  const [startedAt, setStartedAt] = useState<number>(() => Date.now());
-  const [hasRestoredProgress, setHasRestoredProgress] = useState(false);
-  const [transitionDirection, setTransitionDirection] =
-    useState<OnboardingTransitionDirection>('none');
-  const previousStepIndexRef = useRef<number | null>(null);
-  const resetHandledRef = useRef(false);
-  const resetRequested = useMemo(
-    () => new URLSearchParams(location.search).get('reset') === '1',
-    [location.search]
-  );
-  const querySuffix = loaderData.teamMode ? '?team=1' : '';
-  const progressStorageKey = useMemo(
-    () => getOnboardingProgressStorageKey(loaderData.userId),
-    [loaderData.userId]
-  );
+  const [autoCompleteError, setAutoCompleteError] = useState<string | null>(null);
+  const [isAutoCompleting, setIsAutoCompleting] = useState(false);
+  const [autoCompleteRunId, setAutoCompleteRunId] = useState(0);
+  const autoCompleteRunStartedRef = useRef<number | null>(null);
+  const completeOnboardingRequestRef = useRef<Promise<void> | null>(null);
+  const skipToChat = useCallback(() => {
+    navigate('/chat');
+  }, [navigate]);
 
-  const currentStep = useMemo(
-    () => stepIdFromPath(location.pathname),
-    [location.pathname]
-  );
-  const sequence = useMemo(
-    () =>
-      getStepSequence({
-        showOrgSlugStep,
-        aiFamiliarity: answers.ai_familiarity,
-        teamWelcomeOnly: loaderData.teamWelcomeOnly,
-      }),
-    [answers.ai_familiarity, showOrgSlugStep, loaderData.teamWelcomeOnly]
-  );
-  const currentStepIndex = getStepIndex(currentStep, sequence);
-  const totalSteps = sequence.length;
+  const completeOnboarding = useCallback(async () => {
+    if (completeOnboardingRequestRef.current) {
+      return completeOnboardingRequestRef.current;
+    }
 
-  const clearStoredProgress = useCallback(() => {
-    localStorage.removeItem(progressStorageKey);
-  }, [progressStorageKey]);
-
-  const setPendingOrgSlug = useCallback((slug: string | null) => {
-    setPendingOrgSlugState(slug ? slug.trim().toLowerCase() : null);
-  }, []);
-
-  const setShowOrgSlugStep = useCallback((show: boolean) => {
-    setShowOrgSlugStepState(show);
-  }, []);
-
-  const saveOnboarding = useCallback(
-    async (overrides?: Partial<OnboardingPreferences>) => {
-      const payload = mergeAnswers(answers, overrides ?? {});
-      const response = await fetch('/api/onboarding', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) {
-        throw new Error('Failed to save onboarding');
-      }
-      const data = (await response.json()) as { onboarding?: OnboardingPreferences };
-      const saved = normalizePreferences(data.onboarding ?? payload);
-      setAnswers(saved);
-      return saved;
-    },
-    [answers]
-  );
-
-  const completeOnboarding = useCallback(
-    async (overrides?: Partial<OnboardingPreferences>) => {
-      const withOverrides = mergeAnswers(answers, overrides ?? {});
-      const desiredSlug = pendingOrgSlugState?.trim().toLowerCase() ?? null;
-      const completed = mergeAnswers(withOverrides, { completed_at: Date.now() });
+    const completeRequest = (async () => {
       const response = await fetch('/api/onboarding/complete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          onboarding: completed,
-          desiredSlug: showOrgSlugStep ? desiredSlug : null,
-        }),
       });
 
       if (!response.ok) {
         let errorMessage = 'Failed to complete onboarding';
         try {
           const data = (await response.json()) as { error?: string };
-          if (data.error) errorMessage = data.error;
+          if (data.error) {
+            errorMessage = data.error;
+          }
         } catch {
-          // Ignore parse failures and keep default message.
+          // Ignore parse failures and keep default error message.
         }
-        throw new Error(errorMessage);
+        const error = new Error(errorMessage) as CompleteOnboardingError;
+        error.status = response.status;
+        throw error;
       }
 
       const data = (await response.json()) as {
@@ -261,8 +135,10 @@ export default function OnboardingLayout() {
         threadId?: string;
         onboardingSystemMessage?: string | null;
       };
+
       const threadId = data.threadId?.trim();
       const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
+
       if (threadId && onboardingSystemMessage) {
         try {
           sessionStorage.setItem(
@@ -276,170 +152,124 @@ export default function OnboardingLayout() {
           console.error('Failed to persist onboarding prefill message:', error);
         }
       }
-      clearStoredProgress();
-      try { sessionStorage.setItem('showBootModal', '1'); } catch {}
+
+      try {
+        sessionStorage.setItem('showBootModal', '1');
+      } catch {
+        // Ignore storage failures.
+      }
+
       navigate(data.redirectTo || '/chat');
-    },
-    [
-      answers,
-      clearStoredProgress,
-      navigate,
-      pendingOrgSlugState,
-      showOrgSlugStep,
-    ]
-  );
+    })();
 
-  const skipToChat = useCallback(() => {
-    clearStoredProgress();
-    navigate('/chat');
-  }, [clearStoredProgress, navigate]);
+    completeOnboardingRequestRef.current = completeRequest;
 
-  const updateAnswers = useCallback((updates: Partial<OnboardingPreferences>) => {
-    setAnswers((previous) => mergeAnswers(previous, updates));
-  }, []);
+    try {
+      await completeRequest;
+    } finally {
+      completeOnboardingRequestRef.current = null;
+    }
+  }, [navigate]);
 
-  useEffect(() => {
-    if (!resetRequested || resetHandledRef.current) return;
-    resetHandledRef.current = true;
+  const needsWelcomeScreen =
+    loaderData.teamMode || loaderData.emailVerificationRequired;
 
-    const keysToClear: string[] = [];
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = localStorage.key(index);
-      if (key?.startsWith(ONBOARDING_PROGRESS_STORAGE_KEY_PREFIX)) {
-        keysToClear.push(key);
+  const runAutoComplete = useCallback(async () => {
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= AUTO_COMPLETE_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        await completeOnboarding();
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= AUTO_COMPLETE_MAX_ATTEMPTS || !shouldRetryAutoComplete(error)) {
+          break;
+        }
+        await sleep(AUTO_COMPLETE_RETRY_DELAY_MS * attempt);
       }
     }
-    for (const key of keysToClear) {
-      localStorage.removeItem(key);
-    }
-
-    setAnswers(normalizePreferences(loaderData.onboarding ?? DEFAULT_ONBOARDING_PREFERENCES));
-    setPendingOrgSlug(null);
-    setShowOrgSlugStep(false);
-    setStartedAt(Date.now());
-    setHasRestoredProgress(false);
-
-    const params = new URLSearchParams(location.search);
-    params.delete('reset');
-    const nextSearch = params.toString();
-    navigate(
-      `${location.pathname}${nextSearch ? `?${nextSearch}` : ''}`,
-      { replace: true }
-    );
-  }, [
-    loaderData.onboarding,
-    location.pathname,
-    location.search,
-    navigate,
-    resetRequested,
-    setPendingOrgSlug,
-    setShowOrgSlugStep,
-  ]);
+    throw lastError ?? new Error('Failed to complete onboarding');
+  }, [completeOnboarding]);
 
   useEffect(() => {
-    if (loaderData.teamWelcomeOnly) {
-      setHasRestoredProgress(true);
+    if (needsWelcomeScreen) {
       return;
     }
-    if (hasRestoredProgress) return;
-
-    const stored = readStoredProgress(progressStorageKey);
-    if (stored) {
-      setAnswers((previous) =>
-        mergeAnswers(previous, stored.answers as Partial<OnboardingPreferences>)
-      );
-      setStartedAt(stored.startedAt);
-      setPendingOrgSlug(stored.pendingOrgSlug ?? null);
-      setShowOrgSlugStep(
-        Boolean(stored.showOrgSlugStep || stored.currentStep === 'orgSlug')
-      );
-
-      const storedPath = STEP_PATHS[stored.currentStep];
-      if (storedPath && storedPath !== location.pathname) {
-        navigate(`${storedPath}${querySuffix}`, { replace: true });
-      }
+    if (autoCompleteRunStartedRef.current === autoCompleteRunId) {
+      return;
     }
-    setHasRestoredProgress(true);
-  }, [
-    hasRestoredProgress,
-    loaderData.teamWelcomeOnly,
-    location.pathname,
-    navigate,
-    progressStorageKey,
-    querySuffix,
-    setPendingOrgSlug,
-    setShowOrgSlugStep,
-  ]);
+    autoCompleteRunStartedRef.current = autoCompleteRunId;
 
-  useEffect(() => {
-    if (loaderData.teamWelcomeOnly) return;
-    if (currentStepIndex < 0 && sequence.length > 0) {
-      const fallbackStep = getNearestValidStep(currentStep, sequence) ?? sequence[0];
-      navigate(`${STEP_PATHS[fallbackStep]}${querySuffix}`, { replace: true });
-    }
-  }, [
-    currentStep,
-    currentStepIndex,
-    loaderData.teamWelcomeOnly,
-    navigate,
-    querySuffix,
-    sequence,
-  ]);
+    let cancelled = false;
+    setAutoCompleteError(null);
+    setIsAutoCompleting(true);
 
-  useEffect(() => {
-    if (currentStepIndex < 0) return;
-    const previousIndex = previousStepIndexRef.current;
-    if (previousIndex === null) {
-      setTransitionDirection('none');
-    } else if (currentStepIndex > previousIndex) {
-      setTransitionDirection('forward');
-    } else if (currentStepIndex < previousIndex) {
-      setTransitionDirection('backward');
-    } else {
-      setTransitionDirection('none');
-    }
-    previousStepIndexRef.current = currentStepIndex;
-  }, [currentStepIndex]);
+    runAutoComplete()
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setAutoCompleteError(getAutoCompleteErrorMessage(error));
+      })
+      .finally(() => {
+        if (cancelled) {
+          return;
+        }
+        setIsAutoCompleting(false);
+      });
 
-  useEffect(() => {
-    if (loaderData.teamWelcomeOnly) return;
-    if (!hasRestoredProgress) return;
-    const progress: OnboardingProgressState = {
-      currentStep,
-      answers,
-      startedAt,
-      pendingOrgSlug: pendingOrgSlugState,
-      showOrgSlugStep,
+    return () => {
+      cancelled = true;
     };
-    localStorage.setItem(progressStorageKey, JSON.stringify(progress));
-  }, [
-    answers,
-    currentStep,
-    hasRestoredProgress,
-    loaderData.teamWelcomeOnly,
-    pendingOrgSlugState,
-    progressStorageKey,
-    showOrgSlugStep,
-    startedAt,
-  ]);
+  }, [autoCompleteRunId, needsWelcomeScreen, runAutoComplete]);
+
+  if (!needsWelcomeScreen) {
+    if (autoCompleteError) {
+      return (
+        <OnboardingLayout>
+          <div className="space-y-6 text-center">
+            <div className="space-y-2">
+              <h1 className="text-3xl font-semibold tracking-tight">
+                We couldn&apos;t finish onboarding
+              </h1>
+              <p className="text-muted-foreground">
+                Retry and we&apos;ll set up your first chat.
+              </p>
+            </div>
+            <Alert variant="destructive" className="text-left">
+              <AlertDescription>{autoCompleteError}</AlertDescription>
+            </Alert>
+            <div className="pt-2">
+              <Button
+                type="button"
+                size="lg"
+                disabled={isAutoCompleting}
+                onClick={() => {
+                  setAutoCompleteRunId((previous) => previous + 1);
+                }}
+              >
+                {isAutoCompleting ? 'Retrying...' : 'Try again'}
+              </Button>
+            </div>
+          </div>
+        </OnboardingLayout>
+      );
+    }
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   const contextValue: OnboardingRouteContext = {
-    ...loaderData,
-    answers,
-    showOrgSlugStep,
-    setShowOrgSlugStep,
-    pendingOrgSlug: pendingOrgSlugState,
-    setPendingOrgSlug,
-    transitionDirection,
-    updateAnswers,
-    currentStep,
-    sequence,
-    currentStepIndex,
-    totalSteps,
-    skipToChat,
-    saveOnboarding,
     completeOnboarding,
-    clearStoredProgress,
+    skipToChat,
+    teamMode: loaderData.teamMode,
+    onboardingComplete: loaderData.onboardingComplete,
+    userEmail: loaderData.userEmail,
+    emailVerificationRequired: loaderData.emailVerificationRequired,
+    emailVerified: loaderData.emailVerified,
   };
 
   return <Outlet context={contextValue} />;

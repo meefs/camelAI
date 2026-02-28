@@ -1,17 +1,11 @@
-import {
-  useFetcher,
-  useLoaderData,
-  useLocation,
-  useNavigate,
-  useOutletContext,
-} from 'react-router';
+import { useRef, useState } from 'react';
+import { useFetcher, useLoaderData, useLocation, useOutletContext } from 'react-router';
 import type { Route } from './+types/_onboarding.welcome';
 import { getAuthEnv, requireSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { STEP_PATHS } from '@/lib/onboarding';
 import type { OnboardingRouteContext } from './_onboarding';
 
 interface TeamContext {
@@ -22,35 +16,17 @@ interface TeamContext {
 
 interface WelcomeLoaderData {
   orgName: string;
-  showOrgSlugStep: boolean;
   teamContext: TeamContext;
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sessionContext = await requireSession(request, context);
-  const env = getEnv(context);
-  const authEnv = getAuthEnv(env);
   const url = new URL(request.url);
   const teamMode = url.searchParams.get('team') === '1';
-  const orgId = sessionContext.session.org_id;
-  const workspaceId = sessionContext.session.workspace_id;
-  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
-  const userStub = authEnv.USER.get(
-    authEnv.USER.idFromName(sessionContext.session.user_id)
-  );
-
-  const [role, memberCount, workerScripts] = await Promise.all([
-    userStub.getOrgRole(orgId),
-    orgStub.getMemberCount(),
-    orgStub.listWorkerScripts(),
-  ]);
-  const showOrgSlugStep =
-    role === 'owner' && memberCount === 1 && workerScripts.length === 0;
 
   if (!teamMode) {
     return {
       orgName: 'camelAI',
-      showOrgSlugStep,
       teamContext: {
         memberCount: 0,
         appCount: 0,
@@ -58,22 +34,32 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       },
     } satisfies WelcomeLoaderData;
   }
-  const [orgName, integrations] = await Promise.all([
+
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgId = sessionContext.session.org_id;
+  const workspaceId = sessionContext.session.workspace_id;
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+
+  const [orgName, memberCount, workerScripts, integrations] = await Promise.all([
     orgStub
       .getInfo()
       .then((info) => info?.name ?? 'your team')
       .catch(() => 'your team'),
+    orgStub.getMemberCount(),
+    orgStub.listWorkerScripts(),
     workspaceId
       ? authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId))
           .getIntegrations()
-          .then((rows: Array<{ name: string }>) => rows.map((row: { name: string }) => row.name))
+          .then((rows: Array<{ name: string }>) =>
+            rows.map((row: { name: string }) => row.name)
+          )
           .catch(() => [] as string[])
       : Promise.resolve([] as string[]),
   ]);
 
   return {
     orgName,
-    showOrgSlugStep,
     teamContext: {
       memberCount,
       appCount: workerScripts.length,
@@ -90,16 +76,16 @@ export function meta(_: Route.MetaArgs) {
 }
 
 function formatTeamSummary(teamContext: TeamContext): string {
-  const parts: string[] = [];
+  const parts = [
+    `${teamContext.memberCount} team ${teamContext.memberCount === 1 ? 'member' : 'members'}`,
+  ];
 
   if (teamContext.appCount > 0) {
     parts.push(`${teamContext.appCount} apps deployed`);
   }
+
   if (teamContext.integrations.length > 0) {
     parts.push(`Connected to ${teamContext.integrations.join(', ')}`);
-  }
-  if (parts.length === 0) {
-    parts.push(`${teamContext.memberCount} team members`);
   }
 
   return parts.join('  •  ');
@@ -107,13 +93,17 @@ function formatTeamSummary(teamContext: TeamContext): string {
 
 export default function OnboardingWelcomeRoute() {
   const context = useOutletContext<OnboardingRouteContext>();
-  const navigate = useNavigate();
   const location = useLocation();
+  const [error, setError] = useState<string | null>(null);
+  const [isCompleting, setIsCompleting] = useState(false);
+  const completionStartedRef = useRef(false);
   const verificationFetcher = useFetcher<{ success?: boolean; error?: string }>();
-  const { orgName, showOrgSlugStep, teamContext } =
+  const { orgName, teamContext } =
     useLoaderData<typeof loader>() as WelcomeLoaderData;
+
   const isTeamWelcome = context.teamMode;
-  const querySuffix = context.teamMode ? '?team=1' : '';
+  const isTeamMemberAlreadyOnboarded =
+    isTeamWelcome && context.onboardingComplete;
   const emailVerificationRequired =
     context.emailVerificationRequired && !context.emailVerified;
   const emailVerifiedFromLink =
@@ -127,13 +117,7 @@ export default function OnboardingWelcomeRoute() {
       : undefined;
 
   return (
-    <OnboardingLayout
-      currentStep={Math.max(1, context.currentStepIndex + 1)}
-      totalSteps={context.totalSteps}
-      transitionDirection={context.transitionDirection}
-      showBack={false}
-      showSkip={false}
-    >
+    <OnboardingLayout>
       <div className="space-y-6 text-center">
         <div className="space-y-3">
           <h1 className="text-3xl font-semibold tracking-tight">
@@ -144,9 +128,7 @@ export default function OnboardingWelcomeRoute() {
               <p className="text-balance text-muted-foreground">
                 camelAI is your AI software engineer. Claude has a permanent computer here, so it can build, deploy, and maintain applications for you.
               </p>
-              <p className="text-muted-foreground">
-                Let&apos;s get you set up. This takes about 30 seconds.
-              </p>
+              <p className="text-muted-foreground">Verify your email to get started.</p>
             </>
           ) : (
             <>
@@ -157,7 +139,7 @@ export default function OnboardingWelcomeRoute() {
                 {formatTeamSummary(teamContext)}
               </div>
               <p className="text-muted-foreground">
-                Let&apos;s learn a bit about you so Claude can help.
+                Let&apos;s get you set up.
               </p>
             </>
           )}
@@ -173,9 +155,9 @@ export default function OnboardingWelcomeRoute() {
 
         {emailVerificationRequired ? (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4 text-left">
-            <p className="text-sm font-medium">Verify your email to finish onboarding.</p>
+            <p className="text-sm font-medium">Verify your email</p>
             <p className="text-sm text-muted-foreground">
-              We sent a verification link to {context.userEmail}. You&apos;ll need to confirm it before the final onboarding step.
+              We sent a verification link to {context.userEmail}. You&apos;ll need to confirm it before continuing.
             </p>
             {verificationSent ? (
               <p className="text-sm text-muted-foreground">
@@ -203,22 +185,42 @@ export default function OnboardingWelcomeRoute() {
           </div>
         ) : null}
 
+        {error ? (
+          <Alert variant="destructive" className="text-left">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+
         <div className="pt-2">
           <Button
             type="button"
             size="lg"
-            onClick={() => {
-              if (context.teamWelcomeOnly) {
+            disabled={emailVerificationRequired || isCompleting}
+            onClick={async () => {
+              if (isTeamMemberAlreadyOnboarded) {
                 context.skipToChat();
                 return;
               }
-
-              context.setShowOrgSlugStep(showOrgSlugStep);
-              const step = showOrgSlugStep ? 'orgSlug' : 'q1';
-              navigate(`${STEP_PATHS[step]}${querySuffix}`);
+              if (completionStartedRef.current) {
+                return;
+              }
+              completionStartedRef.current = true;
+              setIsCompleting(true);
+              setError(null);
+              try {
+                await context.completeOnboarding();
+              } catch (nextError) {
+                completionStartedRef.current = false;
+                setIsCompleting(false);
+                setError(
+                  nextError instanceof Error
+                    ? nextError.message
+                    : 'Failed to complete onboarding'
+                );
+              }
             }}
           >
-            Get Started
+            {isCompleting ? 'Getting Started...' : 'Get Started'}
           </Button>
         </div>
       </div>
