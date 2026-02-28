@@ -23,12 +23,6 @@ export default [
   // Protected onboarding routes (no app sidebar)
   route('onboarding', 'routes/_onboarding.tsx', [
     index('routes/_onboarding.welcome.tsx'),
-    route('org-slug', 'routes/_onboarding.org-slug.tsx'),
-    route('ai-familiarity', 'routes/_onboarding.q1.tsx'),
-    route('iteration-style', 'routes/_onboarding.q2.tsx'),
-    route('design-style', 'routes/_onboarding.q4.tsx'),
-    route('starter-project', 'routes/_onboarding.q5.tsx'),
-    route('data-interests', 'routes/_onboarding.q6.tsx'),
   ]),
 
   // Protected app routes
@@ -127,7 +121,6 @@ export default [
   route('api/auth/logout', 'routes/api/auth.logout.ts'),
   route('api/auth/switch-org', 'routes/api/auth.switch-org.ts'),
   route('api/auth/switch-workspace', 'routes/api/auth.switch-workspace.ts'),
-  route('api/onboarding', 'routes/api/onboarding.ts'),
   route('api/onboarding/complete', 'routes/api/onboarding.complete.ts'),
   route('api/help', 'routes/api/help.ts'),
   route('api/dev/sent-emails', 'routes/api/dev.sent-emails.ts'),

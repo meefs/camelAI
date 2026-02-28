@@ -11,10 +11,6 @@ import type {
   Integration,
 } from '@/types';
 import {
-  DEFAULT_ONBOARDING_PREFERENCES,
-  normalizePreferences,
-} from '@/lib/onboarding';
-import {
   getSession as getSessionKV,
   destroySession as destroySessionKV,
   createNewSession as createNewSessionKV,
@@ -61,8 +57,7 @@ export async function resetOnboardingForUser(
     }
   }
 
-  const defaults = normalizePreferences(DEFAULT_ONBOARDING_PREFERENCES);
-  await stub.updateOnboarding(defaults);
+  await stub.updateOnboarding({ completed_at: null });
 }
 
 // Session functions

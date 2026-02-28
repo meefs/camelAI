@@ -74,7 +74,7 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 5. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
 
 ### Onboarding
-Incomplete users are redirected to `/onboarding` before accessing `_app` routes. For password-based accounts, email verification is required before `POST /api/onboarding/complete` succeeds. Steps are stored in localStorage during the flow, persisted to `UserDO` via `POST /api/onboarding`, finalized via `POST /api/onboarding/complete` (creates first thread, writes `~/.chiridion/profile.md`, returns redirect). Org slug step is conditional and enforced by `OrgSlugDO`.
+Incomplete users are redirected to `/onboarding` before accessing `_app` routes. OAuth signups (non-team) auto-complete onboarding with no UI, then redirect to first chat. Password signups stay on the onboarding welcome screen until email verification is complete, then proceed. Team invitation users see the team welcome screen before proceeding. `POST /api/onboarding/complete` now marks `completed_at`, creates the first thread, and returns a hidden onboarding system message plus redirect target. The client seeds `pendingMessage:newThread` and `showBootModal` in sessionStorage before navigating to `/chat/{threadId}?newThread=1`. Preference capture now happens in-chat through `AskUserQuestion`; `~/.chiridion/profile.md` is maintained by the profile-writer subagent.
 
 ### Get Help Requests
 Users can open an in-app help dialog from the sidebar footer (`Get Help`, `CircleHelp` icon). The form posts to `POST /api/help` with category, severity, description, and client context (`pageUrl`, `screenSize`). The route validates with zod/Conform, returns success immediately, and uses `waitUntil()` to:
@@ -196,7 +196,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | OAuth | `/api/auth/google[/callback]`, `/api/auth/github[/callback]` |
 | Slack | `/api/integrations/slack/oauth`, `/api/integrations/slack/callback`, `/api/integrations/slack/events` |
 | Orgs | `/api/orgs/:id/invite`, `/api/orgs/:id/check-slug`, `/api/orgs/:id/update-slug` |
-| Onboarding | `/api/onboarding`, `/api/onboarding/complete` |
+| Onboarding | `/api/onboarding/complete` |
 | Support | `/api/help` |
 | Dev tooling | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id` |
 | Admin troubleshooting | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages` |
