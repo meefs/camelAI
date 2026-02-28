@@ -5,7 +5,6 @@ import type { ExternalTurnResult } from './durable-objects.js';
 import { runExternalMessageTurn } from './helpers/external-turn.js';
 import { getOrgStub, getUserStub, getWorkspaceStub } from './helpers/stubs.js';
 import {
-  buildWorkspaceInboxAddress,
   getWorkspaceEmailRoutingConfig,
   parseMailboxAddress,
   parseWorkspaceInboxAddress,
@@ -34,6 +33,7 @@ const EMAIL_REPLY_REFERENCE_PREFIX = 'email_reply_ref:';
 const EMAIL_REPLY_REFERENCE_TTL_SECONDS = 180 * 24 * 60 * 60;
 const DEFAULT_EXTERNAL_TURN_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_EMAIL_RAW_SIZE_BYTES = 2 * 1024 * 1024;
+const STRICT_MESSAGE_ID_PATTERN = /^[^\s<>@]+@(?:[^\s<>@]+|\[[^\]\r\n]+\])$/;
 
 function sanitizeHeaderValue(value: string, maxLength = 200): string {
   return value.replace(/[\r\n]+/g, ' ').trim().slice(0, maxLength);
@@ -49,7 +49,8 @@ function normalizeMessageIdForHeader(rawValue: string | null): string | null {
   const normalized = normalizeMessageId(rawValue);
   if (!normalized) return null;
   const safe = normalized.replace(/[<>\s]/g, '');
-  return safe ? `<${safe}>` : null;
+  if (!safe || !STRICT_MESSAGE_ID_PATTERN.test(safe)) return null;
+  return `<${safe}>`;
 }
 
 function toDedupeFragment(value: string): string {
@@ -347,10 +348,6 @@ async function sendReply(
   const inReplyTo = normalizeMessageIdForHeader(inbound.headers.get('message-id'));
   if (inReplyTo) {
     headers.push(`In-Reply-To: ${inReplyTo}`);
-
-    const references = sanitizeHeaderValue(inbound.headers.get('references') || '', 600);
-    const merged = references ? `${references} ${inReplyTo}`.trim() : inReplyTo;
-    headers.push(`References: ${merged}`);
   }
 
   const raw = `${headers.join('\r\n')}\r\n\r\n${body}\r\n`;
@@ -374,14 +371,24 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
   }
 
   const routingConfig = getWorkspaceEmailRoutingConfig(env);
+  if (!routingConfig) {
+    message.setReject('Workspace email routing is not configured.');
+    return;
+  }
   const recipient = parseWorkspaceInboxAddress(message.to, {
-    expectedDomain: routingConfig?.domain,
-    expectedLocalPart: routingConfig?.localPart,
+    expectedDomain: routingConfig.domain,
+    expectedLocalPart: routingConfig.localPart,
   });
   if (!recipient) {
     message.setReject('Unknown workspace email address.');
     return;
   }
+  const recipientMailbox = parseMailboxAddress(message.to);
+  if (!recipientMailbox) {
+    message.setReject('Unknown workspace email address.');
+    return;
+  }
+  const recipientAddress = `${recipientMailbox.local}@${recipientMailbox.domain}`;
 
   const sender = parseMailboxAddress(message.from);
   if (!sender) {
@@ -455,16 +462,13 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
     });
 
     const replyText = outcomeToReplyText(turnResult);
-    const replyDomain = routingConfig?.domain || recipient.domain;
-    const fromAddress = buildWorkspaceInboxAddress(recipient.workspaceId, replyDomain, {
-      localPart: routingConfig?.localPart,
-    });
+    const replyDomain = recipientMailbox.domain;
     const outboundMessageId = createReplyMessageId(thread.threadId, replyDomain);
 
     const sentMessageId = await sendReply(message, {
-      fromAddress,
+      fromAddress: recipientAddress,
       toAddress: senderEmail,
-      replyToAddress: fromAddress,
+      replyToAddress: recipientAddress,
       subject: formatReplySubject(subject, thread.title),
       body: replyText,
       messageId: outboundMessageId,

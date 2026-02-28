@@ -27,8 +27,9 @@
 			"CF_GATEWAY_NAME": "chiridion",
 			"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-illiana",
 			"WORKER_BASE_URL": "https://dev-illiana.camelai.dev",
-			"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-			"CF_WORKER_NAME": "chiridion-app-dev-illiana",
+				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
+				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+				"CF_WORKER_NAME": "chiridion-app-dev-illiana",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-illiana"
 		},
 	"assets": {

@@ -21,9 +21,10 @@
 		// Claude API proxy (CF AI Gateway)
 		"CF_GATEWAY_NAME": "chiridion",
 		"BEDROCK_REGION": "us-west-2",
-		"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com"
-		// CF_GATEWAY_TOKEN is set via .dev.vars
-	},
+			"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
+			"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
+			// CF_GATEWAY_TOKEN is set via .dev.vars
+		},
 	"assets": {
 		"binding": "ASSETS",
 		"directory": "build/client"
@@ -158,9 +159,10 @@
 				"WORKER_BASE_URL": "https://camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
-				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com"
-				// CF_GATEWAY_TOKEN is set via secrets
-			},
+					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
+					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
+					// CF_GATEWAY_TOKEN is set via secrets
+				},
 			"images": {
 				"binding": "IMAGES"
 			},
@@ -262,7 +264,9 @@
 				"WORKER_BASE_URL": "https://staging.camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
-				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com"
+				"EMAIL_FROM_ADDRESS": "agent-staging@camelai.dev",
+				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+				"WORKSPACE_EMAIL_LOCAL_PART": "agent-staging"
 				// CF_GATEWAY_TOKEN is set via secrets
 			},
 			"assets": {
@@ -369,9 +373,10 @@
 				"WORKER_BASE_URL": "https://dev-miguel.camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
-				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com"
-				// CF_GATEWAY_TOKEN is set via secrets
-			},
+					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
+					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
+					// CF_GATEWAY_TOKEN is set via secrets
+				},
 			"assets": {
 				"binding": "ASSETS",
 				"directory": "build/client"
@@ -477,9 +482,10 @@
 				"WORKER_BASE_URL": "https://dev-illiana.camelai.dev",
 				"CF_GATEWAY_NAME": "chiridion",
 				"BEDROCK_REGION": "us-west-2",
-				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com"
-				// CF_GATEWAY_TOKEN is set via secrets
-			},
+					"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
+					"WORKSPACE_EMAIL_DOMAIN": "camelai.dev"
+					// CF_GATEWAY_TOKEN is set via secrets
+				},
 			"assets": {
 				"binding": "ASSETS",
 				"directory": "build/client"

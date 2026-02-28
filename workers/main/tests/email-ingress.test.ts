@@ -53,7 +53,7 @@ function createMessage(args: {
 
 function createMockEnv(overrides?: Partial<Record<string, unknown>>) {
   return {
-    EMAIL_FROM_ADDRESS: 'no-reply@mail.camelai.com',
+    WORKSPACE_EMAIL_DOMAIN: 'mail.camelai.com',
     WORKSPACE_EMAIL_LOCAL_PART: 'chat',
     EMAIL_TO_USER: {
       get: vi.fn().mockResolvedValue(null),

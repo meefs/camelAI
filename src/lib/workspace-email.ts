@@ -58,29 +58,21 @@ export function parseMailboxAddress(raw: string): ParsedMailboxAddress | null {
 
 export function getWorkspaceEmailDomain(env: {
   WORKSPACE_EMAIL_DOMAIN?: string;
-  EMAIL_FROM_ADDRESS?: string;
 }): string | null {
   const fromExplicit = env.WORKSPACE_EMAIL_DOMAIN?.trim().toLowerCase();
   if (fromExplicit && isValidDomain(fromExplicit)) {
     return fromExplicit;
   }
 
-  const fromAddress = env.EMAIL_FROM_ADDRESS ? parseMailboxAddress(env.EMAIL_FROM_ADDRESS) : null;
-  return fromAddress?.domain ?? null;
+  return null;
 }
 
 export function getWorkspaceEmailLocalPart(env: {
   WORKSPACE_EMAIL_LOCAL_PART?: string;
-  EMAIL_FROM_ADDRESS?: string;
 }): string {
   const fromExplicit = env.WORKSPACE_EMAIL_LOCAL_PART?.trim().toLowerCase();
   if (fromExplicit && isValidLocalPart(fromExplicit)) {
     return fromExplicit;
-  }
-
-  const fromAddress = env.EMAIL_FROM_ADDRESS ? parseMailboxAddress(env.EMAIL_FROM_ADDRESS) : null;
-  if (fromAddress?.local && isValidLocalPart(fromAddress.local)) {
-    return fromAddress.local;
   }
 
   return DEFAULT_WORKSPACE_EMAIL_LOCAL_PART;
@@ -89,7 +81,6 @@ export function getWorkspaceEmailLocalPart(env: {
 export function getWorkspaceEmailRoutingConfig(env: {
   WORKSPACE_EMAIL_DOMAIN?: string;
   WORKSPACE_EMAIL_LOCAL_PART?: string;
-  EMAIL_FROM_ADDRESS?: string;
 }): WorkspaceEmailRoutingConfig | null {
   const domain = getWorkspaceEmailDomain(env);
   if (!domain) return null;

@@ -28,8 +28,9 @@
 			"CF_GATEWAY_NAME": "chiridion",
 			"CF_DISPATCH_NAMESPACE": "chiridion-platform",
 			"WORKER_BASE_URL": "https://camelai.dev",
-			"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-			"CF_WORKER_NAME": "chiridion-app",
+				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
+				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+				"CF_WORKER_NAME": "chiridion-app",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail"
 		},
 	"assets": {

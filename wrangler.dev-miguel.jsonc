@@ -27,8 +27,9 @@
 			"CF_GATEWAY_NAME": "chiridion",
 			"CF_DISPATCH_NAMESPACE": "chiridion-platform-dev-miguel",
 			"WORKER_BASE_URL": "https://dev-miguel.camelai.dev",
-			"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
-			"CF_WORKER_NAME": "chiridion-app-dev-miguel",
+				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
+				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+				"CF_WORKER_NAME": "chiridion-app-dev-miguel",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-dev-miguel"
 		},
 	"assets": {

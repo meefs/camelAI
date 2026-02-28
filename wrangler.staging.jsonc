@@ -27,7 +27,9 @@
 			"CF_GATEWAY_NAME": "chiridion",
 			"CF_DISPATCH_NAMESPACE": "chiridion-platform-staging",
 			"WORKER_BASE_URL": "https://staging.camelai.dev",
-			"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
+			"EMAIL_FROM_ADDRESS": "agent-staging@camelai.dev",
+			"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+			"WORKSPACE_EMAIL_LOCAL_PART": "agent-staging",
 			"CF_WORKER_NAME": "chiridion-app-staging",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail-staging"
 		},
