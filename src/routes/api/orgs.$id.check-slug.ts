@@ -8,12 +8,14 @@ function normalizeSlug(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function isOwnerForOrg(
+function isAdminForOrg(
   orgId: string,
   memberships: Array<{ org_id: string; role: string }>
 ): boolean {
   return memberships.some(
-    (membership) => membership.org_id === orgId && membership.role === 'owner'
+    (membership) =>
+      membership.org_id === orgId &&
+      (membership.role === 'owner' || membership.role === 'admin')
   );
 }
 
@@ -29,15 +31,15 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
   if (!orgId || authContext.currentOrg.id !== orgId) {
     return Response.json(
-      { available: false, reason: 'not_owner' },
+      { available: false, reason: 'not_admin' },
       { status: 403 }
     );
   }
 
-  const isOwner = isOwnerForOrg(orgId, authContext.orgs);
-  if (!isOwner) {
+  const isAdmin = isAdminForOrg(orgId, authContext.orgs);
+  if (!isAdmin) {
     return Response.json(
-      { available: false, reason: 'not_owner' },
+      { available: false, reason: 'not_admin' },
       { status: 403 }
     );
   }

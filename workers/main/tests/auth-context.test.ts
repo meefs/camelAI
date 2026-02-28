@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
 import { createNewSession } from '../src/session-kv';
+import { getAuthContext, requireOrgAdmin } from '../../../src/lib/auth.server';
 import {
   createUser,
   createOrg,
@@ -197,6 +198,54 @@ describe('Auth context building (parallel DO calls)', () => {
       expect(ws1[0].id).toBe(ws1Id);
       expect(ws2[0].id).toBe(ws2Id);
       expect(ws1[0].id).not.toBe(ws2[0].id);
+    });
+  });
+
+  describe('stale org role mismatch regression', () => {
+    it('allows admin-gated access when OrgDO role is admin but UserDO role is stale member', async () => {
+      const ownerEmail = testEmail();
+      const memberEmail = testEmail();
+      const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password', 'Owner');
+      const { userId: memberId } = await createUser(testEnv, memberEmail, 'password', 'Member');
+      const { org, defaultWorkspaceId } = await createOrg(testEnv, 'Mismatch Org', ownerId);
+
+      // Start as normal member in both OrgDO + UserDO.
+      const invitation = await createInvitation(testEnv, org.id, memberEmail, 'member', ownerId);
+      const accepted = await acceptInvitation(testEnv, org.id, invitation.id, memberId);
+      expect(accepted).toBe(true);
+
+      // Introduce drift: promote role in OrgDO only (skip UserDO update on purpose).
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      await orgStub.updateMemberRole(memberId, 'admin', ownerId);
+
+      // Verify mismatch exists.
+      const userStub = testEnv.USER.get(testEnv.USER.idFromName(memberId));
+      expect(await userStub.getOrgRole(org.id)).toBe('member');
+      expect((await orgStub.getMember(memberId))?.role).toBe('admin');
+
+      const { sessionId } = await createNewSession(
+        sessionsKV,
+        memberId,
+        org.id,
+        defaultWorkspaceId
+      );
+
+      const request = new Request('https://camelai.dev/settings/organization/workspaces', {
+        headers: {
+          host: 'camelai.dev',
+          'X-Chiridion-Session-Id': sessionId,
+        },
+      });
+      const context = { cloudflare: { env: testEnv } } as any;
+
+      // Regression assertion: admin gate should trust OrgDO authority and allow access.
+      await expect(requireOrgAdmin(request, context, org.id)).resolves.toBeDefined();
+
+      // Auth context should reconcile the active org role to match OrgDO.
+      const authContext = await getAuthContext(request, context);
+      expect(authContext).not.toBeNull();
+      const currentOrgMembership = authContext?.orgs.find((entry) => entry.org_id === org.id);
+      expect(currentOrgMembership?.role).toBe('admin');
     });
   });
 });

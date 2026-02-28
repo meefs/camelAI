@@ -6,12 +6,14 @@ function normalizeSlug(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function isOwnerForOrg(
+function isAdminForOrg(
   orgId: string,
   memberships: Array<{ org_id: string; role: string }>
 ): boolean {
   return memberships.some(
-    (membership) => membership.org_id === orgId && membership.role === 'owner'
+    (membership) =>
+      membership.org_id === orgId &&
+      (membership.role === 'owner' || membership.role === 'admin')
   );
 }
 
@@ -29,9 +31,9 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return Response.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const isOwner = isOwnerForOrg(orgId, authContext.orgs);
-  if (!isOwner) {
-    return Response.json({ error: 'Only owners can update the org slug' }, { status: 403 });
+  const isAdmin = isAdminForOrg(orgId, authContext.orgs);
+  if (!isAdmin) {
+    return Response.json({ error: 'Only organization admins can update the org slug' }, { status: 403 });
   }
 
   let body: { slug?: string };
@@ -63,7 +65,8 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return Response.json({ error: 'Invalid slug format' }, { status: 400 });
     }
     if (message === 'not_owner') {
-      return Response.json({ error: 'Only owners can update the org slug' }, { status: 403 });
+      // Backward-compatible mapping while OrgDO still reports the old error code.
+      return Response.json({ error: 'Only organization admins can update the org slug' }, { status: 403 });
     }
     if (message === 'slug_taken' || message === 'slug_already_finalized') {
       return Response.json({ error: message }, { status: 409 });
