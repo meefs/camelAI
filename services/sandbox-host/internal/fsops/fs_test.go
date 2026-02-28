@@ -3,6 +3,8 @@ package fsops
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +55,82 @@ func TestWriteAndExists(t *testing.T) {
 	}
 	if string(contents) != "hello" {
 		t.Fatalf("unexpected file contents: %q", string(contents))
+	}
+}
+
+func TestListRecursiveIncludesRelativePaths(t *testing.T) {
+	root := t.TempDir()
+	mgr := NewManager(root)
+	sandbox := "sandbox-a"
+
+	if err := mgr.Write(sandbox, "/src/main.ts", []byte("console.log('hi')")); err != nil {
+		t.Fatalf("write src/main.ts failed: %v", err)
+	}
+	if err := mgr.Write(sandbox, "/README.md", []byte("# readme")); err != nil {
+		t.Fatalf("write README.md failed: %v", err)
+	}
+	if err := mgr.Write(sandbox, "/.claude/projects/thread.jsonl", []byte("{}")); err != nil {
+		t.Fatalf("write .claude/projects/thread.jsonl failed: %v", err)
+	}
+
+	entries, err := mgr.List(sandbox, "/", ListOptions{
+		Recursive:     true,
+		IncludeHidden: true,
+	})
+	if err != nil {
+		t.Fatalf("list recursive failed: %v", err)
+	}
+
+	relativePaths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		relativePaths = append(relativePaths, entry.RelativePath)
+	}
+
+	if !slices.Contains(relativePaths, "src/main.ts") {
+		t.Fatalf("missing src/main.ts in recursive list: %+v", relativePaths)
+	}
+	if !slices.Contains(relativePaths, "README.md") {
+		t.Fatalf("missing README.md in recursive list: %+v", relativePaths)
+	}
+	if !slices.Contains(relativePaths, ".claude/projects/thread.jsonl") {
+		t.Fatalf("missing hidden file in recursive list: %+v", relativePaths)
+	}
+}
+
+func TestListRecursiveExcludeHidden(t *testing.T) {
+	root := t.TempDir()
+	mgr := NewManager(root)
+	sandbox := "sandbox-a"
+
+	if err := mgr.Write(sandbox, "/visible/index.ts", []byte("export {}")); err != nil {
+		t.Fatalf("write visible/index.ts failed: %v", err)
+	}
+	if err := mgr.Write(sandbox, "/.env", []byte("SECRET=1")); err != nil {
+		t.Fatalf("write .env failed: %v", err)
+	}
+	if err := mgr.Write(sandbox, "/.claude/projects/thread.jsonl", []byte("{}")); err != nil {
+		t.Fatalf("write .claude/projects/thread.jsonl failed: %v", err)
+	}
+
+	entries, err := mgr.List(sandbox, "/", ListOptions{
+		Recursive:     true,
+		IncludeHidden: false,
+	})
+	if err != nil {
+		t.Fatalf("list recursive failed: %v", err)
+	}
+
+	relativePaths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		relativePaths = append(relativePaths, entry.RelativePath)
+	}
+
+	if !slices.Contains(relativePaths, "visible/index.ts") {
+		t.Fatalf("missing visible/index.ts in recursive list: %+v", relativePaths)
+	}
+	for _, rel := range relativePaths {
+		if strings.HasPrefix(rel, ".") || strings.Contains(rel, "/.") {
+			t.Fatalf("found hidden entry in filtered list: %q", rel)
+		}
 	}
 }

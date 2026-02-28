@@ -550,7 +550,13 @@ func (s *Server) handleFSList(w http.ResponseWriter, req *http.Request, name str
 	if strings.TrimSpace(path) == "" {
 		path = "/"
 	}
-	files, err := s.fs.List(name, path)
+	recursive := parseBoolQuery(req.URL.Query().Get("recursive"), false)
+	includeHidden := parseBoolQuery(req.URL.Query().Get("includeHidden"), true)
+
+	files, err := s.fs.List(name, path, fsops.ListOptions{
+		Recursive:     recursive,
+		IncludeHidden: includeHidden,
+	})
 	if err != nil {
 		return s.handleFSError(w, err, "Path not found")
 	}
@@ -558,9 +564,25 @@ func (s *Server) handleFSList(w http.ResponseWriter, req *http.Request, name str
 		"files":     files,
 		"count":     len(files),
 		"path":      path,
+		"recursive": recursive,
 		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	return nil
+}
+
+func parseBoolQuery(raw string, defaultValue bool) bool {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return defaultValue
+	}
+	switch strings.ToLower(value) {
+	case "1", "true":
+		return true
+	case "0", "false":
+		return false
+	default:
+		return defaultValue
+	}
 }
 
 func (s *Server) handleFSDelete(w http.ResponseWriter, req *http.Request, name string) error {

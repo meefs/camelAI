@@ -159,6 +159,11 @@ Several features (onboarding first-thread, custom connection "Other") use the sa
 ### Chat Attachment Uploads
 Multipart-only R2 uploads via `/api/workspaces/:id/upload` with actions: `mpu-create`, `mpu-uploadpart`, `mpu-complete`, `mpu-abort`.
 
+### Computer Tab File Search
+- The file tree API route (`/api/workspaces/:id/fs/list`) supports `recursive` + `includeHidden` query params and returns `relativePath` for entries.
+- Recursive list requests are handled in one sandbox-host call (host-side walk) instead of per-directory worker recursion.
+- `WorkspaceContainer.listFiles()` keeps a compatibility fallback to legacy per-directory recursion when sandbox-host responses do not include `recursive: true`.
+
 ### Todo State Persistence
 `control-plane.mjs` emits `todo_state` on `TodoWrite` tool calls. `ChatThreadDO` persists it and replays on WebSocket init. Cleared on turn completion (`result` event).
 

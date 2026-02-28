@@ -236,6 +236,8 @@ export class WorkspaceContainer {
     type: 'file' | 'directory';
     size: number;
     modifiedAt: string;
+    relativePath?: string;
+    absolutePath?: string;
   }> {
     const rawEntries = Array.isArray(payload)
       ? payload
@@ -251,10 +253,31 @@ export class WorkspaceContainer {
 
     return rawEntries.flatMap((entry) => {
       const raw = (entry ?? {}) as Record<string, unknown>;
+      const rawPath = typeof raw.path === 'string' ? raw.path : '';
+      const rawRelativePath = typeof raw.relativePath === 'string'
+        ? raw.relativePath
+        : typeof raw.relative === 'string'
+          ? raw.relative
+          : '';
+      const rawAbsolutePath = typeof raw.absolutePath === 'string'
+        ? raw.absolutePath
+        : rawPath.startsWith('/')
+          ? rawPath
+          : '';
+
       const name = typeof raw.name === 'string'
         ? raw.name
-        : typeof raw.path === 'string'
-          ? this.basenameFsPath(raw.path)
+        : rawRelativePath
+          ? this.basenameFsPath(rawRelativePath)
+          : rawAbsolutePath
+            ? this.basenameFsPath(rawAbsolutePath)
+            : rawPath
+              ? this.basenameFsPath(rawPath)
+              : '';
+      const relativePath = rawRelativePath
+        ? rawRelativePath
+        : rawPath && !rawPath.startsWith('/')
+          ? rawPath
           : '';
       if (!name || name === '/') return [];
 
@@ -270,8 +293,72 @@ export class WorkspaceContainer {
             ? raw.updatedAt
             : nowIso;
 
-      return [{ name, type, size, modifiedAt }];
+      return [{
+        name,
+        type,
+        size,
+        modifiedAt,
+        ...(relativePath ? { relativePath } : {}),
+        ...(rawAbsolutePath ? { absolutePath: rawAbsolutePath } : {}),
+      }];
     });
+  }
+
+  private isHiddenRelativePath(relativePath: string): boolean {
+    return relativePath.split('/').some((segment) => segment.startsWith('.'));
+  }
+
+  private async listFilesWithLegacyWalk(root: string, includeHidden: boolean): Promise<ControlPlaneListResponse> {
+    const files: ControlPlaneListResponse['files'] = [];
+
+    const walk = async (current: string): Promise<void> => {
+      const response = await this.fetchSandbox(
+        this.sandboxUrl('/fs/list', { path: current }),
+      );
+
+      if (response.status === 404) {
+        throw new Error(`Path not found: ${current}`);
+      }
+
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(body || `Failed to list directory: ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const entries = this.parseFsListEntries(payload);
+      for (const entry of entries) {
+        if (!includeHidden && entry.name.startsWith('.')) continue;
+        const absolutePath = this.joinFsPath(current, entry.name);
+        const relativePath = absolutePath.startsWith(`${root}/`)
+          ? absolutePath.slice(root.length + 1)
+          : absolutePath === root
+            ? entry.name
+            : absolutePath;
+
+        files.push({
+          name: entry.name,
+          type: entry.type,
+          size: entry.size,
+          modifiedAt: entry.modifiedAt,
+          relativePath,
+          absolutePath,
+        });
+
+        if (entry.type === 'directory') {
+          await walk(absolutePath);
+        }
+      }
+    };
+
+    await walk(root);
+    return {
+      success: true,
+      files,
+      count: files.length,
+      path: root,
+      timestamp: toIsoTime(Date.now()),
+    };
   }
 
 
@@ -551,15 +638,18 @@ export class WorkspaceContainer {
     const root = this.normalizeFsPath(path);
     const recursive = options?.recursive === true;
     const includeHidden = options?.includeHidden === true;
-    const files: ControlPlaneListResponse['files'] = [];
 
-    const walk = async (current: string): Promise<void> => {
+    try {
       const response = await this.fetchSandbox(
-        this.sandboxUrl('/fs/list', { path: current }),
+        this.sandboxUrl('/fs/list', {
+          path: root,
+          recursive: recursive ? '1' : '0',
+          includeHidden: includeHidden ? '1' : '0',
+        }),
       );
 
       if (response.status === 404) {
-        throw new Error(`Path not found: ${current}`);
+        throw new Error(`Path not found: ${root}`);
       }
 
       if (!response.ok) {
@@ -567,34 +657,48 @@ export class WorkspaceContainer {
         throw new Error(body || `Failed to list directory: ${response.status}`);
       }
 
-      const payload = await response.json();
+      const payload = await response.json() as { recursive?: unknown };
+      const backendRecursive = payload.recursive === true;
+      if (recursive && !backendRecursive) {
+        // Compatibility fallback for older sandbox-host versions.
+        return await this.listFilesWithLegacyWalk(root, includeHidden);
+      }
+
       const entries = this.parseFsListEntries(payload);
+      const files: ControlPlaneListResponse['files'] = [];
       for (const entry of entries) {
-        if (!includeHidden && entry.name.startsWith('.')) continue;
-        const absolutePath = this.joinFsPath(current, entry.name);
-        const relativePath = absolutePath.startsWith(`${root}/`)
-          ? absolutePath.slice(root.length + 1)
-          : absolutePath === root
-            ? entry.name
-            : absolutePath;
+        const relativePath = (entry.relativePath || '')
+          .replace(/^\/+/, '')
+          .split('/')
+          .filter(Boolean)
+          .join('/');
+        const absolutePath = entry.absolutePath
+          ? this.normalizeFsPath(entry.absolutePath)
+          : relativePath
+            ? this.joinFsPath(root, relativePath)
+            : this.joinFsPath(root, entry.name);
+        const normalizedRelativePath = relativePath
+          || (absolutePath.startsWith(`${root}/`)
+            ? absolutePath.slice(root.length + 1)
+            : absolutePath === root
+              ? entry.name
+              : this.basenameFsPath(absolutePath));
+
+        if (!normalizedRelativePath) continue;
+        if (!includeHidden && this.isHiddenRelativePath(normalizedRelativePath)) {
+          continue;
+        }
 
         files.push({
           name: entry.name,
           type: entry.type,
           size: entry.size,
           modifiedAt: entry.modifiedAt,
-          relativePath,
+          relativePath: normalizedRelativePath,
           absolutePath,
         });
-
-        if (recursive && entry.type === 'directory') {
-          await walk(absolutePath);
-        }
       }
-    };
 
-    try {
-      await walk(root);
       return {
         success: true,
         files,
