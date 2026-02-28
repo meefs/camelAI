@@ -71,31 +71,47 @@ export async function action({ request, context }: Route.ActionArgs) {
   const onboardingThreadTitle = `${firstName}'s first chat`;
 
   if (authContext.onboarding?.completed_at) {
+    let existingThreadId: string | null = null;
     try {
       const { items } = await chatDO.getThreadsPaginated(context, workspaceId, {
         offset: 0,
         limit: ONBOARDING_THREAD_LOOKUP_LIMIT,
       });
-      const existingThread = items.find(
-        (thread) =>
-          thread.created_by === authContext.user.id &&
-          thread.title === onboardingThreadTitle
-      );
-      if (existingThread) {
-        return Response.json({
-          success: true,
-          threadId: existingThread.id,
-          onboardingSystemMessage: ONBOARDING_SYSTEM_MESSAGE,
-          redirectTo: `/chat/${existingThread.id}?newThread=1`,
-        });
-      }
+      existingThreadId =
+        items.find(
+          (thread) =>
+            thread.created_by === authContext.user.id &&
+            thread.title === onboardingThreadTitle
+        )?.id ?? null;
     } catch (error) {
       console.error('Failed to look up existing onboarding thread:', error);
+      return Response.json(
+        { error: 'Failed to recover your onboarding chat. Please try again.' },
+        { status: 503 }
+      );
     }
+
+    if (existingThreadId) {
+      return Response.json({
+        success: true,
+        threadId: existingThreadId,
+        onboardingSystemMessage: ONBOARDING_SYSTEM_MESSAGE,
+        redirectTo: `/chat/${existingThreadId}?newThread=1`,
+      });
+    }
+
+    const recoveryThread = await chatDO.createThread(
+      context,
+      workspaceId,
+      onboardingThreadTitle,
+      authContext.user.id
+    );
 
     return Response.json({
       success: true,
-      redirectTo: '/chat',
+      threadId: recoveryThread.id,
+      onboardingSystemMessage: ONBOARDING_SYSTEM_MESSAGE,
+      redirectTo: `/chat/${recoveryThread.id}?newThread=1`,
     });
   }
 
