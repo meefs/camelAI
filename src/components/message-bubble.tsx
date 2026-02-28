@@ -18,6 +18,7 @@ import type { ReactNode } from 'react';
 import { useAuthData } from '@/hooks/use-auth-data';
 import { FilePreviewChip, parseUploadRefs } from '@/components/chat-file-preview';
 import { BugReportCard, parseBugReport } from '@/components/bug-report-preview';
+import { CollapsibleUserMessage } from '@/components/collapsible-user-message';
 import { isSupportedSlashCommand } from '@/lib/slash-commands';
 
 // Format timestamp to readable time (e.g., "12:25 PM")
@@ -600,7 +601,9 @@ export function MessageBubble({
         )}
         {hasCleanContent && (
           <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
-            <ContentBlockRenderer content={cleanedContent} skillSheets={skillSheets} />
+            <CollapsibleUserMessage>
+              <ContentBlockRenderer content={cleanedContent} skillSheets={skillSheets} />
+            </CollapsibleUserMessage>
           </div>
         )}
         {/* Hover action row */}
@@ -648,8 +651,8 @@ export function MessageBubble({
         )}
         {showStreamingIndicator && <LoadingDots />}
       </div>
-      {/* Hover action row - only show when not streaming */}
-      {!isStreaming && hasContent && (
+      {/* Hover action row */}
+      {hasContent && (
         <div
           className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
           role="group"
