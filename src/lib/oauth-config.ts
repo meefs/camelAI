@@ -76,6 +76,34 @@ export interface GitHubEmail {
   visibility: string | null;
 }
 
+const OAUTH_FETCH_TIMEOUT_MS = 15_000;
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs = OAUTH_FETCH_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === 'AbortError' || error.message.includes('aborted'))
+    ) {
+      throw new Error(`OAuth upstream request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function isValidOAuthProvider(provider: string): provider is OAuthProvider {
   return provider === 'google' || provider === 'github';
 }
@@ -115,7 +143,8 @@ export async function exchangeCodeForTokens(
   code: string,
   clientId: string,
   clientSecret: string,
-  redirectUri: string
+  redirectUri: string,
+  timeoutMs = OAUTH_FETCH_TIMEOUT_MS
 ): Promise<OAuthTokenResponse> {
   const config = OAUTH_PROVIDERS[provider];
 
@@ -140,11 +169,11 @@ export async function exchangeCodeForTokens(
     headers['Accept'] = 'application/json';
   }
 
-  const response = await fetch(config.tokenUrl, {
+  const response = await fetchWithTimeout(config.tokenUrl, {
     method: 'POST',
     headers,
     body: body.toString(),
-  });
+  }, timeoutMs);
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -167,17 +196,18 @@ export async function exchangeCodeForTokens(
  */
 export async function fetchUserInfo(
   provider: OAuthProvider,
-  accessToken: string
+  accessToken: string,
+  timeoutMs = OAUTH_FETCH_TIMEOUT_MS
 ): Promise<OAuthUserInfo> {
   const config = OAUTH_PROVIDERS[provider];
 
-  const response = await fetch(config.userInfoUrl, {
+  const response = await fetchWithTimeout(config.userInfoUrl, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: 'application/json',
       'User-Agent': 'Chiridion',
     },
-  });
+  }, timeoutMs);
 
   if (!response.ok) {
     throw new Error(`Failed to fetch user info: ${response.status}`);
@@ -200,7 +230,7 @@ export async function fetchUserInfo(
     // GitHub may not return email in user info, need to fetch separately
     let email = data.email;
     if (!email) {
-      email = await fetchGitHubPrimaryEmail(accessToken);
+      email = await fetchGitHubPrimaryEmail(accessToken, timeoutMs);
     }
 
     if (!email) {
@@ -222,14 +252,17 @@ export async function fetchUserInfo(
 /**
  * Fetch primary email from GitHub (when not public).
  */
-async function fetchGitHubPrimaryEmail(accessToken: string): Promise<string | null> {
-  const response = await fetch('https://api.github.com/user/emails', {
+async function fetchGitHubPrimaryEmail(
+  accessToken: string,
+  timeoutMs = OAUTH_FETCH_TIMEOUT_MS
+): Promise<string | null> {
+  const response = await fetchWithTimeout('https://api.github.com/user/emails', {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: 'application/json',
       'User-Agent': 'Chiridion',
     },
-  });
+  }, timeoutMs);
 
   if (!response.ok) {
     return null;

@@ -55,6 +55,7 @@ export { R2VirtualBucket } from './r2-virtual-bucket.js';
 export { DataProxyService } from './data-proxy-service.js';
 export { AIVirtualBinding } from './ai-virtual-binding.js';
 export { AdminIndexDO } from './admin-index-do.js';
+export { OAuthStateDO } from './oauth-state-do.js';
 
 // Extend React Router's AppLoadContext
 declare module 'react-router' {

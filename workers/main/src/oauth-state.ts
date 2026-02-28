@@ -1,62 +1,64 @@
 /**
- * OAuth state management using KV storage for CSRF protection.
- * States are short-lived (5 minutes) and single-use.
+ * OAuth state management using per-state Durable Objects for CSRF protection.
+ * Each OAuth state maps to its own DO instance (no global chokepoint).
  */
 
 import type { OAuthProvider } from '../../../src/lib/oauth-config';
+import type { OAuthStateDO, OAuthStateData } from './oauth-state-do.js';
 
-export interface OAuthState {
-  provider: OAuthProvider;
-  redirect_url: string;
-  created_at: number;
-}
+export type OAuthState = OAuthStateData;
 
-const OAUTH_STATE_TTL_SECONDS = 5 * 60; // 5 minutes
-const OAUTH_STATE_PREFIX = 'oauth_state:';
+type OAuthStateAtomicStub = Pick<OAuthStateDO, 'create' | 'getState' | 'consume' | 'consumeAndGetState'>;
 
-function stateKey(state: string): string {
-  return `${OAUTH_STATE_PREFIX}${state}`;
+function getOAuthStateStub(
+  namespace: DurableObjectNamespace<OAuthStateDO>,
+  state: string
+): OAuthStateAtomicStub {
+  return namespace.get(namespace.idFromName(state)) as unknown as OAuthStateAtomicStub;
 }
 
 /**
- * Create a new OAuth state and store it in KV.
+ * Create a new OAuth state in a dedicated Durable Object instance.
  */
 export async function createOAuthState(
-  kv: KVNamespace,
+  namespace: DurableObjectNamespace<OAuthStateDO>,
   provider: OAuthProvider,
   redirectUrl: string
 ): Promise<string> {
   const state = crypto.randomUUID();
-  const data: OAuthState = {
-    provider,
-    redirect_url: redirectUrl,
-    created_at: Date.now(),
-  };
-
-  await kv.put(stateKey(state), JSON.stringify(data), {
-    expirationTtl: OAUTH_STATE_TTL_SECONDS,
-  });
+  await getOAuthStateStub(namespace, state).create(provider, redirectUrl);
 
   return state;
 }
 
 /**
- * Validate and consume an OAuth state (single-use).
+ * Read OAuth state without consuming it.
  * Returns the state data if valid, null if invalid or expired.
  */
-export async function validateAndConsumeOAuthState(
-  kv: KVNamespace,
+export async function getOAuthState(
+  namespace: DurableObjectNamespace<OAuthStateDO>,
   state: string
 ): Promise<OAuthState | null> {
-  const key = stateKey(state);
-  const data = await kv.get(key, 'json') as OAuthState | null;
+  return await getOAuthStateStub(namespace, state).getState();
+}
 
-  if (!data) {
-    return null;
-  }
+/**
+ * Consume OAuth state after a successful callback.
+ */
+export async function consumeOAuthState(
+  namespace: DurableObjectNamespace<OAuthStateDO>,
+  state: string
+): Promise<void> {
+  await getOAuthStateStub(namespace, state).consume();
+}
 
-  // Delete immediately to ensure single-use
-  await kv.delete(key);
-
-  return data;
+/**
+ * Atomically validate and consume OAuth state.
+ * Returns state data when valid; null when missing/expired/already-consumed.
+ */
+export async function consumeOAuthStateWithData(
+  namespace: DurableObjectNamespace<OAuthStateDO>,
+  state: string
+): Promise<OAuthState | null> {
+  return await getOAuthStateStub(namespace, state).consumeAndGetState();
 }

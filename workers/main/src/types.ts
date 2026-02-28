@@ -10,6 +10,7 @@ import type { CfApiProxyEnv } from './cf-api-proxy.js';
 import type { McpEnv } from './mcp-handler.js';
 import type { WorkspaceDO } from './workspace.js';
 import type { WorkerLogsDO } from './worker-logs-do.js';
+import type { OAuthStateDO } from './oauth-state-do.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
 import type { SlackEventQueueMessage } from './slack-types.js';
 
@@ -17,6 +18,7 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   ASSETS: Fetcher;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
+  OAUTH_STATE: DurableObjectNamespace<OAuthStateDO>;
   SESSIONS: KVNamespace;
   ERROR_ANALYTICS?: AnalyticsEngineDataset;
   APP_SCREENSHOT_QUEUE?: Queue<AppScreenshotJob>;

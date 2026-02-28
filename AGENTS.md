@@ -73,6 +73,9 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 4. Session stored in KV (`SESSIONS`), cookie set with `httpOnly`, `sameSite: lax`
 5. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
 
+### OAuth State Storage
+Google/GitHub OAuth `state` is stored in a dedicated per-state Durable Object (`OAuthStateDO`) keyed by `state` value (`idFromName(state)`). This avoids KV eventual-consistency issues for callback validation and avoids a single DO bottleneck because each login state is isolated to its own DO instance. Callback handling uses an atomic consume-and-read DO RPC before token exchange so each `state` is single-use.
+
 ### Onboarding
 Incomplete users are redirected to `/onboarding` before accessing `_app` routes. For password-based accounts, email verification is required before `POST /api/onboarding/complete` succeeds. Steps are stored in localStorage during the flow, persisted to `UserDO` via `POST /api/onboarding`, finalized via `POST /api/onboarding/complete` (creates first thread, writes `~/.chiridion/profile.md`, returns redirect). Org slug step is conditional and enforced by `OrgSlugDO`.
 

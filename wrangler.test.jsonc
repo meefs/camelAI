@@ -31,11 +31,13 @@
 			{ "name": "ORG", "class_name": "OrgDO" },
 			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-			{ "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" }
+			{ "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" },
+			{ "name": "OAUTH_STATE", "class_name": "OAuthStateDO" }
 		]
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["UserDO", "OrgDO", "OrgSlugDO", "WorkspaceDO"] },
-		{ "tag": "v2", "new_sqlite_classes": ["AdminIndexDO"] }
+		{ "tag": "v2", "new_sqlite_classes": ["AdminIndexDO"] },
+		{ "tag": "v3", "new_sqlite_classes": ["OAuthStateDO"] }
 	]
 }
