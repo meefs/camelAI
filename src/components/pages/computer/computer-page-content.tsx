@@ -352,6 +352,7 @@ export default function ComputerPageContent({
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchIndexLoaded, setSearchIndexLoaded] = useState(false);
+  const [searchIndexAttempted, setSearchIndexAttempted] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
   const [dragBlockedPath, setDragBlockedPath] = useState<string | null>(null);
@@ -660,8 +661,18 @@ export default function ComputerPageContent({
   }, []);
 
   const loadDirectory = useCallback(
-    async (path: string, options: { recursive?: boolean } = {}) => {
+    async (
+      path: string,
+      options: {
+        recursive?: boolean;
+        includeHidden?: boolean;
+        timeoutMs?: number;
+      } = {}
+    ) => {
       const targetPath = normalizePath(path);
+      const controller = options.timeoutMs ? new AbortController() : null;
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
       setLoadingPaths((prev) => {
         const next = new Set(prev);
         next.add(targetPath);
@@ -669,11 +680,23 @@ export default function ComputerPageContent({
       });
 
       try {
-        const res = await fetch(
-          `${apiBase}/list?path=${encodeURIComponent(targetPath)}&recursive=${
-            options.recursive ? '1' : '0'
-          }`
-        );
+        if (controller && options.timeoutMs) {
+          timeoutId = setTimeout(() => {
+            controller.abort();
+          }, options.timeoutMs);
+        }
+
+        const query = new URLSearchParams({
+          path: targetPath,
+          recursive: options.recursive ? '1' : '0',
+        });
+        if (options.includeHidden !== undefined) {
+          query.set('includeHidden', options.includeHidden ? '1' : '0');
+        }
+
+        const res = await fetch(`${apiBase}/list?${query.toString()}`, {
+          ...(controller ? { signal: controller.signal } : {}),
+        });
         if (!res.ok) {
           const payload = (await res
             .json()
@@ -687,13 +710,21 @@ export default function ComputerPageContent({
           applyListing(data);
         }
         setTreeError(null);
+        return true;
       } catch (error) {
+        const didTimeout = controller?.signal.aborted === true && Boolean(options.timeoutMs);
         setTreeError(
-          error instanceof Error
+          didTimeout
+            ? 'Search indexing timed out. Try narrowing your query or refreshing the file tree.'
+            : error instanceof Error
             ? error.message
             : 'Failed to load workspace files'
         );
+        return false;
       } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
         setLoadingPaths((prev) => {
           const next = new Set(prev);
           next.delete(targetPath);
@@ -735,6 +766,8 @@ export default function ComputerPageContent({
     }
     let cancelled = false;
     setRootLoaded(false);
+    setSearchIndexLoaded(false);
+    setSearchIndexAttempted(false);
     void loadDirectory(ROOT_PATH).finally(() => {
       if (!cancelled) {
         setRootLoaded(true);
@@ -748,13 +781,18 @@ export default function ComputerPageContent({
   useEffect(() => {
     if (!user) return;
     if (!searchTerm.trim()) return;
-    if (searchIndexLoaded || searchLoading) return;
+    if (searchIndexLoaded || searchLoading || searchIndexAttempted) return;
     setSearchLoading(true);
-    void loadDirectory(ROOT_PATH, { recursive: true }).finally(() => {
+    void loadDirectory(ROOT_PATH, {
+      recursive: true,
+      includeHidden: false,
+      timeoutMs: 10000,
+    }).finally(() => {
       setSearchLoading(false);
       setSearchIndexLoaded(true);
+      setSearchIndexAttempted(true);
     });
-  }, [loadDirectory, searchIndexLoaded, searchLoading, searchTerm, user]);
+  }, [loadDirectory, searchIndexAttempted, searchIndexLoaded, searchLoading, searchTerm, user]);
 
 
   const updateTab = useCallback((path: string, updater: (tab: OpenTab) => OpenTab) => {
@@ -1681,7 +1719,7 @@ export default function ComputerPageContent({
   const isSavingActive = activePath ? savingPaths.has(activePath) : false;
   const isTreeLoading = loadingPaths.has(ROOT_PATH);
   const hasSearchTerm = searchTerm.trim().length > 0;
-  const showSearchLoading = hasSearchTerm && (searchLoading || !searchIndexLoaded);
+  const showSearchLoading = hasSearchTerm && searchLoading && treeRows.length === 0;
   const dragSource = dragSourcePathRef.current;
   const dragEnabled = canMutate;
   const canDropToRoot =
@@ -1759,7 +1797,11 @@ export default function ComputerPageContent({
                       size="icon"
                       variant="ghost"
                       className="h-7 w-7"
-                      onClick={() => loadDirectory(ROOT_PATH)}
+                      onClick={() => {
+                        setSearchIndexLoaded(false);
+                        setSearchIndexAttempted(false);
+                        void loadDirectory(ROOT_PATH);
+                      }}
                     >
                       <RefreshCw
                         className={cn('size-3.5', isTreeLoading && 'animate-spin')}
@@ -1868,8 +1910,7 @@ export default function ComputerPageContent({
                           : 'No files found yet.'}
                     </div>
                   )}
-                  {!showSearchLoading &&
-                    treeRows.map(({ node, depth, isMatch }) => {
+                  {treeRows.map(({ node, depth, isMatch }) => {
                       const isExpanded = expandedPaths.has(node.path);
                       const isActive = activePath === node.path;
                       const isDirectory = node.kind === 'dir';

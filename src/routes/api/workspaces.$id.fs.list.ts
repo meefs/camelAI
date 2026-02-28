@@ -5,6 +5,7 @@ import {
   getPathParam,
   parseBooleanParam,
   toContainerPath,
+  normalizeWorkspacePath,
   normalizeWhitespace,
   resolveContainerPath,
 } from './workspaces.utils';
@@ -23,7 +24,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const resolvedPath = await resolveContainerPath(container, path);
     const containerPath = resolvedPath ?? toContainerPath(path);
     const recursive = parseBooleanParam(url.searchParams.get('recursive'), false);
-    const includeHidden = parseBooleanParam(url.searchParams.get('includeHidden'), true);
+    const includeHiddenParam = url.searchParams.get('includeHidden');
+    const includeHidden = includeHiddenParam === null
+      ? !recursive
+      : parseBooleanParam(includeHiddenParam, true);
 
     const listing = await container.listFiles(containerPath, { recursive, includeHidden });
     if (listing.success === false) {
@@ -37,15 +41,25 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     // Entry paths must be workspace-relative (e.g., '/.claude/projects' not just 'projects')
     const response: WorkspaceListResponse = {
       path,
-      entries: (listing.files || []).map((file) => {
+      entries: (listing.files || []).flatMap((file) => {
         const name = normalizeWhitespace(file.name);
-        return {
-          path: path === '/' ? `/${name}` : `${path}/${name}`,
+        const rawRelativePath = normalizeWhitespace(file.relativePath || name).trim();
+        if (!rawRelativePath) return [];
+        const normalizedRelativePath = normalizeWorkspacePath(
+          rawRelativePath.startsWith('/') ? rawRelativePath : `/${rawRelativePath}`
+        );
+        if (normalizedRelativePath === '/') return [];
+        const entryPath = path === '/'
+          ? normalizedRelativePath
+          : normalizeWorkspacePath(`${path}${normalizedRelativePath}`);
+
+        return [{
+          path: entryPath,
           name,
           type: file.type,
           size: file.size,
           modifiedAt: file.modifiedAt,
-        };
+        }];
       }),
       count: listing.count,
       timestamp: new Date().toISOString(),

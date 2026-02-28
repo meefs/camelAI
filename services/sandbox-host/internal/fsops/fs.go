@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,10 +13,16 @@ import (
 )
 
 type Entry struct {
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Size       int64  `json:"size"`
-	ModifiedAt string `json:"modifiedAt"`
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	Size         int64  `json:"size"`
+	ModifiedAt   string `json:"modifiedAt"`
+	RelativePath string `json:"relativePath,omitempty"`
+}
+
+type ListOptions struct {
+	Recursive     bool
+	IncludeHidden bool
 }
 
 type ExistsResult struct {
@@ -105,33 +112,94 @@ func (m *Manager) Write(name, path string, data []byte) error {
 	return nil
 }
 
-func (m *Manager) List(name, path string) ([]Entry, error) {
+func (m *Manager) List(name, path string, options ListOptions) ([]Entry, error) {
 	hostPath, err := m.ResolveHostPath(name, path)
 	if err != nil {
 		return nil, err
 	}
-	dirs, err := os.ReadDir(hostPath)
-	if err != nil {
-		return nil, err
+
+	includeHidden := options.IncludeHidden
+	if !options.Recursive {
+		dirs, err := os.ReadDir(hostPath)
+		if err != nil {
+			return nil, err
+		}
+
+		entries := make([]Entry, 0, len(dirs))
+		for _, de := range dirs {
+			if !includeHidden && strings.HasPrefix(de.Name(), ".") {
+				continue
+			}
+
+			full := filepath.Join(hostPath, de.Name())
+			info, err := os.Stat(full)
+			if err != nil {
+				continue
+			}
+			typeValue := "file"
+			if info.IsDir() {
+				typeValue = "directory"
+			}
+			entries = append(entries, Entry{
+				Name:         de.Name(),
+				Type:         typeValue,
+				Size:         info.Size(),
+				ModifiedAt:   info.ModTime().UTC().Format(time.RFC3339Nano),
+				RelativePath: filepath.ToSlash(de.Name()),
+			})
+		}
+
+		return entries, nil
 	}
 
-	entries := make([]Entry, 0, len(dirs))
-	for _, de := range dirs {
-		full := filepath.Join(hostPath, de.Name())
-		info, err := os.Stat(full)
-		if err != nil {
-			continue
+	entries := make([]Entry, 0, 64)
+	walkErr := filepath.WalkDir(hostPath, func(current string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			// Best-effort traversal: skip unreadable entries.
+			return nil
 		}
+		if current == hostPath {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(hostPath, current)
+		if err != nil {
+			return nil
+		}
+		if relPath == "." || relPath == "" {
+			return nil
+		}
+		relPath = filepath.ToSlash(relPath)
+
+		name := d.Name()
+		if !includeHidden && strings.HasPrefix(name, ".") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+
 		typeValue := "file"
 		if info.IsDir() {
 			typeValue = "directory"
 		}
+
 		entries = append(entries, Entry{
-			Name:       de.Name(),
-			Type:       typeValue,
-			Size:       info.Size(),
-			ModifiedAt: info.ModTime().UTC().Format(time.RFC3339Nano),
+			Name:         name,
+			Type:         typeValue,
+			Size:         info.Size(),
+			ModifiedAt:   info.ModTime().UTC().Format(time.RFC3339Nano),
+			RelativePath: relPath,
 		})
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
 	}
 
 	return entries, nil
