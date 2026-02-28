@@ -9,9 +9,10 @@ import { INTEGRATION_REGISTRY } from '../../../../src/lib/integration-registry.j
 import { decryptCredentials, encryptCredentials } from '../../../../src/lib/integration-crypto.js';
 import { WorkspaceContainer } from '../workspace-container.js';
 import { requireSession } from '../helpers/auth.js';
-import { getWorkspaceStub, getOrgStub, getThreadStub } from '../helpers/stubs.js';
+import type { ConnectionSetupResponse, ExternalTurnResult } from '../durable-objects.js';
+import { runExternalMessageTurn } from '../helpers/external-turn.js';
+import { getWorkspaceStub, getOrgStub } from '../helpers/stubs.js';
 import { redirect, text } from '../helpers/response.js';
-import type { ConnectionSetupResponse } from '../durable-objects.js';
 import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from '../cf-api-proxy.js';
 import type { SlackEventCallbackPayload } from '../slack-types.js';
 
@@ -35,30 +36,7 @@ interface SlackCredentials {
   team_id?: string;
 }
 
-interface SlackQuestion {
-  id?: string;
-  header?: string;
-  question?: string;
-  options?: Array<{ label?: string; description?: string }>;
-  multiSelect?: boolean;
-}
-
-interface SlackAskUserQuestionPayload {
-  questionId: string;
-  toolUseId?: string;
-  questions: SlackQuestion[];
-}
-
-interface SlackExternalStateResponse {
-  pendingQuestion: SlackAskUserQuestionPayload | null;
-}
-
-interface SlackExternalTurnResponse {
-  status: 'result' | 'question' | 'busy' | 'error';
-  reply?: string;
-  question?: SlackAskUserQuestionPayload;
-  error?: string;
-}
+type SlackExternalTurnResponse = ExternalTurnResult;
 
 const SLACK_TEAM_INDEX_PREFIX = 'slack_team:';
 const SLACK_THREAD_MAP_PREFIX = 'slack_thread:';
@@ -210,94 +188,6 @@ function normalizeSlackMessageText(rawText: string, botUserId?: string): string 
     text = text.replace(mention, '').trim();
   }
   return text;
-}
-
-function formatSlackQuestionPrompt(question: SlackAskUserQuestionPayload): string {
-  const lines: string[] = ['Claude needs your input before continuing:'];
-
-  question.questions.forEach((entry, index) => {
-    const label = entry.id || entry.header || `q${index + 1}`;
-    const prompt = entry.question || entry.header || `Question ${index + 1}`;
-    lines.push('');
-    lines.push(`${index + 1}. ${prompt}`);
-    lines.push(`Reply key: ${label}`);
-
-    const options = Array.isArray(entry.options) ? entry.options : [];
-    if (options.length > 0) {
-      for (let optIndex = 0; optIndex < options.length; optIndex += 1) {
-        const option = options[optIndex];
-        const optLabel = option?.label || `Option ${optIndex + 1}`;
-        const optDesc = option?.description ? ` - ${option.description}` : '';
-        lines.push(`  ${optIndex + 1}) ${optLabel}${optDesc}`);
-      }
-    }
-  });
-
-  if (question.questions.length > 1) {
-    lines.push('');
-    lines.push('For multiple questions, reply using one line per answer in the format:');
-    lines.push('key: value');
-  }
-
-  return lines.join('\n');
-}
-
-function parseSlackAnswers(text: string, payload: SlackAskUserQuestionPayload): Record<string, string> {
-  const trimmed = text.trim();
-  if (!trimmed) return {};
-
-  const questions = payload.questions;
-  if (!Array.isArray(questions) || questions.length === 0) return {};
-
-  const answers: Record<string, string> = {};
-  const mapAnswer = (input: string, question: SlackQuestion): string => {
-    const normalized = input.trim();
-    const options = Array.isArray(question.options) ? question.options : [];
-    if (!normalized || options.length === 0) return normalized;
-
-    const asNumber = Number(normalized);
-    if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= options.length) {
-      return options[asNumber - 1]?.label?.trim() || normalized;
-    }
-
-    const lower = normalized.toLowerCase();
-    const matched = options.find((option) => option?.label?.trim().toLowerCase() === lower);
-    return matched?.label?.trim() || normalized;
-  };
-
-  if (questions.length === 1) {
-    const question = questions[0];
-    const key = question.question || question.header || question.id || 'answer';
-    answers[key] = mapAnswer(trimmed, question);
-    return answers;
-  }
-
-  const lines = trimmed.split('\n').map((line) => line.trim()).filter(Boolean);
-  const byKey = new Map<string, SlackQuestion>();
-  for (let index = 0; index < questions.length; index += 1) {
-    const question = questions[index];
-    const key = (question.id || question.header || question.question || `q${index + 1}`).trim().toLowerCase();
-    byKey.set(key, question);
-  }
-
-  for (const line of lines) {
-    const separatorIndex = line.indexOf(':');
-    if (separatorIndex <= 0) continue;
-    const rawKey = line.slice(0, separatorIndex).trim().toLowerCase();
-    const rawValue = line.slice(separatorIndex + 1).trim();
-    const question = byKey.get(rawKey);
-    if (!question) continue;
-    const answerKey = question.question || question.header || question.id || rawKey;
-    answers[answerKey] = mapAnswer(rawValue, question);
-  }
-
-  if (Object.keys(answers).length === 0) {
-    const first = questions[0];
-    const firstKey = first.question || first.header || first.id || 'answer';
-    answers[firstKey] = mapAnswer(trimmed, first);
-  }
-
-  return answers;
 }
 
 async function postSlackThreadMessage(
@@ -668,87 +558,11 @@ async function getOrCreateSlackThreadId(
     args.workspaceId,
     title,
     'slack',
-    args.initialText.trim().slice(0, 500) || undefined,
-    'slack'
+    args.initialText.trim().slice(0, 500) || undefined
   );
 
   await env.APP_KV.put(mappingKey, thread.id);
   return thread.id;
-}
-
-async function runSlackExternalMessageTurn(
-  env: RouteContext['env'],
-  args: {
-    threadId: string;
-    workspaceId: string;
-    orgId: string;
-    userName: string;
-    message: string;
-  }
-): Promise<SlackExternalTurnResponse> {
-  const stub = getThreadStub(env, args.threadId);
-  const response = await stub.fetch(new Request('http://internal/external-message', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      threadId: args.threadId,
-      workspaceId: args.workspaceId,
-      orgId: args.orgId,
-      userName: args.userName,
-      userEmail: null,
-      message: args.message,
-      timeoutMs: DEFAULT_EXTERNAL_TURN_TIMEOUT_MS,
-    }),
-  }));
-
-  if (!response.ok) {
-    return { status: 'error', error: `Chat thread rejected message (${response.status})` };
-  }
-
-  return await response.json() as SlackExternalTurnResponse;
-}
-
-async function runSlackExternalQuestionTurn(
-  env: RouteContext['env'],
-  args: {
-    threadId: string;
-    workspaceId: string;
-    orgId: string;
-    questionId: string;
-    answers: Record<string, string>;
-  }
-): Promise<SlackExternalTurnResponse> {
-  const stub = getThreadStub(env, args.threadId);
-  const response = await stub.fetch(new Request('http://internal/external-question-response', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      threadId: args.threadId,
-      workspaceId: args.workspaceId,
-      orgId: args.orgId,
-      questionId: args.questionId,
-      answers: args.answers,
-      timeoutMs: DEFAULT_EXTERNAL_TURN_TIMEOUT_MS,
-    }),
-  }));
-
-  if (!response.ok) {
-    return { status: 'error', error: `Chat thread rejected question response (${response.status})` };
-  }
-
-  return await response.json() as SlackExternalTurnResponse;
-}
-
-async function getSlackExternalState(
-  env: RouteContext['env'],
-  threadId: string
-): Promise<SlackExternalStateResponse> {
-  const stub = getThreadStub(env, threadId);
-  const response = await stub.fetch(new Request('http://internal/external-state', { method: 'GET' }));
-  if (!response.ok) {
-    return { pendingQuestion: null };
-  }
-  return await response.json() as SlackExternalStateResponse;
 }
 
 async function dispatchSlackTurnOutcome(
@@ -762,11 +576,6 @@ async function dispatchSlackTurnOutcome(
     if (reply) {
       await postSlackThreadMessage(token, channel, threadTs, reply);
     }
-    return;
-  }
-
-  if (result.status === 'question' && result.question) {
-    await postSlackThreadMessage(token, channel, threadTs, formatSlackQuestionPrompt(result.question));
     return;
   }
 
@@ -834,22 +643,15 @@ export async function processSlackEventCallback(
     initialText: messageText,
   });
 
-  const externalState = await getSlackExternalState(env, threadId);
-  const turnResult = externalState.pendingQuestion
-    ? await runSlackExternalQuestionTurn(env, {
-        threadId,
-        workspaceId: installation.workspaceId,
-        orgId: installation.orgId,
-        questionId: externalState.pendingQuestion.questionId,
-        answers: parseSlackAnswers(messageText, externalState.pendingQuestion),
-      })
-    : await runSlackExternalMessageTurn(env, {
-        threadId,
-        workspaceId: installation.workspaceId,
-        orgId: installation.orgId,
-        userName: `Slack ${userId}`,
-        message: messageText,
-      });
+  const turnResult = await runExternalMessageTurn(env, {
+    threadId,
+    workspaceId: installation.workspaceId,
+    orgId: installation.orgId,
+    userName: `Slack ${userId}`,
+    userEmail: null,
+    message: messageText,
+    timeoutMs: DEFAULT_EXTERNAL_TURN_TIMEOUT_MS,
+  });
 
   const replyThreadTs = getSlackReplyThreadTs(event);
   if (!replyThreadTs) return;

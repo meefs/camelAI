@@ -118,8 +118,18 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 2. Worker dedupes by Slack `event_id` and message identity (`team/channel/user/ts`), enqueues to `SLACK_EVENTS_QUEUE`, and returns `200` immediately
 3. Queue consumer resolves workspace/integration by Slack `team_id` from KV index (`slack_team:{teamId}`)
 4. Queue consumer maps Slack thread (`team/channel/root_ts`) to camelAI thread ID (`slack_thread:*`) and creates thread if needed
-5. `ChatThreadDO` ingests Slack turns through internal HTTP endpoints (`/external-message`, `/external-question-response`)
-6. AskUserQuestion prompts are returned to Slack thread replies and next Slack message is treated as tool input
+5. `ChatThreadDO` ingests Slack turns through `externalMessage(...)` Durable Object RPC
+6. `AskUserQuestion` is interactive only when a browser chat websocket is connected for the thread; without a browser session, `ChatThreadDO` auto-answers unavailable to the model
+7. Slack replies receive final assistant output, busy, or error text
+
+### Email Chat Ingress
+1. Cloudflare Email Routing delivers inbound messages to Worker `email()` (non-HTTP handler)
+2. A single registered inbox local-part is used (for example `chat@<domain>`), and workspace addresses are subaddressed as `{local-part}+{workspaceId}@<domain>`
+3. Sender is authorized by email (`EMAIL_TO_USER` lookup) plus workspace access check (org member + workspace access not `none`)
+4. Follow-ups are routed to existing threads using email reply headers (`In-Reply-To` / `References`) mapped in KV (`email_reply_ref:*`)
+5. `ChatThreadDO` ingests email turns through `externalMessage(...)` Durable Object RPC
+6. `AskUserQuestion` follows the same browser-presence rule as Slack/web: interactive only when a browser chat websocket is connected; otherwise the model gets an unavailable response
+7. Replies are sent from workspace-scoped subaddresses (`{local-part}+{workspaceId}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies
 
 ### Sandbox Proxy Auth
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.
@@ -210,6 +220,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Sandbox container proxy APIs | `/api/{mssql,postgres,mysql}/query`, `/api/openai/v1/*` |
 | Apps | `/api/apps/:scriptName/preview` |
 | WebSocket | `/ws/{workspace}` (chat), `/ws/logs?scriptName={name}` (worker logs) |
+| Email | Worker `email()` handler (Cloudflare Email Routing, workspace inbox format `{local-part}+{workspaceId}@...`) |
 | MCP | `/mcp` (streamable HTTP), `/mcp/health` |
 
 ## Durable Objects
@@ -223,7 +234,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | `ChatThreadDO` | per thread | WebSocket state, preview target, todo/prompt persistence |
 | `WorkerLogsDO` | per script | Deployed worker logs (up to 10k entries), real-time WebSocket streaming |
 
-Thread records now include `source` (`web` or `slack`). User-facing history queries filter to `web`; admin views include all sources.
+Thread records are treated uniformly across web, Slack, and email ingress. History and admin queries do not filter by thread source.
 
 **Workspace Runtime** (per workspace): Docker + gVisor sandbox provisioned eagerly on workspace creation. Workers reach sandbox host via VPC service binding (`env.SANDBOX_HOST`). Runtime startup is on-demand from chat/API paths.
 

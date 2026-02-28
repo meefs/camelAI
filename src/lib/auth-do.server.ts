@@ -20,6 +20,7 @@ import type {
   AdminInvitation,
   PaginatedResult,
   PaginationParams,
+  Thread,
   Message,
   PreviewTarget,
 } from '@/types';
@@ -615,7 +616,7 @@ export async function adminGetThreadWithMessages(
   context: AppLoadContext,
   threadId: string
 ): Promise<{
-  thread: { id: string; title: string; created_by: string; created_at: number; updated_at: number; source: 'web' | 'slack' };
+  thread: { id: string; title: string; created_by: string; created_at: number; updated_at: number };
   messages: Message[];
   org_id: string;
   workspace_id: string;
@@ -646,7 +647,6 @@ export async function adminGetThreadWithMessages(
       created_by: thread.created_by,
       created_at: thread.created_at,
       updated_at: thread.updated_at,
-      source: thread.source ?? 'web',
     },
     messages,
     org_id: orgId,
@@ -677,7 +677,7 @@ export async function adminGetWorkspaceDetail(
   if (!org) return null;
 
   // Filter threads to this workspace and map to Thread type
-  const threads = orgThreads
+  const threads: Thread[] = orgThreads
     .filter((t) => t.workspace_id === workspaceId)
     .map((t) => ({
       id: t.id,
@@ -686,7 +686,6 @@ export async function adminGetWorkspaceDetail(
       created_by: t.created_by,
       created_at: t.created_at,
       updated_at: t.updated_at,
-      source: t.source ?? 'web',
       user_message_count: t.user_message_count ?? 0,
     }));
 

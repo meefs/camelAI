@@ -18,11 +18,13 @@ import type { Workspace } from "@/types"
 
 interface WorkspaceGeneralFormProps {
   workspace: Workspace
+  workspaceEmailAddress?: string | null
   canEdit: boolean
 }
 
 export function WorkspaceGeneralForm({
   workspace,
+  workspaceEmailAddress,
   canEdit,
 }: WorkspaceGeneralFormProps) {
   const revalidator = useRevalidator()
@@ -108,6 +110,25 @@ export function WorkspaceGeneralForm({
           />
           {descriptionErrors && descriptionErrors.length > 0 && (
             <p className="text-sm text-destructive">{descriptionErrors[0]}</p>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="workspace-email-address">Workspace email</Label>
+          <Input
+            id="workspace-email-address"
+            value={workspaceEmailAddress ?? "Not configured"}
+            readOnly
+          />
+          {workspaceEmailAddress ? (
+            <p className="text-sm text-muted-foreground">
+              Send a message to this address to chat with camelAI from email. Replies stay in the same camelAI thread
+              using email reply headers.
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Workspace email routing is not configured in this environment.
+            </p>
           )}
         </div>
 

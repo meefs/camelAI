@@ -84,7 +84,6 @@ export default function AdminThreadsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Thread</TableHead>
-                  <TableHead>Source</TableHead>
                   <TableHead>Organization</TableHead>
                   <TableHead>Workspace</TableHead>
                   <TableHead>Updated</TableHead>
@@ -94,7 +93,7 @@ export default function AdminThreadsPage() {
               <TableBody>
                 {threads.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                       No threads found
                     </TableCell>
                   </TableRow>
@@ -111,9 +110,6 @@ export default function AdminThreadsPage() {
                             {thread.id.slice(0, 8)}...
                           </div>
                         </Link>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground capitalize">
-                        {thread.source ?? 'web'}
                       </TableCell>
                       <TableCell>
                         <Link

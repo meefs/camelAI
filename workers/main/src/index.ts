@@ -7,6 +7,7 @@
  * - /api/auth/:provider → User OAuth (Google, GitHub)
  * - /api/integrations/slack/* → Slack OAuth
  * - /api/integrations/slack/events → Slack Events API webhook
+ * - email() → Workspace email ingress (Cloudflare Email Routing)
  * - /api/threads/:id/preview → Thread preview API
  * - /api/openai/v1/* → OpenAI-compatible AI Gateway proxy for sandbox containers
  * - /ws/:workspace → Chat WebSocket (forwarded to ChatThreadDO)
@@ -18,6 +19,7 @@ import type { Env, Route } from './types.js';
 import { handleScreenshotQueue, type AppScreenshotJob } from './screenshot-queue.js';
 import { handleSlackEventsQueue } from './slack-events-queue.js';
 import type { SlackEventQueueMessage } from './slack-types.js';
+import { handleWorkspaceEmailIngress } from './email-ingress.js';
 
 // Route handlers
 import { handleCfProxy } from './routes/cf-proxy.js';
@@ -143,6 +145,10 @@ export default {
     }
 
     return reactRouterHandler(req, { cloudflare: { env, ctx } });
+  },
+
+  async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
+    await handleWorkspaceEmailIngress(message, env);
   },
 
   async queue(batch: MessageBatch<AppScreenshotJob | SlackEventQueueMessage>, env: Env): Promise<void> {

@@ -183,7 +183,7 @@ interface ChatClientSetPreviewTabsState {
   activeTabId?: string | null;
 }
 
-interface ExternalMessageRequest {
+export interface ExternalMessageRequest {
   threadId?: string;
   workspaceId?: string;
   orgId?: string;
@@ -193,23 +193,9 @@ interface ExternalMessageRequest {
   timeoutMs?: number;
 }
 
-interface ExternalQuestionResponseRequest {
-  threadId?: string;
-  workspaceId?: string;
-  orgId?: string;
-  questionId?: string;
-  answers?: Record<string, unknown>;
-  timeoutMs?: number;
-}
-
-interface ExternalTurnResult {
-  status: 'result' | 'question' | 'busy' | 'error';
+export interface ExternalTurnResult {
+  status: 'result' | 'busy' | 'error';
   reply?: string;
-  question?: {
-    questionId: string;
-    toolUseId?: string;
-    questions: unknown[];
-  };
   error?: string;
 }
 
@@ -230,6 +216,7 @@ const MAX_CHAT_EVENT_BUFFER = 500;
 const RUNNER_PING_INTERVAL_MS = 10_000;
 const RUNNER_RECONNECT_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 const RUNNER_RECONNECT_GRACE_MS = 30_000;
+const DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
 
 const HEADER_USER_NAME = 'X-Chiridion-User-Name';
 const HEADER_USER_EMAIL = 'X-Chiridion-User-Email';
@@ -514,161 +501,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
     }
 
-    if (url.pathname === '/external-state' && request.method === 'GET') {
-      const pendingQuestion = this.getOldestPendingQuestion();
-      return new Response(JSON.stringify({
-        pendingQuestion: pendingQuestion
-          ? {
-              questionId: pendingQuestion.questionId,
-              toolUseId: pendingQuestion.toolUseId,
-              questions: pendingQuestion.questions,
-            }
-          : null,
-      }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (url.pathname === '/external-message' && request.method === 'POST') {
-      const body = await request.json() as ExternalMessageRequest;
-      const contextError = this.updateExternalChatContext(body);
-      if (contextError) {
-        return new Response(JSON.stringify({ status: 'error', error: contextError }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      const rawMessage = typeof body.message === 'string' ? body.message.trim() : '';
-      if (!rawMessage) {
-        return new Response(JSON.stringify({ status: 'error', error: 'Missing message' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      if (this.pendingExternalTurn) {
-        return new Response(JSON.stringify({ status: 'busy' }), {
-          status: 409,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      const existingPendingQuestion = this.getOldestPendingQuestion();
-      if (existingPendingQuestion) {
-        return new Response(JSON.stringify({
-          status: 'question',
-          question: {
-            questionId: existingPendingQuestion.questionId,
-            toolUseId: existingPendingQuestion.toolUseId,
-            questions: existingPendingQuestion.questions,
-          },
-        }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      if (this.chatIsStreaming) {
-        return new Response(JSON.stringify({ status: 'busy' }), {
-          status: 409,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      this.markRunnerActivity('external_message');
-      await this.ensureRunnerConnected();
-
-      const attributedContent = this.formatAttributedUserMessage(rawMessage);
-      if (!attributedContent) {
-        return new Response(JSON.stringify({ status: 'error', error: 'Empty message' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      const pendingResult = this.createPendingExternalTurn();
-      if (!(await this.sendRunnerCommandWithReconnect({ type: 'message', content: attributedContent }))) {
-        this.resolvePendingExternalTurn({
-          status: 'error',
-          error: 'Failed to send message to sandbox',
-        });
-      } else {
-        this.setChatIsStreaming(true);
-        this.ctx.waitUntil(
-          this.touchThreadForUserMessage().catch((err) => {
-            console.error('[ChatThreadDO] failed to touch thread after external user message', err);
-          })
-        );
-      }
-
-      const timeoutMs = this.getExternalTurnTimeout(body.timeoutMs);
-      const result = await this.waitForPendingExternalTurn(pendingResult, timeoutMs);
-      return new Response(JSON.stringify(result), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (url.pathname === '/external-question-response' && request.method === 'POST') {
-      const body = await request.json() as ExternalQuestionResponseRequest;
-      const contextError = this.updateExternalChatContext(body);
-      if (contextError) {
-        return new Response(JSON.stringify({ status: 'error', error: contextError }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      const questionId = typeof body.questionId === 'string' ? body.questionId.trim() : '';
-      const answers = body.answers && typeof body.answers === 'object'
-        ? body.answers
-        : null;
-      if (!questionId || !answers) {
-        return new Response(JSON.stringify({ status: 'error', error: 'Missing questionId or answers' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      if (!this.pendingQuestions.has(questionId)) {
-        return new Response(JSON.stringify({
-          status: 'error',
-          error: 'Question is no longer pending',
-        }), {
-          status: 409,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      if (this.pendingExternalTurn) {
-        return new Response(JSON.stringify({ status: 'busy' }), {
-          status: 409,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      this.markRunnerActivity('external_question_response');
-      if (!(await this.sendRunnerCommandWithReconnect({
-        type: 'question_response',
-        questionId,
-        answers,
-      }))) {
-        return new Response(JSON.stringify({
-          status: 'error',
-          error: 'Failed to send question response to sandbox',
-        }), {
-          status: 502,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      const pendingResult = this.createPendingExternalTurn();
-      const timeoutMs = this.getExternalTurnTimeout(body.timeoutMs);
-      const result = await this.waitForPendingExternalTurn(pendingResult, timeoutMs);
-      return new Response(JSON.stringify(result), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
     // HTTP API for connection setup prompts (called by MCP server)
     if (url.pathname === '/connection-setup/prompt' && request.method === 'POST') {
       const body = await request.json() as ConnectionSetupRequest & { mcpDoId?: string; dynamicSchema?: DynamicIntegrationSchema };
@@ -827,6 +659,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (this.getChatSockets().length === 0) {
       this.stopRunnerReconnectLoop('no_chat_sockets');
       this.cancelRunnerDisconnectGrace('no_chat_sockets');
+      if (this.pendingQuestions.size > 0) {
+        this.markRunnerActivity('chat_socket_closed_question_unavailable');
+        this.ctx.waitUntil(
+          this.autoAnswerAllPendingQuestionsAsUnavailable(
+            DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE
+          )
+        );
+      }
     }
     // Intentional no-op on chat socket close. Runner lifecycle is handled
     // by runner-side control events and explicit reconnect-on-demand.
@@ -1396,6 +1236,76 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     return '';
   }
 
+  async externalMessage(body: ExternalMessageRequest): Promise<ExternalTurnResult> {
+    const contextError = this.updateExternalChatContext(body);
+    if (contextError) {
+      return { status: 'error', error: contextError };
+    }
+
+    const rawMessage = typeof body.message === 'string' ? body.message.trim() : '';
+    if (!rawMessage) {
+      return { status: 'error', error: 'Missing message' };
+    }
+
+    if (this.pendingExternalTurn) {
+      return { status: 'busy' };
+    }
+
+    const existingPendingQuestion = this.getOldestPendingQuestion();
+    if (existingPendingQuestion) {
+      if (this.hasAvailableBrowserUser()) {
+        return { status: 'busy' };
+      }
+
+      this.markRunnerActivity('external_question_unavailable_existing');
+      const answered = await this.autoAnswerPendingQuestionAsUnavailable(
+        existingPendingQuestion.questionId,
+        DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE
+      );
+      if (!answered) {
+        return {
+          status: 'error',
+          error: 'AskUserQuestion is unavailable in this channel and could not be auto-answered.',
+        };
+      }
+      return { status: 'busy' };
+    }
+
+    if (this.chatIsStreaming) {
+      return { status: 'busy' };
+    }
+
+    this.markRunnerActivity('external_message');
+    await this.ensureRunnerConnected();
+
+    const attributedContent = this.formatAttributedUserMessage(rawMessage);
+    if (!attributedContent) {
+      return { status: 'error', error: 'Empty message' };
+    }
+
+    const pendingResult = this.createPendingExternalTurn();
+    if (!(await this.sendRunnerCommandWithReconnect({ type: 'message', content: attributedContent }))) {
+      this.resolvePendingExternalTurn({
+        status: 'error',
+        error: 'Failed to send message to sandbox',
+      });
+    } else {
+      this.setChatIsStreaming(true);
+      this.ctx.waitUntil(
+        this.touchThreadForUserMessage().catch((err) => {
+          console.error('[ChatThreadDO] failed to touch thread after external user message', err);
+        })
+      );
+    }
+
+    const timeoutMs = this.getExternalTurnTimeout(body.timeoutMs);
+    return await this.waitForPendingExternalTurn(pendingResult, timeoutMs);
+  }
+
+  private hasAvailableBrowserUser(): boolean {
+    return this.getChatSockets().length > 0;
+  }
+
   private getOldestPendingQuestion(): PendingQuestionInfo | null {
     const iterator = this.pendingQuestions.values().next();
     return iterator.done ? null : iterator.value;
@@ -1441,6 +1351,37 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
     const rounded = Math.floor(timeoutMs);
     return Math.max(5_000, Math.min(5 * 60 * 1000, rounded));
+  }
+
+  private async autoAnswerPendingQuestionAsUnavailable(
+    questionId: string,
+    unavailableMessage: string
+  ): Promise<boolean> {
+    const sent = await this.sendRunnerCommandWithReconnect({
+      type: 'question_response',
+      questionId,
+      answers: {
+        unavailable_reason: unavailableMessage,
+      },
+    });
+    if (sent) {
+      this.pendingQuestions.delete(questionId);
+    }
+    return sent;
+  }
+
+  private async autoAnswerAllPendingQuestionsAsUnavailable(unavailableMessage: string): Promise<void> {
+    const questionIds = [...this.pendingQuestions.keys()];
+    for (const questionId of questionIds) {
+      try {
+        await this.autoAnswerPendingQuestionAsUnavailable(questionId, unavailableMessage);
+      } catch (err) {
+        console.error('[ChatThreadDO] failed to auto-answer pending AskUserQuestion', {
+          questionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 
   private createPendingExternalTurn(): Promise<ExternalTurnResult> {
@@ -1767,19 +1708,32 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
           this.trace('runner_question_duplicate', { questionId, seq });
           return;
         }
+
         this.pendingQuestions.set(questionId, {
           questionId,
           toolUseId: typeof event.toolUseId === 'string' ? event.toolUseId : undefined,
           questions,
         });
-        this.resolvePendingExternalTurn({
-          status: 'question',
-          question: {
-            questionId,
-            toolUseId: typeof event.toolUseId === 'string' ? event.toolUseId : undefined,
-            questions,
-          },
-        });
+
+        if (!this.hasAvailableBrowserUser()) {
+          this.markRunnerActivity('question_unavailable_no_browser');
+          this.ctx.waitUntil(
+            this.autoAnswerPendingQuestionAsUnavailable(
+              questionId,
+              DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE
+            ).catch((err) => {
+              console.error('[ChatThreadDO] failed to auto-answer unavailable AskUserQuestion', err);
+            })
+          );
+          return;
+        }
+
+        if (this.pendingExternalTurn) {
+          this.markRunnerActivity('external_question_waiting_browser');
+          this.resolvePendingExternalTurn({
+            status: 'busy',
+          });
+        }
       }
     }
 
@@ -1830,6 +1784,15 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
 
     if (eventType === 'session' || eventType === 'ready') {
+      if (eventType === 'ready' && this.pendingQuestions.size > 0 && !this.hasAvailableBrowserUser()) {
+        this.ctx.waitUntil(
+          this.autoAnswerAllPendingQuestionsAsUnavailable(
+            DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE
+          ).catch((err) => {
+            console.error('[ChatThreadDO] failed to retry unavailable AskUserQuestion auto-answers', err);
+          })
+        );
+      }
       // These are synthesized by ChatThreadDO on init.
       return;
     }

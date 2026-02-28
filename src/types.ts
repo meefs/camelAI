@@ -1,5 +1,3 @@
-export type ThreadSource = 'web' | 'slack';
-
 export interface Thread {
   id: string;
   workspace_id: string;
@@ -7,7 +5,6 @@ export interface Thread {
   created_by: string;
   created_at: number;
   updated_at: number;
-  source: ThreadSource;
   user_message_count: number;
   first_user_message?: string | null;
   creator?: User;

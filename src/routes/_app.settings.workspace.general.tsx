@@ -4,6 +4,7 @@ import type { Route } from './+types/_app.settings.workspace.general';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do';
+import { buildWorkspaceInboxAddress, getWorkspaceEmailRoutingConfig } from '@/lib/workspace-email';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { WorkspaceGeneralForm } from '@/components/settings/workspace-general-form';
@@ -51,14 +52,24 @@ export async function action({ request, context }: Route.ActionArgs) {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
+  const env = getEnv(context);
+
+  const workspace = authContext.currentWorkspace;
+  const routingConfig = getWorkspaceEmailRoutingConfig(env);
+  const workspaceEmailAddress = workspace && routingConfig
+    ? buildWorkspaceInboxAddress(workspace.id, routingConfig.domain, {
+        localPart: routingConfig.localPart,
+      })
+    : null;
 
   return {
-    workspace: authContext.currentWorkspace,
+    workspace,
+    workspaceEmailAddress,
   };
 }
 
 export default function WorkspaceGeneralPage() {
-  const { workspace } = useLoaderData<typeof loader>();
+  const { workspace, workspaceEmailAddress } = useLoaderData<typeof loader>();
 
   if (!workspace) {
     return (
@@ -78,7 +89,11 @@ export default function WorkspaceGeneralPage() {
         description="Manage your workspace settings."
       />
       <Separator />
-      <WorkspaceGeneralForm workspace={workspace} canEdit={true} />
+      <WorkspaceGeneralForm
+        workspace={workspace}
+        workspaceEmailAddress={workspaceEmailAddress}
+        canEdit={true}
+      />
     </div>
   );
 }
