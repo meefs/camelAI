@@ -822,22 +822,26 @@ export default function Chat({
   const pendingCompactionPlaceholderIdRef = useRef<string | null>(null);
   const queuedManualCompactionsRef = useRef(0);
   const activeManualCompactionTurnRef = useRef(false);
-  const syncManualCompactionIndicator = useCallback(() => {
-    const shouldShowIndicator = activeManualCompactionTurnRef.current || queuedManualCompactionsRef.current > 0;
+  const isAutoCompactingRef = useRef(false);
+  const syncCompactionIndicator = useCallback(() => {
+    const shouldShowIndicator =
+      activeManualCompactionTurnRef.current ||
+      queuedManualCompactionsRef.current > 0 ||
+      isAutoCompactingRef.current;
     setIsCompacting(shouldShowIndicator);
   }, [setIsCompacting]);
   const queueManualCompaction = useCallback(() => {
     queuedManualCompactionsRef.current += 1;
-    syncManualCompactionIndicator();
-  }, [syncManualCompactionIndicator]);
+    syncCompactionIndicator();
+  }, [syncCompactionIndicator]);
   const startQueuedManualCompactionIfNeeded = useCallback(() => {
     if (activeManualCompactionTurnRef.current || queuedManualCompactionsRef.current <= 0) {
       return;
     }
     queuedManualCompactionsRef.current -= 1;
     activeManualCompactionTurnRef.current = true;
-    syncManualCompactionIndicator();
-  }, [syncManualCompactionIndicator]);
+    syncCompactionIndicator();
+  }, [syncCompactionIndicator]);
   const completeActiveManualCompaction = useCallback(() => {
     if (activeManualCompactionTurnRef.current) {
       activeManualCompactionTurnRef.current = false;
@@ -846,13 +850,13 @@ export default function Chat({
       // If completion arrives without an active turn, consume one queued entry.
       queuedManualCompactionsRef.current -= 1;
     }
-    syncManualCompactionIndicator();
-  }, [syncManualCompactionIndicator]);
+    syncCompactionIndicator();
+  }, [syncCompactionIndicator]);
   const clearManualCompactionQueue = useCallback(() => {
     activeManualCompactionTurnRef.current = false;
     queuedManualCompactionsRef.current = 0;
-    syncManualCompactionIndicator();
-  }, [syncManualCompactionIndicator]);
+    syncCompactionIndicator();
+  }, [syncCompactionIndicator]);
   // MCP-triggered bug report capture
   const [mcpBugReportPrompt, setMcpBugReportPrompt] = useState<{ requestId: string; message?: string } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -1602,6 +1606,8 @@ export default function Chat({
     // authoritative streaming_state immediately after ready.
     setStreamingMessageId(null);
     setLoading(false);
+    isAutoCompactingRef.current = false;
+    syncCompactionIndicator();
     if (!isReconnect) {
       reconnectAttempts.current = 0;
     }
@@ -1759,6 +1765,9 @@ export default function Chat({
             isInCompactionBlockRef.current = true;
             compactionContentRef.current = '';
             hasCapturedCompactionSummaryRef.current = false;
+            // Fallback trigger when system/status events are unavailable.
+            isAutoCompactingRef.current = true;
+            syncCompactionIndicator();
             return;
           }
           if (isInCompactionBlockRef.current) {
@@ -1773,6 +1782,8 @@ export default function Chat({
               if (summary) {
                 hasCapturedCompactionSummaryRef.current = true;
                 completeActiveManualCompaction();
+                isAutoCompactingRef.current = false;
+                syncCompactionIndicator();
                 const existingPlaceholderId = pendingCompactionPlaceholderIdRef.current;
                 const compactMsg: Message = {
                   id: existingPlaceholderId || `compact_${Date.now()}`,
@@ -1904,12 +1915,23 @@ export default function Chat({
           splitStreamingMessageOnNextPartRef.current = false;
           setStreamingMessageId(null);
           startQueuedManualCompactionIfNeeded();
+        } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'status') {
+          const status = (sdkEvent as unknown as Record<string, unknown>).status;
+          if (status === 'compacting') {
+            isAutoCompactingRef.current = true;
+            syncCompactionIndicator();
+          } else if (status === null) {
+            isAutoCompactingRef.current = false;
+            syncCompactionIndicator();
+          }
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
           // Compaction is complete — the compact_boundary event arrives AFTER the
           // SDK finishes generating the summary (not before). Insert a compact
           // summary card immediately. If the control plane later forwards the full
           // summary (isCompactSummary user event), it will replace this placeholder.
           completeActiveManualCompaction();
+          isAutoCompactingRef.current = false;
+          syncCompactionIndicator();
           if (hasCapturedCompactionSummaryRef.current) {
             hasCapturedCompactionSummaryRef.current = false;
             return;
@@ -1940,6 +1962,8 @@ export default function Chat({
           );
           if (isCompactSummary) {
             completeActiveManualCompaction();
+            isAutoCompactingRef.current = false;
+            syncCompactionIndicator();
             hasCapturedCompactionSummaryRef.current = false;
             const placeholderId = pendingCompactionPlaceholderIdRef.current;
             pendingCompactionPlaceholderIdRef.current = null;
@@ -2038,6 +2062,8 @@ export default function Chat({
           }
           setStreamingMessageId(null);
           setLoading(false);
+          isAutoCompactingRef.current = false;
+          syncCompactionIndicator();
           if (activeManualCompactionTurnRef.current) {
             completeActiveManualCompaction();
           }
@@ -2080,6 +2106,7 @@ export default function Chat({
         }
         setStreamingMessageId(null);
         setLoading(false);
+        isAutoCompactingRef.current = false;
         clearManualCompactionQueue();
         hasCapturedCompactionSummaryRef.current = false;
       } else if (
@@ -2119,6 +2146,10 @@ export default function Chat({
             connectWebSocket(id, true);
           }
         }, delay);
+      } else {
+        // Reconnect exhausted — clear stale compaction indicator.
+        isAutoCompactingRef.current = false;
+        clearManualCompactionQueue();
       }
     };
 

@@ -315,6 +315,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   globalThis.WebSocket = OriginalWebSocket;
 });
 
@@ -416,6 +417,70 @@ describe('Chat compaction event lifecycle', () => {
     });
 
     expect(screen.getByTestId('compact-summary')).toBeInTheDocument();
+  });
+
+  it('shows and clears compacting indicator from system status events (auto-compaction)', async () => {
+    render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
+    const socket = getMainSocket();
+
+    await act(async () => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await act(async () => {
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'system', subtype: 'status', status: 'compacting' },
+      });
+    });
+    expect(screen.getByTestId('compacting-indicator')).toBeInTheDocument();
+
+    await act(async () => {
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'system', subtype: 'status', status: null },
+      });
+    });
+    expect(screen.queryByTestId('compacting-indicator')).not.toBeInTheDocument();
+  });
+
+  it('uses stream-event compaction block as fallback trigger when status events are absent', async () => {
+    render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
+    const socket = getMainSocket();
+
+    await act(async () => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await act(async () => {
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: {
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 0, content_block: { type: 'compaction' } },
+        },
+      });
+    });
+    expect(screen.getByTestId('compacting-indicator')).toBeInTheDocument();
+
+    await act(async () => {
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: {
+          type: 'stream_event',
+          event: { type: 'content_block_delta', index: 0, delta: { type: 'compaction_delta', content: 'Fallback summary' } },
+        },
+      });
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+      });
+    });
+
+    expect(screen.queryByTestId('compacting-indicator')).not.toBeInTheDocument();
+    expect(screen.getByTestId('compact-summary')).toHaveTextContent('Fallback summary');
   });
 
   it('does not append a placeholder when compaction summary was already captured from stream events', async () => {
@@ -521,6 +586,68 @@ describe('Chat compaction event lifecycle', () => {
     // (This tests the safety net in the error handler)
     await act(async () => {
       socket.emitMessage({ type: 'error', error: 'something failed' });
+    });
+
+    expect(screen.queryByTestId('compacting-indicator')).not.toBeInTheDocument();
+  });
+
+  it('clears auto-compacting indicator on result safety net', async () => {
+    render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
+    const socket = getMainSocket();
+
+    await act(async () => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'system', subtype: 'status', status: 'compacting' },
+      });
+    });
+    expect(screen.getByTestId('compacting-indicator')).toBeInTheDocument();
+
+    await act(async () => {
+      socket.emitMessage({ type: 'sdk_event', event: { type: 'result' } });
+    });
+
+    expect(screen.queryByTestId('compacting-indicator')).not.toBeInTheDocument();
+  });
+
+  it('clears manual compact indicator when reconnect retries are exhausted', async () => {
+    const user = userEvent.setup();
+    render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
+
+    let socket = getMainSocket();
+
+    await act(async () => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await user.type(screen.getByLabelText('Prompt'), '/compact');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(screen.getByTestId('compacting-indicator')).toBeInTheDocument();
+
+    vi.useFakeTimers();
+
+    const reconnectBackoffsMs = [1000, 2000, 4000, 8000, 16000];
+    for (const delayMs of reconnectBackoffsMs) {
+      await act(async () => {
+        socket.close();
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(delayMs);
+      });
+      const latest = MockWebSocket.instances.at(-1);
+      if (!latest) {
+        throw new Error('Expected reconnect attempt to create a new WebSocket');
+      }
+      socket = latest;
+    }
+
+    // Sixth close hits the exhausted branch (maxAttempts reached).
+    await act(async () => {
+      socket.close();
     });
 
     expect(screen.queryByTestId('compacting-indicator')).not.toBeInTheDocument();

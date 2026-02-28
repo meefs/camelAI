@@ -1,6 +1,6 @@
 # Auto-Compaction UX — Detect & Disclose
 
-**February 28, 2026**
+**February 28, 2026** | Single file: `src/components/Chat.tsx`
 
 ---
 
@@ -80,47 +80,103 @@ The client **does not** listen for `system/status` events with `status: "compact
 
 ---
 
+## Design Decision: Single-Writer State Pattern
+
+The existing manual compaction flow uses a ref-driven architecture where `syncManualCompactionIndicator()` is the **single writer** to `isCompacting`, deriving it from `activeManualCompactionTurnRef` and `queuedManualCompactionsRef`. Adding direct `setIsCompacting()` calls for auto-compaction would create competing writers that can fight with the sync function in reconnect/replay edge cases.
+
+To avoid this, we extend the existing single-writer pattern:
+
+1. Add a new `isAutoCompactingRef` (a ref, not state — same pattern as the manual refs).
+2. Rename `syncManualCompactionIndicator()` → `syncCompactionIndicator()`.
+3. Expand the derivation formula: `shouldShow = activeManualCompactionTurnRef.current || queuedManualCompactionsRef.current > 0 || isAutoCompactingRef.current`.
+4. **All** paths (manual and auto) mutate their respective refs and call `syncCompactionIndicator()`. No direct `setIsCompacting()` calls anywhere outside the sync function.
+
+This preserves the existing architecture and eliminates any possibility of manual/auto state collisions.
+
+---
+
+## Step 0: Preflight Validation
+
+Before writing any code, confirm that the SDK actually emits `system/status` events in our runtime.
+
+1. Trigger a known auto-compaction run (long conversation that fills context).
+2. In the browser devtools Network tab (WebSocket frames) or by adding a temporary `console.log` in the `sdk_event` handler, confirm the runner emits:
+   - `{ type: "system", subtype: "status", status: "compacting" }`
+   - `{ type: "system", subtype: "status", status: null }`
+3. If both events are present, proceed with Steps 1-4 below.
+4. **If absent**: use degraded fallback detection via `stream_event/content_block_start` where `content_block.type === "compaction"` (event 2 in the sequence — later than ideal since the summary is already generating, but still far better than no disclosure). In this case, replace the `system/status` check in Step 2 with a `content_block_start` type check for `compaction`, and skip the `status: null` cleanup (rely on existing summary-capture and safety-net paths instead).
+
+---
+
 ## Implementation
 
-### Step 1: Detect `system/status` compaction events on the client
+All changes are in `src/components/Chat.tsx`.
 
-**File: `src/components/Chat.tsx`** — in the WebSocket `onmessage` handler, inside the `data.type === 'sdk_event'` branch.
+### Step 1: Add `isAutoCompactingRef` and rename the sync function
 
-Currently, `system` events are handled at lines 1902-1926 with checks for `subtype === 'init'` and `subtype === 'compact_boundary'`. Add a new check for `subtype === 'status'`:
+**Around line 818-828** (the compaction ref declarations and `syncManualCompactionIndicator`):
 
 ```typescript
-// FIND this block (around line 1902):
+// FIND (around line 818-828):
+const queuedManualCompactionsRef = useRef(0);
+const activeManualCompactionTurnRef = useRef(false);
+
+const syncManualCompactionIndicator = useCallback(() => {
+  const shouldShowIndicator = activeManualCompactionTurnRef.current || queuedManualCompactionsRef.current > 0;
+  setIsCompacting(shouldShowIndicator);
+}, [setIsCompacting]);
+
+// REPLACE WITH:
+const queuedManualCompactionsRef = useRef(0);
+const activeManualCompactionTurnRef = useRef(false);
+const isAutoCompactingRef = useRef(false);
+
+const syncCompactionIndicator = useCallback(() => {
+  const shouldShowIndicator =
+    activeManualCompactionTurnRef.current ||
+    queuedManualCompactionsRef.current > 0 ||
+    isAutoCompactingRef.current;
+  setIsCompacting(shouldShowIndicator);
+}, [setIsCompacting]);
+```
+
+Then rename all references from `syncManualCompactionIndicator` → `syncCompactionIndicator` throughout the file. This affects the dependency arrays of `queueManualCompaction`, `startQueuedManualCompactionIfNeeded`, `completeActiveManualCompaction`, and `clearManualCompactionQueue`.
+
+### Step 2: Detect `system/status` compaction events
+
+In the WebSocket `onmessage` handler, inside the `data.type === 'sdk_event'` branch. Currently, `system` events are handled around lines 1902-1926 with checks for `subtype === 'init'` and `subtype === 'compact_boundary'`.
+
+Add a new branch between the `init` and `compact_boundary` cases:
+
+```typescript
+// FIND (around line 1902):
 } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'init') {
-  // System init - reset the streaming message ID
   splitStreamingMessageOnNextPartRef.current = false;
   setStreamingMessageId(null);
   startQueuedManualCompactionIfNeeded();
 } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
 
-// ADD this NEW branch between the 'init' and 'compact_boundary' cases:
+// ADD this NEW branch between 'init' and 'compact_boundary':
 } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'status') {
   const status = (sdkEvent as Record<string, unknown>).status;
   if (status === 'compacting') {
-    // Auto-compaction starting — show the compacting indicator
-    setIsCompacting(true);
+    isAutoCompactingRef.current = true;
+    syncCompactionIndicator();
   } else if (status === null) {
-    // Compaction finished — indicator will be cleared when summary/boundary arrives,
-    // but clear it here too as a safety net
-    setIsCompacting(false);
+    isAutoCompactingRef.current = false;
+    syncCompactionIndicator();
   }
 } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
 ```
 
-### Step 2: Clear `isCompacting` on compact summary capture
+### Step 3: Clear auto-compaction ref on summary capture paths
 
-The compacting indicator should be cleared as soon as the compaction summary is captured (whether via the `compaction` content block or the `compact_boundary` fallback). This already happens for manual compactions via `completeActiveManualCompaction()`, but auto-compaction bypasses that code path.
+The compacting indicator should clear as soon as the compaction summary is captured. The existing `completeActiveManualCompaction()` only clears manual refs. Add `isAutoCompactingRef.current = false` + `syncCompactionIndicator()` alongside those calls.
 
-**File: `src/components/Chat.tsx`**
-
-**2a.** In the `compaction` content block handler (around line 1769-1803), when `content_block_stop` fires and we have a summary, also clear `isCompacting`:
+**3a.** In the `compaction` content block handler (around line 1769-1803), when `content_block_stop` fires with a summary:
 
 ```typescript
-// FIND this block (around line 1769):
+// FIND (around line 1769):
 if (evt?.type === 'content_block_stop') {
   const summary = compactionContentRef.current;
   isInCompactionBlockRef.current = false;
@@ -129,61 +185,50 @@ if (evt?.type === 'content_block_stop') {
     hasCapturedCompactionSummaryRef.current = true;
     completeActiveManualCompaction();
     // ... builds compactMsg, updates messages ...
-  }
-  return;
-}
 
-// ADD setIsCompacting(false) right after completeActiveManualCompaction():
-if (summary) {
-  hasCapturedCompactionSummaryRef.current = true;
-  completeActiveManualCompaction();
-  setIsCompacting(false); // ← ADD THIS LINE
-  // ... rest of the block stays the same ...
-}
+// ADD after completeActiveManualCompaction():
+    hasCapturedCompactionSummaryRef.current = true;
+    completeActiveManualCompaction();
+    isAutoCompactingRef.current = false;
+    syncCompactionIndicator();
+    // ... rest stays the same ...
 ```
 
-**2b.** In the `compact_boundary` handler (around line 1907-1926), also clear `isCompacting`. It currently calls `completeActiveManualCompaction()` which only clears for manual compactions:
+**3b.** In the `compact_boundary` handler (around line 1907-1926):
 
 ```typescript
-// FIND this block (around line 1907):
+// FIND (around line 1907):
 } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
   completeActiveManualCompaction();
   if (hasCapturedCompactionSummaryRef.current) {
-    hasCapturedCompactionSummaryRef.current = false;
-    return;
-  }
 
-// ADD setIsCompacting(false) right after completeActiveManualCompaction():
-} else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
+// ADD after completeActiveManualCompaction():
   completeActiveManualCompaction();
-  setIsCompacting(false); // ← ADD THIS LINE
+  isAutoCompactingRef.current = false;
+  syncCompactionIndicator();
   if (hasCapturedCompactionSummaryRef.current) {
 ```
 
-**2c.** In the `isCompactSummary` user event handler (around line 1938-1978), also clear `isCompacting`:
+**3c.** In the `isCompactSummary` user event handler (around line 1938-1978):
 
 ```typescript
-// FIND this block (around line 1938-1942):
+// FIND (around line 1938-1942):
 if (sdkEvent.isCompactSummary) {
   completeActiveManualCompaction();
   hasCapturedCompactionSummaryRef.current = false;
-  const placeholderId = pendingCompactionPlaceholderIdRef.current;
-  pendingCompactionPlaceholderIdRef.current = null;
 
-// ADD setIsCompacting(false):
-if (sdkEvent.isCompactSummary) {
+// ADD after completeActiveManualCompaction():
   completeActiveManualCompaction();
-  setIsCompacting(false); // ← ADD THIS LINE
+  isAutoCompactingRef.current = false;
+  syncCompactionIndicator();
   hasCapturedCompactionSummaryRef.current = false;
 ```
 
-### Step 3: Add safety net clearance on `result`, `error`, and reconnect
+### Step 4: Safety net clearance on `result`, `error`, reconnect, and close
 
-The `isCompacting` state must be cleared when a turn ends so it never gets stuck. Currently, none of these paths call `setIsCompacting(false)` because the state was only used for manual compaction (which clears via `completeActiveManualCompaction()`/`clearManualCompactionQueue()`). With auto-compaction support, explicit clearance is needed.
+The indicator must never get stuck. Clear the auto-compaction ref in all terminal paths.
 
-**File: `src/components/Chat.tsx`**
-
-**3a.** In the `result` handler (around line 2023-2045), add `setIsCompacting(false)` alongside `setLoading(false)`:
+**4a.** In the `result` handler (around line 2023-2045), alongside `setLoading(false)`:
 
 ```typescript
 // FIND (around line 2039-2044):
@@ -194,17 +239,18 @@ if (activeManualCompactionTurnRef.current) {
 }
 hasCapturedCompactionSummaryRef.current = false;
 
-// ADD setIsCompacting(false) after setLoading(false):
+// ADD after setLoading(false):
 setStreamingMessageId(null);
 setLoading(false);
-setIsCompacting(false); // ← ADD THIS LINE
+isAutoCompactingRef.current = false;
+syncCompactionIndicator();
 if (activeManualCompactionTurnRef.current) {
   completeActiveManualCompaction();
 }
 hasCapturedCompactionSummaryRef.current = false;
 ```
 
-**3b.** In the `error` handler (around line 2070-2084), add `setIsCompacting(false)` alongside `setLoading(false)`:
+**4b.** In the `error` handler (around line 2070-2084), alongside `setLoading(false)`:
 
 ```typescript
 // FIND (around line 2081-2084):
@@ -213,15 +259,17 @@ setLoading(false);
 clearManualCompactionQueue();
 hasCapturedCompactionSummaryRef.current = false;
 
-// ADD setIsCompacting(false) after setLoading(false):
+// ADD after setLoading(false):
 setStreamingMessageId(null);
 setLoading(false);
-setIsCompacting(false); // ← ADD THIS LINE
+isAutoCompactingRef.current = false;
 clearManualCompactionQueue();
+// Note: clearManualCompactionQueue() calls syncCompactionIndicator() internally,
+// which will now also evaluate the cleared isAutoCompactingRef.
 hasCapturedCompactionSummaryRef.current = false;
 ```
 
-**3c.** In the `connectWebSocket` function's initial state reset (around line 1604), add `setIsCompacting(false)` alongside the existing `setLoading(false)`:
+**4c.** In the `connectWebSocket` function's initial state reset (around line 1604):
 
 ```typescript
 // FIND (around line 1600-1604):
@@ -231,11 +279,39 @@ setReady(false);
 setStreamingMessageId(null);
 setLoading(false);
 
-// ADD setIsCompacting(false) after setLoading(false):
+// ADD after setLoading(false):
 setStreamingMessageId(null);
 setLoading(false);
-setIsCompacting(false); // ← ADD THIS LINE
+isAutoCompactingRef.current = false;
+syncCompactionIndicator();
 ```
+
+**4d.** In the `ws.onclose` handler (around line 2095-2123), when reconnect is exhausted:
+
+```typescript
+// FIND (around line 2095-2123):
+ws.onclose = () => {
+  if (connectionIdRef.current !== thisConnectionId) return;
+  // ... clears ping interval, sets ready false, etc ...
+  const maxAttempts = 5;
+  if (reconnectAttempts.current < maxAttempts) {
+    // ... exponential backoff reconnect ...
+  }
+};
+
+// ADD an else branch when reconnect is exhausted:
+  if (reconnectAttempts.current < maxAttempts) {
+    // ... existing reconnect logic ...
+  } else {
+    // Reconnect exhausted — clear stale compaction indicator
+    isAutoCompactingRef.current = false;
+    syncCompactionIndicator();
+  }
+```
+
+### Step 5: Remove temporary preflight instrumentation
+
+If Step 0 used temporary logging in `Chat.tsx` (for example, `console.log(sdkEvent)` inside `sdk_event` handling), remove it before merge.
 
 ---
 
@@ -243,7 +319,7 @@ setIsCompacting(false); // ← ADD THIS LINE
 
 | File | Change |
 |------|--------|
-| `src/components/Chat.tsx` | Add `system/status` event handler to detect auto-compaction start/end; add `setIsCompacting(false)` calls in compaction summary capture paths and `result`/`error` handlers |
+| `src/components/Chat.tsx` | Add `isAutoCompactingRef`, rename sync function, detect `system/status` events, clear auto ref in summary/boundary/result/error/reconnect/close paths |
 
 ## Files NOT Modified
 
@@ -259,11 +335,36 @@ setIsCompacting(false); // ← ADD THIS LINE
 
 ## Verification
 
-1. **Auto-compaction**: Start a long conversation that fills the context window. When auto-compaction triggers, the `CompactingIndicator` ("Compacting conversation...") should appear instead of ambiguous loading dots.
-2. **Manual `/compact`**: Typing `/compact` should still show the same indicator (existing behavior preserved).
-3. **Indicator clears**: After compaction finishes, the indicator disappears and is replaced by the `CompactSummaryCard`.
-4. **No stuck indicator**: If the session ends mid-compaction (error, disconnect), the indicator clears on `result`/`error`/close events.
-5. **Reconnect**: If a client reconnects mid-compaction, the replay buffer may deliver the `system/status` event, showing the indicator until the summary arrives.
+1. **Preflight**: Confirm `system/status` events are emitted by the SDK in our runtime (Step 0).
+2. **Auto-compaction**: Start a long conversation that fills the context window. When auto-compaction triggers, the `CompactingIndicator` ("Compacting conversation...") should appear instead of ambiguous loading dots.
+3. **Manual `/compact`**: Typing `/compact` should still show the same indicator (existing behavior preserved — manual refs drive the sync function as before).
+4. **Indicator clears**: After compaction finishes, the indicator disappears and is replaced by the `CompactSummaryCard`.
+5. **No stuck indicator on `result`**: If compaction completes and the turn ends, the indicator clears via the `result` handler safety net.
+6. **No stuck indicator on `error`**: If an error occurs mid-compaction, the indicator clears via the `error` handler.
+7. **No stuck indicator on close**: If the WebSocket closes and reconnect is exhausted (5 attempts), the indicator clears.
+8. **Reconnect mid-compaction**: If a client reconnects while compaction is in progress, the reconnect reset clears the stale indicator. If the server replays the `system/status` event, the indicator re-enables correctly.
+9. **Fallback branch (only if Step 0 fails)**: With `content_block_start(type=compaction)` as the trigger, the indicator still appears during auto-compaction and clears on summary capture, `result`, `error`, and reconnect-exhausted close.
+10. **No debug leakage**: Confirm no temporary preflight logging remains in production code.
+
+---
+
+## Acceptance Criteria
+
+- Auto-compaction start is visibly disclosed to users through `CompactingIndicator`.
+- Manual `/compact` behavior remains unchanged and does not regress.
+- `isCompacting` has one write path (`syncCompactionIndicator()`), derived from manual and auto refs.
+- Indicator clears reliably on compaction completion and on terminal safety-net paths (`result`, `error`, reconnect-exhausted close).
+- Reconnect/replay scenarios do not leave stale compaction UI state.
+- If `system/status` events are unavailable in runtime, fallback detection still prevents "hung" perception.
+
+---
+
+## Rollout Notes
+
+- No backend/control-plane rollout is required; change is frontend-only (`Chat.tsx`).
+- Preflight validation (Step 0) is required before implementation merge.
+- If fallback mode is used because status events are missing, note that in PR description and open a follow-up to investigate SDK/runtime event parity.
+- After shipping, update [AGENTS.md](/Users/illiana/Projects/chiridion-app/AGENTS.md) chat behavior notes to mention auto-compaction disclosure in the client UI.
 
 ## Not in Scope
 

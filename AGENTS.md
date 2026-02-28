@@ -97,6 +97,7 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 3. `control-plane.mjs` calls Claude SDK `query()` and streams events back with monotonic `seq` numbers
 4. On reconnects, `ChatThreadDO` sends `lastSeq`, replays missed events, dedupes, resumes streaming
 5. Claude SDK stores messages in JSONL at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`
+6. `Chat.tsx` discloses compaction progress in-flight: `CompactingIndicator` turns on for manual `/compact` and auto-compaction (`system/status` with `status: "compacting"`, plus `stream_event/content_block_start(type=compaction)` fallback) and clears on summary capture, `status: null`, turn `result`/`error`, reconnect reset, or reconnect-exhausted close.
 
 ### Thread Message History Retrieval
 `getMessages()` no longer parses JSONL in the Worker runtime. It now calls sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}`, and sandbox-host reads + parses the JSONL file into `Message[]` before returning it. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker streams the JSON response body through from sandbox-host without buffering the full payload in Worker memory.
@@ -198,7 +199,7 @@ Sandbox notebook execution preloads pandas display defaults through IPython star
 Table outputs (notebook DataFrame renders and standalone CSV/TSV previews) also support fullscreen expansion via `TableViewer`: 500-row cap, sortable columns, column resizing, global row filtering, sticky index columns, text-wrap toggle, and full-table CSV export. Report and notebook modes remain width-capped and centered on wide screens (`max-w-5xl` for report, `max-w-[1800px]` for notebook) while remaining full-width on narrow panels. Markdown file previews render inside a centered `max-w-3xl` container with consistent padding. Source-code file previews (`.py`, `.ts`, `.js`, `.go`, `.rs`, `.sql`, etc.) use Shiki highlighting with line numbers and a copy button in an IDE-like full-panel layout; plain text (`.txt`, `.log`) remains a raw `<pre>` preview.
 
 ### SDK Event Types
-- `system` (subtype: `init`) - Session initialization
+- `system` (subtypes: `init`, `status`, `compact_boundary`) - Session initialization, compaction status transitions, compaction boundary markers
 - `stream_event` - Real-time: `content_block_start`, `content_block_delta`, `message_delta`
 - `assistant` - Full/partial assistant message
 - `user` - Tool results
