@@ -9,6 +9,7 @@ import { hasCompletedOnboarding } from '@/lib/onboarding';
 interface OnboardingLoaderData {
   userEmail: string;
   teamMode: boolean;
+  onboardingComplete: boolean;
   emailVerificationRequired: boolean;
   emailVerified: boolean;
 }
@@ -17,7 +18,9 @@ const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
 
 export interface OnboardingRouteContext {
   completeOnboarding: () => Promise<void>;
+  skipToChat: () => void;
   teamMode: boolean;
+  onboardingComplete: boolean;
   userEmail: string;
   emailVerificationRequired: boolean;
   emailVerified: boolean;
@@ -55,6 +58,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   return {
     userEmail: authBootstrap.profile.email,
     teamMode,
+    onboardingComplete,
     emailVerificationRequired,
     emailVerified: emailVerificationStatus.verified,
   } satisfies OnboardingLoaderData;
@@ -65,6 +69,9 @@ export default function OnboardingLayout() {
   const navigate = useNavigate();
   const completedRef = useRef(false);
   const completeOnboardingRequestRef = useRef<Promise<void> | null>(null);
+  const skipToChat = useCallback(() => {
+    navigate('/chat');
+  }, [navigate]);
 
   const completeOnboarding = useCallback(async () => {
     if (completeOnboardingRequestRef.current) {
@@ -154,7 +161,9 @@ export default function OnboardingLayout() {
 
   const contextValue: OnboardingRouteContext = {
     completeOnboarding,
+    skipToChat,
     teamMode: loaderData.teamMode,
+    onboardingComplete: loaderData.onboardingComplete,
     userEmail: loaderData.userEmail,
     emailVerificationRequired: loaderData.emailVerificationRequired,
     emailVerified: loaderData.emailVerified,

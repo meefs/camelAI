@@ -102,6 +102,8 @@ export default function OnboardingWelcomeRoute() {
     useLoaderData<typeof loader>() as WelcomeLoaderData;
 
   const isTeamWelcome = context.teamMode;
+  const isTeamMemberAlreadyOnboarded =
+    isTeamWelcome && context.onboardingComplete;
   const emailVerificationRequired =
     context.emailVerificationRequired && !context.emailVerified;
   const emailVerifiedFromLink =
@@ -195,6 +197,10 @@ export default function OnboardingWelcomeRoute() {
             size="lg"
             disabled={emailVerificationRequired || isCompleting}
             onClick={async () => {
+              if (isTeamMemberAlreadyOnboarded) {
+                context.skipToChat();
+                return;
+              }
               if (completionStartedRef.current) {
                 return;
               }
