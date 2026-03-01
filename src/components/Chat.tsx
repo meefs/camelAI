@@ -3313,14 +3313,17 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     }
   }
 
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
+
   const handleCompactFromIndicator = useCallback(() => {
     if (loading || isStreaming || isCompacting || readOnly) return;
-    sendMessage({
+    sendMessageRef.current({
       contentOverride: '/compact',
       preserveDraft: true,
       skipAttachmentRefs: true,
     });
-  }, [loading, isStreaming, isCompacting, readOnly, sendMessage]);
+  }, [loading, isStreaming, isCompacting, readOnly]);
 
   const chatBreadcrumbs = [
     { label: 'Chat' },

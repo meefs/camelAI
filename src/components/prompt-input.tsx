@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useCallback, useEffect } from 'react';
+import { memo, useRef, useState, useCallback, useEffect } from 'react';
 import { ArrowUp, Square, Loader2, Plus, Mic } from 'lucide-react';
 import {
   InputGroup,
@@ -41,6 +41,39 @@ interface PromptInputProps {
   onCompact?: () => void;
 }
 
+interface SendButtonProps {
+  showStopButton: boolean;
+  isSubmitDisabled: boolean;
+  isLoading: boolean;
+  onClick: (e: React.MouseEvent) => void;
+}
+
+const MemoizedSendButton = memo(function MemoizedSendButton({
+  showStopButton,
+  isSubmitDisabled,
+  isLoading,
+  onClick,
+}: SendButtonProps) {
+  return (
+    <InputGroupButton
+      type={showStopButton ? 'button' : 'submit'}
+      size="icon-sm"
+      variant={showStopButton ? 'destructive' : 'default'}
+      disabled={isSubmitDisabled}
+      onClick={onClick}
+      className="rounded-full"
+    >
+      {isLoading ? (
+        <Loader2 className="size-4 animate-spin" />
+      ) : showStopButton ? (
+        <Square className="size-3" />
+      ) : (
+        <ArrowUp className="size-4" />
+      )}
+    </InputGroupButton>
+  );
+});
+
 export function PromptInput({
   value,
   onChange,
@@ -65,6 +98,8 @@ export function PromptInput({
 }: PromptInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const onStopRef = useRef(onStop);
+  onStopRef.current = onStop;
 
   // Track latest value for voice recording callback
   const valueRef = useRef(value);
@@ -98,7 +133,7 @@ export function PromptInput({
   const showVoiceButton = enableVoiceRecording && isVoiceSupported;
 
   // Show stop button when assistant is running and input is empty
-  const showStopButton = isAssistantRunning && !value.trim() && onStop;
+  const showStopButton = Boolean(isAssistantRunning && !value.trim() && onStop);
   const effectivePlaceholder = animatedPlaceholder ?? placeholder;
 
   function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
@@ -123,18 +158,18 @@ export function PromptInput({
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (showStopButton) {
-      onStop?.();
+      onStopRef.current?.();
     } else if (value.trim() && !disabled) {
       onSubmit();
     }
   }
 
-  function handleButtonClick(e: React.MouseEvent) {
+  const handleButtonClick = useCallback((e: React.MouseEvent) => {
     if (showStopButton) {
       e.preventDefault();
-      onStop?.();
+      onStopRef.current?.();
     }
-  }
+  }, [showStopButton]);
 
   function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
@@ -337,27 +372,17 @@ export function PromptInput({
                     </Tooltip>
                   )}
 
-                  {contextUsedPercent != null && onCompact && (
+                  {contextUsedPercent != null && contextUsedPercent >= 50 && onCompact && (
                     <ContextIndicator usedPercent={contextUsedPercent} onCompact={onCompact} />
                   )}
                 </div>
 
-                <InputGroupButton
-                  type={showStopButton ? 'button' : 'submit'}
-                  size="icon-sm"
-                  variant={showStopButton ? 'destructive' : 'default'}
-                  disabled={isSubmitDisabled}
+                <MemoizedSendButton
+                  showStopButton={showStopButton}
+                  isSubmitDisabled={isSubmitDisabled}
+                  isLoading={isLoading}
                   onClick={handleButtonClick}
-                  className="rounded-full"
-                >
-                  {isLoading ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : showStopButton ? (
-                    <Square className="size-3" />
-                  ) : (
-                    <ArrowUp className="size-4" />
-                  )}
-                </InputGroupButton>
+                />
               </>
             )}
           </InputGroupAddon>

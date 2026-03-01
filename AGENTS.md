@@ -97,7 +97,7 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 4. On reconnects, `ChatThreadDO` sends `lastSeq`, replays missed events, dedupes, resumes streaming
 5. Claude SDK stores messages in JSONL at `/home/claude/.claude/projects/-home-claude/{threadId}.jsonl`
 6. `Chat.tsx` discloses compaction progress in-flight: `CompactingIndicator` turns on for manual `/compact` and auto-compaction (`system/status` with `status: "compacting"`, plus `stream_event/content_block_start(type=compaction)` fallback) and clears on summary capture, `status: null`, turn `result`/`error`, reconnect reset, or reconnect-exhausted close.
-7. `ChatThreadDO` computes per-turn context usage percent from the last `stream_event.message_start` usage plus `result.modelUsage` context window, persists it in DO KV (`chatContextUsedPercent`), and replays/broadcasts `context_usage_state` so the composer `ContextIndicator` (in the left toolbar, after Mic) can show `"XX% used"` and trigger `/compact` without mutating unsent draft text.
+7. `ChatThreadDO` computes context usage from `stream_event.message_start` usage and now broadcasts live `context_usage_state` updates during a turn when a model-scoped `contextWindow` cache is available (`chatContextWindowByModel`, persisted in DO KV). On `result`, it computes and persists the canonical value (`chatContextUsedPercent`) and replays `transientContextUsedPercent ?? contextUsedPercent` on chat init so reconnects can resume from the freshest value. The composer `ContextIndicator` (left toolbar, after Mic) appears when usage is `>= 50%`, shows `"XX% used"`, and can trigger `/compact` without mutating unsent draft text.
 
 ### Thread Message History Retrieval
 `getMessages()` no longer parses JSONL in the Worker runtime. It now calls sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}`, and sandbox-host reads + parses the JSONL file into `Message[]` before returning it. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker streams the JSON response body through from sandbox-host without buffering the full payload in Worker memory.
@@ -208,7 +208,7 @@ Table outputs (notebook DataFrame renders and standalone CSV/TSV previews) also 
 - `assistant` - Full/partial assistant message
 - `user` - Tool results
 - `result` - Query complete
-- `context_usage_state` - DO-computed per-thread context usage update (`usedPercent`) for composer indicator replay/realtime updates
+- `context_usage_state` - DO-computed per-thread context usage update (`usedPercent`) for live per-call updates plus canonical result-time replay
 
 ## API Routes
 

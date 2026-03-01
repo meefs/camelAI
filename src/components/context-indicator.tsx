@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
@@ -29,7 +30,11 @@ function describeWedgePath(pct: number, cx = 10, cy = 10, r = 8): string {
   return `M ${cx} ${cy} L ${cx} ${cy - r} A ${r} ${r} 0 ${largeArc} 1 ${x} ${y} Z`;
 }
 
-export function ContextIndicator({ usedPercent, onCompact, className }: ContextIndicatorProps) {
+export const ContextIndicator = memo(function ContextIndicator({
+  usedPercent,
+  onCompact,
+  className,
+}: ContextIndicatorProps) {
   const pct = Math.max(0, Math.min(100, Math.round(usedPercent)));
 
   return (
@@ -66,4 +71,4 @@ export function ContextIndicator({ usedPercent, onCompact, className }: ContextI
       </TooltipContent>
     </Tooltip>
   );
-}
+});

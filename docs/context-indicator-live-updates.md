@@ -183,6 +183,42 @@ In the existing `result` handler:
 3. Persist canonical `contextUsedPercent` and broadcast final value.
 4. Clear transient state.
 
+This step uses two new helpers that must be implemented in `durable-objects.ts`:
+- `extractContextWindowByModel(sdkEvent)` to parse `result.modelUsage` into `Record<string, number>`.
+- `shallowEqualNumberMaps(a, b)` to avoid redundant KV writes when the model cache hasn't changed.
+
+`extractContextWindowForModel(sdkEvent, model)` remains in place for final canonical percent computation.
+
+```typescript
+function extractContextWindowByModel(
+  sdkEvent: { modelUsage?: unknown }
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!sdkEvent.modelUsage || typeof sdkEvent.modelUsage !== 'object') return out;
+  for (const [model, usage] of Object.entries(sdkEvent.modelUsage as Record<string, unknown>)) {
+    if (!usage || typeof usage !== 'object') continue;
+    const contextWindow = toFiniteNumber((usage as Record<string, unknown>).contextWindow);
+    if (contextWindow !== null && contextWindow > 0) {
+      out[model] = contextWindow;
+    }
+  }
+  return out;
+}
+
+function shallowEqualNumberMaps(
+  a: Record<string, number>,
+  b: Record<string, number>
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+```
+
 ```typescript
 if (sdkEvent?.type === 'result') {
   // ... existing result handling ...
@@ -226,6 +262,13 @@ if (initUsedPercent !== null) {
 ```
 
 On `compact_boundary`, set `usageIsPostCompaction = false` and clear `transientContextUsedPercent` to avoid replaying stale pre-compaction intermediate values during reconnect.
+
+```typescript
+if (sdkEvent?.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
+  this.usageIsPostCompaction = false;
+  this.transientContextUsedPercent = null;
+}
+```
 
 ---
 
