@@ -317,8 +317,10 @@ describe('context usage live updates', () => {
   });
 
   it('replays transient context usage when available on chat init', () => {
-    expect(resolveContextUsageForInit(18, 22)).toBe(18);
-    expect(resolveContextUsageForInit(null, 22)).toBe(22);
-    expect(resolveContextUsageForInit(null, null)).toBeNull();
+    expect(resolveContextUsageForInit(18, 22, true)).toBe(18);
+    expect(resolveContextUsageForInit(null, 22, true)).toBe(22);
+    expect(resolveContextUsageForInit(null, null, true)).toBeNull();
+    expect(resolveContextUsageForInit(18, 22, false)).toBe(22);
+    expect(resolveContextUsageForInit(18, null, false)).toBeNull();
   });
 });

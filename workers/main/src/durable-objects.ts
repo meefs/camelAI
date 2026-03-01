@@ -443,8 +443,12 @@ export function applyContextUsageSdkEvent(
 
 export function resolveContextUsageForInit(
   transientContextUsedPercent: number | null,
-  contextUsedPercent: number | null
+  contextUsedPercent: number | null,
+  chatIsStreaming: boolean
 ): number | null {
+  if (!chatIsStreaming) {
+    return contextUsedPercent;
+  }
   return transientContextUsedPercent ?? contextUsedPercent;
 }
 
@@ -1198,7 +1202,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
     const initUsedPercent = resolveContextUsageForInit(
       this.transientContextUsedPercent,
-      this.contextUsedPercent
+      this.contextUsedPercent,
+      this.chatIsStreaming
     );
     this.sendDirect(ws, { type: 'context_usage_state', usedPercent: initUsedPercent });
     this.trace('handle_chat_init_complete', {
@@ -2148,6 +2153,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         lastRunnerSeq: this.lastRunnerSeq,
       });
       this.setChatIsStreaming(false);
+      const hadTransientUsage = this.transientContextUsedPercent !== null;
+      this.transientContextUsedPercent = null;
+      this.lastMessageStartUsage = null;
+      this.usageIsPostCompaction = true;
+      if (hadTransientUsage) {
+        this.broadcastRealtime({ type: 'context_usage_state', usedPercent: this.contextUsedPercent });
+      }
       this.pushChatEvent({
         type: 'sdk_event',
         event: { type: 'result', subtype: 'runner_disconnected' },
