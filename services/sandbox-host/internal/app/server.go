@@ -241,7 +241,7 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 
 	switch {
 	case route.Subpath == "/fs/read" && req.Method == http.MethodGet:
-		return s.handleFSRead(w, req, name)
+		return s.handleFSRead(w, req, route)
 	case route.Subpath == "/fs/write" && req.Method == http.MethodPut:
 		return s.handleFSWrite(w, req, name)
 	case route.Subpath == "/fs/list" && req.Method == http.MethodGet:
@@ -374,27 +374,66 @@ func normalizeOpenAIProxyUpstreamPath(path string) (string, bool) {
 	return normalized, true
 }
 
-func (s *Server) handleFSRead(w http.ResponseWriter, req *http.Request, name string) error {
+func (s *Server) handleFSRead(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) error {
 	path := req.URL.Query().Get("path")
 	if strings.TrimSpace(path) == "" {
 		errorJSON(w, "path query param required", http.StatusBadRequest)
 		return nil
 	}
 
-	info, err := s.fs.ReadInfo(name, path)
+	// Resolve /mnt/user-outputs/ and /mnt/user-uploads/ to host R2 FUSE paths
+	if hostPath, ok := s.resolveR2MountPath(path, route.OrgID, route.WorkspaceID); ok {
+		return s.serveHostFile(w, hostPath)
+	}
+
+	info, err := s.fs.ReadInfo(route.Name, path)
 	if err != nil {
 		return s.handleFSError(w, err, "File not found")
 	}
 
-	ext := filepath.Ext(info.HostPath)
+	return s.serveHostFile(w, info.HostPath)
+}
+
+// resolveR2MountPath checks if a sandbox path targets /mnt/user-outputs/ or
+// /mnt/user-uploads/ and returns the corresponding host R2 FUSE path.
+// Returns ("", false) if the path doesn't match or is invalid.
+func (s *Server) resolveR2MountPath(sandboxPath, orgID, workspaceID string) (string, bool) {
+	for _, mountDir := range []string{"user-outputs", "user-uploads"} {
+		prefix := "/mnt/" + mountDir + "/"
+		if !strings.HasPrefix(sandboxPath, prefix) {
+			continue
+		}
+		subpath := strings.TrimPrefix(sandboxPath, prefix)
+		cleaned := filepath.Clean(subpath)
+		// Reject traversal: cleaned must stay within the mount subtree
+		if cleaned == ".." || strings.HasPrefix(cleaned, "../") || filepath.IsAbs(cleaned) {
+			return "", false
+		}
+		hostPath := filepath.Join("/mnt/r2", orgID, workspaceID, mountDir, cleaned)
+		return hostPath, true
+	}
+	return "", false
+}
+
+func (s *Server) serveHostFile(w http.ResponseWriter, hostPath string) error {
+	stat, err := os.Stat(hostPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			errorJSON(w, "File not found", http.StatusNotFound)
+			return nil
+		}
+		return err
+	}
+
+	ext := filepath.Ext(hostPath)
 	contentType := mime.TypeByExtension(ext)
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
-	file, err := os.Open(info.HostPath)
+	w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
+	file, err := os.Open(hostPath)
 	if err != nil {
 		return err
 	}
