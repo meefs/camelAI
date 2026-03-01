@@ -65,7 +65,13 @@ vi.mock('@/components/prompt-input', () => ({
 }));
 
 vi.mock('@/components/message-bubble', () => ({
-  MessageBubble: ({ message }: { message: { role: string; content: unknown } }) => {
+  MessageBubble: ({
+    message,
+    showStreamingIndicator,
+  }: {
+    message: { role: string; content: unknown };
+    showStreamingIndicator?: boolean;
+  }) => {
     const renderedContent = typeof message.content === 'string'
       ? message.content
       : Array.isArray(message.content)
@@ -80,7 +86,12 @@ vi.mock('@/components/message-bubble', () => ({
             .join(' ')
         : '';
 
-    return <div data-testid="chat-bubble">{`${message.role}: ${renderedContent}`}</div>;
+    return (
+      <div data-testid="chat-bubble">
+        {`${message.role}: ${renderedContent}`}
+        {showStreamingIndicator ? <div data-testid="inline-loading-dots" /> : null}
+      </div>
+    );
   },
   isInterruptMessage: () => false,
   parseSlashCommand: () => null,
@@ -88,7 +99,7 @@ vi.mock('@/components/message-bubble', () => ({
 }));
 
 vi.mock('@/components/loading-dots', () => ({
-  LoadingDots: () => <div data-testid="loading-dots" />,
+  LoadingDots: () => <div data-testid="global-loading-dots" />,
 }));
 
 vi.mock('@/components/welcome-screen', () => ({
@@ -291,6 +302,11 @@ describe('Chat mid-stream follow-up ordering', () => {
       emitStreamTextPart(mainSocket, 'assistant-part-1', 'Part one');
     });
 
+    await waitFor(() => {
+      expect(screen.queryByTestId('global-loading-dots')).toBeNull();
+      expect(screen.getByTestId('inline-loading-dots')).toBeTruthy();
+    });
+
     await user.type(screen.getByLabelText('Prompt'), 'follow-up');
     await user.click(screen.getByRole('button', { name: 'Send' }));
 
@@ -324,6 +340,11 @@ describe('Chat mid-stream follow-up ordering', () => {
       mainSocket.emitOpen();
       mainSocket.emitMessage({ type: 'ready' });
       emitStreamTextPart(mainSocket, 'assistant-part-1', 'TC one');
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('global-loading-dots')).toBeNull();
+      expect(screen.getByTestId('inline-loading-dots')).toBeTruthy();
     });
 
     await user.type(screen.getByLabelText('Prompt'), 'follow-up');

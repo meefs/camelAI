@@ -488,17 +488,16 @@ interface ChatMessagesViewProps {
   isLastMessageAssistantLike: boolean;
   copyMessage: (messageId: string, content: string) => void;
   copiedMessageId: string | null;
-  lastStreamingMessageId: string | null;
+  assistantTurnActive: boolean;
+  activeAssistantMessageId: string | null;
   skillSheetsByToolId: Map<string, string>;
   hostname?: string;
   orgSlug?: string;
   error: string | null;
   setError: Dispatch<SetStateAction<string | null>>;
   isCompacting: boolean;
-  loading: boolean;
   isLoadingMessages: boolean;
-  isStreaming: boolean;
-  hasStreamingMessage: boolean;
+  showGlobalAssistantIndicator: boolean;
   shouldRenderSpacer: boolean;
   lastUserMessageRef: RefObject<HTMLDivElement | null>;
   assistantMeasureRef: RefObject<HTMLDivElement | null>;
@@ -515,17 +514,16 @@ const ChatMessagesView = memo(function ChatMessagesView({
   isLastMessageAssistantLike,
   copyMessage,
   copiedMessageId,
-  lastStreamingMessageId,
+  assistantTurnActive,
+  activeAssistantMessageId,
   skillSheetsByToolId,
   hostname,
   orgSlug,
   error,
   setError,
   isCompacting,
-  loading,
   isLoadingMessages,
-  isStreaming,
-  hasStreamingMessage,
+  showGlobalAssistantIndicator,
   shouldRenderSpacer,
   lastUserMessageRef,
   assistantMeasureRef,
@@ -575,7 +573,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
               message={msg}
               onCopy={copyMessage}
               copiedId={copiedMessageId}
-              showStreamingIndicator={msg.id === lastStreamingMessageId}
+              showStreamingIndicator={assistantTurnActive && msg.id === activeAssistantMessageId}
               skillSheets={skillSheetsByToolId}
               hostname={hostname}
               orgSlug={orgSlug}
@@ -615,7 +613,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
       )}
 
       {/* Loading indicator when assistant is running but no message shows its own streaming dots */}
-      {(loading || isStreaming) && !hasStreamingMessage && !isCompacting && (
+      {showGlobalAssistantIndicator && !isCompacting && (
         <div ref={assistantPendingMeasureRef}>
           <LoadingDots />
         </div>
@@ -941,14 +939,25 @@ export default function Chat({
 
   const isStreaming = streamingMessageId !== null;
   const wasStreamingRef = useRef(isStreaming);
-  // Find the last streaming message ID (for showing loading indicator only on bottom-most)
-  const lastStreamingMessageId = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].isStreaming) return messages[i].id;
+  const activeAssistantMessageId = useMemo(() => {
+    if (streamingMessageId) {
+      const trackedMessageExists = messages.some(
+        msg => msg.id === streamingMessageId && msg.role === 'assistant'
+      );
+      if (trackedMessageExists) return streamingMessageId;
     }
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role === 'assistant' && msg.isStreaming) return msg.id;
+    }
+
     return null;
-  }, [messages]);
-  const hasStreamingMessage = lastStreamingMessageId !== null;
+  }, [messages, streamingMessageId]);
+  const assistantTurnActive = loading || isStreaming;
+  const hasActiveAssistantMessage = activeAssistantMessageId !== null;
+  const showGlobalAssistantIndicator =
+    assistantTurnActive && !hasActiveAssistantMessage && !isCompacting;
   const skillSheetsByToolId = useMemo(() => {
     const map = new Map<string, string>();
     for (const message of messages) {
@@ -3509,17 +3518,16 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             isLastMessageAssistantLike={isLastMessageAssistantLike}
             copyMessage={copyMessage}
             copiedMessageId={copiedMessageId}
-            lastStreamingMessageId={lastStreamingMessageId}
+            assistantTurnActive={assistantTurnActive}
+            activeAssistantMessageId={activeAssistantMessageId}
             skillSheetsByToolId={skillSheetsByToolId}
             hostname={hostname}
             orgSlug={orgSlug}
             error={error}
             setError={setError}
             isCompacting={isCompacting}
-            loading={loading}
             isLoadingMessages={isLoadingMessages}
-            isStreaming={isStreaming}
-            hasStreamingMessage={hasStreamingMessage}
+            showGlobalAssistantIndicator={showGlobalAssistantIndicator}
             shouldRenderSpacer={shouldRenderSpacer}
             lastUserMessageRef={lastUserMessageRef}
             assistantMeasureRef={assistantMeasureRef}
