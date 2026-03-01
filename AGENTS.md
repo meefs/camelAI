@@ -191,6 +191,9 @@ The MCP server exposes `get_latest_logs`, which retrieves recent tail-captured r
 ### Integration Token Refresh
 OAuth integrations with expiring tokens are refreshed by `WorkspaceDO` alarms. Updated credentials are pushed to both sandbox runtimes and deployed workers.
 
+### Scheduled Prompts (Workspace Cron)
+Each workspace has a `WorkspaceCronDO` scheduler that stores cron-style prompt jobs (5-field UTC cron expressions) and triggers them via DO alarms. When a job fires, `WorkspaceCronDO` sends the configured prompt into the target thread through `ChatThreadDO`’s `/external-message` endpoint, so it runs as an automated agent turn. Jobs are managed through MCP tools (`list_scheduled_prompts`, `create_scheduled_prompt`, `update_scheduled_prompt`, `delete_scheduled_prompt`, `run_scheduled_prompt_now`).
+
 ### App Previews
 Deploy enqueues screenshot job → Browser Rendering → JPEG stored in R2 at `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg` → served via `/api/apps/:scriptName/preview`.
 
@@ -238,6 +241,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | `OrgDO` | per org | Members, invitations, threads, worker scripts, integrations, API tokens |
 | `OrgSlugDO` | per slug | Atomic slug ownership (`claim`/`getOwner`/`release`) |
 | `WorkspaceDO` | per workspace | Metadata, members, integrations, audit logs, token refresh alarms |
+| `WorkspaceCronDO` | per workspace | Scheduled prompt definitions, next-run calculation, alarm-based prompt dispatch to chat threads |
 | `ChatThreadDO` | per thread | WebSocket state, preview target, todo/prompt persistence |
 | `WorkerLogsDO` | per script | Deployed worker logs (up to 10k entries), real-time WebSocket streaming |
 

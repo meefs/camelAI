@@ -11,6 +11,7 @@ import { z } from 'zod';
 import type { OrgDO, WorkerScript } from './auth';
 import type { WorkspaceDO } from './workspace';
 import type { ChatThreadDO, ConnectionSetupRequest, ConnectionSetupResponse, DynamicIntegrationSchema, DynamicField, BugReportCaptureRequest, BugReportCaptureResponse, PreviewTarget } from './durable-objects';
+import type { WorkspaceCronDO } from './workspace-cron';
 import { WorkspaceContainer, type WorkspaceContainerEnv } from './workspace-container';
 import { getAllIntegrations, getIntegrationsByCategory, getIntegrationDefinition, validateConfig, validateCredentials } from '../../../src/lib/integration-registry';
 import { encryptCredentials } from '../../../src/lib/integration-crypto';
@@ -25,6 +26,7 @@ export interface McpEnv extends WorkspaceContainerEnv {
   CHAT_THREAD: DurableObjectNamespace<ChatThreadDO>;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
+  WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
   APP_KV: KVNamespace;
   BROWSER?: Fetcher;
   SANDBOX_PROXY_SECRET?: string;
@@ -120,6 +122,18 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
    */
   private getChatThreadStub(threadId: string): DurableObjectStub<ChatThreadDO> {
     return this.env.CHAT_THREAD.get(this.env.CHAT_THREAD.idFromName(threadId)) as DurableObjectStub<ChatThreadDO>;
+  }
+
+  /**
+   * Get WorkspaceCronDO stub for a workspace.
+   */
+  private getWorkspaceCronStub(workspaceId: string): DurableObjectStub<WorkspaceCronDO> {
+    if (!this.env.WORKSPACE_CRON) {
+      throw new Error('Workspace scheduler binding is not configured');
+    }
+    return this.env.WORKSPACE_CRON.get(
+      this.env.WORKSPACE_CRON.idFromName(workspaceId)
+    ) as DurableObjectStub<WorkspaceCronDO>;
   }
 
   /**
@@ -703,6 +717,251 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
             script_version: entry.scriptVersion,
           })),
         });
+      }
+    );
+
+    // ==========================================
+    // Scheduled Prompt Tools
+    // ==========================================
+
+    const formatScheduledPrompt = (prompt: {
+      id: string;
+      name: string;
+      prompt: string;
+      cron_expression: string;
+      thread_id: string;
+      scheduled_by_thread_id: string | null;
+      enabled: boolean;
+      created_by: string;
+      created_at: number;
+      updated_at: number;
+      next_run_at: number | null;
+      last_run_at: number | null;
+      last_run_status: string | null;
+      last_run_error: string | null;
+      run_count: number;
+    }) => ({
+      id: prompt.id,
+      name: prompt.name,
+      prompt: prompt.prompt,
+      cron_expression: prompt.cron_expression,
+      thread_id: prompt.thread_id,
+      scheduled_by_thread_id: prompt.scheduled_by_thread_id,
+      enabled: prompt.enabled,
+      created_by: prompt.created_by,
+      created_at: new Date(prompt.created_at).toISOString(),
+      updated_at: new Date(prompt.updated_at).toISOString(),
+      next_run_at: prompt.next_run_at ? new Date(prompt.next_run_at).toISOString() : null,
+      last_run_at: prompt.last_run_at ? new Date(prompt.last_run_at).toISOString() : null,
+      last_run_status: prompt.last_run_status,
+      last_run_error: prompt.last_run_error,
+      run_count: prompt.run_count,
+    });
+
+    this.server.tool(
+      'list_scheduled_prompts',
+      'List scheduled prompts for the current workspace. Cron expressions use 5 fields in UTC: minute hour day-of-month month day-of-week.',
+      {},
+      async () => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const prompts = await schedulerStub.listScheduledPrompts(workspaceId);
+
+          return this.textResponse({
+            success: true,
+            count: prompts.length,
+            timezone: 'UTC',
+            prompts: prompts.map((prompt) => formatScheduledPrompt(prompt)),
+          });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    );
+
+    this.server.tool(
+      'create_scheduled_prompt',
+      'Create a scheduled prompt in the current workspace. The cron expression is evaluated in UTC, and a dedicated thread is created for this schedule automatically.',
+      {
+        name: z.string().describe('Friendly name for the scheduled prompt'),
+        prompt: z.string().describe('Prompt text to send when the schedule fires'),
+        cron_expression: z
+          .string()
+          .describe('5-field cron expression in UTC: minute hour day-of-month month day-of-week'),
+        enabled: z
+          .boolean()
+          .optional()
+          .describe('Optional. Defaults to true. Set false to create a paused schedule.'),
+      },
+      async ({ name, prompt, cron_expression, enabled }) => {
+        const { userId, workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const created = await schedulerStub.createScheduledPrompt({
+            workspaceId,
+            name,
+            prompt,
+            cronExpression: cron_expression,
+            createdBy: userId,
+            scheduledByThreadId: this.threadId,
+            enabled,
+          });
+
+          return this.textResponse({
+            success: true,
+            timezone: 'UTC',
+            scheduled_prompt: formatScheduledPrompt(created),
+            message: `Created scheduled prompt "${created.name}"`,
+          });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    );
+
+    this.server.tool(
+      'update_scheduled_prompt',
+      'Update an existing scheduled prompt in the current workspace.',
+      {
+        prompt_id: z.string().describe('ID of the scheduled prompt to update'),
+        name: z.string().optional().describe('Optional new display name'),
+        prompt: z.string().optional().describe('Optional new prompt text'),
+        cron_expression: z
+          .string()
+          .optional()
+          .describe('Optional new 5-field UTC cron expression'),
+        enabled: z
+          .boolean()
+          .optional()
+          .describe('Optional enabled state'),
+      },
+      async ({ prompt_id, name, prompt, cron_expression, enabled }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const updated = await schedulerStub.updateScheduledPrompt({
+            workspaceId,
+            id: prompt_id,
+            name,
+            prompt,
+            cronExpression: cron_expression,
+            enabled,
+          });
+
+          if (!updated) {
+            return this.textResponse({
+              success: false,
+              error: `Scheduled prompt "${prompt_id}" not found`,
+            });
+          }
+
+          return this.textResponse({
+            success: true,
+            timezone: 'UTC',
+            scheduled_prompt: formatScheduledPrompt(updated),
+            message: `Updated scheduled prompt "${updated.name}"`,
+          });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    );
+
+    this.server.tool(
+      'delete_scheduled_prompt',
+      'Delete a scheduled prompt from the current workspace.',
+      {
+        prompt_id: z.string().describe('ID of the scheduled prompt to delete'),
+      },
+      async ({ prompt_id }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const deleted = await schedulerStub.deleteScheduledPrompt(workspaceId, prompt_id);
+          if (!deleted) {
+            return this.textResponse({
+              success: false,
+              error: `Scheduled prompt "${prompt_id}" not found`,
+            });
+          }
+
+          return this.textResponse({
+            success: true,
+            message: `Deleted scheduled prompt "${prompt_id}"`,
+          });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    );
+
+    this.server.tool(
+      'run_scheduled_prompt_now',
+      'Trigger a scheduled prompt immediately without waiting for its next cron time.',
+      {
+        prompt_id: z.string().describe('ID of the scheduled prompt to run now'),
+      },
+      async ({ prompt_id }) => {
+        const { workspaceId } = this.requireAuth();
+        if (!workspaceId) {
+          return this.textResponse({ success: false, error: 'No workspace context available' });
+        }
+
+        try {
+          const schedulerStub = this.getWorkspaceCronStub(workspaceId);
+          const result = await schedulerStub.runScheduledPromptNow(workspaceId, prompt_id);
+          if (!result) {
+            return this.textResponse({
+              success: false,
+              error: `Scheduled prompt "${prompt_id}" not found`,
+            });
+          }
+
+          return this.textResponse({
+            success: true,
+            timezone: 'UTC',
+            scheduled_prompt: formatScheduledPrompt(result.prompt),
+            run: {
+              status: result.dispatch.status,
+              thread_id: result.dispatch.thread_id,
+              error: result.dispatch.error,
+              reply: result.dispatch.reply,
+            },
+          });
+        } catch (error) {
+          return this.textResponse({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     );
 

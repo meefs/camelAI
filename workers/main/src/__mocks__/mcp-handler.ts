@@ -11,6 +11,7 @@ export interface McpEnv {
   ORG: DurableObjectNamespace;
   WORKSPACE: DurableObjectNamespace;
   MCP_OBJECT: DurableObjectNamespace<ChiridionMcp>;
+  WORKSPACE_CRON?: DurableObjectNamespace;
   APP_KV: KVNamespace;
   SANDBOX_PROXY_SECRET?: string;
 }

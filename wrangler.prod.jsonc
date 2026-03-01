@@ -72,6 +72,7 @@
 			{ "name": "ORG", "class_name": "OrgDO" },
 			{ "name": "ORG_SLUG", "class_name": "OrgSlugDO" },
 			{ "name": "WORKSPACE", "class_name": "WorkspaceDO" },
+			{ "name": "WORKSPACE_CRON", "class_name": "WorkspaceCronDO" },
 			{ "name": "MCP_OBJECT", "class_name": "ChiridionMcp" },
 			{ "name": "WORKER_LOGS", "class_name": "WorkerLogsDO" },
 			{ "name": "ADMIN_INDEX", "class_name": "AdminIndexDO" },
@@ -95,6 +96,7 @@
 		{ "tag": "v14", "new_sqlite_classes": ["WorkerLogsDO"] },
 		{ "tag": "v15", "new_sqlite_classes": ["AdminIndexDO"] },
 		{ "tag": "v16", "deleted_classes": ["DataProxy"] },
-		{ "tag": "v17", "new_sqlite_classes": ["OAuthStateDO"] }
-		]
-	}
+		{ "tag": "v17", "new_sqlite_classes": ["OAuthStateDO"] },
+		{ "tag": "v18", "new_sqlite_classes": ["WorkspaceCronDO"] }
+	]
+}

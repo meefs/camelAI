@@ -6,6 +6,7 @@ import { dispatchAdminEvent } from './auth';
 import { decryptCredentials, encryptCredentials } from '../../../src/lib/integration-crypto';
 import { syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
 import { mintBigQueryAccessTokenFromServiceAccount } from './google-service-account';
+import type { WorkspaceCronDO } from './workspace-cron';
 import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
@@ -145,6 +146,7 @@ export interface WorkspaceEnv {
   APP_KV?: KVNamespace;
   EMAIL_TO_USER?: KVNamespace;
   CHAT_THREAD?: DurableObjectNamespace;
+  WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
   TOKEN_SIGNING_SECRET?: string;
 }
 
@@ -289,6 +291,21 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     });
   }
 
+  private async disableScheduledPromptsForWorkspace(workspaceId: string, reason: string): Promise<void> {
+    if (!this.env.WORKSPACE_CRON) return;
+    try {
+      const schedulerStub = this.env.WORKSPACE_CRON.get(
+        this.env.WORKSPACE_CRON.idFromName(workspaceId)
+      ) as DurableObjectStub<WorkspaceCronDO>;
+      await schedulerStub.disableAllScheduledPrompts(workspaceId, reason);
+    } catch (error) {
+      console.warn('[WorkspaceDO] Failed to disable workspace scheduled prompts', {
+        workspaceId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   async getInfo(): Promise<Workspace | null> {
     const rows = this.sql.exec('SELECT value FROM workspace_info WHERE key = ?', 'data').toArray();
     if (rows.length === 0) return null;
@@ -403,6 +420,7 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     info.archived_at = Date.now();
     info.archived_by = archivedBy;
     await this.setInfo(info);
+    await this.disableScheduledPromptsForWorkspace(info.id, 'workspace_archived');
     this.log('workspace_archived', archivedBy, undefined, { workspace_id: info.id, name: info.name });
     return info;
   }
@@ -413,6 +431,10 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
    */
   async hardDeleteWorkspace(actorId: string): Promise<void> {
     const info = await this.getInfo();
+
+    if (info) {
+      await this.disableScheduledPromptsForWorkspace(info.id, 'workspace_deleted');
+    }
 
     // Stop any pending token refresh alarms before clearing tables.
     await this.ctx.storage.deleteAlarm();

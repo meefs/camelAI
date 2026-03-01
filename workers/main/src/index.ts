@@ -52,6 +52,7 @@ export { ChatThreadDO } from './durable-objects.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
 export { WorkspaceDO } from './workspace.js';
+export { WorkspaceCronDO } from './workspace-cron.js';
 export { WorkerLogsDO } from './worker-logs-do.js';
 export { R2VirtualBucket } from './r2-virtual-bucket.js';
 export { DataProxyService } from './data-proxy-service.js';
