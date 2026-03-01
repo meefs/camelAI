@@ -46,6 +46,8 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   BEDROCK_REGION?: string;
   // Sandbox proxy shared secret
   SANDBOX_PROXY_SECRET?: string;
+  // Admin CLI API key (set via wrangler secret)
+  ADMIN_API_KEY?: string;
 }
 
 export interface RouteContext {
@@ -56,7 +58,7 @@ export interface RouteContext {
   match: RegExpMatchArray;
 }
 
-export type RouteHandler = (ctx: RouteContext) => Promise<Response>;
+export type RouteHandler = (ctx: RouteContext) => Promise<Response | null>;
 
 export interface Route {
   method: string;

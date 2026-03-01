@@ -42,6 +42,7 @@ import {
   handlePostgresQuery,
 } from './routes/data-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
+import { handleAdminApi } from './routes/admin-api.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
@@ -69,6 +70,9 @@ declare module 'react-router' {
 // =============================================================================
 
 const routes: Route[] = [
+  // Admin REST API (ADMIN_API_KEY auth; returns null to fall through to React Router for session-auth routes)
+  { method: 'ALL', path: /^\/api\/admin\//, handler: handleAdminApi },
+
   // CF API Proxy
   { method: 'ALL', path: /^\/client\/v4\//, handler: handleCfProxy },
 
@@ -132,7 +136,9 @@ export default {
       const match = url.pathname.match(route.path);
       if (!match) continue;
 
-      return route.handler({ req, env, ctx, url, match });
+      const result = await route.handler({ req, env, ctx, url, match });
+      if (result !== null) return result;
+      // null → handler declined, continue matching
     }
 
     if (isWebSocket) {

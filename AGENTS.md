@@ -38,9 +38,8 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
    - Cloudflare Workers SSR via `@cloudflare/vite-plugin`
 
 2. **Workers** (`workers/`)
-   - `main/` - Main camelAI app worker (SSR, Durable Objects, WebSocket routing, OAuth, MCP)
+   - `main/` - Main camelAI app worker (SSR, Durable Objects, WebSocket routing, OAuth, MCP, admin CLI API)
    - `dispatcher/` - Routes `*.camelai.app` to user workers (Workers for Platforms)
-   - `admin-cli/` - Local-only admin CLI for querying live environments
 
 3. **Sandbox Host** (`services/sandbox-host/`)
    - Go HTTP server managing Docker + gVisor container lifecycle on Azure VM
@@ -223,6 +222,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Support | `/api/help` |
 | Dev tooling | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id` |
 | Admin troubleshooting | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages` |
+| Admin REST API | `/api/admin/{stats,users,orgs,threads,kv,r2}` (Bearer `ADMIN_API_KEY` auth) |
 | Invitations | `/api/invitations/:orgId/:invitationId` (GET/POST) |
 | Workspace FS | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}` |
 | Workspace chat | `/api/workspaces/:id/chat/:threadId/messages/stream` |
@@ -340,15 +340,34 @@ bun run deploy:dispatcher:prod      # Deploy dispatcher
 bun run deploy:tail:prod            # Deploy tail worker (user worker logs)
 ```
 
-### Admin CLI
+### Admin REST API
+
+Admin endpoints are served by the main worker at `/api/admin/*` and require `ADMIN_API_KEY` Bearer auth (set via `wrangler secret put ADMIN_API_KEY`). Requests without a Bearer token fall through to React Router for session-auth admin routes (e.g. `/api/admin/threads/:id/messages`).
+
 ```bash
-bun run admin -- [env] [endpoint] [jq-filter]   # Quick query
-bun run admin -- staging overview                # Example
-bun run admin -- prod users '.users[] | {name, email}'
-bun run admin:staging                            # Interactive mode
+curl -H "Authorization: Bearer <key>" https://<host>/api/admin/stats
+curl -H "Authorization: Bearer <key>" https://<host>/api/admin/users
+curl -H "Authorization: Bearer <key>" https://<host>/api/admin/orgs
+curl -H "Authorization: Bearer <key>" https://<host>/api/admin/threads
+curl -H "Authorization: Bearer <key>" https://<host>/api/admin/kv?prefix=email:
+curl -H "Authorization: Bearer <key>" https://<host>/api/admin/r2?prefix=abc
+curl -X POST -d '{"user_id":"..."}' -H "Authorization: Bearer <key>" https://<host>/api/admin/orgs/:id/members
+curl -X PATCH -d '{"title":"..."}' -H "Authorization: Bearer <key>" https://<host>/api/admin/threads/:id
 ```
 
-Endpoints: `/overview`, `/orgs`, `/users`, `/threads`, `/kv-keys`, `/r2/list`, `/workers`.
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/stats` | Aggregate counts (user_count, org_count, membership_count) |
+| GET | `/users` | All users |
+| GET | `/users/:id/orgs` | User's org memberships |
+| GET | `/orgs` | All orgs (enriched with members + workspaces) |
+| GET | `/threads` | All threads across orgs |
+| POST | `/orgs/:id/members` | Add member to org (`{ user_id, role? }`) |
+| PATCH | `/threads/:id` | Update thread (`{ title?, created_by? }`) |
+| GET | `/kv` | List KV keys (`?prefix=` supported) |
+| GET | `/kv/:key` | Get KV value |
+| GET | `/r2` | List R2 objects (`?prefix=` supported) |
+| GET | `/r2/:key+` | R2 object head metadata |
 
 ### Sandbox Host Deployment
 
