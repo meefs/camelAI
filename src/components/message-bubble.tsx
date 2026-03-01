@@ -482,7 +482,9 @@ export function MessageBubble({
   }
 
   // Hide messages that are entirely system messages (no visible content after stripping)
-  if (!hasVisibleContent(message.content)) {
+  // For assistant streaming turns, allow an empty-content bubble to render
+  // so loading dots stay visible before the first content block arrives.
+  if (!hasVisibleContent(message.content) && !(message.role === 'assistant' && showStreamingIndicator)) {
     return null;
   }
 
@@ -656,12 +658,11 @@ export function MessageBubble({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="max-w-none space-y-4">
-        {hasContent && (
+      {hasContent && (
+        <div className="max-w-none space-y-4">
           <ContentBlockRenderer content={message.content} isStreaming={isStreaming} skillSheets={skillSheets} />
-        )}
-        {showStreamingIndicator && <LoadingDots />}
-      </div>
+        </div>
+      )}
       {/* Hover action row */}
       {hasContent && (
         <div
@@ -689,6 +690,7 @@ export function MessageBubble({
           </Tooltip>
         </div>
       )}
+      {showStreamingIndicator && <LoadingDots />}
     </div>
   );
 }
