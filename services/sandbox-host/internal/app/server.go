@@ -1,9 +1,12 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -257,8 +260,6 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return s.handleChatMessages(w, req, name)
 	case strings.HasPrefix(route.Subpath, "/data-proxy/"):
 		return s.forwardDataProxyRequest(w, req, route)
-	case strings.HasPrefix(route.Subpath, "/openai-proxy/"):
-		return s.forwardOpenAIProxyRequest(w, req, route)
 	case route.Subpath == "/health" && req.Method == http.MethodGet:
 		if _, err := s.containers.EnsureContainer(name, opts); err != nil {
 			return err
@@ -362,78 +363,6 @@ func (s *Server) forwardDataProxyRequest(w http.ResponseWriter, req *http.Reques
 	return nil
 }
 
-func (s *Server) forwardOpenAIProxyRequest(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) error {
-	base := strings.TrimRight(strings.TrimSpace(s.cfg.OpenAIProxyUpstreamURL), "/")
-	if base == "" {
-		errorJSON(w, "OpenAI proxy upstream not configured", http.StatusServiceUnavailable)
-		return nil
-	}
-	token := strings.TrimSpace(s.cfg.OpenAIProxyAuthToken)
-	if token == "" {
-		errorJSON(w, "OpenAI proxy auth token not configured", http.StatusServiceUnavailable)
-		return nil
-	}
-
-	upstreamPath := strings.TrimPrefix(route.Subpath, "/openai-proxy")
-	normalizedUpstreamPath, ok := normalizeOpenAIProxyUpstreamPath(upstreamPath)
-	if !ok {
-		errorJSON(w, "Invalid OpenAI proxy path", http.StatusBadRequest)
-		return nil
-	}
-
-	bodyReader, err := rewriteOpenAIProxyBody(req, normalizedUpstreamPath)
-	if err != nil {
-		return err
-	}
-
-	targetURL := base + normalizedUpstreamPath
-	if req.URL.RawQuery != "" {
-		targetURL += "?" + req.URL.RawQuery
-	}
-
-	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, bodyReader)
-	if err != nil {
-		return err
-	}
-	forwardReq.Header = sanitizeOpenAIProxyUpstreamHeaders(req.Header)
-	forwardReq.Header.Set("Authorization", "Bearer "+token)
-	forwardReq.Header.Set("cf-aig-metadata", buildAIGatewayMetadata(route, req))
-	applyStreamingRequestHeaders(forwardReq.Header)
-
-	resp, err := s.httpClient.Do(forwardReq)
-	if err != nil {
-		errorJSON(w, "OpenAI proxy upstream unavailable", http.StatusServiceUnavailable)
-		return nil
-	}
-	defer resp.Body.Close()
-
-	copyHeaders(w.Header(), resp.Header)
-	applyStreamingResponseHeaders(w.Header(), resp.Header.Get("Content-Type"))
-	w.WriteHeader(resp.StatusCode)
-
-	if err := copyResponseBody(w, resp.Body); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil
-		}
-		return err
-	}
-	return nil
-}
-
-var allowedModelAliases = map[string]bool{
-	"auto":        true,
-	"auto_search": true,
-	"auto_image":  true,
-}
-
-func resolveGatewayModel(requestModel string) string {
-	trimmed := strings.TrimSpace(requestModel)
-	if allowedModelAliases[trimmed] {
-		return "dynamic/" + trimmed
-	}
-	return "dynamic/auto"
-}
-
 func normalizeOpenAIProxyUpstreamPath(path string) (string, bool) {
 	if !strings.HasPrefix(path, "/v1/") && path != "/v1" {
 		return "", false
@@ -443,73 +372,6 @@ func normalizeOpenAIProxyUpstreamPath(path string) (string, bool) {
 		return "", false
 	}
 	return normalized, true
-}
-
-func rewriteOpenAIProxyBody(req *http.Request, upstreamPath string) (io.Reader, error) {
-	if req.Method == http.MethodGet || req.Method == http.MethodHead {
-		return nil, nil
-	}
-	if req.Body == nil {
-		return nil, nil
-	}
-
-	rawBody, err := io.ReadAll(req.Body)
-	if err != nil {
-		return nil, err
-	}
-	if len(rawBody) == 0 {
-		return bytes.NewReader(rawBody), nil
-	}
-	if upstreamPath != "/chat/completions" {
-		return bytes.NewReader(rawBody), nil
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(rawBody, &payload); err != nil {
-		// Keep passthrough behavior for non-JSON payloads; upstream will validate.
-		return bytes.NewReader(rawBody), nil
-	}
-
-	callerModel, _ := payload["model"].(string)
-	payload["model"] = resolveGatewayModel(callerModel)
-	rewritten, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	return bytes.NewReader(rewritten), nil
-}
-
-func buildAIGatewayMetadata(route WorkspaceRoute, req *http.Request) string {
-	userID := strings.TrimSpace(req.Header.Get("X-Chiridion-User-Id"))
-	threadID := strings.TrimSpace(req.Header.Get("X-Chiridion-Thread-Id"))
-	uidParts := []string{route.OrgID, route.WorkspaceID}
-	if userID != "" {
-		uidParts = append(uidParts, userID)
-	}
-	uid := strings.Join(uidParts, ":")
-	if threadID != "" {
-		uid = uid + ":" + threadID
-	}
-
-	chiridion := map[string]string{
-		"orgId":       route.OrgID,
-		"workspaceId": route.WorkspaceID,
-		"threadId":    threadID,
-	}
-	if userID != "" {
-		chiridion["userId"] = userID
-	}
-
-	payload := map[string]any{
-		"uid":       uid,
-		"chiridion": chiridion,
-	}
-
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return `{"uid":"unknown"}`
-	}
-	return string(encoded)
 }
 
 func (s *Server) handleFSRead(w http.ResponseWriter, req *http.Request, name string) error {
@@ -977,6 +839,18 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 		return
 	}
 
+	// Route LLM API requests to AI Gateway instead of Worker
+	if s.cfg.AIGatewayBaseURL != "" {
+		switch {
+		case strings.HasPrefix(proxy.UpstreamPath, "/api/claude/"):
+			s.forwardClaudeToAIGateway(w, req, proxy, threadContext, caller, requestID, startedAt)
+			return
+		case strings.HasPrefix(proxy.UpstreamPath, "/api/openai/"):
+			s.forwardOpenAIToAIGateway(w, req, proxy, threadContext, caller, requestID, startedAt)
+			return
+		}
+	}
+
 	workerBaseURL := normalizeWorkerBaseURL(firstNonEmpty(threadContext.WorkerBaseURL, s.cfg.WorkerBaseURL))
 	if workerBaseURL == "" {
 		s.trace("proxy_request_rejected_missing_worker_base", map[string]any{
@@ -1085,6 +959,435 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 			"threadKey":       threadKey,
 			"error":           err.Error(),
 		})
+	}
+}
+
+func (s *Server) forwardClaudeToAIGateway(
+	w http.ResponseWriter,
+	req *http.Request,
+	proxy ProxyRoute,
+	threadContext *ProxyThreadContext,
+	caller *container.ContainerRecord,
+	requestID string,
+	startedAt time.Time,
+) {
+	// Read and parse request body for universal endpoint wrapping
+	rawBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		errorJSON(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	var bodyJSON map[string]any
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &bodyJSON); err != nil {
+			errorJSON(w, "Invalid JSON body", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Map /api/claude/v1/messages -> v1/messages (strip leading slash for universal endpoint)
+	anthropicEndpoint := strings.TrimPrefix(
+		strings.Replace(proxy.UpstreamPath, "/api/claude/", "/", 1),
+		"/",
+	)
+
+	// Build Anthropic provider entry (no API key — gateway BYOK handles auth)
+	anthropicHeaders := map[string]string{
+		"Content-Type": "application/json",
+	}
+	if val := req.Header.Get("anthropic-version"); val != "" {
+		anthropicHeaders["anthropic-version"] = val
+	}
+	if val := req.Header.Get("anthropic-beta"); val != "" {
+		anthropicHeaders["anthropic-beta"] = val
+	}
+
+	anthropicEntry := map[string]any{
+		"provider": "anthropic",
+		"endpoint": anthropicEndpoint,
+		"headers":  anthropicHeaders,
+		"query":    bodyJSON,
+	}
+
+	// Bedrock primary, Anthropic fallback for messages endpoints
+	var providers []map[string]any
+	isMessagesEndpoint := strings.Contains(anthropicEndpoint, "messages") && !strings.Contains(anthropicEndpoint, "count_tokens")
+	if isMessagesEndpoint && s.cfg.AIGatewayToken != "" {
+		bedrockEntry := buildBedrockProviderEntry(bodyJSON, req.Header, s.cfg)
+		if bedrockEntry != nil {
+			providers = []map[string]any{bedrockEntry, anthropicEntry}
+		} else {
+			providers = []map[string]any{anthropicEntry}
+		}
+	} else {
+		providers = []map[string]any{anthropicEntry}
+	}
+
+	payload, err := json.Marshal(providers)
+	if err != nil {
+		errorJSON(w, "Failed to build gateway payload", http.StatusInternalServerError)
+		return
+	}
+
+	targetURL := s.cfg.AIGatewayBaseURL + "/"
+	forwardReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
+	if err != nil {
+		errorJSON(w, "Failed to create gateway request", http.StatusInternalServerError)
+		return
+	}
+
+	forwardReq.Header.Set("Content-Type", "application/json")
+	if s.cfg.AIGatewayToken != "" {
+		forwardReq.Header.Set("cf-aig-authorization", "Bearer "+s.cfg.AIGatewayToken)
+	}
+	forwardReq.Header.Set("cf-aig-metadata", buildAIGatewayMetadata(threadContext))
+	applyStreamingRequestHeaders(forwardReq.Header)
+
+	s.trace("gateway_claude_proxy_start", map[string]any{
+		"requestId":       requestID,
+		"callerContainer": caller.Name,
+		"method":          req.Method,
+		"threadId":        threadContext.ThreadID,
+		"endpoint":        anthropicEndpoint,
+		"providerCount":   len(providers),
+	})
+	s.containers.AddProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath))
+
+	resp, upstreamErr := s.httpClient.Do(forwardReq)
+	durationMs := time.Since(startedAt).Milliseconds()
+	if upstreamErr != nil {
+		s.trace("gateway_claude_proxy_error", map[string]any{
+			"requestId":       requestID,
+			"callerContainer": caller.Name,
+			"method":          req.Method,
+			"threadId":        threadContext.ThreadID,
+			"durationMs":      durationMs,
+			"endpoint":        anthropicEndpoint,
+			"error":           upstreamErr.Error(),
+		})
+		s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), 0, durationMs)
+		log.Printf("[SandboxHost] AI Gateway Claude proxy failed method=%s endpoint=%s thread=%s container=%s durationMs=%d error=%v",
+			req.Method, anthropicEndpoint, threadContext.ThreadID, threadContext.ContainerName, durationMs, upstreamErr)
+		errorJSON(w, "AI Gateway upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	s.trace("gateway_claude_proxy_complete", map[string]any{
+		"requestId":       requestID,
+		"callerContainer": caller.Name,
+		"method":          req.Method,
+		"threadId":        threadContext.ThreadID,
+		"status":          resp.StatusCode,
+		"durationMs":      durationMs,
+		"endpoint":        anthropicEndpoint,
+		"aigStep":         resp.Header.Get("cf-aig-step"),
+	})
+	s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), resp.StatusCode, durationMs)
+
+	// Detect if Bedrock handled the request (step 0 = primary = Bedrock)
+	isBedrockResponse := resp.Header.Get("cf-aig-step") == "0"
+	isStreaming := bodyJSON != nil && bodyJSON["stream"] == true
+	needsConversion := isBedrockResponse && isStreaming && resp.StatusCode == http.StatusOK
+
+	copyHeaders(w.Header(), resp.Header)
+	if needsConversion {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	}
+	applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+
+	if needsConversion {
+		if err := copyBedrockStreamToSSE(w, resp.Body); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.trace("gateway_claude_proxy_copy_error", map[string]any{
+					"requestId":       requestID,
+					"callerContainer": caller.Name,
+					"threadId":        threadContext.ThreadID,
+					"error":           err.Error(),
+					"conversion":      "bedrock_to_sse",
+				})
+			}
+		}
+	} else {
+		if err := copyResponseBody(w, resp.Body); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.trace("gateway_claude_proxy_copy_error", map[string]any{
+					"requestId":       requestID,
+					"callerContainer": caller.Name,
+					"threadId":        threadContext.ThreadID,
+					"error":           err.Error(),
+				})
+			}
+		}
+	}
+}
+
+func (s *Server) forwardOpenAIToAIGateway(
+	w http.ResponseWriter,
+	req *http.Request,
+	proxy ProxyRoute,
+	threadContext *ProxyThreadContext,
+	caller *container.ContainerRecord,
+	requestID string,
+	startedAt time.Time,
+) {
+	// Map /api/openai/v1/* -> {gateway}/compat/* (Cloudflare's OpenAI-compatible endpoint)
+	openaiPath := strings.TrimPrefix(proxy.UpstreamPath, "/api/openai")
+	normalizedPath, ok := normalizeOpenAIProxyUpstreamPath(openaiPath)
+	if !ok {
+		errorJSON(w, "Invalid OpenAI proxy path", http.StatusBadRequest)
+		return
+	}
+
+	targetURL := s.cfg.AIGatewayBaseURL + "/compat" + normalizedPath
+	if req.URL.RawQuery != "" {
+		targetURL += "?" + req.URL.RawQuery
+	}
+
+	// Rewrite model aliases to Cloudflare dynamic routing prefixed names
+	var forwardBody io.Reader = req.Body
+	if req.Method == http.MethodPost {
+		rawBody, err := io.ReadAll(req.Body)
+		if err != nil {
+			errorJSON(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		var bodyJSON map[string]any
+		if len(rawBody) > 0 {
+			if err := json.Unmarshal(rawBody, &bodyJSON); err == nil {
+				if model, _ := bodyJSON["model"].(string); model != "" {
+					if mapped := mapToGatewayModel(model); mapped != model {
+						bodyJSON["model"] = mapped
+						rawBody, _ = json.Marshal(bodyJSON)
+					}
+				}
+			}
+		}
+		forwardBody = bytes.NewReader(rawBody)
+	}
+
+	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, forwardBody)
+	if err != nil {
+		errorJSON(w, "Failed to create gateway request", http.StatusInternalServerError)
+		return
+	}
+
+	headers := sanitizeGatewayUpstreamHeaders(req.Header)
+	headers.Set("cf-aig-authorization", "Bearer "+s.cfg.AIGatewayToken)
+	headers.Set("cf-aig-metadata", buildAIGatewayMetadata(threadContext))
+	applyStreamingRequestHeaders(headers)
+	forwardReq.Header = headers
+
+	s.trace("gateway_openai_proxy_start", map[string]any{
+		"requestId":       requestID,
+		"callerContainer": caller.Name,
+		"method":          req.Method,
+		"threadId":        threadContext.ThreadID,
+		"targetPath":      "/compat" + normalizedPath,
+	})
+	s.containers.AddProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath))
+
+	resp, upstreamErr := s.httpClient.Do(forwardReq)
+	durationMs := time.Since(startedAt).Milliseconds()
+	if upstreamErr != nil {
+		s.trace("gateway_openai_proxy_error", map[string]any{
+			"requestId":       requestID,
+			"callerContainer": caller.Name,
+			"method":          req.Method,
+			"threadId":        threadContext.ThreadID,
+			"durationMs":      durationMs,
+			"error":           upstreamErr.Error(),
+		})
+		s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), 0, durationMs)
+		log.Printf("[SandboxHost] AI Gateway OpenAI proxy failed method=%s thread=%s container=%s durationMs=%d error=%v",
+			req.Method, threadContext.ThreadID, threadContext.ContainerName, durationMs, upstreamErr)
+		errorJSON(w, "AI Gateway upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	s.trace("gateway_openai_proxy_complete", map[string]any{
+		"requestId":       requestID,
+		"callerContainer": caller.Name,
+		"method":          req.Method,
+		"threadId":        threadContext.ThreadID,
+		"status":          resp.StatusCode,
+		"durationMs":      durationMs,
+	})
+	s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), resp.StatusCode, durationMs)
+
+	copyHeaders(w.Header(), resp.Header)
+	applyStreamingResponseHeaders(w.Header(), resp.Header.Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+	if err := copyResponseBody(w, resp.Body); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.trace("gateway_openai_proxy_copy_error", map[string]any{
+				"requestId":       requestID,
+				"callerContainer": caller.Name,
+				"threadId":        threadContext.ThreadID,
+				"error":           err.Error(),
+			})
+		}
+	}
+}
+
+func sanitizeGatewayUpstreamHeaders(src http.Header) http.Header {
+	headers := cloneHeaders(src)
+	headers.Del("Host")
+	headers.Del("Authorization")
+	headers.Del("Content-Length")
+	headers.Del("X-Sandbox-Secret")
+	headers.Del("X-Chiridion-Org-Id")
+	headers.Del("X-Chiridion-Workspace-Id")
+	headers.Del("X-Chiridion-User-Id")
+	headers.Del("X-Chiridion-Thread-Id")
+	headers.Del("X-Api-Key")
+	headers.Del("x-api-key")
+	// Strip spoofable forwarding/proxy headers from sandbox callers
+	headers.Del("X-Forwarded-For")
+	headers.Del("X-Forwarded-Host")
+	headers.Del("X-Forwarded-Proto")
+	headers.Del("X-Real-Ip")
+	headers.Del("Cf-Connecting-Ip")
+	headers.Del("Forwarded")
+	headers.Del("Via")
+	return headers
+}
+
+// buildAIGatewayMetadata builds the cf-aig-metadata header for Cloudflare
+// AI Gateway spend tracking and tenant attribution.
+func buildAIGatewayMetadata(tc *ProxyThreadContext) string {
+	userID := strings.TrimSpace(tc.UserID)
+	uidParts := []string{tc.OrgID, tc.WorkspaceID}
+	if userID != "" {
+		uidParts = append(uidParts, userID)
+	}
+	uid := strings.Join(uidParts, ":")
+	if tc.ThreadID != "" {
+		uid = uid + ":" + tc.ThreadID
+	}
+
+	chiridion := map[string]string{
+		"orgId":       tc.OrgID,
+		"workspaceId": tc.WorkspaceID,
+		"threadId":    tc.ThreadID,
+	}
+	if userID != "" {
+		chiridion["userId"] = userID
+	}
+
+	payload := map[string]any{
+		"uid":       uid,
+		"chiridion": chiridion,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return `{"uid":"unknown"}`
+	}
+	return string(encoded)
+}
+
+// Bedrock model mapping (Anthropic model ID -> Bedrock model ID)
+var bedrockModelMap = map[string]string{
+	"claude-sonnet-4-5-20250929": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+	"claude-haiku-4-5-20251001":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+	"claude-opus-4-5-20251101":   "global.anthropic.claude-opus-4-5-20251101-v1:0",
+	"claude-sonnet-4-6":          "global.anthropic.claude-sonnet-4-6",
+	"claude-opus-4-6":            "global.anthropic.claude-opus-4-6-v1",
+	"claude-sonnet-4-20250514":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
+	"claude-opus-4-20250514":     "global.anthropic.claude-opus-4-20250514-v1:0",
+	"claude-3-5-sonnet-20241022": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+	"claude-3-5-haiku-20241022":  "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+}
+
+
+func mapToBedrockModel(model string) string {
+	if mapped, ok := bedrockModelMap[model]; ok {
+		return mapped
+	}
+	m := strings.ToLower(model)
+	if strings.Contains(m, "sonnet-4-6") || strings.Contains(m, "sonnet-4.6") {
+		return "global.anthropic.claude-sonnet-4-6"
+	}
+	return "global.anthropic." + model + "-v1:0"
+}
+
+var allowedModelAliases = map[string]bool{
+	"auto":        true,
+	"auto_search": true,
+	"auto_image":  true,
+}
+
+// mapToGatewayModel rewrites model aliases to Cloudflare dynamic routing names.
+// "auto" -> "dynamic/auto", "auto_search" -> "dynamic/auto_search", etc.
+// Unrecognized aliases fall back to "dynamic/auto".
+func mapToGatewayModel(model string) string {
+	trimmed := strings.TrimSpace(model)
+	if allowedModelAliases[trimmed] {
+		return "dynamic/" + trimmed
+	}
+	if strings.HasPrefix(trimmed, "dynamic/") {
+		return trimmed
+	}
+	return "dynamic/auto"
+}
+
+func buildBedrockProviderEntry(body map[string]any, reqHeaders http.Header, cfg Config) map[string]any {
+	if body == nil {
+		return nil
+	}
+
+	modelStr, _ := body["model"].(string)
+	if modelStr == "" {
+		return nil
+	}
+	bedrockModel := mapToBedrockModel(modelStr)
+
+	isStreaming, _ := body["stream"].(bool)
+	endpoint := "invoke"
+	if isStreaming {
+		endpoint = "invoke-with-response-stream"
+	}
+
+	bedrockEndpoint := fmt.Sprintf("bedrock-runtime/%s/model/%s/%s",
+		cfg.AWSRegionName, bedrockModel, endpoint)
+
+	// Build Bedrock body: same fields as Anthropic minus "model" and "stream", plus anthropic_version.
+	// Bedrock rejects "stream" in the body — streaming is controlled by the endpoint path.
+	bedrockBody := map[string]any{
+		"anthropic_version": "bedrock-2023-05-31",
+	}
+	for key, val := range body {
+		if key != "model" && key != "stream" {
+			bedrockBody[key] = val
+		}
+	}
+
+	// Pass anthropic-beta header values as body array for Bedrock
+	if betaHeader := reqHeaders.Get("anthropic-beta"); betaHeader != "" {
+		var betas []string
+		for _, b := range strings.Split(betaHeader, ",") {
+			b = strings.TrimSpace(b)
+			if b != "" {
+				betas = append(betas, b)
+			}
+		}
+		if len(betas) > 0 {
+			bedrockBody["anthropic_beta"] = betas
+		}
+	}
+
+	bedrockHeaders := map[string]string{
+		"Content-Type": "application/json",
+	}
+
+	return map[string]any{
+		"provider": "aws-bedrock",
+		"endpoint": bedrockEndpoint,
+		"headers":  bedrockHeaders,
+		"query":    bedrockBody,
 	}
 }
 
@@ -1429,6 +1732,88 @@ func copyResponseBody(w http.ResponseWriter, body io.Reader) error {
 	return err
 }
 
+// copyBedrockStreamToSSE converts Amazon EventStream binary frames to Anthropic SSE format.
+//
+// Each EventStream message has this binary layout:
+//
+//	[4B total_length][4B headers_length][4B prelude_crc][headers][payload][4B message_crc]
+//
+// The payload is JSON like {"bytes":"<base64-encoded-json>","p":"<id>"}.
+// We decode the base64 "bytes" field to get the Anthropic event and re-emit as SSE.
+func copyBedrockStreamToSSE(w http.ResponseWriter, body io.Reader) error {
+	if w == nil || body == nil {
+		return nil
+	}
+
+	flusher, _ := w.(http.Flusher)
+	r := bufio.NewReader(body)
+
+	for {
+		// Read 12-byte prelude: total_length (4) + headers_length (4) + prelude_crc (4)
+		var prelude [12]byte
+		if _, err := io.ReadFull(r, prelude[:]); err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				return nil
+			}
+			return err
+		}
+
+		totalLen := binary.BigEndian.Uint32(prelude[0:4])
+		headersLen := binary.BigEndian.Uint32(prelude[4:8])
+
+		if totalLen < 16 { // minimum: 12 prelude + 4 message CRC
+			continue
+		}
+
+		// Read the rest of the message (total - 12 prelude bytes)
+		remaining := make([]byte, totalLen-12)
+		if _, err := io.ReadFull(r, remaining); err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				return nil
+			}
+			return err
+		}
+
+		// Payload starts after headers, ends before 4-byte message CRC
+		payloadStart := headersLen
+		payloadEnd := uint32(len(remaining)) - 4
+		if payloadStart >= payloadEnd {
+			continue
+		}
+		payload := remaining[payloadStart:payloadEnd]
+
+		// Parse payload JSON to extract base64 "bytes" field
+		var frame struct {
+			Bytes string `json:"bytes"`
+		}
+		if err := json.Unmarshal(payload, &frame); err != nil || frame.Bytes == "" {
+			continue
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(frame.Bytes)
+		if err != nil {
+			continue
+		}
+
+		// Extract event type from decoded JSON
+		var event struct {
+			Type string `json:"type"`
+		}
+		eventType := "content_block_delta"
+		if json.Unmarshal(decoded, &event) == nil && event.Type != "" {
+			eventType = event.Type
+		}
+
+		sseLine := fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(decoded))
+		if _, err := io.WriteString(w, sseLine); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+}
+
 type flushWriter struct {
 	writer  io.Writer
 	flusher http.Flusher
@@ -1514,40 +1899,6 @@ func copyHeaders(dst, src http.Header) {
 			dst.Add(key, value)
 		}
 	}
-}
-
-func sanitizeOpenAIProxyUpstreamHeaders(src http.Header) http.Header {
-	headers := cloneHeaders(src)
-
-	// Never forward internal auth/identity or transport-managed headers.
-	headers.Del("Host")
-	headers.Del("Authorization")
-	headers.Del("Content-Length")
-	headers.Del("X-Sandbox-Secret")
-	headers.Del("X-Chiridion-Org-Id")
-	headers.Del("X-Chiridion-Workspace-Id")
-	headers.Del("X-Chiridion-User-Id")
-	headers.Del("X-Chiridion-Thread-Id")
-
-	// Drop client IP/proxy chain headers so gateway/provider receives clean origin metadata.
-	for _, key := range []string{
-		"Forwarded",
-		"X-Forwarded-For",
-		"X-Forwarded-Host",
-		"X-Forwarded-Proto",
-		"X-Real-Ip",
-		"True-Client-Ip",
-		"CF-Connecting-Ip",
-		"Cf-Connecting-Ip",
-		"CF-Ray",
-		"Cf-Ray",
-		"Cdn-Loop",
-		"Via",
-	} {
-		headers.Del(key)
-	}
-
-	return headers
 }
 
 func decodeJSON(req *http.Request, target any) error {

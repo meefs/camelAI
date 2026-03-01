@@ -9,7 +9,6 @@
  * - /api/integrations/slack/events → Slack Events API webhook
  * - email() → Workspace email ingress (Cloudflare Email Routing)
  * - /api/threads/:id/preview → Thread preview API
- * - /api/openai/v1/* → OpenAI-compatible AI Gateway proxy for sandbox containers
  * - /ws/:workspace → Chat WebSocket (forwarded to ChatThreadDO)
  * - * → React Router SSR
  */
@@ -37,13 +36,11 @@ import {
 } from './routes/integrations.js';
 import { handleChatWebSocket } from './routes/websocket.js';
 import { handleLogsWebSocket } from './routes/logs-websocket.js';
-import { handleClaudeProxy, handleCountTokens } from './routes/claude-proxy.js';
 import {
   handleMssqlQuery,
   handleMysqlQuery,
   handlePostgresQuery,
 } from './routes/data-proxy.js';
-import { handleOpenAIProxy } from './routes/openai-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 
 // Re-exports for wrangler
@@ -75,13 +72,10 @@ const routes: Route[] = [
   // CF API Proxy
   { method: 'ALL', path: /^\/client\/v4\//, handler: handleCfProxy },
 
-  // Claude API Proxy (for sandbox containers)
-  { method: 'POST', path: /^\/api\/claude\/v1\/messages\/count_tokens$/, handler: handleCountTokens },
-  { method: 'POST', path: /^\/api\/claude\/v1\/messages$/, handler: handleClaudeProxy },
+  // Data proxy (for sandbox containers)
   { method: 'POST', path: /^\/api\/mssql\/query$/, handler: handleMssqlQuery },
   { method: 'POST', path: /^\/api\/postgres\/query$/, handler: handlePostgresQuery },
   { method: 'POST', path: /^\/api\/mysql\/query$/, handler: handleMysqlQuery },
-  { method: 'ALL', path: /^\/api\/openai\/v1(\/|$)/, handler: handleOpenAIProxy },
 
   // MCP
   { method: 'ALL', path: /^\/mcp(\/|$)/, handler: handleMcp },

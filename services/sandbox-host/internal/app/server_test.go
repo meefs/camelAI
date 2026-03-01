@@ -2,7 +2,10 @@ package app
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -276,90 +279,6 @@ func TestForwardDataProxyRequest(t *testing.T) {
 	}
 }
 
-func TestForwardOpenAIProxyRequest(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/compat/chat/completions" {
-			t.Fatalf("unexpected upstream path: %s", req.URL.Path)
-		}
-		if req.Header.Get("Authorization") != "Bearer gateway-token" {
-			t.Fatalf("unexpected authorization header: %q", req.Header.Get("Authorization"))
-		}
-		if req.Header.Get("X-Forwarded-For") != "" {
-			t.Fatalf("unexpected forwarded-for header: %q", req.Header.Get("X-Forwarded-For"))
-		}
-		if req.Header.Get("CF-Connecting-IP") != "" {
-			t.Fatalf("unexpected cf-connecting-ip header: %q", req.Header.Get("CF-Connecting-IP"))
-		}
-		if req.Header.Get("X-Sandbox-Secret") != "" {
-			t.Fatalf("unexpected internal sandbox header: %q", req.Header.Get("X-Sandbox-Secret"))
-		}
-		var payload map[string]any
-		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-			t.Fatalf("failed to decode upstream body: %v", err)
-		}
-		if payload["model"] != "dynamic/auto" {
-			t.Fatalf("expected model rewrite to dynamic/auto, got: %v", payload["model"])
-		}
-
-		metadata := req.Header.Get("cf-aig-metadata")
-		if strings.TrimSpace(metadata) == "" {
-			t.Fatal("expected cf-aig-metadata header")
-		}
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(metadata), &parsed); err != nil {
-			t.Fatalf("invalid cf-aig-metadata JSON: %v", err)
-		}
-		if parsed["uid"] != "org-1:ws-1:user-1:thread-1" {
-			t.Fatalf("unexpected uid in metadata: %+v", parsed["uid"])
-		}
-		chiridion, ok := parsed["chiridion"].(map[string]any)
-		if !ok {
-			t.Fatalf("missing chiridion metadata: %+v", parsed)
-		}
-		if chiridion["orgId"] != "org-1" || chiridion["workspaceId"] != "ws-1" || chiridion["userId"] != "user-1" || chiridion["threadId"] != "thread-1" {
-			t.Fatalf("unexpected chiridion metadata: %+v", chiridion)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl_test","object":"chat.completion"}`))
-	}))
-	defer upstream.Close()
-
-	server := &Server{
-		cfg: Config{
-			OpenAIProxyUpstreamURL: upstream.URL + "/compat",
-			OpenAIProxyAuthToken:   "gateway-token",
-		},
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces/org-1/ws-1/openai-proxy/v1/chat/completions", strings.NewReader(`{"model":"@cf/meta/llama-3.1-8b-instruct"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Forwarded-For", "198.41.214.162")
-	req.Header.Set("CF-Connecting-IP", "203.0.113.5")
-	req.Header.Set("X-Sandbox-Secret", "internal")
-	req.Header.Set("X-Chiridion-User-Id", "user-1")
-	req.Header.Set("X-Chiridion-Thread-Id", "thread-1")
-	rec := httptest.NewRecorder()
-	route := WorkspaceRoute{
-		OrgID:       "org-1",
-		WorkspaceID: "ws-1",
-		Subpath:     "/openai-proxy/v1/chat/completions",
-	}
-
-	if err := server.forwardOpenAIProxyRequest(rec, req, route); err != nil {
-		t.Fatalf("forwardOpenAIProxyRequest failed: %v", err)
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
-	}
-	if got := strings.TrimSpace(rec.Body.String()); got != `{"id":"chatcmpl_test","object":"chat.completion"}` {
-		t.Fatalf("unexpected body: %q", got)
-	}
-}
-
 type chunkReader struct {
 	chunks [][]byte
 	index  int
@@ -396,4 +315,134 @@ func (w *testResponseWriter) WriteHeader(statusCode int) {
 
 func (w *testResponseWriter) Flush() {
 	w.flushCount++
+}
+
+// buildEventStreamMessage builds an Amazon EventStream binary message.
+// Layout: [4B total_len][4B headers_len][4B prelude_crc][headers][payload][4B message_crc]
+func buildEventStreamMessage(payload []byte) []byte {
+	// Headers: :event-type = "chunk", :content-type = "application/json", :message-type = "event"
+	var headers bytes.Buffer
+	writeHeader := func(name string, value string) {
+		headers.WriteByte(byte(len(name)))
+		headers.WriteString(name)
+		headers.WriteByte(7) // type 7 = string
+		binary.Write(&headers, binary.BigEndian, uint16(len(value)))
+		headers.WriteString(value)
+	}
+	writeHeader(":event-type", "chunk")
+	writeHeader(":content-type", "application/json")
+	writeHeader(":message-type", "event")
+
+	headersBytes := headers.Bytes()
+	totalLen := 12 + len(headersBytes) + len(payload) + 4
+
+	var msg bytes.Buffer
+	// Prelude
+	binary.Write(&msg, binary.BigEndian, uint32(totalLen))
+	binary.Write(&msg, binary.BigEndian, uint32(len(headersBytes)))
+	preludeCRC := crc32.ChecksumIEEE(msg.Bytes())
+	binary.Write(&msg, binary.BigEndian, preludeCRC)
+	// Headers + payload
+	msg.Write(headersBytes)
+	msg.Write(payload)
+	// Message CRC
+	msgCRC := crc32.ChecksumIEEE(msg.Bytes())
+	binary.Write(&msg, binary.BigEndian, msgCRC)
+	return msg.Bytes()
+}
+
+func TestCopyBedrockStreamToSSE(t *testing.T) {
+	event1 := map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id":   "msg_123",
+			"type": "message",
+			"role": "assistant",
+		},
+	}
+	event2 := map[string]any{
+		"type": "content_block_delta",
+		"delta": map[string]any{
+			"type": "text_delta",
+			"text": "Hello",
+		},
+	}
+	event3 := map[string]any{
+		"type": "message_stop",
+	}
+
+	encodePayload := func(v any) []byte {
+		b, _ := json.Marshal(v)
+		encoded := base64.StdEncoding.EncodeToString(b)
+		payload, _ := json.Marshal(map[string]string{"bytes": encoded})
+		return payload
+	}
+
+	// Build EventStream binary stream
+	var stream bytes.Buffer
+	stream.Write(buildEventStreamMessage(encodePayload(event1)))
+	stream.Write(buildEventStreamMessage(encodePayload(event2)))
+	stream.Write(buildEventStreamMessage(encodePayload(event3)))
+
+	writer := &testResponseWriter{header: make(http.Header)}
+	err := copyBedrockStreamToSSE(writer, &stream)
+	if err != nil {
+		t.Fatalf("copyBedrockStreamToSSE failed: %v", err)
+	}
+
+	result := writer.body.String()
+	t.Logf("SSE output:\n%s", result)
+
+	if !strings.Contains(result, "event: message_start\n") {
+		t.Fatal("missing message_start event")
+	}
+	if !strings.Contains(result, "event: content_block_delta\n") {
+		t.Fatal("missing content_block_delta event")
+	}
+	if !strings.Contains(result, "event: message_stop\n") {
+		t.Fatal("missing message_stop event")
+	}
+
+	for _, line := range strings.Split(result, "\n") {
+		if strings.HasPrefix(line, "data: ") {
+			jsonStr := strings.TrimPrefix(line, "data: ")
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+				t.Fatalf("data line is not valid JSON: %q: %v", jsonStr, err)
+			}
+		}
+	}
+
+	if writer.flushCount < 3 {
+		t.Fatalf("expected at least 3 flushes, got %d", writer.flushCount)
+	}
+}
+
+func TestCopyBedrockStreamToSSEChunked(t *testing.T) {
+	// Test with frames split across read boundaries via bufio
+	event := map[string]any{"type": "content_block_delta", "delta": map[string]any{"text": "Hi"}}
+	b, _ := json.Marshal(event)
+	encoded := base64.StdEncoding.EncodeToString(b)
+	payload, _ := json.Marshal(map[string]string{"bytes": encoded})
+	frame := buildEventStreamMessage(payload)
+
+	// Split frame in the middle
+	mid := len(frame) / 2
+	reader := &chunkReader{
+		chunks: [][]byte{
+			frame[:mid],
+			frame[mid:],
+		},
+	}
+
+	writer := &testResponseWriter{header: make(http.Header)}
+	err := copyBedrockStreamToSSE(writer, reader)
+	if err != nil {
+		t.Fatalf("copyBedrockStreamToSSE failed: %v", err)
+	}
+
+	result := writer.body.String()
+	if !strings.Contains(result, "event: content_block_delta\n") {
+		t.Fatalf("expected content_block_delta event in output: %q", result)
+	}
 }

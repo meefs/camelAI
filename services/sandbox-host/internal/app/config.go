@@ -16,8 +16,6 @@ type Config struct {
 	ProxyPort                  int
 	ProxyListenAddr            string
 	DataProxyUpstreamURL       string
-	OpenAIProxyUpstreamURL     string
-	OpenAIProxyAuthToken       string
 	IdleTimeout                time.Duration
 	ReadHeaderTimeout          time.Duration
 	WriteTimeout               time.Duration
@@ -26,6 +24,9 @@ type Config struct {
 	ProxyThreadActiveTTL       time.Duration
 	ProxyThreadCloseGrace      time.Duration
 	ProxyThreadCleanupInterval time.Duration
+	AIGatewayBaseURL           string
+	AIGatewayToken             string
+	AWSRegionName              string
 	TraceSandboxHost           bool
 	HeaderWorkerBaseURL        string
 	HeaderThreadID             string
@@ -49,10 +50,10 @@ func LoadConfig() Config {
 	dataProxyPort := envInt("DATA_PROXY_PORT", defaultByPlatform(8090, 8090))
 	cfAccountID := strings.TrimSpace(envString("CF_ACCOUNT_ID", ""))
 	cfGatewayName := strings.TrimSpace(envString("CF_GATEWAY_NAME", ""))
-	defaultOpenAIProxyUpstreamURL := ""
+	defaultAIGatewayBaseURL := ""
 	if cfAccountID != "" && cfGatewayName != "" {
-		defaultOpenAIProxyUpstreamURL = fmt.Sprintf(
-			"https://gateway.ai.cloudflare.com/v1/%s/%s/compat",
+		defaultAIGatewayBaseURL = fmt.Sprintf(
+			"https://gateway.ai.cloudflare.com/v1/%s/%s",
 			cfAccountID,
 			cfGatewayName,
 		)
@@ -68,8 +69,6 @@ func LoadConfig() Config {
 		ProxyPort:                  proxyPort,
 		ProxyListenAddr:            ":" + strconv.Itoa(proxyPort),
 		DataProxyUpstreamURL:       envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
-		OpenAIProxyUpstreamURL:     envString("OPENAI_PROXY_UPSTREAM_URL", defaultOpenAIProxyUpstreamURL),
-		OpenAIProxyAuthToken:       firstNonEmpty(envString("OPENAI_PROXY_AUTH_TOKEN", ""), envString("CF_GATEWAY_TOKEN", "")),
 		IdleTimeout:                time.Duration(idleSecs) * time.Second,
 		ReadHeaderTimeout:          15 * time.Second,
 		WriteTimeout:               0,
@@ -78,6 +77,9 @@ func LoadConfig() Config {
 		ProxyThreadActiveTTL:       time.Duration(activeTTLms) * time.Millisecond,
 		ProxyThreadCloseGrace:      time.Duration(closeGraceMs) * time.Millisecond,
 		ProxyThreadCleanupInterval: time.Duration(cleanupMs) * time.Millisecond,
+		AIGatewayBaseURL:           strings.TrimRight(envString("AI_GATEWAY_BASE_URL", defaultAIGatewayBaseURL), "/"),
+		AIGatewayToken:             envString("CF_GATEWAY_TOKEN", ""),
+		AWSRegionName:              envString("AWS_REGION_NAME", "us-west-2"),
 		TraceSandboxHost:           envString("TRACE_SANDBOX_HOST", "") == "1",
 		HeaderWorkerBaseURL:        "x-chiridion-worker-base-url",
 		HeaderThreadID:             "x-chiridion-thread-id",

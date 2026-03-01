@@ -130,6 +130,16 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 	return m
 }
 
+// NewTestManager returns a Manager suitable for tests that don't need Docker.
+func NewTestManager() *Manager {
+	return &Manager{
+		containers:       make(map[string]*ContainerRecord),
+		containerIPIndex: make(map[string]string),
+		pendingWorkspaces: make(map[string]int),
+		ensureInFlight:   make(map[string]*ensureWait),
+	}
+}
+
 func (m *Manager) TouchContainer(name, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

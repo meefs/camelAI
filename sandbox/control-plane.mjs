@@ -817,6 +817,7 @@ class ChatSession {
       ...this.sessionEnv,
       THREAD_ID: this.threadId,
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
     };
     const proxyThreadId = this.threadId;
     if (proxyThreadId) {
