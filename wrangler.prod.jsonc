@@ -30,6 +30,7 @@
 			"WORKER_BASE_URL": "https://camelai.dev",
 				"EMAIL_FROM_ADDRESS": "no-reply@mail.camelai.com",
 				"WORKSPACE_EMAIL_DOMAIN": "camelai.dev",
+			"WORKSPACE_EMAIL_LOCAL_PART": "agent",
 				"CF_WORKER_NAME": "chiridion-app",
 			"TAIL_WORKER_NAME": "chiridion-user-logs-tail"
 		},
