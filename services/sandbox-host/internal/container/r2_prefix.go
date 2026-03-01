@@ -2,45 +2,40 @@ package container
 
 import (
 	"fmt"
-	"log"
 	"os"
-	"os/exec"
-	"strings"
-	"sync"
+	"path/filepath"
 	"time"
 )
 
-// ensureR2Prefix creates .keep marker objects on R2 via rclone (S3 API, not FUSE)
-// so that the host-level rclone FUSE mount sees the directories for bind-mounting.
-// Both directories are created in parallel.
-func ensureR2Prefix(rcloneConfPath, bucket, prefix string) error {
-	uploadsKey := fmt.Sprintf("r2:%s/%s/user-uploads/.keep", bucket, prefix)
-	outputsKey := fmt.Sprintf("r2:%s/%s/user-outputs/.keep", bucket, prefix)
+// ensureR2Prefix creates the user-uploads and user-outputs directories through
+// the s3fs FUSE mount. Since s3fs writes are synchronous (upload completes on
+// close()), the directories exist in R2 immediately after os.MkdirAll returns.
+func ensureR2Prefix(r2MountRoot, prefix string) error {
+	uploadsDir := filepath.Join(r2MountRoot, prefix, "user-uploads")
+	outputsDir := filepath.Join(r2MountRoot, prefix, "user-outputs")
 
-	var wg sync.WaitGroup
-	var errUploads, errOutputs error
-
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		errUploads = rcloneRcat(rcloneConfPath, uploadsKey)
-	}()
-	go func() {
-		defer wg.Done()
-		errOutputs = rcloneRcat(rcloneConfPath, outputsKey)
-	}()
-	wg.Wait()
-
-	if errUploads != nil {
-		return fmt.Errorf("create user-uploads marker: %w", errUploads)
+	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
+		return fmt.Errorf("create user-uploads dir: %w", err)
 	}
-	if errOutputs != nil {
-		return fmt.Errorf("create user-outputs marker: %w", errOutputs)
+	if err := os.MkdirAll(outputsDir, 0755); err != nil {
+		return fmt.Errorf("create user-outputs dir: %w", err)
 	}
+
+	// Write .keep markers so the directories persist as S3 prefixes
+	for _, dir := range []string{uploadsDir, outputsDir} {
+		keepPath := filepath.Join(dir, ".keep")
+		if _, err := os.Stat(keepPath); os.IsNotExist(err) {
+			if err := os.WriteFile(keepPath, []byte{}, 0644); err != nil {
+				return fmt.Errorf("write %s: %w", keepPath, err)
+			}
+		}
+	}
+
 	return nil
 }
 
-// waitForR2Dir polls the host FUSE mount path until the directory appears.
+// waitForR2Dir verifies the directory exists on the FUSE mount.
+// With s3fs (synchronous writes), this is mainly a sanity check.
 func waitForR2Dir(path string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -51,15 +46,4 @@ func waitForR2Dir(path string, timeout time.Duration) bool {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return false
-}
-
-func rcloneRcat(confPath, remotePath string) error {
-	cmd := exec.Command("rclone", "rcat", "--config", confPath, remotePath)
-	cmd.Stdin = strings.NewReader("")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("[R2Prefix] rclone rcat %s failed: %s", remotePath, string(out))
-		return err
-	}
-	return nil
 }

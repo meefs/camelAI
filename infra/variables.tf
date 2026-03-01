@@ -89,13 +89,13 @@ variable "sandbox_proxy_port" {
 }
 
 variable "r2_access_key_id" {
-  description = "R2 API access key ID used by sandbox-host rclone mount"
+  description = "R2 API access key ID used by sandbox-host s3fs mount"
   type        = string
   sensitive   = true
 }
 
 variable "r2_secret_access_key" {
-  description = "R2 API secret access key used by sandbox-host rclone mount"
+  description = "R2 API secret access key used by sandbox-host s3fs mount"
   type        = string
   sensitive   = true
 }

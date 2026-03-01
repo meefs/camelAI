@@ -68,8 +68,6 @@ type Manager struct {
 	idleTimeout         time.Duration
 	reaperInterval      time.Duration
 	r2MountRoot         string
-	r2BucketName        string
-	r2RcloneConfPath    string
 	healthPollInterval  time.Duration
 	cfDispatchNamespace string
 	containerProxyBase  string
@@ -110,8 +108,6 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		idleTimeout:         time.Duration(envInt("IDLE_TIMEOUT_MS", 30_000)) * time.Millisecond,
 		reaperInterval:      10 * time.Second,
 		r2MountRoot:         "/mnt/r2",
-		r2BucketName:        envString("R2_BUCKET_NAME", ""),
-		r2RcloneConfPath:    envString("R2_RCLONE_CONF", filepath.Join(os.TempDir(), "rclone-r2-host.conf")),
 		healthPollInterval:  maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
 		cfDispatchNamespace: envString("CF_DISPATCH_NAMESPACE", ""),
 		containerProxyBase:  containerProxyBase,
@@ -444,14 +440,14 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		}
 	}
 
-	if opts.OrgID != "" && opts.WorkspaceID != "" && m.r2MountRoot != "" && m.r2BucketName != "" {
+	if opts.OrgID != "" && opts.WorkspaceID != "" && m.r2MountRoot != "" {
 		prefix := opts.OrgID + "/" + opts.WorkspaceID
-		if err := ensureR2Prefix(m.r2RcloneConfPath, m.r2BucketName, prefix); err != nil {
+		if err := ensureR2Prefix(m.r2MountRoot, prefix); err != nil {
 			log.Printf("[ContainerManager] R2 prefix creation failed for %s: %v (container will start without R2 mounts)", name, err)
 		} else {
 			uploadsDir := filepath.Join(m.r2MountRoot, prefix, "user-uploads")
 			outputsDir := filepath.Join(m.r2MountRoot, prefix, "user-outputs")
-			if waitForR2Dir(uploadsDir, 10*time.Second) && waitForR2Dir(outputsDir, 10*time.Second) {
+			if waitForR2Dir(uploadsDir, 2*time.Second) && waitForR2Dir(outputsDir, 2*time.Second) {
 				binds = append(binds,
 					uploadsDir+":/mnt/user-uploads:ro,rslave",
 					outputsDir+":/mnt/user-outputs:rslave",

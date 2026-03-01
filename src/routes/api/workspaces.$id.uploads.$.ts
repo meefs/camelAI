@@ -134,10 +134,17 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
     const headers: Record<string, string> = {
       'Content-Type': contentType,
-      'Content-Length': object.size.toString(),
       'Cache-Control': 'private, max-age=3600',
       'Content-Disposition': `${displayInline ? 'inline' : 'attachment'}; filename="${filename}"`,
     };
+
+    // Only set Content-Length when R2 reports a non-zero size.
+    // Objects uploaded via S3 API can report size=0 even though the body
+    // stream contains the full content, causing browsers to discard the
+    // response body.
+    if (object.size > 0) {
+      headers['Content-Length'] = object.size.toString();
+    }
 
     return new Response(object.body, { headers });
   } catch (error) {

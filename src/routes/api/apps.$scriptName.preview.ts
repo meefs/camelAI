@@ -76,7 +76,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       headers: {
         'Content-Type': object.httpMetadata?.contentType ?? 'image/jpeg',
         'Cache-Control': object.httpMetadata?.cacheControl ?? 'public, max-age=300',
-        'Content-Length': object.size.toString(),
+        ...(object.size > 0 ? { 'Content-Length': object.size.toString() } : {}),
         ...(etag ? { ETag: etag } : {}),
       },
     });
