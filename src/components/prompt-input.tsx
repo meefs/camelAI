@@ -9,6 +9,7 @@ import {
   InputGroupTextarea,
 } from '@/components/ui/input-group';
 import { AttachmentList, type Attachment } from '@/components/attachment-list';
+import { ContextIndicator } from '@/components/context-indicator';
 import { VoiceRecorderBar } from '@/components/voice-recorder';
 import { cn } from '@/lib/utils';
 import { useVoiceRecording } from '@/hooks/use-voice-recording';
@@ -35,6 +36,9 @@ interface PromptInputProps {
   onAttachmentRemove?: (id: string) => void;
   // Voice recording props
   enableVoiceRecording?: boolean;
+  // Context indicator props
+  contextUsedPercent?: number | null;
+  onCompact?: () => void;
 }
 
 export function PromptInput({
@@ -56,6 +60,8 @@ export function PromptInput({
   onFilesSelected,
   onAttachmentRemove,
   enableVoiceRecording = true,
+  contextUsedPercent,
+  onCompact,
 }: PromptInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -330,9 +336,12 @@ export function PromptInput({
                       <TooltipContent>Dictate</TooltipContent>
                     </Tooltip>
                   )}
+
+                  {contextUsedPercent != null && onCompact && (
+                    <ContextIndicator usedPercent={contextUsedPercent} onCompact={onCompact} />
+                  )}
                 </div>
 
-                {/* Submit/Stop button */}
                 <InputGroupButton
                   type={showStopButton ? 'button' : 'submit'}
                   size="icon-sm"

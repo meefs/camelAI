@@ -209,6 +209,7 @@ const CHAT_SOCKET_TAG = 'chat';
 
 const CHAT_CONTEXT_KEY = 'chatContext';
 const CHAT_TODOS_KEY = 'chatTodos';
+const CHAT_CONTEXT_USED_PERCENT_KEY = 'chatContextUsedPercent';
 const CHAT_NEXT_EVENT_ID_KEY = 'chatNextEventId';
 const CHAT_RUNNER_LAST_SEQ_KEY = 'chatRunnerLastSeq';
 
@@ -217,6 +218,50 @@ const RUNNER_PING_INTERVAL_MS = 10_000;
 const RUNNER_RECONNECT_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 const RUNNER_RECONNECT_GRACE_MS = 30_000;
 const DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
+
+/**
+ * Last per-API-call prompt usage captured from stream_event.message_start.
+ */
+interface LastMessageStartUsage {
+  inputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  model: string | null;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Extract contextWindow for the captured message_start model.
+ * Falls back to the maximum contextWindow across modelUsage entries.
+ */
+function extractContextWindowForModel(
+  sdkEvent: { modelUsage?: unknown },
+  model: string | null
+): number {
+  if (!sdkEvent.modelUsage || typeof sdkEvent.modelUsage !== 'object') return 0;
+
+  const entries = sdkEvent.modelUsage as Record<string, unknown>;
+
+  if (model && entries[model] && typeof entries[model] === 'object') {
+    const contextWindow = toFiniteNumber((entries[model] as Record<string, unknown>).contextWindow);
+    if (contextWindow !== null && contextWindow > 0) {
+      return contextWindow;
+    }
+  }
+
+  let maxContextWindow = 0;
+  for (const usage of Object.values(entries)) {
+    if (!usage || typeof usage !== 'object') continue;
+    const contextWindow = toFiniteNumber((usage as Record<string, unknown>).contextWindow);
+    if (contextWindow !== null && contextWindow > maxContextWindow) {
+      maxContextWindow = contextWindow;
+    }
+  }
+  return maxContextWindow;
+}
 
 const HEADER_USER_NAME = 'X-Chiridion-User-Name';
 const HEADER_USER_EMAIL = 'X-Chiridion-User-Email';
@@ -251,6 +296,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private chatEventBuffer: Array<Record<string, unknown>> = [];
   private nextChatEventId: number = 1;
   private currentTodos: unknown[] = [];
+  private contextUsedPercent: number | null = null;
+  private lastMessageStartUsage: LastMessageStartUsage | null = null;
+  private usageIsPostCompaction: boolean = true;
   private chatIsStreaming: boolean = false;
   private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
   private pendingExternalTurn: PendingExternalTurn | null = null;
@@ -410,6 +458,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const storedTodos = ctx.storage.kv.get<unknown[]>(CHAT_TODOS_KEY);
       if (Array.isArray(storedTodos)) {
         this.currentTodos = storedTodos;
+      }
+
+      const storedContextUsedPercent = ctx.storage.kv.get<number>(CHAT_CONTEXT_USED_PERCENT_KEY);
+      if (typeof storedContextUsedPercent === 'number' && Number.isFinite(storedContextUsedPercent)) {
+        this.contextUsedPercent = Math.max(0, Math.min(100, Math.round(storedContextUsedPercent)));
       }
 
       const storedNextEventId = ctx.storage.kv.get<number>(CHAT_NEXT_EVENT_ID_KEY);
@@ -943,6 +996,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     // so sending this last ensures the current todos aren't immediately cleared.
     if (this.currentTodos.length > 0) {
       this.sendDirect(ws, { type: 'todo_state', todos: this.currentTodos });
+    }
+    if (this.contextUsedPercent !== null) {
+      this.sendDirect(ws, { type: 'context_usage_state', usedPercent: this.contextUsedPercent });
     }
     this.trace('handle_chat_init_complete', {
       incomingThreadId,
@@ -1747,15 +1803,44 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (eventType === 'sdk_event') {
       const sdkEvent = event.event as {
         type?: string;
+        subtype?: string;
+        modelUsage?: unknown;
         message?: { content?: unknown };
         event?: {
           type?: string;
+          message?: {
+            usage?: unknown;
+            model?: unknown;
+          };
           delta?: {
             type?: string;
             text?: string;
           };
         };
       } | undefined;
+
+      if (sdkEvent?.type === 'stream_event') {
+        const streamEvent = sdkEvent.event;
+        if (streamEvent?.type === 'message_start' && streamEvent.message?.usage) {
+          const usage = streamEvent.message.usage as Record<string, unknown>;
+          this.lastMessageStartUsage = {
+            inputTokens:
+              toFiniteNumber(usage.input_tokens) ??
+              toFiniteNumber(usage.inputTokens) ??
+              0,
+            cacheReadInputTokens:
+              toFiniteNumber(usage.cache_read_input_tokens) ??
+              toFiniteNumber(usage.cacheReadInputTokens) ??
+              0,
+            cacheCreationInputTokens:
+              toFiniteNumber(usage.cache_creation_input_tokens) ??
+              toFiniteNumber(usage.cacheCreationInputTokens) ??
+              0,
+            model: typeof streamEvent.message.model === 'string' ? streamEvent.message.model : null,
+          };
+          this.usageIsPostCompaction = true;
+        }
+      }
 
       if (sdkEvent?.type === 'stream_event' && this.pendingExternalTurn) {
         const streamEvent = sdkEvent.event;
@@ -1765,6 +1850,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         if (streamEvent?.type === 'content_block_delta' && streamEvent.delta?.type === 'text_delta') {
           this.pendingExternalTurn.streamingText += streamEvent.delta.text || '';
         }
+      }
+
+      if (sdkEvent?.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
+        this.usageIsPostCompaction = false;
       }
 
       if (sdkEvent?.type === 'assistant' && this.pendingExternalTurn) {
@@ -1779,6 +1868,24 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
         this.setChatIsStreaming(false);
         this.persistRunnerSeqIfNeeded('result');
+        if (this.lastMessageStartUsage && this.usageIsPostCompaction) {
+          const contextWindow = extractContextWindowForModel(sdkEvent, this.lastMessageStartUsage.model);
+          if (contextWindow > 0) {
+            const totalInput =
+              this.lastMessageStartUsage.inputTokens +
+              this.lastMessageStartUsage.cacheReadInputTokens +
+              this.lastMessageStartUsage.cacheCreationInputTokens;
+            const contextUsedPercent = Math.max(
+              0,
+              Math.min(100, Math.round((totalInput / contextWindow) * 100))
+            );
+            this.contextUsedPercent = contextUsedPercent;
+            this.ctx.storage.kv.put(CHAT_CONTEXT_USED_PERCENT_KEY, contextUsedPercent);
+            this.broadcastRealtime({ type: 'context_usage_state', usedPercent: contextUsedPercent });
+          }
+        }
+        this.lastMessageStartUsage = null;
+        this.usageIsPostCompaction = true;
         this.resolvePendingExternalTurn({ status: 'result' });
       }
     }
