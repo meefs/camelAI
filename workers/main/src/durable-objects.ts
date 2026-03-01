@@ -332,7 +332,8 @@ export interface ContextUsageSdkEvent {
 
 export interface ContextUsageTrackingUpdate {
   nextState: ContextUsageTrackingState;
-  liveUsedPercent: number | null;
+  // `undefined` means "no realtime update to broadcast"; `null` means "clear indicator".
+  liveUsedPercent: number | null | undefined;
   finalUsedPercent: number | null;
   contextWindowCacheChanged: boolean;
 }
@@ -349,7 +350,7 @@ export function applyContextUsageSdkEvent(
     cachedContextWindowByModel: currentState.cachedContextWindowByModel,
   };
 
-  let liveUsedPercent: number | null = null;
+  let liveUsedPercent: number | null | undefined = undefined;
   let finalUsedPercent: number | null = null;
   let contextWindowCacheChanged = false;
 
@@ -380,13 +381,22 @@ export function applyContextUsageSdkEvent(
         const livePct = calculateContextUsedPercent(nextState.lastMessageStartUsage, contextWindow);
         nextState.transientContextUsedPercent = livePct;
         liveUsedPercent = livePct;
+      } else if (nextState.transientContextUsedPercent !== null) {
+        // New call usage arrived for an uncached model; clear stale in-turn value.
+        nextState.transientContextUsedPercent = null;
+        liveUsedPercent = nextState.contextUsedPercent;
       }
     }
   }
 
   if (sdkEvent?.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
     nextState.usageIsPostCompaction = false;
+    const hadTransientUsage = nextState.transientContextUsedPercent !== null;
     nextState.transientContextUsedPercent = null;
+    if (hadTransientUsage) {
+      // Compact boundary invalidates in-turn usage; revert realtime state to canonical (or clear).
+      liveUsedPercent = nextState.contextUsedPercent;
+    }
   }
 
   if (sdkEvent?.type === 'result') {
@@ -2029,7 +2039,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         this.ctx.storage.kv.put(CHAT_CONTEXT_WINDOW_BY_MODEL_KEY, this.cachedContextWindowByModel);
       }
 
-      if (contextUsageUpdate.liveUsedPercent !== null) {
+      if (contextUsageUpdate.liveUsedPercent !== undefined) {
         this.broadcastRealtime({ type: 'context_usage_state', usedPercent: contextUsageUpdate.liveUsedPercent });
       }
 

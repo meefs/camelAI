@@ -2079,7 +2079,9 @@ export default function Chat({
           setCurrentTodos(data.todos);
         }
       } else if (data.type === 'context_usage_state') {
-        if (typeof data.usedPercent === 'number' && Number.isFinite(data.usedPercent)) {
+        if (data.usedPercent === null) {
+          setContextUsedPercent(null);
+        } else if (typeof data.usedPercent === 'number' && Number.isFinite(data.usedPercent)) {
           setContextUsedPercent(Math.max(0, Math.min(100, Math.round(data.usedPercent))));
         }
       } else if (data.type === 'ask_user_question') {

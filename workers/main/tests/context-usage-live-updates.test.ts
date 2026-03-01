@@ -84,7 +84,7 @@ describe('context usage live updates', () => {
     });
     state = messageStart.nextState;
 
-    expect(messageStart.liveUsedPercent).toBeNull();
+    expect(messageStart.liveUsedPercent).toBeUndefined();
     expect(state.transientContextUsedPercent).toBeNull();
 
     const result = applyContextUsageSdkEvent(state, {
@@ -126,6 +126,7 @@ describe('context usage live updates', () => {
     });
     state = compactBoundary.nextState;
 
+    expect(compactBoundary.liveUsedPercent).toBe(25);
     expect(state.usageIsPostCompaction).toBe(false);
     expect(state.transientContextUsedPercent).toBeNull();
 
@@ -220,6 +221,7 @@ describe('context usage live updates', () => {
     });
     state = haikuLiveBeforeCache.nextState;
     expect(haikuLiveBeforeCache.liveUsedPercent).toBeNull();
+    expect(state.transientContextUsedPercent).toBeNull();
 
     const firstHaikuResult = applyContextUsageSdkEvent(state, {
       type: 'result',
@@ -246,6 +248,72 @@ describe('context usage live updates', () => {
     });
 
     expect(haikuLiveAfterCache.liveUsedPercent).toBe(10);
+  });
+
+  it('reverts to canonical usage when uncached message_start follows cached live update', () => {
+    let state = initialState({
+      contextUsedPercent: 22,
+      cachedContextWindowByModel: { 'claude-sonnet-4': 200_000 },
+    });
+
+    const cachedModelLive = applyContextUsageSdkEvent(state, {
+      type: 'stream_event',
+      event: {
+        type: 'message_start',
+        message: {
+          model: 'claude-sonnet-4',
+          usage: { input_tokens: 20_000 },
+        },
+      },
+    });
+    state = cachedModelLive.nextState;
+    expect(cachedModelLive.liveUsedPercent).toBe(10);
+    expect(state.transientContextUsedPercent).toBe(10);
+
+    const uncachedModelMessageStart = applyContextUsageSdkEvent(state, {
+      type: 'stream_event',
+      event: {
+        type: 'message_start',
+        message: {
+          model: 'claude-haiku-3',
+          usage: { input_tokens: 5_000 },
+        },
+      },
+    });
+    state = uncachedModelMessageStart.nextState;
+
+    expect(uncachedModelMessageStart.liveUsedPercent).toBe(22);
+    expect(state.transientContextUsedPercent).toBeNull();
+  });
+
+  it('emits clear update when compact boundary invalidates transient usage without canonical value', () => {
+    let state = initialState({
+      cachedContextWindowByModel: { 'claude-sonnet-4': 200_000 },
+    });
+
+    const preCompactMessage = applyContextUsageSdkEvent(state, {
+      type: 'stream_event',
+      event: {
+        type: 'message_start',
+        message: {
+          model: 'claude-sonnet-4',
+          usage: { input_tokens: 40_000 },
+        },
+      },
+    });
+    state = preCompactMessage.nextState;
+    expect(preCompactMessage.liveUsedPercent).toBe(20);
+    expect(state.transientContextUsedPercent).toBe(20);
+
+    const compactBoundary = applyContextUsageSdkEvent(state, {
+      type: 'system',
+      subtype: 'compact_boundary',
+    });
+    state = compactBoundary.nextState;
+
+    expect(compactBoundary.liveUsedPercent).toBeNull();
+    expect(state.transientContextUsedPercent).toBeNull();
+    expect(state.usageIsPostCompaction).toBe(false);
   });
 
   it('replays transient context usage when available on chat init', () => {
