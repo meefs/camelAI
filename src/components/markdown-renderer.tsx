@@ -6,8 +6,7 @@ import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
 import { cn } from '@/lib/utils';
 import { Check, Copy } from 'lucide-react';
-import { codeToHtml } from 'shiki';
-import { SHIKI_DEFAULT_THEMES, PRELOAD_LANGUAGES } from '@/lib/shiki-config';
+import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
 
 interface MarkdownRendererProps {
   content: string;
@@ -52,24 +51,23 @@ function CodeBlockPre({ children }: { children?: React.ReactNode }) {
       };
     }
 
-    const lang = language && PRELOAD_LANGUAGES.includes(language as typeof PRELOAD_LANGUAGES[number])
+    const lang = language && SUPPORTED_LANGUAGES.has(language)
       ? language
       : 'text';
-    codeToHtml(codeString, {
-      lang,
-      themes: SHIKI_DEFAULT_THEMES,
-      defaultColor: false,
-    })
-      .then((html) => {
-        if (isActive) {
-          setHighlightedCode(html);
-        }
-      })
-      .catch(() => {
-        if (isActive) {
-          setHighlightedCode(null);
-        }
+    try {
+      const html = codeToHtml(codeString, {
+        lang,
+        themes: SHIKI_DEFAULT_THEMES,
+        defaultColor: false,
       });
+      if (isActive) {
+        setHighlightedCode(html);
+      }
+    } catch {
+      if (isActive) {
+        setHighlightedCode(null);
+      }
+    }
 
     return () => {
       isActive = false;

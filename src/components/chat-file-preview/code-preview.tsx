@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
-import { codeToHtml } from 'shiki';
-import { SHIKI_DEFAULT_THEMES, PRELOAD_LANGUAGES } from '@/lib/shiki-config';
+import { codeToHtml, SHIKI_DEFAULT_THEMES, SUPPORTED_LANGUAGES } from '@/lib/shiki-config';
 import { cn } from '@/lib/utils';
 import { getShikiLanguage } from './file-type-utils';
 
@@ -40,25 +39,24 @@ export function CodePreview({
     }
 
     setHighlightedCode(null);
-    const lang = language && PRELOAD_LANGUAGES.includes(language as (typeof PRELOAD_LANGUAGES)[number])
+    const lang = language && SUPPORTED_LANGUAGES.has(language)
       ? language
       : 'text';
 
-    codeToHtml(code, {
-      lang,
-      themes: SHIKI_DEFAULT_THEMES,
-      defaultColor: false,
-    })
-      .then((html) => {
-        if (isActive) {
-          setHighlightedCode(html);
-        }
-      })
-      .catch(() => {
-        if (isActive) {
-          setHighlightedCode(null);
-        }
+    try {
+      const html = codeToHtml(code, {
+        lang,
+        themes: SHIKI_DEFAULT_THEMES,
+        defaultColor: false,
       });
+      if (isActive) {
+        setHighlightedCode(html);
+      }
+    } catch {
+      if (isActive) {
+        setHighlightedCode(null);
+      }
+    }
 
     return () => {
       isActive = false;
