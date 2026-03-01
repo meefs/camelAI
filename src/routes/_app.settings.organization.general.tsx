@@ -1,7 +1,7 @@
 import { useLoaderData } from 'react-router';
 import { parseWithZod } from '@conform-to/zod/v4';
 import type { Route } from './+types/_app.settings.organization.general';
-import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
+import { requireAuthContext, requireOrgAdmin, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import { archiveOrg, transferOrgOwnership, getOrgMembersWithWorkspaceAccess } from '@/lib/auth-do';
 import { Separator } from '@/components/ui/separator';
@@ -53,6 +53,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   // Default: update org name
+  await requireOrgAdmin(request, context, authContext.currentOrg.id);
   const submission = parseWithZod(formData, { schema: orgNameSchema });
 
   if (submission.status !== 'success') {

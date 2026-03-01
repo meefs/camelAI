@@ -219,21 +219,51 @@ async function getAuthContextUncached(
     authEnv.ORG.idFromName(sessionContext.session.org_id)
   );
   const currentOrgInfoPromise = currentOrgStub.getInfo();
-  const [authBootstrap, orgInfo] = await Promise.all([
+  const currentOrgMemberPromise = currentOrgStub.getMember(sessionContext.session.user_id);
+  const [authBootstrap, orgInfo, currentOrgMember] = await Promise.all([
     userStub.getAuthBootstrap(),
     currentOrgInfoPromise,
+    currentOrgMemberPromise,
   ]);
   const profile = authBootstrap.profile;
   if (!profile) return null;
   if (!orgInfo) return null;
   const currentOrg: Organization = orgInfo;
   const onboarding = authBootstrap.onboarding;
-  const orgs = await getUserOrgs(authEnv, sessionContext.session.user_id, {
+  let orgs = await getUserOrgs(authEnv, sessionContext.session.user_id, {
     preloadedUserOrgs: authBootstrap.orgs,
     preloadedOrgInfoById: new Map([
       [sessionContext.session.org_id, currentOrgInfoPromise],
     ]),
   });
+
+  // OrgDO is the source of truth for role checks. If UserDO role data is stale
+  // for the active org, reconcile it in-memory so current request permissions/UI
+  // reflect the effective org role.
+  if (currentOrgMember) {
+    const currentOrgIndex = orgs.findIndex((membership) => membership.org_id === currentOrg.id);
+    if (currentOrgIndex === -1) {
+      orgs = [
+        ...orgs,
+        {
+          org_id: currentOrg.id,
+          org_name: currentOrg.name,
+          role: currentOrgMember.role,
+          joined_at: currentOrgMember.joined_at,
+          last_workspace_id: null,
+        },
+      ];
+    } else if (orgs[currentOrgIndex].role !== currentOrgMember.role) {
+      orgs = orgs.map((membership, index) =>
+        index === currentOrgIndex
+          ? {
+              ...membership,
+              role: currentOrgMember.role,
+            }
+          : membership
+      );
+    }
+  }
 
   const userContext: UserContext = {
     ...sessionContext,
@@ -342,11 +372,20 @@ export async function requireOrgAdmin(
 ): Promise<AuthContext> {
   const authContext = await requireAuthContext(request, context);
 
-  // Use cached org membership from authContext instead of re-fetching
   const userOrg = authContext.orgs.find((o) => o.org_id === orgId);
-  const isAdmin = userOrg?.role === 'owner' || userOrg?.role === 'admin';
+  const cachedIsAdmin = userOrg?.role === 'owner' || userOrg?.role === 'admin';
 
-  if (!isAdmin) {
+  if (cachedIsAdmin) {
+    return authContext;
+  }
+
+  // Fallback to OrgDO authority when UserDO org role data is stale.
+  const env = getEnv(context);
+  const authEnv = getAuthEnv(env);
+  const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
+  const effectiveIsAdmin = await orgStub.isAdmin(authContext.user.id);
+
+  if (!effectiveIsAdmin) {
     throw redirect('/');
   }
 

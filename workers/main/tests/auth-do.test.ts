@@ -165,6 +165,28 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(orgs[0].last_workspace_id).toBeTypeOf('string');
     });
 
+    it('permits org admins through slug update authorization checks', async () => {
+      const ownerEmail = testEmail();
+      const adminEmail = testEmail();
+      const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
+      const { userId: adminId } = await createUser(testEnv, adminEmail, 'password123', 'Admin');
+      const { org } = await createOrg(testEnv, 'Slug Admin Org', ownerId);
+
+      const invitation = await createInvitation(testEnv, org.id, adminEmail, 'admin', ownerId);
+      const accepted = await acceptInvitation(testEnv, org.id, invitation.id, adminId);
+      expect(accepted).toBe(true);
+
+      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
+      const existing = await orgStub.getInfo();
+      if (!existing) {
+        throw new Error('Expected org to exist');
+      }
+
+      // Uses a no-op slug update to isolate the permission gate from slug finalization checks.
+      const updated = await orgStub.updateSlug(existing.slug, adminId);
+      expect(updated.slug).toBe(existing.slug);
+    });
+
     it('detects slug conflicts when persisted org slugs exist without registry claims', async () => {
       const ownerEmail = testEmail();
       const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
