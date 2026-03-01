@@ -1591,9 +1591,9 @@ export class OrgDO extends DurableObject<DOEnv> {
     const normalizedSlug = normalizeOrgSlug(newSlugInput);
     ensureValidOrgSlug(normalizedSlug);
 
-    const isOwner = await this.isOwner(actorId);
-    if (!isOwner) {
-      throw new Error('not_owner');
+    const isAdmin = await this.isAdmin(actorId);
+    if (!isAdmin) {
+      throw new Error('not_admin');
     }
 
     if (normalizedSlug === info.slug) {

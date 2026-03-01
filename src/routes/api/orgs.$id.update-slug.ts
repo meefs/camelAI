@@ -64,8 +64,8 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     if (message === 'invalid_slug_format') {
       return Response.json({ error: 'Invalid slug format' }, { status: 400 });
     }
-    if (message === 'not_owner') {
-      // Backward-compatible mapping while OrgDO still reports the old error code.
+    if (message === 'not_admin' || message === 'not_owner') {
+      // Keep compatibility with older not_owner error code during rollout.
       return Response.json({ error: 'Only organization admins can update the org slug' }, { status: 403 });
     }
     if (message === 'slug_taken' || message === 'slug_already_finalized') {
