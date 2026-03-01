@@ -353,8 +353,7 @@ ExecStartPre=/bin/bash -c '\
 ExecStart=/usr/bin/rclone mount \
     --config /tmp/rclone-r2-host.conf \
     --dir-cache-time 5s \
-    --vfs-cache-mode writes \
-    --vfs-write-back 0 \
+    --vfs-cache-mode off \
     --allow-other \
     --uid 1001 --gid 1001 \
     r2:${R2_BUCKET_NAME} /mnt/r2

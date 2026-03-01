@@ -1,9 +1,7 @@
 import type { Route } from './+types/workspaces.$id.outputs.$';
-import { getSession } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
-import type { AuthEnv } from '@/lib/auth-helpers';
 import { buildWorkspaceScopedR2Key } from '@/lib/workspace-r2-paths';
-import { resolveWorkspaceFileReadOrgId } from '@/lib/workspace-file-access.server';
+import { requireWorkspaceAuth } from './workspaces.utils';
 
 // Common MIME types for file serving
 const MIME_TYPES: Record<string, string> = {
@@ -62,7 +60,8 @@ function getMimeType(filename: string): string {
 }
 
 function shouldDisplayInline(mimeType: string): boolean {
-  return INLINE_MIME_TYPES.has(mimeType);
+  const normalized = mimeType.split(';')[0].trim().toLowerCase();
+  return INLINE_MIME_TYPES.has(normalized);
 }
 
 /**
@@ -112,56 +111,33 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'Invalid file path' }, { status: 400 });
     }
 
-    // Authenticate user
-    const sessionContext = await getSession(request, context);
-    if (!sessionContext) {
-      return Response.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const { orgId } = await requireWorkspaceAuth(request, context, workspaceId);
 
     const env = getEnv(context);
-    const authEnv = env as unknown as AuthEnv;
+    const filename = filePath.split('/').pop() || 'file';
+    const fallbackContentType = getMimeType(filename);
 
-    const orgId = await resolveWorkspaceFileReadOrgId(
-      authEnv,
-      workspaceId,
-      sessionContext.session.org_id,
-      sessionContext.session.user_id
-    );
-    if (!orgId) {
-      return Response.json({ error: 'Workspace not found' }, { status: 404 });
-    }
-
-    // Construct R2 key
     const r2Key = buildWorkspaceScopedR2Key(
       orgId,
       workspaceId,
       `user-outputs/${filePath}`
     );
     const object = await env.R2_BUCKET.get(r2Key);
+
     if (!object) {
       return Response.json({ error: 'File not found' }, { status: 404 });
     }
 
-    // Get filename from path
-    const filename = filePath.split('/').pop() || 'file';
-    const contentType = object.httpMetadata?.contentType || getMimeType(filename);
+    const contentType = object.httpMetadata?.contentType || fallbackContentType;
     const displayInline = shouldDisplayInline(contentType);
 
-    // Build response headers
     const headers: Record<string, string> = {
       'Content-Type': contentType,
       'Content-Length': object.size.toString(),
       'Cache-Control': 'private, max-age=3600',
+      'Content-Disposition': `${displayInline ? 'inline' : 'attachment'}; filename="${filename}"`,
     };
 
-    // Set Content-Disposition based on content type
-    if (displayInline) {
-      headers['Content-Disposition'] = `inline; filename="${filename}"`;
-    } else {
-      headers['Content-Disposition'] = `attachment; filename="${filename}"`;
-    }
-
-    // Stream the response
     return new Response(object.body, { headers });
   } catch (error) {
     if (error instanceof Response) {

@@ -96,6 +96,7 @@ When the configured image ref changes, sandbox-host now recreates workspace cont
 
 For R2 host-level FUSE mounts, set `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, and `R2_BUCKET_NAME`.
 The sandbox-host mounts R2 on the host and bind-mounts per-workspace directories into containers.
+The rclone FUSE mount uses `--vfs-cache-mode off` so writes go directly to R2 (no local VFS cache).
 
 `SANDBOX_PROXY_SECRET` must match between the main worker and sandbox-host. If it is missing,
 container proxy calls (for example `/api/claude/v1/messages`) are rejected.
