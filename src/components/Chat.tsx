@@ -974,6 +974,7 @@ export default function Chat({
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [contextUsedPercent, setContextUsedPercent] = useState<number | null>(null);
   const attachmentPreviewUrlsRef = useRef<Set<string>>(new Set());
   const [isDragOver, setIsDragOver] = useState(false);
   const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>(() => initialPreviewSession.tabs);
@@ -1029,6 +1030,7 @@ export default function Chat({
     splitStreamingMessageOnNextPartRef.current = false;
     setCurrentTodos([]);
     setPendingQuestion(null);
+    setContextUsedPercent(null);
   }, [threadId]);
 
   useEffect(() => {
@@ -2075,6 +2077,12 @@ export default function Chat({
         // Direct todo state from server - no extraction needed
         if (Array.isArray(data.todos)) {
           setCurrentTodos(data.todos);
+        }
+      } else if (data.type === 'context_usage_state') {
+        if (data.usedPercent === null) {
+          setContextUsedPercent(null);
+        } else if (typeof data.usedPercent === 'number' && Number.isFinite(data.usedPercent)) {
+          setContextUsedPercent(Math.max(0, Math.min(100, Math.round(data.usedPercent))));
         }
       } else if (data.type === 'ask_user_question') {
         // Claude is asking the user a question
@@ -3202,13 +3210,20 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     setPreviewTargetForThread(null);
   }, [setPreviewTargetForThread]);
 
-  function sendMessage() {
+  type SendOptions = {
+    contentOverride?: string;
+    preserveDraft?: boolean;
+    skipAttachmentRefs?: boolean;
+  };
+
+  function sendMessage(opts?: SendOptions) {
     if (readOnly) {
       return;
     }
+    const rawContent = (opts?.contentOverride ?? input).trim();
     if (
       isLoadingMessages ||
-      !input.trim() ||
+      !rawContent ||
       !shouldShowChat ||
       !resolvedWorkspaceId ||
       !threadId
@@ -3221,31 +3236,37 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     // Mark that user has interacted - prevents loader sync from overwriting streaming state
     hasHadUserInteraction.current = true;
 
-    const userMessage = input.trim();
-    setInput('');
-
-    // Build message content with file references appended
-    const completedAttachments = attachments.filter(a => a.status === 'complete');
-    let finalContent = userMessage;
-    if (completedAttachments.length > 0) {
-      const fileRefs = completedAttachments
-        .map(a => `(user uploaded file to ${a.path})`)
-        .join('\n');
-      finalContent = `${userMessage}\n\n${fileRefs}`;
+    if (!opts?.preserveDraft && !opts?.contentOverride) {
+      setInput('');
     }
+
+    const shouldIncludeAttachmentRefs = !opts?.skipAttachmentRefs && !opts?.contentOverride;
+    let finalContent = rawContent;
+    if (shouldIncludeAttachmentRefs) {
+      const completedAttachments = attachments.filter(a => a.status === 'complete');
+      if (completedAttachments.length > 0) {
+        const fileRefs = completedAttachments
+          .map(a => `(user uploaded file to ${a.path})`)
+          .join('\n');
+        finalContent = `${rawContent}\n\n${fileRefs}`;
+      }
+    }
+
     const shouldShowCompactingIndicator = isManualCompactCommand(finalContent);
 
     if (shouldShowCompactingIndicator) {
       queueManualCompaction();
     }
 
-    // Clear attachments after building message (revoke any blob URLs to avoid memory leaks)
-    setAttachments(prev => {
-      for (const a of prev) {
-        revokeAttachmentPreviewUrl(a.previewUrl);
-      }
-      return [];
-    });
+    if (shouldIncludeAttachmentRefs) {
+      // Clear attachments after building message (revoke any blob URLs to avoid memory leaks)
+      setAttachments(prev => {
+        for (const a of prev) {
+          revokeAttachmentPreviewUrl(a.previewUrl);
+        }
+        return [];
+      });
+    }
 
     // Clear any previous error
     setError(null);
@@ -3293,6 +3314,18 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       // If connected but not ready, the message will be sent when ready event arrives
     }
   }
+
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
+
+  const handleCompactFromIndicator = useCallback(() => {
+    if (loading || isStreaming || isCompacting || readOnly) return;
+    sendMessageRef.current({
+      contentOverride: '/compact',
+      preserveDraft: true,
+      skipAttachmentRefs: true,
+    });
+  }, [loading, isStreaming, isCompacting, readOnly]);
 
   const chatBreadcrumbs = [
     { label: 'Chat' },
@@ -3549,6 +3582,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
                   attachments={attachments}
                   onFilesSelected={handleFilesSelected}
                   onAttachmentRemove={handleAttachmentRemove}
+                  contextUsedPercent={contextUsedPercent}
+                  onCompact={handleCompactFromIndicator}
                 />
               </div>
             </div>

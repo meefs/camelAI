@@ -209,6 +209,8 @@ const CHAT_SOCKET_TAG = 'chat';
 
 const CHAT_CONTEXT_KEY = 'chatContext';
 const CHAT_TODOS_KEY = 'chatTodos';
+const CHAT_CONTEXT_USED_PERCENT_KEY = 'chatContextUsedPercent';
+const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = 'chatContextWindowByModel';
 const CHAT_NEXT_EVENT_ID_KEY = 'chatNextEventId';
 const CHAT_RUNNER_LAST_SEQ_KEY = 'chatRunnerLastSeq';
 
@@ -217,6 +219,238 @@ const RUNNER_PING_INTERVAL_MS = 10_000;
 const RUNNER_RECONNECT_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 const RUNNER_RECONNECT_GRACE_MS = 30_000;
 const DEFAULT_EXTERNAL_ASK_USER_QUESTION_UNAVAILABLE_MESSAGE = 'User is not at computer; AskUserQuestion is unavailable in this channel. Continue without asking and use best effort.';
+
+/**
+ * Last per-API-call prompt usage captured from stream_event.message_start.
+ */
+export interface LastMessageStartUsage {
+  inputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  model: string | null;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Extract contextWindow for the captured message_start model.
+ * Falls back to the maximum contextWindow across modelUsage entries.
+ */
+function extractContextWindowForModel(
+  sdkEvent: { modelUsage?: unknown },
+  model: string | null
+): number {
+  if (!sdkEvent.modelUsage || typeof sdkEvent.modelUsage !== 'object') return 0;
+
+  const entries = sdkEvent.modelUsage as Record<string, unknown>;
+
+  if (model && entries[model] && typeof entries[model] === 'object') {
+    const contextWindow = toFiniteNumber((entries[model] as Record<string, unknown>).contextWindow);
+    if (contextWindow !== null && contextWindow > 0) {
+      return contextWindow;
+    }
+  }
+
+  let maxContextWindow = 0;
+  for (const usage of Object.values(entries)) {
+    if (!usage || typeof usage !== 'object') continue;
+    const contextWindow = toFiniteNumber((usage as Record<string, unknown>).contextWindow);
+    if (contextWindow !== null && contextWindow > maxContextWindow) {
+      maxContextWindow = contextWindow;
+    }
+  }
+  return maxContextWindow;
+}
+
+export function extractContextWindowByModel(
+  sdkEvent: { modelUsage?: unknown }
+): Record<string, number> {
+  const byModel: Record<string, number> = {};
+  if (!sdkEvent.modelUsage || typeof sdkEvent.modelUsage !== 'object') {
+    return byModel;
+  }
+
+  for (const [model, usage] of Object.entries(sdkEvent.modelUsage as Record<string, unknown>)) {
+    if (!usage || typeof usage !== 'object') continue;
+    const contextWindow = toFiniteNumber((usage as Record<string, unknown>).contextWindow);
+    if (contextWindow !== null && contextWindow > 0) {
+      byModel[model] = contextWindow;
+    }
+  }
+
+  return byModel;
+}
+
+export function shallowEqualNumberMaps(
+  a: Record<string, number>,
+  b: Record<string, number>
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+
+  return true;
+}
+
+function calculateContextUsedPercent(
+  usage: LastMessageStartUsage,
+  contextWindow: number
+): number {
+  const totalInput =
+    usage.inputTokens +
+    usage.cacheReadInputTokens +
+    usage.cacheCreationInputTokens;
+  return Math.max(0, Math.min(100, Math.round((totalInput / contextWindow) * 100)));
+}
+
+export interface ContextUsageTrackingState {
+  contextUsedPercent: number | null;
+  transientContextUsedPercent: number | null;
+  lastMessageStartUsage: LastMessageStartUsage | null;
+  usageIsPostCompaction: boolean;
+  cachedContextWindowByModel: Record<string, number>;
+}
+
+export interface ContextUsageSdkEvent {
+  type?: string;
+  subtype?: string;
+  modelUsage?: unknown;
+  event?: {
+    type?: string;
+    message?: {
+      usage?: unknown;
+      model?: unknown;
+    };
+  };
+}
+
+export interface ContextUsageTrackingUpdate {
+  nextState: ContextUsageTrackingState;
+  // `undefined` means "no realtime update to broadcast"; `null` means "clear indicator".
+  liveUsedPercent: number | null | undefined;
+  finalUsedPercent: number | null;
+  contextWindowCacheChanged: boolean;
+}
+
+export function applyContextUsageSdkEvent(
+  currentState: ContextUsageTrackingState,
+  sdkEvent: ContextUsageSdkEvent | undefined
+): ContextUsageTrackingUpdate {
+  const nextState: ContextUsageTrackingState = {
+    contextUsedPercent: currentState.contextUsedPercent,
+    transientContextUsedPercent: currentState.transientContextUsedPercent,
+    lastMessageStartUsage: currentState.lastMessageStartUsage,
+    usageIsPostCompaction: currentState.usageIsPostCompaction,
+    cachedContextWindowByModel: currentState.cachedContextWindowByModel,
+  };
+
+  let liveUsedPercent: number | null | undefined = undefined;
+  let finalUsedPercent: number | null = null;
+  let contextWindowCacheChanged = false;
+
+  if (sdkEvent?.type === 'stream_event') {
+    const streamEvent = sdkEvent.event;
+    if (streamEvent?.type === 'message_start' && streamEvent.message?.usage) {
+      const usage = streamEvent.message.usage as Record<string, unknown>;
+      nextState.lastMessageStartUsage = {
+        inputTokens:
+          toFiniteNumber(usage.input_tokens) ??
+          toFiniteNumber(usage.inputTokens) ??
+          0,
+        cacheReadInputTokens:
+          toFiniteNumber(usage.cache_read_input_tokens) ??
+          toFiniteNumber(usage.cacheReadInputTokens) ??
+          0,
+        cacheCreationInputTokens:
+          toFiniteNumber(usage.cache_creation_input_tokens) ??
+          toFiniteNumber(usage.cacheCreationInputTokens) ??
+          0,
+        model: typeof streamEvent.message.model === 'string' ? streamEvent.message.model : null,
+      };
+      nextState.usageIsPostCompaction = true;
+
+      const model = nextState.lastMessageStartUsage.model;
+      const contextWindow = model ? nextState.cachedContextWindowByModel[model] : undefined;
+      if (contextWindow && contextWindow > 0 && nextState.usageIsPostCompaction) {
+        const livePct = calculateContextUsedPercent(nextState.lastMessageStartUsage, contextWindow);
+        nextState.transientContextUsedPercent = livePct;
+        liveUsedPercent = livePct;
+      } else if (nextState.transientContextUsedPercent !== null) {
+        // New call usage arrived for an uncached model; clear stale in-turn value.
+        nextState.transientContextUsedPercent = null;
+        liveUsedPercent = nextState.contextUsedPercent;
+      }
+    }
+  }
+
+  if (sdkEvent?.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
+    nextState.usageIsPostCompaction = false;
+    const hadTransientUsage = nextState.transientContextUsedPercent !== null;
+    nextState.transientContextUsedPercent = null;
+    if (hadTransientUsage) {
+      // Compact boundary invalidates in-turn usage; revert realtime state to canonical (or clear).
+      liveUsedPercent = nextState.contextUsedPercent;
+    }
+  }
+
+  if (sdkEvent?.type === 'result') {
+    const contextWindowByModel = extractContextWindowByModel(sdkEvent);
+    if (Object.keys(contextWindowByModel).length > 0) {
+      const mergedContextWindowByModel = {
+        ...nextState.cachedContextWindowByModel,
+        ...contextWindowByModel,
+      };
+      if (!shallowEqualNumberMaps(mergedContextWindowByModel, nextState.cachedContextWindowByModel)) {
+        nextState.cachedContextWindowByModel = mergedContextWindowByModel;
+        contextWindowCacheChanged = true;
+      }
+    }
+
+    if (nextState.lastMessageStartUsage && nextState.usageIsPostCompaction) {
+      let contextWindow = extractContextWindowForModel(sdkEvent, nextState.lastMessageStartUsage.model);
+      if (contextWindow <= 0 && nextState.lastMessageStartUsage.model) {
+        const cachedContextWindow = nextState.cachedContextWindowByModel[nextState.lastMessageStartUsage.model];
+        if (typeof cachedContextWindow === 'number' && cachedContextWindow > 0) {
+          contextWindow = cachedContextWindow;
+        }
+      }
+
+      if (contextWindow > 0) {
+        const contextUsedPercent = calculateContextUsedPercent(nextState.lastMessageStartUsage, contextWindow);
+        nextState.contextUsedPercent = contextUsedPercent;
+        finalUsedPercent = contextUsedPercent;
+      }
+    }
+
+    nextState.transientContextUsedPercent = null;
+    nextState.lastMessageStartUsage = null;
+    nextState.usageIsPostCompaction = true;
+  }
+
+  return {
+    nextState,
+    liveUsedPercent,
+    finalUsedPercent,
+    contextWindowCacheChanged,
+  };
+}
+
+export function resolveContextUsageForInit(
+  transientContextUsedPercent: number | null,
+  contextUsedPercent: number | null,
+  chatIsStreaming: boolean
+): number | null {
+  if (!chatIsStreaming) {
+    return contextUsedPercent;
+  }
+  return transientContextUsedPercent ?? contextUsedPercent;
+}
 
 const HEADER_USER_NAME = 'X-Chiridion-User-Name';
 const HEADER_USER_EMAIL = 'X-Chiridion-User-Email';
@@ -251,6 +485,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   private chatEventBuffer: Array<Record<string, unknown>> = [];
   private nextChatEventId: number = 1;
   private currentTodos: unknown[] = [];
+  // Canonical persisted/replayed value (set on result events only).
+  private contextUsedPercent: number | null = null;
+  // Ephemeral in-turn value (never persisted).
+  private transientContextUsedPercent: number | null = null;
+  private lastMessageStartUsage: LastMessageStartUsage | null = null;
+  private usageIsPostCompaction: boolean = true;
+  private cachedContextWindowByModel: Record<string, number> = {};
   private chatIsStreaming: boolean = false;
   private pendingQuestions: Map<string, PendingQuestionInfo> = new Map();
   private pendingExternalTurn: PendingExternalTurn | null = null;
@@ -410,6 +651,21 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const storedTodos = ctx.storage.kv.get<unknown[]>(CHAT_TODOS_KEY);
       if (Array.isArray(storedTodos)) {
         this.currentTodos = storedTodos;
+      }
+
+      const storedContextUsedPercent = ctx.storage.kv.get<number>(CHAT_CONTEXT_USED_PERCENT_KEY);
+      if (typeof storedContextUsedPercent === 'number' && Number.isFinite(storedContextUsedPercent)) {
+        this.contextUsedPercent = Math.max(0, Math.min(100, Math.round(storedContextUsedPercent)));
+      }
+
+      const storedContextWindowByModel =
+        ctx.storage.kv.get<Record<string, unknown>>(CHAT_CONTEXT_WINDOW_BY_MODEL_KEY);
+      if (storedContextWindowByModel && typeof storedContextWindowByModel === 'object') {
+        for (const [model, contextWindow] of Object.entries(storedContextWindowByModel)) {
+          if (typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0) {
+            this.cachedContextWindowByModel[model] = contextWindow;
+          }
+        }
       }
 
       const storedNextEventId = ctx.storage.kv.get<number>(CHAT_NEXT_EVENT_ID_KEY);
@@ -944,6 +1200,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (this.currentTodos.length > 0) {
       this.sendDirect(ws, { type: 'todo_state', todos: this.currentTodos });
     }
+    const initUsedPercent = resolveContextUsageForInit(
+      this.transientContextUsedPercent,
+      this.contextUsedPercent,
+      this.chatIsStreaming
+    );
+    this.sendDirect(ws, { type: 'context_usage_state', usedPercent: initUsedPercent });
     this.trace('handle_chat_init_complete', {
       incomingThreadId,
       replayFromEventId: lastEventId,
@@ -1747,15 +2009,47 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (eventType === 'sdk_event') {
       const sdkEvent = event.event as {
         type?: string;
+        subtype?: string;
+        modelUsage?: unknown;
         message?: { content?: unknown };
         event?: {
           type?: string;
+          message?: {
+            usage?: unknown;
+            model?: unknown;
+          };
           delta?: {
             type?: string;
             text?: string;
           };
         };
       } | undefined;
+
+      const contextUsageUpdate = applyContextUsageSdkEvent({
+        contextUsedPercent: this.contextUsedPercent,
+        transientContextUsedPercent: this.transientContextUsedPercent,
+        lastMessageStartUsage: this.lastMessageStartUsage,
+        usageIsPostCompaction: this.usageIsPostCompaction,
+        cachedContextWindowByModel: this.cachedContextWindowByModel,
+      }, sdkEvent);
+      this.contextUsedPercent = contextUsageUpdate.nextState.contextUsedPercent;
+      this.transientContextUsedPercent = contextUsageUpdate.nextState.transientContextUsedPercent;
+      this.lastMessageStartUsage = contextUsageUpdate.nextState.lastMessageStartUsage;
+      this.usageIsPostCompaction = contextUsageUpdate.nextState.usageIsPostCompaction;
+      this.cachedContextWindowByModel = contextUsageUpdate.nextState.cachedContextWindowByModel;
+
+      if (contextUsageUpdate.contextWindowCacheChanged) {
+        this.ctx.storage.kv.put(CHAT_CONTEXT_WINDOW_BY_MODEL_KEY, this.cachedContextWindowByModel);
+      }
+
+      if (contextUsageUpdate.liveUsedPercent !== undefined) {
+        this.broadcastRealtime({ type: 'context_usage_state', usedPercent: contextUsageUpdate.liveUsedPercent });
+      }
+
+      if (contextUsageUpdate.finalUsedPercent !== null) {
+        this.ctx.storage.kv.put(CHAT_CONTEXT_USED_PERCENT_KEY, contextUsageUpdate.finalUsedPercent);
+        this.broadcastRealtime({ type: 'context_usage_state', usedPercent: contextUsageUpdate.finalUsedPercent });
+      }
 
       if (sdkEvent?.type === 'stream_event' && this.pendingExternalTurn) {
         const streamEvent = sdkEvent.event;
@@ -1859,6 +2153,13 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
         lastRunnerSeq: this.lastRunnerSeq,
       });
       this.setChatIsStreaming(false);
+      const hadTransientUsage = this.transientContextUsedPercent !== null;
+      this.transientContextUsedPercent = null;
+      this.lastMessageStartUsage = null;
+      this.usageIsPostCompaction = true;
+      if (hadTransientUsage) {
+        this.broadcastRealtime({ type: 'context_usage_state', usedPercent: this.contextUsedPercent });
+      }
       this.pushChatEvent({
         type: 'sdk_event',
         event: { type: 'result', subtype: 'runner_disconnected' },
