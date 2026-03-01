@@ -62,15 +62,19 @@ RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /usr/local/lib/creat
 # Claude Agent SDK
 RUN cd /opt/chiridion && \
     echo '{"name":"chiridion-sandbox-runner","private":true,"type":"module"}' > package.json && \
-    bun install --no-progress @anthropic-ai/claude-agent-sdk@0.2.62
+    bun install --no-progress @anthropic-ai/claude-agent-sdk@0.2.63
 
 # Copy sandbox files
 COPY sandbox/control-plane.mjs /opt/chiridion/control-plane.mjs
+COPY sandbox/team-poll-controller.mjs /opt/chiridion/team-poll-controller.mjs
+COPY sandbox/team-poll-state.mjs /opt/chiridion/team-poll-state.mjs
 COPY sandbox/memory-logger.mjs /opt/chiridion/memory-logger.mjs
 COPY sandbox/entrypoint.sh /opt/chiridion/entrypoint.sh
 COPY sandbox/skills/ /etc/claude-code/.claude/skills/
 COPY sandbox/create-worker/ /usr/local/lib/create-worker/
 RUN chmod 755 /opt/chiridion/control-plane.mjs && \
+    chmod 644 /opt/chiridion/team-poll-controller.mjs && \
+    chmod 644 /opt/chiridion/team-poll-state.mjs && \
     chmod 644 /opt/chiridion/memory-logger.mjs && \
     chmod +x /opt/chiridion/entrypoint.sh && \
     chmod +x /usr/local/lib/create-worker/create-worker.mjs && \

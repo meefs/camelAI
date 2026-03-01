@@ -1449,6 +1449,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     if (this.chatIsStreaming === value) return;
     this.trace('set_chat_is_streaming', { from: this.chatIsStreaming, to: value });
     this.chatIsStreaming = value;
+    // Clear persisted todos when a new turn starts so they don't go stale
+    // across reconnects. The next TodoWrite will re-persist fresh state.
+    if (value && this.currentTodos.length > 0) {
+      this.currentTodos = [];
+      this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
+    }
     this.broadcastRealtime({ type: 'streaming_state', isStreaming: value });
   }
 
@@ -1954,6 +1960,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
     }
 
+    if (eventType === 'streaming_resumed') {
+      // Control plane signals that a new turn started from team polling —
+      // re-set streaming state so external ingress correctly returns busy.
+      this.setChatIsStreaming(true);
+    }
+
     if (eventType === 'todo_state') {
       const todos = event.todos;
       if (Array.isArray(todos)) {
@@ -2069,8 +2081,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       if (sdkEvent?.type === 'result') {
-        this.currentTodos = [];
-        this.ctx.storage.kv.delete(CHAT_TODOS_KEY);
+        // Don't clear todos here — the client handles clearing via its own
+        // auto-timeout (1.5-2s after all todos are completed) and on next
+        // streaming start. Clearing server-side on result races the client
+        // and destroys persistence before reconnecting clients can replay.
         this.setChatIsStreaming(false);
         this.persistRunnerSeqIfNeeded('result');
         this.resolvePendingExternalTurn({ status: 'result' });

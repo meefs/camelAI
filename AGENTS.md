@@ -99,6 +99,11 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 6. `Chat.tsx` discloses compaction progress in-flight: `CompactingIndicator` turns on for manual `/compact` and auto-compaction (`system/status` with `status: "compacting"`, plus `stream_event/content_block_start(type=compaction)` fallback) and clears on summary capture, `status: null`, turn `result`/`error`, reconnect reset, or reconnect-exhausted close.
 7. `ChatThreadDO` computes context usage from `stream_event.message_start` usage and now broadcasts live `context_usage_state` updates during a turn when a model-scoped `contextWindow` cache is available (`chatContextWindowByModel`, persisted in DO KV). On `result`, it computes and persists the canonical value (`chatContextUsedPercent`) and replays `transientContextUsedPercent ?? contextUsedPercent` on chat init so reconnects can resume from the freshest value. The composer `ContextIndicator` (left toolbar, after Mic) appears when usage is `>= 50%`, shows `"XX% used"`, and can trigger `/compact` without mutating unsent draft text.
 
+### Agent Teams Polling
+- `sandbox/team-poll-controller.mjs` owns TeamCreate tracking and teammate inbox polling for a thread; `control-plane.mjs` delegates SDK events/results to this controller.
+- The controller stores canonical owned-team names per thread in `~/.claude/projects/<projectPath>/<threadId>.team-poll-state.json`.
+- Teammate inbox polling only considers teams owned by the current thread and skips entries already marked `read` or previously consumed (persisted per team), preventing duplicate teammate message injection after control-plane restarts.
+
 ### Thread Message History Retrieval
 `getMessages()` no longer parses JSONL in the Worker runtime. It now calls sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}`, and sandbox-host reads + parses the JSONL file into `Message[]` before returning it. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker streams the JSON response body through from sandbox-host without buffering the full payload in Worker memory.
 

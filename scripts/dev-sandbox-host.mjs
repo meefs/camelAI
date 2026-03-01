@@ -28,6 +28,8 @@ let debounceTimer = null;
 const watchTargets = [
   dockerfilePath,
   resolve(repoRoot, 'sandbox/control-plane.mjs'),
+  resolve(repoRoot, 'sandbox/team-poll-controller.mjs'),
+  resolve(repoRoot, 'sandbox/team-poll-state.mjs'),
   resolve(repoRoot, 'sandbox/memory-logger.mjs'),
   resolve(repoRoot, 'sandbox/entrypoint.sh'),
   resolve(repoRoot, 'sandbox/skills'),

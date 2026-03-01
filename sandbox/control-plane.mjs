@@ -16,6 +16,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { loadUserProfile } from './memory-logger.mjs';
 import { readFile, access } from 'fs/promises';
 import { homedir } from 'os';
+import { TeamPollingController } from './team-poll-controller.mjs';
 
 const PORT = parseInt(process.env.CONTROL_PLANE_PORT || '8080', 10);
 const CONTROL_PLANE_IDLE_TIMEOUT_SECS = Math.max(
@@ -83,7 +84,7 @@ function noteInbound(ws, type, bytes) {
   });
 }
 
-function noteOutbound(ws, type, bytes) {
+function noteOutbound(ws, type) {
   ws.data.lastOutboundAt = Date.now();
   ws.data.outboundCount = (typeof ws.data.outboundCount === 'number' ? ws.data.outboundCount : 0) + 1;
   ws.data.lastOutboundType = type;
@@ -96,7 +97,7 @@ function sendWsJson(ws, payload, context) {
     : 'unknown';
   try {
     ws.send(json);
-    noteOutbound(ws, payloadType, json.length);
+    noteOutbound(ws, payloadType);
     traceControlPlane('ws_send', {
       ...wsDebugSnapshot(ws),
       context,
@@ -496,6 +497,14 @@ class ChatSession {
     this.hasTerminalResultSinceActivity = false;
     this.clients = new Set();
     this.shuttingDown = false;
+    this.teamPolling = new TeamPollingController({
+      threadId: this.threadId,
+      trace: traceControlPlane,
+      canPoll: () => !this.shuttingDown && this.hasTerminalResultSinceActivity,
+      injectMessage: content => this.handleMessage(content),
+      broadcastStreamingResumed: () => this.broadcast({ type: 'streaming_resumed', source: 'team_poll' }),
+      onSettled: () => this.scheduleDisconnectIfIdleEligible('team_poll_end'),
+    });
     this.nextOutboundSeq = 1;
     this.replayBuffer = [];
   }
@@ -559,11 +568,7 @@ class ChatSession {
     for (const ws of this.clients) {
       try {
         ws.send(json);
-        noteOutbound(
-          ws,
-          typeof payloadType === 'string' ? payloadType : 'unknown',
-          json.length
-        );
+        noteOutbound(ws, typeof payloadType === 'string' ? payloadType : 'unknown');
       } catch (err) {
         traceControlPlane('session_broadcast_send_failed', {
           threadId: this.threadId,
@@ -638,7 +643,8 @@ class ChatSession {
       !this.eventLoopRunning &&
       this.pendingQuestions.size === 0 &&
       this.messageQueue.length === 0 &&
-      !this.shuttingDown
+      !this.shuttingDown &&
+      !this.teamPolling.isRunning()
     );
   }
 
@@ -755,6 +761,7 @@ class ChatSession {
 
   shutdown() {
     this.shuttingDown = true;
+    this.teamPolling.shutdown();
     this.clearDisconnect();
     if (this.messageResolver) {
       const r = this.messageResolver;
@@ -1011,6 +1018,7 @@ class ChatSession {
 
     (async () => {
       try {
+        await this.teamPolling.init();
         while (true) {
           const { value: event, done } = await this.queryIterator.next();
           if (done) break;
@@ -1023,12 +1031,14 @@ class ChatSession {
           this.broadcast({ type: 'sdk_event', event });
           if (event?.type === 'result') {
             this.markTerminalResult();
+            this.teamPolling.requestPoll();
           }
 
           if (event?.type === 'system' && event?.subtype === 'compact_boundary') {
             this.forwardCompactSummary(event).catch(() => {});
           }
 
+          this.teamPolling.onSdkEvent(event);
           const todos = this.extractTodos(event);
           if (todos) this.broadcast({ type: 'todo_state', todos });
 
@@ -1089,7 +1099,14 @@ class ChatSession {
       pending.resolve({});
     }
     if (this.activeQuery) {
-      try { await this.activeQuery.interrupt(); } catch {}
+      try {
+        await this.activeQuery.interrupt();
+      } catch (err) {
+        traceControlPlane('session_stop_interrupt_failed', {
+          threadId: this.threadId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 }
@@ -1151,7 +1168,7 @@ function errorResponse(message, status) {
 
 // ─── HTTP Server ───────────────────────────────────────────
 
-const server = Bun.serve({
+Bun.serve({
   port: PORT,
   idleTimeout: CONTROL_PLANE_IDLE_TIMEOUT_SECS,
 
