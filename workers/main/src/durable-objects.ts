@@ -1200,9 +1200,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       this.transientContextUsedPercent,
       this.contextUsedPercent
     );
-    if (initUsedPercent !== null) {
-      this.sendDirect(ws, { type: 'context_usage_state', usedPercent: initUsedPercent });
-    }
+    this.sendDirect(ws, { type: 'context_usage_state', usedPercent: initUsedPercent });
     this.trace('handle_chat_init_complete', {
       incomingThreadId,
       replayFromEventId: lastEventId,
