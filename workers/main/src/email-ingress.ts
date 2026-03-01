@@ -1,5 +1,9 @@
 import { EmailMessage } from 'cloudflare:email';
 import PostalMime from 'postal-mime';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { Env } from './types.js';
 import type { ExternalTurnResult } from './durable-objects.js';
 import { runExternalMessageTurn } from './helpers/external-turn.js';
@@ -33,6 +37,7 @@ const EMAIL_REPLY_REFERENCE_PREFIX = 'email_reply_ref:';
 const EMAIL_REPLY_REFERENCE_TTL_SECONDS = 180 * 24 * 60 * 60;
 const DEFAULT_EXTERNAL_TURN_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_EMAIL_RAW_SIZE_BYTES = 2 * 1024 * 1024;
+const MAX_EMAIL_REPLY_BODY_CHARS = 50_000;
 const STRICT_MESSAGE_ID_PATTERN = /^[^\s<>@]+@(?:[^\s<>@]+|\[[^\]\r\n]+\])$/;
 
 function sanitizeHeaderValue(value: string, maxLength = 200): string {
@@ -169,6 +174,111 @@ function stripQuotedReplyContent(text: string): string {
   }
 
   return kept.join('\n').trim();
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderMarkdownEmailHtml(markdown: string): string {
+  const content = markdown.trim() || 'Done.';
+
+  try {
+    const renderedMarkdown = renderToStaticMarkup(
+      createElement(
+        'div',
+        { className: 'markdown-body' },
+        createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, content)
+      )
+    );
+
+    return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background: #f4f4f5;
+        color: #18181b;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      .container {
+        max-width: 680px;
+        margin: 0 auto;
+        background: #ffffff;
+        padding: 24px;
+      }
+      .markdown-body {
+        font-size: 15px;
+        line-height: 1.6;
+      }
+      .markdown-body p { margin: 0 0 14px; }
+      .markdown-body h1,
+      .markdown-body h2,
+      .markdown-body h3,
+      .markdown-body h4 { margin: 20px 0 12px; line-height: 1.3; }
+      .markdown-body ul,
+      .markdown-body ol { margin: 0 0 14px 20px; padding: 0; }
+      .markdown-body li { margin: 0 0 6px; }
+      .markdown-body code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        background: #f4f4f5;
+        border-radius: 4px;
+        padding: 0.15em 0.3em;
+      }
+      .markdown-body pre {
+        margin: 0 0 14px;
+        padding: 12px;
+        border-radius: 8px;
+        overflow-x: auto;
+        background: #f4f4f5;
+      }
+      .markdown-body pre code {
+        background: transparent;
+        padding: 0;
+      }
+      .markdown-body a { color: #0f766e; text-decoration: underline; }
+      .markdown-body blockquote {
+        margin: 0 0 14px;
+        padding: 0 0 0 12px;
+        border-left: 3px solid #d4d4d8;
+        color: #52525b;
+      }
+      .markdown-body table {
+        border-collapse: collapse;
+        margin: 0 0 14px;
+      }
+      .markdown-body th,
+      .markdown-body td {
+        border: 1px solid #e4e4e7;
+        padding: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">${renderedMarkdown}</div>
+  </body>
+</html>`;
+  } catch (error) {
+    console.error('[email-ingress] Failed to render markdown email body', error);
+    return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+  </head>
+  <body style="margin:0;padding:24px;background:#ffffff;color:#18181b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    <pre style="white-space:pre-wrap;font-size:15px;line-height:1.5;margin:0;">${escapeHtml(content)}</pre>
+  </body>
+</html>`;
+  }
 }
 
 async function resolveAuthorizedSender(
@@ -328,15 +438,16 @@ async function sendReply(
   const fromAddress = sanitizeHeaderValue(args.fromAddress, 320);
   const toAddress = sanitizeHeaderValue(args.toAddress, 320);
   const replyToAddress = sanitizeHeaderValue(args.replyToAddress, 320);
-  const body = args.body.replace(/\r\n/g, '\n').trim().slice(0, 50_000);
+  const bodyText = args.body.replace(/\r\n/g, '\n').trim().slice(0, MAX_EMAIL_REPLY_BODY_CHARS);
+  const bodyHtml = renderMarkdownEmailHtml(bodyText);
+  const boundary = `camelai-${crypto.randomUUID()}`;
 
   const headers: string[] = [
     `From: camelAI <${fromAddress}>`,
     `To: ${toAddress}`,
     `Subject: ${subject}`,
     'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=utf-8',
-    'Content-Transfer-Encoding: 8bit',
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
     `Reply-To: ${replyToAddress}`,
   ];
 
@@ -350,7 +461,22 @@ async function sendReply(
     headers.push(`In-Reply-To: ${inReplyTo}`);
   }
 
-  const raw = `${headers.join('\r\n')}\r\n\r\n${body}\r\n`;
+  const multipartBody = [
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    bodyText || 'Done.',
+    `--${boundary}`,
+    'Content-Type: text/html; charset=utf-8',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    bodyHtml,
+    `--${boundary}--`,
+    '',
+  ].join('\r\n');
+
+  const raw = `${headers.join('\r\n')}\r\n\r\n${multipartBody}`;
   await inbound.reply(new EmailMessage(fromAddress, toAddress, raw));
   return normalizeMessageId(args.messageId);
 }

@@ -130,7 +130,7 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 4. Follow-ups are routed to existing threads using email reply headers (`In-Reply-To` / `References`) mapped in KV (`email_reply_ref:*`)
 5. `ChatThreadDO` ingests email turns through `externalMessage(...)` Durable Object RPC
 6. `AskUserQuestion` follows the same browser-presence rule as Slack/web: interactive only when a browser chat websocket is connected; otherwise the model gets an unavailable response
-7. Replies are sent from workspace-scoped subaddresses (`{local-part}+{workspaceId}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies
+7. Replies are sent from workspace-scoped subaddresses (`{local-part}+{workspaceId}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies, and outbound bodies are sent as `multipart/alternative` (`text/plain` + markdown-rendered `text/html`)
 
 ### Sandbox Proxy Auth
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.
