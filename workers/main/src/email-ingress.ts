@@ -8,11 +8,13 @@ import type { Env } from './types.js';
 import type { ExternalTurnResult } from './durable-objects.js';
 import { runExternalMessageTurn } from './helpers/external-turn.js';
 import { getOrgStub, getUserStub, getWorkspaceStub } from './helpers/stubs.js';
+import { buildWorkspaceScopedR2Key } from '../../../src/lib/workspace-r2-paths.js';
 import {
   getWorkspaceEmailRoutingConfig,
   parseMailboxAddress,
   parseWorkspaceInboxAddress,
 } from '../../../src/lib/workspace-email.js';
+import type { Attachment as PostalMimeAttachment } from 'postal-mime';
 
 interface AuthorizedSender {
   userId: string;
@@ -27,6 +29,11 @@ interface EmailThreadResolution {
   title: string;
 }
 
+interface ParsedEmailContent {
+  text: string;
+  attachments: PostalMimeAttachment[];
+}
+
 const EMAIL_EVENT_DEDUPE_PREFIX = 'email_event:';
 const EMAIL_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
 const EMAIL_EVENT_DEDUPE_PROCESSING_TTL_SECONDS = 5 * 60;
@@ -39,6 +46,34 @@ const DEFAULT_EXTERNAL_TURN_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_EMAIL_RAW_SIZE_BYTES = 2 * 1024 * 1024;
 const MAX_EMAIL_REPLY_BODY_CHARS = 50_000;
 const STRICT_MESSAGE_ID_PATTERN = /^[^\s<>@]+@(?:[^\s<>@]+|\[[^\]\r\n]+\])$/;
+const DEFAULT_ATTACHMENT_BASENAME = 'attachment';
+const DEFAULT_ATTACHMENT_CONTENT_TYPE = 'application/octet-stream';
+const MIME_EXTENSION_MAP: Record<string, string> = {
+  'application/json': '.json',
+  'application/pdf': '.pdf',
+  'application/xml': '.xml',
+  'application/zip': '.zip',
+  'application/x-tar': '.tar',
+  'application/gzip': '.gz',
+  'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/msword': '.doc',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+  'text/plain': '.txt',
+  'text/csv': '.csv',
+  'text/html': '.html',
+  'text/markdown': '.md',
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/svg+xml': '.svg',
+  'audio/mpeg': '.mp3',
+  'audio/wav': '.wav',
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+};
 
 function sanitizeHeaderValue(value: string, maxLength = 200): string {
   return value.replace(/[\r\n]+/g, ' ').trim().slice(0, maxLength);
@@ -133,7 +168,89 @@ function stripHtmlTags(input: string): string {
     .trim();
 }
 
-async function extractEmailText(message: ForwardableEmailMessage): Promise<string> {
+function buildUploadKey(orgId: string, workspaceId: string, filename: string): string {
+  return buildWorkspaceScopedR2Key(orgId, workspaceId, `user-uploads/${filename}`);
+}
+
+function toUploadMountPath(filename: string): string {
+  return `/mnt/user-uploads/${filename}`;
+}
+
+function generateUniqueFilename(originalName: string): string {
+  const timestamp = Date.now();
+  const randomPart = Math.random().toString(36).substring(2, 8);
+  const ext = originalName.includes('.')
+    ? originalName
+      .slice(originalName.lastIndexOf('.'))
+      .replace(/[^a-zA-Z0-9.]/g, '_')
+      .substring(0, 20)
+    : '';
+  const baseName = originalName.includes('.')
+    ? originalName.slice(0, originalName.lastIndexOf('.'))
+    : originalName;
+  const sanitized = baseName
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .substring(0, 50);
+  return `${sanitized || DEFAULT_ATTACHMENT_BASENAME}-${timestamp}-${randomPart}${ext}`;
+}
+
+function normalizeAttachmentName(attachment: PostalMimeAttachment, index: number): string {
+  const fromFilename = typeof attachment.filename === 'string' ? attachment.filename.trim() : '';
+  if (fromFilename) return fromFilename.slice(0, 255);
+
+  const fallbackBase = `${DEFAULT_ATTACHMENT_BASENAME}-${index + 1}`;
+  const extension = MIME_EXTENSION_MAP[(attachment.mimeType || '').toLowerCase()] || '';
+  return `${fallbackBase}${extension}`.slice(0, 255);
+}
+
+function decodeBase64Content(content: string): Uint8Array | null {
+  try {
+    const compact = content.replace(/\s+/g, '');
+    const binary = atob(compact);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function toAttachmentPayload(
+  attachment: PostalMimeAttachment
+): { body: ArrayBuffer | Uint8Array; size: number } | null {
+  if (attachment.content instanceof ArrayBuffer) {
+    return { body: attachment.content, size: attachment.content.byteLength };
+  }
+
+  if (typeof attachment.content !== 'string') return null;
+
+  if (attachment.encoding === 'base64') {
+    const decoded = decodeBase64Content(attachment.content);
+    if (!decoded) return null;
+    return { body: decoded, size: decoded.byteLength };
+  }
+
+  const encoded = new TextEncoder().encode(attachment.content);
+  return { body: encoded, size: encoded.byteLength };
+}
+
+function shouldUploadAttachment(attachment: PostalMimeAttachment): boolean {
+  if (attachment.related) return false;
+  if (!attachment.content) return false;
+  if (attachment.disposition === 'inline' && !attachment.filename) return false;
+  return true;
+}
+
+function appendUploadRefsToMessage(content: string, uploadPaths: string[]): string {
+  if (uploadPaths.length === 0) return content.trim();
+  const refs = uploadPaths.map((path) => `(user uploaded file to ${path})`).join('\n');
+  const trimmed = content.trim();
+  return trimmed ? `${trimmed}\n\n${refs}` : refs;
+}
+
+async function parseEmailContent(message: ForwardableEmailMessage): Promise<ParsedEmailContent> {
   const rawBytes = await new Response(message.raw).arrayBuffer();
 
   try {
@@ -141,20 +258,77 @@ async function extractEmailText(message: ForwardableEmailMessage): Promise<strin
     const parsed = await parser.parse(rawBytes) as {
       text?: string | null;
       html?: string | null;
+      attachments?: PostalMimeAttachment[] | null;
     };
 
     const text = parsed.text?.trim() || '';
-    if (text) return text;
+    if (text) {
+      return {
+        text,
+        attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
+      };
+    }
 
     const html = parsed.html?.trim() || '';
-    return html ? stripHtmlTags(html) : '';
+    return {
+      text: html ? stripHtmlTags(html) : '',
+      attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
+    };
   } catch {
     // Fallback for malformed MIME: take bytes after header separator.
     const raw = new TextDecoder().decode(rawBytes);
     const normalized = raw.replace(/\r\n/g, '\n');
     const splitIndex = normalized.indexOf('\n\n');
-    return (splitIndex >= 0 ? normalized.slice(splitIndex + 2) : normalized).trim();
+    return {
+      text: (splitIndex >= 0 ? normalized.slice(splitIndex + 2) : normalized).trim(),
+      attachments: [],
+    };
   }
+}
+
+async function uploadEmailAttachments(
+  env: Env,
+  args: {
+    orgId: string;
+    workspaceId: string;
+    attachments: PostalMimeAttachment[];
+  }
+): Promise<string[]> {
+  const uploadedPaths: string[] = [];
+
+  for (const [index, attachment] of args.attachments.entries()) {
+    if (!shouldUploadAttachment(attachment)) continue;
+
+    const payload = toAttachmentPayload(attachment);
+    if (!payload || payload.size === 0) continue;
+
+    const originalName = normalizeAttachmentName(attachment, index);
+    const storedFilename = generateUniqueFilename(originalName);
+    const contentType = (attachment.mimeType || '').trim() || DEFAULT_ATTACHMENT_CONTENT_TYPE;
+    const r2Key = buildUploadKey(args.orgId, args.workspaceId, storedFilename);
+
+    try {
+      await env.R2_BUCKET.put(r2Key, payload.body, {
+        httpMetadata: { contentType },
+        customMetadata: {
+          originalName,
+          uploadedAt: new Date().toISOString(),
+          source: 'email-ingress',
+        },
+      });
+      uploadedPaths.push(toUploadMountPath(storedFilename));
+    } catch (error) {
+      console.error('[email-ingress] failed to upload attachment', {
+        workspaceId: args.workspaceId,
+        orgId: args.orgId,
+        filename: attachment.filename || null,
+        mimeType: attachment.mimeType || null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return uploadedPaths;
 }
 
 function stripQuotedReplyContent(text: string): string {
@@ -559,8 +733,14 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
 
   try {
     const subject = sanitizeHeaderValue(message.headers.get('subject') || '', 240);
-    const messageBody = stripQuotedReplyContent(await extractEmailText(message));
-    const userMessage = (messageBody || subject).trim();
+    const parsedContent = await parseEmailContent(message);
+    const messageBody = stripQuotedReplyContent(parsedContent.text);
+    const uploadedAttachmentPaths = await uploadEmailAttachments(env, {
+      orgId: authorizedSender.orgId,
+      workspaceId: authorizedSender.workspaceId,
+      attachments: parsedContent.attachments,
+    });
+    const userMessage = appendUploadRefsToMessage((messageBody || subject).trim(), uploadedAttachmentPaths);
 
     if (!userMessage) {
       message.setReject('Email message is empty.');

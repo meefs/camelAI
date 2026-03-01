@@ -1,4 +1,26 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+const {
+  runExternalMessageTurnMock,
+  getWorkspaceStubMock,
+  getOrgStubMock,
+  getUserStubMock,
+} = vi.hoisted(() => ({
+  runExternalMessageTurnMock: vi.fn(),
+  getWorkspaceStubMock: vi.fn(),
+  getOrgStubMock: vi.fn(),
+  getUserStubMock: vi.fn(),
+}));
+
+vi.mock('../src/helpers/external-turn.js', () => ({
+  runExternalMessageTurn: runExternalMessageTurnMock,
+}));
+
+vi.mock('../src/helpers/stubs.js', () => ({
+  getWorkspaceStub: getWorkspaceStubMock,
+  getOrgStub: getOrgStubMock,
+  getUserStub: getUserStubMock,
+}));
+
 import { handleWorkspaceEmailIngress } from '../src/email-ingress.js';
 
 function streamFromString(text: string): ReadableStream<Uint8Array> {
@@ -16,6 +38,7 @@ function createMessage(args: {
   to: string;
   subject?: string;
   rawBody?: string;
+  raw?: string;
 }): ForwardableEmailMessage & {
   setReject: ReturnType<typeof vi.fn>;
   reply: ReturnType<typeof vi.fn>;
@@ -23,15 +46,17 @@ function createMessage(args: {
   const setReject = vi.fn();
   const reply = vi.fn().mockResolvedValue(undefined);
 
-  const rawBody = args.rawBody || 'hello';
-  const raw = [
-    `From: ${args.from}`,
-    `To: ${args.to}`,
-    `Subject: ${args.subject || ''}`,
-    'Content-Type: text/plain; charset=utf-8',
-    '',
-    rawBody,
-  ].join('\r\n');
+  const raw = args.raw ?? (() => {
+    const rawBody = args.rawBody || 'hello';
+    return [
+      `From: ${args.from}`,
+      `To: ${args.to}`,
+      `Subject: ${args.subject || ''}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      rawBody,
+    ].join('\r\n');
+  })();
 
   return {
     from: args.from,
@@ -51,23 +76,113 @@ function createMessage(args: {
   };
 }
 
-function createMockEnv(overrides?: Partial<Record<string, unknown>>) {
+function createMockKvStore(initial?: Record<string, string>) {
+  const store = new Map<string, string>(Object.entries(initial || {}));
+  return {
+    get: vi.fn(async (key: string) => store.get(key) ?? null),
+    put: vi.fn(async (key: string, value: string) => {
+      store.set(key, value);
+    }),
+    delete: vi.fn(async (key: string) => {
+      store.delete(key);
+    }),
+  };
+}
+
+function createMockEnv(overrides?: Partial<Record<string, unknown>>): any {
+  const emailToUser = createMockKvStore();
+  const appKv = createMockKvStore();
   return {
     WORKSPACE_EMAIL_DOMAIN: 'mail.camelai.com',
     WORKSPACE_EMAIL_LOCAL_PART: 'chat',
-    EMAIL_TO_USER: {
-      get: vi.fn().mockResolvedValue(null),
+    EMAIL_TO_USER: emailToUser,
+    APP_KV: appKv,
+    R2_BUCKET: {
+      put: vi.fn().mockResolvedValue({}),
     },
-    APP_KV: {
-      get: vi.fn().mockResolvedValue(null),
-      put: vi.fn().mockResolvedValue(undefined),
-      delete: vi.fn().mockResolvedValue(undefined),
-    },
+    _emailToUserStore: emailToUser,
+    _appKvStore: appKv,
     ...overrides,
-  } as never;
+  };
 }
 
 describe('handleWorkspaceEmailIngress', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('uploads email attachments and appends upload refs to the forwarded message', async () => {
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
+      getMemberAccess: vi.fn().mockResolvedValue({ access_level: 'full' }),
+    };
+    const orgStub = {
+      isMember: vi.fn().mockResolvedValue(true),
+      getThread: vi.fn().mockResolvedValue(null),
+      createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Quarterly report' }),
+    };
+    const userStub = {
+      getProfile: vi.fn().mockResolvedValue({ name: 'Agent User' }),
+    };
+
+    getWorkspaceStubMock.mockReturnValue(workspaceStub);
+    getOrgStubMock.mockReturnValue(orgStub);
+    getUserStubMock.mockReturnValue(userStub);
+    runExternalMessageTurnMock.mockResolvedValue({ status: 'result', reply: 'Looks good.' });
+
+    const env = createMockEnv();
+    env.EMAIL_TO_USER.get.mockResolvedValue('user-1');
+
+    const boundary = 'test-boundary';
+    const raw = [
+      'From: user@example.com',
+      'To: chat+workspace-1@mail.camelai.com',
+      'Subject: Quarterly report',
+      'Message-ID: <msg-1@example.com>',
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Here is the report.',
+      `--${boundary}`,
+      'Content-Type: text/plain; name="report 2026.txt"',
+      'Content-Disposition: attachment; filename="report 2026.txt"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      'aGVsbG8gYXR0YWNobWVudA==',
+      `--${boundary}--`,
+      '',
+    ].join('\r\n');
+
+    const message = createMessage({
+      from: 'user@example.com',
+      to: 'chat+workspace-1@mail.camelai.com',
+      subject: 'Quarterly report',
+      raw,
+    });
+
+    await handleWorkspaceEmailIngress(message, env);
+
+    expect(message.setReject).not.toHaveBeenCalled();
+    expect(env.R2_BUCKET.put).toHaveBeenCalledTimes(1);
+    expect(runExternalMessageTurnMock).toHaveBeenCalledTimes(1);
+    expect(message.reply).toHaveBeenCalledTimes(1);
+
+    const [r2Key] = env.R2_BUCKET.put.mock.calls[0] as [string];
+    const storedFilename = r2Key.split('/').pop() || '';
+
+    expect(r2Key).toMatch(/^org-1\/workspace-1\/user-uploads\/report_2026-\d+-[a-z0-9]{6}\.txt$/);
+    expect(runExternalMessageTurnMock).toHaveBeenCalledWith(
+      env,
+      expect.objectContaining({
+        threadId: 'thread-1',
+        message: `Here is the report.\n\n(user uploaded file to /mnt/user-uploads/${storedFilename})`,
+      })
+    );
+  });
+
   it('rejects unknown workspace mailbox format', async () => {
     const message = createMessage({
       from: 'user@example.com',

@@ -128,9 +128,10 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 2. A single registered inbox local-part is used (for example `chat@<domain>`), and workspace addresses are subaddressed as `{local-part}+{workspaceId}@<domain>`
 3. Sender is authorized by email (`EMAIL_TO_USER` lookup) plus workspace access check (org member + workspace access not `none`)
 4. Follow-ups are routed to existing threads using email reply headers (`In-Reply-To` / `References`) mapped in KV (`email_reply_ref:*`)
-5. `ChatThreadDO` ingests email turns through `externalMessage(...)` Durable Object RPC
-6. `AskUserQuestion` follows the same browser-presence rule as Slack/web: interactive only when a browser chat websocket is connected; otherwise the model gets an unavailable response
-7. Replies are sent from workspace-scoped subaddresses (`{local-part}+{workspaceId}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies, and outbound bodies are sent as `multipart/alternative` (`text/plain` + markdown-rendered `text/html`)
+5. MIME attachments are uploaded to workspace-scoped R2 keys under `user-uploads/` and appended to the inbound turn as `(user uploaded file to /mnt/user-uploads/<filename>)` lines (same format as web chat uploads)
+6. `ChatThreadDO` ingests email turns through `externalMessage(...)` Durable Object RPC
+7. `AskUserQuestion` follows the same browser-presence rule as Slack/web: interactive only when a browser chat websocket is connected; otherwise the model gets an unavailable response
+8. Replies are sent from workspace-scoped subaddresses (`{local-part}+{workspaceId}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies, and outbound bodies are sent as `multipart/alternative` (`text/plain` + markdown-rendered `text/html`)
 
 ### Sandbox Proxy Auth
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.
