@@ -41,7 +41,7 @@ RUN uv venv /tmp/warmup --python 3.13 && \
         openpyxl xlsxwriter duckdb beautifulsoup4 \
         pdfplumber python-docx python-pptx \
         sqlalchemy psycopg google-cloud-bigquery google-auth \
-        requests httpx \
+        requests httpx openai \
         sympy networkx \
         pillow \
         tqdm && \
