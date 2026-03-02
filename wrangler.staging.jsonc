@@ -9,7 +9,7 @@
 	"observability": { "enabled": true },
 	"rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
 	"routes": [
-		{ "pattern": "staging.camelai.dev/*", "zone_name": "camelai.dev" }
+		{ "pattern": "staging.camelai.dev", "custom_domain": true }
 	],
 	"vpc_services": [
 		{
