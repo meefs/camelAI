@@ -154,7 +154,13 @@ vi.mock('@/components/prompt-input', () => ({
 }));
 
 vi.mock('@/components/message-bubble', () => ({
-  MessageBubble: ({ message }: { message: { role: string; content: unknown; isCompactSummary?: boolean } }) => {
+  MessageBubble: ({
+    message,
+    suppressFinalizedState,
+  }: {
+    message: { id: string; role: string; content: unknown; isCompactSummary?: boolean };
+    suppressFinalizedState?: boolean;
+  }) => {
     if (message.isCompactSummary) {
       return <div data-testid="compact-summary">{typeof message.content === 'string' ? message.content : '[blocks]'}</div>;
     }
@@ -166,7 +172,15 @@ vi.mock('@/components/message-bubble', () => ({
             .filter(Boolean)
             .join(' ')
         : '';
-    return <div data-testid="chat-bubble">{`${message.role}: ${rendered}`}</div>;
+    return (
+      <div
+        data-testid="chat-bubble"
+        data-message-id={message.id}
+        data-suppress-finalized-state={suppressFinalizedState ? 'true' : 'false'}
+      >
+        {`${message.role}: ${rendered}`}
+      </div>
+    );
   },
   isInterruptMessage: () => false,
   parseSlashCommand: () => null,
@@ -256,6 +270,12 @@ function getMainSocket(): MockWebSocket {
   const socket = MockWebSocket.instances.find((s) => s.url.includes('/ws/ws-1'));
   if (!socket) throw new Error('Main chat WebSocket was not created');
   return socket;
+}
+
+function getChatBubbleByMessageId(messageId: string): HTMLElement | undefined {
+  return screen.getAllByTestId('chat-bubble').find(
+    node => node.getAttribute('data-message-id') === messageId,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +501,39 @@ describe('Chat compaction event lifecycle', () => {
 
     expect(screen.queryByTestId('compacting-indicator')).not.toBeInTheDocument();
     expect(screen.getByTestId('compact-summary')).toHaveTextContent('Fallback summary');
+  });
+
+  it('preserves suppression state when status compacting is followed by compaction block start', async () => {
+    render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
+    const socket = getMainSocket();
+
+    await act(async () => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+      emitStreamTextPart(socket, 'pre-compact-msg', 'Before compaction');
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: 'end_turn' } } },
+      });
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'system', subtype: 'status', status: 'compacting' },
+      });
+    });
+
+    expect(getChatBubbleByMessageId('pre-compact-msg')).toHaveAttribute('data-suppress-finalized-state', 'true');
+
+    await act(async () => {
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: {
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 0, content_block: { type: 'compaction' } },
+        },
+      });
+    });
+
+    expect(getChatBubbleByMessageId('pre-compact-msg')).toHaveAttribute('data-suppress-finalized-state', 'true');
   });
 
   it('does not append a placeholder when compaction summary was already captured from stream events', async () => {
@@ -733,6 +786,53 @@ describe('Chat compaction event lifecycle', () => {
       const texts = bubbles.map((b) => b.textContent);
       expect(texts).toContain('assistant: After compaction');
     });
+  });
+
+  it('keeps pre-compaction assistant content above the compact card and streams post-compaction content into a new assistant message', async () => {
+    render(<Chat threadId="thread-1" workspaceId="ws-1" initialMessages={[]} />);
+    const socket = getMainSocket();
+
+    await act(async () => {
+      socket.emitOpen();
+      socket.emitMessage({ type: 'ready' });
+    });
+
+    await act(async () => {
+      emitStreamTextPart(socket, 'pre-compact-msg', 'Before compaction');
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: 'end_turn' } } },
+      });
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'system', subtype: 'status', status: 'compacting' },
+      });
+      emitCompactionSummaryBlock(socket, 'Compacted summary');
+      socket.emitMessage({
+        type: 'sdk_event',
+        event: { type: 'system', subtype: 'compact_boundary' },
+      });
+      emitStreamTextPart(socket, 'post-compact-msg', 'After compaction');
+    });
+
+    await waitFor(() => {
+      const assistantRows = screen.getAllByTestId('chat-bubble').map((node) => node.textContent);
+      expect(assistantRows).toContain('assistant: Before compaction');
+      expect(assistantRows).toContain('assistant: After compaction');
+    });
+
+    expect(screen.getByTestId('compact-summary')).toHaveTextContent('Compacted summary');
+
+    const orderedRows = Array.from(document.querySelectorAll('[data-message-id]'));
+    const preIndex = orderedRows.findIndex((row) => row.getAttribute('data-message-id') === 'pre-compact-msg');
+    const postIndex = orderedRows.findIndex((row) => row.getAttribute('data-message-id') === 'post-compact-msg');
+    const compactIndex = orderedRows.findIndex((row) => row.querySelector('[data-testid="compact-summary"]'));
+
+    expect(preIndex).toBeGreaterThanOrEqual(0);
+    expect(compactIndex).toBeGreaterThanOrEqual(0);
+    expect(postIndex).toBeGreaterThanOrEqual(0);
+    expect(compactIndex).toBeGreaterThan(preIndex);
+    expect(postIndex).toBeGreaterThan(compactIndex);
   });
 
   it('renders compact summary message from initialMessages (history reload)', () => {

@@ -121,6 +121,7 @@ export interface ChatEnv extends WorkspaceContainerEnv {
   PLATFORM_SCRIPT_TOKENS?: KVNamespace;
   DEBUG_CLAUDE_AGENT_SDK?: string;
   SANDBOX_PROXY_SECRET?: string;
+  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE?: string;
 }
 
 // Pending connection setup with MCP callback info
@@ -1771,6 +1772,10 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       const envVars = await container.buildClaudeRunnerEnv({
         threadId: context.threadId,
       });
+      // Forward auto-compaction override so dev/staging can trigger compaction early.
+      if (this.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) {
+        envVars.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = this.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE;
+      }
       this.trace('ensure_runner_env_built', {
         envVarCount: Object.keys(envVars).length,
       });

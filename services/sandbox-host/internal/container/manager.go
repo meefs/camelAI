@@ -433,6 +433,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			"CHIRIDION_TRACE_EVENTS", "CHIRIDION_DEBUG_STARTUP", "CHIRIDION_DEBUG_SDK",
 			"CHIRIDION_DEBUG_FS", "CLAUDE_CODE_MAX_TURNS", "CLAUDE_CODE_DISABLE_NONESSENTIAL",
 			"CHIRIDION_PREQUEUE_FIRST_MESSAGE", "CHIRIDION_FIRST_MESSAGE_DELAY_MS",
+			"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
 		} {
 			if value, ok := os.LookupEnv(key); ok {
 				env = append(env, key+"="+value)

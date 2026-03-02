@@ -425,6 +425,8 @@ interface MessageBubbleProps {
   copiedId: string | null;
   /** Whether to show the streaming loading indicator (only true for the last streaming message) */
   showStreamingIndicator?: boolean;
+  /** Keep the message in "running" visual state and hide finalized actions (used during compaction). */
+  suppressFinalizedState?: boolean;
   skillSheets?: Map<string, string>;
   hostname?: string;
   orgSlug?: string;
@@ -435,6 +437,7 @@ export function MessageBubble({
   onCopy,
   copiedId,
   showStreamingIndicator = false,
+  suppressFinalizedState = false,
   skillSheets,
   hostname,
   orgSlug,
@@ -490,7 +493,7 @@ export function MessageBubble({
 
   const { currentWorkspace } = useAuthData();
   const isCopied = copiedId === message.id;
-  const isStreaming = message.isStreaming ?? false;
+  const isStreaming = (message.isStreaming ?? false) || suppressFinalizedState;
   const hasContent = typeof message.content === 'string'
     ? message.content.length > 0
     : message.content.length > 0;
@@ -664,7 +667,7 @@ export function MessageBubble({
         </div>
       )}
       {/* Hover action row */}
-      {hasContent && (
+      {hasContent && !suppressFinalizedState && (
         <div
           className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
           role="group"

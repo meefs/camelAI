@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { ContentBlock } from '@/types';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { cn } from '@/lib/utils';
 
-const COLLAPSED_MAX_HEIGHT = 200;
+const MAX_COLLAPSED_HEIGHT = 300;
+const MASK_FADE = 'linear-gradient(to bottom, black 85%, transparent 100%)';
 
 interface CompactSummaryCardProps {
   content: string | ContentBlock[];
@@ -14,8 +14,8 @@ interface CompactSummaryCardProps {
 
 export function CompactSummaryCard({ content }: CompactSummaryCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const contentRef = useRef<HTMLDivElement>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   const displayContent = typeof content === 'string'
     ? content
@@ -24,14 +24,36 @@ export function CompactSummaryCard({ content }: CompactSummaryCardProps) {
         .filter(Boolean)
         .join('\n');
 
-  useEffect(() => {
-    if (contentRef.current) {
-      setIsOverflowing(contentRef.current.scrollHeight > COLLAPSED_MAX_HEIGHT);
-    }
-  }, [displayContent]);
+  useLayoutEffect(() => {
+    const element = contentRef.current;
+    if (!element) return;
+
+    const checkOverflow = () => {
+      setIsOverflowing(element.scrollHeight > MAX_COLLAPSED_HEIGHT);
+    };
+
+    checkOverflow();
+
+    const observer = new ResizeObserver(checkOverflow);
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, []);
+
+  const handleCollapse = () => {
+    setIsExpanded(false);
+    requestAnimationFrame(() => {
+      contentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  };
+
+  const collapsed = isOverflowing && !isExpanded;
 
   return (
-    <div className="compact-summary mt-1 mb-4 rounded-lg border border-border/50 bg-muted/10 px-4 py-3">
+    <div className={cn(
+      'compact-summary mt-1 mb-4 rounded-lg border border-border/50 bg-muted/10 px-4 py-3',
+      isOverflowing && 'group/msg',
+    )}>
       {/* Header */}
       <div className="mb-2">
         <span className="text-sm text-muted-foreground font-medium">
@@ -44,37 +66,33 @@ export function CompactSummaryCard({ content }: CompactSummaryCardProps) {
         <div
           ref={contentRef}
           className={cn(
-            'text-sm text-muted-foreground/80 overflow-hidden',
-            !isExpanded && isOverflowing && 'max-h-[200px]',
+            'text-sm text-muted-foreground/80',
+            collapsed && 'overflow-hidden',
           )}
+          style={collapsed ? {
+            maxHeight: MAX_COLLAPSED_HEIGHT,
+            maskImage: MASK_FADE,
+            WebkitMaskImage: MASK_FADE,
+          } : undefined}
         >
           <MarkdownRenderer content={displayContent} />
         </div>
 
-        {/* Gradient fade overlay (collapsed + overflowing) */}
-        {!isExpanded && isOverflowing && (
-          <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-background to-transparent pointer-events-none" />
+        {isOverflowing && (
+          <div className={cn(
+            'absolute bottom-2 right-2 opacity-0 group-hover/msg:opacity-100 transition-opacity',
+            isExpanded && 'relative bottom-auto right-auto mt-1 flex justify-end',
+          )}>
+            <button
+              type="button"
+              onClick={isExpanded ? handleCollapse : () => setIsExpanded(true)}
+              className="rounded-md border border-border bg-background/80 px-4 py-1.5 text-sm text-foreground transition-colors hover:bg-accent backdrop-blur-sm"
+            >
+              {isExpanded ? 'Show less' : 'Show more'}
+            </button>
+          </div>
         )}
       </div>
-
-      {/* Expand / collapse toggle */}
-      {isOverflowing && (
-        <div className="flex justify-end mt-1">
-          <button
-            type="button"
-            onClick={() => setIsExpanded(prev => !prev)}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
-          >
-            {isExpanded ? 'Show less' : 'Show more'}
-            <ChevronDown
-              className={cn(
-                'h-3 w-3 transition-transform',
-                isExpanded && 'rotate-180',
-              )}
-            />
-          </button>
-        </div>
-      )}
     </div>
   );
 }
