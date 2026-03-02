@@ -42,7 +42,7 @@ import {
   handlePostgresQuery,
 } from './routes/data-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
-import { handleAdminApi } from './routes/admin-api.js';
+import { handleAdminApi } from './routes/admin/index.js';
 
 // Re-exports for wrangler
 export { ChiridionMcp } from './mcp-handler.js';
