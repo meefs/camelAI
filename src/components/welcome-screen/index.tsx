@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, use, useCallback, useMemo, useState } from 'react';
+import { Suspense, use, useCallback, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { ChevronUp, Plus } from 'lucide-react';
 import type { WorkerScriptWithCreator, Integration, Thread } from '@/types';
@@ -330,6 +330,12 @@ export function WelcomeScreen({
   const [referenceTime] = useState(() => renderedAt ?? Date.now());
   const [helpOpen, setHelpOpen] = useState(false);
   const hasConnections = connections.length > 0;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const focusInput = useCallback(() => {
+    textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
 
   const handleOpenThread = useCallback((threadId: string) => {
     navigate(`/chat/${threadId}`);
@@ -366,15 +372,18 @@ export function WelcomeScreen({
   const shouldAnimatePlaceholder = !inputValue.trim();
   const handlePromptSelect = useCallback((item: StarterPromptItem) => {
     onPromptChange(item.prompt);
-  }, [onPromptChange]);
+    focusInput();
+  }, [onPromptChange, focusInput]);
 
   const handleConnectionSelect = useCallback((connection: Integration) => {
     onPromptChange(`Use my ${connection.name || connection.integration_type} connection to create `);
-  }, [onPromptChange]);
+    focusInput();
+  }, [onPromptChange, focusInput]);
 
   const handleIntegrationSelect = useCallback((integration: { type: string; displayName: string }) => {
     onPromptChange(`Let's connect ${integration.displayName}`);
-  }, [onPromptChange]);
+    focusInput();
+  }, [onPromptChange, focusInput]);
 
   return (
     <div className="w-full max-w-5xl space-y-10">
@@ -387,6 +396,7 @@ export function WelcomeScreen({
       <AnimatedPlaceholder isActive={shouldAnimatePlaceholder}>
         {(animatedText) => (
           <PromptInput
+            textareaRef={textareaRef}
             value={inputValue}
             onChange={onPromptChange}
             onSubmit={onSubmit}
