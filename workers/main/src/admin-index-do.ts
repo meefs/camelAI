@@ -1,6 +1,53 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { DOEnv } from './auth';
 
+// ---------------------------------------------------------------------------
+// Filter types for paginated queries
+// ---------------------------------------------------------------------------
+
+export interface UserFilters {
+  is_superuser?: boolean;
+  is_orphaned?: boolean;
+  sort_by?: 'created_at' | 'email' | 'name';
+  sort_dir?: 'asc' | 'desc';
+}
+
+export interface ThreadFilters {
+  org_id?: string;
+  workspace_id?: string;
+  created_by?: string;
+  sort_by?: 'created_at' | 'updated_at';
+  sort_dir?: 'asc' | 'desc';
+}
+
+export interface OrgFilters {
+  archived?: boolean;
+  sort_by?: 'created_at' | 'name';
+  sort_dir?: 'asc' | 'desc';
+}
+
+export interface WorkspaceFilters {
+  org_id?: string;
+  archived?: boolean;
+  sort_by?: 'created_at' | 'name';
+  sort_dir?: 'asc' | 'desc';
+}
+
+export interface AppFilters {
+  org_id?: string;
+  workspace_id?: string;
+  is_public?: boolean;
+  sort_by?: 'created_at' | 'updated_at';
+  sort_dir?: 'asc' | 'desc';
+}
+
+// Sort column allowlists (prevents SQL injection via validated keys)
+const USER_SORT_COLS: Record<string, string> = { created_at: 'created_at', email: 'email', name: 'name' };
+const THREAD_SORT_COLS: Record<string, string> = { created_at: 't.created_at', updated_at: 't.updated_at' };
+const ORG_SORT_COLS: Record<string, string> = { created_at: 'created_at', name: 'name' };
+const WORKSPACE_SORT_COLS: Record<string, string> = { created_at: 'w.created_at', name: 'w.name' };
+const APP_SORT_COLS: Record<string, string> = { created_at: 'a.created_at', updated_at: 'a.updated_at' };
+
 export type AdminEventType =
   | { type: 'user_upsert'; payload: any }
   | { type: 'user_delete'; payload: { id: string } }
@@ -390,27 +437,72 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     };
   }
 
-  async getThreadsPaginated(offset: number, limit: number, search?: string) {
-    let query = 'SELECT t.*, o.name as org_name, w.name as workspace_name FROM threads t LEFT JOIN orgs o ON t.org_id = o.id LEFT JOIN workspaces w ON t.workspace_id = w.id';
+  async getUsersPaginated(offset: number, limit: number, search?: string, filters?: UserFilters) {
+    const conditions: string[] = [];
     const params: any[] = [];
+
     if (search) {
-      query += ' WHERE t.title LIKE ? OR o.name LIKE ? OR w.name LIKE ?';
+      conditions.push('(email LIKE ? OR name LIKE ?)');
+      const like = `%${search}%`;
+      params.push(like, like);
+    }
+    if (filters?.is_superuser !== undefined) {
+      conditions.push('is_superuser = ?');
+      params.push(filters.is_superuser ? 1 : 0);
+    }
+    if (filters?.is_orphaned !== undefined) {
+      conditions.push('is_orphaned = ?');
+      params.push(filters.is_orphaned ? 1 : 0);
+    }
+
+    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const sortCol = USER_SORT_COLS[filters?.sort_by ?? 'created_at'] ?? 'created_at';
+    const sortDir = filters?.sort_dir === 'asc' ? 'ASC' : 'DESC';
+
+    const items = Array.from(
+      this.sql.exec(`SELECT * FROM users${where} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`, ...params, limit, offset)
+    ).map((u: any) => ({
+      ...u,
+      avatar: { color: u.avatar_color || '#666', content: u.avatar_content || 'U' },
+      is_superuser: u.is_superuser === 1,
+      is_orphaned: u.is_orphaned === 1,
+    }));
+
+    const total = this.sql.exec(`SELECT COUNT(*) as count FROM users${where}`, ...params).next().value?.count || 0;
+
+    return { items, total, offset, limit };
+  }
+
+  async getThreadsPaginated(offset: number, limit: number, search?: string, filters?: ThreadFilters) {
+    const base = 'SELECT t.*, o.name as org_name, w.name as workspace_name FROM threads t LEFT JOIN orgs o ON t.org_id = o.id LEFT JOIN workspaces w ON t.workspace_id = w.id';
+    const countBase = 'SELECT COUNT(*) as count FROM threads t LEFT JOIN orgs o ON t.org_id = o.id LEFT JOIN workspaces w ON t.workspace_id = w.id';
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    if (search) {
+      conditions.push('(t.title LIKE ? OR o.name LIKE ? OR w.name LIKE ?)');
       const like = `%${search}%`;
       params.push(like, like, like);
     }
-    query += ' ORDER BY t.updated_at DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
-
-    const items = Array.from(this.sql.exec(query, ...params));
-    
-    let countQuery = 'SELECT COUNT(*) as count FROM threads t LEFT JOIN orgs o ON t.org_id = o.id LEFT JOIN workspaces w ON t.workspace_id = w.id';
-    const countParams: any[] = [];
-    if (search) {
-      countQuery += ' WHERE t.title LIKE ? OR o.name LIKE ? OR w.name LIKE ?';
-      const like = `%${search}%`;
-      countParams.push(like, like, like);
+    if (filters?.org_id) {
+      conditions.push('t.org_id = ?');
+      params.push(filters.org_id);
     }
-    const total = this.sql.exec(countQuery, ...countParams).next().value?.count || 0;
+    if (filters?.workspace_id) {
+      conditions.push('t.workspace_id = ?');
+      params.push(filters.workspace_id);
+    }
+    if (filters?.created_by) {
+      conditions.push('t.created_by = ?');
+      params.push(filters.created_by);
+    }
+
+    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const sortCol = THREAD_SORT_COLS[filters?.sort_by ?? 'updated_at'] ?? 't.updated_at';
+    const sortDir = filters?.sort_dir === 'asc' ? 'ASC' : 'DESC';
+
+    const items = Array.from(this.sql.exec(`${base}${where} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`, ...params, limit, offset));
+    const total = this.sql.exec(`${countBase}${where}`, ...params).next().value?.count || 0;
 
     return { items, total, offset, limit };
   }
@@ -423,40 +515,62 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     return this.sql.exec('SELECT COUNT(*) as count FROM apps').next().value?.count || 0;
   }
 
-  async getOrgsPaginated(offset: number, limit: number, search?: string) {
-    let query = 'SELECT * FROM orgs';
+  async getOrgsPaginated(offset: number, limit: number, search?: string, filters?: OrgFilters) {
+    const conditions: string[] = [];
     const params: any[] = [];
+
     if (search) {
-      query += ' WHERE name LIKE ?';
+      conditions.push('name LIKE ?');
       params.push(`%${search}%`);
     }
-    query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
+    if (filters?.archived !== undefined) {
+      conditions.push('archived = ?');
+      params.push(filters.archived ? 1 : 0);
+    }
 
-    const items = Array.from(this.sql.exec(query, ...params)).map((o: any) => ({
+    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const sortCol = ORG_SORT_COLS[filters?.sort_by ?? 'created_at'] ?? 'created_at';
+    const sortDir = filters?.sort_dir === 'asc' ? 'ASC' : 'DESC';
+
+    const items = Array.from(
+      this.sql.exec(`SELECT * FROM orgs${where} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`, ...params, limit, offset)
+    ).map((o: any) => ({
       ...o,
-      archived: o.archived === 1
+      archived: o.archived === 1,
     }));
 
-    let countQuery = 'SELECT COUNT(*) as count FROM orgs';
-    if (search) countQuery += ' WHERE name LIKE ?';
-    const total = this.sql.exec(countQuery, ...(search ? [`%${search}%`] : [])).next().value?.count || 0;
+    const total = this.sql.exec(`SELECT COUNT(*) as count FROM orgs${where}`, ...params).next().value?.count || 0;
 
     return { items, total, offset, limit };
   }
 
-  async getWorkspacesPaginated(offset: number, limit: number, search?: string) {
-    let query = 'SELECT w.*, o.name as org_name FROM workspaces w LEFT JOIN orgs o ON w.org_id = o.id';
+  async getWorkspacesPaginated(offset: number, limit: number, search?: string, filters?: WorkspaceFilters) {
+    const base = 'SELECT w.*, o.name as org_name FROM workspaces w LEFT JOIN orgs o ON w.org_id = o.id';
+    const countBase = 'SELECT COUNT(*) as count FROM workspaces w LEFT JOIN orgs o ON w.org_id = o.id';
+    const conditions: string[] = [];
     const params: any[] = [];
+
     if (search) {
-      query += ' WHERE w.name LIKE ? OR o.name LIKE ?';
+      conditions.push('(w.name LIKE ? OR o.name LIKE ?)');
       const like = `%${search}%`;
       params.push(like, like);
     }
-    query += ' ORDER BY w.created_at DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
+    if (filters?.org_id) {
+      conditions.push('w.org_id = ?');
+      params.push(filters.org_id);
+    }
+    if (filters?.archived !== undefined) {
+      conditions.push('w.archived = ?');
+      params.push(filters.archived ? 1 : 0);
+    }
 
-    const items = Array.from(this.sql.exec(query, ...params)).map((w: any) => ({
+    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const sortCol = WORKSPACE_SORT_COLS[filters?.sort_by ?? 'created_at'] ?? 'w.created_at';
+    const sortDir = filters?.sort_dir === 'asc' ? 'ASC' : 'DESC';
+
+    const items = Array.from(
+      this.sql.exec(`${base}${where} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`, ...params, limit, offset)
+    ).map((w: any) => ({
       ...w,
       description: w.description ?? null,
       avatar: {
@@ -469,14 +583,7 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
       compute_tier: w.compute_tier ?? 'standard',
     }));
 
-    let countQuery = 'SELECT COUNT(*) as count FROM workspaces w LEFT JOIN orgs o ON w.org_id = o.id';
-    const countParams: any[] = [];
-    if (search) {
-      countQuery += ' WHERE w.name LIKE ? OR o.name LIKE ?';
-      const like = `%${search}%`;
-      countParams.push(like, like);
-    }
-    const total = this.sql.exec(countQuery, ...countParams).next().value?.count || 0;
+    const total = this.sql.exec(`${countBase}${where}`, ...params).next().value?.count || 0;
 
     return { items, total, offset, limit };
   }
@@ -507,33 +614,57 @@ export class AdminIndexDO extends DurableObject<DOEnv> {
     return items;
   }
 
-  async getAppsPaginated(offset: number, limit: number, search?: string) {
+  async getAppsPaginated(offset: number, limit: number, search?: string, filters?: AppFilters) {
     const orgSlugExpr = this.getOrgSlugSelectExpression();
-    let query = `SELECT a.*, o.name as org_name, ${orgSlugExpr} as org_slug, w.name as workspace_name, u.name as created_by_name, u.email as created_by_email FROM apps a LEFT JOIN orgs o ON a.org_id = o.id LEFT JOIN workspaces w ON a.workspace_id = w.id LEFT JOIN users u ON a.created_by = u.id`;
+    const base = `SELECT a.*, o.name as org_name, ${orgSlugExpr} as org_slug, w.name as workspace_name, u.name as created_by_name, u.email as created_by_email FROM apps a LEFT JOIN orgs o ON a.org_id = o.id LEFT JOIN workspaces w ON a.workspace_id = w.id LEFT JOIN users u ON a.created_by = u.id`;
+    const countBase = 'SELECT COUNT(*) as count FROM apps a LEFT JOIN orgs o ON a.org_id = o.id LEFT JOIN workspaces w ON a.workspace_id = w.id LEFT JOIN users u ON a.created_by = u.id';
+    const conditions: string[] = [];
     const params: any[] = [];
+
     if (search) {
-      query += ' WHERE a.script_name LIKE ? OR o.name LIKE ? OR w.name LIKE ? OR u.name LIKE ? OR u.email LIKE ?';
+      conditions.push('(a.script_name LIKE ? OR o.name LIKE ? OR w.name LIKE ? OR u.name LIKE ? OR u.email LIKE ?)');
       const like = `%${search}%`;
       params.push(like, like, like, like, like);
     }
-    query += ' ORDER BY a.updated_at DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
+    if (filters?.org_id) {
+      conditions.push('a.org_id = ?');
+      params.push(filters.org_id);
+    }
+    if (filters?.workspace_id) {
+      conditions.push('a.workspace_id = ?');
+      params.push(filters.workspace_id);
+    }
+    if (filters?.is_public !== undefined) {
+      conditions.push('a.is_public = ?');
+      params.push(filters.is_public ? 1 : 0);
+    }
 
-    const items = Array.from(this.sql.exec(query, ...params)).map((a: any) => ({
+    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const sortCol = APP_SORT_COLS[filters?.sort_by ?? 'updated_at'] ?? 'a.updated_at';
+    const sortDir = filters?.sort_dir === 'asc' ? 'ASC' : 'DESC';
+
+    const items = Array.from(
+      this.sql.exec(`${base}${where} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`, ...params, limit, offset)
+    ).map((a: any) => ({
       ...a,
-      is_public: a.is_public === 1
+      is_public: a.is_public === 1,
     }));
 
-    let countQuery = 'SELECT COUNT(*) as count FROM apps a LEFT JOIN orgs o ON a.org_id = o.id LEFT JOIN workspaces w ON a.workspace_id = w.id LEFT JOIN users u ON a.created_by = u.id';
-    const countParams: any[] = [];
-    if (search) {
-      countQuery += ' WHERE a.script_name LIKE ? OR o.name LIKE ? OR w.name LIKE ? OR u.name LIKE ? OR u.email LIKE ?';
-      const like = `%${search}%`;
-      countParams.push(like, like, like, like, like);
-    }
-    const total = this.sql.exec(countQuery, ...countParams).next().value?.count || 0;
+    const total = this.sql.exec(`${countBase}${where}`, ...params).next().value?.count || 0;
 
     return { items, total, offset, limit };
+  }
+
+  async getOrgById(orgId: string) {
+    const row = this.sql.exec(
+      'SELECT * FROM orgs WHERE id = ? LIMIT 1',
+      orgId
+    ).toArray()[0] as any;
+    if (!row) return null;
+    return {
+      ...row,
+      archived: row.archived === 1,
+    };
   }
 
   async getThreadContextById(threadId: string) {

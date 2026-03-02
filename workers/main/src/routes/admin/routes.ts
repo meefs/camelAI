@@ -5,33 +5,45 @@
  * its request/response schemas. The OpenAPI spec is auto-generated from these
  * declarations — no separate spec file needed.
  *
+ * List endpoints use AdminIndexDO (SQLite-backed) for efficient paginated,
+ * filterable, sortable queries. Mutation endpoints still use individual DO stubs.
+ *
  * All handlers assume Bearer auth has already been validated by the wrapper
  * in index.ts — they only handle routing and business logic.
  */
 
 import { Hono } from 'hono';
 import { openApi } from 'hono-zod-openapi';
+import { z } from 'zod';
 import type { Env } from '../../types.js';
+import type { UserFilters, ThreadFilters, OrgFilters, WorkspaceFilters, AppFilters } from '../../admin-index-do.js';
 import {
   ErrorSchema,
   StatsResponseSchema,
   UserSummarySchema,
   OrgMembershipSchema,
-  OrgEnrichedSchema,
+  OrgSchema,
+  OrgDetailSchema,
   ThreadSchema,
+  WorkspaceSchema,
+  AppSchema,
   AddMemberBodySchema,
   AddMemberResponseSchema,
   KvEntrySchema,
   KvValueSchema,
   R2ObjectSummarySchema,
   R2ObjectDetailSchema,
+  UsersQuerySchema,
+  ThreadsQuerySchema,
+  OrgsQuerySchema,
+  WorkspacesQuerySchema,
+  AppsQuerySchema,
+  PaginationQuerySchema,
+  paginatedList,
   dataList,
 } from './schemas.js';
 import {
-  getAllUsers,
-  getAllOrgs,
-  getAllThreads,
-  collectAllOrgIds,
+  getAdminIndexStub,
   getOrgStub,
   getUserStub,
 } from './helpers.js';
@@ -39,6 +51,17 @@ import {
 type HonoEnv = { Bindings: Env };
 
 export const routes = new Hono<HonoEnv>();
+
+// ---------------------------------------------------------------------------
+// Cache-Control middleware for GET endpoints
+// ---------------------------------------------------------------------------
+
+routes.use('*', async (c, next) => {
+  await next();
+  if (c.req.method === 'GET' && c.res.status === 200) {
+    c.res.headers.set('Cache-Control', 'private, max-age=30');
+  }
+});
 
 // ---------------------------------------------------------------------------
 // GET /stats
@@ -53,31 +76,15 @@ routes.get(
     },
   }),
   async (c) => {
-    const env = c.env;
-    const users = await getAllUsers(env);
-    const orgIds = new Set<string>();
-    let membershipCount = 0;
-
-    for (const u of users) {
-      membershipCount += u.org_count;
-    }
-
-    await Promise.all(
-      users.map(async (u) => {
-        try {
-          const userStub = getUserStub(env, u.id);
-          const orgs = await userStub.getOrgs();
-          for (const org of orgs) orgIds.add(org.org_id);
-        } catch {
-          // ignore
-        }
-      })
-    );
-
+    const adminIndex = getAdminIndexStub(c.env);
+    const overview = await adminIndex.getOverview();
     return c.json({
-      user_count: users.length,
-      org_count: orgIds.size,
-      membership_count: membershipCount,
+      total_users: overview.total_users,
+      total_orgs: overview.total_orgs,
+      total_memberships: overview.total_memberships,
+      total_workspaces: overview.total_workspaces,
+      total_integrations: overview.total_integrations,
+      orphaned_users: overview.orphaned_users,
     });
   },
 );
@@ -89,14 +96,23 @@ routes.get(
 routes.get(
   '/users',
   openApi({
-    summary: 'List all users',
+    summary: 'List users (paginated)',
+    request: {
+      query: UsersQuerySchema,
+    },
     responses: {
-      200: dataList(UserSummarySchema),
+      200: paginatedList(UserSummarySchema),
     },
   }),
   async (c) => {
-    const users = await getAllUsers(c.env);
-    return c.json({ data: users });
+    const { limit, offset, search, is_superuser, is_orphaned, sort_by, sort_dir } = c.req.valid('query');
+    const adminIndex = getAdminIndexStub(c.env);
+    const filters: UserFilters = { sort_by, sort_dir };
+    if (is_superuser !== undefined) filters.is_superuser = is_superuser;
+    if (is_orphaned !== undefined) filters.is_orphaned = is_orphaned;
+
+    const result = await adminIndex.getUsersPaginated(offset, limit, search, filters);
+    return c.json(result);
   },
 );
 
@@ -127,66 +143,64 @@ routes.get(
 routes.get(
   '/orgs',
   openApi({
-    summary: 'List all orgs (enriched with members and workspaces)',
+    summary: 'List orgs (paginated)',
+    request: {
+      query: OrgsQuerySchema,
+    },
     responses: {
-      200: dataList(OrgEnrichedSchema),
+      200: paginatedList(OrgSchema),
     },
   }),
   async (c) => {
-    const env = c.env;
-    const orgs = await getAllOrgs(env);
+    const { limit, offset, search, archived, sort_by, sort_dir } = c.req.valid('query');
+    const adminIndex = getAdminIndexStub(c.env);
+    const filters: OrgFilters = { sort_by, sort_dir };
+    if (archived !== undefined) filters.archived = archived;
 
-    const enrichedOrgs = await Promise.all(
-      orgs.map(async (org) => {
-        const orgStub = getOrgStub(env, org.id);
-        const [members, workspaces] = await Promise.all([
-          orgStub.getMembers(),
-          orgStub.getWorkspaces(true),
-        ]);
+    const result = await adminIndex.getOrgsPaginated(offset, limit, search, filters);
+    return c.json(result);
+  },
+);
 
-        const memberDetails = await Promise.all(
-          members.map(async (m) => {
-            try {
-              const userStub = getUserStub(env, m.user_id);
-              const profile = await userStub.getProfile();
-              return {
-                user_id: m.user_id,
-                email: profile?.email || 'unknown',
-                name: profile?.name || null,
-                role: m.role,
-                joined_at: m.joined_at,
-              };
-            } catch {
-              return {
-                user_id: m.user_id,
-                email: 'unknown',
-                name: null,
-                role: m.role,
-                joined_at: m.joined_at,
-              };
-            }
-          })
-        );
+// ---------------------------------------------------------------------------
+// GET /orgs/:id
+// ---------------------------------------------------------------------------
 
-        return {
-          id: org.id,
-          name: org.name,
-          created_by: org.created_by,
-          created_at: org.created_at,
-          member_count: org.member_count,
-          members: memberDetails,
-          workspace_count: workspaces.length,
-          workspaces: workspaces.map((ws) => ({
-            id: ws.id,
-            name: ws.name,
-            created_at: ws.created_at,
-            archived: ws.archived,
-          })),
-        };
-      })
-    );
+routes.get(
+  '/orgs/:id',
+  openApi({
+    summary: 'Org detail with recent activity',
+    responses: {
+      200: OrgDetailSchema,
+      404: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param('id');
+    const adminIndex = getAdminIndexStub(c.env);
 
-    return c.json({ data: enrichedOrgs });
+    // Get org metadata (including member_count, workspace_count) from AdminIndexDO
+    const orgInfo = await adminIndex.getOrgById(orgId);
+    if (!orgInfo) {
+      return c.json({ error: 'Organization not found' }, 404);
+    }
+
+    const activity = await adminIndex.getOrgRecentActivity(orgId);
+
+    return c.json({
+      id: orgInfo.id,
+      name: orgInfo.name,
+      slug: orgInfo.slug ?? null,
+      created_by: orgInfo.created_by,
+      created_at: orgInfo.created_at,
+      archived: orgInfo.archived,
+      member_count: orgInfo.member_count ?? 0,
+      workspace_count: orgInfo.workspace_count ?? 0,
+      threads: activity.threads,
+      apps: activity.apps,
+      threadCount: activity.threadCount,
+      appCount: activity.appCount,
+    });
   },
 );
 
@@ -236,14 +250,24 @@ routes.post(
 routes.get(
   '/threads',
   openApi({
-    summary: 'List all threads across orgs',
+    summary: 'List threads (paginated)',
+    request: {
+      query: ThreadsQuerySchema,
+    },
     responses: {
-      200: dataList(ThreadSchema),
+      200: paginatedList(ThreadSchema),
     },
   }),
   async (c) => {
-    const threads = await getAllThreads(c.env);
-    return c.json({ data: threads });
+    const { limit, offset, search, org_id, workspace_id, created_by, sort_by, sort_dir } = c.req.valid('query');
+    const adminIndex = getAdminIndexStub(c.env);
+    const filters: ThreadFilters = { sort_by, sort_dir };
+    if (org_id) filters.org_id = org_id;
+    if (workspace_id) filters.workspace_id = workspace_id;
+    if (created_by) filters.created_by = created_by;
+
+    const result = await adminIndex.getThreadsPaginated(offset, limit, search, filters);
+    return c.json(result);
   },
 );
 
@@ -276,22 +300,79 @@ routes.patch(
       return c.json({ error: 'At least one of title or created_by is required' }, 400);
     }
 
-    const orgIds = await collectAllOrgIds(env);
-    let result = null;
+    // Try AdminIndexDO first (fast single-SQL lookup)
+    const adminIndex = getAdminIndexStub(env);
+    const threadContext = await adminIndex.getThreadContextById(threadId);
 
-    for (const orgId of orgIds) {
-      const orgStub = getOrgStub(env, orgId);
-      const thread = await orgStub.getThread(threadId);
-      if (thread) {
-        result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
-        break;
-      }
+    if (threadContext) {
+      const orgStub = getOrgStub(env, threadContext.org_id);
+      const result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
+      if (result) return c.json(result);
     }
 
-    if (!result) {
-      return c.json({ error: 'Thread not found' }, 404);
+    // Fallback: index may be stale — scan orgs via AdminIndexDO org list
+    const orgsResult = await adminIndex.getOrgsPaginated(0, 1000);
+    for (const org of orgsResult.items) {
+      const orgStub = getOrgStub(env, org.id);
+      const result = await orgStub.adminUpdateThread(threadId, body, 'admin-api');
+      if (result) return c.json(result);
     }
 
+    return c.json({ error: 'Thread not found' }, 404);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /workspaces
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/workspaces',
+  openApi({
+    summary: 'List workspaces (paginated)',
+    request: {
+      query: WorkspacesQuerySchema,
+    },
+    responses: {
+      200: paginatedList(WorkspaceSchema),
+    },
+  }),
+  async (c) => {
+    const { limit, offset, search, org_id, archived, sort_by, sort_dir } = c.req.valid('query');
+    const adminIndex = getAdminIndexStub(c.env);
+    const filters: WorkspaceFilters = { sort_by, sort_dir };
+    if (org_id) filters.org_id = org_id;
+    if (archived !== undefined) filters.archived = archived;
+
+    const result = await adminIndex.getWorkspacesPaginated(offset, limit, search, filters);
+    return c.json(result);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /apps
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/apps',
+  openApi({
+    summary: 'List apps (paginated)',
+    request: {
+      query: AppsQuerySchema,
+    },
+    responses: {
+      200: paginatedList(AppSchema),
+    },
+  }),
+  async (c) => {
+    const { limit, offset, search, org_id, workspace_id, is_public, sort_by, sort_dir } = c.req.valid('query');
+    const adminIndex = getAdminIndexStub(c.env);
+    const filters: AppFilters = { sort_by, sort_dir };
+    if (org_id) filters.org_id = org_id;
+    if (workspace_id) filters.workspace_id = workspace_id;
+    if (is_public !== undefined) filters.is_public = is_public;
+
+    const result = await adminIndex.getAppsPaginated(offset, limit, search, filters);
     return c.json(result);
   },
 );
@@ -439,6 +520,3 @@ routes.get(
     });
   },
 );
-
-// Need z import for inline schemas in openApi() middleware
-import { z } from 'zod';
