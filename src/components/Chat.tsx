@@ -496,6 +496,7 @@ interface ChatMessagesViewProps {
   error: string | null;
   setError: Dispatch<SetStateAction<string | null>>;
   isCompacting: boolean;
+  compactingPriorMessageId: string | null;
   isLoadingMessages: boolean;
   showGlobalAssistantIndicator: boolean;
   shouldRenderSpacer: boolean;
@@ -522,6 +523,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
   error,
   setError,
   isCompacting,
+  compactingPriorMessageId,
   isLoadingMessages,
   showGlobalAssistantIndicator,
   shouldRenderSpacer,
@@ -574,6 +576,7 @@ const ChatMessagesView = memo(function ChatMessagesView({
               onCopy={copyMessage}
               copiedId={copiedMessageId}
               showStreamingIndicator={assistantTurnActive && msg.id === activeAssistantMessageId}
+              suppressFinalizedState={isCompacting && msg.id === compactingPriorMessageId}
               skillSheets={skillSheetsByToolId}
               hostname={hostname}
               orgSlug={orgSlug}
@@ -823,6 +826,10 @@ export default function Chat({
   const queuedManualCompactionsRef = useRef(0);
   const activeManualCompactionTurnRef = useRef(false);
   const isAutoCompactingRef = useRef(false);
+  // ID of the assistant message that was active when compaction started.
+  // Used to suppress finalized visuals until compaction is complete.
+  const compactingPriorMessageIdRef = useRef<string | null>(null);
+  const [compactingPriorMessageId, setCompactingPriorMessageId] = useState<string | null>(null);
   const syncCompactionIndicator = useCallback(() => {
     const shouldShowIndicator =
       activeManualCompactionTurnRef.current ||
@@ -872,6 +879,7 @@ export default function Chat({
   // Refs to track current state for use in callbacks (avoids stale closures)
   const messagesRef = useRef(messages);
   const streamingMessageIdRef = useRef(streamingMessageId);
+  const lastCompletedAssistantMessageIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef(pendingMessages);
 
   // Wrapper setters that update both state and ref
@@ -1040,6 +1048,9 @@ export default function Chat({
     setCurrentTodos([]);
     setPendingQuestion(null);
     setContextUsedPercent(null);
+    lastCompletedAssistantMessageIdRef.current = null;
+    compactingPriorMessageIdRef.current = null;
+    setCompactingPriorMessageId(null);
   }, [threadId]);
 
   useEffect(() => {
@@ -1618,6 +1629,9 @@ export default function Chat({
     // Clear stale streaming state on reconnect; server sends the
     // authoritative streaming_state immediately after ready.
     setStreamingMessageId(null);
+    lastCompletedAssistantMessageIdRef.current = null;
+    compactingPriorMessageIdRef.current = null;
+    setCompactingPriorMessageId(null);
     setLoading(false);
     isAutoCompactingRef.current = false;
     syncCompactionIndicator();
@@ -1781,6 +1795,18 @@ export default function Chat({
             // Fallback trigger when system/status events are unavailable.
             isAutoCompactingRef.current = true;
             syncCompactionIndicator();
+            // Only capture once: status events are the primary source and this is
+            // a fallback path when those events are missing.
+            if (compactingPriorMessageIdRef.current === null) {
+              const priorId = streamingMessageIdRef.current
+                ?? lastCompletedAssistantMessageIdRef.current
+                ?? null;
+              compactingPriorMessageIdRef.current = priorId;
+              setCompactingPriorMessageId(priorId);
+            }
+            if (streamingMessageIdRef.current) {
+              setStreamingMessageId(null);
+            }
             return;
           }
           if (isInCompactionBlockRef.current) {
@@ -1792,6 +1818,8 @@ export default function Chat({
               const summary = compactionContentRef.current;
               isInCompactionBlockRef.current = false;
               compactionContentRef.current = '';
+              compactingPriorMessageIdRef.current = null;
+              setCompactingPriorMessageId(null);
               if (summary) {
                 hasCapturedCompactionSummaryRef.current = true;
                 completeActiveManualCompaction();
@@ -1933,9 +1961,19 @@ export default function Chat({
           if (status === 'compacting') {
             isAutoCompactingRef.current = true;
             syncCompactionIndicator();
+            const priorId = streamingMessageIdRef.current
+              ?? lastCompletedAssistantMessageIdRef.current
+              ?? null;
+            compactingPriorMessageIdRef.current = priorId;
+            setCompactingPriorMessageId(priorId);
+            if (streamingMessageIdRef.current) {
+              setStreamingMessageId(null);
+            }
           } else if (status === null) {
             isAutoCompactingRef.current = false;
             syncCompactionIndicator();
+            compactingPriorMessageIdRef.current = null;
+            setCompactingPriorMessageId(null);
           }
         } else if (sdkEvent.type === 'system' && sdkEvent.subtype === 'compact_boundary') {
           // Compaction is complete — the compact_boundary event arrives AFTER the
@@ -1945,6 +1983,8 @@ export default function Chat({
           completeActiveManualCompaction();
           isAutoCompactingRef.current = false;
           syncCompactionIndicator();
+          compactingPriorMessageIdRef.current = null;
+          setCompactingPriorMessageId(null);
           if (hasCapturedCompactionSummaryRef.current) {
             hasCapturedCompactionSummaryRef.current = false;
             return;
@@ -1977,6 +2017,8 @@ export default function Chat({
             completeActiveManualCompaction();
             isAutoCompactingRef.current = false;
             syncCompactionIndicator();
+            compactingPriorMessageIdRef.current = null;
+            setCompactingPriorMessageId(null);
             hasCapturedCompactionSummaryRef.current = false;
             const placeholderId = pendingCompactionPlaceholderIdRef.current;
             pendingCompactionPlaceholderIdRef.current = null;
@@ -2062,6 +2104,7 @@ export default function Chat({
           // Finish streaming
           splitStreamingMessageOnNextPartRef.current = false;
           const msgId = streamingMessageIdRef.current;
+          lastCompletedAssistantMessageIdRef.current = msgId;
           if (msgId) {
             const parsedResultTimestamp = typeof sdkEvent.timestamp === 'string'
               ? new Date(sdkEvent.timestamp).getTime()
@@ -2077,6 +2120,8 @@ export default function Chat({
           setLoading(false);
           isAutoCompactingRef.current = false;
           syncCompactionIndicator();
+          compactingPriorMessageIdRef.current = null;
+          setCompactingPriorMessageId(null);
           if (activeManualCompactionTurnRef.current) {
             completeActiveManualCompaction();
           }
@@ -2118,6 +2163,7 @@ export default function Chat({
         // Finish streaming on error
         splitStreamingMessageOnNextPartRef.current = false;
         const msgId = streamingMessageIdRef.current;
+        lastCompletedAssistantMessageIdRef.current = msgId;
         if (msgId) {
           setMessages(prev => prev.map(msg =>
             msg.id === msgId ? finalizeStreamingMessage(msg) : msg
@@ -2126,6 +2172,8 @@ export default function Chat({
         setStreamingMessageId(null);
         setLoading(false);
         isAutoCompactingRef.current = false;
+        compactingPriorMessageIdRef.current = null;
+        setCompactingPriorMessageId(null);
         clearManualCompactionQueue();
         hasCapturedCompactionSummaryRef.current = false;
       } else if (
@@ -2168,6 +2216,9 @@ export default function Chat({
       } else {
         // Reconnect exhausted — clear stale compaction indicator.
         isAutoCompactingRef.current = false;
+        compactingPriorMessageIdRef.current = null;
+        setCompactingPriorMessageId(null);
+        lastCompletedAssistantMessageIdRef.current = null;
         clearManualCompactionQueue();
       }
     };
@@ -3295,6 +3346,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       splitStreamingMessageOnNextPartRef.current = true;
       setMessages(prev => [...prev, userMsg]);
     } else {
+      lastCompletedAssistantMessageIdRef.current = null;
       // /compact is operational and can happen while users read older messages.
       // Avoid forcing a jump to bottom in that case.
       forceScrollOnNextUpdate.current = !shouldShowCompactingIndicator;
@@ -3526,6 +3578,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
             error={error}
             setError={setError}
             isCompacting={isCompacting}
+            compactingPriorMessageId={compactingPriorMessageId}
             isLoadingMessages={isLoadingMessages}
             showGlobalAssistantIndicator={showGlobalAssistantIndicator}
             shouldRenderSpacer={shouldRenderSpacer}
