@@ -103,9 +103,21 @@ const resp = await client.chat.completions.create({
 
 ## Tools and Agents
 
-When building AI agents that have access to tools, **prefer codemode** over plain tool calling. Codemode lets the LLM orchestrate multiple tools in a single turn by writing TypeScript code, which is faster and more capable than sequential one-tool-at-a-time calling.
+> **IMPORTANT: Always use codemode for tool-calling agents.** Codemode is the **strongly recommended default** for any agent that uses tools. It lets the LLM orchestrate multiple tools in a single turn by writing TypeScript code — calling tools sequentially, in parallel, with conditionals, loops, and error handling — all within one step. This is dramatically faster, more reliable, and more capable than plain tool calling, which forces one-tool-at-a-time round-trips with the model.
+>
+> **Only fall back to plain tool calling** if the agent has a single, trivially simple tool with no chaining needs. In every other case, **use codemode.**
 
-### Codemode (Recommended for Agents with Tools)
+### Why Codemode Over Plain Tool Calling
+
+| | Codemode | Plain Tool Calling |
+|---|---|---|
+| **Tools per turn** | Unlimited — chain, branch, loop | One at a time, sequential round-trips |
+| **Latency** | One LLM call orchestrates many tools | N tools = N+ LLM round-trips |
+| **Logic** | Full TypeScript: conditionals, loops, try/catch | Model must "reason" across turns |
+| **Reliability** | Code executes deterministically | Model may lose track of multi-step plans |
+| **Type safety** | `outputSchema` → real TS types in generated code | Tool outputs are untyped `unknown` |
+
+### Codemode (Default for Agents with Tools)
 
 ```typescript
 import { tool, streamText, stepCountIs } from "ai";
@@ -139,11 +151,11 @@ const result = streamText({
 });
 ```
 
-With codemode, the LLM can chain tools in one step: `const weather = await getWeather({ city: "Paris" }); return await formatReport(weather);` — instead of making separate round-trips for each tool call.
+With codemode, the LLM can chain tools in one step: `const weather = await getWeather({ city: "Paris" }); return await formatReport(weather);` — instead of making separate round-trips for each tool call. It can also run tools in parallel (`Promise.all`), add conditional logic, handle errors with try/catch, and iterate over collections — all things that are impossible or extremely brittle with plain tool calling.
 
-### Plain Tool Calling (Simple Cases)
+### Plain Tool Calling (Escape Hatch Only)
 
-For agents with one or two simple tools that don't need chaining, plain tool calling is fine:
+> **Avoid unless the agent has a single trivially simple tool.** If there are 2+ tools, or any chance of chaining, use codemode instead.
 
 ```typescript
 const result = streamText({
@@ -240,12 +252,12 @@ const imageDataUrl = result.choices[0].message.images?.[0]?.image_url?.url;
 
 ## Best Practices
 
-1. **Prefer codemode for agents with tools** — lets the LLM chain multiple tools in a single turn instead of sequential round-trips.
-2. Use `workersai("auto", {})` as the default model selection.
-3. Keep system prompts explicit and task-scoped.
-4. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
-5. Stream responses for chat UX.
-6. Use Zod for tool parameter validation.
-7. Use `MarkdownRenderer` for assistant output.
-8. Use `outputSchema` on tools when using codemode for proper type generation.
+1. **Always use codemode for tool-calling agents** — this is the single most impactful pattern. Codemode lets the LLM chain, branch, and parallelize tool calls in one turn instead of slow sequential round-trips. Only skip codemode for agents with a single trivially simple tool.
+2. **Add `outputSchema` to every tool** — generates real TypeScript types in codemode, making LLM-generated code more reliable.
+3. Use `workersai("auto", {})` as the default model selection.
+4. Keep system prompts explicit and task-scoped.
+5. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
+6. Stream responses for chat UX.
+7. Use Zod for tool parameter validation.
+8. Use `MarkdownRenderer` for assistant output.
 
