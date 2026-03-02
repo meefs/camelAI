@@ -39,6 +39,8 @@ interface PromptInputProps {
   // Context indicator props
   contextUsedPercent?: number | null;
   onCompact?: () => void;
+  // Ref for programmatic focus
+  textareaRef?: React.RefObject<HTMLTextAreaElement>;
 }
 
 interface SendButtonProps {
@@ -95,6 +97,7 @@ export function PromptInput({
   enableVoiceRecording = true,
   contextUsedPercent,
   onCompact,
+  textareaRef,
 }: PromptInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -294,6 +297,7 @@ export function PromptInput({
           )}
 
           <InputGroupTextarea
+            ref={textareaRef}
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
