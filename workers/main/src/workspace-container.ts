@@ -20,9 +20,11 @@
 import { mapCredentialsToEnvVars } from './integration-env';
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
 import type { WorkspaceDO } from './workspace';
+import type { OrgDO } from './auth';
 
 export interface WorkspaceContainerEnv {
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  ORG: DurableObjectNamespace<OrgDO>;
   R2_BUCKET: R2Bucket;
   INTEGRATION_SECRET_KEY: string;
 
@@ -412,9 +414,59 @@ export class WorkspaceContainer {
 
     await this.writeIntegrationEnvFileToSandbox(integrationEnv);
 
+    // Fetch org-level BYOK provider config (if any)
+    const byokEnv = await this.fetchByokEnvVars();
+
     return {
       ...integrationEnv,
+      ...byokEnv,
     };
+  }
+
+  /**
+   * Fetch org-level BYOK (bring your own key) LLM provider env vars.
+   * When configured, these override the proxy env vars so the SDK
+   * calls the provider directly.
+   */
+  private async fetchByokEnvVars(): Promise<Record<string, string>> {
+    if (!this.orgId) return {};
+
+    try {
+      const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId));
+      const record = await orgStub.getLlmProviderConfig();
+      if (!record) return {};
+
+      const creds = await decryptCredentials<Record<string, string>>(
+        record.credentials_encrypted,
+        this.env.INTEGRATION_SECRET_KEY
+      );
+      const config = JSON.parse(record.config) as Record<string, string>;
+
+      if (record.provider === 'anthropic') {
+        console.log(`[Sandbox] BYOK: using Anthropic direct API for org=${this.orgId}`);
+        return {
+          ANTHROPIC_API_KEY: creds.api_key,
+          ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+          CHIRIDION_BYOK_PROVIDER: 'anthropic',
+        };
+      }
+
+      if (record.provider === 'bedrock') {
+        const region = config.aws_region || 'us-east-1';
+        console.log(`[Sandbox] BYOK: using Bedrock (${region}) for org=${this.orgId}`);
+        return {
+          CLAUDE_CODE_USE_BEDROCK: '1',
+          AWS_BEARER_TOKEN_BEDROCK: creds.bearer_token,
+          AWS_REGION: region,
+          CHIRIDION_BYOK_PROVIDER: 'bedrock',
+        };
+      }
+
+      return {};
+    } catch (err) {
+      console.error('[Sandbox] fetchByokEnvVars: error:', err);
+      return {};
+    }
   }
 
   // ─── Chat WebSocket ──────────────────────────────────────

@@ -443,3 +443,17 @@ export interface AppCreator {
 export interface WorkerScriptWithCreator extends WorkerScript {
   creator?: AppCreator;
 }
+
+// LLM Provider BYOK types
+export type LlmProvider = 'anthropic' | 'bedrock';
+
+export interface LlmProviderConfigPublic {
+  provider: LlmProvider;
+  config: {
+    aws_region?: string; // Bedrock only
+  };
+  key_hint: string; // First 8 chars of the key
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}

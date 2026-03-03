@@ -1301,7 +1301,22 @@ export class OrgDO extends DurableObject<DOEnv> {
       }
     }
 
-    const CURRENT_SCHEMA_VERSION = 17;
+    if (version < 18) {
+      // V18: LLM provider BYOK config (bring your own API key)
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS llm_provider_config (
+          id TEXT PRIMARY KEY DEFAULT 'active',
+          provider TEXT NOT NULL,
+          credentials_encrypted TEXT NOT NULL,
+          config TEXT NOT NULL DEFAULT '{}',
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+    }
+
+    const CURRENT_SCHEMA_VERSION = 18;
     if (version < CURRENT_SCHEMA_VERSION) {
       this.ctx.storage.kv.put('schemaVersion', CURRENT_SCHEMA_VERSION);
     }
@@ -2661,6 +2676,66 @@ export class OrgDO extends DurableObject<DOEnv> {
         resolvedLimit
       )
       .toArray() as unknown as OrgThread[];
+  }
+
+  // ─── LLM Provider BYOK Config ─────────────────────────────────
+
+  getLlmProviderConfig(): {
+    provider: string;
+    credentials_encrypted: string;
+    config: string;
+    created_by: string;
+    created_at: number;
+    updated_at: number;
+  } | null {
+    const rows = this.sql
+      .exec<{
+        provider: string;
+        credentials_encrypted: string;
+        config: string;
+        created_by: string;
+        created_at: number;
+        updated_at: number;
+      }>("SELECT provider, credentials_encrypted, config, created_by, created_at, updated_at FROM llm_provider_config WHERE id = 'active'")
+      .toArray();
+    return rows.length > 0 ? rows[0] : null;
+  }
+
+  setLlmProviderConfig(
+    provider: string,
+    credentialsEncrypted: string,
+    config: string,
+    createdBy: string
+  ): void {
+    const now = Date.now();
+    this.sql.exec(
+      `INSERT INTO llm_provider_config (id, provider, credentials_encrypted, config, created_by, created_at, updated_at)
+       VALUES ('active', ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         provider = excluded.provider,
+         credentials_encrypted = excluded.credentials_encrypted,
+         config = excluded.config,
+         created_by = excluded.created_by,
+         updated_at = excluded.updated_at`,
+      provider,
+      credentialsEncrypted,
+      config,
+      createdBy,
+      now,
+      now
+    );
+  }
+
+  deleteLlmProviderConfig(): boolean {
+    this.sql.exec("DELETE FROM llm_provider_config WHERE id = 'active'");
+    return true;
+  }
+
+  hasLlmProviderConfig(): boolean {
+    const rows = this.sql
+      .exec<{ cnt: number }>("SELECT COUNT(*) as cnt FROM llm_provider_config WHERE id = 'active'")
+      .toArray();
+    return (rows[0]?.cnt ?? 0) > 0;
   }
 
   /**
