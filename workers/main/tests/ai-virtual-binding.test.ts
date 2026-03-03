@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
   extractModelFromInput,
-  mapModelToGateway,
+  isOpenRouterModel,
   resolveGatewaySettings,
+  resolveModel,
   resolveVirtualModel,
   runViaGatewayHTTP,
 } from '../src/ai-virtual-binding.js';
@@ -73,27 +74,52 @@ describe('extractModelFromInput', () => {
   });
 });
 
-describe('mapModelToGateway', () => {
+describe('resolveModel', () => {
   it('maps auto to dynamic/auto', () => {
-    expect(mapModelToGateway('auto')).toBe('dynamic/auto');
+    expect(resolveModel('auto')).toBe('dynamic/auto');
   });
 
   it('maps auto_search to dynamic/auto_search', () => {
-    expect(mapModelToGateway('auto_search')).toBe('dynamic/auto_search');
+    expect(resolveModel('auto_search')).toBe('dynamic/auto_search');
   });
 
   it('maps auto_image to dynamic/auto_image', () => {
-    expect(mapModelToGateway('auto_image')).toBe('dynamic/auto_image');
+    expect(resolveModel('auto_image')).toBe('dynamic/auto_image');
   });
 
-  it('falls back to dynamic/auto for unknown models', () => {
-    expect(mapModelToGateway('@cf/bad/model')).toBe('dynamic/auto');
-    expect(mapModelToGateway('gpt-4')).toBe('dynamic/auto');
-    expect(mapModelToGateway('')).toBe('dynamic/auto');
+  it('passes through OpenRouter models as-is', () => {
+    expect(resolveModel('anthropic/claude-3.5-sonnet')).toBe('anthropic/claude-3.5-sonnet');
+    expect(resolveModel('openai/gpt-4o')).toBe('openai/gpt-4o');
+    expect(resolveModel('google/gemini-pro')).toBe('google/gemini-pro');
+    expect(resolveModel('meta-llama/llama-3-70b-instruct')).toBe('meta-llama/llama-3-70b-instruct');
+  });
+
+  it('passes through models with dynamic/ prefix unchanged', () => {
+    expect(resolveModel('dynamic/auto')).toBe('dynamic/auto');
+    expect(resolveModel('dynamic/auto_search')).toBe('dynamic/auto_search');
+  });
+
+  it('falls back to dynamic/auto for empty string', () => {
+    expect(resolveModel('')).toBe('dynamic/auto');
   });
 
   it('trims whitespace before matching', () => {
-    expect(mapModelToGateway('  auto_search  ')).toBe('dynamic/auto_search');
+    expect(resolveModel('  auto_search  ')).toBe('dynamic/auto_search');
+    expect(resolveModel('  anthropic/claude-3.5-sonnet  ')).toBe('anthropic/claude-3.5-sonnet');
+  });
+});
+
+describe('isOpenRouterModel', () => {
+  it('returns false for dynamic/ models', () => {
+    expect(isOpenRouterModel('dynamic/auto')).toBe(false);
+    expect(isOpenRouterModel('dynamic/auto_search')).toBe(false);
+    expect(isOpenRouterModel('dynamic/auto_image')).toBe(false);
+  });
+
+  it('returns true for OpenRouter models', () => {
+    expect(isOpenRouterModel('anthropic/claude-3.5-sonnet')).toBe(true);
+    expect(isOpenRouterModel('openai/gpt-4o')).toBe(true);
+    expect(isOpenRouterModel('google/gemini-pro')).toBe(true);
   });
 });
 
@@ -193,6 +219,29 @@ describe('runViaGatewayHTTP', () => {
 
     const body = JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body)) as { model: string };
     expect(body.model).toBe('dynamic/auto_image');
+  });
+
+  it('routes OpenRouter models to /openrouter/ endpoint', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        id: 'chatcmpl_or_1',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    );
+
+    await runViaGatewayHTTP(
+      { accountID: 'acct_1', gatewayID: 'gw_1', authToken: 'tok_1' },
+      { orgId: 'org_1', workspaceId: 'ws_1' },
+      { messages: [{ role: 'user', content: 'hello' }] },
+      'anthropic/claude-3.5-sonnet',
+      'openrouter',
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://gateway.ai.cloudflare.com/v1/acct_1/gw_1/openrouter/chat/completions');
+
+    const body = JSON.parse(String(init.body)) as { model: string };
+    expect(body.model).toBe('anthropic/claude-3.5-sonnet');
   });
 
   it('throws gateway error message for non-2xx responses', async () => {

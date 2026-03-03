@@ -252,7 +252,9 @@ export async function action({ request, context }) {
 
 ## Model Routes
 
-Three model routes are available. Use them with `workersai(routeName, {})` in deployed workers, or `model: "routeName"` in the container OpenAI-compatible proxy:
+### Auto Routes (Strongly Recommended)
+
+Three auto routes are available. Use them with `workersai(routeName, {})` in deployed workers, or `model: "routeName"` in the container OpenAI-compatible proxy:
 
 | Route | Purpose | When to Use |
 |-------|---------|-------------|
@@ -260,9 +262,49 @@ Three model routes are available. Use them with `workersai(routeName, {})` in de
 | `auto_search` | Google Search grounding with inline citations | App needs real-time info: news, live prices, recent events, fact-checking |
 | `auto_image` | Image generation from text prompts | App needs to create images: avatars, illustrations, thumbnails, creative content |
 
-**Always default to `auto`** unless the user's use case clearly requires search grounding or image generation. A single app can use multiple routes for different features (e.g., `auto` for chat, `auto_search` for a "research" mode, `auto_image` for an image creator).
+**Always default to `auto`** unless the user's use case clearly requires search grounding or image generation. Auto routing automatically selects the best model for the task, optimizes for cost and latency, and requires no configuration. A single app can use multiple routes for different features (e.g., `auto` for chat, `auto_search` for a "research" mode, `auto_image` for an image creator).
 
-Model selection is supported in both deployed workers (via `env.AI`) and the container OpenAI-compatible proxy. Unknown model names fall back to `auto`.
+### Specific OpenRouter Models (Only When User Explicitly Requests)
+
+Any model available on [OpenRouter](https://openrouter.ai/models) can be used by passing the full model identifier (e.g., `anthropic/claude-sonnet-4.6`, `openai/gpt-5.3-chat`, `google/gemini-3.1-pro-preview`). **Only use a specific model when the user explicitly asks for it.** Never proactively choose a specific model — auto routing is always the better default.
+
+```typescript
+// In deployed workers (env.AI)
+const result = await streamText({
+  model: workersai("anthropic/claude-sonnet-4.6", {}),
+  messages: await convertToModelMessages(this.messages),
+});
+
+// In container scripts (OpenAI-compatible proxy)
+const resp = await client.chat.completions.create({
+  model: "openai/gpt-5.3-chat",
+  messages: [{ role: "user", content: "Hello" }],
+});
+```
+
+Model selection is supported in both deployed workers (via `env.AI`) and the container OpenAI-compatible proxy.
+
+#### Discovering Available Models
+
+To look up available models, pricing, or capabilities, fetch the OpenRouter models API (no auth required):
+
+```bash
+curl -s https://openrouter.ai/api/v1/models
+```
+
+Returns a `data[]` array where each entry has:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Model identifier to pass as the model param (e.g., `anthropic/claude-sonnet-4.6`) |
+| `name` | Human-readable name (e.g., `Anthropic: Claude Sonnet 4.6`) |
+| `context_length` | Max context window in tokens |
+| `pricing.prompt` | Cost per input token (USD) |
+| `pricing.completion` | Cost per output token (USD) |
+| `architecture.modality` | Input/output modalities (e.g., `text+image->text`) |
+| `supported_parameters` | Supported API params (e.g., `tools`, `response_format`) |
+
+Use this when a user asks what models are available, wants to compare pricing, or needs a model with specific capabilities (e.g., tool calling, large context, vision).
 
 ### Search Grounding Example
 
@@ -298,7 +340,7 @@ const imageDataUrl = result.choices[0].message.images?.[0]?.image_url?.url;
 4. **Use a `type` discriminator in codemode return values** — define the convention in your `createCodeTool` description.
 5. **Handle the current AI SDK part format** — use `p.type.startsWith("tool-")`, `p.output ?? p.result`, and `state === "output-available"`.
 6. **Use `??` for defensive defaults** — Zod params may be `undefined` at runtime. `||` silently replaces valid `0`/`false`/`""`.
-7. Use `workersai("auto", {})` as the default model.
+7. Use `workersai("auto", {})` as the default model. Only use a specific OpenRouter model (e.g., `"anthropic/claude-sonnet-4.6"`) when the user explicitly requests it.
 8. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
 9. Stream responses for chat UX.
 10. Use `MarkdownRenderer` for assistant output.

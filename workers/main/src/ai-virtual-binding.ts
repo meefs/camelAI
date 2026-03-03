@@ -14,14 +14,30 @@ interface AIVirtualBindingProps {
   userId?: string;
 }
 
-const ALLOWED_MODEL_ALIASES = new Set(['auto', 'auto_search', 'auto_image']);
+const DYNAMIC_MODEL_ALIASES = new Set(['auto', 'auto_search', 'auto_image']);
 
-export function mapModelToGateway(alias: string): string {
-  const trimmed = alias.trim();
-  if (ALLOWED_MODEL_ALIASES.has(trimmed)) {
+/**
+ * Resolve a model string to its gateway representation.
+ *
+ * - Known aliases (`auto`, `auto_search`, `auto_image`) map to `dynamic/{alias}`.
+ * - Models already prefixed with `dynamic/` pass through unchanged.
+ * - Everything else is treated as an OpenRouter model and passes through as-is.
+ */
+export function resolveModel(model: string): string {
+  const trimmed = model.trim();
+  if (DYNAMIC_MODEL_ALIASES.has(trimmed)) {
     return `dynamic/${trimmed}`;
   }
-  return 'dynamic/auto';
+  return trimmed || 'dynamic/auto';
+}
+
+/**
+ * Returns true when the resolved model should route through the OpenRouter
+ * gateway provider endpoint (`/openrouter/`) rather than the Cloudflare
+ * compat endpoint (`/compat/`).
+ */
+export function isOpenRouterModel(resolvedModel: string): boolean {
+  return !resolvedModel.startsWith('dynamic/');
 }
 
 /**
@@ -35,9 +51,9 @@ export class AIVirtualBinding extends WorkerEntrypoint<AIVirtualBindingEnv, AIVi
     const { model: inputModel, input: sanitizedInput } = extractModelFromInput(input);
     const envDefault = resolveVirtualModel(this.env);
 
-    // Resolve alias: caller param → input body model → env default — first in allowlist wins
-    const resolvedAlias = pickAllowedAlias(model, inputModel, envDefault);
-    const gatewayModel = mapModelToGateway(resolvedAlias);
+    // Resolve model: caller param → input body model → env default — first non-empty wins
+    const picked = pickModel(model, inputModel, envDefault);
+    const resolvedModelName = resolveModel(picked);
 
     const gatewaySettings = resolveGatewaySettings(this.env);
     if (!gatewaySettings) {
@@ -46,7 +62,8 @@ export class AIVirtualBinding extends WorkerEntrypoint<AIVirtualBindingEnv, AIVi
       );
     }
 
-    return runViaGatewayHTTP(gatewaySettings, this.ctx.props, sanitizedInput, gatewayModel);
+    const provider: GatewayProvider = isOpenRouterModel(resolvedModelName) ? 'openrouter' : 'compat';
+    return runViaGatewayHTTP(gatewaySettings, this.ctx.props, sanitizedInput, resolvedModelName, provider);
   }
 }
 
@@ -57,11 +74,10 @@ export function resolveVirtualModel(env: Pick<AIVirtualBindingEnv, 'AI_VIRTUAL_M
   return configured || DEFAULT_VIRTUAL_MODEL;
 }
 
-function pickAllowedAlias(...candidates: (string | undefined)[]): string {
+function pickModel(...candidates: (string | undefined)[]): string {
   for (const c of candidates) {
-    if (c && ALLOWED_MODEL_ALIASES.has(c.trim())) {
-      return c.trim();
-    }
+    const trimmed = c?.trim();
+    if (trimmed) return trimmed;
   }
   return DEFAULT_VIRTUAL_MODEL;
 }
@@ -128,15 +144,18 @@ function buildGatewayMetadata(props: AIVirtualBindingProps): string {
   });
 }
 
-function buildGatewayURL(accountID: string, gatewayID: string): string {
-  return `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountID)}/${encodeURIComponent(gatewayID)}/compat/chat/completions`;
+export type GatewayProvider = 'compat' | 'openrouter';
+
+function buildGatewayURL(accountID: string, gatewayID: string, provider: GatewayProvider = 'compat'): string {
+  return `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(accountID)}/${encodeURIComponent(gatewayID)}/${provider}/chat/completions`;
 }
 
 export async function runViaGatewayHTTP(
   settings: GatewaySettings,
   props: AIVirtualBindingProps,
   input: unknown,
-  model: string = 'dynamic/auto'
+  model: string = 'dynamic/auto',
+  provider: GatewayProvider = 'compat'
 ): Promise<unknown> {
   const headers = new Headers();
   headers.set('Authorization', `Bearer ${settings.authToken}`);
@@ -144,7 +163,7 @@ export async function runViaGatewayHTTP(
   headers.set('cf-aig-metadata', buildGatewayMetadata(props));
   const payload = toGatewayPayload(input, model);
 
-  const resp = await fetch(buildGatewayURL(settings.accountID, settings.gatewayID), {
+  const resp = await fetch(buildGatewayURL(settings.accountID, settings.gatewayID, provider), {
     method: 'POST',
     headers,
     body: JSON.stringify(payload),

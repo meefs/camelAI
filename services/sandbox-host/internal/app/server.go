@@ -1172,7 +1172,7 @@ func (s *Server) forwardOpenAIToAIGateway(
 	requestID string,
 	startedAt time.Time,
 ) {
-	// Map /api/openai/v1/* -> {gateway}/compat/* (Cloudflare's OpenAI-compatible endpoint)
+	// Map /api/openai/v1/* -> {gateway}/{provider}/* where provider is "compat" or "openrouter"
 	openaiPath := strings.TrimPrefix(proxy.UpstreamPath, "/api/openai")
 	normalizedPath, ok := normalizeOpenAIProxyUpstreamPath(openaiPath)
 	if !ok {
@@ -1180,12 +1180,8 @@ func (s *Server) forwardOpenAIToAIGateway(
 		return
 	}
 
-	targetURL := s.cfg.AIGatewayBaseURL + "/compat" + normalizedPath
-	if req.URL.RawQuery != "" {
-		targetURL += "?" + req.URL.RawQuery
-	}
-
-	// Rewrite model aliases to Cloudflare dynamic routing prefixed names
+	// Resolve model and determine gateway provider
+	gatewayProvider := "compat"
 	var forwardBody io.Reader = req.Body
 	if req.Method == http.MethodPost {
 		rawBody, err := io.ReadAll(req.Body)
@@ -1197,14 +1193,23 @@ func (s *Server) forwardOpenAIToAIGateway(
 		if len(rawBody) > 0 {
 			if err := json.Unmarshal(rawBody, &bodyJSON); err == nil {
 				if model, _ := bodyJSON["model"].(string); model != "" {
-					if mapped := mapToGatewayModel(model); mapped != model {
-						bodyJSON["model"] = mapped
+					resolved := resolveGatewayModel(model)
+					if resolved != model {
+						bodyJSON["model"] = resolved
 						rawBody, _ = json.Marshal(bodyJSON)
+					}
+					if isOpenRouterModel(resolved) {
+						gatewayProvider = "openrouter"
 					}
 				}
 			}
 		}
 		forwardBody = bytes.NewReader(rawBody)
+	}
+
+	targetURL := s.cfg.AIGatewayBaseURL + "/" + gatewayProvider + normalizedPath
+	if req.URL.RawQuery != "" {
+		targetURL += "?" + req.URL.RawQuery
 	}
 
 	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, forwardBody)
@@ -1224,7 +1229,7 @@ func (s *Server) forwardOpenAIToAIGateway(
 		"callerContainer": caller.Name,
 		"method":          req.Method,
 		"threadId":        threadContext.ThreadID,
-		"targetPath":      "/compat" + normalizedPath,
+		"targetPath":      "/" + gatewayProvider + normalizedPath,
 	})
 	s.containers.AddProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath))
 
@@ -1353,24 +1358,34 @@ func mapToBedrockModel(model string) string {
 	return "global.anthropic." + model + "-v1:0"
 }
 
-var allowedModelAliases = map[string]bool{
+var dynamicModelAliases = map[string]bool{
 	"auto":        true,
 	"auto_search": true,
 	"auto_image":  true,
 }
 
-// mapToGatewayModel rewrites model aliases to Cloudflare dynamic routing names.
-// "auto" -> "dynamic/auto", "auto_search" -> "dynamic/auto_search", etc.
-// Unrecognized aliases fall back to "dynamic/auto".
-func mapToGatewayModel(model string) string {
+// resolveGatewayModel rewrites model aliases to Cloudflare dynamic routing names
+// and passes OpenRouter models through as-is.
+//
+// Known aliases ("auto", "auto_search", "auto_image") map to "dynamic/{alias}".
+// Models already prefixed with "dynamic/" pass through unchanged.
+// Everything else is treated as an OpenRouter model and passes through as-is.
+func resolveGatewayModel(model string) string {
 	trimmed := strings.TrimSpace(model)
-	if allowedModelAliases[trimmed] {
+	if dynamicModelAliases[trimmed] {
 		return "dynamic/" + trimmed
 	}
-	if strings.HasPrefix(trimmed, "dynamic/") {
-		return trimmed
+	if trimmed == "" {
+		return "dynamic/auto"
 	}
-	return "dynamic/auto"
+	return trimmed
+}
+
+// isOpenRouterModel returns true when the resolved model should route through
+// the OpenRouter gateway provider endpoint (/openrouter/) rather than the
+// Cloudflare compat endpoint (/compat/).
+func isOpenRouterModel(resolvedModel string) bool {
+	return !strings.HasPrefix(resolvedModel, "dynamic/")
 }
 
 func buildBedrockProviderEntry(body map[string]any, reqHeaders http.Header, cfg Config) map[string]any {
