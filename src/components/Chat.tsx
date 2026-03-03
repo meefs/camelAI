@@ -633,6 +633,24 @@ const ChatMessagesView = memo(function ChatMessagesView({
   );
 });
 
+type TabRenderState = {
+  tabId: string;
+  target: PreviewTarget;
+  // App tab
+  appPreviewUrl: string;
+  vanityHost: string;
+  iframeKey: number;
+  isLoading: boolean;
+  // File tab
+  filePreviewUrl: string;
+  filePreviewOpenUrl: string;
+  previewFileName: string;
+  notebookViewMode: 'report' | 'notebook';
+  markdownViewMode: 'rendered' | 'source';
+  isNotebookPreview: boolean;
+  isMarkdownPreview: boolean;
+};
+
 interface PreviewPanelShellProps {
   previewTabs: PreviewTab[];
   activeTabId: string | null;
@@ -648,14 +666,8 @@ interface PreviewPanelShellProps {
   markdownViewMode: 'rendered' | 'source';
   onMarkdownViewModeChange: (mode: 'rendered' | 'source') => void;
   filePreviewOpenUrl: string;
-  previewLoading: boolean;
   iframeRef: RefObject<HTMLIFrameElement | null>;
-  iframeKey: number;
-  appPreviewUrl: string;
-  previewFileName: string;
-  filePreviewUrl: string;
-  isNotebookPreview: boolean;
-  isMarkdownPreview: boolean;
+  tabRenderStates: TabRenderState[];
   vanityUrl: string;
   vanityHost: string;
 }
@@ -675,20 +687,18 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
   markdownViewMode,
   onMarkdownViewModeChange,
   filePreviewOpenUrl,
-  previewLoading,
   iframeRef,
-  iframeKey,
-  appPreviewUrl,
-  previewFileName,
-  filePreviewUrl,
-  isNotebookPreview,
-  isMarkdownPreview,
+  tabRenderStates,
   vanityUrl,
   vanityHost,
 }: PreviewPanelShellProps) {
   if (previewTabs.length === 0 || !previewTarget || !activeTabId) {
     return null;
   }
+
+  const activeTabState = tabRenderStates.find((s) => s.tabId === activeTabId);
+  const isNotebookPreview = activeTabState?.isNotebookPreview ?? false;
+  const isMarkdownPreview = activeTabState?.isMarkdownPreview ?? false;
 
   return (
     <>
@@ -714,37 +724,45 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
         filePreviewOpenUrl={filePreviewOpenUrl}
       />
 
-      <div key={activeTabId} className="flex-1 min-h-0 overflow-hidden">
-        {previewTarget.kind === 'app' ? (
-          previewLoading ? (
-            <div className="flex h-full w-full items-center justify-center bg-muted/30">
-              <div className="flex flex-col items-center gap-3">
-                <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-                <span className="text-sm text-muted-foreground">Loading preview...</span>
+      {tabRenderStates.map((state) => {
+        const isActive = state.tabId === activeTabId;
+        return (
+          <div
+            key={state.tabId}
+            className={cn('flex-1 min-h-0 overflow-hidden', !isActive && 'hidden')}
+          >
+            {state.target.kind === 'app' ? (
+              state.isLoading ? (
+                <div className="flex h-full w-full items-center justify-center bg-muted/30">
+                  <div className="flex flex-col items-center gap-3">
+                    <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+                    <span className="text-sm text-muted-foreground">Loading preview...</span>
+                  </div>
+                </div>
+              ) : (
+                <iframe
+                  ref={isActive ? iframeRef : null}
+                  key={state.iframeKey}
+                  src={state.appPreviewUrl || 'about:blank'}
+                  className="h-full w-full bg-white"
+                  title="Deployed App Preview"
+                />
+              )
+            ) : (
+              <div className="h-full">
+                <FilePreviewContent
+                  filename={state.previewFileName}
+                  previewUrl={state.filePreviewUrl}
+                  contentType={state.target.contentType}
+                  layout="panel"
+                  notebookViewMode={state.isNotebookPreview ? state.notebookViewMode : undefined}
+                  markdownViewMode={state.isMarkdownPreview ? state.markdownViewMode : undefined}
+                />
               </div>
-            </div>
-          ) : (
-            <iframe
-              ref={iframeRef}
-              key={iframeKey}
-              src={appPreviewUrl || 'about:blank'}
-              className="h-full w-full bg-white"
-              title="Deployed App Preview"
-            />
-          )
-        ) : (
-          <div className="h-full">
-            <FilePreviewContent
-              filename={previewFileName}
-              previewUrl={filePreviewUrl}
-              contentType={previewTarget.contentType}
-              layout="panel"
-              notebookViewMode={isNotebookPreview ? notebookViewMode : undefined}
-              markdownViewMode={isMarkdownPreview ? markdownViewMode : undefined}
-            />
+            )}
           </div>
-        )}
-      </div>
+        );
+      })}
     </>
   );
 });
@@ -1008,11 +1026,8 @@ export default function Chat({
   const [tabNotebookViewModes, setTabNotebookViewModes] = useState<Record<string, 'report' | 'notebook'>>({});
   const [tabMarkdownViewModes, setTabMarkdownViewModes] = useState<Record<string, 'rendered' | 'source'>>({});
   const [tabAppLoading, setTabAppLoading] = useState<Record<string, boolean>>({});
-  const iframeKey = activeTabId ? (tabIframeKeys[activeTabId] ?? 0) : 0;
-  const filePreviewKey = activeTabId ? (tabFilePreviewKeys[activeTabId] ?? 0) : 0;
   const notebookViewMode = activeTabId ? (tabNotebookViewModes[activeTabId] ?? 'report') : 'report';
   const markdownViewMode = activeTabId ? (tabMarkdownViewModes[activeTabId] ?? 'rendered') : 'rendered';
-  const previewLoading = activeTabId ? Boolean(tabAppLoading[activeTabId]) : false;
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
   const previewVersionRef = useRef<number>(0);
@@ -3400,16 +3415,75 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       .join('/');
   }, []);
 
-  const previewFileName = useMemo(() => {
-    if (previewTarget?.kind !== 'file') return '';
-    if (previewTarget.filename) return previewTarget.filename;
-    return previewTarget.path.split('/').filter(Boolean).pop() || 'file';
-  }, [previewTarget]);
+  // Per-tab render state for all open tabs. Kept in the DOM simultaneously so
+  // switching between tabs never reloads iframes or file previews.
+  const tabRenderStates = useMemo((): TabRenderState[] => {
+    return previewTabs.map((tab) => {
+      const target = tab.target;
+      const tabId = tab.id;
 
-  const isNotebookPreview = previewTarget?.kind === 'file'
-    && previewFileName.toLowerCase().endsWith('.ipynb');
-  const isMarkdownPreview = previewTarget?.kind === 'file'
-    && previewFileName.toLowerCase().endsWith('.md');
+      if (target.kind === 'app') {
+        const scriptName = target.scriptName;
+        const iframeHost = orgSlug
+          ? `${scriptName}--${orgSlug}.${getIframeDomain(hostname)}`
+          : `${scriptName}.${getIframeDomain(hostname)}`;
+        const vHost = orgSlug
+          ? `${scriptName}--${orgSlug}.${getVanityDomain(hostname)}`
+          : `${scriptName}.${getVanityDomain(hostname)}`;
+        return {
+          tabId,
+          target,
+          appPreviewUrl: `https://${iframeHost}`,
+          vanityHost: vHost,
+          iframeKey: tabIframeKeys[tabId] ?? 0,
+          isLoading: tabAppLoading[tabId] ?? false,
+          filePreviewUrl: '',
+          filePreviewOpenUrl: '',
+          previewFileName: '',
+          notebookViewMode: 'report',
+          markdownViewMode: 'rendered',
+          isNotebookPreview: false,
+          isMarkdownPreview: false,
+        };
+      }
+
+      // File tab
+      const normalizedPath = target.path.replace(/^\/+/, '');
+      const encodedPath = encodePathSegments(normalizedPath);
+      const route = target.source === 'workspace'
+        ? `fs/content/${encodedPath}`
+        : `${target.source === 'upload' ? 'uploads' : 'outputs'}/${encodedPath}`;
+      const fileKey = tabFilePreviewKeys[tabId] ?? 0;
+      const filename = target.filename || target.path.split('/').filter(Boolean).pop() || 'file';
+      const isNotebook = filename.toLowerCase().endsWith('.ipynb');
+      const isMarkdown = filename.toLowerCase().endsWith('.md');
+      return {
+        tabId,
+        target,
+        appPreviewUrl: '',
+        vanityHost: '',
+        iframeKey: 0,
+        isLoading: false,
+        filePreviewUrl: `/api/workspaces/${target.workspaceId}/${route}?v=${fileKey}`,
+        filePreviewOpenUrl: `/api/workspaces/${target.workspaceId}/${route}`,
+        previewFileName: filename,
+        notebookViewMode: tabNotebookViewModes[tabId] ?? 'report',
+        markdownViewMode: tabMarkdownViewModes[tabId] ?? 'rendered',
+        isNotebookPreview: isNotebook,
+        isMarkdownPreview: isMarkdown,
+      };
+    });
+  }, [
+    previewTabs,
+    tabIframeKeys,
+    tabAppLoading,
+    tabFilePreviewKeys,
+    tabNotebookViewModes,
+    tabMarkdownViewModes,
+    hostname,
+    orgSlug,
+    encodePathSegments,
+  ]);
 
   const previewDomains = useMemo(() => {
     if (previewTarget?.kind !== 'app') {
@@ -3428,18 +3502,7 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       vanityHost: `${scriptName}.${getVanityDomain(hostname)}`,
     };
   }, [previewTarget, hostname, orgSlug]);
-  const appPreviewUrl = previewDomains.iframeHost ? `https://${previewDomains.iframeHost}` : '';
   const appPreviewVanityUrl = previewDomains.vanityHost ? `https://${previewDomains.vanityHost}` : '';
-
-  const filePreviewUrl = useMemo(() => {
-    if (previewTarget?.kind !== 'file') return '';
-    const normalizedPath = previewTarget.path.replace(/^\/+/, '');
-    const encodedPath = encodePathSegments(normalizedPath);
-    const route = previewTarget.source === 'workspace'
-      ? `fs/content/${encodedPath}`
-      : `${previewTarget.source === 'upload' ? 'uploads' : 'outputs'}/${encodedPath}`;
-    return `/api/workspaces/${previewTarget.workspaceId}/${route}?v=${filePreviewKey}`;
-  }, [previewTarget, encodePathSegments, filePreviewKey]);
 
   const filePreviewOpenUrl = useMemo(() => {
     if (previewTarget?.kind !== 'file') return '';
@@ -3526,14 +3589,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       markdownViewMode={markdownViewMode}
       onMarkdownViewModeChange={setActiveMarkdownViewMode}
       filePreviewOpenUrl={filePreviewOpenUrl}
-      previewLoading={previewLoading}
       iframeRef={iframeRef}
-      iframeKey={iframeKey}
-      appPreviewUrl={appPreviewUrl}
-      previewFileName={previewFileName}
-      filePreviewUrl={filePreviewUrl}
-      isNotebookPreview={isNotebookPreview}
-      isMarkdownPreview={isMarkdownPreview}
+      tabRenderStates={tabRenderStates}
       vanityUrl={appPreviewVanityUrl}
       vanityHost={previewDomains.vanityHost}
     />
