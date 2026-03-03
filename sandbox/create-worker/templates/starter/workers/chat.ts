@@ -54,13 +54,21 @@ export class Chat extends AIChatAgent<Env> {
   ): Promise<Response> {
     const workersai = createWorkersAI({ binding: this.env.AI });
 
-    /* --- Codemode (recommended for agents with tools) ---
+    /* --- Codemode (always use for agents with tools) ---
+    // Codemode lets the LLM chain, branch, and parallelize tool calls in a
+    // single turn by writing TypeScript code. Only skip codemode for agents
+    // with a single trivially simple tool.
     const myTools = {
       getWeather: tool({
         description: "Get weather for a city",
         parameters: z.object({ city: z.string() }),
+        // Always add outputSchema — generates real TS types in codemode
         outputSchema: z.object({ city: z.string(), temperature: z.number() }),
-        execute: async ({ city }) => ({ city, temperature: 72 }),
+        execute: async ({ city }) => {
+          // Use ?? (not ||) for defaults to preserve valid falsy values (0, false, "")
+          const c = city ?? "Unknown";
+          return { city: c, temperature: 72 };
+        },
       }),
     };
     const executor = new DynamicWorkerExecutor({ loader: this.env.LOADER });

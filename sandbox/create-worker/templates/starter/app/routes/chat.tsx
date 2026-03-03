@@ -102,15 +102,22 @@ function ChatClient({ sessionId }: { sessionId: string }) {
     });
   };
 
-  // Extract text content from message parts
-  const getMessageText = (message: UIMessage): string => {
-    if (!message.parts) return "";
-    return message.parts
-      .filter(
-        (part): part is { type: "text"; text: string } => part.type === "text"
-      )
-      .map((part) => part.text)
-      .join("");
+  // Check if an assistant message has any visible content yet.
+  // Prevents "blank bubble" when the stream starts but no parts have arrived.
+  const hasVisibleContent = (message: UIMessage): boolean => {
+    if (!message.parts?.length) return false;
+    return message.parts.some((part: any) => {
+      if (part.type === "text" && part.text?.trim()) return true;
+      if (typeof part.type === "string" && part.type.startsWith("tool-")) {
+        const result = part.output ?? part.result;
+        if (
+          (part.state === "result" || part.state === "output-available") &&
+          result
+        )
+          return true;
+      }
+      return false;
+    });
   };
 
   return (
@@ -138,7 +145,6 @@ function ChatClient({ sessionId }: { sessionId: string }) {
         )}
 
         {messages.map((message: UIMessage, index: number) => {
-          const text = getMessageText(message);
           const isLastMessage = index === messages.length - 1;
           const isAssistant = message.role === "assistant";
 
@@ -154,32 +160,95 @@ function ChatClient({ sessionId }: { sessionId: string }) {
                     : "bg-blue-600 text-white"
                 }`}
               >
-                {/* IMPORTANT: Always use MarkdownRenderer for AI responses */}
-                {/* AI output contains markdown (code, lists, tables) that needs proper rendering */}
                 {isAssistant ? (
-                  <MarkdownRenderer
-                    content={text}
-                    isStreaming={isStreaming && isLastMessage}
-                  />
+                  <>
+                    {/* Show loading if streaming but nothing visible yet (blank bubble fix) */}
+                    {!hasVisibleContent(message) &&
+                      isStreaming &&
+                      isLastMessage && (
+                        <div className="flex space-x-1">
+                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]" />
+                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]" />
+                        </div>
+                      )}
+                    {/* Render all message parts — text and tool results */}
+                    {message.parts?.map((part: any, i: number) => {
+                      // Text parts — always use MarkdownRenderer for AI output
+                      if (part.type === "text" && part.text) {
+                        return (
+                          <MarkdownRenderer
+                            key={i}
+                            content={part.text}
+                            isStreaming={isStreaming && isLastMessage}
+                          />
+                        );
+                      }
+                      // Tool parts: "tool-{name}" format (AI SDK v5+)
+                      if (
+                        typeof part.type === "string" &&
+                        part.type.startsWith("tool-")
+                      ) {
+                        const state = part.state;
+                        const result = part.output ?? part.result;
+                        // Loading — tool call in progress
+                        if (state === "call" || state === "partial-call") {
+                          return (
+                            <div key={i} className="flex space-x-1 py-1">
+                              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]" />
+                              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]" />
+                            </div>
+                          );
+                        }
+                        // Completed — render result (customize per your app's needs)
+                        if (
+                          (state === "result" ||
+                            state === "output-available") &&
+                          result
+                        ) {
+                          // For codemode, result is { code, result, logs }
+                          // Customize rendering based on result.result.type
+                          return null; // AI summarizes in text by default
+                        }
+                        return null;
+                      }
+                      return null;
+                    })}
+                  </>
                 ) : (
-                  <p className="whitespace-pre-wrap">{text}</p>
+                  <p className="whitespace-pre-wrap">
+                    {message.parts
+                      ?.filter(
+                        (p: any): p is { type: "text"; text: string } =>
+                          p.type === "text"
+                      )
+                      .map((p: any) => p.text)
+                      .join("")}
+                  </p>
                 )}
               </div>
             </div>
           );
         })}
 
-        {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
-          <div className="flex justify-start">
-            <div className="bg-white border border-gray-200 rounded-lg px-4 py-2">
-              <div className="flex space-x-1">
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]" />
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]" />
+        {/* Show loading if waiting for response and no visible assistant content yet */}
+        {isLoading &&
+          (() => {
+            const lastMsg = messages[messages.length - 1];
+            if (!lastMsg || lastMsg.role !== "assistant") return true;
+            return !hasVisibleContent(lastMsg);
+          })() && (
+            <div className="flex justify-start">
+              <div className="bg-white border border-gray-200 rounded-lg px-4 py-2">
+                <div className="flex space-x-1">
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]" />
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]" />
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-red-700">

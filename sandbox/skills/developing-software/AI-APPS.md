@@ -1,6 +1,6 @@
 # Building AI Apps and Agents
 
-The starter template includes pre-configured AI chat scaffolding with the Vercel AI SDK and Cloudflare Workers AI.
+The starter template includes pre-configured AI chat scaffolding with the Vercel AI SDK and Cloudflare Workers AI. See `workers/chat.ts` for the Chat DO and `app/routes/chat.tsx` for the frontend — just uncomment to enable.
 
 ## Runtime Model
 
@@ -43,49 +43,9 @@ Notes:
 - Do not set `max_tokens` by default. Thinking/reasoning tokens consume that same budget and can truncate completions prematurely.
 - If you must use `max_tokens`, leave substantial headroom for both thinking and final output.
 
-## Chat DO Example
-
-```typescript
-import { AIChatAgent } from "@cloudflare/ai-chat";
-import { createWorkersAI } from "workers-ai-provider";
-import {
-  streamText,
-  createUIMessageStream,
-  createUIMessageStreamResponse,
-  convertToModelMessages,
-} from "ai";
-
-export class Chat extends AIChatAgent<Env> {
-  async onChatMessage(onFinish, options) {
-    const workersai = createWorkersAI({ binding: this.env.AI });
-
-    const stream = createUIMessageStream({
-      execute: async ({ writer }) => {
-        const result = streamText({
-          model: workersai("auto", {}),
-          messages: await convertToModelMessages(this.messages),
-          system: "You are a helpful AI assistant.",
-          onFinish,
-          abortSignal: options?.abortSignal,
-        });
-
-        writer.merge(result.toUIMessageStream());
-      },
-    });
-
-    return createUIMessageStreamResponse({ stream });
-  }
-}
-```
-
 ## OpenAI-Compatible Local Proxy (Container Path)
 
-For scripts/services running inside the camelAI container, use:
-
-- `OPENAI_BASE_URL`
-- `OPENAI_API_KEY=proxy`
-
-Example:
+For scripts/services running inside the camelAI container, use `OPENAI_BASE_URL` + `OPENAI_API_KEY=proxy`:
 
 ```typescript
 import OpenAI from "openai";
@@ -117,102 +77,19 @@ const resp = await client.chat.completions.create({
 | **Reliability** | Code executes deterministically | Model may lose track of multi-step plans |
 | **Type safety** | `outputSchema` → real TS types in generated code | Tool outputs are untyped `unknown` |
 
-### Codemode (Default for Agents with Tools)
+### Codemode Setup
 
-```typescript
-import { tool, streamText, stepCountIs } from "ai";
-import { z } from "zod";
-import { DynamicWorkerExecutor } from "@cloudflare/codemode";
-import { createCodeTool } from "@cloudflare/codemode/ai";
+The starter template has codemode pre-configured (commented out in `workers/chat.ts`). Uncomment and customize:
 
-const myTools = {
-  getWeather: tool({
-    description: "Get weather for a city",
-    parameters: z.object({ city: z.string() }),
-    outputSchema: z.object({ city: z.string(), temperature: z.number() }),
-    execute: async ({ city }) => ({ city, temperature: 72 }),
-  }),
-  formatReport: tool({
-    description: "Format a weather report",
-    parameters: z.object({ city: z.string(), temperature: z.number() }),
-    outputSchema: z.string(),
-    execute: async ({ city, temperature }) => `It's ${temperature}°F in ${city}.`,
-  }),
-};
-
-const executor = new DynamicWorkerExecutor({ loader: env.LOADER });
-const codeTool = createCodeTool({ tools: myTools, executor });
-
-const result = streamText({
-  model: workersai("auto", {}),
-  messages: await convertToModelMessages(this.messages),
-  tools: { codemode: codeTool },
-  stopWhen: stepCountIs(100),
-});
-```
-
-With codemode, the LLM can chain tools in one step: `const weather = await getWeather({ city: "Paris" }); return await formatReport(weather);` — instead of making separate round-trips for each tool call. It can also run tools in parallel (`Promise.all`), add conditional logic, handle errors with try/catch, and iterate over collections — all things that are impossible or extremely brittle with plain tool calling.
-
-### Plain Tool Calling (Escape Hatch Only)
-
-> **Avoid unless the agent has a single trivially simple tool.** If there are 2+ tools, or any chance of chaining, use codemode instead.
-
-```typescript
-const result = streamText({
-  model: workersai("auto", {}),
-  messages: await convertToModelMessages(this.messages),
-  tools: {
-    getWeather: tool({
-      description: "Get weather for a city",
-      parameters: z.object({ city: z.string() }),
-      execute: async ({ city }) => ({ city, temperature: 72 }),
-    }),
-  },
-  stopWhen: stepCountIs(100),
-
-});
-```
-
-## Stateless Route Example
-
-```typescript
-import { data } from "react-router";
-import { generateText } from "ai";
-import { createWorkersAI } from "workers-ai-provider";
-
-export async function action({ request, context }) {
-  const { prompt } = await request.json();
-  const workersai = createWorkersAI({ binding: context.cloudflare.env.AI });
-
-  const { text } = await generateText({
-    model: workersai("auto", {}),
-    prompt,
-  });
-
-  return data({ response: text });
-}
-```
-
-## Codemode Reference
-
-`@cloudflare/codemode` is pre-configured in the starter template (`worker_loaders` + `SELF` bindings in `wrangler.jsonc`). See the [Tools and Agents](#tools-and-agents) section above for usage examples.
-
-### How It Works
-
-1. You define tools with `outputSchema` so the generated code gets proper types
-2. `createCodeTool` wraps your tools into a single "code" tool the LLM can call
-3. `DynamicWorkerExecutor` runs the LLM-generated code in an ephemeral Worker isolate
-4. The LLM writes code like `const weather = await getWeather({ city: "Paris" }); return await formatReport(weather);`
-
-### Key Points
-
-- **`outputSchema`** on tools produces real TypeScript types instead of `unknown` in generated code
-- **`env.LOADER`** (`worker_loaders` binding) provides the isolate runtime
-- The `__filename` define in `vite.config.ts` polyfills a Node.js global needed by the TypeScript compiler
+1. Define tools with `outputSchema` for typed code generation
+2. Create executor: `new DynamicWorkerExecutor({ loader: this.env.LOADER })`
+3. Create code tool: `createCodeTool({ tools: myTools, executor })`
+4. Pass to streamText: `tools: { codemode: codeTool }`
+5. Always set `stopWhen: stepCountIs(100)` for multi-step tool use
 
 ### Codemode Tool Design — Only Provide Data Tools
 
-With codemode, you do **NOT** need "pass-through" or "formatting" tools (e.g., a `createVisualization` tool that just echoes inputs into a chart config). The LLM writes code that calls your data tools and constructs any output shape directly. Only wrap tools that **access data** or **perform side effects** in codemode. The LLM handles all data transformation and output shaping in its generated code.
+Do **NOT** create "pass-through" or "formatting" tools (e.g., a `createVisualization` tool that just echoes inputs into a chart config). Only wrap tools that **access data** or **perform side effects**. The LLM handles all data transformation and output shaping in its generated code.
 
 ### Codemode Return Type Convention
 
@@ -258,9 +135,9 @@ async () => {
 
 ### Codemode Frontend Rendering — AI SDK UIMessage Part Format
 
-> **This is the #1 source of bugs when integrating codemode.** The AI SDK v5+ uses a different UIMessage part format than what older docs describe. If charts/tables are "not rendering" after adding codemode, this is almost certainly why.
+> **This is the #1 source of bugs when integrating codemode.** The AI SDK v5+ uses a different UIMessage part format than what older docs describe.
 
-**Part format differences (old vs current SDK):**
+The starter template's `chat.tsx` has a working implementation. Key differences from older docs:
 
 | Property | Old SDK (pre-v5) | Current SDK (v5+) |
 |----------|-------------------|---------------------|
@@ -272,101 +149,67 @@ async () => {
 
 **Codemode output shape** (what `p.output` contains):
 ```typescript
-{
-  code: "async () => { ... }",     // The LLM-generated code
-  result: {                         // The return value from that code
-    type: "chart",                  // Your discriminator field
-    chartType: "bar",
-    title: "...",
-    data: [...],
-    ...
-  },
-  logs: []                          // Console output from sandbox
-}
+{ code: "async () => { ... }", result: { type: "chart", ... }, logs: [] }
 ```
 
 The frontend reads `p.output.result.type` to decide what to render.
 
-**Complete working frontend pattern:**
-
-```tsx
-function MessageBubble({ message }: { message: UIMessage }) {
-  return (
-    <div>
-      {message.parts?.map((part, i) => {
-        const p = part as any;
-
-        // Text parts
-        if (p.type === "text" && p.text) {
-          return <MarkdownRenderer key={i} content={p.text} />;
-        }
-
-        // Tool parts: "tool-{name}" format (NOT "tool-invocation")
-        if (typeof p.type === "string" && p.type.startsWith("tool-")) {
-          const toolName = p.toolName || p.type.replace("tool-", "");
-          const state = p.state;
-          // New SDK uses "output", old uses "result" — support both
-          const result = p.output ?? p.result;
-
-          // Loading states
-          if (state === "call" || state === "partial-call") {
-            return <LoadingSpinner key={i} />;
-          }
-
-          // Completed: "result" (old) or "output-available" (new)
-          if ((state === "result" || state === "output-available") && result) {
-            if (toolName === "codemode") {
-              // Codemode wraps in { code, result, logs }
-              const output = result?.result;
-              if (!output?.type) return null;
-
-              if (output.type === "chart") return <ChartRenderer key={i} config={output} />;
-              if (output.type === "table") return <TableRenderer key={i} data={output} />;
-              return null; // stats or unknown — AI summarizes in text
-            }
-          }
-
-          // Error state — LLM will retry or explain in text
-          if (state === "output-error") return null;
-
-          // Still running (any other state)
-          return <LoadingSpinner key={i} />;
-        }
-
-        return null;
-      })}
-    </div>
-  );
-}
-```
-
-**Key gotchas to avoid:**
+**Key gotchas:**
 1. `p.type` is `"tool-codemode"`, NOT `"tool-invocation"` — always use `p.type.startsWith("tool-")`
 2. The tool name comes from `p.type`, not `p.toolName` (which is `undefined` in the new SDK)
 3. Codemode wraps the LLM's return value — the actual data is in `result.result`, not `result`
 4. Use `p.output ?? p.result` to handle both old and new SDK versions
 5. Check for `"output-available"` state, not just `"result"`
+6. **Blank bubble gap** — The assistant message stream starts before any parts arrive. If your loading indicator only checks `lastMessage.role !== "assistant"`, it will hide too early. Use `hasVisibleContent()` (see `chat.tsx`) before hiding the loading state.
 
 ### Zod Parameter Defensive Defaults
 
-Tool parameters validated with Zod may arrive as `undefined` at runtime despite being defined as required in the schema (Zod v3/v4 compatibility gap with the `ai` package). Always add defensive defaults in your `execute` functions:
+Tool parameters validated with Zod may arrive as `undefined` at runtime (Zod v3/v4 compatibility gap with the `ai` package). Always add defensive defaults using `??` (not `||`, which replaces valid falsy values like `0`, `false`, `""`):
 
 ```typescript
-aggregateStats: tool({
-  parameters: z.object({
-    groupBy: z.enum(["industry", "status", "batch"]).describe("Grouping dimension"),
-    metric: z.enum(["count", "avg_size"]).describe("Metric to compute"),
-  }),
-  execute: async (params) => {
-    // IMPORTANT: Add defensive defaults despite Zod schema
-    // Use ?? (not ||) to preserve valid falsy values like 0, false, ""
-    const metric = params.metric ?? "count";
-    const groupBy = params.groupBy ?? "industry";
-    // Use local vars, not params.metric / params.groupBy
-    return computeStats({ metric, groupBy });
-  },
-}),
+execute: async (params) => {
+  const metric = params.metric ?? "count";
+  const groupBy = params.groupBy ?? "industry";
+  return computeStats({ metric, groupBy });
+},
 ```
+
+## Stateless Route Example
+
+```typescript
+import { data } from "react-router";
+import { generateText } from "ai";
+import { createWorkersAI } from "workers-ai-provider";
+
+export async function action({ request, context }) {
+  const { prompt } = await request.json();
+  const workersai = createWorkersAI({ binding: context.cloudflare.env.AI });
+
+  const { text } = await generateText({
+    model: workersai("auto", {}),
+    prompt,
+  });
+
+  return data({ response: text });
+}
+```
+
+## Codemode Reference
+
+`@cloudflare/codemode` is pre-configured in the starter template (`worker_loaders` + `SELF` bindings in `wrangler.jsonc`). See `workers/chat.ts` for setup.
+
+### How It Works
+
+1. You define tools with `outputSchema` so the generated code gets proper types
+2. `createCodeTool` wraps your tools into a single "code" tool the LLM can call
+3. `DynamicWorkerExecutor` runs the LLM-generated code in an ephemeral Worker isolate
+4. The LLM writes code like `const weather = await getWeather({ city: "Paris" }); return await formatReport(weather);`
+
+### Key Points
+
+- **`outputSchema`** on tools produces real TypeScript types instead of `unknown` in generated code
+- **`env.LOADER`** (`worker_loaders` binding) provides the isolate runtime
+- The `__filename` define in `vite.config.ts` polyfills a Node.js global needed by the TypeScript compiler
 
 ## Model Routes
 
@@ -410,16 +253,13 @@ const imageDataUrl = result.choices[0].message.images?.[0]?.image_url?.url;
 
 ## Best Practices
 
-1. **Always use codemode for tool-calling agents** — this is the single most impactful pattern. Codemode lets the LLM chain, branch, and parallelize tool calls in one turn instead of slow sequential round-trips. Only skip codemode for agents with a single trivially simple tool.
-2. **Add `outputSchema` to every tool** — generates real TypeScript types in codemode, making LLM-generated code more reliable.
-3. **Only wrap data/side-effect tools in codemode** — don't create pass-through tools for formatting or reshaping data. The LLM constructs output shapes directly in code.
-4. **Use a `type` discriminator in codemode return values** — define the convention in your `createCodeTool` description so the frontend can route rendering.
-5. **Handle the current AI SDK part format on the frontend** — use `p.type.startsWith("tool-")`, `p.output ?? p.result`, and `state === "output-available"`. See the [Codemode Frontend Rendering](#codemode-frontend-rendering--ai-sdk-uimessage-part-format) section.
-6. **Add defensive defaults in tool execute functions** — Zod params may be `undefined` at runtime despite schemas. Use `params.field ?? "default"` (nullish coalescing) to preserve valid falsy values like `0`, `false`, or `""`.
-7. Use `workersai("auto", {})` as the default model selection.
-8. Keep system prompts explicit and task-scoped.
-9. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
-10. Stream responses for chat UX.
-11. Use Zod for tool parameter validation (with defensive defaults).
-12. Use `MarkdownRenderer` for assistant output.
-
+1. **Always use codemode for tool-calling agents** — lets the LLM chain, branch, and parallelize tool calls in one turn. Only skip for a single trivially simple tool.
+2. **Add `outputSchema` to every tool** — generates real TypeScript types in codemode.
+3. **Only wrap data/side-effect tools in codemode** — the LLM constructs output shapes directly in code.
+4. **Use a `type` discriminator in codemode return values** — define the convention in your `createCodeTool` description.
+5. **Handle the current AI SDK part format** — use `p.type.startsWith("tool-")`, `p.output ?? p.result`, and `state === "output-available"`.
+6. **Use `??` for defensive defaults** — Zod params may be `undefined` at runtime. `||` silently replaces valid `0`/`false`/`""`.
+7. Use `workersai("auto", {})` as the default model.
+8. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
+9. Stream responses for chat UX.
+10. Use `MarkdownRenderer` for assistant output.
