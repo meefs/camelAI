@@ -5,20 +5,36 @@
 import type { Env } from '../types.js';
 import type { SessionData } from '../session-kv.js';
 import type { WorkspaceDO } from '../workspace.js';
-import type { OrgDO } from '../auth.js';
-import { getSession } from '../session-kv.js';
-import { getSessionIdFromRequest } from '../cookies.js';
+import type { OrgDO, UserDO } from '../auth.js';
+import { getSignedSessionFromRequest } from '../cookies.js';
 import { text } from './response.js';
 import { getWorkspaceStub, getOrgStub } from './stubs.js';
 
 export type AuthResult = { session: SessionData } | { error: Response };
 
 export async function requireSession(req: Request, env: Env): Promise<AuthResult> {
-  const sessionId = getSessionIdFromRequest(req);
-  if (!sessionId) return { error: text('Unauthorized', 401) };
+  const signedSession = await getSignedSessionFromRequest(req, env.TOKEN_SIGNING_SECRET);
+  if (!signedSession) return { error: text('Unauthorized', 401) };
 
-  const session = await getSession(env.SESSIONS, sessionId);
-  if (!session) return { error: text('Unauthorized', 401) };
+  // Check if this session was created before a logout invalidation
+  const userNs = env.USER as DurableObjectNamespace<UserDO>;
+  const invalidatedAt = await userNs
+    .get(userNs.idFromName(signedSession.user_id))
+    .getSessionInvalidatedAt();
+  if (invalidatedAt && signedSession.created_at < invalidatedAt) {
+    return { error: text('Unauthorized', 401) };
+  }
+
+  // Map to SessionData format for compatibility
+  const session: SessionData = {
+    user_id: signedSession.user_id,
+    org_id: signedSession.org_id,
+    workspace_id: signedSession.workspace_id,
+    created_at: signedSession.created_at,
+    last_accessed: signedSession.created_at,
+    user_name: signedSession.user_name,
+    user_email: signedSession.user_email,
+  };
 
   return { session };
 }

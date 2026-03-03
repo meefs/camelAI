@@ -1,7 +1,7 @@
-import { Outlet, redirect, useLoaderData } from 'react-router';
+import { Outlet, redirect, data, useLoaderData } from 'react-router';
 import type { Route } from './+types/_app';
 import { requireAuthContext } from '@/lib/auth.server';
-import { parseCookies } from '@/lib/cookies.server';
+import { parseCookies, createSessionCookieHeader } from '@/lib/cookies.server';
 import { AppSidebar } from '@/components/sidebar/app-sidebar';
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
 import type { AuthState } from '@/types';
@@ -58,10 +58,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     error: null,
   };
 
-  return {
-    authState,
-    defaultSidebarOpen,
-  };
+  const responseData = { authState, defaultSidebarOpen };
+
+  // Re-sign session cookie if workspace fell back (e.g. workspace removed/access revoked)
+  if (authContext.resignedSessionCookie) {
+    return data(responseData, {
+      headers: { 'Set-Cookie': createSessionCookieHeader(authContext.resignedSessionCookie, request) },
+    });
+  }
+
+  return responseData;
 }
 
 export default function AppLayout() {

@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { env, SELF } from 'cloudflare:test';
-import { createNewSession } from '../src/session-kv';
+import { createSignedSession, type SignedSessionData } from '../src/signed-session';
 import {
   createUser,
   createOrg,
@@ -20,7 +20,7 @@ const testEmail = () => `test-${Date.now()}-${Math.random().toString(36).slice(2
 
 describe('WebSocket access guard', () => {
   const testEnv = env as unknown as TestEnv;
-  const sessionsKV = env.SESSIONS as KVNamespace;
+  const signingSecret = (env as any).TOKEN_SIGNING_SECRET as string;
 
   async function setupMemberSession() {
     const ownerEmail = testEmail();
@@ -36,21 +36,30 @@ describe('WebSocket access guard', () => {
     const workspaceId = workspaces[0]?.id ?? null;
     const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
     const thread = await orgStub.createThread(workspaceId!, 'Test thread', memberId);
-    const { sessionId, sessionData } = await createNewSession(sessionsKV, memberId, org.id, workspaceId);
-    expect(sessionData.workspace_id).toBeTruthy();
+
+    // Create a signed session token
+    const sessionData: SignedSessionData = {
+      user_id: memberId,
+      org_id: org.id,
+      workspace_id: workspaceId,
+      created_at: Date.now(),
+      user_name: 'Member',
+      user_email: memberEmail,
+    };
+    const signedToken = await createSignedSession(signingSecret, sessionData);
 
     return {
       ownerId,
       memberId,
       orgId: org.id,
-      workspaceId: sessionData.workspace_id!,
+      workspaceId: workspaceId!,
       threadId: thread.id,
-      sessionId,
+      signedToken,
     };
   }
 
   it('denies WebSocket upgrade for read_only workspace access', async () => {
-    const { ownerId, memberId, workspaceId, threadId, sessionId } = await setupMemberSession();
+    const { ownerId, memberId, workspaceId, threadId, signedToken } = await setupMemberSession();
 
     await setWorkspaceAccess(testEnv, workspaceId, memberId, 'read_only', ownerId);
 
@@ -58,7 +67,7 @@ describe('WebSocket access guard', () => {
       headers: {
         Upgrade: 'websocket',
         Connection: 'Upgrade',
-        'X-Chiridion-Session-Id': sessionId,
+        'X-Chiridion-Session-Id': signedToken,
       },
     });
 
@@ -66,7 +75,7 @@ describe('WebSocket access guard', () => {
   });
 
   it('denies WebSocket upgrade when org membership is removed', async () => {
-    const { ownerId, memberId, orgId, workspaceId, threadId, sessionId } = await setupMemberSession();
+    const { ownerId, memberId, orgId, workspaceId, threadId, signedToken } = await setupMemberSession();
 
     await removeOrgMember(testEnv, orgId, memberId, ownerId);
 
@@ -74,7 +83,7 @@ describe('WebSocket access guard', () => {
       headers: {
         Upgrade: 'websocket',
         Connection: 'Upgrade',
-        'X-Chiridion-Session-Id': sessionId,
+        'X-Chiridion-Session-Id': signedToken,
       },
     });
 

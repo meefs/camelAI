@@ -16,13 +16,12 @@
 
 import type { RouteContext } from '../types.js';
 import { redirect, text } from '../helpers/response.js';
-import { getSession } from '../session-kv.js';
-import { getSessionIdFromRequest } from '../cookies.js';
+import { getSignedSessionFromRequest } from '../cookies.js';
 import {
   validateAndConsumeAuthState,
   createWorkerAuthToken,
 } from '../worker-auth.js';
-import type { OrgDO } from '../auth.js';
+import type { OrgDO, UserDO } from '../auth.js';
 
 // Auth callback path on dispatcher domain
 const AUTH_CALLBACK_PATH = '/__chiridion_auth/callback';
@@ -45,20 +44,20 @@ export async function handleWorkerAuth({ req, env, url }: RouteContext): Promise
     return text('Invalid or expired state', 400);
   }
 
-  // Check if user is authenticated
-  const sessionId = getSessionIdFromRequest(req);
+  // Check if user is authenticated via signed session cookie
+  const session = await getSignedSessionFromRequest(req, env.TOKEN_SIGNING_SECRET);
 
-  if (!sessionId) {
-    // User is not logged in - redirect to login
-    // After login, they'll need to try accessing the worker again
-    // (the state has been consumed, so they need to re-initiate the flow)
+  if (!session) {
     const loginUrl = new URL('/login', url.origin);
     return redirect(loginUrl.toString());
   }
 
-  const session = await getSession(env.SESSIONS, sessionId);
-  if (!session) {
-    // Invalid/expired session - redirect to login
+  // Check if this session was invalidated (e.g. by logout)
+  const userNs = env.USER as DurableObjectNamespace<UserDO>;
+  const invalidatedAt = await userNs
+    .get(userNs.idFromName(session.user_id))
+    .getSessionInvalidatedAt();
+  if (invalidatedAt && session.created_at < invalidatedAt) {
     const loginUrl = new URL('/login', url.origin);
     return redirect(loginUrl.toString());
   }

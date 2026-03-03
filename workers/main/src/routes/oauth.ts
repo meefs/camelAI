@@ -1,10 +1,11 @@
 /**
  * User OAuth routes (Google, GitHub)
+ *
+ * Uses HMAC-signed cookies for both OAuth state (CSRF) and session tokens.
+ * No server-side storage needed — eliminates KV eventual-consistency issues.
  */
 
 import type { RouteContext, Env } from '../types.js';
-import { createSession } from '../session-kv.js';
-import { createOAuthState, consumeOAuthStateWithData } from '../oauth-state.js';
 import {
   isValidOAuthProvider,
   buildAuthorizationUrl,
@@ -14,11 +15,27 @@ import {
   type OAuthProvider,
 } from '../../../../src/lib/oauth-config.js';
 import { getOrCreateUserFromOAuth, ensureDefaultOrgWorkspace } from '../services/oauth.js';
-import { redirect, text } from '../helpers/response.js';
+import { text } from '../helpers/response.js';
+import {
+  SESSION_MAX_AGE,
+  getCookieDomain,
+  getSessionCookieName,
+  createOAuthStateCookie,
+  getOAuthStateFromRequest,
+  createDeleteOAuthStateCookie,
+} from '../cookies.js';
+import { createSignedSession, type SignedSessionData } from '../signed-session.js';
 
 const OAUTH_PROVIDER_TIMEOUT_MS = 15_000;
 
-export async function handleOAuthStart({ env, url, match }: RouteContext): Promise<Response> {
+function buildSessionCookie(name: string, value: string, maxAge: number, secure: boolean, domain?: string): string {
+  const parts = [`${name}=${value}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAge}`];
+  if (secure) parts.push('Secure');
+  if (domain) parts.push(`Domain=${domain}`);
+  return parts.join('; ');
+}
+
+export async function handleOAuthStart({ env, url, match, req }: RouteContext): Promise<Response> {
   const provider = match[1] as OAuthProvider;
   if (!isValidOAuthProvider(provider)) return text('Invalid provider', 400);
 
@@ -28,12 +45,22 @@ export async function handleOAuthStart({ env, url, match }: RouteContext): Promi
 
   const redirectTo = url.searchParams.get('redirect') || '/';
   const callbackUrl = `${url.origin}/api/auth/${provider}/callback`;
-  const state = await createOAuthState(env.OAUTH_STATE, provider, redirectTo);
+  const nonce = crypto.randomUUID();
 
-  return redirect(buildAuthorizationUrl(provider, clientId, callbackUrl, state));
+  const stateCookie = await createOAuthStateCookie(
+    { provider, redirect_url: redirectTo, nonce, created_at: Date.now() },
+    env.TOKEN_SIGNING_SECRET,
+    req
+  );
+
+  const headers = new Headers({
+    Location: buildAuthorizationUrl(provider, clientId, callbackUrl, nonce),
+  });
+  headers.append('Set-Cookie', stateCookie);
+  return new Response(null, { status: 302, headers });
 }
 
-export async function handleOAuthCallback({ env, url, match }: RouteContext): Promise<Response> {
+export async function handleOAuthCallback({ env, url, match, req }: RouteContext): Promise<Response> {
   const startedAt = Date.now();
   const provider = match[1] as OAuthProvider;
   if (!isValidOAuthProvider(provider)) return text('Invalid provider', 400);
@@ -42,23 +69,27 @@ export async function handleOAuthCallback({ env, url, match }: RouteContext): Pr
   const state = url.searchParams.get('state');
   const error = url.searchParams.get('error');
   const secure = url.protocol === 'https:';
+  const hostname = url.hostname;
 
-  if (error) return redirect(`${url.origin}/login?error=oauth_denied`);
-  if (!code || !state) return redirect(`${url.origin}/login?error=oauth_invalid`);
+  if (error) return redirectTo(`${url.origin}/login?error=oauth_denied`);
+  if (!code || !state) return redirectTo(`${url.origin}/login?error=oauth_invalid`);
 
-  const stateData = await consumeOAuthStateWithData(env.OAUTH_STATE, state);
-  if (!stateData || stateData.provider !== provider) {
+  // Verify OAuth state from signed cookie
+  const stateData = await getOAuthStateFromRequest(req, env.TOKEN_SIGNING_SECRET);
+  if (!stateData || stateData.provider !== provider || stateData.nonce !== state) {
     console.warn('[oauth] invalid state on callback', {
       provider,
+      hasStateCookie: !!stateData,
+      nonceMatch: stateData?.nonce === state,
       elapsed_ms: Date.now() - startedAt,
     });
-    return redirect(`${url.origin}/login?error=oauth_state_invalid`);
+    return redirectTo(`${url.origin}/login?error=oauth_state_invalid`);
   }
 
   const config = OAUTH_PROVIDERS[provider];
   const clientId = env[config.clientIdEnvVar as keyof Env] as string | undefined;
   const clientSecret = env[config.clientSecretEnvVar as keyof Env] as string | undefined;
-  if (!clientId || !clientSecret) return redirect(`${url.origin}/login?error=oauth_config`);
+  if (!clientId || !clientSecret) return redirectTo(`${url.origin}/login?error=oauth_config`);
 
   let stage:
     | 'state_validate_consume'
@@ -91,27 +122,34 @@ export async function handleOAuthCallback({ env, url, match }: RouteContext): Pr
     stage = 'org_workspace';
     const { orgId, workspaceId } = await ensureDefaultOrgWorkspace(env, userId, displayName);
 
-    const sessionId = crypto.randomUUID();
     stage = 'session_create';
-    await createSession(env.SESSIONS, sessionId, {
+    const sessionData: SignedSessionData = {
       user_id: userId,
       org_id: orgId,
       workspace_id: workspaceId,
       created_at: Date.now(),
-      last_accessed: Date.now(),
       user_name: userInfo.name || null,
       user_email: userInfo.email || null,
-    });
+    };
+    const signedToken = await createSignedSession(env.TOKEN_SIGNING_SECRET, sessionData);
 
     console.log('[oauth] callback succeeded', {
       provider,
       elapsed_ms: Date.now() - startedAt,
     });
 
-    return redirect(stateData.redirect_url || '/', sessionId, secure, url.hostname);
+    // Set session cookie and clear OAuth state cookie
+    const domain = getCookieDomain(hostname);
+    const cookieName = getSessionCookieName(hostname);
+    const headers = new Headers({
+      Location: stateData.redirect_url || '/',
+    });
+    headers.append('Set-Cookie', buildSessionCookie(cookieName, signedToken, SESSION_MAX_AGE, secure, domain));
+    headers.append('Set-Cookie', createDeleteOAuthStateCookie(req));
+    return new Response(null, { status: 302, headers });
   } catch (err) {
     if (err instanceof Error && err.message === 'oauth_race_condition') {
-      return redirect(`${url.origin}/login?error=oauth_race_condition`);
+      return redirectTo(`${url.origin}/login?error=oauth_race_condition`);
     }
     console.error('[oauth] OAuth flow failed:', {
       provider,
@@ -119,6 +157,10 @@ export async function handleOAuthCallback({ env, url, match }: RouteContext): Pr
       elapsed_ms: Date.now() - startedAt,
       error: err instanceof Error ? err.message : String(err),
     });
-    return redirect(`${url.origin}/login?error=oauth_failed`);
+    return redirectTo(`${url.origin}/login?error=oauth_failed`);
   }
+}
+
+function redirectTo(url: string): Response {
+  return new Response(null, { status: 302, headers: { Location: url } });
 }

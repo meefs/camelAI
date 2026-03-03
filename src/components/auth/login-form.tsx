@@ -23,9 +23,10 @@ const inspirationalPrompts = [
 
 type LoginFormProps = {
   redirectTo: string;
+  oauthError?: string | null;
 };
 
-export function LoginForm({ redirectTo }: LoginFormProps) {
+export function LoginForm({ redirectTo, oauthError }: LoginFormProps) {
   const navigate = useNavigate();
   const fetcher = useFetcher();
   const [email, setEmail] = useState('');
@@ -74,6 +75,13 @@ export function LoginForm({ redirectTo }: LoginFormProps) {
                   Sign in to your account
                 </p>
               </div>
+
+              {oauthError && (
+                <Alert variant="destructive">
+                  <AlertCircle className="size-4" />
+                  <AlertDescription>{oauthError}</AlertDescription>
+                </Alert>
+              )}
 
               {error && (
                 <Alert variant="destructive">

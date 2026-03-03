@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
-import { createNewSession } from '../src/session-kv';
+import { createSignedSession, type SignedSessionData } from '../src/signed-session';
 import { getAuthContext, requireOrgAdmin } from '../../../src/lib/auth.server';
 import {
   createUser,
@@ -27,14 +27,22 @@ import {
 
 describe('Auth context building (parallel DO calls)', () => {
   const testEnv = env as unknown as TestEnv;
-  const sessionsKV = env.SESSIONS as KVNamespace;
+  const signingSecret = (env as any).TOKEN_SIGNING_SECRET as string;
 
   const testEmail = () => `test-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
 
-  async function createTestSession(userId: string, orgId: string) {
+  async function createTestSession(userId: string, orgId: string, userEmail?: string) {
     const workspaces = await listOrgWorkspaces(testEnv, orgId);
     const workspaceId = workspaces[0]?.id ?? null;
-    return createNewSession(sessionsKV, userId, orgId, workspaceId);
+    const sessionData: SignedSessionData = {
+      user_id: userId,
+      org_id: orgId,
+      workspace_id: workspaceId,
+      created_at: Date.now(),
+      user_email: userEmail ?? null,
+    };
+    const signedToken = await createSignedSession(signingSecret, sessionData);
+    return { signedToken, sessionData: { ...sessionData, last_accessed: sessionData.created_at } };
   }
 
   describe('getUserOrgs with parallelization', () => {
@@ -170,7 +178,7 @@ describe('Auth context building (parallel DO calls)', () => {
       const workspaces = await listUserWorkspaces(testEnv, userId, org.id);
       const workspaceId = workspaces[0].id;
 
-      const { sessionId, sessionData } = await createTestSession(userId, org.id);
+      const { sessionData } = await createTestSession(userId, org.id);
 
       expect(sessionData.user_id).toBe(userId);
       expect(sessionData.org_id).toBe(org.id);
@@ -223,17 +231,12 @@ describe('Auth context building (parallel DO calls)', () => {
       expect(await userStub.getOrgRole(org.id)).toBe('member');
       expect((await orgStub.getMember(memberId))?.role).toBe('admin');
 
-      const { sessionId } = await createNewSession(
-        sessionsKV,
-        memberId,
-        org.id,
-        defaultWorkspaceId
-      );
+      const { signedToken } = await createTestSession(memberId, org.id, memberEmail);
 
       const request = new Request('https://camelai.dev/settings/organization/workspaces', {
         headers: {
           host: 'camelai.dev',
-          'X-Chiridion-Session-Id': sessionId,
+          'X-Chiridion-Session-Id': signedToken,
         },
       });
       const context = { cloudflare: { env: testEnv } } as any;

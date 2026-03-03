@@ -9,13 +9,17 @@ import {
   SESSION_MAX_AGE,
   getSessionCookieName,
   getSessionIdFromRequest as getSessionIdFromRequestBase,
+  getSignedSessionFromRequest as getSignedSessionFromRequestBase,
+  createSignedSessionCookie as createSignedSessionCookieBase,
   createSessionCookie,
   createDeleteSessionCookie,
   withSessionCookies,
   withDeleteSessionCookies,
+  type SignedSessionData,
 } from '../../workers/main/src/cookies';
 
 export { SESSION_MAX_AGE };
+export type { SignedSessionData };
 
 // For backwards compat - returns the cookie name for the current request
 export function getSessionCookieNameForRequest(request: Request): string {
@@ -61,4 +65,21 @@ export async function getSession(
   sessionId: string
 ): Promise<SessionData | null> {
   return getSessionKV(env.SESSIONS, sessionId);
+}
+
+// --- Signed session helpers ---
+
+export async function getSignedSessionFromRequest(
+  request: Request,
+  secret: string
+): Promise<SignedSessionData | null> {
+  return getSignedSessionFromRequestBase(request, secret);
+}
+
+export async function createSignedSessionCookieHeader(
+  sessionData: SignedSessionData,
+  secret: string,
+  request: Request
+): Promise<string> {
+  return createSignedSessionCookieBase(sessionData, secret, request);
 }

@@ -1,11 +1,10 @@
 import type { Route } from './+types/orgs.$id.invite';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
-import { getSessionIdFromRequest } from '@/lib/cookies.server';
+import { getSignedSessionFromRequest } from '@/lib/cookies.server';
 import {
   createInvitation,
   getInvitation,
-  getSession,
   isOrgAdmin,
 } from '@/lib/auth-do';
 import { inviteMemberFormSchema } from '@/lib/schemas';
@@ -21,14 +20,10 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     return Response.json({ error: 'Organization ID is required' }, { status: 400 });
   }
 
-  const sessionId = getSessionIdFromRequest(request);
-  if (!sessionId) {
-    return Response.json({ error: 'Not authenticated' }, { status: 401 });
-  }
-
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const session = await getSession(authEnv, sessionId);
+
+  const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
   if (!session) {
     return Response.json({ error: 'Not authenticated' }, { status: 401 });
   }

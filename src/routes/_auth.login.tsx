@@ -9,15 +9,26 @@ export function meta() {
   ];
 }
 
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  oauth_denied: 'You cancelled the sign-in.',
+  oauth_state_invalid: 'Sign-in expired. Please try again.',
+  oauth_race_condition: 'Sign-in conflict. Please try again.',
+  oauth_failed: 'Sign-in failed. Please try again.',
+  oauth_invalid: 'Invalid sign-in response. Please try again.',
+  oauth_config: 'OAuth is not configured. Please contact support.',
+};
+
 export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const redirectTo = getSafeRedirect(url.searchParams.get('redirect'));
-  return { redirectTo };
+  const errorCode = url.searchParams.get('error');
+  const oauthError = errorCode ? OAUTH_ERROR_MESSAGES[errorCode] ?? null : null;
+  return { redirectTo, oauthError };
 }
 
 export default function LoginPage() {
-  const { redirectTo } = useLoaderData<typeof loader>();
-  return <LoginForm redirectTo={redirectTo} />;
+  const { redirectTo, oauthError } = useLoaderData<typeof loader>();
+  return <LoginForm redirectTo={redirectTo} oauthError={oauthError} />;
 }
 
 function getSafeRedirect(redirect: string | null): string {

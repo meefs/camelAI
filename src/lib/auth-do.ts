@@ -10,13 +10,11 @@ import type {
   AppPreviewStatus,
   Integration,
 } from '@/types';
-import {
-  getSession as getSessionKV,
-  destroySession as destroySessionKV,
-  createNewSession as createNewSessionKV,
-  updateSession as updateSessionKV,
-} from '../../workers/main/src/session-kv';
 import { validateApiToken as validateApiTokenKV } from '../../workers/main/src/api-tokens';
+import {
+  createSignedSession,
+  type SignedSessionData,
+} from '../../workers/main/src/signed-session';
 
 import {
   type AuthEnv,
@@ -60,53 +58,90 @@ export async function resetOnboardingForUser(
   await stub.updateOnboarding({ completed_at: null });
 }
 
-// Session functions
-export async function getSession(env: AuthEnv, sessionId: string): Promise<SessionData | null> {
-  return getSessionKV(env.SESSIONS, sessionId);
-}
+// Session functions — signed cookies replace KV storage
 
+/**
+ * Create a new signed session token. Returns the HMAC-signed token string
+ * that should be set as the session cookie value.
+ */
 export async function createSession(
   env: AuthEnv,
   userId: string,
   orgId: string,
   workspaceId: string | null = null,
   userInfo?: { name?: string | null; email?: string | null }
-): Promise<{ sessionId: string; sessionData: SessionData }> {
-  return createNewSessionKV(env.SESSIONS, userId, orgId, workspaceId, userInfo);
+): Promise<{ signedToken: string; sessionData: SessionData }> {
+  const now = Date.now();
+  const sessionData: SessionData = {
+    user_id: userId,
+    org_id: orgId,
+    workspace_id: workspaceId,
+    created_at: now,
+    last_accessed: now,
+    user_name: userInfo?.name ?? null,
+    user_email: userInfo?.email ?? null,
+  };
+  const signedSession: SignedSessionData = {
+    user_id: userId,
+    org_id: orgId,
+    workspace_id: workspaceId,
+    created_at: now,
+    user_name: userInfo?.name ?? null,
+    user_email: userInfo?.email ?? null,
+  };
+  const signedToken = await createSignedSession(env.TOKEN_SIGNING_SECRET, signedSession);
+  return { signedToken, sessionData };
 }
 
-export async function destroySession(env: AuthEnv, sessionId: string): Promise<void> {
-  return destroySessionKV(env.SESSIONS, sessionId);
-}
-
+/**
+ * Re-sign a session with updated org/workspace. Returns new signed token.
+ */
 export async function switchSessionOrg(
   env: AuthEnv,
-  sessionId: string,
+  currentSession: SessionData,
   orgId: string,
   workspaceId: string | null = null
-): Promise<void> {
-  const session = await getSessionKV(env.SESSIONS, sessionId);
-  if (!session) throw new Error('Session not found');
-  session.org_id = orgId;
-  session.workspace_id = workspaceId;
-  await updateSessionKV(env.SESSIONS, sessionId, session);
+): Promise<string> {
+  const signedSession: SignedSessionData = {
+    user_id: currentSession.user_id,
+    org_id: orgId,
+    workspace_id: workspaceId,
+    created_at: Date.now(),
+    user_name: currentSession.user_name,
+    user_email: currentSession.user_email,
+  };
+  const signedToken = await createSignedSession(env.TOKEN_SIGNING_SECRET, signedSession);
   // Update user's last workspace for this org
   if (workspaceId) {
-    const stub = env.USER.get(env.USER.idFromName(session.user_id));
+    const stub = env.USER.get(env.USER.idFromName(currentSession.user_id));
     await stub.setOrgLastWorkspace(orgId, workspaceId);
   }
+  return signedToken;
 }
 
-export async function switchSessionWorkspace(env: AuthEnv, sessionId: string, workspaceId: string | null): Promise<void> {
-  const session = await getSessionKV(env.SESSIONS, sessionId);
-  if (!session) throw new Error('Session not found');
-  session.workspace_id = workspaceId;
-  await updateSessionKV(env.SESSIONS, sessionId, session);
+/**
+ * Re-sign a session with updated workspace. Returns new signed token.
+ */
+export async function switchSessionWorkspace(
+  env: AuthEnv,
+  currentSession: SessionData,
+  workspaceId: string | null
+): Promise<string> {
+  const signedSession: SignedSessionData = {
+    user_id: currentSession.user_id,
+    org_id: currentSession.org_id,
+    workspace_id: workspaceId,
+    created_at: Date.now(),
+    user_name: currentSession.user_name,
+    user_email: currentSession.user_email,
+  };
+  const signedToken = await createSignedSession(env.TOKEN_SIGNING_SECRET, signedSession);
   // Update user's last workspace for this org
-  if (workspaceId && session.org_id) {
-    const stub = env.USER.get(env.USER.idFromName(session.user_id));
-    await stub.setOrgLastWorkspace(session.org_id, workspaceId);
+  if (workspaceId && currentSession.org_id) {
+    const stub = env.USER.get(env.USER.idFromName(currentSession.user_id));
+    await stub.setOrgLastWorkspace(currentSession.org_id, workspaceId);
   }
+  return signedToken;
 }
 
 // User functions

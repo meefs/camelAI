@@ -1,7 +1,7 @@
 import { redirect, type AppLoadContext } from 'react-router';
 import { getEnv } from './cloudflare.server';
-import { getSessionIdFromRequest } from './cookies.server';
-import { getSession as getSessionKV, updateSession } from '../../workers/main/src/session-kv';
+import { getSignedSessionFromRequest, type SignedSessionData } from './cookies.server';
+import { createSignedSession } from '../../workers/main/src/signed-session';
 import type { Organization, OrgMembership, WorkspaceAccessLevel, WorkspaceWithAccess } from '@/types';
 import type { User } from '@/types';
 import type { OnboardingPreferences } from '@/types';
@@ -39,6 +39,8 @@ export interface AuthContext extends UserContext {
   orgWorkspaceCount: number;
   /** Email verification status (bundled from UserDO bootstrap) */
   emailVerification: { required: boolean; verified: boolean };
+  /** When set, the session cookie should be re-signed with this token (e.g. workspace fallback) */
+  resignedSessionCookie?: string;
 }
 
 export interface SessionWorkspaceAccessContext extends SessionContext {
@@ -49,20 +51,39 @@ export interface SessionWorkspaceAccessContext extends SessionContext {
 }
 
 /**
- * Get session from request, returns null if not authenticated
+ * Get session from request, returns null if not authenticated.
+ * Reads session data from HMAC-signed cookie, then checks UserDO
+ * session invalidation to reject tokens issued before a logout.
  */
 export async function getSession(
   request: Request,
   context: AppLoadContext
 ): Promise<SessionContext | null> {
-  const sessionId = getSessionIdFromRequest(request);
-  if (!sessionId) return null;
-
   const env = getEnv(context);
-  const session = await getSessionKV(env.SESSIONS, sessionId);
-  if (!session) return null;
+  const signedSession = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
+  if (!signedSession) return null;
 
-  return { sessionId, session };
+  // Check if this session was created before a logout invalidation
+  const authEnv = getAuthEnv(env);
+  const userStub = authEnv.USER.get(authEnv.USER.idFromName(signedSession.user_id));
+  const invalidatedAt = await userStub.getSessionInvalidatedAt();
+  if (invalidatedAt && signedSession.created_at < invalidatedAt) {
+    return null;
+  }
+
+  // Map signed session data to SessionData format (compatible with existing code)
+  const session: SessionData = {
+    user_id: signedSession.user_id,
+    org_id: signedSession.org_id,
+    workspace_id: signedSession.workspace_id,
+    created_at: signedSession.created_at,
+    last_accessed: signedSession.created_at,
+    user_name: signedSession.user_name,
+    user_email: signedSession.user_email,
+  };
+
+  // sessionId is a placeholder — with signed cookies, the cookie IS the session
+  return { sessionId: `signed:${signedSession.user_id}`, session };
 }
 
 /**
@@ -228,6 +249,14 @@ async function getAuthContextUncached(
   const profile = authBootstrap.profile;
   if (!profile) return null;
   if (!orgInfo) return null;
+
+  // Check if this session was created before a logout invalidation
+  if (
+    authBootstrap.sessionInvalidatedAt &&
+    sessionContext.session.created_at < authBootstrap.sessionInvalidatedAt
+  ) {
+    return null;
+  }
   const currentOrg: Organization = orgInfo;
   const onboarding = authBootstrap.onboarding;
   let orgs = await getUserOrgs(authEnv, sessionContext.session.user_id, {
@@ -299,14 +328,17 @@ async function getAuthContextUncached(
     ? workspaces.find((ws) => ws.id === sessionWorkspaceId)!
     : workspaces[0] ?? null;
 
-  // Sync session if workspace changed (stale session.workspace_id or fallback to first workspace)
+  // Re-sign session cookie if workspace changed (stale session or fallback)
   const newWorkspaceId = currentWorkspace?.id ?? null;
+  let resignedSessionCookie: string | undefined;
   if (newWorkspaceId !== sessionWorkspaceId) {
-    // Update session in background - don't block the response
-    void updateSession(env.SESSIONS, sessionContext.sessionId, {
-      ...sessionContext.session,
+    resignedSessionCookie = await createSignedSession(env.TOKEN_SIGNING_SECRET, {
+      user_id: sessionContext.session.user_id,
+      org_id: sessionContext.session.org_id,
       workspace_id: newWorkspaceId,
-      last_accessed: Date.now(),
+      created_at: sessionContext.session.created_at,
+      user_name: sessionContext.session.user_name,
+      user_email: sessionContext.session.user_email,
     });
   }
 
@@ -320,6 +352,7 @@ async function getAuthContextUncached(
     allWorkspaces,
     orgWorkspaceCount,
     emailVerification: authBootstrap.emailVerification,
+    resignedSessionCookie,
   };
 }
 

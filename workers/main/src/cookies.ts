@@ -2,8 +2,19 @@
  * Unified cookie utilities for session management.
  */
 
+import {
+  createSignedSession,
+  parseSignedSession,
+  createSignedOAuthState,
+  parseSignedOAuthState,
+  type SignedSessionData,
+  type SignedOAuthStateData,
+} from './signed-session.js';
+
 export const SESSION_HEADER = 'X-Chiridion-Session-Id';
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+export const OAUTH_STATE_COOKIE_NAME = 'chiridion_oauth_state';
+export const OAUTH_STATE_MAX_AGE = 5 * 60; // 5 minutes
 
 /**
  * Get the session cookie name for the current environment.
@@ -103,3 +114,58 @@ export function withDeleteSessionCookies(headers: Headers, request: Request): He
   headers.append('Set-Cookie', createDeleteSessionCookie(request));
   return headers;
 }
+
+// --- Signed session cookie ---
+
+export async function getSignedSessionFromRequest(
+  request: Request,
+  secret: string
+): Promise<SignedSessionData | null> {
+  const token = getSessionIdFromRequest(request);
+  if (!token) return null;
+  return parseSignedSession(secret, token);
+}
+
+export async function createSignedSessionCookie(
+  sessionData: SignedSessionData,
+  secret: string,
+  request: Request
+): Promise<string> {
+  const token = await createSignedSession(secret, sessionData);
+  return createSessionCookie(token, request);
+}
+
+// --- OAuth state cookie ---
+
+export async function createOAuthStateCookie(
+  stateData: SignedOAuthStateData,
+  secret: string,
+  request: Request
+): Promise<string> {
+  const token = await createSignedOAuthState(secret, stateData);
+  const hostname = getHostname(request);
+  return buildCookie(
+    OAUTH_STATE_COOKIE_NAME,
+    token,
+    OAUTH_STATE_MAX_AGE,
+    isSecure(request),
+    getCookieDomain(hostname)
+  );
+}
+
+export async function getOAuthStateFromRequest(
+  request: Request,
+  secret: string
+): Promise<SignedOAuthStateData | null> {
+  const token = parseCookie(request.headers.get('Cookie'), OAUTH_STATE_COOKIE_NAME);
+  if (!token) return null;
+  return parseSignedOAuthState(secret, token);
+}
+
+export function createDeleteOAuthStateCookie(request: Request): string {
+  const hostname = getHostname(request);
+  return buildCookie(OAUTH_STATE_COOKIE_NAME, '', 0, isSecure(request), getCookieDomain(hostname));
+}
+
+// Re-export types for convenience
+export type { SignedSessionData, SignedOAuthStateData };

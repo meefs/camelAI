@@ -1,8 +1,8 @@
 import type { Route } from './+types/apps.$scriptName.preview';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { getSessionIdFromRequest } from '@/lib/cookies.server';
+import { getSignedSessionFromRequest } from '@/lib/cookies.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
-import { getSession, isOrgMember, getWorkerAccessInfo } from '@/lib/auth-do';
+import { isOrgMember, getWorkerAccessInfo } from '@/lib/auth-do';
 
 interface R2Env extends AuthEnv {
   R2_BUCKET: R2Bucket;
@@ -17,6 +17,7 @@ function getR2Env(env: CloudflareEnv): R2Env {
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,
     APP_KV: env.APP_KV,
+    TOKEN_SIGNING_SECRET: env.TOKEN_SIGNING_SECRET,
     R2_BUCKET: env.R2_BUCKET,
   };
 }
@@ -29,13 +30,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       return Response.json({ error: 'App not found' }, { status: 404 });
     }
 
-    const sessionId = getSessionIdFromRequest(request);
-    if (!sessionId) {
-      return Response.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
     const env = getR2Env(getEnv(context));
-    const session = await getSession(env, sessionId);
+    const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
     if (!session) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }

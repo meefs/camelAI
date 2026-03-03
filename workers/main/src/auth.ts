@@ -213,6 +213,8 @@ export interface UserAuthBootstrap {
   onboarding: OnboardingPreferences | null;
   orgs: UserOrg[];
   emailVerification: { required: boolean; verified: boolean };
+  /** Timestamp when all sessions were invalidated (e.g. on logout). Null if never invalidated. */
+  sessionInvalidatedAt: number | null;
 }
 
 export type OAuthProvider = 'google' | 'github';
@@ -541,7 +543,23 @@ export class UserDO extends DurableObject<DOEnv> {
       required: Boolean(passwordHash),
       verified: profile?.email_verified_at != null,
     };
-    return { profile, onboarding, orgs, emailVerification };
+    const sessionInvalidatedAt = this.ctx.storage.kv.get<number>('sessionInvalidatedAt') ?? null;
+    return { profile, onboarding, orgs, emailVerification, sessionInvalidatedAt };
+  }
+
+  /**
+   * Invalidate all outstanding signed sessions for this user.
+   * Any session created before this timestamp will be rejected.
+   */
+  invalidateSessions(): void {
+    this.ctx.storage.kv.put('sessionInvalidatedAt', Date.now());
+  }
+
+  /**
+   * Get the session invalidation timestamp. Returns null if never invalidated.
+   */
+  getSessionInvalidatedAt(): number | null {
+    return this.ctx.storage.kv.get<number>('sessionInvalidatedAt') ?? null;
   }
 
   async setProfile(profile: User): Promise<void> {

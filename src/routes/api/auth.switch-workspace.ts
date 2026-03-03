@@ -1,9 +1,8 @@
 import type { Route } from './+types/auth.switch-workspace';
 import { getEnv, type CloudflareEnv } from '@/lib/cloudflare.server';
-import { getSessionIdFromRequest } from '@/lib/cookies.server';
+import { getSignedSessionFromRequest, createSessionCookieHeader } from '@/lib/cookies.server';
 import { type AuthEnv } from '@/lib/auth-helpers';
 import {
-  getSession,
   getWorkspace,
   getWorkspaceAccess,
   switchSessionOrg,
@@ -19,6 +18,7 @@ function getAuthEnv(env: CloudflareEnv): AuthEnv {
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,
     APP_KV: env.APP_KV,
+    TOKEN_SIGNING_SECRET: env.TOKEN_SIGNING_SECRET,
   };
 }
 
@@ -28,14 +28,10 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   try {
-    const sessionId = getSessionIdFromRequest(request);
-    if (!sessionId) {
-      return Response.json({ error: 'Not authenticated' }, { status: 401 });
-    }
-
     const env = getEnv(context);
     const authEnv = getAuthEnv(env);
-    const session = await getSession(authEnv, sessionId);
+
+    const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
     if (!session) {
       return Response.json({ error: 'Not authenticated' }, { status: 401 });
     }
@@ -59,14 +55,28 @@ export async function action({ request, context }: Route.ActionArgs) {
       return Response.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
+    const currentSessionData = {
+      user_id: session.user_id,
+      org_id: session.org_id,
+      workspace_id: session.workspace_id,
+      created_at: session.created_at,
+      last_accessed: session.created_at,
+      user_name: session.user_name,
+      user_email: session.user_email,
+    };
+
+    let signedToken: string;
     // If workspace is in a different org, switch org as well
     if (workspace.org_id !== session.org_id) {
-      await switchSessionOrg(authEnv, sessionId, workspace.org_id, workspaceId);
+      signedToken = await switchSessionOrg(authEnv, currentSessionData, workspace.org_id, workspaceId);
     } else {
-      await switchSessionWorkspace(authEnv, sessionId, workspaceId);
+      signedToken = await switchSessionWorkspace(authEnv, currentSessionData, workspaceId);
     }
 
-    return Response.json({ success: true });
+    return Response.json(
+      { success: true },
+      { headers: { 'Set-Cookie': createSessionCookieHeader(signedToken, request) } }
+    );
   } catch (error) {
     console.error('Switch workspace error:', error);
     return Response.json({ error: 'Failed to switch workspace' }, { status: 500 });

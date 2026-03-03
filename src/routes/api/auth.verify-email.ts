@@ -1,8 +1,6 @@
 import type { AppLoadContext } from 'react-router';
-import { getAuthEnv } from '@/lib/auth-helpers';
 import { getEnv } from '@/lib/cloudflare.server';
-import { getSessionIdFromRequest } from '@/lib/cookies.server';
-import { getSession } from '@/lib/auth-do';
+import { getSignedSessionFromRequest } from '@/lib/cookies.server';
 import { validateEmailVerificationToken } from '@/lib/email-verification-token';
 
 function redirectWithParams(
@@ -54,15 +52,11 @@ export async function loader({
 
   await userStub.markEmailVerified();
 
-  const authEnv = getAuthEnv(env);
-  const sessionId = getSessionIdFromRequest(request);
-  if (sessionId) {
-    const session = await getSession(authEnv, sessionId);
-    if (session?.user_id === payload.user_id) {
-      return redirectWithParams(request, '/onboarding', {
-        emailVerified: '1',
-      });
-    }
+  const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
+  if (session?.user_id === payload.user_id) {
+    return redirectWithParams(request, '/onboarding', {
+      emailVerified: '1',
+    });
   }
 
   return redirectWithParams(request, '/onboarding', {

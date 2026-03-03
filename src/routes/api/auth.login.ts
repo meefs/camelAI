@@ -20,6 +20,7 @@ function getAuthEnv(env: CloudflareEnv): AuthEnv {
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,
     APP_KV: env.APP_KV,
+    TOKEN_SIGNING_SECRET: env.TOKEN_SIGNING_SECRET,
   };
 }
 
@@ -71,14 +72,14 @@ export async function action({ request, context }: Route.ActionArgs) {
       workspaceId = workspaces[0]?.id ?? null;
     }
 
-    const { sessionId } = await createSession(authEnv, userResult.userId, orgId, workspaceId, {
+    const { signedToken } = await createSession(authEnv, userResult.userId, orgId, workspaceId, {
       name: userResult.user.name,
       email: userResult.user.email,
     });
 
     return Response.json(
       { success: true },
-      { headers: { 'Set-Cookie': createSessionCookieHeader(sessionId, request) } }
+      { headers: { 'Set-Cookie': createSessionCookieHeader(signedToken, request) } }
     );
   } catch (error) {
     console.error('Login error:', error);

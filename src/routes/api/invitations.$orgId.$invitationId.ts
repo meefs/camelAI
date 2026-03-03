@@ -1,11 +1,10 @@
 import type { Route } from './+types/invitations.$orgId.$invitationId';
 import { getEnv } from '@/lib/cloudflare.server';
 import { getAuthEnv } from '@/lib/auth-helpers';
-import { getSessionIdFromRequest } from '@/lib/cookies.server';
+import { getSignedSessionFromRequest, createSessionCookieHeader } from '@/lib/cookies.server';
 import {
   acceptInvitation,
   getInvitation,
-  getSession,
   listOrgWorkspaces,
   switchSessionOrg,
 } from '@/lib/auth-do';
@@ -54,14 +53,10 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return Response.json({ error: 'Organization ID and invitation ID are required' }, { status: 400 });
     }
 
-    const sessionId = getSessionIdFromRequest(request);
-    if (!sessionId) {
-      return Response.json({ error: 'Not authenticated' }, { status: 401 });
-    }
-
     const env = getEnv(context);
     const authEnv = getAuthEnv(env);
-    const session = await getSession(authEnv, sessionId);
+
+    const session = await getSignedSessionFromRequest(request, env.TOKEN_SIGNING_SECRET);
     if (!session) {
       return Response.json({ error: 'Not authenticated' }, { status: 401 });
     }
@@ -89,13 +84,27 @@ export async function action({ request, context, params }: Route.ActionArgs) {
 
     const workspaces = await listOrgWorkspaces(authEnv, orgId);
     const workspaceId = workspaces[0]?.id ?? null;
-    await switchSessionOrg(authEnv, sessionId, orgId, workspaceId);
 
-    return Response.json({
-      success: true,
-      org: { id: invitation.org.id, name: invitation.org.name },
-      workspace: workspaceId ? { id: workspaceId } : null,
-    });
+    // Re-sign session with new org and return updated cookie
+    const currentSessionData = {
+      user_id: session.user_id,
+      org_id: session.org_id,
+      workspace_id: session.workspace_id,
+      created_at: session.created_at,
+      last_accessed: session.created_at,
+      user_name: session.user_name,
+      user_email: session.user_email,
+    };
+    const signedToken = await switchSessionOrg(authEnv, currentSessionData, orgId, workspaceId);
+
+    return Response.json(
+      {
+        success: true,
+        org: { id: invitation.org.id, name: invitation.org.name },
+        workspace: workspaceId ? { id: workspaceId } : null,
+      },
+      { headers: { 'Set-Cookie': createSessionCookieHeader(signedToken, request) } }
+    );
   } catch (error) {
     console.error('Accept invitation error:', error);
     return Response.json({ error: 'Failed to accept invitation' }, { status: 500 });
