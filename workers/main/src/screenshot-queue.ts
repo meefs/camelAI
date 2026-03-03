@@ -171,7 +171,17 @@ export async function captureScreenshot(
       );
     }
 
-    await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
+    await page.addStyleTag({
+      content: `
+        body { overflow: hidden !important; }
+        *, *::before, *::after {
+          animation-duration: 0.01ms !important;
+          animation-delay: 0.01ms !important;
+          transition-duration: 0.01ms !important;
+          transition-delay: 0.01ms !important;
+        }
+      `,
+    });
     await waitForReadySignal(page);
     await new Promise((resolve) => setTimeout(resolve, POST_LOAD_DELAY_MS));
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -324,7 +334,17 @@ export async function captureScreenshotRaw(
           );
         }
 
-        await page.addStyleTag({ content: 'body { overflow: hidden !important; }' });
+        await page.addStyleTag({
+          content: `
+            body { overflow: hidden !important; }
+            *, *::before, *::after {
+              animation-duration: 0.01ms !important;
+              animation-delay: 0.01ms !important;
+              transition-duration: 0.01ms !important;
+              transition-delay: 0.01ms !important;
+            }
+          `,
+        });
         await waitForReadySignal(page);
         await new Promise((resolve) => setTimeout(resolve, POST_LOAD_DELAY_MS));
         await page.evaluate(() => window.scrollTo(0, 0));
