@@ -2347,12 +2347,13 @@ export class OrgDO extends DurableObject<DOEnv> {
   }
 
   /**
-   * Get threads with pagination (optionally filtered by workspace)
+   * Get threads with pagination (optionally filtered by workspace and creator)
    */
   getThreadsPaginated(
     offset = 0,
     limit = 50,
-    workspaceId?: string
+    workspaceId?: string,
+    createdBy?: string
   ): { items: OrgThread[]; total: number; offset: number; limit: number } {
     const resolvedOffset = Math.max(0, Math.floor(offset));
     const resolvedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
@@ -2363,6 +2364,10 @@ export class OrgDO extends DurableObject<DOEnv> {
     if (workspaceId) {
       whereClauses.push('workspace_id = ?');
       whereParams.push(workspaceId);
+    }
+    if (createdBy) {
+      whereClauses.push('created_by = ?');
+      whereParams.push(createdBy);
     }
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';

@@ -96,7 +96,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : Promise.resolve([]);
 
   const recentThreadsPromise: Promise<Thread[]> = workspaceId
-    ? chatDO.getRecentThreads(context, workspaceId, 6).catch((error) => {
+    ? chatDO.getRecentThreads(context, workspaceId, 6, userId ?? undefined).catch((error) => {
         console.error('Failed to load recent threads:', error);
         return [];
       })

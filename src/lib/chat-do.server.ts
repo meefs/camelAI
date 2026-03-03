@@ -124,13 +124,14 @@ export async function createThread(
 export async function getRecentThreads(
   context: AppLoadContext,
   workspaceId: string,
-  limit = 6
+  limit = 6,
+  createdBy?: string
 ): Promise<Thread[]> {
   const env = getEnv(context);
   const wsInfo = await getWorkspaceInfo(env, workspaceId);
   if (!wsInfo) return [];
   const orgStub = env.ORG.get(env.ORG.idFromName(wsInfo.org_id));
-  const result = await orgStub.getThreadsPaginated(0, limit, workspaceId);
+  const result = await orgStub.getThreadsPaginated(0, limit, workspaceId, createdBy);
   return result.items.map((t) => toThread(t));
 }
 
