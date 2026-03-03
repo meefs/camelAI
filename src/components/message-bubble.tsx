@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/tooltip';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ThinkingBlock, ToolCall } from '@/components/tool-call';
+import { isSubAgentTool } from '@/components/tool-call/tool-utils';
 import { TeammateMessage } from '@/components/tool-call/teammate-message';
 import { TaskNotification } from '@/components/tool-call/task-notification';
 import { LoadingDots } from '@/components/loading-dots';
@@ -311,7 +312,7 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
     if (block.type === 'tool_use') {
       const results = toolResultsById.get(block.id) ?? [];
       const latestResult = results[results.length - 1];
-      const isTaskTool = block.name === 'Task';
+      const isTaskTool = isSubAgentTool(block.name);
       const skillSheet = skillSheets?.get(block.id);
       // Check if the agent received results after this tool call.
       // A subsequent text block means the agent continued with a response;

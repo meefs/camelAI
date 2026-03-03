@@ -144,7 +144,8 @@ export function getToolSummaryParts(
       }
       return { action: `Searching for "${truncate(pattern || 'pattern', 20)}"...` };
     }
-    case 'Task': {
+    case 'Task':
+    case 'Agent': {
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
       const summary = description || (isStreaming ? 'working...' : 'task');
       return { action: `Agent: ${summary}` };

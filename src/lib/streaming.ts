@@ -246,13 +246,17 @@ function buildToolUseIndex(messages: Message[]): Map<string, ToolUseIndexEntry> 
   return index;
 }
 
+function isSubAgentTool(name?: string): boolean {
+  return name === 'Task' || name === 'Agent';
+}
+
 function findTaskToolUseIdByPrompt(messages: Message[], prompt?: string): string | undefined {
   if (!prompt) return undefined;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
     for (const block of message.content) {
-      if (block.type !== 'tool_use' || block.name !== 'Task') continue;
+      if (block.type !== 'tool_use' || !isSubAgentTool(block.name)) continue;
       const blockPrompt = typeof block.input?.prompt === 'string' ? block.input.prompt : '';
       if (blockPrompt && blockPrompt === prompt) {
         return block.id;
@@ -295,7 +299,7 @@ export function attachToolResultsToMessages(
   const promptMatchedId = findTaskToolUseIdByPrompt(next, options.parentToolPrompt);
   const parentToolUseId = options.parentToolUseId ?? promptMatchedId;
   const parentEntry = parentToolUseId ? toolUseIndex.get(parentToolUseId) : undefined;
-  const parentIsTask = parentEntry?.tool.name === 'Task';
+  const parentIsTask = isSubAgentTool(parentEntry?.tool.name);
 
   const appendToIndex = (index: number, toolResult: ToolResultBlock) => {
     const target = next[index];
@@ -308,12 +312,17 @@ export function attachToolResultsToMessages(
 
   toolResults.forEach((toolResult, index) => {
     const directEntry = toolUseIndex.get(toolResult.tool_use_id);
-    const resolvedToolUseId = directEntry
-      ? toolResult.tool_use_id
-      : parentIsTask && parentToolUseId
-        ? parentToolUseId
+    // When the parent is a sub-agent tool (Agent/Task), always group results under
+    // the parent — even if the sub-agent's tool_use blocks were mixed into the main
+    // message via streaming and would otherwise match directly.
+    const resolvedToolUseId = (parentIsTask && parentToolUseId)
+      ? parentToolUseId
+      : directEntry
+        ? toolResult.tool_use_id
         : toolResult.tool_use_id;
-    const resolvedEntry = directEntry ?? (resolvedToolUseId === parentToolUseId ? parentEntry : undefined);
+    const resolvedEntry = (parentIsTask && parentEntry)
+      ? parentEntry
+      : directEntry ?? (resolvedToolUseId === parentToolUseId ? parentEntry : undefined);
     const targetIndex = resolvedEntry?.messageIndex ?? findLastAssistantIndex(next);
     const resolvedResult = resolvedToolUseId === toolResult.tool_use_id
       ? toolResult

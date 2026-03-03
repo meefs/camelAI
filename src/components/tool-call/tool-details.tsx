@@ -55,6 +55,7 @@ export function ToolCallDetails({ tool, result, results, skillSheet, progressCou
       content = <SearchDetails tool={tool} result={result} mode="grep" />;
       break;
     case 'Task':
+    case 'Agent':
     case 'TaskOutput':
       content = (
         <TaskDetails
