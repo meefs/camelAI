@@ -702,7 +702,13 @@ When building AI agents that have access to tools, **prefer codemode** over plai
 
 Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools for typed code generation. Always set `stopWhen: stepCountIs(100)` for multi-step tool use. Use plain tool calling only for simple cases with one or two tools that don't need chaining.
 
-**See [AI-APPS.md](AI-APPS.md) for full codemode setup and examples.**
+**Critical codemode integration notes:**
+- **Only wrap data-access tools** — do NOT create pass-through tools (e.g. `createVisualization`) that just echo inputs. The LLM constructs output shapes directly in code.
+- **Define a return type convention** in the `createCodeTool` description using a `type` discriminator field (e.g., `{ type: "chart", ... }` or `{ type: "table", ... }`). Include the `{{types}}` placeholder and concrete examples.
+- **Frontend rendering** — the AI SDK v5+ uses `p.type === "tool-codemode"` (NOT `"tool-invocation"`), `p.state === "output-available"` (NOT `"result"`), and data in `p.output` (NOT `p.result`). The codemode output shape is `{ code, result, logs }` — your discriminated return value is in `p.output.result`.
+- **Zod defensive defaults** — tool parameters may arrive as `undefined` despite Zod schemas. Always add `const metric = params.metric ?? "count"` in execute functions (use `??` not `||` to preserve valid falsy values).
+
+**See [AI-APPS.md](AI-APPS.md) for full codemode setup, frontend rendering patterns, and common pitfalls.**
 
 ## Best Practices
 

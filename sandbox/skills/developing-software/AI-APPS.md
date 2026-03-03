@@ -210,6 +210,164 @@ export async function action({ request, context }) {
 - **`env.LOADER`** (`worker_loaders` binding) provides the isolate runtime
 - The `__filename` define in `vite.config.ts` polyfills a Node.js global needed by the TypeScript compiler
 
+### Codemode Tool Design — Only Provide Data Tools
+
+With codemode, you do **NOT** need "pass-through" or "formatting" tools (e.g., a `createVisualization` tool that just echoes inputs into a chart config). The LLM writes code that calls your data tools and constructs any output shape directly. Only wrap tools that **access data** or **perform side effects** in codemode. The LLM handles all data transformation and output shaping in its generated code.
+
+### Codemode Return Type Convention
+
+Define a discriminated return type convention in your `createCodeTool` description so the frontend knows how to render each result. Use a `type` field as the discriminator. Include the `{{types}}` placeholder so the LLM sees the tool type definitions, and provide concrete examples:
+
+```typescript
+const codemode = createCodeTool({
+  tools: dataTools,
+  executor,
+  description: `Execute code to query and analyze data. You have access to these tools via the \`codemode\` object:
+
+{{types}}
+
+IMPORTANT: Your code MUST return a result object with a "type" field indicating what to render:
+
+1. For CHARTS — return:
+   { type: "chart", chartType: "bar"|"line"|"area"|"pie", title: string, data: Array<Record<string, any>>, xKey: string, yKeys: string[], xLabel?: string, yLabel?: string }
+
+2. For TABLES — return:
+   { type: "table", companies: Array<...>, total: number, showing: number }
+
+3. For RAW STATS (no visual) — return:
+   { type: "stats", stats: Array<{ label: string, value: number }>, groupBy: string, metric: string }
+
+Examples:
+
+// Bar chart
+async () => {
+  const result = await codemode.aggregateStats({ groupBy: "category", metric: "count", limit: 10 });
+  return {
+    type: "chart",
+    chartType: "bar",
+    title: "Top 10 Categories",
+    data: result.stats.map(s => ({ label: s.label, value: s.value })),
+    xKey: "label",
+    yKeys: ["value"],
+    xLabel: "Category",
+    yLabel: "Count"
+  };
+}`,
+});
+```
+
+### Codemode Frontend Rendering — AI SDK UIMessage Part Format
+
+> **This is the #1 source of bugs when integrating codemode.** The AI SDK v5+ uses a different UIMessage part format than what older docs describe. If charts/tables are "not rendering" after adding codemode, this is almost certainly why.
+
+**Part format differences (old vs current SDK):**
+
+| Property | Old SDK (pre-v5) | Current SDK (v5+) |
+|----------|-------------------|---------------------|
+| Part type | `p.type === "tool-invocation"` | `p.type === "tool-{toolName}"` (e.g., `"tool-codemode"`) |
+| Completion state | `p.state === "result"` | `p.state === "output-available"` |
+| Result data | `p.result` | `p.output` |
+| Tool name | `p.toolName` | `undefined` — extract from `p.type.replace("tool-", "")` |
+| Error state | N/A | `p.state === "output-error"` |
+
+**Codemode output shape** (what `p.output` contains):
+```typescript
+{
+  code: "async () => { ... }",     // The LLM-generated code
+  result: {                         // The return value from that code
+    type: "chart",                  // Your discriminator field
+    chartType: "bar",
+    title: "...",
+    data: [...],
+    ...
+  },
+  logs: []                          // Console output from sandbox
+}
+```
+
+The frontend reads `p.output.result.type` to decide what to render.
+
+**Complete working frontend pattern:**
+
+```tsx
+function MessageBubble({ message }: { message: UIMessage }) {
+  return (
+    <div>
+      {message.parts?.map((part, i) => {
+        const p = part as any;
+
+        // Text parts
+        if (p.type === "text" && p.text) {
+          return <MarkdownRenderer key={i} content={p.text} />;
+        }
+
+        // Tool parts: "tool-{name}" format (NOT "tool-invocation")
+        if (typeof p.type === "string" && p.type.startsWith("tool-")) {
+          const toolName = p.toolName || p.type.replace("tool-", "");
+          const state = p.state;
+          // New SDK uses "output", old uses "result" — support both
+          const result = p.output ?? p.result;
+
+          // Loading states
+          if (state === "call" || state === "partial-call") {
+            return <LoadingSpinner key={i} />;
+          }
+
+          // Completed: "result" (old) or "output-available" (new)
+          if ((state === "result" || state === "output-available") && result) {
+            if (toolName === "codemode") {
+              // Codemode wraps in { code, result, logs }
+              const output = result?.result;
+              if (!output?.type) return null;
+
+              if (output.type === "chart") return <ChartRenderer key={i} config={output} />;
+              if (output.type === "table") return <TableRenderer key={i} data={output} />;
+              return null; // stats or unknown — AI summarizes in text
+            }
+          }
+
+          // Error state — LLM will retry or explain in text
+          if (state === "output-error") return null;
+
+          // Still running (any other state)
+          return <LoadingSpinner key={i} />;
+        }
+
+        return null;
+      })}
+    </div>
+  );
+}
+```
+
+**Key gotchas to avoid:**
+1. `p.type` is `"tool-codemode"`, NOT `"tool-invocation"` — always use `p.type.startsWith("tool-")`
+2. The tool name comes from `p.type`, not `p.toolName` (which is `undefined` in the new SDK)
+3. Codemode wraps the LLM's return value — the actual data is in `result.result`, not `result`
+4. Use `p.output ?? p.result` to handle both old and new SDK versions
+5. Check for `"output-available"` state, not just `"result"`
+
+### Zod Parameter Defensive Defaults
+
+Tool parameters validated with Zod may arrive as `undefined` at runtime despite being defined as required in the schema (Zod v3/v4 compatibility gap with the `ai` package). Always add defensive defaults in your `execute` functions:
+
+```typescript
+aggregateStats: tool({
+  parameters: z.object({
+    groupBy: z.enum(["industry", "status", "batch"]).describe("Grouping dimension"),
+    metric: z.enum(["count", "avg_size"]).describe("Metric to compute"),
+  }),
+  execute: async (params) => {
+    // IMPORTANT: Add defensive defaults despite Zod schema
+    // Use ?? (not ||) to preserve valid falsy values like 0, false, ""
+    const metric = params.metric ?? "count";
+    const groupBy = params.groupBy ?? "industry";
+    // Use local vars, not params.metric / params.groupBy
+    return computeStats({ metric, groupBy });
+  },
+}),
+```
+
 ## Model Routes
 
 Three model routes are available. Use them with `workersai(routeName, {})` in deployed workers, or `model: "routeName"` in the container OpenAI-compatible proxy:
@@ -254,10 +412,14 @@ const imageDataUrl = result.choices[0].message.images?.[0]?.image_url?.url;
 
 1. **Always use codemode for tool-calling agents** — this is the single most impactful pattern. Codemode lets the LLM chain, branch, and parallelize tool calls in one turn instead of slow sequential round-trips. Only skip codemode for agents with a single trivially simple tool.
 2. **Add `outputSchema` to every tool** — generates real TypeScript types in codemode, making LLM-generated code more reliable.
-3. Use `workersai("auto", {})` as the default model selection.
-4. Keep system prompts explicit and task-scoped.
-5. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
-6. Stream responses for chat UX.
-7. Use Zod for tool parameter validation.
-8. Use `MarkdownRenderer` for assistant output.
+3. **Only wrap data/side-effect tools in codemode** — don't create pass-through tools for formatting or reshaping data. The LLM constructs output shapes directly in code.
+4. **Use a `type` discriminator in codemode return values** — define the convention in your `createCodeTool` description so the frontend can route rendering.
+5. **Handle the current AI SDK part format on the frontend** — use `p.type.startsWith("tool-")`, `p.output ?? p.result`, and `state === "output-available"`. See the [Codemode Frontend Rendering](#codemode-frontend-rendering--ai-sdk-uimessage-part-format) section.
+6. **Add defensive defaults in tool execute functions** — Zod params may be `undefined` at runtime despite schemas. Use `params.field ?? "default"` (nullish coalescing) to preserve valid falsy values like `0`, `false`, or `""`.
+7. Use `workersai("auto", {})` as the default model selection.
+8. Keep system prompts explicit and task-scoped.
+9. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
+10. Stream responses for chat UX.
+11. Use Zod for tool parameter validation (with defensive defaults).
+12. Use `MarkdownRenderer` for assistant output.
 
