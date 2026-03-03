@@ -96,7 +96,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     : Promise.resolve([]);
 
   const recentThreadsPromise: Promise<Thread[]> = workspaceId
-    ? chatDO.getRecentThreads(context, workspaceId, 20).catch((error) => {
+    ? chatDO.getRecentThreads(context, workspaceId, 6, userId ?? undefined).catch((error) => {
         console.error('Failed to load recent threads:', error);
         return [];
       })
@@ -112,15 +112,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         })
     : Promise.resolve([]);
 
-  const [allApps, allRecentThreads, connections] = await Promise.all([
+  const [allApps, recentThreads, connections] = await Promise.all([
     allAppsPromise,
     recentThreadsPromise,
     connectionsPromise,
   ]);
-
-  const recentThreads = userId
-    ? allRecentThreads.filter((t) => t.created_by === userId).slice(0, 6)
-    : allRecentThreads.slice(0, 6);
 
   return {
     workspaceId: workspaceId ?? null,
