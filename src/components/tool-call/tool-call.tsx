@@ -1,19 +1,21 @@
 "use client";
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { ToolCallDetails } from './tool-details';
 import { FileLink } from './file-link';
-import { getToolStatus, type ToolStatus } from './tool-status';
+import { getToolStatus, ratchetToolStatusForIdentity, type ToolStatus } from './tool-status';
 import { getToolSummaryParts } from './tool-summary';
 
 export interface ToolCallProps {
   tool?: ToolUseBlock;
   result?: ToolResultBlock;
   results?: ToolResultBlock[];
+  /** Stable identity for the current rendered tool row; changing this resets local status ratchet state. */
+  callIdentity?: string;
   isStreaming?: boolean;
   defaultExpanded?: boolean;
   skillSheet?: string;
@@ -83,6 +85,7 @@ export function ToolCall({
   tool,
   result,
   results,
+  callIdentity,
   isStreaming,
   defaultExpanded = false,
   skillSheet,
@@ -90,8 +93,19 @@ export function ToolCall({
   agentContinued,
 }: ToolCallProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const statusRef = useRef<ToolStatus>('running');
+  const callIdentityRef = useRef<string>('');
   const resolvedResults = results ?? (result ? [result] : []);
-  const status = getToolStatus(tool, result, isStreaming, resolvedResults, agentContinued);
+  const rawStatus = getToolStatus(tool, result, resolvedResults, agentContinued);
+  const resolvedCallIdentity = callIdentity ?? tool?.id ?? result?.tool_use_id ?? 'tool-call';
+  const status = ratchetToolStatusForIdentity(
+    statusRef.current,
+    callIdentityRef.current,
+    rawStatus,
+    resolvedCallIdentity
+  );
+  callIdentityRef.current = resolvedCallIdentity;
+  statusRef.current = status;
   const resolvedProgressCount = typeof progressCount === 'number'
     ? progressCount
     : resolvedResults.length;

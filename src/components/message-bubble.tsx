@@ -242,11 +242,12 @@ export function contentToString(content: string | ContentBlock[]): string {
 }
 interface ContentBlockRendererProps {
   content: string | ContentBlock[];
+  messageId?: string;
   isStreaming?: boolean;
   skillSheets?: Map<string, string>;
 }
 
-function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: ContentBlockRendererProps) {
+function ContentBlockRenderer({ content, messageId, isStreaming = false, skillSheets }: ContentBlockRendererProps) {
   // String content - render as markdown
   if (typeof content === 'string') {
     const displayContent = stripSystemMessageTags(content);
@@ -333,6 +334,7 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
             tool={block}
             result={latestResult}
             results={isTaskTool ? results : undefined}
+            callIdentity={`${messageId ?? 'message'}:tool:${block.id || index}`}
             isStreaming={isStreaming}
             skillSheet={skillSheet}
             progressCount={isTaskTool ? results.length : undefined}
@@ -348,7 +350,13 @@ function ContentBlockRenderer({ content, isStreaming = false, skillSheets }: Con
       items.push({
         kind: 'tool',
         key: `result-${block.tool_use_id || index}`,
-        node: <ToolCall result={block} isStreaming={isStreaming} />,
+        node: (
+          <ToolCall
+            result={block}
+            callIdentity={`${messageId ?? 'message'}:result:${block.tool_use_id || index}`}
+            isStreaming={isStreaming}
+          />
+        ),
       });
       return;
     }
@@ -618,7 +626,11 @@ export function MessageBubble({
         {hasCleanContent && (
           <div className="max-w-[85%] px-4 py-3 rounded-3xl border border-border bg-muted/30 text-foreground">
             <CollapsibleUserMessage>
-              <ContentBlockRenderer content={cleanedContent} skillSheets={skillSheets} />
+              <ContentBlockRenderer
+                content={cleanedContent}
+                messageId={message.id}
+                skillSheets={skillSheets}
+              />
             </CollapsibleUserMessage>
           </div>
         )}
@@ -663,7 +675,12 @@ export function MessageBubble({
     <div className="flex flex-col gap-1">
       {hasContent && (
         <div className="max-w-none space-y-4">
-          <ContentBlockRenderer content={message.content} isStreaming={isStreaming} skillSheets={skillSheets} />
+          <ContentBlockRenderer
+            content={message.content}
+            messageId={message.id}
+            isStreaming={isStreaming}
+            skillSheets={skillSheets}
+          />
         </div>
       )}
       {/* Hover action row */}
