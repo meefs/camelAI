@@ -44,12 +44,17 @@ export function getToolSummaryParts(
 
   const { name, input } = tool;
   const inputRecord = input || {};
+  const isRunning = status === 'running' || (status == null && isStreaming && !result);
+  const isError = status === 'error';
 
   if (isMcpTool(name)) {
     const mcpParts = parseMcpToolName(name);
     if (mcpParts) {
-      if (isStreaming && !result) {
+      if (isRunning) {
         return { action: `Calling ${mcpParts.displayTool} on ${mcpParts.displayServer}...` };
+      }
+      if (isError) {
+        return { action: `Failed to call ${mcpParts.displayTool} on ${mcpParts.displayServer}` };
       }
       return { action: `Called ${mcpParts.displayTool} on ${mcpParts.displayServer}` };
     }
@@ -63,8 +68,20 @@ export function getToolSummaryParts(
           : typeof inputRecord.path === 'string'
             ? inputRecord.path
             : '';
-      if (isStreaming && !path) {
-        return { action: 'Reading file...' };
+      if (isRunning) {
+        if (!path) return { action: 'Reading file...' };
+        return {
+          action: 'Reading',
+          filename: getFilename(path),
+          path,
+        };
+      }
+      if (isError) {
+        return {
+          action: 'Failed to read',
+          filename: path ? getFilename(path) : undefined,
+          path: path || undefined,
+        };
       }
       return {
         action: 'Read',
@@ -79,8 +96,20 @@ export function getToolSummaryParts(
           : typeof inputRecord.path === 'string'
             ? inputRecord.path
             : '';
-      if (isStreaming && !path) {
-        return { action: 'Creating file...' };
+      if (isRunning) {
+        if (!path) return { action: 'Creating file...' };
+        return {
+          action: 'Creating',
+          filename: getFilename(path),
+          path,
+        };
+      }
+      if (isError) {
+        return {
+          action: 'Failed to create',
+          filename: path ? getFilename(path) : undefined,
+          path: path || undefined,
+        };
       }
       return {
         action: 'Created',
@@ -95,8 +124,20 @@ export function getToolSummaryParts(
           : typeof inputRecord.path === 'string'
             ? inputRecord.path
             : '';
-      if (isStreaming && !path) {
-        return { action: 'Editing file...' };
+      if (isRunning) {
+        if (!path) return { action: 'Editing file...' };
+        return {
+          action: 'Editing',
+          filename: getFilename(path),
+          path,
+        };
+      }
+      if (isError) {
+        return {
+          action: 'Failed to edit',
+          filename: path ? getFilename(path) : undefined,
+          path: path || undefined,
+        };
       }
       return {
         action: 'Edited',
@@ -108,13 +149,24 @@ export function getToolSummaryParts(
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
       const command = typeof inputRecord.command === 'string' ? inputRecord.command : '';
       const label = description || truncate(command || 'command', 30);
-      if (status === 'running') {
+      if (isRunning) {
         if (!description && !command) return { action: 'Running command...' };
         return { action: `Running ${label}...` };
+      }
+      if (isError) {
+        return { action: `Failed to run ${label}` };
       }
       return { action: `Ran ${label}` };
     }
     case 'Glob': {
+      const globPattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
+      if (isRunning) {
+        if (!globPattern) return { action: 'Searching for files...' };
+        return { action: `Searching for "${truncate(globPattern, 20)}"...` };
+      }
+      if (isError) {
+        return { action: 'Failed to search files' };
+      }
       const count = parseCountFromResult(result);
       if (count !== null) return { action: `Found ${count} files` };
       if (result) {
@@ -124,11 +176,17 @@ export function getToolSummaryParts(
         }
         return { action: 'Searched files' };
       }
-      const globPattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
-      if (isStreaming && !globPattern) return { action: 'Searching for files...' };
-      return { action: `Searching for "${truncate(globPattern || 'files', 20)}"...` };
+      return { action: 'Searched files' };
     }
     case 'Grep': {
+      const pattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
+      if (isRunning) {
+        if (!pattern) return { action: 'Searching...' };
+        return { action: `Searching for "${truncate(pattern, 20)}"...` };
+      }
+      if (isError) {
+        return { action: 'Failed to search codebase' };
+      }
       const count = parseCountFromResult(result);
       if (count !== null) return { action: `Found ${count} matches` };
       if (result) {
@@ -138,21 +196,24 @@ export function getToolSummaryParts(
         }
         return { action: 'Searched codebase' };
       }
-      const pattern = typeof inputRecord.pattern === 'string' ? inputRecord.pattern : '';
-      if (isStreaming && !pattern) {
-        return { action: 'Searching...' };
-      }
-      return { action: `Searching for "${truncate(pattern || 'pattern', 20)}"...` };
+      return { action: 'Searched codebase' };
     }
     case 'Task': {
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
-      const summary = description || (isStreaming ? 'working...' : 'task');
-      return { action: `Agent: ${summary}` };
+      if (isRunning) {
+        const summary = description || 'working...';
+        return { action: `Agent: ${summary}` };
+      }
+      if (isError) {
+        const summary = description || 'task';
+        return { action: `Agent failed: ${summary}` };
+      }
+      return { action: `Agent: ${description || 'task'}` };
     }
     case 'AskUserQuestion': {
       const questions = Array.isArray(inputRecord.questions) ? inputRecord.questions : [];
 
-      if (status === 'running' && !result) {
+      if (isRunning && !result) {
         return { action: 'Waiting for your input' };
       }
 
@@ -174,11 +235,11 @@ export function getToolSummaryParts(
     }
     case 'TeamCreate': {
       const teamName = typeof inputRecord.team_name === 'string' ? inputRecord.team_name : '';
-      if (status === 'running') {
+      if (isRunning) {
         if (!teamName) return { action: 'Creating team...' };
         return { action: `Creating team ${teamName}...` };
       }
-      if (status === 'error') {
+      if (isError) {
         if (!teamName) return { action: 'Failed to create team' };
         return { action: `Failed to create team ${teamName}` };
       }
@@ -186,9 +247,13 @@ export function getToolSummaryParts(
     }
     case 'Skill': {
       const skill = typeof inputRecord.skill === 'string' ? inputRecord.skill : '';
-      if (!result) {
+      if (isRunning) {
         if (!skill) return { action: 'Reading skill...' };
         return { action: `Reading skill ${skill}...` };
+      }
+      if (isError) {
+        if (!skill) return { action: 'Failed to read skill' };
+        return { action: `Failed to read skill ${skill}` };
       }
       const path = skill ? `/home/claude/.claude/skills/${skill}/SKILL.md` : '';
       return {
@@ -199,22 +264,37 @@ export function getToolSummaryParts(
     }
     case 'WebFetch': {
       const url = typeof inputRecord.url === 'string' ? inputRecord.url : '';
-      if (isStreaming && !url) {
-        return { action: 'Fetching page...' };
+      if (isRunning) {
+        if (!url) return { action: 'Fetching page...' };
+        return { action: `Fetching ${getHostname(url)}...` };
+      }
+      if (isError) {
+        return { action: `Failed to fetch ${url ? getHostname(url) : 'web page'}` };
       }
       return { action: `Fetched ${url ? getHostname(url) : 'web page'}` };
     }
     case 'WebSearch':
+      if (isRunning) return { action: 'Searching web...' };
+      if (isError) return { action: 'Failed to search web' };
       return { action: 'Searched web' };
     case 'TodoWrite':
+      if (isRunning) return { action: 'Updating tasks...' };
+      if (isError) return { action: 'Failed to update tasks' };
       return { action: 'Updated tasks' };
     case 'NotebookEdit':
+      if (isRunning) return { action: 'Editing notebook cell...' };
+      if (isError) return { action: 'Failed to edit notebook cell' };
       return { action: 'Edited notebook cell' };
     case 'KillShell':
+      if (isRunning) return { action: 'Stopping background task...' };
+      if (isError) return { action: 'Failed to stop background task' };
       return { action: 'Stopped background task' };
     case 'TaskOutput':
+      if (isRunning) return { action: 'Retrieving task output...' };
+      if (isError) return { action: 'Failed to retrieve task output' };
       return { action: 'Retrieved task output' };
     default:
+      if (isRunning) return { action: `${name}...` };
       return { action: name };
   }
 }
@@ -222,9 +302,10 @@ export function getToolSummaryParts(
 export function getToolSummary(
   tool?: ToolUseBlock,
   result?: ToolResultBlock,
+  status: 'running' | 'complete' | 'error',
   isStreaming?: boolean
 ): string {
-  const parts = getToolSummaryParts(tool, result, isStreaming);
+  const parts = getToolSummaryParts(tool, result, isStreaming, status);
   if (parts.filename) {
     return `${parts.action} ${parts.filename}`;
   }

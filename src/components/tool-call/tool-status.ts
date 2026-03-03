@@ -2,10 +2,28 @@ import type { ToolResultBlock, ToolUseBlock } from '@/types';
 
 export type ToolStatus = 'running' | 'complete' | 'error';
 
+export function ratchetToolStatus(previous: ToolStatus | undefined, next: ToolStatus): ToolStatus {
+  if ((previous === 'complete' || previous === 'error') && next === 'running') {
+    return previous;
+  }
+  return next;
+}
+
+export function ratchetToolStatusForIdentity(
+  previousStatus: ToolStatus | undefined,
+  previousIdentity: string | undefined,
+  nextStatus: ToolStatus,
+  nextIdentity: string
+): ToolStatus {
+  if (previousIdentity !== nextIdentity) {
+    return nextStatus;
+  }
+  return ratchetToolStatus(previousStatus, nextStatus);
+}
+
 export function getToolStatus(
   tool?: ToolUseBlock,
   result?: ToolResultBlock,
-  isStreaming?: boolean,
   results?: ToolResultBlock[],
   agentContinued?: boolean
 ): ToolStatus {
@@ -18,7 +36,6 @@ export function getToolStatus(
   }
 
   if (result && (result as { is_error?: boolean }).is_error) return 'error';
-  if (isStreaming && !result) return 'running';
   if (result) return 'complete';
   // No result object, but the agent produced content after this tool call —
   // the tool must have completed since the agent can't continue without its result.
