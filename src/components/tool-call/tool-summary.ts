@@ -198,7 +198,8 @@ export function getToolSummaryParts(
       }
       return { action: 'Searched codebase' };
     }
-    case 'Task': {
+    case 'Task':
+    case 'Agent': {
       const description = typeof inputRecord.description === 'string' ? inputRecord.description : '';
       if (isRunning) {
         const summary = description || 'working...';

@@ -1,5 +1,10 @@
 import type { ContentBlock, ToolResultBlock } from '@/types';
 
+/** True when the tool name represents a sub-agent invocation (Task or Agent). */
+export function isSubAgentTool(name?: string): boolean {
+  return name === 'Task' || name === 'Agent';
+}
+
 /**
  * Strips ANSI escape codes from a string.
  * Handles color codes, cursor movement, and other terminal control sequences.

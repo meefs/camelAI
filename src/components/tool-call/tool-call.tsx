@@ -9,6 +9,7 @@ import { ToolCallDetails } from './tool-details';
 import { FileLink } from './file-link';
 import { getToolStatus, ratchetToolStatusForIdentity, type ToolStatus } from './tool-status';
 import { getToolSummaryParts } from './tool-summary';
+import { isSubAgentTool } from './tool-utils';
 
 export interface ToolCallProps {
   tool?: ToolUseBlock;
@@ -109,7 +110,7 @@ export function ToolCall({
   const resolvedProgressCount = typeof progressCount === 'number'
     ? progressCount
     : resolvedResults.length;
-  const showResultCount = tool?.name === 'Task' && resolvedProgressCount > 0;
+  const showResultCount = isSubAgentTool(tool?.name) && resolvedProgressCount > 0;
   const resultCountLabel = showResultCount
     ? `${resolvedProgressCount} result${resolvedProgressCount === 1 ? '' : 's'}`
     : null;

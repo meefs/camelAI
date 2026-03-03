@@ -69,8 +69,9 @@ export function TaskDetails({ tool, result, results, progressCount }: TaskDetail
   const finalResult = resolvedResults.find((block) => !block.isTaskUpdate);
   const finalResultText = finalResult ? getResultText(finalResult) : '';
   const hasHeaderDetails = Boolean(agent || model || description || prompt);
-  const showProgress = tool?.name === 'Task' && totalResults > 0;
-  const showResultsList = tool?.name === 'Task' && resolvedResults.length > 0;
+  const isAgent = tool?.name === 'Task' || tool?.name === 'Agent';
+  const showProgress = isAgent && totalResults > 0;
+  const showResultsList = isAgent && resolvedResults.length > 0;
 
   return (
     <div className="space-y-2">

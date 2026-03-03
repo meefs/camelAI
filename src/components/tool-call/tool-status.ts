@@ -1,4 +1,5 @@
 import type { ToolResultBlock, ToolUseBlock } from '@/types';
+import { isSubAgentTool } from './tool-utils';
 
 export type ToolStatus = 'running' | 'complete' | 'error';
 
@@ -27,7 +28,7 @@ export function getToolStatus(
   results?: ToolResultBlock[],
   agentContinued?: boolean
 ): ToolStatus {
-  if (tool?.name === 'Task') {
+  if (isSubAgentTool(tool?.name)) {
     const finalResult = results?.find(block => !block.isTaskUpdate) ??
       (result && !result.isTaskUpdate ? result : undefined);
     if (finalResult && (finalResult as { is_error?: boolean }).is_error) return 'error';
