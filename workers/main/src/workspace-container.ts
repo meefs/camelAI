@@ -459,6 +459,9 @@ export class WorkspaceContainer {
           AWS_BEARER_TOKEN_BEDROCK: creds.bearer_token,
           AWS_REGION: region,
           CHIRIDION_BYOK_PROVIDER: 'bedrock',
+          // Clear proxy env vars so the SDK uses Bedrock directly
+          ANTHROPIC_BASE_URL: '',
+          ANTHROPIC_API_KEY: '',
         };
       }
 
