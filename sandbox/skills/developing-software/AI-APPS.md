@@ -93,6 +93,8 @@ Do **NOT** create "pass-through" or "formatting" tools (e.g., a `createVisualiza
 
 ### Codemode Return Type Convention
 
+> This pattern serves double duty: it provides **structured output** (replacing `Output.object()` which doesn't work with the Workers AI provider + tools) AND tells the frontend how to render results. Define your return types here — not in `Output.object()`.
+
 Define a discriminated return type convention in your `createCodeTool` description so the frontend knows how to render each result. Use a `type` field as the discriminator. Include the `{{types}}` placeholder so the LLM sees the tool type definitions, and provide concrete examples:
 
 ```typescript
@@ -172,6 +174,43 @@ execute: async (params) => {
   const groupBy = params.groupBy ?? "industry";
   return computeStats({ metric, groupBy });
 },
+```
+
+## Structured Output from Agents
+
+### `Output.object()` Limitation
+
+> **`Output.object()` does not work with the Workers AI provider when tools are present.** The `workers-ai-provider` strips tools from the request when `response_format` is `json_schema`, making structured output and tool calling mutually exclusive. The AI Gateway also does not enforce `json_schema` on downstream models, so even structured-only requests (no tools) fail.
+>
+> **Use codemode return type conventions instead.** The LLM writes TypeScript that constructs and returns a typed object — this is more reliable than LLM JSON generation because the structure comes from executed code, not text completion.
+
+### Backend Extraction Pattern
+
+When using codemode for structured output in API routes (not chat streaming), extract the result from tool steps:
+
+```typescript
+import { generateText, stepCountIs } from "ai";
+
+const result = await generateText({
+  model: workersai("auto", {}),
+  tools: { codemode: codeTool },
+  stopWhen: stepCountIs(100),
+  system: "Use codemode to query data and return structured results.",
+  prompt,
+});
+
+// Extract structured result from codemode output
+let structuredResult = null;
+for (const step of result.steps) {
+  if (step.toolResults?.length) {
+    for (const tr of step.toolResults) {
+      const output = (tr as any).output ?? (tr as any).result;
+      if (output?.result) {
+        structuredResult = output.result; // Your discriminated return value
+      }
+    }
+  }
+}
 ```
 
 ## Stateless Route Example

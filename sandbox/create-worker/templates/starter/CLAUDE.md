@@ -207,6 +207,7 @@ The template has a complete AI chat setup - just uncomment:
 **When adding tools to the chat agent:**
 - **Always use codemode** (`createCodeTool` + `DynamicWorkerExecutor`) — it lets the LLM chain, branch, and parallelize tool calls in a single turn. Only skip codemode for a single trivially simple tool.
 - **Add `outputSchema` to every tool** — generates real TypeScript types in codemode.
+- **For structured output, use codemode return type conventions** — `Output.object()` does not work with the Workers AI provider when tools are present. Instead, define discriminated return types in your `createCodeTool` description. The LLM's generated code constructs typed objects directly.
 - **Use `??` (not `||`) for defensive defaults** in tool execute functions — `||` silently replaces valid falsy values like `0`, `false`, or `""`.
 - **Tool part rendering** — AI SDK v5+ uses `p.type === "tool-{name}"` (not `"tool-invocation"`), `p.state === "output-available"` (not `"result"`), and `p.output` (not `p.result`). See `chat.tsx` for the working pattern.
 

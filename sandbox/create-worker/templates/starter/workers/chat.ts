@@ -58,6 +58,9 @@ export class Chat extends AIChatAgent<Env> {
     // Codemode lets the LLM chain, branch, and parallelize tool calls in a
     // single turn by writing TypeScript code. Only skip codemode for agents
     // with a single trivially simple tool.
+    //
+    // For STRUCTURED OUTPUT: Use codemode return type conventions instead of
+    // Output.object(), which doesn't work with the Workers AI provider + tools.
     const myTools = {
       getWeather: tool({
         description: "Get weather for a city",
@@ -72,7 +75,20 @@ export class Chat extends AIChatAgent<Env> {
       }),
     };
     const executor = new DynamicWorkerExecutor({ loader: this.env.LOADER });
-    const codeTool = createCodeTool({ tools: myTools, executor });
+    const codeTool = createCodeTool({
+      tools: myTools,
+      executor,
+      // Define return type conventions for structured output.
+      // The LLM's generated code constructs and returns typed objects directly.
+      description: `Execute code to query data. Tools available via \`codemode\`:
+
+{{types}}
+
+Your code MUST return a result object with a "type" field:
+
+1. { type: "weather", city: string, temperature: number, summary: string }
+2. { type: "comparison", cities: Array<{ city: string, temperature: number }>, warmest: string }`,
+    });
     */
 
     const stream = createUIMessageStream({
