@@ -257,6 +257,10 @@ body{
 
 <script>
 (function(){
+// Notify parent frame so preview panel can retry transient deploy errors
+if(window.parent!==window){
+  try{window.parent.postMessage({type:'chiridion-preview-error',status:${statusCode}},'*');}catch(e){}
+}
 var c=document.getElementById('bg'),w=c.parentElement;
 var ctx=c.getContext('2d');if(!ctx)return;
 var dpr=Math.min(window.devicePixelRatio||1,2);

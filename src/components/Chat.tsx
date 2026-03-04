@@ -1046,6 +1046,8 @@ export default function Chat({
   const splitStreamingMessageOnNextPartRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const iframeRefreshTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const iframeRetryCountsRef = useRef<Record<string, number>>({});
+  const iframeRetryTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const reconnectAttempts = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -1081,6 +1083,11 @@ export default function Chat({
       clearTimeout(timeout);
     }
     iframeRefreshTimeoutsRef.current = {};
+    for (const timeout of Object.values(iframeRetryTimeoutsRef.current)) {
+      clearTimeout(timeout);
+    }
+    iframeRetryTimeoutsRef.current = {};
+    iframeRetryCountsRef.current = {};
   }, []);
 
   useEffect(() => {
@@ -1115,6 +1122,55 @@ export default function Chat({
       clearAllIframeRefreshTimeouts();
     }
   }, [threadId, clearAllIframeRefreshTimeouts]);
+
+  // Retry iframe on transient errors (404/500/503) during deploy.
+  // Dispatcher error pages postMessage({ type: 'chiridion-preview-error', status }) to parent.
+  const IFRAME_MAX_RETRIES = 3;
+  const IFRAME_RETRY_DELAY_MS = 2000;
+  useEffect(() => {
+    const iframeDomain = hostname ? getIframeDomain(hostname) : null;
+
+    function handlePreviewError(event: MessageEvent) {
+      if (
+        !event.data ||
+        event.data.type !== 'chiridion-preview-error' ||
+        typeof event.data.status !== 'number'
+      ) return;
+      const status = event.data.status as number;
+      if (status !== 404 && status !== 500 && status !== 503) return;
+
+      // Match the message origin to an app tab
+      const tabs = previewTabsRef.current;
+      const matchedTab = iframeDomain
+        ? tabs.find((tab) => {
+            if (tab.target.kind !== 'app') return false;
+            const s = tab.target.scriptName;
+            const host = orgSlug
+              ? `${s}--${orgSlug}.${iframeDomain}`
+              : `${s}.${iframeDomain}`;
+            return event.origin === `https://${host}`;
+          })
+        : null;
+      const tabId = matchedTab?.id ?? activeTabIdRef.current;
+      if (!tabId) return;
+
+      const retries = iframeRetryCountsRef.current[tabId] ?? 0;
+      if (retries >= IFRAME_MAX_RETRIES) return;
+      if (iframeRetryTimeoutsRef.current[tabId]) return;
+
+      iframeRetryCountsRef.current[tabId] = retries + 1;
+      iframeRetryTimeoutsRef.current[tabId] = setTimeout(() => {
+        delete iframeRetryTimeoutsRef.current[tabId];
+        setTabIframeKeys((prev) => ({
+          ...prev,
+          [tabId]: (prev[tabId] ?? 0) + 1,
+        }));
+      }, IFRAME_RETRY_DELAY_MS);
+    }
+
+    window.addEventListener('message', handlePreviewError);
+    return () => window.removeEventListener('message', handlePreviewError);
+  }, [hostname, orgSlug]);
 
   const revokeAttachmentPreviewUrl = useCallback((url?: string) => {
     if (!url) return;
@@ -1328,6 +1384,12 @@ export default function Chat({
   }, [backfillThreadFirstUserMessage, readOnly, resolvedWorkspaceId, setError, setMessages]);
 
   const bumpIframeKey = useCallback((tabId: string) => {
+    iframeRetryCountsRef.current[tabId] = 0;
+    const retryTimeout = iframeRetryTimeoutsRef.current[tabId];
+    if (retryTimeout) {
+      clearTimeout(retryTimeout);
+      delete iframeRetryTimeoutsRef.current[tabId];
+    }
     setTabIframeKeys((prev) => ({
       ...prev,
       [tabId]: (prev[tabId] ?? 0) + 1,
@@ -1466,6 +1528,12 @@ export default function Chat({
       clearTimeout(timeout);
       delete iframeRefreshTimeoutsRef.current[tabId];
     }
+    const retryTimeout = iframeRetryTimeoutsRef.current[tabId];
+    if (retryTimeout) {
+      clearTimeout(retryTimeout);
+      delete iframeRetryTimeoutsRef.current[tabId];
+    }
+    delete iframeRetryCountsRef.current[tabId];
   }, []);
 
   const openTabForTarget = useCallback((target: PreviewTarget, options?: { sync?: boolean }) => {
