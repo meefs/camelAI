@@ -53,6 +53,7 @@ import {
   error503Page,
 } from './error-pages';
 import { getSession as getSessionKV, type SessionData } from '../../main/src/session-kv';
+import { getSessionCookieName } from '../../main/src/cookies';
 import type { OrgDO } from '../../main/src/auth';
 
 interface Env {
@@ -216,9 +217,8 @@ function buildNewFormatUrl(url: URL, scriptName: string, orgSlug: string): strin
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 const SCREENSHOT_SESSION_MAX_AGE = SCREENSHOT_SESSION_TTL_SECONDS;
 
-// Main app session cookie name (same-site requests will have this)
-const MAIN_APP_SESSION_COOKIE = 'chiridion_session_v2';
-const LEGACY_MAIN_APP_SESSION_COOKIE = 'chiridion_session';
+// Legacy main app session cookie names (fallback for in-flight sessions)
+const LEGACY_MAIN_APP_SESSION_COOKIES = ['chiridion_session_v2', 'chiridion_session'];
 
 // Main app URL for auth redirects (determined from request hostname)
 function getMainAppUrl(hostname: string): string {
@@ -544,11 +544,19 @@ async function handleWorkerRequest(
   // For same-site requests (*.camelai.dev), check main app session cookie directly
   // No redirect dance needed - the cookie is already available or the user isn't logged in
   if (isSameSiteRequest(url.hostname)) {
-    const mainSessionIdV2 = getCookieValue(cookieHeader, MAIN_APP_SESSION_COOKIE);
-    const mainSessionIdLegacy = getCookieValue(cookieHeader, LEGACY_MAIN_APP_SESSION_COOKIE);
-    const mainSessionId = mainSessionIdV2 || mainSessionIdLegacy;
+    // Use the environment-aware cookie name (matches what the main app sets)
+    const currentCookieName = getSessionCookieName(url.hostname);
+    let mainSessionId = getCookieValue(cookieHeader, currentCookieName);
 
-    console.log(`[dispatcher] Same-site auth for ${scriptName}: v2=${mainSessionIdV2 ? 'present' : 'missing'}, legacy=${mainSessionIdLegacy ? 'present' : 'missing'}`);
+    // Fallback to legacy cookie names for in-flight sessions
+    if (!mainSessionId) {
+      for (const legacyName of LEGACY_MAIN_APP_SESSION_COOKIES) {
+        mainSessionId = getCookieValue(cookieHeader, legacyName);
+        if (mainSessionId) break;
+      }
+    }
+
+    console.log(`[dispatcher] Same-site auth for ${scriptName}: cookie=${currentCookieName}, found=${mainSessionId ? 'yes' : 'no'}`);
 
     if (!mainSessionId) {
       // No session cookie - user is not logged in
