@@ -179,6 +179,11 @@ This is your workspace. Files persist between sessions. You can build, deploy, a
 
 Integration credentials auto-sync to deployed workers as secrets.
 
+If environment variables (especially \`INT_*\` integration credentials) appear stale or missing during a session, manually re-source the env file:
+\`\`\`bash
+set -a && source "$CLAUDE_ENV_FILE" && set +a
+\`\`\`
+
 AI access patterns:
 - In the container/runtime, use the local OpenAI-compatible proxy (\`OPENAI_BASE_URL\` + \`OPENAI_API_KEY=proxy\`) for SDK calls.
 - For chat completions through this local proxy, pass one of the supported model aliases (\`auto\`, \`auto_search\`, \`auto_image\`) as the \`model\` field. Unknown models fall back to \`auto\`.
