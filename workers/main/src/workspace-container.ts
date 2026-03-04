@@ -501,6 +501,26 @@ export class WorkspaceContainer {
     }
   }
 
+  /**
+   * Create a dispatcher session for sandbox Playwright scripts to access
+   * private deployed apps owned by the org.
+   */
+  private async createAppAccessSession(): Promise<Record<string, string>> {
+    if (!this.env.SESSIONS || !this.orgId || !this.workspaceId) return {};
+
+    try {
+      const { sessionId } = await createDispatcherSession(
+        this.env.SESSIONS,
+        `sandbox:${this.workspaceId}`,
+        this.orgId,
+      );
+      return { CHIRIDION_APP_SESSION: sessionId };
+    } catch (err) {
+      console.error('[Sandbox] createAppAccessSession failed:', err);
+      return {};
+    }
+  }
+
   // ─── Chat WebSocket ──────────────────────────────────────
 
   /**
