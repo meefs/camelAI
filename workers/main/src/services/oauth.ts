@@ -46,7 +46,26 @@ export async function getOrCreateUserFromOAuth(
 
   // Check by OAuth key (email might have changed)
   userId = await env.EMAIL_TO_USER.get(oauthKey);
-  if (userId) return userId;
+  if (userId) {
+    const userStub = getUserStub(env, userId);
+    const profile = await userStub.getProfile();
+
+    if (!profile) {
+      // Zombie: oauth KV entry exists but UserDO has no profile.
+      // Re-create profile and update email KV mapping.
+      console.warn('[oauth] zombie user detected via oauth key, re-creating profile', { userId, email, provider });
+      await userStub.createUserFromOAuth(
+        userId,
+        email,
+        userInfo.name || email.split('@')[0],
+        provider,
+        userInfo.providerId
+      );
+      await env.EMAIL_TO_USER.put(emailKey, userId);
+    }
+
+    return userId;
+  }
 
   // Create new user
   userId = crypto.randomUUID();
