@@ -59,10 +59,21 @@ RUN mkdir -p /opt/chiridion /etc/claude-code/.claude/skills /usr/local/lib/creat
     /mnt/user-uploads /mnt/user-outputs && \
     chown 1001:1001 /mnt/user-uploads /mnt/user-outputs
 
-# Claude Agent SDK
+# Claude Agent SDK + Playwright
 RUN cd /opt/chiridion && \
     echo '{"name":"chiridion-sandbox-runner","private":true,"type":"module"}' > package.json && \
-    bun install --no-progress @anthropic-ai/claude-agent-sdk@0.2.63
+    bun install --no-progress @anthropic-ai/claude-agent-sdk@0.2.63 playwright
+
+# Playwright: install Chromium system deps + browser binary.
+# PLAYWRIGHT_BROWSERS_PATH keeps the browser outside /home/claude (bind-mounted at runtime).
+# Symlink playwright into the global node_modules so ESM `import` resolves it
+# (NODE_PATH is not honored by Node's ESM resolver).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN cd /opt/chiridion && npx playwright install-deps chromium && \
+    npx playwright install chromium && \
+    rm -rf /var/lib/apt/lists/* && \
+    chmod -R o+rx /opt/playwright-browsers && \
+    ln -s /opt/chiridion/node_modules/playwright /usr/local/lib/node_modules/playwright
 
 # Copy sandbox files
 COPY sandbox/control-plane.mjs /opt/chiridion/control-plane.mjs

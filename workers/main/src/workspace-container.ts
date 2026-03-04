@@ -19,6 +19,7 @@
  */
 import { mapCredentialsToEnvVars } from './integration-env';
 import { decryptCredentials } from '../../../src/lib/integration-crypto';
+import { createDispatcherSession } from './worker-auth';
 import type { WorkspaceDO } from './workspace';
 import type { OrgDO } from './auth';
 
@@ -27,6 +28,7 @@ export interface WorkspaceContainerEnv {
   ORG: DurableObjectNamespace<OrgDO>;
   R2_BUCKET: R2Bucket;
   INTEGRATION_SECRET_KEY: string;
+  SESSIONS?: KVNamespace;
 
   SANDBOX_HOST?: Fetcher;
   SANDBOX_HOST_URL?: string;
@@ -424,13 +426,19 @@ export class WorkspaceContainer {
     console.log(`[Sandbox] buildClaudeRunnerEnv: thread=${options.threadId}`);
     const integrationEnv = await this.fetchIntegrationEnvVars();
 
-    await this.writeIntegrationEnvFileToSandbox(integrationEnv);
+    // Create a dispatcher session so Playwright scripts can access private deployed apps
+    const appSessionEnv = await this.createAppAccessSession();
+
+    await this.writeIntegrationEnvFileToSandbox({
+      ...integrationEnv,
+      ...appSessionEnv,
+    });
 
     // Fetch org-level BYOK provider config (if any)
     const byokProxy = await this.fetchByokProxyCredentials();
 
     return {
-      envVars: integrationEnv,
+      envVars: { ...integrationEnv, ...appSessionEnv },
       byokProxy,
     };
   }
@@ -470,6 +478,26 @@ export class WorkspaceContainer {
     } catch (err) {
       console.error('[Sandbox] fetchByokProxyCredentials: error:', err);
       return undefined;
+    }
+  }
+
+  /**
+   * Create a dispatcher session for sandbox Playwright scripts to access
+   * private deployed apps owned by the org.
+   */
+  private async createAppAccessSession(): Promise<Record<string, string>> {
+    if (!this.env.SESSIONS || !this.orgId || !this.workspaceId) return {};
+
+    try {
+      const { sessionId } = await createDispatcherSession(
+        this.env.SESSIONS,
+        `sandbox:${this.workspaceId}`,
+        this.orgId,
+      );
+      return { CHIRIDION_APP_SESSION: sessionId };
+    } catch (err) {
+      console.error('[Sandbox] createAppAccessSession failed:', err);
+      return {};
     }
   }
 
