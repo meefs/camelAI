@@ -18,11 +18,28 @@ export async function getOrCreateUserFromOAuth(
   // Check by email first
   let userId = await env.EMAIL_TO_USER.get(emailKey);
   if (userId) {
+    const userStub = getUserStub(env, userId);
+    const profile = await userStub.getProfile();
+
+    if (!profile) {
+      // Zombie KV entry: email maps to a UserDO with no profile (e.g. hard-deleted user).
+      // Re-create the profile so the user can log in.
+      console.warn('[oauth] zombie user detected, re-creating profile', { userId, email, provider });
+      await userStub.createUserFromOAuth(
+        userId,
+        email,
+        userInfo.name || email.split('@')[0],
+        provider,
+        userInfo.providerId
+      );
+      return userId;
+    }
+
     // Link OAuth if not already linked
     const existingOAuth = await env.EMAIL_TO_USER.get(oauthKey);
     if (!existingOAuth || existingOAuth === userId) {
       await env.EMAIL_TO_USER.put(oauthKey, userId);
-      await getUserStub(env, userId).linkOAuthProvider(provider, userInfo.providerId);
+      await userStub.linkOAuthProvider(provider, userInfo.providerId);
     }
     return userId;
   }
@@ -48,13 +65,19 @@ export async function getOrCreateUserFromOAuth(
     throw new Error('oauth_race_condition');
   }
 
-  await getUserStub(env, userId).createUserFromOAuth(
-    userId,
-    email,
-    userInfo.name || email.split('@')[0],
-    provider,
-    userInfo.providerId
-  );
+  try {
+    await getUserStub(env, userId).createUserFromOAuth(
+      userId,
+      email,
+      userInfo.name || email.split('@')[0],
+      provider,
+      userInfo.providerId
+    );
+  } catch (error) {
+    // Clean up KV entries if DO profile creation fails to prevent zombie users
+    await Promise.all([env.EMAIL_TO_USER.delete(emailKey), env.EMAIL_TO_USER.delete(oauthKey)]);
+    throw error;
+  }
 
   return userId;
 }

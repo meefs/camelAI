@@ -229,7 +229,10 @@ async function getAuthContextUncached(
   context: AppLoadContext
 ): Promise<AuthContext | null> {
   const sessionContext = await getSession(request, context);
-  if (!sessionContext) return null;
+  if (!sessionContext) {
+    console.warn('[auth] getAuthContext returning null: no session');
+    return null;
+  }
 
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
@@ -247,14 +250,32 @@ async function getAuthContextUncached(
     currentOrgMemberPromise,
   ]);
   const profile = authBootstrap.profile;
-  if (!profile) return null;
-  if (!orgInfo) return null;
+  if (!profile) {
+    console.warn('[auth] getAuthContext returning null: profile is null', {
+      user_id: sessionContext.session.user_id,
+      org_id: sessionContext.session.org_id,
+      workspace_id: sessionContext.session.workspace_id,
+    });
+    return null;
+  }
+  if (!orgInfo) {
+    console.warn('[auth] getAuthContext returning null: orgInfo is null', {
+      user_id: sessionContext.session.user_id,
+      org_id: sessionContext.session.org_id,
+    });
+    return null;
+  }
 
   // Check if this session was created before a logout invalidation
   if (
     authBootstrap.sessionInvalidatedAt &&
     sessionContext.session.created_at < authBootstrap.sessionInvalidatedAt
   ) {
+    console.warn('[auth] getAuthContext returning null: session invalidated', {
+      user_id: sessionContext.session.user_id,
+      session_created_at: sessionContext.session.created_at,
+      invalidated_at: authBootstrap.sessionInvalidatedAt,
+    });
     return null;
   }
   const currentOrg: Organization = orgInfo;
