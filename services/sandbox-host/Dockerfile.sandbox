@@ -73,6 +73,7 @@ RUN cd /opt/chiridion && npx playwright install-deps chromium && \
     npx playwright install chromium && \
     rm -rf /var/lib/apt/lists/* && \
     chmod -R o+rx /opt/playwright-browsers && \
+    mkdir -p /usr/local/lib/node_modules && \
     ln -s /opt/chiridion/node_modules/playwright /usr/local/lib/node_modules/playwright
 
 # Copy sandbox files
