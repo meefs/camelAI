@@ -548,7 +548,9 @@ Features include:
 - Resumable streaming via WebSockets
 - Tool use and function calling
 
-**See [AI-APPS.md](AI-APPS.md) for setup, customization, and common pitfalls.**
+> **Critical:** Every `useAgent` call MUST pass a unique `name` (e.g., a session ID) — without it, all users share one DO instance. Generate session IDs server-side in loaders, not in component bodies. Also, `useAgentChat` does NOT return `input`/`setInput`/`handleSubmit` in AI SDK v3 — manage your own input state with `useState` and use `sendMessage` to send.
+
+**See [AI-APPS.md](AI-APPS.md) for setup, session isolation, and common pitfalls.**
 
 ### camelAI AI Access Patterns
 

@@ -20,6 +20,75 @@ Use `env.AI` in worker code whenever possible.
 2. In `workers/app.ts`, uncomment `routeAgentRequest` and `export { Chat }`.
 3. In `app/routes.ts`, add `route("chat", "routes/chat.tsx")`.
 
+## Critical: Session Isolation with useAgent
+
+> **Every `useAgent` call MUST pass a unique `name` to create per-user/per-session Durable Object instances.** Without `name`, all users share the same DO instance ("default"), seeing each other's conversations and overwriting each other's state. This is the #1 deployment bug with Cloudflare Agents.
+
+```tsx
+// BAD — all users share one DO instance (the "default" instance)
+const agent = useAgent({ agent: "Chat" });
+
+// GOOD — each session gets its own DO instance
+const agent = useAgent({ agent: "Chat", name: sessionId });
+```
+
+### How to generate session IDs
+
+**Always generate session IDs server-side in a loader** — never in the component body (causes hydration mismatches and re-render loops).
+
+```tsx
+// In your route loader (runs on the server)
+export async function loader({ request }: Route.LoaderArgs) {
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get("session") || crypto.randomUUID();
+  return { sessionId };
+}
+
+// In your component
+export default function ChatPage() {
+  const { sessionId } = useLoaderData<typeof loader>();
+  // ...
+  const agent = useAgent({ agent: "Chat", name: sessionId });
+}
+```
+
+For apps where conversations should persist across page refreshes within a tab, store the session ID in `sessionStorage`:
+
+```tsx
+function getOrCreateSessionId(): string {
+  const key = "chat-session-id";
+  let id = sessionStorage.getItem(key);
+  if (!id) {
+    id = crypto.randomUUID();
+    sessionStorage.setItem(key, id);
+  }
+  return id;
+}
+```
+
+### AI SDK v3: useAgentChat API
+
+`useAgentChat` (from `@cloudflare/ai-chat/react`) does **NOT** return `input`, `setInput`, `handleInputChange`, or `handleSubmit`. These were removed in AI SDK v3. Manage your own input state:
+
+```tsx
+// BAD — these are undefined in AI SDK v3, causes "X is not a function" errors
+const { input, setInput, handleSubmit } = useAgentChat({ agent });
+
+// GOOD — manage your own input state
+const [input, setInput] = useState("");
+const { messages, sendMessage, status, error, clearHistory } = useAgentChat({
+  agent,
+});
+
+const onSubmit = async (e: FormEvent) => {
+  e.preventDefault();
+  if (!input.trim()) return;
+  const text = input;
+  setInput("");
+  await sendMessage({ role: "user", parts: [{ type: "text", text }] });
+};
+```
+
 ## Workers AI Provider (Recommended)
 
 Use `workers-ai-provider` with the AI SDK:
@@ -334,13 +403,15 @@ const imageDataUrl = result.choices[0].message.images?.[0]?.image_url?.url;
 
 ## Best Practices
 
-1. **Always use codemode for tool-calling agents** — lets the LLM chain, branch, and parallelize tool calls in one turn. Only skip for a single trivially simple tool.
-2. **Add `outputSchema` to every tool** — generates real TypeScript types in codemode.
-3. **Only wrap data/side-effect tools in codemode** — the LLM constructs output shapes directly in code.
-4. **Use a `type` discriminator in codemode return values** — define the convention in your `createCodeTool` description.
-5. **Handle the current AI SDK part format** — use `p.type.startsWith("tool-")`, `p.output ?? p.result`, and `state === "output-available"`.
-6. **Use `??` for defensive defaults** — Zod params may be `undefined` at runtime. `||` silently replaces valid `0`/`false`/`""`.
-7. Use `workersai("auto", {})` as the default model. Only use a specific OpenRouter model (e.g., `"anthropic/claude-sonnet-4.6"`) when the user explicitly requests it.
-8. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
-9. Stream responses for chat UX.
-10. Use `MarkdownRenderer` for assistant output.
+1. **Always pass a unique `name` to `useAgent`** — without it, all users share one DO instance. Generate session IDs server-side in loaders.
+2. **Manage your own input state** — `useAgentChat` does not return `input`/`setInput`/`handleSubmit` in AI SDK v3. Use `useState` + `sendMessage`.
+3. **Always use codemode for tool-calling agents** — lets the LLM chain, branch, and parallelize tool calls in one turn. Only skip for a single trivially simple tool.
+4. **Add `outputSchema` to every tool** — generates real TypeScript types in codemode.
+5. **Only wrap data/side-effect tools in codemode** — the LLM constructs output shapes directly in code.
+6. **Use a `type` discriminator in codemode return values** — define the convention in your `createCodeTool` description.
+7. **Handle the current AI SDK part format** — use `p.type.startsWith("tool-")`, `p.output ?? p.result`, and `state === "output-available"`.
+8. **Use `??` for defensive defaults** — Zod params may be `undefined` at runtime. `||` silently replaces valid `0`/`false`/`""`.
+9. Use `workersai("auto", {})` as the default model. Only use a specific OpenRouter model (e.g., `"anthropic/claude-sonnet-4.6"`) when the user explicitly requests it.
+10. Avoid `max_tokens` unless a hard cap is required; reasoning tokens count toward it.
+11. Stream responses for chat UX.
+12. Use `MarkdownRenderer` for assistant output.

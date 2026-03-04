@@ -35,10 +35,14 @@ import { createWorkersAI } from "workers-ai-provider";
  *
  * ## Usage from React
  * ```tsx
- * // IMPORTANT: useAgent uses `name` (not `id`) to identify instances
- * // Generate sessionId server-side in your loader to avoid re-render issues
+ * // IMPORTANT: Always pass a unique `name` — without it, all users share
+ * // one DO instance and see each other's conversations.
  * const agent = useAgent({ agent: "Chat", name: sessionId });
- * const { messages, sendMessage } = useAgentChat({ agent });
+ *
+ * // useAgentChat does NOT return input/setInput/handleSubmit (AI SDK v3).
+ * // Manage your own input state with useState.
+ * const { messages, sendMessage, status } = useAgentChat({ agent });
+ * await sendMessage({ text: "Hello" });
  * ```
  */
 export class Chat extends AIChatAgent<Env> {

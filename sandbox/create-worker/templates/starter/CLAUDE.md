@@ -234,7 +234,8 @@ export async function loader({ context }: Route.LoaderArgs) {
 
 ## Common Pitfalls
 
-- **useAgent uses `name`, not `id`**: `useAgent({ agent: "Chat", name: sessionId })`
-- **Generate session IDs in loaders**, not in component body (causes re-render issues)
+- **Always pass a unique `name` to `useAgent`**: `useAgent({ agent: "Chat", name: sessionId })`. Without `name`, ALL users share the same DO instance ("default"), seeing each other's conversations. Every chat must have a unique session ID.
+- **Generate session IDs in loaders**, not in component body (causes re-render issues). For persistence across refreshes, use `sessionStorage` on the client.
+- **`useAgentChat` does NOT return `input`/`setInput`/`handleSubmit`** — these were removed in AI SDK v3. Manage your own input state with `useState("")` and send messages via `sendMessage({ role: "user", parts: [{ type: "text", text }] })`. Using the removed properties causes `"X is not a function"` errors.
 - **Use MarkdownRenderer for AI output** - AI responses are markdown-formatted
 - **Use `bunx --bun shadcn@latest add`** - not `npx shadcn` or `bun run shadcn`

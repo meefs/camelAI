@@ -13,11 +13,6 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       "~": resolve(__dirname, "./app"),
-      // Workaround: @cloudflare/ai-chat imports { agentContext } from "agents/internal_context"
-      // but agents@0.6.0 removed the subpath from its exports map and renamed the export
-      // to __DO_NOT_USE_WILL_BREAK__agentContext. Rolldown (Vite 8) enforces strict exports
-      // resolution, so we alias it to a shim that re-exports under the old name.
-      "agents/internal_context": resolve(__dirname, "workers/agents-internal-context-shim.ts"),
     },
   },
   // Configure SSR environment to use Cloudflare's worker entry as the rollup input

@@ -1,5 +1,5 @@
 import { useState, type FormEvent, useEffect } from "react";
-import { useLoaderData } from "react-router";
+import { useLoaderData, redirect } from "react-router";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import type { UIMessage } from "@ai-sdk/react";
@@ -25,21 +25,34 @@ import type { Route } from "./+types/chat";
  * - This happens automatically via `convertToModelMessages(this.messages)` in chat.ts
  * - The SDK handles persistence, so conversations survive page refreshes
  *
- * Session management:
- * - Each unique `name` in useAgent creates a separate chat instance
- * - Generate session IDs server-side in loaders (not in components!)
- * - Client-side ID generation causes re-render issues
+ * Session isolation:
+ * - Each unique `name` in useAgent creates a separate Durable Object instance
+ * - WITHOUT a unique name, ALL users share the same DO ("default") and see
+ *   each other's conversations — this is the #1 deployment bug
+ * - The session ID lives in the URL (/chat?session=<id>) so users can have
+ *   multiple conversations and share/bookmark them
+ * - Visiting /chat with no ?session redirects to a fresh session automatically
+ *
+ * API notes (AI SDK v3):
+ * - useAgentChat does NOT return input/setInput/handleSubmit — manage your
+ *   own input state with useState and use sendMessage() to send
+ * - sendMessage accepts { text } shorthand or { role, parts } for rich content
  */
 
 /**
- * Loader runs on the server - generate session ID here.
- * IMPORTANT: useAgent uses `name` (not `id`) to identify chat instances.
+ * Loader generates a session ID if none is in the URL.
+ * The ID is in the query string so multiple conversations are just
+ * different URLs — easy to extend with a sidebar/history list later.
  */
-export async function loader({ request }: Route.LoaderArgs) {
-  // Generate a unique session ID for this chat
-  // In a real app, you might use user ID, conversation ID from URL params, etc.
+export function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
-  const sessionId = url.searchParams.get("session") || crypto.randomUUID();
+  const sessionId = url.searchParams.get("session");
+
+  // No session in URL → redirect to a fresh one
+  if (!sessionId) {
+    url.searchParams.set("session", crypto.randomUUID());
+    throw redirect(url.pathname + url.search);
+  }
 
   return { sessionId };
 }
@@ -72,13 +85,16 @@ export default function ChatPage() {
 function ChatClient({ sessionId }: { sessionId: string }) {
   const [input, setInput] = useState("");
 
-  // IMPORTANT: useAgent uses `name` (not `id`) to identify the chat instance
-  // Each unique name creates a separate conversation with its own history
+  // IMPORTANT: Always pass a unique `name` to useAgent.
+  // Without it, every user shares the same Durable Object instance ("default")
+  // and sees each other's conversations.
   const agent = useAgent({
     agent: "Chat",
     name: sessionId,
   });
 
+  // Note: useAgentChat does NOT return input/setInput/handleSubmit (removed
+  // in AI SDK v3). Manage your own input state with useState.
   const { messages, sendMessage, status, error, clearHistory } = useAgentChat({
     agent,
   });
@@ -90,33 +106,14 @@ function ChatClient({ sessionId }: { sessionId: string }) {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
 
-    const message = input;
+    const text = input;
     setInput("");
 
-    // Send message to the Chat Durable Object
-    // The DO automatically persists this message and includes all
-    // previous messages when calling the AI model
+    // Using the parts format makes it easy to extend with images, files, etc.
+    // For text-only, you can also use the shorthand: sendMessage({ text })
     await sendMessage({
       role: "user",
-      parts: [{ type: "text", text: message }],
-    });
-  };
-
-  // Check if an assistant message has any visible content yet.
-  // Prevents "blank bubble" when the stream starts but no parts have arrived.
-  const hasVisibleContent = (message: UIMessage): boolean => {
-    if (!message.parts?.length) return false;
-    return message.parts.some((part: any) => {
-      if (part.type === "text" && part.text?.trim()) return true;
-      if (typeof part.type === "string" && part.type.startsWith("tool-")) {
-        const result = part.output ?? part.result;
-        if (
-          (part.state === "result" || part.state === "output-available") &&
-          result
-        )
-          return true;
-      }
-      return false;
+      parts: [{ type: "text", text }],
     });
   };
 
@@ -162,16 +159,6 @@ function ChatClient({ sessionId }: { sessionId: string }) {
               >
                 {isAssistant ? (
                   <>
-                    {/* Show loading if streaming but nothing visible yet (blank bubble fix) */}
-                    {!hasVisibleContent(message) &&
-                      isStreaming &&
-                      isLastMessage && (
-                        <div className="flex space-x-1">
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]" />
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]" />
-                        </div>
-                      )}
                     {/* Render all message parts — text and tool results */}
                     {message.parts?.map((part: any, i: number) => {
                       // Text parts — always use MarkdownRenderer for AI output
@@ -184,37 +171,16 @@ function ChatClient({ sessionId }: { sessionId: string }) {
                           />
                         );
                       }
-                      // Tool parts: "tool-{name}" format (AI SDK v5+)
-                      if (
-                        typeof part.type === "string" &&
-                        part.type.startsWith("tool-")
-                      ) {
-                        const state = part.state;
-                        const result = part.output ?? part.result;
-                        // Loading — tool call in progress
-                        if (state === "call" || state === "partial-call") {
-                          return (
-                            <div key={i} className="flex space-x-1 py-1">
-                              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
-                              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]" />
-                              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]" />
-                            </div>
-                          );
-                        }
-                        // Completed — render result (customize per your app's needs)
-                        if (
-                          (state === "result" ||
-                            state === "output-available") &&
-                          result
-                        ) {
-                          // For codemode, result is { code, result, logs }
-                          // Customize rendering based on result.result.type
-                          return null; // AI summarizes in text by default
-                        }
-                        return null;
-                      }
                       return null;
                     })}
+                    {/* Show loading dots on the last assistant message while streaming */}
+                    {isLoading && isLastMessage && (
+                      <div className="flex space-x-1 py-1">
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]" />
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]" />
+                      </div>
+                    )}
                   </>
                 ) : (
                   <p className="whitespace-pre-wrap">
@@ -232,13 +198,9 @@ function ChatClient({ sessionId }: { sessionId: string }) {
           );
         })}
 
-        {/* Show loading if waiting for response and no visible assistant content yet */}
+        {/* Show loading bubble when waiting and no assistant message exists yet */}
         {isLoading &&
-          (() => {
-            const lastMsg = messages[messages.length - 1];
-            if (!lastMsg || lastMsg.role !== "assistant") return true;
-            return !hasVisibleContent(lastMsg);
-          })() && (
+          messages[messages.length - 1]?.role !== "assistant" && (
             <div className="flex justify-start">
               <div className="bg-white border border-gray-200 rounded-lg px-4 py-2">
                 <div className="flex space-x-1">
