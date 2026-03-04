@@ -285,6 +285,59 @@ bun test -t "discount"
 bun test --coverage
 ```
 
+## E2E Testing with Playwright
+
+Playwright and Chromium are pre-installed in the sandbox for end-to-end testing of deployed apps.
+
+### Basic Usage
+
+```javascript
+import { chromium } from "playwright";
+
+const browser = await chromium.launch();
+const page = await browser.newPage();
+
+await page.goto("https://my-app.camelai.app");
+await page.click('button:text("Sign Up")');
+await page.fill('input[name="email"]', "test@example.com");
+await page.click('button[type="submit"]');
+
+await expect(page.locator(".success-message")).toBeVisible();
+await browser.close();
+```
+
+### Accessing Private Deployed Apps
+
+Private apps require authentication. Use the `CHIRIDION_APP_SESSION` env var (automatically available in the sandbox) to set the dispatcher session cookie:
+
+```javascript
+import { chromium } from "playwright";
+
+const browser = await chromium.launch();
+const context = await browser.newContext();
+
+if (process.env.CHIRIDION_APP_SESSION) {
+  await context.addCookies([
+    { name: "chiridion_run_session", value: process.env.CHIRIDION_APP_SESSION, domain: ".camelai.app", path: "/", httpOnly: true },
+  ]);
+}
+
+const page = await context.newPage();
+await page.goto("https://my-private-app.camelai.app");
+```
+
+### When to Use E2E vs Unit Tests
+
+| Scenario | Approach |
+|----------|----------|
+| Logic bug in a function | Unit test (faster) |
+| Visual layout issue | E2E with screenshot |
+| Form submission flow | E2E |
+| API response handling | Unit test with mocks |
+| Full user journey | E2E |
+
+Prefer unit tests for speed. Use Playwright when you need to verify browser behavior, navigation flows, or visual rendering.
+
 ## Debugging Checklist
 
 When investigating a bug:
