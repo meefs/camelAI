@@ -188,6 +188,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
   // Skip fetching thread metadata for new threads — we just created it and it has no title yet
   const thread = isNewThread ? null : await chatDO.getThread(context, params.id, workspaceId);
+  if (!isNewThread && !thread) {
+    throw redirect('/chat');
+  }
 
   const chatDataPromise: Promise<ChatData> = isNewThread
     ? Promise.resolve(EMPTY_CHAT_DATA)

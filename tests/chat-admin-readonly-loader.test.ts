@@ -104,3 +104,67 @@ describe('chat loader admin readonly mode', () => {
     });
   });
 });
+
+describe('chat loader workspace mismatch handling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getEnvMock.mockReturnValue({});
+    getAuthEnvMock.mockReturnValue({});
+    getThreadPreviewStateMock.mockResolvedValue({
+      target: null,
+      tabs: [],
+      activeTabId: null,
+      version: 0,
+    });
+  });
+
+  it('redirects to /chat when the thread is not in the active workspace', async () => {
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+    });
+    getThreadMock.mockResolvedValue(null);
+
+    await expect(
+      loader({
+        request: new Request('https://camelai.com/chat/thread_123'),
+        context: {},
+        params: { id: 'thread_123' },
+      } as never)
+    ).rejects.toSatisfy((response: unknown) => {
+      return response instanceof Response
+        && response.status === 302
+        && response.headers.get('Location') === '/chat';
+    });
+
+    expect(getThreadMock).toHaveBeenCalledWith({}, 'thread_123', 'ws_active');
+  });
+
+  it('returns chat payload when the thread belongs to the active workspace', async () => {
+    requireAuthContextMock.mockResolvedValue({
+      currentWorkspace: { id: 'ws_active' },
+      currentOrg: { id: 'org_active', slug: 'acme' },
+    });
+    getThreadMock.mockResolvedValue({
+      id: 'thread_123',
+      workspace_id: 'ws_active',
+      title: 'Workspace Thread',
+    });
+
+    const result = await loader({
+      request: new Request('https://camelai.com/chat/thread_123'),
+      context: {},
+      params: { id: 'thread_123' },
+    } as never);
+
+    expect(result.readOnly).toBe(false);
+    expect(result.workspaceId).toBe('ws_active');
+    expect(result.threadTitle).toBe('Workspace Thread');
+    await expect(result.chatDataPromise).resolves.toEqual({
+      messages: [],
+      previewTabs: [],
+      activeTabId: null,
+      previewTarget: null,
+    });
+  });
+});
