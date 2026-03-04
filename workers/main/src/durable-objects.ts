@@ -214,6 +214,7 @@ const CHAT_CONTEXT_USED_PERCENT_KEY = 'chatContextUsedPercent';
 const CHAT_CONTEXT_WINDOW_BY_MODEL_KEY = 'chatContextWindowByModel';
 const CHAT_NEXT_EVENT_ID_KEY = 'chatNextEventId';
 const CHAT_RUNNER_LAST_SEQ_KEY = 'chatRunnerLastSeq';
+const CHAT_RUNNER_IDLE_DISCONNECT_KEY = 'chatRunnerIdleDisconnect';
 
 const MAX_CHAT_EVENT_BUFFER = 500;
 const RUNNER_PING_INTERVAL_MS = 10_000;
@@ -550,6 +551,9 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.runnerActivityGeneration += 1;
     const hadIntentionalIdleDisconnect = this.runnerIntentionalIdleDisconnect;
     this.runnerIntentionalIdleDisconnect = false;
+    if (hadIntentionalIdleDisconnect) {
+      this.ctx.storage.kv.put(CHAT_RUNNER_IDLE_DISCONNECT_KEY, false);
+    }
     this.trace('runner_activity', {
       source,
       generation: this.runnerActivityGeneration,
@@ -678,6 +682,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       if (typeof storedRunnerLastSeq === 'number' && storedRunnerLastSeq > 0) {
         this.lastRunnerSeq = storedRunnerLastSeq;
         this.lastPersistedRunnerSeq = storedRunnerLastSeq;
+      }
+
+      const storedIdleDisconnect = ctx.storage.kv.get<boolean>(CHAT_RUNNER_IDLE_DISCONNECT_KEY);
+      if (storedIdleDisconnect === true) {
+        this.runnerIntentionalIdleDisconnect = true;
       }
 
       // chatIsStreaming is intentionally in-memory only (not persisted).
@@ -2133,6 +2142,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       this.runnerIntentionalIdleDisconnect = true;
+      this.ctx.storage.kv.put(CHAT_RUNNER_IDLE_DISCONNECT_KEY, true);
       this.stopRunnerReconnectLoop('idle_disconnect_control');
       this.cancelRunnerDisconnectGrace('idle_disconnect_control');
       this.trace('runner_idle_disconnect_control_closing', {
