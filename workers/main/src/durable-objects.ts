@@ -1778,7 +1778,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       const container = new WorkspaceContainer(this.env, context.workspaceId, context.orgId);
       // Build thread-specific env (integration creds + thread ID).
-      const envVars = await container.buildClaudeRunnerEnv({
+      const { envVars, byokProxy } = await container.buildClaudeRunnerEnv({
         threadId: context.threadId,
       });
       // Forward auto-compaction override so dev/staging can trigger compaction early.
@@ -1790,9 +1790,11 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       });
 
       // Open WebSocket to the control plane's /chat endpoint.
+      // BYOK credentials pass via headers so sandbox-host can call the provider directly.
       const chatWs = await container.connectChatWebSocket({
         threadId: context.threadId,
         userId: context.userId ?? undefined,
+        byokProxy,
       });
       this.attachRunnerSocket(chatWs);
       this.trace('ensure_runner_ws_connected');

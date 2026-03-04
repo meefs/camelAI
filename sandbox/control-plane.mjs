@@ -826,26 +826,15 @@ class ChatSession {
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
       CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
     };
+    // Rewrite all proxy URLs (including Anthropic) to route through the
+    // sandbox-host proxy with thread context. BYOK credentials are handled
+    // entirely in sandbox-host via WebSocket upgrade headers.
     const proxyThreadId = this.threadId;
-    // BYOK: when org has their own API key, skip proxy rewriting for Anthropic URLs
-    // so the SDK calls the provider directly instead of going through our proxy.
-    const isByok = mergedEnv.CHIRIDION_BYOK_PROVIDER === 'anthropic' || mergedEnv.CLAUDE_CODE_USE_BEDROCK === '1';
     if (proxyThreadId) {
-      if (isByok) {
-        // BYOK active: only rewrite non-Anthropic proxy URLs
-        for (const key of ['CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'OPENAI_PROXY_URL', 'OPENAI_BASE_URL', 'MCP_SERVER_URL']) {
-          const value = mergedEnv[key];
-          if (typeof value === 'string' && value.length > 0) {
-            mergedEnv[key] = withThreadProxyPath(value, proxyThreadId);
-          }
-        }
-      } else {
-        // Default: rewrite all proxy URLs including Anthropic
-        for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'OPENAI_PROXY_URL', 'OPENAI_BASE_URL', 'MCP_SERVER_URL']) {
-          const value = mergedEnv[key];
-          if (typeof value === 'string' && value.length > 0) {
-            mergedEnv[key] = withThreadProxyPath(value, proxyThreadId);
-          }
+      for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'OPENAI_PROXY_URL', 'OPENAI_BASE_URL', 'MCP_SERVER_URL']) {
+        const value = mergedEnv[key];
+        if (typeof value === 'string' && value.length > 0) {
+          mergedEnv[key] = withThreadProxyPath(value, proxyThreadId);
         }
       }
     }

@@ -115,6 +115,10 @@ export interface ClaudeRunnerEnvOptions {
   threadId: string;
 }
 
+export type ByokProxyCredentials =
+  | { provider: 'anthropic'; apiKey: string }
+  | { provider: 'bedrock'; bearerToken: string; region: string };
+
 const INTEGRATION_ENV_FILE_PATH = '/home/claude/.chiridion/integration.env';
 
 function toIsoTime(ms: number): string {
@@ -403,8 +407,16 @@ export class WorkspaceContainer {
   /**
    * Build thread-specific env vars (integration creds + thread ID).
    * Passed to the control plane chat WebSocket init message.
+   *
+   * BYOK credentials are returned separately as `byokProxy` so they're
+   * passed to sandbox-host via WebSocket upgrade headers — never leaked
+   * into the container env. The SDK always talks standard Anthropic Messages
+   * API through the proxy; sandbox-host decides the upstream.
    */
-  async buildClaudeRunnerEnv(options: ClaudeRunnerEnvOptions): Promise<Record<string, string>> {
+  async buildClaudeRunnerEnv(options: ClaudeRunnerEnvOptions): Promise<{
+    envVars: Record<string, string>;
+    byokProxy?: ByokProxyCredentials;
+  }> {
     if (!this.workspaceId) {
       throw new Error('WorkspaceContainer not initialized');
     }
@@ -415,26 +427,27 @@ export class WorkspaceContainer {
     await this.writeIntegrationEnvFileToSandbox(integrationEnv);
 
     // Fetch org-level BYOK provider config (if any)
-    const byokEnv = await this.fetchByokEnvVars();
+    const byokProxy = await this.fetchByokProxyCredentials();
 
     return {
-      ...integrationEnv,
-      ...byokEnv,
+      envVars: integrationEnv,
+      byokProxy,
     };
   }
 
   /**
-   * Fetch org-level BYOK (bring your own key) LLM provider env vars.
-   * When configured, these override the proxy env vars so the SDK
-   * calls the provider directly.
+   * Fetch org-level BYOK (bring your own key) LLM provider credentials.
+   *
+   * Both Anthropic and Bedrock BYOK are handled in the Go proxy (sandbox-host).
+   * Credentials are passed via WebSocket headers, not container env vars.
    */
-  private async fetchByokEnvVars(): Promise<Record<string, string>> {
-    if (!this.orgId) return {};
+  private async fetchByokProxyCredentials(): Promise<ByokProxyCredentials | undefined> {
+    if (!this.orgId) return undefined;
 
     try {
       const orgStub = this.env.ORG.get(this.env.ORG.idFromName(this.orgId));
       const record = await orgStub.getLlmProviderConfig();
-      if (!record) return {};
+      if (!record) return undefined;
 
       const creds = await decryptCredentials<Record<string, string>>(
         record.credentials_encrypted,
@@ -443,32 +456,20 @@ export class WorkspaceContainer {
       const config = JSON.parse(record.config) as Record<string, string>;
 
       if (record.provider === 'anthropic') {
-        console.log(`[Sandbox] BYOK: using Anthropic direct API for org=${this.orgId}`);
-        return {
-          ANTHROPIC_API_KEY: creds.api_key,
-          ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
-          CHIRIDION_BYOK_PROVIDER: 'anthropic',
-        };
+        console.log(`[Sandbox] BYOK: using Anthropic via proxy for org=${this.orgId}`);
+        return { provider: 'anthropic', apiKey: creds.api_key };
       }
 
       if (record.provider === 'bedrock') {
         const region = config.aws_region || 'us-east-1';
-        console.log(`[Sandbox] BYOK: using Bedrock (${region}) for org=${this.orgId}`);
-        return {
-          CLAUDE_CODE_USE_BEDROCK: '1',
-          AWS_BEARER_TOKEN_BEDROCK: creds.bearer_token,
-          AWS_REGION: region,
-          CHIRIDION_BYOK_PROVIDER: 'bedrock',
-          // Clear proxy env vars so the SDK uses Bedrock directly
-          ANTHROPIC_BASE_URL: '',
-          ANTHROPIC_API_KEY: '',
-        };
+        console.log(`[Sandbox] BYOK: using Bedrock via proxy (${region}) for org=${this.orgId}`);
+        return { provider: 'bedrock', bearerToken: creds.bearer_token, region };
       }
 
-      return {};
+      return undefined;
     } catch (err) {
-      console.error('[Sandbox] fetchByokEnvVars: error:', err);
-      return {};
+      console.error('[Sandbox] fetchByokProxyCredentials: error:', err);
+      return undefined;
     }
   }
 
@@ -479,7 +480,11 @@ export class WorkspaceContainer {
    * ChatThreadDO uses this to bridge chat clients to the Claude Agent SDK
    * running in-process inside the sandbox.
    */
-  async connectChatWebSocket(options: { threadId: string; userId?: string }): Promise<WebSocket> {
+  async connectChatWebSocket(options: {
+    threadId: string;
+    userId?: string;
+    byokProxy?: ByokProxyCredentials;
+  }): Promise<WebSocket> {
     console.log(`[Sandbox] connectChatWebSocket: connecting via proxy`);
     if (!options.threadId) {
       throw new Error('Thread ID is required for chat websocket');
@@ -489,13 +494,23 @@ export class WorkspaceContainer {
       throw new Error('WORKER_BASE_URL is not configured');
     }
 
+    const headers: Record<string, string> = {
+      Upgrade: 'websocket',
+      'X-Chiridion-Thread-Id': options.threadId,
+      'X-Chiridion-Worker-Base-Url': workerBaseUrl,
+    };
+    if (options.userId) {
+      headers['X-Chiridion-User-Id'] = options.userId;
+    }
+    if (options.byokProxy?.provider === 'anthropic') {
+      headers['X-Chiridion-Byok-Anthropic-Key'] = options.byokProxy.apiKey;
+    } else if (options.byokProxy?.provider === 'bedrock') {
+      headers['X-Chiridion-Byok-Bedrock-Token'] = options.byokProxy.bearerToken;
+      headers['X-Chiridion-Byok-Bedrock-Region'] = options.byokProxy.region;
+    }
+
     const response = await this.fetchSandbox(this.sandboxUrl('/chat'), {
-      headers: {
-        Upgrade: 'websocket',
-        'X-Chiridion-Thread-Id': options.threadId,
-        ...(options.userId ? { 'X-Chiridion-User-Id': options.userId } : {}),
-        'X-Chiridion-Worker-Base-Url': workerBaseUrl,
-      },
+      headers,
     });
 
     if (response.status !== 101 || !response.webSocket) {

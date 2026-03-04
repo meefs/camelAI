@@ -44,6 +44,12 @@ type ProxyThreadContext struct {
 	LastSeenAt    time.Time
 	ExpiresAt     time.Time
 	ClosedAt      *time.Time
+
+	// BYOK: when set, Claude API requests are forwarded directly to the
+	// provider using these credentials instead of going through AI Gateway.
+	ByokAnthropicKey  string
+	ByokBedrockToken  string
+	ByokBedrockRegion string
 }
 
 type WorkspaceRoute struct {
@@ -593,6 +599,9 @@ func (s *Server) handleChatProxy(
 		return nil
 	}
 	userID := strings.TrimSpace(req.Header.Get(s.cfg.HeaderUserID))
+	byokAnthropicKey := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-Anthropic-Key"))
+	byokBedrockToken := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-Bedrock-Token"))
+	byokBedrockRegion := strings.TrimSpace(req.Header.Get("X-Chiridion-Byok-Bedrock-Region"))
 
 	workerBaseURL := normalizeWorkerBaseURL(firstNonEmpty(req.Header.Get(s.cfg.HeaderWorkerBaseURL), s.cfg.WorkerBaseURL))
 	if workerBaseURL == "" {
@@ -614,17 +623,20 @@ func (s *Server) handleChatProxy(
 		createdAt = existing.CreatedAt
 	}
 	s.proxyThreads[threadKey] = &ProxyThreadContext{
-		Key:           threadKey,
-		ContainerName: name,
-		OrgID:         route.OrgID,
-		WorkspaceID:   route.WorkspaceID,
-		UserID:        userID,
-		ThreadID:      threadID,
-		WorkerBaseURL: workerBaseURL,
-		CreatedAt:     createdAt,
-		LastSeenAt:    now,
-		ExpiresAt:     now.Add(s.cfg.ProxyThreadActiveTTL),
-		ClosedAt:      nil,
+		Key:               threadKey,
+		ContainerName:     name,
+		OrgID:             route.OrgID,
+		WorkspaceID:       route.WorkspaceID,
+		UserID:            userID,
+		ThreadID:          threadID,
+		WorkerBaseURL:     workerBaseURL,
+		CreatedAt:         createdAt,
+		LastSeenAt:        now,
+		ExpiresAt:         now.Add(s.cfg.ProxyThreadActiveTTL),
+		ClosedAt:          nil,
+		ByokAnthropicKey:  byokAnthropicKey,
+		ByokBedrockToken:  byokBedrockToken,
+		ByokBedrockRegion: byokBedrockRegion,
 	}
 	current := copyProxyThreadContext(s.proxyThreads[threadKey])
 	s.proxyMu.Unlock()
@@ -876,6 +888,19 @@ func (s *Server) handleProxyRoute(w http.ResponseWriter, req *http.Request, prox
 		})
 		errorJSON(w, "Unknown proxy thread", http.StatusForbidden)
 		return
+	}
+
+	// BYOK: route Claude API requests directly to the provider (bypass AI Gateway).
+	if strings.HasPrefix(proxy.UpstreamPath, "/api/claude/") {
+		if threadContext.ByokAnthropicKey != "" {
+			s.forwardClaudeToAnthropicDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
+			return
+		}
+		// Bedrock count_tokens falls through to AI Gateway (Bedrock uses Anthropic format for that).
+		if threadContext.ByokBedrockToken != "" && !strings.Contains(proxy.UpstreamPath, "count_tokens") {
+			s.forwardClaudeToBedrockDirect(w, req, proxy, threadContext, caller, requestID, startedAt)
+			return
+		}
 	}
 
 	// Route LLM API requests to AI Gateway instead of Worker
@@ -1153,6 +1178,212 @@ func (s *Server) forwardClaudeToAIGateway(
 		if err := copyResponseBody(w, resp.Body); err != nil {
 			if !errors.Is(err, context.Canceled) {
 				s.trace("gateway_claude_proxy_copy_error", map[string]any{
+					"requestId":       requestID,
+					"callerContainer": caller.Name,
+					"threadId":        threadContext.ThreadID,
+					"error":           err.Error(),
+				})
+			}
+		}
+	}
+}
+
+// forwardClaudeToAnthropicDirect handles BYOK Anthropic requests by
+// forwarding to api.anthropic.com with the org's API key. Pure passthrough —
+// no body parsing or transformation needed.
+func (s *Server) forwardClaudeToAnthropicDirect(
+	w http.ResponseWriter,
+	req *http.Request,
+	proxy ProxyRoute,
+	threadContext *ProxyThreadContext,
+	caller *container.ContainerRecord,
+	requestID string,
+	startedAt time.Time,
+) {
+	targetURL := "https://api.anthropic.com" + strings.Replace(proxy.UpstreamPath, "/api/claude", "", 1)
+
+	forwardReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, req.Body)
+	if err != nil {
+		errorJSON(w, "Failed to create Anthropic request", http.StatusInternalServerError)
+		return
+	}
+
+	// Copy all Anthropic headers, replace auth.
+	forwardReq.Header = cloneHeaders(req.Header)
+	forwardReq.Header.Set("x-api-key", threadContext.ByokAnthropicKey)
+	applyStreamingRequestHeaders(forwardReq.Header)
+
+	proxyTag := fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath)
+	s.containers.AddProxyRequest(threadContext.ContainerName, proxyTag)
+
+	resp, upstreamErr := s.httpClient.Do(forwardReq)
+	durationMs := time.Since(startedAt).Milliseconds()
+	if upstreamErr != nil {
+		s.containers.RemoveProxyRequest(threadContext.ContainerName, proxyTag, 0, durationMs)
+		log.Printf("[SandboxHost] BYOK Anthropic proxy failed thread=%s durationMs=%d error=%v",
+			threadContext.ThreadID, durationMs, upstreamErr)
+		errorJSON(w, "Anthropic upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	s.containers.RemoveProxyRequest(threadContext.ContainerName, proxyTag, resp.StatusCode, durationMs)
+
+	copyHeaders(w.Header(), resp.Header)
+	applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+	_ = copyResponseBody(w, resp.Body)
+}
+
+// forwardClaudeToBedrockDirect handles BYOK Bedrock requests by calling
+// the Bedrock invoke-with-response-stream endpoint directly using the
+// org's bearer token (bypasses AI Gateway).
+func (s *Server) forwardClaudeToBedrockDirect(
+	w http.ResponseWriter,
+	req *http.Request,
+	proxy ProxyRoute,
+	threadContext *ProxyThreadContext,
+	caller *container.ContainerRecord,
+	requestID string,
+	startedAt time.Time,
+) {
+	rawBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		errorJSON(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	var bodyJSON map[string]any
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &bodyJSON); err != nil {
+			errorJSON(w, "Invalid JSON body", http.StatusBadRequest)
+			return
+		}
+	}
+
+	modelStr, _ := bodyJSON["model"].(string)
+	if modelStr == "" {
+		errorJSON(w, "Missing model in request body", http.StatusBadRequest)
+		return
+	}
+	bedrockModel := mapToBedrockModel(modelStr)
+
+	isStreaming, _ := bodyJSON["stream"].(bool)
+	endpoint := "invoke"
+	if isStreaming {
+		endpoint = "invoke-with-response-stream"
+	}
+
+	region := threadContext.ByokBedrockRegion
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	targetURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/%s",
+		region, bedrockModel, endpoint)
+
+	// Build Bedrock body: strip model/stream, add anthropic_version.
+	bedrockBody := map[string]any{
+		"anthropic_version": "bedrock-2023-05-31",
+	}
+	for key, val := range bodyJSON {
+		if key != "model" && key != "stream" {
+			bedrockBody[key] = val
+		}
+	}
+
+	// Pass anthropic-beta header values as body array for Bedrock
+	if betaHeader := req.Header.Get("anthropic-beta"); betaHeader != "" {
+		var betas []string
+		for _, b := range strings.Split(betaHeader, ",") {
+			b = strings.TrimSpace(b)
+			if b != "" {
+				betas = append(betas, b)
+			}
+		}
+		if len(betas) > 0 {
+			bedrockBody["anthropic_beta"] = betas
+		}
+	}
+
+	payload, err := json.Marshal(bedrockBody)
+	if err != nil {
+		errorJSON(w, "Failed to build Bedrock payload", http.StatusInternalServerError)
+		return
+	}
+
+	forwardReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
+	if err != nil {
+		errorJSON(w, "Failed to create Bedrock request", http.StatusInternalServerError)
+		return
+	}
+
+	forwardReq.Header.Set("Content-Type", "application/json")
+	forwardReq.Header.Set("Authorization", "Bearer "+threadContext.ByokBedrockToken)
+	applyStreamingRequestHeaders(forwardReq.Header)
+
+	s.trace("byok_bedrock_direct_start", map[string]any{
+		"requestId":       requestID,
+		"callerContainer": caller.Name,
+		"method":          req.Method,
+		"threadId":        threadContext.ThreadID,
+		"model":           modelStr,
+		"bedrockModel":    bedrockModel,
+		"region":          region,
+		"streaming":       isStreaming,
+	})
+	s.containers.AddProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath))
+
+	resp, upstreamErr := s.httpClient.Do(forwardReq)
+	durationMs := time.Since(startedAt).Milliseconds()
+	if upstreamErr != nil {
+		s.trace("byok_bedrock_direct_error", map[string]any{
+			"requestId":       requestID,
+			"callerContainer": caller.Name,
+			"threadId":        threadContext.ThreadID,
+			"durationMs":      durationMs,
+			"error":           upstreamErr.Error(),
+		})
+		s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), 0, durationMs)
+		log.Printf("[SandboxHost] BYOK Bedrock direct proxy failed thread=%s container=%s durationMs=%d error=%v",
+			threadContext.ThreadID, threadContext.ContainerName, durationMs, upstreamErr)
+		errorJSON(w, "Bedrock upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	s.trace("byok_bedrock_direct_complete", map[string]any{
+		"requestId":       requestID,
+		"callerContainer": caller.Name,
+		"threadId":        threadContext.ThreadID,
+		"status":          resp.StatusCode,
+		"durationMs":      durationMs,
+		"model":           modelStr,
+		"bedrockModel":    bedrockModel,
+	})
+	s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), resp.StatusCode, durationMs)
+
+	if isStreaming && resp.StatusCode == http.StatusOK {
+		// Bedrock returns EventStream binary frames — convert to SSE for the SDK.
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		applyStreamingResponseHeaders(w.Header(), "text/event-stream")
+		w.WriteHeader(resp.StatusCode)
+		if err := copyBedrockStreamToSSE(w, resp.Body); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.trace("byok_bedrock_direct_copy_error", map[string]any{
+					"requestId":       requestID,
+					"callerContainer": caller.Name,
+					"threadId":        threadContext.ThreadID,
+					"error":           err.Error(),
+				})
+			}
+		}
+	} else {
+		copyHeaders(w.Header(), resp.Header)
+		applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
+		w.WriteHeader(resp.StatusCode)
+		if err := copyResponseBody(w, resp.Body); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.trace("byok_bedrock_direct_copy_error", map[string]any{
 					"requestId":       requestID,
 					"callerContainer": caller.Name,
 					"threadId":        threadContext.ThreadID,
