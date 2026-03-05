@@ -2,8 +2,6 @@
  * Cookie utilities for React Router routes.
  */
 
-import type { SessionData } from '../../workers/main/src/session-kv';
-import { getSession as getSessionKV } from '../../workers/main/src/session-kv';
 import { parse } from 'cookie';
 import {
   SESSION_MAX_AGE,
@@ -58,13 +56,6 @@ export function withSessionCookie(headers: Headers, sessionId: string, request: 
 
 export function withDeleteSessionCookie(headers: Headers, request: Request): Headers {
   return withDeleteSessionCookies(headers, request);
-}
-
-export async function getSession(
-  env: { SESSIONS: KVNamespace },
-  sessionId: string
-): Promise<SessionData | null> {
-  return getSessionKV(env.SESSIONS, sessionId);
 }
 
 // --- Signed session helpers ---

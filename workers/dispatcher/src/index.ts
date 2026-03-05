@@ -52,7 +52,6 @@ import {
   error500Page,
   error503Page,
 } from './error-pages';
-import { getSession as getSessionKV, type SessionData } from '../../main/src/session-kv';
 import { getSessionCookieName } from '../../main/src/cookies';
 import { parseSignedSession } from '../../main/src/signed-session';
 import type { OrgDO } from '../../main/src/auth';
@@ -218,9 +217,6 @@ function buildNewFormatUrl(url: URL, scriptName: string, orgSlug: string): strin
 // Cookie settings for dispatcher session
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 const SCREENSHOT_SESSION_MAX_AGE = SCREENSHOT_SESSION_TTL_SECONDS;
-
-// Legacy main app session cookie names (fallback for in-flight sessions)
-const LEGACY_MAIN_APP_SESSION_COOKIES = ['chiridion_session_v2', 'chiridion_session'];
 
 // Main app URL for auth redirects (determined from request hostname)
 function getMainAppUrl(hostname: string): string {
@@ -548,15 +544,7 @@ async function handleWorkerRequest(
   if (isSameSiteRequest(url.hostname)) {
     // Use the environment-aware cookie name (matches what the main app sets)
     const currentCookieName = getSessionCookieName(url.hostname);
-    let mainSessionId = getCookieValue(cookieHeader, currentCookieName);
-
-    // Fallback to legacy cookie names for in-flight sessions
-    if (!mainSessionId) {
-      for (const legacyName of LEGACY_MAIN_APP_SESSION_COOKIES) {
-        mainSessionId = getCookieValue(cookieHeader, legacyName);
-        if (mainSessionId) break;
-      }
-    }
+    const mainSessionId = getCookieValue(cookieHeader, currentCookieName);
 
     console.log(`[dispatcher] Same-site auth for ${scriptName}: cookie=${currentCookieName}, found=${mainSessionId ? 'yes' : 'no'}`);
 
@@ -567,24 +555,7 @@ async function handleWorkerRequest(
     }
 
     try {
-      // Try HMAC-signed session first (current format), then fall back to KV (legacy)
-      let session: SessionData | null = null;
-      const signedSession = await parseSignedSession(env.TOKEN_SIGNING_SECRET, mainSessionId);
-      if (signedSession) {
-        session = {
-          user_id: signedSession.user_id,
-          org_id: signedSession.org_id,
-          workspace_id: signedSession.workspace_id,
-          created_at: signedSession.created_at,
-          last_accessed: signedSession.created_at,
-          user_name: signedSession.user_name,
-          user_email: signedSession.user_email,
-        };
-      } else {
-        // Legacy KV-based session fallback
-        session = await getSessionKV(env.SESSIONS, mainSessionId);
-      }
-
+      const session = await parseSignedSession(env.TOKEN_SIGNING_SECRET, mainSessionId);
       if (!session) {
         console.log(`[dispatcher] Session invalid for ${scriptName}, token prefix: ${mainSessionId.slice(0, 8)}...`);
         return errorResponse(error401Page(getMainAppUrl(url.hostname)));
