@@ -5,7 +5,10 @@ import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from './workspace-container';
-import { SUPPORTED_SLASH_COMMANDS } from '../../../src/lib/slash-commands';
+import {
+  formatAttributedUserMessage,
+  type ChatAuthorIdentity,
+} from './chat-author-attribution';
 
 export type PreviewTarget =
   | {
@@ -458,8 +461,6 @@ const HEADER_USER_NAME = 'X-Chiridion-User-Name';
 const HEADER_USER_EMAIL = 'X-Chiridion-User-Email';
 const HEADER_USER_ID = 'X-Chiridion-User-Id';
 
-const CAMELAI_SYSTEM_MESSAGE_REGEX =
-  /<camelai system message>([\s\S]*?)<\/camelai system message>/gi;
 const TRACE_CHAT_THREAD_DO = false;
 
 /**
@@ -723,8 +724,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
 
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
-      this.captureChatContextFromRequest(url, request);
       this.ctx.acceptWebSocket(server, [CHAT_SOCKET_TAG]);
+      this.captureChatContextFromRequest(url, request, server);
       this.trace('ws_upgrade_accepted', {
         path: url.pathname,
         queryThreadId: url.searchParams.get('threadId') || '',
@@ -886,7 +887,7 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       }
 
       if (data.type === 'message') {
-        await this.handleChatMessage(data as unknown as ChatClientMessage);
+        await this.handleChatMessage(ws, data as unknown as ChatClientMessage);
         return;
       }
 
@@ -1102,14 +1103,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private captureChatContextFromRequest(url: URL, request: Request): void {
+  private captureChatContextFromRequest(url: URL, request: Request, ws?: WebSocket): void {
     const queryThreadId = url.searchParams.get('threadId')?.trim() || '';
     const queryWorkspaceId = url.searchParams.get('workspaceId')?.trim() || '';
     const queryOrgId = url.searchParams.get('orgId')?.trim() || '';
 
-    const userId = request.headers.get(HEADER_USER_ID);
-    const userName = request.headers.get(HEADER_USER_NAME);
-    const userEmail = request.headers.get(HEADER_USER_EMAIL);
+    const userId = request.headers.get(HEADER_USER_ID)?.trim() || null;
+    const userName = request.headers.get(HEADER_USER_NAME)?.trim() || null;
+    const userEmail = request.headers.get(HEADER_USER_EMAIL)?.trim() || null;
 
     const prev = this.chatContext;
     const threadId = queryThreadId || prev?.threadId || '';
@@ -1130,11 +1131,12 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       threadId,
       workspaceId,
       orgId,
-      userId: userId || prev?.userId || null,
-      userName: userName || prev?.userName || null,
-      userEmail: userEmail || prev?.userEmail || null,
+      userId,
+      userName,
+      userEmail,
     };
 
+    ws?.serializeAttachment(this.chatContext);
     this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, this.chatContext);
     this.trace('capture_chat_context_set', {
       threadId,
@@ -1243,14 +1245,17 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     );
   }
 
-  private async handleChatMessage(data: ChatClientMessage): Promise<void> {
+  private async handleChatMessage(ws: WebSocket, data: ChatClientMessage): Promise<void> {
     if (!this.chatContext) {
       this.emitChatError('No session - send init first');
       return;
     }
 
     const rawContent = typeof data.content === 'string' ? data.content : '';
-    const attributedContent = this.formatAttributedUserMessage(rawContent);
+    const attributedContent = formatAttributedUserMessage(
+      rawContent,
+      this.getSocketAuthorIdentity(ws)
+    );
     if (!attributedContent) return;
     this.trace('handle_chat_message', {
       rawLength: rawContent.length,
@@ -1298,7 +1303,6 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     }
   }
 
-  private static readonly SLASH_COMMANDS = new Set<string>(SUPPORTED_SLASH_COMMANDS);
   private async handleSetPreviewTarget(data: ChatClientSetPreviewTarget): Promise<void> {
     if (!this.chatContext) {
       this.emitChatError('No session - send init first');
@@ -1468,50 +1472,49 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.broadcastRealtime({ type: 'streaming_state', isStreaming: value });
   }
 
-  private formatAttributedUserMessage(content: string): string {
-    if (!content) return '';
-
-    const contextMessages: string[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = CAMELAI_SYSTEM_MESSAGE_REGEX.exec(content)) !== null) {
-      const value = typeof match[1] === 'string' ? match[1].trim() : '';
-      if (value) {
-        contextMessages.push(value);
-      }
+  private getSocketChatContext(ws: WebSocket): ChatContextState | null {
+    const attachment = ws.deserializeAttachment();
+    if (!attachment || typeof attachment !== 'object') {
+      return null;
     }
-    CAMELAI_SYSTEM_MESSAGE_REGEX.lastIndex = 0;
 
-    const userMessage = content
-      .replace(CAMELAI_SYSTEM_MESSAGE_REGEX, '')
-      .trim();
-    CAMELAI_SYSTEM_MESSAGE_REGEX.lastIndex = 0;
+    const candidate = attachment as Partial<ChatContextState>;
+    const threadId = typeof candidate.threadId === 'string' ? candidate.threadId.trim() : '';
+    const workspaceId = typeof candidate.workspaceId === 'string' ? candidate.workspaceId.trim() : '';
+    const orgId = typeof candidate.orgId === 'string' ? candidate.orgId.trim() : '';
+    if (!threadId || !workspaceId || !orgId) {
+      return null;
+    }
 
-    // Pass slash commands through without author attribution so the
-    // Claude SDK recognises them as bare `/command` inputs.
-    const isSlashCommand = ChatThreadDO.SLASH_COMMANDS.has(userMessage);
-
-    const userName = this.chatContext?.userName;
-    const userEmail = this.chatContext?.userEmail;
-    const authorPrefix = isSlashCommand ? '' : this.formatAuthorPrefix(userName, userEmail);
-    const attributedUserMessage = userMessage ? `${authorPrefix}${userMessage}` : '';
-
-    const contextualPrefix = contextMessages.length > 0
-      ? contextMessages
-          .map((messageText) => `<camelai system message>${messageText}</camelai system message>`)
-          .join('\n\n')
-      : '';
-
-    return [contextualPrefix, attributedUserMessage]
-      .filter(Boolean)
-      .join('\n\n')
-      .trim();
+    return {
+      threadId,
+      workspaceId,
+      orgId,
+      userId: typeof candidate.userId === 'string' && candidate.userId.trim()
+        ? candidate.userId.trim()
+        : null,
+      userName: typeof candidate.userName === 'string' && candidate.userName.trim()
+        ? candidate.userName.trim()
+        : null,
+      userEmail: typeof candidate.userEmail === 'string' && candidate.userEmail.trim()
+        ? candidate.userEmail.trim()
+        : null,
+    };
   }
 
-  private formatAuthorPrefix(userName: string | null | undefined, userEmail: string | null | undefined): string {
-    if (userName && userEmail) return `[${userName} (${userEmail})]: `;
-    if (userName) return `[${userName}]: `;
-    if (userEmail) return `[${userEmail}]: `;
-    return '';
+  private getSocketAuthorIdentity(ws: WebSocket): ChatAuthorIdentity {
+    const socketContext = this.getSocketChatContext(ws);
+    if (socketContext) {
+      return {
+        userName: socketContext.userName,
+        userEmail: socketContext.userEmail,
+      };
+    }
+
+    return {
+      userName: this.chatContext?.userName ?? null,
+      userEmail: this.chatContext?.userEmail ?? null,
+    };
   }
 
   async externalMessage(body: ExternalMessageRequest): Promise<ExternalTurnResult> {
@@ -1556,7 +1559,14 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
     this.markRunnerActivity('external_message');
     await this.ensureRunnerConnected();
 
-    const attributedContent = this.formatAttributedUserMessage(rawMessage);
+    const attributedContent = formatAttributedUserMessage(rawMessage, {
+      userName: typeof body.userName === 'string' && body.userName.trim()
+        ? body.userName.trim()
+        : null,
+      userEmail: typeof body.userEmail === 'string' && body.userEmail.trim()
+        ? body.userEmail.trim()
+        : null,
+    });
     if (!attributedContent) {
       return { status: 'error', error: 'Empty message' };
     }
@@ -1612,12 +1622,8 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
       workspaceId,
       orgId,
       userId: this.chatContext?.userId ?? null,
-      userName: typeof payload.userName === 'string' && payload.userName.trim()
-        ? payload.userName.trim()
-        : (this.chatContext?.userName ?? null),
-      userEmail: typeof payload.userEmail === 'string' && payload.userEmail.trim()
-        ? payload.userEmail.trim()
-        : (this.chatContext?.userEmail ?? null),
+      userName: this.chatContext?.userName ?? null,
+      userEmail: this.chatContext?.userEmail ?? null,
     };
     this.ctx.storage.kv.put(CHAT_CONTEXT_KEY, this.chatContext);
     return null;
