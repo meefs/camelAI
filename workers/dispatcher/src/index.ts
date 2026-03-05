@@ -54,6 +54,7 @@ import {
 } from './error-pages';
 import { getSession as getSessionKV, type SessionData } from '../../main/src/session-kv';
 import { getSessionCookieName } from '../../main/src/cookies';
+import { parseSignedSession } from '../../main/src/signed-session';
 import type { OrgDO } from '../../main/src/auth';
 
 interface Env {
@@ -65,6 +66,7 @@ interface Env {
   APP_KV: KVNamespace;
   SESSIONS: KVNamespace;
   ORG: DurableObjectNamespace<OrgDO>;
+  TOKEN_SIGNING_SECRET: string;
   // Set to "true" to skip all auth checks (local development only)
   SKIP_AUTH?: string;
   // Policy for workers missing KV access metadata ("open" during migration, "closed" for strict enforcement)
@@ -565,10 +567,26 @@ async function handleWorkerRequest(
     }
 
     try {
-      const session = await getSessionKV(env.SESSIONS, mainSessionId);
+      // Try HMAC-signed session first (current format), then fall back to KV (legacy)
+      let session: SessionData | null = null;
+      const signedSession = await parseSignedSession(env.TOKEN_SIGNING_SECRET, mainSessionId);
+      if (signedSession) {
+        session = {
+          user_id: signedSession.user_id,
+          org_id: signedSession.org_id,
+          workspace_id: signedSession.workspace_id,
+          created_at: signedSession.created_at,
+          last_accessed: signedSession.created_at,
+          user_name: signedSession.user_name,
+          user_email: signedSession.user_email,
+        };
+      } else {
+        // Legacy KV-based session fallback
+        session = await getSessionKV(env.SESSIONS, mainSessionId);
+      }
+
       if (!session) {
-        // Invalid/expired session
-        console.log(`[dispatcher] Session not found in KV for ${scriptName}, sessionId prefix: ${mainSessionId.slice(0, 8)}...`);
+        console.log(`[dispatcher] Session invalid for ${scriptName}, token prefix: ${mainSessionId.slice(0, 8)}...`);
         return errorResponse(error401Page(getMainAppUrl(url.hostname)));
       }
 
