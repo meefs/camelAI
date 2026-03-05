@@ -100,25 +100,29 @@ function ClickToCopyUrlBar({
   };
 
   return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      className={cn(
-        'group/url flex max-w-[300px] items-center gap-1.5 rounded-md px-2 py-1 text-xs font-mono transition-colors',
-        copied ? 'bg-green-500/10' : 'bg-muted/50 hover:bg-muted'
-      )}
-      title={url}
-    >
-      <Globe className="h-3 w-3 shrink-0 text-muted-foreground" />
-      <span className="truncate text-muted-foreground">
-        {copied ? 'Copied!' : displayHost}
-      </span>
-      {!copied ? (
-        <span className="shrink-0 text-[10px] text-muted-foreground/60 opacity-0 transition-opacity group-hover/url:opacity-100">
-          Copy
-        </span>
-      ) : null}
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className={cn(
+            'group/url flex max-w-[300px] items-center gap-1.5 rounded-md px-2 py-1 text-xs font-mono transition-colors',
+            copied ? 'bg-green-500/10' : 'bg-muted/50 hover:bg-muted'
+          )}
+        >
+          <Globe className="h-3 w-3 shrink-0 text-muted-foreground" />
+          <span className="truncate text-muted-foreground">
+            {copied ? 'Copied!' : displayHost}
+          </span>
+          {!copied ? (
+            <span className="shrink-0 text-[10px] text-muted-foreground/60 opacity-0 transition-opacity group-hover/url:opacity-100">
+              Copy
+            </span>
+          ) : null}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>Live app link</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -343,6 +347,8 @@ function PreviewToolbarComponent({
 
       <Separator orientation="vertical" className="mx-1 h-4 data-[orientation=vertical]:self-auto" />
 
+      <ToolbarButton icon={ExternalLink} tooltip="Open in new tab" onClick={onOpenExternal} />
+
       {fileType === 'app' ? (
         <AppToolbarActions
           vanityUrl={vanityUrl}
@@ -367,10 +373,6 @@ function PreviewToolbarComponent({
       ) : (
         <DownloadButton activeTarget={activeTarget} filePreviewOpenUrl={filePreviewOpenUrl} />
       )}
-
-      <div className="flex-1" />
-
-      <ToolbarButton icon={ExternalLink} tooltip="Open in new tab" onClick={onOpenExternal} />
     </div>
   );
 }
