@@ -712,32 +712,9 @@ Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools f
 
 **See [AI-APPS.md](AI-APPS.md) for full codemode setup, frontend rendering patterns, and common pitfalls.**
 
-## Browser Automation with Playwright
+## E2E Testing with Playwright
 
-The sandbox has Playwright and Chromium pre-installed for browser automation and testing.
-
-### Accessing Private Deployed Apps
-
-Deployed apps that require authentication can be accessed from Playwright scripts using the `CHIRIDION_APP_SESSION` environment variable. This session token is automatically created and written to the sandbox environment on each chat connection.
-
-Set it as a cookie on the browser context before navigating:
-
-```javascript
-import { chromium } from "playwright";
-
-const browser = await chromium.launch();
-const context = await browser.newContext();
-
-// Authenticate with private deployed apps
-if (process.env.CHIRIDION_APP_SESSION) {
-  await context.addCookies([
-    { name: "chiridion_run_session", value: process.env.CHIRIDION_APP_SESSION, domain: ".camelai.app", path: "/", httpOnly: true },
-  ]);
-}
-
-const page = await context.newPage();
-await page.goto("https://my-app.camelai.app");
-```
+The starter template includes Playwright as a devDependency and scaffolded E2E smoke tests in `e2e/smoke.test.mjs` (commented out). Chromium is pre-installed in the sandbox. Uncomment the tests, update the `APP_URL`, and run with `bun run test:e2e`. The test file includes auth cookie boilerplate for accessing private deployed apps.
 
 ## Best Practices
 

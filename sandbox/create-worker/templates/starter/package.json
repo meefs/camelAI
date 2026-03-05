@@ -11,6 +11,7 @@
 		"dev": "react-router dev",
 		"preview": "bun run build && vite preview",
 		"test": "vitest",
+		"test:e2e": "vitest run e2e/",
 		"typecheck": "bun run cf-typegen && react-router typegen && tsc -b"
 	},
 	"dependencies": {
