@@ -520,28 +520,3 @@ routes.get(
     });
   },
 );
-
-// ---------------------------------------------------------------------------
-// GET /secrets/:name — Read a worker secret value
-// ---------------------------------------------------------------------------
-
-routes.get(
-  '/secrets/:name',
-  openApi({
-    summary: 'Get secret value',
-    tags: ['Secrets'],
-    params: z.object({ name: z.string() }),
-    responses: {
-      200: { schema: z.object({ name: z.string(), value: z.string() }) },
-      404: { schema: ErrorSchema },
-    },
-  }),
-  (c) => {
-    const name = c.req.param('name');
-    const value = (c.env as Record<string, unknown>)[name];
-    if (typeof value !== 'string') {
-      return c.json({ error: `Secret "${name}" not found` }, 404);
-    }
-    return c.json({ name, value });
-  },
-);
