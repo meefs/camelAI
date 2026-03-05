@@ -423,27 +423,32 @@ function ShareStatusButton({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={disabled || isPending}
-          className={cn(
-            "h-6 gap-1.5 rounded-full border px-2 text-xs font-medium",
-            optimisticIsPublic
-              ? "border-green-200 bg-green-50 text-green-700 hover:bg-green-100/80 hover:text-green-800 dark:border-green-900/70 dark:bg-green-950/30 dark:text-green-300 dark:hover:bg-green-950/60"
-              : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-          )}
-        >
-          {optimisticIsPublic ? (
-            <Globe className="h-3.5 w-3.5" />
-          ) : (
-            <Lock className="h-3.5 w-3.5" />
-          )}
-          {optimisticIsPublic ? 'Public' : 'Private'}
-          <ChevronDown className="h-3 w-3 opacity-60" />
-        </Button>
-      </DropdownMenuTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={disabled || isPending}
+              className={cn(
+                "h-6 gap-1.5 rounded-md border px-2 text-xs font-medium",
+                optimisticIsPublic
+                  ? "border-primary/20 bg-primary/5 text-primary hover:bg-primary/10 dark:border-primary/30 dark:bg-primary/10 dark:text-primary dark:hover:bg-primary/20"
+                  : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+              )}
+            >
+              {optimisticIsPublic ? (
+                <Globe className="h-3.5 w-3.5" />
+              ) : (
+                <Lock className="h-3.5 w-3.5" />
+              )}
+              {optimisticIsPublic ? 'Public' : 'Private'}
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>Update visibility</TooltipContent>
+      </Tooltip>
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>Visibility</DropdownMenuLabel>
         <DropdownMenuRadioGroup
