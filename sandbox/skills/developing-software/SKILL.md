@@ -716,6 +716,14 @@ Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools f
 
 The starter template includes Playwright as a devDependency and scaffolded E2E smoke tests in `e2e/smoke.test.mjs` (commented out). Chromium is pre-installed in the sandbox. Uncomment the tests, update the `APP_URL`, and run with `bun run test:e2e`. The test file includes auth cookie boilerplate for accessing private deployed apps.
 
+## Troubleshooting
+
+### Recharts SSR Warnings
+Recharts `ResponsiveContainer` emits width/height warnings during SSR — these are **expected and benign**. Do not add `ClientOnly` wrappers or other workarounds to suppress them; the extra complexity is not worth it.
+
+### Screenshot Tool Timeouts
+If `take_app_screenshot` times out after deployment, consider **server-side data fetching latency** as the likely cause before blaming the rendering layer. Slow loaders or API calls delay the initial page render, which causes the screenshot to time out. Fix by adding React `<Suspense>` boundaries with skeleton fallbacks around data-dependent sections so the page shell renders immediately while data loads.
+
 ## Best Practices
 
 1. **One DO class per domain concept** - e.g., `UserDO`, `RoomDO`, `SessionDO`
