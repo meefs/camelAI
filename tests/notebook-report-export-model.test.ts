@@ -1,0 +1,79 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildNotebookReportExportModel,
+  removeHeaderContentFromTitleCell,
+} from '@/components/chat-file-preview/notebook-preview/report-export-model';
+import type { NotebookFile } from '@/components/chat-file-preview/notebook-preview/types';
+
+describe('notebook report export model', () => {
+  it('removes the header title and subtitle from the title cell body', () => {
+    const source = [
+      '# Quarterly Review',
+      '',
+      'Executive summary line.',
+      '',
+      '## Findings',
+      'Revenue increased.',
+    ].join('\n');
+
+    expect(removeHeaderContentFromTitleCell(source)).toBe([
+      '## Findings',
+      'Revenue increased.',
+    ].join('\n'));
+  });
+
+  it('uses report-mode visibility rules and keeps report body content', () => {
+    const notebook: NotebookFile = {
+      metadata: {
+        language_info: {
+          version: '3.12.1',
+        },
+      },
+      cells: [
+        {
+          cell_type: 'markdown',
+          source: [
+            '# Quarterly Review',
+            'Executive summary line.',
+            '',
+            '## Findings',
+            'Revenue increased.',
+          ].join('\n'),
+        },
+        {
+          cell_type: 'code',
+          source: [
+            'import pandas as pd',
+            'import numpy as np',
+            'from pathlib import Path',
+          ].join('\n'),
+          outputs: [],
+        },
+        {
+          cell_type: 'code',
+          source: 'print("ready")',
+          outputs: [
+            {
+              output_type: 'stream',
+              text: 'ready\n',
+            },
+          ],
+        },
+      ],
+    };
+
+    const model = buildNotebookReportExportModel(notebook);
+
+    expect(model.languageVersion).toBe('3.12.1');
+    expect(model.codeCellCount).toBe(2);
+    expect(model.blocks).toHaveLength(2);
+    expect(model.blocks[0]).toMatchObject({
+      kind: 'markdown',
+      markdown: ['## Findings', 'Revenue increased.'].join('\n'),
+    });
+    expect(model.blocks[1]).toMatchObject({
+      kind: 'text',
+      text: 'ready\n',
+    });
+  });
+});

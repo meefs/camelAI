@@ -303,7 +303,7 @@ export function getToolSummaryParts(
 export function getToolSummary(
   tool?: ToolUseBlock,
   result?: ToolResultBlock,
-  status: 'running' | 'complete' | 'error',
+  status?: 'running' | 'complete' | 'error',
   isStreaming?: boolean
 ): string {
   const parts = getToolSummaryParts(tool, result, isStreaming, status);
