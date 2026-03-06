@@ -30,7 +30,14 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (!name?.trim()) {
       return { error: 'Workspace name is required' };
     }
-    await createWorkspace(authEnv, orgId, name.trim(), actorId, description?.trim() || null);
+    try {
+      await createWorkspace(authEnv, orgId, name.trim(), actorId, description?.trim() || null);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('already exists')) {
+        return { error: 'A workspace with that name already exists in this organization' };
+      }
+      throw err;
+    }
     return { success: true };
   }
 

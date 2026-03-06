@@ -15,7 +15,6 @@ function getAuthEnv(env: CloudflareEnv): AuthEnv {
   return {
     USER: env.USER as AuthEnv['USER'],
     ORG: env.ORG as AuthEnv['ORG'],
-    ORG_SLUG: env.ORG_SLUG as AuthEnv['ORG_SLUG'],
     WORKSPACE: env.WORKSPACE as AuthEnv['WORKSPACE'],
     SESSIONS: env.SESSIONS,
     EMAIL_TO_USER: env.EMAIL_TO_USER,

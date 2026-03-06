@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { hashPassword, verifyPassword } from './password';
 import { generateDefaultAvatar, validateAvatarContent } from '../../../src/lib/avatar';
+import { slugifyWorkspaceName } from '../../../src/lib/workspace-email';
 import type {
   OrgRole,
   BillingStatus,
@@ -10,7 +11,6 @@ import type {
   OnboardingPreferences,
 } from '../../../src/types';
 import { WorkspaceDO } from './workspace';
-import { OrgSlugDO } from './org-slug-registry';
 
 // Re-export for consumers that import from this module
 export type { OrgRole, BillingStatus } from '../../../src/types';
@@ -19,7 +19,6 @@ export type { OrgRole, BillingStatus } from '../../../src/types';
 export interface DOEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
-  ORG_SLUG: DurableObjectNamespace<OrgSlugDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   ADMIN_INDEX: DurableObjectNamespace<import('./admin-index-do.js').AdminIndexDO>;
   EMAIL_TO_USER: KVNamespace;
@@ -37,43 +36,37 @@ function isSuperuserEmail(email: string | null): boolean {
   return SUPERUSER_EMAILS.has(email.toLowerCase());
 }
 
-const ORG_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,22}[a-z0-9]$/;
 const ORG_INDEX_PREFIX = 'org_index:';
+const ORG_SLUG_KV_PREFIX = 'org_slug:';
 
-function normalizeOrgSlugBase(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-/**
- * Generate a URL-safe slug for an organization.
- * Format: {normalized-name}-{id-prefix}
- * e.g., "Acme Corp" with ID "85b12345..." becomes "acme-corp-85b"
- */
-function generateOrgSlug(name: string, idPrefix: string): string {
-  const normalizedPrefix = idPrefix.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'org';
-  const maxBaseLength = Math.max(1, 24 - normalizedPrefix.length - 1);
-  const base = normalizeOrgSlugBase(name).slice(0, maxBaseLength) || 'org';
-  return `${base}-${normalizedPrefix}`;
-}
-
-function normalizeOrgSlug(slug: string): string {
-  return slug.trim().toLowerCase();
-}
-
-function isValidOrgSlug(slug: string): boolean {
-  return ORG_SLUG_PATTERN.test(slug);
-}
-
-function ensureValidOrgSlug(slug: string): void {
-  if (!isValidOrgSlug(slug)) {
-    throw new Error('invalid_slug_format');
+async function hashOrgSlug(orgId: string): Promise<string> {
+  const data = new TextEncoder().encode(orgId);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  const bytes = new Uint8Array(hash);
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let slug = '';
+  for (let i = 0; i < 6; i++) {
+    slug += chars[bytes[i] % chars.length];
   }
+  return slug;
+}
+
+async function generateUniqueOrgSlug(orgId: string, kv: KVNamespace): Promise<string> {
+  const baseSlug = await hashOrgSlug(orgId);
+  const existing = await kv.get(`${ORG_SLUG_KV_PREFIX}${baseSlug}`);
+  if (!existing || existing === orgId) return baseSlug;
+
+  // Collision: append incrementing suffix
+  for (let i = 2; i <= 99; i++) {
+    const candidate = `${baseSlug}${i}`;
+    const owner = await kv.get(`${ORG_SLUG_KV_PREFIX}${candidate}`);
+    if (!owner || owner === orgId) return candidate;
+  }
+  throw new Error('slug_generation_failed');
+}
+
+async function registerOrgSlug(kv: KVNamespace, slug: string, orgId: string): Promise<void> {
+  await kv.put(`${ORG_SLUG_KV_PREFIX}${slug}`, orgId);
 }
 
 import type { AdminEventType } from './admin-index-do.js';
@@ -88,78 +81,6 @@ export function dispatchAdminEvent(ctx: DurableObjectState, env: DOEnv, event: A
   } catch (err) {
     console.error('Failed to dispatch to AdminIndex', err);
   }
-}
-
-function buildSlugCandidates(name: string, orgId: string): string[] {
-  const lengths = [3, 4, 5, 6, 7, 8];
-  const seen = new Set<string>();
-  const candidates: string[] = [];
-
-  for (const length of lengths) {
-    const suffix = orgId.slice(0, length);
-    if (!suffix) continue;
-    const candidate = generateOrgSlug(name, suffix);
-    if (seen.has(candidate)) continue;
-    seen.add(candidate);
-    candidates.push(candidate);
-  }
-
-  if (candidates.length === 0) {
-    candidates.push(generateOrgSlug(name, crypto.randomUUID().slice(0, 6)));
-  }
-
-  return candidates;
-}
-
-async function claimSlugWithCandidates(
-  slugNamespace: DurableObjectNamespace<OrgSlugDO>,
-  orgId: string,
-  candidates: string[],
-  options?: {
-    isCandidateBlocked?: (candidate: string) => Promise<boolean>;
-  }
-): Promise<string> {
-  for (const candidate of candidates) {
-    if (options?.isCandidateBlocked && (await options.isCandidateBlocked(candidate))) {
-      continue;
-    }
-    const slugStub = slugNamespace.get(slugNamespace.idFromName(candidate));
-    const result = await slugStub.claim(orgId);
-    if (result.ok) {
-      return candidate;
-    }
-  }
-
-  throw new Error('slug_claim_failed');
-}
-
-async function claimExactSlug(
-  slugNamespace: DurableObjectNamespace<OrgSlugDO>,
-  orgId: string,
-  slug: string
-): Promise<void> {
-  const slugStub = slugNamespace.get(slugNamespace.idFromName(slug));
-  const result = await slugStub.claim(orgId);
-  if (!result.ok) {
-    throw new Error('slug_taken');
-  }
-}
-
-async function getSlugOwner(
-  slugNamespace: DurableObjectNamespace<OrgSlugDO>,
-  slug: string
-): Promise<string | null> {
-  const slugStub = slugNamespace.get(slugNamespace.idFromName(slug));
-  return slugStub.getOwner();
-}
-
-async function releaseExactSlug(
-  slugNamespace: DurableObjectNamespace<OrgSlugDO>,
-  orgId: string,
-  slug: string
-): Promise<void> {
-  const slugStub = slugNamespace.get(slugNamespace.idFromName(slug));
-  await slugStub.release(orgId);
 }
 
 function toOnboardingPreferences(raw: unknown): OnboardingPreferences | null {
@@ -1229,19 +1150,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
 
     if (version < 12) {
-      // V12: Add slug to organization
-      const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
-      if (rows.length > 0) {
-        const info = JSON.parse((rows[0] as { value: string }).value) as Organization;
-        if (!info.slug) {
-          info.slug = generateOrgSlug(info.name, info.id.slice(0, 3));
-          this.sql.exec(
-            'INSERT OR REPLACE INTO org_info (key, value) VALUES (?, ?)',
-            'data',
-            JSON.stringify(info)
-          );
-        }
-      }
+      // V12: Slug backfill for existing orgs (already ran; new orgs get hash slugs via getInfo fallback)
     }
 
     if (version < 13) {
@@ -1391,86 +1300,6 @@ export class OrgDO extends DurableObject<DOEnv> {
     };
   }
 
-  private async ensureSlugClaimed(orgId: string, slug: string): Promise<void> {
-    const slugStub = this.env.ORG_SLUG.get(this.env.ORG_SLUG.idFromName(slug));
-    const result = await slugStub.claim(orgId);
-    if (!result.ok && result.owner !== orgId) {
-      throw new Error('slug_claim_conflict');
-    }
-  }
-
-  private async collectUserIdsForSlugCheck(): Promise<string[]> {
-    const userIds = new Set<string>();
-    let cursor: string | undefined;
-
-    while (true) {
-      const listed = await this.env.EMAIL_TO_USER.list({ cursor });
-      const emailKeys = listed.keys
-        .map((entry) => entry.name)
-        .filter((key) => key.startsWith('email:') || (key.includes('@') && !key.includes(':')));
-
-      if (emailKeys.length > 0) {
-        const values = await Promise.all(emailKeys.map((key) => this.env.EMAIL_TO_USER.get(key)));
-        for (const value of values) {
-          if (typeof value === 'string' && value.length > 0 && !value.startsWith('{')) {
-            userIds.add(value);
-          }
-        }
-      }
-
-      if (listed.list_complete || !listed.cursor) {
-        break;
-      }
-      cursor = listed.cursor;
-    }
-
-    return Array.from(userIds);
-  }
-
-  async findConflictingOrgIdByStoredSlug(
-    targetSlug: string,
-    excludingOrgId: string | null = null
-  ): Promise<string | null> {
-    const normalizedTargetSlug = normalizeOrgSlug(targetSlug);
-    if (!normalizedTargetSlug) {
-      return null;
-    }
-
-    const userIds = await this.collectUserIdsForSlugCheck();
-    if (userIds.length === 0) {
-      return null;
-    }
-
-    const orgIds = new Set<string>();
-    for (const userId of userIds) {
-      try {
-        const userStub = this.env.USER.get(this.env.USER.idFromName(userId)) as unknown as UserDO;
-        const userOrgs = await userStub.getOrgs();
-        for (const org of userOrgs) {
-          if (!excludingOrgId || org.org_id !== excludingOrgId) {
-            orgIds.add(org.org_id);
-          }
-        }
-      } catch {
-        // Ignore invalid/missing user records from stale KV mappings.
-      }
-    }
-
-    for (const orgId of orgIds) {
-      try {
-        const orgStub = this.env.ORG.get(this.env.ORG.idFromName(orgId)) as unknown as OrgDO;
-        const slug = await orgStub.getStoredSlug();
-        if (slug === normalizedTargetSlug) {
-          return orgId;
-        }
-      } catch {
-        // Ignore orgs that cannot be read; they should not block unrelated slug updates.
-      }
-    }
-
-    return null;
-  }
-
   // Org info methods
   async getInfo(): Promise<Organization | null> {
     const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
@@ -1494,7 +1323,7 @@ export class OrgDO extends DurableObject<DOEnv> {
       changed = true;
     }
     if (!info.slug) {
-      info.slug = generateOrgSlug(info.name, info.id.slice(0, 3));
+      info.slug = await hashOrgSlug(info.id);
       changed = true;
     }
     if (changed) {
@@ -1505,30 +1334,19 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   /**
    * Get just the org slug (for contexts where we only need the slug).
-   * Falls back to generating from name if not stored.
+   * Also ensures the slug→orgId reverse mapping exists in KV.
    */
   async getSlug(): Promise<string | null> {
     const info = await this.getInfo();
-    return info?.slug ?? null;
-  }
+    if (!info?.slug) return null;
 
-  /**
-   * Read the currently persisted slug without claiming/repairing registry state.
-   * Used by slug-collision checks in createOrg/updateSlug.
-   */
-  async getStoredSlug(): Promise<string | null> {
-    const rows = this.sql.exec('SELECT value FROM org_info WHERE key = ?', 'data').toArray();
-    if (rows.length === 0) return null;
-
-    const info = JSON.parse((rows[0] as { value: string }).value) as Organization;
-    if (typeof info.slug === 'string' && info.slug.trim().length > 0) {
-      return normalizeOrgSlug(info.slug);
+    // Lazy backfill: ensure KV reverse mapping exists
+    const kvKey = `${ORG_SLUG_KV_PREFIX}${info.slug}`;
+    const existing = await this.env.APP_KV.get(kvKey);
+    if (!existing) {
+      await registerOrgSlug(this.env.APP_KV, info.slug, info.id);
     }
-
-    if (!info.name || !info.id) {
-      return null;
-    }
-    return normalizeOrgSlug(generateOrgSlug(info.name, info.id.slice(0, 3)));
+    return info.slug;
   }
 
   async setInfo(info: Organization): Promise<void> {
@@ -1542,17 +1360,9 @@ export class OrgDO extends DurableObject<DOEnv> {
 
   async createOrg(id: string, name: string, createdBy: string): Promise<{ org: Organization; defaultWorkspaceId: string }> {
     const now = Date.now();
-    const slug = await claimSlugWithCandidates(
-      this.env.ORG_SLUG,
-      id,
-      buildSlugCandidates(name, id),
-      {
-        isCandidateBlocked: async (candidate) => {
-          const conflictingOrgId = await this.findConflictingOrgIdByStoredSlug(candidate, id);
-          return Boolean(conflictingOrgId);
-        },
-      }
-    );
+    const slug = await generateUniqueOrgSlug(id, this.env.APP_KV);
+    await registerOrgSlug(this.env.APP_KV, slug, id);
+
     const info: Organization = {
       id,
       name,
@@ -1593,7 +1403,6 @@ export class OrgDO extends DurableObject<DOEnv> {
 
       return { org: info, defaultWorkspaceId: workspaceId };
     } catch (error) {
-      await releaseExactSlug(this.env.ORG_SLUG, id, slug);
       try {
         await this.unindexOrg(id);
       } catch {
@@ -1613,72 +1422,6 @@ export class OrgDO extends DurableObject<DOEnv> {
         this.log('org_updated', actorId, info.id, { previous_name: previousName, name });
       }
     }
-  }
-
-  async updateSlug(newSlugInput: string, actorId: string): Promise<Organization> {
-    const info = await this.getInfo();
-    if (!info) {
-      throw new Error('org_not_found');
-    }
-
-    const normalizedSlug = normalizeOrgSlug(newSlugInput);
-    ensureValidOrgSlug(normalizedSlug);
-
-    const isAdmin = await this.isAdmin(actorId);
-    if (!isAdmin) {
-      throw new Error('not_admin');
-    }
-
-    if (normalizedSlug === info.slug) {
-      return info;
-    }
-
-    const memberCount = await this.getMemberCount();
-    if (memberCount !== 1) {
-      throw new Error('slug_already_finalized');
-    }
-
-    const scripts = await this.listWorkerScripts();
-    if (scripts.length > 0) {
-      throw new Error('slug_already_finalized');
-    }
-
-    const priorSlugChange = this.sql.exec<{ action: string }>(
-      'SELECT action FROM audit_log WHERE action = ? LIMIT 1',
-      'slug_changed'
-    ).toArray();
-    if (priorSlugChange.length > 0) {
-      throw new Error('slug_already_finalized');
-    }
-
-    const claimedOwner = await getSlugOwner(this.env.ORG_SLUG, normalizedSlug);
-    if (claimedOwner && claimedOwner !== info.id) {
-      throw new Error('slug_taken');
-    }
-    if (!claimedOwner) {
-      const conflictingOrgId = await this.findConflictingOrgIdByStoredSlug(normalizedSlug, info.id);
-      if (conflictingOrgId) {
-        throw new Error('slug_taken');
-      }
-    }
-
-    await claimExactSlug(this.env.ORG_SLUG, info.id, normalizedSlug);
-
-    const previousSlug = info.slug;
-    try {
-      info.slug = normalizedSlug;
-      await this.setInfo(info);
-      this.log('slug_changed', actorId, info.id, {
-        previous_slug: previousSlug,
-        new_slug: normalizedSlug,
-      });
-    } catch (error) {
-      await releaseExactSlug(this.env.ORG_SLUG, info.id, normalizedSlug);
-      throw error;
-    }
-
-    await releaseExactSlug(this.env.ORG_SLUG, info.id, previousSlug);
-    return info;
   }
 
   // Member methods
@@ -2222,12 +1965,40 @@ export class OrgDO extends DurableObject<DOEnv> {
     );
   }
 
+  async checkWorkspaceNameAvailable(name: string, excludeWorkspaceId?: string): Promise<boolean> {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+
+    // Check both exact name (case-insensitive) and slugified name to prevent
+    // email routing collisions (e.g. "Data Science" and "Data-Science" both
+    // slugify to "data-science")
+    const slug = slugifyWorkspaceName(trimmed);
+    const rows = excludeWorkspaceId
+      ? this.sql.exec(
+          'SELECT id, name FROM workspaces WHERE archived = 0 AND id != ?',
+          excludeWorkspaceId
+        ).toArray() as Array<{ id: string; name: string }>
+      : this.sql.exec(
+          'SELECT id, name FROM workspaces WHERE archived = 0'
+        ).toArray() as Array<{ id: string; name: string }>;
+
+    for (const row of rows) {
+      if (row.name.toLowerCase() === trimmed.toLowerCase()) return false;
+      if (slugifyWorkspaceName(row.name) === slug) return false;
+    }
+    return true;
+  }
+
   async addWorkspace(
     workspaceId: string,
     name: string,
     createdAt: number,
     actorId: string
   ): Promise<void> {
+    const available = await this.checkWorkspaceNameAvailable(name, workspaceId);
+    if (!available) {
+      throw new Error(`A workspace named "${name}" already exists in this organization`);
+    }
     this.sql.exec(
       'INSERT INTO workspaces (id, name, created_at, archived) VALUES (?, ?, ?, 0) ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at',
       workspaceId,
@@ -2235,6 +2006,14 @@ export class OrgDO extends DurableObject<DOEnv> {
       createdAt
     );
     this.log('workspace_created', actorId, workspaceId, { name });
+  }
+
+  async updateWorkspaceName(workspaceId: string, name: string): Promise<void> {
+    const available = await this.checkWorkspaceNameAvailable(name, workspaceId);
+    if (!available) {
+      throw new Error(`A workspace named "${name}" already exists in this organization`);
+    }
+    this.sql.exec('UPDATE workspaces SET name = ? WHERE id = ?', name, workspaceId);
   }
 
   async archiveWorkspace(workspaceId: string): Promise<void> {
@@ -2248,6 +2027,14 @@ export class OrgDO extends DurableObject<DOEnv> {
     }
     return this.sql.exec('SELECT id, name, created_at, archived FROM workspaces WHERE archived = 0 ORDER BY created_at ASC')
       .toArray() as unknown as Array<{ id: string; name: string; created_at: number; archived: number }>;
+  }
+
+  async getWorkspaceBySlug(slug: string): Promise<{ id: string; name: string; created_at: number; archived: number } | null> {
+    const workspaces = this.sql.exec(
+      'SELECT id, name, created_at, archived FROM workspaces WHERE archived = 0'
+    ).toArray() as Array<{ id: string; name: string; created_at: number; archived: number }>;
+    const normalizedSlug = slug.toLowerCase();
+    return workspaces.find((ws) => slugifyWorkspaceName(ws.name) === normalizedSlug) ?? null;
   }
 
   async transferOwnership(actorId: string, newOwnerId: string): Promise<void> {
@@ -2326,7 +2113,12 @@ export class OrgDO extends DurableObject<DOEnv> {
       return;
     }
 
-    await releaseExactSlug(this.env.ORG_SLUG, info.id, info.slug);
+    // Clean up slug→org KV mapping
+    try {
+      await this.env.APP_KV.delete(`${ORG_SLUG_KV_PREFIX}${info.slug}`);
+    } catch {
+      // Best-effort slug cleanup.
+    }
     try {
       await this.unindexOrg(info.id);
     } catch {
@@ -2676,7 +2468,7 @@ export class OrgDO extends DurableObject<DOEnv> {
     return {
       ok: true,
       orgId: info.id,
-      orgSlug: info.slug || `org-${info.id.slice(0, 3)}`,
+      orgSlug: info.slug || info.id.slice(0, 5),
       threadId,
     };
   }

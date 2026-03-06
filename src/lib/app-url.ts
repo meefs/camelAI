@@ -5,15 +5,31 @@
  * detected from the hostname. This ensures workers deploy to and are accessible
  * from environment-specific domains.
  *
- * New flat URL format (with org slug, uses -- separator to avoid nested subdomain issues):
+ * New URL format (new-style 6+ alphanumeric slugs use single hyphen):
+ * Production: {scriptName}-{orgSlug}.camelai.app, {scriptName}-{orgSlug}.apps.camelai.dev
+ *
+ * Old URL format (old-style slugs with hyphens use double-hyphen separator):
  * Production: {scriptName}--{orgSlug}.camelai.app, {scriptName}--{orgSlug}.apps.camelai.dev
- * Staging: {scriptName}--{orgSlug}.staging.camelai.app, {scriptName}--{orgSlug}.apps.staging.camelai.dev
- * Dev: {scriptName}--{orgSlug}.dev-{name}.camelai.app, {scriptName}--{orgSlug}.apps.dev-{name}.camelai.dev
- * Local: {scriptName}--{orgSlug}.local.camelai.app, {scriptName}--{orgSlug}.apps.local.camelai.dev
  *
  * Legacy URL format (backwards compatibility, no org slug):
  * Production: {scriptName}.camelai.app, {scriptName}.apps.camelai.dev
  */
+
+/**
+ * New-style org slugs are 6+ purely alphanumeric characters (no hyphens).
+ * Old-style slugs (e.g. "ms-workspace-b3c") contain hyphens and use "--" separator.
+ */
+function isNewStyleSlug(slug: string): boolean {
+  return /^[a-z0-9]{6,}$/.test(slug);
+}
+
+/**
+ * Build the hostname label for an app: "{script}-{slug}" or "{script}--{slug}".
+ */
+export function buildAppLabel(scriptName: string, orgSlug: string): string {
+  const separator = isNewStyleSlug(orgSlug) ? '-' : '--';
+  return `${scriptName}${separator}${orgSlug}`;
+}
 
 /**
  * Extract the environment prefix from a hostname.
@@ -78,30 +94,24 @@ export function getIframeDomain(hostname?: string): string {
 
 /**
  * Get the full vanity URL for a deployed app with org slug.
- * Uses flat format with -- separator to avoid nested subdomain issues.
- * e.g., "https://my-app--acme-85b.camelai.app" for production
- * e.g., "https://my-app--acme-85b.staging.camelai.app" for staging
+ * New-style slugs use single hyphen, old-style use double hyphen.
  */
 export function getAppUrl(scriptName: string, hostname?: string, orgSlug?: string): string {
   const domain = getVanityDomain(hostname);
   if (orgSlug) {
-    return `https://${scriptName}--${orgSlug}.${domain}`;
+    return `https://${buildAppLabel(scriptName, orgSlug)}.${domain}`;
   }
-  // Legacy format without org slug
   return `https://${scriptName}.${domain}`;
 }
 
 /**
  * Get the full iframe URL for a deployed app (used for same-site embedding).
- * Uses flat format with -- separator to avoid nested subdomain issues.
- * e.g., "https://my-app--acme-85b.apps.camelai.dev" for production
- * e.g., "https://my-app--acme-85b.apps.staging.camelai.dev" for staging
+ * New-style slugs use single hyphen, old-style use double hyphen.
  */
 export function getAppIframeUrl(scriptName: string, hostname?: string, orgSlug?: string): string {
   const domain = getIframeDomain(hostname);
   if (orgSlug) {
-    return `https://${scriptName}--${orgSlug}.${domain}`;
+    return `https://${buildAppLabel(scriptName, orgSlug)}.${domain}`;
   }
-  // Legacy format without org slug
   return `https://${scriptName}.${domain}`;
 }

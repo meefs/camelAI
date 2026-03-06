@@ -386,6 +386,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const changes: Record<string, [unknown, unknown]> = {};
 
     if (typeof updates.name === 'string' && updates.name.trim() && updates.name !== info.name) {
+      // Check case-insensitive uniqueness within the org
+      const orgStub = this.env.ORG.get(
+        this.env.ORG.idFromName(info.org_id)
+      ) as unknown as OrgDO;
+      await orgStub.updateWorkspaceName(info.id, updates.name);
       changes.name = [info.name, updates.name];
       info.name = updates.name;
     }

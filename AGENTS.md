@@ -131,13 +131,13 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 
 ### Email Chat Ingress
 1. Cloudflare Email Routing delivers inbound messages to Worker `email()` (non-HTTP handler)
-2. A single registered inbox local-part is used (for example `chat@<domain>`), and workspace addresses are subaddressed as `{local-part}+{workspaceId}@<domain>`
+2. A single registered inbox local-part is used (for example `chat@<domain>`), and workspace addresses are subaddressed as `{local-part}+{orgSlug}.{workspaceSlug}@<domain>` (e.g., `chat+acme-corp-85b.default-workspace@camelai.dev`)
 3. Sender is authorized by email (`EMAIL_TO_USER` lookup) plus workspace access check (org member + workspace access not `none`)
 4. Follow-ups are routed to existing threads using email reply headers (`In-Reply-To` / `References`) mapped in KV (`email_reply_ref:*`)
 5. MIME attachments are uploaded to workspace-scoped R2 keys under `user-uploads/` and appended to the inbound turn as `(user uploaded file to /mnt/user-uploads/<filename>)` lines (same format as web chat uploads)
 6. `ChatThreadDO` ingests email turns through `externalMessage(...)` Durable Object RPC
 7. `AskUserQuestion` follows the same browser-presence rule as Slack/web: interactive only when a browser chat websocket is connected; otherwise the model gets an unavailable response
-8. Replies are sent from workspace-scoped subaddresses (`{local-part}+{workspaceId}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies, and outbound bodies are sent as `multipart/alternative` (`text/plain` + markdown-rendered `text/html`)
+8. Replies are sent from workspace-scoped subaddresses (`{local-part}+{orgSlug}.{workspaceSlug}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies, and outbound bodies are sent as `multipart/alternative` (`text/plain` + markdown-rendered `text/html`)
 
 ### Sandbox Proxy Auth
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.
@@ -238,7 +238,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Sandbox container proxy APIs | `/api/{mssql,postgres,mysql}/query`, `/api/openai/v1/*` |
 | Apps | `/api/apps/:scriptName/preview` |
 | WebSocket | `/ws/{workspace}` (chat), `/ws/logs?scriptName={name}` (worker logs) |
-| Email | Worker `email()` handler (Cloudflare Email Routing, workspace inbox format `{local-part}+{workspaceId}@...`) |
+| Email | Worker `email()` handler (Cloudflare Email Routing, workspace inbox format `{local-part}+{orgSlug}.{workspaceSlug}@...`) |
 | MCP | `/mcp` (streamable HTTP), `/mcp/health` |
 
 ## Durable Objects

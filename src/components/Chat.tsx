@@ -72,7 +72,7 @@ import {
   normalizeToolResultMessages,
   mergeTeammateMessages,
 } from '@/lib/streaming';
-import { getAppUrl, getVanityDomain, getIframeDomain } from '@/lib/app-url';
+import { getAppUrl, getVanityDomain, getIframeDomain, buildAppLabel } from '@/lib/app-url';
 import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
 import { isManualCompactCommand } from '@/lib/slash-commands';
 import { getFirstThreadPreviewUserMessage } from '@/lib/thread-preview';
@@ -1151,7 +1151,7 @@ export default function Chat({
             if (tab.target.kind !== 'app') return false;
             const s = tab.target.scriptName;
             const host = orgSlug
-              ? `${s}--${orgSlug}.${iframeDomain}`
+              ? `${buildAppLabel(s, orgSlug)}.${iframeDomain}`
               : `${s}.${iframeDomain}`;
             return event.origin === `https://${host}`;
           })
@@ -3166,7 +3166,7 @@ export default function Chat({
 
       // Create bug report bundle (without large data, using file references)
       const vanityHost = orgSlug
-        ? `${deployedApp}--${orgSlug}.${getVanityDomain(hostname)}`
+        ? `${buildAppLabel(deployedApp, orgSlug)}.${getVanityDomain(hostname)}`
         : `${deployedApp}.${getVanityDomain(hostname)}`;
       const vanityUrl = `https://${vanityHost}`;
       const debugDataClean = debugData ? {
@@ -3498,10 +3498,10 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       if (target.kind === 'app') {
         const scriptName = target.scriptName;
         const iframeHost = orgSlug
-          ? `${scriptName}--${orgSlug}.${getIframeDomain(hostname)}`
+          ? `${buildAppLabel(scriptName, orgSlug)}.${getIframeDomain(hostname)}`
           : `${scriptName}.${getIframeDomain(hostname)}`;
         const vHost = orgSlug
-          ? `${scriptName}--${orgSlug}.${getVanityDomain(hostname)}`
+          ? `${buildAppLabel(scriptName, orgSlug)}.${getVanityDomain(hostname)}`
           : `${scriptName}.${getVanityDomain(hostname)}`;
         return {
           tabId,
@@ -3565,8 +3565,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     const scriptName = previewTarget.scriptName;
     if (orgSlug) {
       return {
-        iframeHost: `${scriptName}--${orgSlug}.${getIframeDomain(hostname)}`,
-        vanityHost: `${scriptName}--${orgSlug}.${getVanityDomain(hostname)}`,
+        iframeHost: `${buildAppLabel(scriptName, orgSlug)}.${getIframeDomain(hostname)}`,
+        vanityHost: `${buildAppLabel(scriptName, orgSlug)}.${getVanityDomain(hostname)}`,
       };
     }
     // Legacy format without org slug

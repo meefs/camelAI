@@ -91,7 +91,9 @@ function createMockKvStore(initial?: Record<string, string>) {
 
 function createMockEnv(overrides?: Partial<Record<string, unknown>>): any {
   const emailToUser = createMockKvStore();
-  const appKv = createMockKvStore();
+  const appKv = createMockKvStore({
+    'org_slug:acme-85b': 'org-1',
+  });
   return {
     WORKSPACE_EMAIL_DOMAIN: 'mail.camelai.com',
     WORKSPACE_EMAIL_LOCAL_PART: 'chat',
@@ -120,6 +122,7 @@ describe('handleWorkspaceEmailIngress', () => {
       isMember: vi.fn().mockResolvedValue(true),
       getThread: vi.fn().mockResolvedValue(null),
       createThread: vi.fn().mockResolvedValue({ id: 'thread-1', title: 'Quarterly report' }),
+      getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
     };
     const userStub = {
       getProfile: vi.fn().mockResolvedValue({ name: 'Agent User' }),
@@ -136,7 +139,7 @@ describe('handleWorkspaceEmailIngress', () => {
     const boundary = 'test-boundary';
     const raw = [
       'From: user@example.com',
-      'To: chat+workspace-1@mail.camelai.com',
+      'To: chat+acme-85b.my-workspace@mail.camelai.com',
       'Subject: Quarterly report',
       'Message-ID: <msg-1@example.com>',
       'MIME-Version: 1.0',
@@ -158,7 +161,7 @@ describe('handleWorkspaceEmailIngress', () => {
 
     const message = createMessage({
       from: 'user@example.com',
-      to: 'chat+workspace-1@mail.camelai.com',
+      to: 'chat+acme-85b.my-workspace@mail.camelai.com',
       subject: 'Quarterly report',
       raw,
     });
@@ -197,9 +200,14 @@ describe('handleWorkspaceEmailIngress', () => {
   });
 
   it('rejects senders that are not mapped to a user', async () => {
+    const orgStub = {
+      getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
+    };
+    getOrgStubMock.mockReturnValue(orgStub);
+
     const message = createMessage({
       from: 'stranger@example.com',
-      to: 'chat+workspace-1@mail.camelai.com',
+      to: 'chat+acme-85b.my-workspace@mail.camelai.com',
       subject: 'hello',
     });
 

@@ -161,8 +161,6 @@ export default [
 
   // Organization & invitation API routes
   route('api/orgs/:id/invite', 'routes/api/orgs.$id.invite.ts'),
-  route('api/orgs/:id/check-slug', 'routes/api/orgs.$id.check-slug.ts'),
-  route('api/orgs/:id/update-slug', 'routes/api/orgs.$id.update-slug.ts'),
   route('api/orgs/:id/llm-provider', 'routes/api/orgs.$id.llm-provider.ts'),
   route('api/invitations/:orgId/:invitationId', 'routes/api/invitations.$orgId.$invitationId.ts'),
 

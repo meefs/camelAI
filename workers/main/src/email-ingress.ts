@@ -10,6 +10,7 @@ import { runExternalMessageTurn } from './helpers/external-turn.js';
 import { getOrgStub, getUserStub, getWorkspaceStub } from './helpers/stubs.js';
 import { buildWorkspaceScopedR2Key } from '../../../src/lib/workspace-r2-paths.js';
 import {
+  buildWorkspaceInboxAddress,
   getWorkspaceEmailRoutingConfig,
   parseMailboxAddress,
   parseWorkspaceInboxAddress,
@@ -455,9 +456,25 @@ function renderMarkdownEmailHtml(markdown: string): string {
   }
 }
 
+async function resolveWorkspaceFromSlugs(
+  env: Env,
+  orgSlug: string,
+  workspaceSlug: string
+): Promise<{ orgId: string; workspaceId: string } | null> {
+  const orgId = await env.APP_KV.get(`org_slug:${orgSlug}`);
+  if (!orgId) return null;
+
+  const orgStub = getOrgStub(env, orgId);
+  const workspace = await orgStub.getWorkspaceBySlug(workspaceSlug);
+  if (!workspace) return null;
+
+  return { orgId, workspaceId: workspace.id };
+}
+
 async function resolveAuthorizedSender(
   env: Env,
   workspaceId: string,
+  orgId: string,
   senderEmail: string
 ): Promise<AuthorizedSender | null> {
   const userId = await env.EMAIL_TO_USER.get(`email:${senderEmail}`);
@@ -467,7 +484,7 @@ async function resolveAuthorizedSender(
   const workspaceInfo = await wsStub.getInfo();
   if (!workspaceInfo || workspaceInfo.archived) return null;
 
-  const orgStub = getOrgStub(env, workspaceInfo.org_id);
+  const orgStub = getOrgStub(env, orgId);
   const [isOrgMember, memberAccess, profile] = await Promise.all([
     orgStub.isMember(userId),
     wsStub.getMemberAccess(userId),
@@ -482,7 +499,7 @@ async function resolveAuthorizedSender(
     userName: profile?.name?.trim() || senderEmail,
     userEmail: senderEmail,
     workspaceId,
-    orgId: workspaceInfo.org_id,
+    orgId,
   };
 }
 
@@ -683,6 +700,13 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
     message.setReject('Unknown workspace email address.');
     return;
   }
+
+  const resolved = await resolveWorkspaceFromSlugs(env, recipient.orgSlug, recipient.workspaceSlug);
+  if (!resolved) {
+    message.setReject('Unknown workspace email address.');
+    return;
+  }
+
   const recipientMailbox = parseMailboxAddress(message.to);
   if (!recipientMailbox) {
     message.setReject('Unknown workspace email address.');
@@ -697,7 +721,7 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
   }
 
   const senderEmail = `${sender.local}@${sender.domain}`;
-  const authorizedSender = await resolveAuthorizedSender(env, recipient.workspaceId, senderEmail);
+  const authorizedSender = await resolveAuthorizedSender(env, resolved.workspaceId, resolved.orgId, senderEmail);
   if (!authorizedSender) {
     message.setReject('Sender is not allowed for this workspace inbox.');
     return;
@@ -705,7 +729,7 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
 
   const normalizedMessageId = normalizeMessageId(message.headers.get('message-id'));
   const dedupeKey = normalizedMessageId
-    ? getEmailDedupeKey(recipient.workspaceId, normalizedMessageId)
+    ? getEmailDedupeKey(resolved.workspaceId, normalizedMessageId)
     : null;
   let dedupeProcessingValue: string | null = null;
   let dedupeHandled = false;
@@ -749,7 +773,7 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
     }
 
     const thread = await resolveThreadForEmail(env, {
-      workspaceId: recipient.workspaceId,
+      workspaceId: resolved.workspaceId,
       orgId: authorizedSender.orgId,
       headers: message.headers,
       subject,
@@ -782,7 +806,7 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
 
     if (sentMessageId) {
       await env.APP_KV.put(
-        getEmailReplyReferenceKey(recipient.workspaceId, sentMessageId),
+        getEmailReplyReferenceKey(resolved.workspaceId, sentMessageId),
         thread.threadId,
         { expirationTtl: EMAIL_REPLY_REFERENCE_TTL_SECONDS }
       );
