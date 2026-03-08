@@ -18,6 +18,8 @@ export interface SDKEvent {
   sourceToolUseID?: string;
   sourceToolUseId?: string;
   source_tool_use_id?: string;
+  parentToolUseID?: string;
+  parentToolUseId?: string;
   parent_tool_use_id?: string;
   toolUseResult?: {
     prompt?: unknown;
@@ -33,6 +35,8 @@ export interface SDKEvent {
     sourceToolUseID?: string;
     sourceToolUseId?: string;
     source_tool_use_id?: string;
+    parentToolUseID?: string;
+    parentToolUseId?: string;
     parent_tool_use_id?: string;
   };
   event?: {
@@ -62,6 +66,43 @@ export interface SDKEvent {
       signature?: string;
     };
   };
+}
+
+function firstStringValue(
+  record: Record<string, unknown>,
+  keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string') {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+export function extractToolEventMetaInfo(
+  event: SDKEvent
+): { isMeta: boolean; sourceToolUseID?: string } {
+  const record = event as unknown as Record<string, unknown>;
+  const messageRecord = (event.message ?? {}) as unknown as Record<string, unknown>;
+  const sourceToolUseKeys = [
+    'sourceToolUseID',
+    'sourceToolUseId',
+    'source_tool_use_id',
+    'parentToolUseID',
+    'parentToolUseId',
+    'parent_tool_use_id',
+  ];
+  const sourceToolUseID = firstStringValue(record, sourceToolUseKeys)
+    ?? firstStringValue(messageRecord, sourceToolUseKeys);
+  const isMeta = Boolean(
+    record.isMeta ??
+    record.is_meta ??
+    messageRecord.isMeta ??
+    messageRecord.is_meta
+  );
+  return { isMeta, sourceToolUseID };
 }
 
 /**

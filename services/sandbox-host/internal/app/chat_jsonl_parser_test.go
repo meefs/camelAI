@@ -60,6 +60,27 @@ func TestParseClaudeJSONLMessagesMetaAndCompactSummary(t *testing.T) {
 	}
 }
 
+func TestParseClaudeJSONLMessagesCamelCaseParentToolUseID(t *testing.T) {
+	jsonl := `{"type":"assistant","timestamp":"2026-01-02T03:04:06.000Z","message":{"id":"a1","content":[{"type":"tool_use","id":"tool-parent","name":"Agent","input":{"prompt":"explore"}}]}}
+{"type":"user","uuid":"meta-1","timestamp":"2026-01-02T03:04:07.000Z","parentToolUseID":"tool-parent","message":{"content":[{"type":"text","text":"meta"}]}}`
+
+	messages := parseClaudeJSONLMessages(jsonl, "thread-3")
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+
+	for _, message := range messages {
+		if message.IsMeta {
+			if message.SourceToolUseID != "tool-parent" {
+				t.Fatalf("expected camel-case parentToolUseID to populate sourceToolUseID, got %+v", message)
+			}
+			return
+		}
+	}
+
+	t.Fatalf("expected a meta message, got %+v", messages)
+}
+
 func TestParseClaudeJSONLMessagesThinkingPreserved(t *testing.T) {
 	ts1 := "2026-01-02T03:04:05.000Z"
 	ts2 := "2026-01-02T03:04:06.000Z"

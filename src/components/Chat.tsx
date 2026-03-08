@@ -67,6 +67,7 @@ import {
   type SDKEvent,
   applyStreamingEventToMessage,
   attachToolResultsToMessages,
+  extractToolEventMetaInfo,
   finalizeStreamingMessage,
   mergeTaskNotifications,
   normalizeToolResultMessages,
@@ -209,28 +210,6 @@ function isUserTurnAnchorMessage(msg: Message): boolean {
 
 function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
   return Boolean(msg && (msg.role === 'assistant' || msg.isCompactSummary));
-}
-
-function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
-  const record = event as unknown as Record<string, unknown>;
-  const messageRecord = (event.message ?? {}) as unknown as Record<string, unknown>;
-  const isMeta = Boolean(
-    record.isMeta ??
-    record.is_meta ??
-    messageRecord.isMeta ??
-    messageRecord.is_meta
-  );
-  const sourceToolUseID = (
-    record.sourceToolUseID ??
-    record.sourceToolUseId ??
-    record.source_tool_use_id ??
-    record.parent_tool_use_id ??
-    messageRecord.sourceToolUseID ??
-    messageRecord.sourceToolUseId ??
-    messageRecord.source_tool_use_id ??
-    messageRecord.parent_tool_use_id
-  );
-  return { isMeta, sourceToolUseID: typeof sourceToolUseID === 'string' ? sourceToolUseID : undefined };
 }
 
 function getLastToolUseId(message?: Message): string | undefined {
@@ -2150,7 +2129,7 @@ export default function Chat({
             Array.isArray(contentBlocks) &&
             contentBlocks.length > 0 &&
             contentBlocks.every(block => block.type === 'tool_result');
-          const { sourceToolUseID } = extractMetaInfo(sdkEvent);
+          const { sourceToolUseID } = extractToolEventMetaInfo(sdkEvent);
 
           if (!isToolResultEvent) {
             const shouldBeMeta = true;
