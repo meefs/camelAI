@@ -13,7 +13,6 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-
 import { readFile, access } from 'fs/promises';
 import { homedir } from 'os';
 import { TeamPollingController } from './team-poll-controller.mjs';
@@ -495,7 +494,6 @@ class ChatSession {
     this.messageResolver = null;
     this.messageQueue = [];
     this.pendingQuestions = new Map();
-
     this.lastForwardedCompactSummaryKey = null;
     this.disconnectTimer = null;
     this.activityGeneration = 0;

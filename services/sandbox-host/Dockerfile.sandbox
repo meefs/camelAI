@@ -77,14 +77,12 @@ RUN cd /opt/chiridion && npx playwright install-deps chromium && \
 COPY sandbox/control-plane.mjs /opt/chiridion/control-plane.mjs
 COPY sandbox/team-poll-controller.mjs /opt/chiridion/team-poll-controller.mjs
 COPY sandbox/team-poll-state.mjs /opt/chiridion/team-poll-state.mjs
-COPY sandbox/memory-logger.mjs /opt/chiridion/memory-logger.mjs
 COPY sandbox/entrypoint.sh /opt/chiridion/entrypoint.sh
 COPY sandbox/skills/ /etc/claude-code/.claude/skills/
 COPY sandbox/create-worker/ /usr/local/lib/create-worker/
 RUN chmod 755 /opt/chiridion/control-plane.mjs && \
     chmod 644 /opt/chiridion/team-poll-controller.mjs && \
     chmod 644 /opt/chiridion/team-poll-state.mjs && \
-    chmod 644 /opt/chiridion/memory-logger.mjs && \
     chmod +x /opt/chiridion/entrypoint.sh && \
     chmod +x /usr/local/lib/create-worker/create-worker.mjs && \
     chmod +x /usr/local/lib/create-worker/publish.mjs && \
