@@ -51,6 +51,9 @@ export function getCookieDomain(hostname: string | undefined): string | undefine
 }
 
 function isSecure(request: Request): boolean {
+  const host = request.headers.get('host')?.split(':')[0];
+  if (host === 'localhost' || host === '127.0.0.1') return false;
+
   const proto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
   if (proto) return proto === 'https';
   try {

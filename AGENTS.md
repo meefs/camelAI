@@ -72,7 +72,7 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 5. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
 
 ### OAuth State Storage
-Google/GitHub OAuth `state` is stored in a dedicated per-state Durable Object (`OAuthStateDO`) keyed by `state` value (`idFromName(state)`). This avoids KV eventual-consistency issues for callback validation and avoids a single DO bottleneck because each login state is isolated to its own DO instance. Callback handling uses an atomic consume-and-read DO RPC before token exchange so each `state` is single-use.
+Google/GitHub OAuth `state` is stored in an HMAC-signed `chiridion_oauth_state` cookie, not a Durable Object. `workers/main/src/routes/oauth.ts` sets the cookie on `/api/auth/{provider}` and validates it on `/api/auth/{provider}/callback` by checking the signed payload, provider, nonce, and 5-minute expiry. This avoids KV eventual-consistency issues during callback handling without introducing a DO hop.
 
 ### Onboarding
 Incomplete users are redirected to `/onboarding` before accessing `_app` routes. OAuth signups (non-team) auto-complete onboarding with no UI, then redirect to first chat. Password signups stay on the onboarding welcome screen until email verification is complete, then proceed. Team invitation users see the team welcome screen before proceeding. `POST /api/onboarding/complete` now marks `completed_at`, creates the first thread, and returns a hidden onboarding system message plus redirect target. The client seeds `pendingMessage:newThread` and `showBootModal` in sessionStorage before navigating to `/chat/{threadId}?newThread=1`. Preference capture now happens in-chat through `AskUserQuestion`.
