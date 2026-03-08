@@ -150,6 +150,8 @@ func parseClaudeJSONLMessages(fileContent string, threadID string) []parsedChatM
 				"sourceToolUseID",
 				"sourceToolUseId",
 				"source_tool_use_id",
+				"parentToolUseID",
+				"parentToolUseId",
 				"parent_tool_use_id",
 			)
 			if sourceToolUseID == "" {
@@ -158,6 +160,8 @@ func parseClaudeJSONLMessages(fileContent string, threadID string) []parsedChatM
 					"sourceToolUseID",
 					"sourceToolUseId",
 					"source_tool_use_id",
+					"parentToolUseID",
+					"parentToolUseId",
 					"parent_tool_use_id",
 				)
 			}
