@@ -46,6 +46,8 @@ describe('pdf export', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -133,5 +135,78 @@ describe('pdf export', () => {
     });
 
     expect(fontRegister).toHaveBeenCalledTimes(3);
+  });
+
+  it('falls back when markdown image preparation fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('fetch failed')));
+
+    const { exportNotebookReportAsPdf } = await import(
+      '@/components/chat-file-preview/notebook-preview/pdf-export'
+    );
+
+    await exportNotebookReportAsPdf({
+      filename: 'analysis.ipynb',
+      notebook: {
+        cells: [
+          {
+            cell_type: 'markdown',
+            source: '![Chart](https://example.com/chart.png)',
+          },
+        ],
+      },
+    });
+
+    expect(pdfToBlob).toHaveBeenCalledTimes(1);
+    expect(triggerBlobDownload).toHaveBeenCalledTimes(1);
+    expect(console.error).toHaveBeenCalledWith(
+      'Notebook PDF markdown image export failed:',
+      expect.any(Error)
+    );
+  });
+
+  it('does not trigger a late download after export timeout', async () => {
+    vi.useFakeTimers();
+
+    const pendingBlob = {
+      resolve: null as ((value: Blob) => void) | null,
+    };
+    pdfToBlob.mockImplementationOnce(
+      () =>
+        new Promise<Blob>((resolve) => {
+          pendingBlob.resolve = resolve;
+        })
+    );
+
+    const { exportNotebookReportAsPdf } = await import(
+      '@/components/chat-file-preview/notebook-preview/pdf-export'
+    );
+
+    const exportPromise = exportNotebookReportAsPdf({
+      filename: 'analysis.ipynb',
+      notebook: {
+        cells: [
+          {
+            cell_type: 'markdown',
+            source: '# Analysis',
+          },
+        ],
+      },
+    });
+    const exportExpectation = expect(exportPromise).rejects.toThrow(
+      'Notebook PDF export timed out. Please try again.'
+    );
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await exportExpectation;
+    expect(triggerBlobDownload).not.toHaveBeenCalled();
+
+    const lateResolve = pendingBlob.resolve;
+    if (typeof lateResolve === 'function') {
+      lateResolve(new Blob(['late'], { type: 'application/pdf' }));
+    }
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(triggerBlobDownload).not.toHaveBeenCalled();
   });
 });

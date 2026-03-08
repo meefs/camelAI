@@ -9,6 +9,7 @@ import {
   triggerBlobDownload,
 } from './chart-runtime';
 import { NotebookPdfDocument, type NotebookPdfRenderableBlock } from './pdf-document';
+import { extractMarkdownImageUrls, type PdfMarkdownImageAssets } from './pdf-markdown';
 import {
   buildNotebookReportExportModel,
   type NotebookReportExportBlock,
@@ -40,6 +41,48 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
         clearTimeout(timeoutId);
         reject(error);
       }
+    );
+  });
+}
+
+function getAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('Notebook PDF export was aborted.');
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw getAbortError(signal);
+  }
+}
+
+function withAbortTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  message: string
+): Promise<T> {
+  const controller = new AbortController();
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: (value: T | Error) => void, value: T | Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      callback(value);
+    };
+
+    const timeoutId = setTimeout(() => {
+      const error = new Error(message);
+      controller.abort(error);
+      finish(reject as (value: T | Error) => void, error);
+    }, ms);
+
+    operation(controller.signal).then(
+      (value) => finish(resolve as (value: T | Error) => void, value),
+      (error) => finish(
+        reject as (value: T | Error) => void,
+        error instanceof Error ? error : new Error(String(error))
+      )
     );
   });
 }
@@ -87,13 +130,14 @@ function registerPdfFonts(font: typeof import('@react-pdf/renderer').Font): void
   pdfFontsRegistered = true;
 }
 
-async function normalizeImageSrcForPdf(src: string): Promise<string> {
+async function normalizeImageSrcForPdf(src: string, signal?: AbortSignal): Promise<string> {
+  throwIfAborted(signal);
   if (src.startsWith('data:')) {
     return src;
   }
 
   const response = await withTimeout(
-    fetch(src),
+    fetch(src, { signal }),
     IMAGE_FETCH_TIMEOUT_MS,
     'Image fetch timed out during PDF export.'
   );
@@ -105,17 +149,36 @@ async function normalizeImageSrcForPdf(src: string): Promise<string> {
   return await blobToDataUrl(blob);
 }
 
-async function getImageDimensions(src: string): Promise<{ width: number; height: number }> {
+async function getImageDimensions(
+  src: string,
+  signal?: AbortSignal
+): Promise<{ width: number; height: number }> {
+  throwIfAborted(signal);
   const image = new Image();
   return await withTimeout(
     new Promise<{ width: number; height: number }>((resolve, reject) => {
+      const handleAbort = () => {
+        cleanup();
+        reject(getAbortError(signal as AbortSignal));
+      };
+      const cleanup = () => {
+        image.onload = null;
+        image.onerror = null;
+        signal?.removeEventListener('abort', handleAbort);
+      };
       image.onload = () => {
+        cleanup();
         resolve({
           width: image.naturalWidth || 1200,
           height: image.naturalHeight || 800,
         });
       };
-      image.onerror = () => reject(new Error('Image dimensions could not be read.'));
+      image.onerror = () => {
+        cleanup();
+        reject(new Error('Image dimensions could not be read.'));
+      };
+      signal?.addEventListener('abort', handleAbort, { once: true });
+      throwIfAborted(signal);
       image.src = src;
     }),
     IMAGE_FETCH_TIMEOUT_MS,
@@ -123,21 +186,52 @@ async function getImageDimensions(src: string): Promise<{ width: number; height:
   );
 }
 
-async function buildPdfImageAsset(src: string): Promise<PdfImageAsset> {
-  const normalizedSrc = await normalizeImageSrcForPdf(src);
-  const dimensions = await getImageDimensions(normalizedSrc);
+async function buildPdfImageAsset(src: string, signal?: AbortSignal): Promise<PdfImageAsset> {
+  const normalizedSrc = await normalizeImageSrcForPdf(src, signal);
+  throwIfAborted(signal);
+  const dimensions = await getImageDimensions(normalizedSrc, signal);
   return {
     src: normalizedSrc,
     ...dimensions,
   };
 }
 
+async function buildMarkdownImageAssets(
+  markdown: string,
+  signal?: AbortSignal
+): Promise<PdfMarkdownImageAssets | undefined> {
+  const urls = extractMarkdownImageUrls(markdown);
+  if (urls.length === 0) {
+    return undefined;
+  }
+
+  const imageAssets: PdfMarkdownImageAssets = {};
+  for (const url of urls) {
+    throwIfAborted(signal);
+    try {
+      imageAssets[url] = await buildPdfImageAsset(url, signal);
+    } catch (error) {
+      if (signal?.aborted) {
+        throw getAbortError(signal);
+      }
+      console.error('Notebook PDF markdown image export failed:', error);
+      imageAssets[url] = null;
+    }
+  }
+
+  return imageAssets;
+}
+
 async function preparePdfBlock(
-  block: NotebookReportExportBlock
+  block: NotebookReportExportBlock,
+  signal?: AbortSignal
 ): Promise<NotebookPdfRenderableBlock | null> {
   switch (block.kind) {
     case 'markdown':
-      return block;
+      return {
+        ...block,
+        imageAssets: await buildMarkdownImageAssets(block.markdown, signal),
+      };
     case 'table':
       return block;
     case 'text':
@@ -154,7 +248,8 @@ async function preparePdfBlock(
       };
     case 'image':
       try {
-        const asset = await buildPdfImageAsset(block.src);
+        const asset = await buildPdfImageAsset(block.src, signal);
+        throwIfAborted(signal);
         return {
           id: block.id,
           kind: 'figure',
@@ -162,6 +257,9 @@ async function preparePdfBlock(
           asset,
         };
       } catch (error) {
+        if (signal?.aborted) {
+          throw getAbortError(signal);
+        }
         console.error('Notebook PDF image export failed:', error);
         return {
           id: block.id,
@@ -180,6 +278,7 @@ async function preparePdfBlock(
           CHART_RENDER_TIMEOUT_MS,
           'Chart render timed out during PDF export.'
         );
+        throwIfAborted(signal);
         return {
           id: block.id,
           kind: 'figure',
@@ -187,6 +286,9 @@ async function preparePdfBlock(
           asset,
         };
       } catch (error) {
+        if (signal?.aborted) {
+          throw getAbortError(signal);
+        }
         console.error('Notebook PDF chart export failed:', error);
         return {
           id: block.id,
@@ -200,12 +302,14 @@ async function preparePdfBlock(
 }
 
 export async function prepareNotebookPdfBlocks(
-  blocks: NotebookReportExportBlock[]
+  blocks: NotebookReportExportBlock[],
+  signal?: AbortSignal
 ): Promise<NotebookPdfRenderableBlock[]> {
   const preparedBlocks: NotebookPdfRenderableBlock[] = [];
 
   for (const block of blocks) {
-    const prepared = await preparePdfBlock(block);
+    throwIfAborted(signal);
+    const prepared = await preparePdfBlock(block, signal);
     if (prepared) {
       preparedBlocks.push(prepared);
     }
@@ -222,12 +326,14 @@ export async function exportNotebookReportAsPdf(options: {
     throw new Error('Notebook PDF export is only available in the browser.');
   }
 
-  await withTimeout(
-    (async () => {
+  await withAbortTimeout(
+    async (signal) => {
       const reactPdfModule = await import('@react-pdf/renderer');
+      throwIfAborted(signal);
       registerPdfFonts(reactPdfModule.Font);
       const model = buildNotebookReportExportModel(options.notebook);
-      const blocks = await prepareNotebookPdfBlocks(model.blocks);
+      const blocks = await prepareNotebookPdfBlocks(model.blocks, signal);
+      throwIfAborted(signal);
       const pdfTitle = model.header.title ?? options.filename.replace(/\.ipynb$/i, '');
       // `react-pdf` expects a renderer-specific document element here, and
       // `createElement` is the narrowest cast surface for that handoff.
@@ -238,8 +344,9 @@ export async function exportNotebookReportAsPdf(options: {
       }) as unknown as Parameters<typeof reactPdfModule.pdf>[0];
 
       const blob = await reactPdfModule.pdf(documentElement).toBlob();
+      throwIfAborted(signal);
       triggerBlobDownload(blob, toPdfFilename(options.filename));
-    })(),
+    },
     EXPORT_TIMEOUT_MS,
     'Notebook PDF export timed out. Please try again.'
   );

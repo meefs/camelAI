@@ -3,6 +3,7 @@ import { Image, Link, StyleSheet, Text, View } from '@react-pdf/renderer';
 import remarkGfm from 'remark-gfm';
 import remarkParse from 'remark-parse';
 import { unified } from 'unified';
+import type { PdfImageAsset } from './chart-runtime';
 import { PdfTable } from './pdf-table';
 import type { ParsedTable } from './types';
 
@@ -19,6 +20,15 @@ interface MdastNode {
 }
 
 const markdownProcessor = unified().use(remarkParse).use(remarkGfm);
+const IMAGE_FAILURE_COPY = 'Image could not be rendered for PDF export.';
+
+export interface PdfMarkdownImageAssets {
+  [src: string]: PdfImageAsset | null;
+}
+
+interface RenderMarkdownToPdfOptions {
+  imageAssets?: PdfMarkdownImageAssets;
+}
 
 const styles = StyleSheet.create({
   paragraph: {
@@ -182,6 +192,26 @@ function canRenderPdfImage(url: unknown): url is string {
   return typeof url === 'string' && /^(data:|https?:\/\/)/i.test(url);
 }
 
+function visitMarkdownNodes(node: MdastNode, visit: (current: MdastNode) => void): void {
+  visit(node);
+  for (const child of nodeChildren(node)) {
+    visitMarkdownNodes(child, visit);
+  }
+}
+
+export function extractMarkdownImageUrls(markdown: string): string[] {
+  const tree = markdownProcessor.parse(markdown) as MdastNode;
+  const urls = new Set<string>();
+
+  visitMarkdownNodes(tree, (node) => {
+    if (node.type === 'image' && canRenderPdfImage(node.url)) {
+      urls.add(node.url);
+    }
+  });
+
+  return Array.from(urls);
+}
+
 function markdownTableToParsedTable(node: MdastNode): ParsedTable {
   const rows = nodeChildren(node);
   const headerCells = rows[0] ? nodeChildren(rows[0]).map(extractText) : [];
@@ -243,13 +273,40 @@ function renderInlineNodes(nodes: MdastNode[], keyPrefix: string): ReactNode[] {
   });
 }
 
-function renderMarkdownImage(node: MdastNode, key: string): ReactNode {
+function renderMarkdownImageFallback(alt: string, key: string): ReactNode {
+  return (
+    <View key={key} style={styles.htmlFallback}>
+      <Text style={styles.htmlFallbackText}>{IMAGE_FAILURE_COPY}</Text>
+      {alt ? <Text style={styles.imageCaption}>{alt}</Text> : null}
+    </View>
+  );
+}
+
+function renderMarkdownImage(
+  node: MdastNode,
+  key: string,
+  imageAssets?: PdfMarkdownImageAssets
+): ReactNode {
   const alt = node.alt?.trim() || 'untitled';
   if (!canRenderPdfImage(node.url)) {
     return (
       <Text key={key} style={styles.paragraph}>
         {`[Image: ${alt}]`}
       </Text>
+    );
+  }
+
+  if (imageAssets) {
+    const asset = imageAssets[node.url];
+    if (!asset) {
+      return renderMarkdownImageFallback(alt, key);
+    }
+
+    return (
+      <View key={key} style={styles.imageBlock} wrap={false}>
+        <Image src={asset.src} cache={false} style={styles.image} />
+        {node.alt ? <Text style={styles.imageCaption}>{node.alt}</Text> : null}
+      </View>
     );
   }
 
@@ -261,7 +318,12 @@ function renderMarkdownImage(node: MdastNode, key: string): ReactNode {
   );
 }
 
-function renderList(node: MdastNode, key: string, depth: number): ReactNode {
+function renderList(
+  node: MdastNode,
+  key: string,
+  depth: number,
+  imageAssets?: PdfMarkdownImageAssets
+): ReactNode {
   const ordered = Boolean(node.ordered);
   const start = node.start ?? 1;
   const listStyles = depth > 0 ? [styles.list, styles.nestedList] : [styles.list];
@@ -286,7 +348,8 @@ function renderList(node: MdastNode, key: string, depth: number): ReactNode {
                 return renderBlockNode(
                   child,
                   `${key}-child-${index}-${childIndex}`,
-                  depth + 1
+                  depth + 1,
+                  imageAssets
                 );
               })}
             </View>
@@ -297,11 +360,16 @@ function renderList(node: MdastNode, key: string, depth: number): ReactNode {
   );
 }
 
-function renderBlockNode(node: MdastNode, key: string, depth = 0): ReactNode {
+function renderBlockNode(
+  node: MdastNode,
+  key: string,
+  depth = 0,
+  imageAssets?: PdfMarkdownImageAssets
+): ReactNode {
   switch (node.type) {
     case 'paragraph':
       if (nodeChildren(node).length === 1 && nodeChildren(node)[0]?.type === 'image') {
-        return renderMarkdownImage(nodeChildren(node)[0] as MdastNode, key);
+        return renderMarkdownImage(nodeChildren(node)[0] as MdastNode, key, imageAssets);
       }
       return (
         <Text key={key} style={styles.paragraph}>
@@ -324,11 +392,11 @@ function renderBlockNode(node: MdastNode, key: string, depth = 0): ReactNode {
     case 'blockquote':
       return (
         <View key={key} style={styles.blockquote}>
-          {nodeChildren(node).map((child, index) => renderBlockNode(child, `${key}-${index}`, depth))}
+          {nodeChildren(node).map((child, index) => renderBlockNode(child, `${key}-${index}`, depth, imageAssets))}
         </View>
       );
     case 'list':
-      return renderList(node, key, depth);
+      return renderList(node, key, depth, imageAssets);
     case 'code':
       return (
         <View key={key} style={styles.codeBlock}>
@@ -336,7 +404,7 @@ function renderBlockNode(node: MdastNode, key: string, depth = 0): ReactNode {
         </View>
       );
     case 'image':
-      return renderMarkdownImage(node, key);
+      return renderMarkdownImage(node, key, imageAssets);
     case 'table':
       return <PdfTable key={key} table={markdownTableToParsedTable(node)} />;
     case 'thematicBreak':
@@ -353,7 +421,7 @@ function renderBlockNode(node: MdastNode, key: string, depth = 0): ReactNode {
       if (nodeChildren(node).length > 0) {
         return (
           <View key={key}>
-            {nodeChildren(node).map((child, index) => renderBlockNode(child, `${key}-${index}`, depth))}
+            {nodeChildren(node).map((child, index) => renderBlockNode(child, `${key}-${index}`, depth, imageAssets))}
           </View>
         );
       }
@@ -361,13 +429,16 @@ function renderBlockNode(node: MdastNode, key: string, depth = 0): ReactNode {
   }
 }
 
-export function renderMarkdownToPdfNodes(markdown: string): ReactNode[] {
+export function renderMarkdownToPdfNodes(
+  markdown: string,
+  options: RenderMarkdownToPdfOptions = {}
+): ReactNode[] {
   const tree = markdownProcessor.parse(markdown) as MdastNode;
   return nodeChildren(tree)
-    .map((node, index) => renderBlockNode(node, `markdown-${index}`))
+    .map((node, index) => renderBlockNode(node, `markdown-${index}`, 0, options.imageAssets))
     .filter(Boolean);
 }
 
-export function PdfMarkdown({ markdown }: { markdown: string }) {
-  return <View>{renderMarkdownToPdfNodes(markdown)}</View>;
+export function PdfMarkdown({ markdown, imageAssets }: { markdown: string; imageAssets?: PdfMarkdownImageAssets }) {
+  return <View>{renderMarkdownToPdfNodes(markdown, { imageAssets })}</View>;
 }

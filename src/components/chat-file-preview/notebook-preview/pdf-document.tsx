@@ -1,5 +1,5 @@
 import { Document, Image, Page, StyleSheet, Text, View } from '@react-pdf/renderer';
-import { PdfMarkdown } from './pdf-markdown';
+import { PdfMarkdown, type PdfMarkdownImageAssets } from './pdf-markdown';
 import { PdfTable } from './pdf-table';
 import type { NotebookReportExportModel } from './report-export-model';
 import type { TableDisplayModel } from './table-display';
@@ -8,7 +8,7 @@ import { formatNotebookDate } from './utils';
 import type { PdfImageAsset } from './chart-runtime';
 
 export type NotebookPdfRenderableBlock =
-  | { id: string; kind: 'markdown'; markdown: string }
+  | { id: string; kind: 'markdown'; markdown: string; imageAssets?: PdfMarkdownImageAssets }
   | { id: string; kind: 'figure'; title: string; asset: PdfImageAsset }
   | { id: string; kind: 'table'; table: ParsedTable; display: TableDisplayModel; title: string }
   | { id: string; kind: 'text'; text: string }
@@ -200,7 +200,7 @@ function buildFooterRightText(model: NotebookReportExportModel): string {
 function renderBlock(block: NotebookPdfRenderableBlock) {
   switch (block.kind) {
     case 'markdown':
-      return <PdfMarkdown markdown={block.markdown} />;
+      return <PdfMarkdown markdown={block.markdown} imageAssets={block.imageAssets} />;
     case 'figure': {
       const size = getFigureSize(block.asset);
       return (

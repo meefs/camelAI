@@ -57,4 +57,20 @@ describe('pdf markdown renderer', () => {
 
     expect(typeNames).toContain('IMAGE');
   });
+
+  it('falls back when a prepared markdown image asset is unavailable', () => {
+    const nodes = renderMarkdownToPdfNodes(
+      '![Chart](https://example.com/chart.png)',
+      {
+        imageAssets: {
+          'https://example.com/chart.png': null,
+        },
+      }
+    );
+
+    const typeNames = nodes.flatMap((node) => collectElementTypeNames(node));
+
+    expect(typeNames).not.toContain('IMAGE');
+    expect(typeNames).toContain('TEXT');
+  });
 });
