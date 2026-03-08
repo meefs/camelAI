@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
@@ -95,6 +95,12 @@ export interface FilePreviewContentProps {
   layout?: PreviewLayout;
   notebookViewMode?: 'report' | 'notebook';
   markdownViewMode?: 'rendered' | 'source';
+  onNotebookStateChange?: (state: NotebookPreviewLoadState) => void;
+}
+
+export interface NotebookPreviewLoadState {
+  notebook: NotebookFile | null;
+  status: 'idle' | 'loading' | 'ready' | 'error';
 }
 
 function FilePreviewContentComponent({
@@ -104,6 +110,7 @@ function FilePreviewContentComponent({
   layout = 'dialog',
   notebookViewMode,
   markdownViewMode,
+  onNotebookStateChange,
 }: FilePreviewContentProps) {
   const previewType = useMemo(
     () => getPreviewType(filename, contentType),
@@ -120,6 +127,19 @@ function FilePreviewContentComponent({
     truncated: false,
     totalLines: 0,
   });
+  const notebookStateChangeRef = useRef(onNotebookStateChange);
+
+  useEffect(() => {
+    notebookStateChangeRef.current = onNotebookStateChange;
+  }, [onNotebookStateChange]);
+
+  useEffect(() => {
+    const notifyNotebookStateChange = notebookStateChangeRef.current;
+    if (!notifyNotebookStateChange) return;
+    if (previewType !== 'notebook') {
+      notifyNotebookStateChange({ notebook: null, status: 'idle' });
+    }
+  }, [previewType]);
 
   useEffect(() => {
     const shouldFetchText =
@@ -136,6 +156,9 @@ function FilePreviewContentComponent({
     setTextStatus('loading');
     setTextErrorMessage(getPreviewErrorMessage(previewType));
     setNotebook(null);
+    if (previewType === 'notebook') {
+      notebookStateChangeRef.current?.({ notebook: null, status: 'loading' });
+    }
 
     fetch(previewUrl, { signal: controller.signal })
       .then(async (response) => {
@@ -155,6 +178,7 @@ function FilePreviewContentComponent({
           if (cancelled) return;
           setNotebook(parsed);
           setTextStatus('ready');
+          notebookStateChangeRef.current?.({ notebook: parsed, status: 'ready' });
           return;
         }
 
@@ -181,6 +205,9 @@ function FilePreviewContentComponent({
         const status = typeof error?.status === 'number' ? error.status : undefined;
         setTextErrorMessage(getPreviewErrorMessage(previewType, status));
         setTextStatus('error');
+        if (previewType === 'notebook') {
+          notebookStateChangeRef.current?.({ notebook: null, status: 'error' });
+        }
       });
 
     return () => {

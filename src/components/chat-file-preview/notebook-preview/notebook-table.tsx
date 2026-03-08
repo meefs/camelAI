@@ -2,7 +2,7 @@
 
 import { cn } from '@/lib/utils';
 import { Download, Maximize2 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   TableBody,
   TableCell,
@@ -11,6 +11,12 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import type { ParsedTable } from './types';
+import {
+  REPORT_MAX_CELL_CHARS,
+  getTableDisplayModel,
+  isNumericValue,
+  truncateCell,
+} from './table-display';
 
 interface NotebookTableProps {
   table: ParsedTable;
@@ -18,54 +24,19 @@ interface NotebookTableProps {
   onExpand?: () => void;
 }
 
-const MAX_DISPLAY_ROWS = 100;
-const REPORT_MAX_CELL_CHARS = 50;
-
-function truncateCell(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  return value.slice(0, maxChars) + '\u2026';
-}
-
-function isNumeric(value: string): boolean {
-  const normalized = value.trim();
-  if (!normalized || normalized === '...' || normalized === 'NaN' || normalized === 'None') {
-    return false;
-  }
-  return /^-?[\d,]+(?:\.\d+)?(?:[eE][+-]?\d+)?%?$/.test(normalized);
-}
-
-function getMaxRowLength(rows: readonly string[][]): number {
-  let max = 0;
-  for (const row of rows) {
-    if (row.length > max) {
-      max = row.length;
-    }
-  }
-  return max;
-}
-
 export function NotebookTable({ table, mode, onExpand }: NotebookTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showOverflowFade, setShowOverflowFade] = useState(false);
   const isReport = mode === 'report';
-  const columnCount = useMemo(
-    () => Math.max(table.headers.length, getMaxRowLength(table.rows)),
-    [table.headers, table.rows]
-  );
-  const parsedRows = table.rows.length;
-  const totalRows = table.sourceRowCount ?? parsedRows;
-  const displayCapped = parsedRows > MAX_DISPLAY_ROWS;
-  const displayRows = displayCapped ? table.rows.slice(0, MAX_DISPLAY_ROWS) : table.rows;
-  const displayedCount = displayRows.length;
-  const dataColumns = Math.max(0, columnCount - table.indexColumns);
-
-  const colLabel = `${dataColumns.toLocaleString()} column${dataColumns === 1 ? '' : 's'}`;
-  const captionText =
-    displayedCount < totalRows
-      ? `Showing ${displayedCount.toLocaleString()} of ${totalRows.toLocaleString()} rows × ${colLabel}`
-      : (table.caption ?? `${totalRows.toLocaleString()} row${totalRows === 1 ? '' : 's'} × ${colLabel}`);
-
-  const hasCsvData = table.headers.length > 0 || table.rows.some((row) => row.length > 0);
+  const {
+    columnCount,
+    parsedRows,
+    totalRows,
+    displayCapped,
+    displayRows,
+    captionText,
+    hasCsvData,
+  } = getTableDisplayModel(table);
 
   const updateOverflowFade = useCallback(() => {
     const el = scrollRef.current;
@@ -205,7 +176,7 @@ export function NotebookTable({ table, mode, onExpand }: NotebookTableProps) {
                     const isIndexColumn = columnIndex < table.indexColumns;
                     const isLastIndexColumn =
                       table.indexColumns > 0 && columnIndex === table.indexColumns - 1;
-                    const numericCell = !isIndexColumn && isNumeric(cellValue);
+                    const numericCell = !isIndexColumn && isNumericValue(cellValue);
 
                     if (isIndexColumn) {
                       return (
@@ -218,7 +189,7 @@ export function NotebookTable({ table, mode, onExpand }: NotebookTableProps) {
                           )}
                         >
                           {isReport && cellValue.length > REPORT_MAX_CELL_CHARS ? (
-                            <span title={cellValue}>{truncateCell(cellValue, REPORT_MAX_CELL_CHARS)}</span>
+                            <span title={cellValue}>{truncateCell(cellValue)}</span>
                           ) : cellValue}
                         </th>
                       );
@@ -233,7 +204,7 @@ export function NotebookTable({ table, mode, onExpand }: NotebookTableProps) {
                         )}
                       >
                         {isReport && cellValue.length > REPORT_MAX_CELL_CHARS ? (
-                          <span title={cellValue}>{truncateCell(cellValue, REPORT_MAX_CELL_CHARS)}</span>
+                          <span title={cellValue}>{truncateCell(cellValue)}</span>
                         ) : cellValue}
                       </TableCell>
                     );

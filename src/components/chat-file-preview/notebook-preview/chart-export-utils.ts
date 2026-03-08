@@ -1,22 +1,17 @@
 'use client';
 
 import type { RefObject } from 'react';
+import {
+  cloneSvgForExport,
+  dataUrlToBlob,
+  getChartSvg,
+  sanitizeFilename,
+  svgToPngBlob,
+  triggerBlobDownload,
+  type PlotlyWindow,
+} from './chart-runtime';
 
 type ChartKind = 'vegalite' | 'plotly';
-
-interface PlotlyExportApi {
-  toImage?: (
-    root: HTMLElement,
-    options?: Record<string, unknown>
-  ) => Promise<string>;
-}
-
-interface PlotlyWindow extends Window {
-  Plotly?: PlotlyExportApi;
-}
-
-const SVG_NS = 'http://www.w3.org/2000/svg';
-const XLINK_NS = 'http://www.w3.org/1999/xlink';
 const PLOTLY_NON_SVG_TRACE_TYPES = new Set([
   'scatter3d',
   'surface',
@@ -41,128 +36,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return value as Record<string, unknown>;
   }
   return null;
-}
-
-function sanitizeFilename(title: string): string {
-  const safe = title
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .replace(/_+/g, '_');
-
-  return safe.slice(0, 80) || 'chart';
-}
-
-function triggerBlobDownload(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.style.display = 'none';
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 0);
-}
-
-function dataUrlToBlob(dataUrl: string): Blob | null {
-  const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/);
-  if (!match) return null;
-
-  const mimeType = match[1] || 'application/octet-stream';
-  const isBase64 = match[2] === ';base64';
-  const dataPart = match[3] ?? '';
-
-  try {
-    if (isBase64) {
-      const binary = atob(dataPart);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i += 1) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      return new Blob([bytes], { type: mimeType });
-    }
-
-    return new Blob([decodeURIComponent(dataPart)], { type: mimeType });
-  } catch {
-    return null;
-  }
-}
-
-function getChartSvg(container: HTMLElement): SVGSVGElement | null {
-  const svgElement = container.querySelector('svg');
-  return svgElement instanceof SVGSVGElement ? svgElement : null;
-}
-
-function getSvgExportDimensions(svg: SVGSVGElement): { width: number; height: number } {
-  const rect = svg.getBoundingClientRect();
-  const widthAttr = Number.parseFloat(svg.getAttribute('width') ?? '');
-  const heightAttr = Number.parseFloat(svg.getAttribute('height') ?? '');
-  const viewBox = svg.viewBox.baseVal;
-  const width = Math.max(
-    1,
-    Math.round(
-      rect.width || widthAttr || (viewBox && Number.isFinite(viewBox.width) ? viewBox.width : 0) || 800
-    )
-  );
-  const height = Math.max(
-    1,
-    Math.round(
-      rect.height || heightAttr || (viewBox && Number.isFinite(viewBox.height) ? viewBox.height : 0) || 500
-    )
-  );
-
-  return { width, height };
-}
-
-function cloneSvgForExport(svg: SVGSVGElement): SVGSVGElement {
-  const clone = svg.cloneNode(true) as SVGSVGElement;
-  clone.setAttribute('xmlns', SVG_NS);
-  clone.setAttribute('xmlns:xlink', XLINK_NS);
-
-  const { width, height } = getSvgExportDimensions(svg);
-  if (!clone.getAttribute('viewBox')) {
-    clone.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  }
-  clone.setAttribute('width', String(width));
-  clone.setAttribute('height', String(height));
-
-  return clone;
-}
-
-async function svgToPngBlob(svg: SVGSVGElement, scale = 2): Promise<Blob | null> {
-  const { width, height } = getSvgExportDimensions(svg);
-  const svgString = new XMLSerializer().serializeToString(cloneSvgForExport(svg));
-  const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-  const svgUrl = URL.createObjectURL(svgBlob);
-
-  try {
-    const image = new Image();
-    const loaded = new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error('Failed to load SVG for PNG export.'));
-    });
-    image.src = svgUrl;
-    await loaded;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(width * scale));
-    canvas.height = Math.max(1, Math.round(height * scale));
-
-    const context = canvas.getContext('2d');
-    if (!context) return null;
-
-    context.scale(scale, scale);
-    context.drawImage(image, 0, 0, width, height);
-
-    return await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob((blob) => resolve(blob), 'image/png');
-    });
-  } finally {
-    URL.revokeObjectURL(svgUrl);
-  }
 }
 
 async function exportPlotlyAsPng(

@@ -56,7 +56,7 @@ import { LoadingDots } from '@/components/loading-dots';
 import { Skeleton } from '@/components/ui/skeleton';
 import { CompactingIndicator } from '@/components/compacting-indicator';
 import { WelcomeScreen } from '@/components/welcome-screen';
-import { FilePreviewContent, isImageFile } from '@/components/chat-file-preview';
+import { FilePreviewContent, isImageFile, type NotebookPreviewLoadState } from '@/components/chat-file-preview';
 import { ChatPreviewProvider } from '@/components/chat-preview/preview-context';
 import { PreviewTabRow } from '@/components/preview-panel/preview-tabs';
 import { PreviewToolbar } from '@/components/preview-panel/preview-toolbar';
@@ -210,6 +210,33 @@ function isUserTurnAnchorMessage(msg: Message): boolean {
 
 function isAssistantLikeMessage(msg: Message | null | undefined): boolean {
   return Boolean(msg && (msg.role === 'assistant' || msg.isCompactSummary));
+}
+
+const DEFAULT_NOTEBOOK_PREVIEW_STATE: NotebookPreviewLoadState = {
+  notebook: null,
+  status: 'idle',
+};
+
+function extractMetaInfo(event: SDKEvent): { isMeta: boolean; sourceToolUseID?: string } {
+  const record = event as unknown as Record<string, unknown>;
+  const messageRecord = (event.message ?? {}) as unknown as Record<string, unknown>;
+  const isMeta = Boolean(
+    record.isMeta ??
+    record.is_meta ??
+    messageRecord.isMeta ??
+    messageRecord.is_meta
+  );
+  const sourceToolUseID = (
+    record.sourceToolUseID ??
+    record.sourceToolUseId ??
+    record.source_tool_use_id ??
+    record.parent_tool_use_id ??
+    messageRecord.sourceToolUseID ??
+    messageRecord.sourceToolUseId ??
+    messageRecord.source_tool_use_id ??
+    messageRecord.parent_tool_use_id
+  );
+  return { isMeta, sourceToolUseID: typeof sourceToolUseID === 'string' ? sourceToolUseID : undefined };
 }
 
 function getLastToolUseId(message?: Message): string | undefined {
@@ -650,6 +677,10 @@ interface PreviewPanelShellProps {
   markdownViewMode: 'rendered' | 'source';
   onMarkdownViewModeChange: (mode: 'rendered' | 'source') => void;
   filePreviewOpenUrl: string;
+  activeNotebookState: NotebookPreviewLoadState;
+  isNotebookPdfExporting: boolean;
+  onNotebookStateChange: (tabId: string, state: NotebookPreviewLoadState) => void;
+  onNotebookReportPdfDownload: () => void | Promise<void>;
   iframeRef: RefObject<HTMLIFrameElement | null>;
   tabRenderStates: TabRenderState[];
   vanityUrl: string;
@@ -671,6 +702,10 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
   markdownViewMode,
   onMarkdownViewModeChange,
   filePreviewOpenUrl,
+  activeNotebookState,
+  isNotebookPdfExporting,
+  onNotebookStateChange,
+  onNotebookReportPdfDownload,
   iframeRef,
   tabRenderStates,
   vanityUrl,
@@ -706,6 +741,9 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
         markdownViewMode={isMarkdownPreview ? markdownViewMode : undefined}
         onMarkdownViewModeChange={onMarkdownViewModeChange}
         filePreviewOpenUrl={filePreviewOpenUrl}
+        notebookState={isNotebookPreview ? activeNotebookState : undefined}
+        isNotebookPdfExporting={isNotebookPreview ? isNotebookPdfExporting : undefined}
+        onNotebookReportPdfDownload={isNotebookPreview ? onNotebookReportPdfDownload : undefined}
       />
 
       {tabRenderStates.map((state) => {
@@ -741,6 +779,9 @@ const PreviewPanelShell = memo(function PreviewPanelShell({
                   layout="panel"
                   notebookViewMode={state.isNotebookPreview ? state.notebookViewMode : undefined}
                   markdownViewMode={state.isMarkdownPreview ? state.markdownViewMode : undefined}
+                  onNotebookStateChange={state.isNotebookPreview
+                    ? (nextState) => onNotebookStateChange(state.tabId, nextState)
+                    : undefined}
                 />
               </div>
             )}
@@ -1009,9 +1050,17 @@ export default function Chat({
   const [tabFilePreviewKeys, setTabFilePreviewKeys] = useState<Record<string, number>>({});
   const [tabNotebookViewModes, setTabNotebookViewModes] = useState<Record<string, 'report' | 'notebook'>>({});
   const [tabMarkdownViewModes, setTabMarkdownViewModes] = useState<Record<string, 'rendered' | 'source'>>({});
+  const [tabNotebookStates, setTabNotebookStates] = useState<Record<string, NotebookPreviewLoadState>>({});
+  const [tabNotebookPdfExporting, setTabNotebookPdfExporting] = useState<Record<string, boolean>>({});
   const [tabAppLoading, setTabAppLoading] = useState<Record<string, boolean>>({});
   const notebookViewMode = activeTabId ? (tabNotebookViewModes[activeTabId] ?? 'report') : 'report';
   const markdownViewMode = activeTabId ? (tabMarkdownViewModes[activeTabId] ?? 'rendered') : 'rendered';
+  const activeNotebookState = activeTabId
+    ? (tabNotebookStates[activeTabId] ?? DEFAULT_NOTEBOOK_PREVIEW_STATE)
+    : DEFAULT_NOTEBOOK_PREVIEW_STATE;
+  const isNotebookPdfExporting = activeTabId
+    ? Boolean(tabNotebookPdfExporting[activeTabId])
+    : false;
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [currentTitle, setCurrentTitle] = useState(threadTitle);
   const previewVersionRef = useRef<number>(0);
@@ -1084,6 +1133,8 @@ export default function Chat({
     setTabFilePreviewKeys({});
     setTabNotebookViewModes({});
     setTabMarkdownViewModes({});
+    setTabNotebookStates({});
+    setTabNotebookPdfExporting({});
     setTabAppLoading({});
     previewVersionRef.current = 0;
     supportsPreviewTabsStateRef.current = false;
@@ -1500,6 +1551,18 @@ export default function Chat({
       delete next[tabId];
       return next;
     });
+    setTabNotebookStates((prev) => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
+    setTabNotebookPdfExporting((prev) => {
+      if (!(tabId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
     setTabAppLoading((prev) => {
       if (!(tabId in prev)) return prev;
       const next = { ...prev };
@@ -1563,6 +1626,63 @@ export default function Chat({
     syncPreviewTabsStateBestEffort(nextTabs, nextActiveTabId);
     cleanupClosedTabState(tabId);
   }, [setLocalPreviewSessionState, syncPreviewTabsStateBestEffort, cleanupClosedTabState]);
+
+  const handleTabNotebookStateChange = useCallback((
+    tabId: string,
+    state: NotebookPreviewLoadState
+  ) => {
+    setTabNotebookStates((prev) => {
+      const current = prev[tabId];
+      if (current?.status === state.status && current?.notebook === state.notebook) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [tabId]: state,
+      };
+    });
+  }, []);
+
+  const handleNotebookReportPdfDownload = useCallback(async () => {
+    if (!activeTabId || previewTarget?.kind !== 'file') return;
+    if (tabNotebookPdfExporting[activeTabId]) return;
+
+    const notebookState = tabNotebookStates[activeTabId] ?? DEFAULT_NOTEBOOK_PREVIEW_STATE;
+    if (notebookState.status !== 'ready' || !notebookState.notebook) {
+      return;
+    }
+
+    const tabId = activeTabId;
+    const fallbackName = previewTarget.path.split('/').filter(Boolean).pop() || 'notebook.ipynb';
+    const filename = previewTarget.filename || fallbackName;
+
+    setTabNotebookPdfExporting((prev) => ({
+      ...prev,
+      [tabId]: true,
+    }));
+
+    try {
+      const { exportNotebookReportAsPdf } = await import(
+        '@/components/chat-file-preview/notebook-preview/pdf-export'
+      );
+      await exportNotebookReportAsPdf({
+        notebook: notebookState.notebook,
+        filename,
+      });
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Failed to export notebook report as PDF.';
+      toast.error(message);
+    } finally {
+      setTabNotebookPdfExporting((prev) => {
+        if (!(tabId in prev)) return prev;
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
+    }
+  }, [activeTabId, previewTarget, tabNotebookPdfExporting, tabNotebookStates]);
 
   const handleRealtimeSideChannelEvent = useCallback((data: any) => {
     if (data.type === 'preview_state') {
@@ -3669,6 +3789,10 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       markdownViewMode={markdownViewMode}
       onMarkdownViewModeChange={setActiveMarkdownViewMode}
       filePreviewOpenUrl={filePreviewOpenUrl}
+      activeNotebookState={activeNotebookState}
+      isNotebookPdfExporting={isNotebookPdfExporting}
+      onNotebookStateChange={handleTabNotebookStateChange}
+      onNotebookReportPdfDownload={handleNotebookReportPdfDownload}
       iframeRef={iframeRef}
       tabRenderStates={tabRenderStates}
       vanityUrl={appPreviewVanityUrl}

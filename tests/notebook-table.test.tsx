@@ -61,6 +61,31 @@ describe('NotebookTable', () => {
     ).toBeInTheDocument();
   });
 
+  it('uses the parsed row count in the CSV label when source rows exceed parsed rows', () => {
+    const parsedRowCount = 150;
+    const sourceRowCount = 1000;
+    const table: ParsedTable = {
+      headers: ['Row', 'Value'],
+      rows: Array.from({ length: parsedRowCount }, (_, index) => [
+        `${index + 1}`,
+        `Value ${index + 1}`,
+      ]),
+      indexColumns: 1,
+      caption: `${sourceRowCount} rows × 1 column`,
+      sourceRowCount,
+    };
+
+    render(<NotebookTable table={table} mode="report" />);
+
+    expect(screen.getByText('Showing 100 of 1,000 rows × 1 column')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /download all 150 rows as csv/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /download all 1,000 rows as csv/i })
+    ).not.toBeInTheDocument();
+  });
+
   it('renders an expand button when onExpand is provided', () => {
     const table: ParsedTable = {
       headers: ['Name', 'Value'],

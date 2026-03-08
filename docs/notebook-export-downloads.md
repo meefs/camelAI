@@ -1,14 +1,15 @@
 # Notebook Export & Individual Output Downloads
 
-## Status (February 17, 2026)
+## Status (March 6, 2026)
 
-Report-level PDF export has been removed from the product and codebase.
-
-Current supported behavior:
+Chat preview now supports:
 1. Toolbar download for raw `.ipynb`
-2. Per-chart/per-table downloads (CSV/PNG/SVG where supported)
+2. Toolbar export for **Download report as PDF**
+3. Per-chart/per-table downloads (CSV/PNG/SVG where supported)
 
-The remainder of this document is retained as historical implementation context from the original proposal.
+The shipped PDF export uses the custom React PDF pipeline described in [docs/notebook-pdf-export-plan.md](./notebook-pdf-export-plan.md), not the historical print-based approach below.
+
+The remainder of this document is retained as historical context for the removed print-flow design.
 
 ## Problem
 

@@ -1,6 +1,6 @@
 import { reactRouter } from '@react-router/dev/vite';
 import { cloudflare } from '@cloudflare/vite-plugin';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, type DepOptimizationOptions, type Plugin } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
 // Plugin to suppress benign "terminated" errors from undici/miniflare
@@ -47,6 +47,33 @@ function suppressUndiciTerminatedErrors(): Plugin {
 }
 
 export default defineConfig(({ command }) => {
+  const clientOptimizeDepsInclude = [
+    'react',
+    'react-dom',
+    'react-dom/client',
+    'react-router',
+    'react/jsx-runtime',
+    'react/jsx-dev-runtime',
+  ];
+
+  // SSR startup was repeatedly discovering and re-hashing deps, which left the
+  // module runner requesting stale files from node_modules/.vite/deps_ssr.
+  // Keep SSR dep optimization deterministic and only prebundle the small set of
+  // interop-sensitive deps that actually need it.
+  const ssrOptimizeDeps: DepOptimizationOptions = {
+    include: [
+      'cookie',
+      'react',
+      'react/jsx-runtime',
+      'react/jsx-dev-runtime',
+      'react-dom/server',
+      'unenv/mock/proxy-cjs',
+    ],
+    noDiscovery: true,
+    holdUntilCrawlEnd: true,
+    ignoreOutdatedRequests: true,
+  };
+
   // Allow common tunnel hosts for local development (e.g., ngrok).
   // Additional hosts can be provided via VITE_ALLOWED_HOSTS=host1,host2.
   // Leading dot entries allow subdomains (e.g. ".ngrok-free.app").
@@ -77,6 +104,7 @@ export default defineConfig(({ command }) => {
     // This ensures Durable Object exports are included in the bundle
     environments: {
       ssr: {
+        optimizeDeps: ssrOptimizeDeps,
         build: {
           rollupOptions: {
             input: 'virtual:cloudflare/worker-entry',
@@ -84,13 +112,16 @@ export default defineConfig(({ command }) => {
         },
       },
     },
+    ssr: {
+      optimizeDeps: ssrOptimizeDeps,
+    },
     build: {
       target: 'esnext',
       // Only enable source maps in development to avoid exposing server code in production
       sourcemap: command !== 'build',
     },
     optimizeDeps: {
-      include: ['react', 'react-dom', 'react-dom/client', 'react-router'],
+      include: clientOptimizeDepsInclude,
       // Disable dep discovery during builds to avoid WebSocket error in @cloudflare/vite-plugin
       ...(command === 'build' && { noDiscovery: true }),
     },

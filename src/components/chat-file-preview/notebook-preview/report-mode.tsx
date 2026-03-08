@@ -1,6 +1,7 @@
 import { memo, useMemo } from 'react';
 import { classifyCells } from './cell-classifier';
 import { extractHeader } from './notebook-header';
+import { removeHeaderContentFromTitleCell } from './report-export-model';
 import { OutputRenderer } from './output-renderers';
 import { ReportFooter } from './report-footer';
 import { ReportHeader } from './report-header';
@@ -12,27 +13,6 @@ import { extractTocEntries, getNotebookCells, toText } from './utils';
 interface ReportModeProps {
   notebook: NotebookFile;
   layout: 'panel' | 'dialog';
-}
-
-function removeHeaderContentFromTitleCell(source: string): string {
-  const lines = source.split('\n');
-  const h1Index = lines.findIndex((line) => /^#\s+/.test(line.trim()));
-  if (h1Index === -1) return source;
-
-  let cursor = h1Index + 1;
-  while (cursor < lines.length) {
-    const trimmed = lines[cursor].trim();
-    if (trimmed.length === 0) {
-      cursor += 1;
-      continue;
-    }
-    if (/^#{1,6}\s+/.test(trimmed)) {
-      break;
-    }
-    cursor += 1;
-  }
-
-  return [...lines.slice(0, h1Index), ...lines.slice(cursor)].join('\n').trim();
 }
 
 function ReportModeComponent({ notebook, layout }: ReportModeProps) {
