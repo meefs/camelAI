@@ -241,7 +241,7 @@ export function NotebookTable({ table, mode, onExpand }: NotebookTableProps) {
             onClick={downloadCsv}
             disabled={!hasCsvData}
             aria-label={displayCapped
-              ? `Download all ${totalRows.toLocaleString()} rows as CSV`
+              ? `Download all ${parsedRows.toLocaleString()} rows as CSV`
               : 'Download as CSV'}
             className={cn(
               'notebook-table-download-btn',
