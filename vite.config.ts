@@ -1,6 +1,6 @@
 import { reactRouter } from '@react-router/dev/vite';
 import { cloudflare } from '@cloudflare/vite-plugin';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, type DepOptimizationOptions, type Plugin } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
 // Plugin to suppress benign "terminated" errors from undici/miniflare
@@ -60,7 +60,7 @@ export default defineConfig(({ command }) => {
   // module runner requesting stale files from node_modules/.vite/deps_ssr.
   // Keep SSR dep optimization deterministic and only prebundle the small set of
   // interop-sensitive deps that actually need it.
-  const ssrOptimizeDeps = {
+  const ssrOptimizeDeps: DepOptimizationOptions = {
     include: [
       'cookie',
       'react',
@@ -72,7 +72,7 @@ export default defineConfig(({ command }) => {
     noDiscovery: true,
     holdUntilCrawlEnd: true,
     ignoreOutdatedRequests: true,
-  } as const;
+  };
 
   // Allow common tunnel hosts for local development (e.g., ngrok).
   // Additional hosts can be provided via VITE_ALLOWED_HOSTS=host1,host2.

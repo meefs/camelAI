@@ -6,7 +6,7 @@ function collectElementTypeNames(node: React.ReactNode): string[] {
   const names: string[] = [];
 
   const visit = (value: React.ReactNode) => {
-    if (!React.isValidElement(value)) return;
+    if (!React.isValidElement<{ children?: React.ReactNode }>(value)) return;
 
     const type = value.type as { name?: string };
     if (typeof value.type === 'string') {

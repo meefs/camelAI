@@ -1,4 +1,5 @@
 import { StyleSheet, Text, View } from '@react-pdf/renderer';
+import type { Style } from '@react-pdf/types';
 import { getTableDisplayModel, isNumericValue, truncateCell, type TableDisplayModel } from './table-display';
 import type { ParsedTable } from './types';
 
@@ -182,7 +183,7 @@ export function PdfTable({ table, display }: PdfTableProps) {
                     const cellStyles = isLastCell
                       ? [styles.cellBase, { flexGrow: columnFlexWeights[columnIndex] }, styles.lastCell]
                       : [styles.cellBase, { flexGrow: columnFlexWeights[columnIndex] }];
-                    const textStyles = [styles.cellText];
+                    const textStyles: Style[] = [styles.cellText];
                     if (isIndexColumn) {
                       textStyles.push(styles.indexCellText);
                     }
