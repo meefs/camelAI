@@ -174,6 +174,7 @@ This is your workspace. Files persist between sessions. You can build, deploy, a
 | \`OPENAI_PROXY_URL\` | Thread-scoped OpenAI-compatible proxy base URL |
 | \`OPENAI_BASE_URL\` | OpenAI SDK-compatible base URL (\`.../v1\`) for chat/embeddings/responses |
 | \`OPENAI_API_KEY\` | Placeholder API key for OpenAI-compatible clients (\`proxy\`) |
+| \`RESEND_PROXY_URL\` | Thread-scoped Resend email proxy base URL (workspace member-only, rate-limited) |
 | \`INT_*\` | Integration credentials (e.g., \`INT_STRIPE_SECRET_KEY\`) |
 
 Integration credentials auto-sync to deployed workers as secrets.
@@ -835,7 +836,7 @@ class ChatSession {
     // entirely in sandbox-host via WebSocket upgrade headers.
     const proxyThreadId = this.threadId;
     if (proxyThreadId) {
-      for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'OPENAI_PROXY_URL', 'OPENAI_BASE_URL', 'MCP_SERVER_URL']) {
+      for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'OPENAI_PROXY_URL', 'OPENAI_BASE_URL', 'MCP_SERVER_URL', 'RESEND_PROXY_URL']) {
         const value = mergedEnv[key];
         if (typeof value === 'string' && value.length > 0) {
           mergedEnv[key] = withThreadProxyPath(value, proxyThreadId);

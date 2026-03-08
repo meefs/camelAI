@@ -41,6 +41,7 @@ import {
   handleMysqlQuery,
   handlePostgresQuery,
 } from './routes/data-proxy.js';
+import { handleResendProxy } from './routes/resend-proxy.js';
 import { handleWorkerAuth } from './routes/worker-auth.js';
 import { handleAdminApi } from './routes/admin/index.js';
 
@@ -79,6 +80,9 @@ const routes: Route[] = [
   { method: 'POST', path: /^\/api\/mssql\/query$/, handler: handleMssqlQuery },
   { method: 'POST', path: /^\/api\/postgres\/query$/, handler: handlePostgresQuery },
   { method: 'POST', path: /^\/api\/mysql\/query$/, handler: handleMysqlQuery },
+
+  // Resend email proxy (for sandbox containers)
+  { method: 'POST', path: /^\/api\/resend\/emails$/, handler: handleResendProxy },
 
   // MCP
   { method: 'ALL', path: /^\/mcp(\/|$)/, handler: handleMcp },

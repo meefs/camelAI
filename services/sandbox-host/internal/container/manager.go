@@ -419,6 +419,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			"OPENAI_PROXY_URL="+m.containerProxyBase+"/api/openai",
 			"OPENAI_BASE_URL="+m.containerProxyBase+"/api/openai/v1",
 			"OPENAI_API_KEY=proxy",
+			"RESEND_PROXY_URL="+m.containerProxyBase+"/api/resend",
 			"MCP_SERVER_URL="+m.containerProxyBase+"/mcp",
 			"CLOUDFLARE_ACCOUNT_ID=chiridion",
 			"WRANGLER_SEND_METRICS=false",
