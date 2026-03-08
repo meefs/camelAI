@@ -248,7 +248,7 @@ bun run test:e2e
 
 Every project should ship with polished design fundamentals out of the box. When scaffolding or building any app, always include:
 
-1. **Interesting fonts** - Don't settle for system defaults or generic sans-serif. Pick a distinctive, high-quality Google Font that fits the project's personality (e.g., Space Grotesk for techy apps, Playfair Display for editorial, DM Sans for clean SaaS). Import it in `app/root.tsx` or `app/styles/globals.css` and apply it to the body/html element. Use the `--font` flag with `create-worker` when scaffolding, or add fonts manually via Google Fonts `@import` or `<link>`.
+1. **Typography** - Before starting layout, choose at least two Google Fonts: a **display font** for headings and feature moments, and a **body font** for running text. The display font is a design asset — pick something that matches the project's personality (bold and expressive like Danfo or Fraunces for creative sites; refined like Instrument Serif or Space Grotesk for SaaS/tools). Carry the display font throughout the site, not just the hero. Use `--font` with `create-worker` for the body font, then add the display font via Google Fonts `@import` or `<link>` in `app/root.tsx` or `app/styles/globals.css`.
 
 2. **Favicon** - Every app must have a favicon. Create or generate an SVG favicon that reflects the app's purpose and place it at `public/favicon.svg` (or `public/favicon.ico`). Reference it in the root `<head>` via a `<link rel="icon">` tag. A simple, recognizable icon is better than no icon.
 
