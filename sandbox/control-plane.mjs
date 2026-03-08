@@ -13,7 +13,6 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { loadUserProfile } from './memory-logger.mjs';
 import { readFile, access } from 'fs/promises';
 import { homedir } from 'os';
 import { TeamPollingController } from './team-poll-controller.mjs';
@@ -156,7 +155,6 @@ This is your workspace. Files persist between sessions. You can build, deploy, a
 ├── projects/          # Your projects (persistent across sessions)
 ├── .config/           # Tool configs (wrangler, npm, etc.)
 └── .chiridion/        # camelAI-specific data
-    └── profile.md     # User profile
 
 /mnt/user-uploads/     # Files uploaded by user (read-only)
 /mnt/user-outputs/     # Files for user download (write here)
@@ -175,6 +173,7 @@ This is your workspace. Files persist between sessions. You can build, deploy, a
 | \`OPENAI_PROXY_URL\` | Thread-scoped OpenAI-compatible proxy base URL |
 | \`OPENAI_BASE_URL\` | OpenAI SDK-compatible base URL (\`.../v1\`) for chat/embeddings/responses |
 | \`OPENAI_API_KEY\` | Placeholder API key for OpenAI-compatible clients (\`proxy\`) |
+| \`RESEND_PROXY_URL\` | Thread-scoped Resend email proxy base URL (workspace member-only, rate-limited) |
 | \`INT_*\` | Integration credentials (e.g., \`INT_STRIPE_SECRET_KEY\`) |
 
 Integration credentials auto-sync to deployed workers as secrets.
@@ -495,7 +494,6 @@ class ChatSession {
     this.messageResolver = null;
     this.messageQueue = [];
     this.pendingQuestions = new Map();
-    this.userProfile = null;
     this.lastForwardedCompactSummaryKey = null;
     this.disconnectTimer = null;
     this.activityGeneration = 0;
@@ -836,7 +834,7 @@ class ChatSession {
     // entirely in sandbox-host via WebSocket upgrade headers.
     const proxyThreadId = this.threadId;
     if (proxyThreadId) {
-      for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'OPENAI_PROXY_URL', 'OPENAI_BASE_URL', 'MCP_SERVER_URL']) {
+      for (const key of ['ANTHROPIC_BASE_URL', 'CLOUDFLARE_API_BASE_URL', 'DATA_PROXY_URL', 'OPENAI_PROXY_URL', 'OPENAI_BASE_URL', 'MCP_SERVER_URL', 'RESEND_PROXY_URL']) {
         const value = mergedEnv[key];
         if (typeof value === 'string' && value.length > 0) {
           mergedEnv[key] = withThreadProxyPath(value, proxyThreadId);
@@ -853,8 +851,7 @@ class ChatSession {
       };
     }
 
-    const systemAppend = buildSystemPromptAppend().trim() +
-      (this.userProfile ? `\n\n## User Profile\n\nHere's what you know about this user:\n\n${this.userProfile}` : '');
+    const systemAppend = buildSystemPromptAppend().trim();
 
     const options = {
       // Force Node as the runtime executable — Bun has a bug that breaks the SDK.
@@ -935,8 +932,6 @@ class ChatSession {
 
     this.initPromise = (async () => {
       const t0 = performance.now();
-      this.userProfile = await loadUserProfile().catch(() => null);
-      const tProfile = performance.now();
       const fileExists = await this.sessionFileExists();
       const tFileCheck = performance.now();
       const options = this.getQueryOptions(fileExists);
@@ -951,8 +946,7 @@ class ChatSession {
         fileExists,
         hasMcp,
         timings: {
-          profileMs: Math.round(tProfile - t0),
-          fileCheckMs: Math.round(tFileCheck - tProfile),
+          fileCheckMs: Math.round(tFileCheck - t0),
           queryCreateMs: Math.round(tQuery - tFileCheck),
           iteratorMs: Math.round(tIterator - tQuery),
           totalMs: Math.round(tIterator - t0),

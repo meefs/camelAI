@@ -8,7 +8,7 @@ import {
   DialogContent,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { getVanityDomain } from '@/lib/app-url';
+import { getVanityDomain, buildAppLabel } from '@/lib/app-url';
 
 export interface BugReportDetailDialogProps {
   open: boolean;
@@ -45,7 +45,7 @@ export function BugReportDetailDialog({
   orgSlug,
 }: BugReportDetailDialogProps) {
   const vanityHost = orgSlug
-    ? `${appName}--${orgSlug}.${getVanityDomain(hostname)}`
+    ? `${buildAppLabel(appName, orgSlug)}.${getVanityDomain(hostname)}`
     : `${appName}.${getVanityDomain(hostname)}`;
 
   return (

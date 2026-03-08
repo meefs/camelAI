@@ -3,6 +3,7 @@ import type { Route } from './+types/_admin.apps';
 import { requireSuperuser } from '@/lib/auth.server';
 import * as authDO from '@/lib/auth-do.server';
 import { getVanityDomain } from '@/lib/app-url.server';
+import { buildAppLabel } from '@/lib/app-url';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AdminPagination } from '@/components/admin/admin-pagination';
 import { AdminSearch } from '@/components/admin/admin-search';
@@ -30,7 +31,7 @@ function formatTimestamp(value: number) {
 
 function getAdminAppHost(scriptName: string, orgSlug: string | null, vanityDomain: string) {
   return orgSlug
-    ? `${scriptName}--${orgSlug}.${vanityDomain}`
+    ? `${buildAppLabel(scriptName, orgSlug)}.${vanityDomain}`
     : `${scriptName}.${vanityDomain}`;
 }
 

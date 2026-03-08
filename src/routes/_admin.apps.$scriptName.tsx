@@ -6,6 +6,7 @@ import * as authDO from '@/lib/auth-do.server';
 import { setWorkerScriptPublic, deleteWorkerScript } from '@/lib/auth-do';
 import { deleteDispatchScript } from '../../workers/main/src/cf-api-proxy';
 import { getVanityDomain } from '@/lib/app-url.server';
+import { buildAppLabel } from '@/lib/app-url';
 import { AdminPageHeader } from '@/components/admin/admin-page-header';
 import { AppEditForm } from '@/components/admin/app-edit-form';
 import { AppDangerZone } from '@/components/admin/app-danger-zone';
@@ -24,7 +25,7 @@ function formatTimestamp(value: number) {
 
 function getAdminAppHost(scriptName: string, orgSlug: string | null, vanityDomain: string) {
   return orgSlug
-    ? `${scriptName}--${orgSlug}.${vanityDomain}`
+    ? `${buildAppLabel(scriptName, orgSlug)}.${vanityDomain}`
     : `${scriptName}.${vanityDomain}`;
 }
 

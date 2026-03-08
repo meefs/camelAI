@@ -10,7 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { BugReportDetailDialog } from './bug-report-detail-dialog';
-import { getVanityDomain } from '@/lib/app-url';
+import { getVanityDomain, buildAppLabel } from '@/lib/app-url';
 
 export interface BugReportCardProps {
   appName: string;
@@ -29,7 +29,7 @@ export function BugReportCard({
 }: BugReportCardProps) {
   const [open, setOpen] = useState(false);
   const vanityHost = orgSlug
-    ? `${appName}--${orgSlug}.${getVanityDomain(hostname)}`
+    ? `${buildAppLabel(appName, orgSlug)}.${getVanityDomain(hostname)}`
     : `${appName}.${getVanityDomain(hostname)}`;
 
   return (

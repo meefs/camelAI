@@ -716,6 +716,24 @@ Use `createCodeTool` + `DynamicWorkerExecutor` and add `outputSchema` to tools f
 
 The starter template includes Playwright as a devDependency and scaffolded E2E smoke tests in `e2e/smoke.test.mjs` (commented out). Chromium is pre-installed in the sandbox. Uncomment the tests, update the `APP_URL`, and run with `bun run test:e2e`. The test file includes auth cookie boilerplate for accessing private deployed apps.
 
+## Troubleshooting
+
+### Recharts SSR Warnings
+Recharts `ResponsiveContainer` emits width/height warnings during SSR — these are **expected and benign**. Do not add `ClientOnly` wrappers or other workarounds to suppress them; the extra complexity is not worth it.
+
+### Screenshot Tool Timeouts
+If `take_app_screenshot` times out after deployment, consider **server-side data fetching latency** as the likely cause before blaming the rendering layer. Slow loaders or API calls delay the initial page render, which causes the screenshot to time out. Fix by adding React `<Suspense>` boundaries with skeleton fallbacks around data-dependent sections so the page shell renders immediately while data loads.
+
+## Design Defaults
+
+Every project should ship with polished design fundamentals. When building any app, always include these from the start:
+
+1. **Interesting fonts** - Never use default system fonts or generic sans-serif. Choose a distinctive, high-quality Google Font that matches the project's personality (e.g., Space Grotesk for techy/developer tools, Playfair Display for editorial/content, DM Sans for clean SaaS, Bitter for data-heavy dashboards). Import via Google Fonts `@import` or `<link>` in the root layout and apply to the body. When scaffolding with `create-worker`, use the `--font` flag to set the base font — but also consider adding a secondary display font manually for headings.
+
+2. **Favicon** - Every deployed app must have a favicon. Create or generate an SVG favicon (`public/favicon.svg`) that reflects the app's purpose or brand. Reference it in the root `<head>` with `<link rel="icon" type="image/svg+xml" href="/favicon.svg">`. A simple, recognizable icon is always better than the browser default.
+
+3. **OpenGraph meta tags and image** - Add `og:title`, `og:description`, and `og:image` meta tags in the root route or layout head so the app looks professional when shared on social media, Slack, or messaging apps. Create a `public/og-image.png` (1200x630px recommended) with the app name, a brief tagline, and relevant visuals. Also include `twitter:card=summary_large_image` and `twitter:image` meta tags.
+
 ## Best Practices
 
 1. **One DO class per domain concept** - e.g., `UserDO`, `RoomDO`, `SessionDO`

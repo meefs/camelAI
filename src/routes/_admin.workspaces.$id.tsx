@@ -85,11 +85,18 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     }
 
     const stub = authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId));
-    await stub.updateWorkspace({
-      name: name.trim(),
-      description: description?.trim() || null,
-      avatar: { color: avatarColor, content: avatarContent },
-    }, 'system-admin');
+    try {
+      await stub.updateWorkspace({
+        name: name.trim(),
+        description: description?.trim() || null,
+        avatar: { color: avatarColor, content: avatarContent },
+      }, 'system-admin');
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('already exists')) {
+        return { error: 'A workspace with that name already exists in this organization' };
+      }
+      throw err;
+    }
     return { success: true };
   }
 

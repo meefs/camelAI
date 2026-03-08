@@ -386,6 +386,11 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     const changes: Record<string, [unknown, unknown]> = {};
 
     if (typeof updates.name === 'string' && updates.name.trim() && updates.name !== info.name) {
+      // Check case-insensitive uniqueness within the org
+      const orgStub = this.env.ORG.get(
+        this.env.ORG.idFromName(info.org_id)
+      ) as unknown as OrgDO;
+      await orgStub.updateWorkspaceName(info.id, updates.name);
       changes.name = [info.name, updates.name];
       info.name = updates.name;
     }
@@ -477,6 +482,41 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     return this.sql.exec(
       'SELECT user_id, access_level, granted_by, granted_at FROM members ORDER BY granted_at ASC'
     ).toArray() as unknown as WorkspaceMember[];
+  }
+
+  // Rate limit for resend email proxy (atomic check + record in single DO call)
+  checkAndRecordResendRateLimit(
+    count: number,
+    hourlyLimit: number,
+    dailyLimit: number
+  ): { allowed: boolean; reason?: string } {
+    const now = Date.now();
+    const key = 'resend_proxy_rate_limit';
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+    const window: { timestamps: number[] } =
+      (this.ctx.storage.kv.get(key) as { timestamps: number[] } | undefined) ?? { timestamps: [] };
+
+    // Prune entries older than 24h
+    window.timestamps = window.timestamps.filter((t) => now - t < ONE_DAY_MS);
+
+    const hourlyCount = window.timestamps.filter((t) => now - t < ONE_HOUR_MS).length;
+    const dailyCount = window.timestamps.length;
+
+    if (hourlyCount + count > hourlyLimit) {
+      return { allowed: false, reason: `Hourly email limit exceeded (${hourlyLimit}/hour)` };
+    }
+    if (dailyCount + count > dailyLimit) {
+      return { allowed: false, reason: `Daily email limit exceeded (${dailyLimit}/day)` };
+    }
+
+    // Record the sends
+    for (let i = 0; i < count; i++) {
+      window.timestamps.push(now);
+    }
+    this.ctx.storage.kv.put(key, window);
+    return { allowed: true };
   }
 
   async validateChatThreadAccess(

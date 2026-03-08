@@ -41,12 +41,17 @@ const RAW_CAPTURE_TIMEOUT_MS = 10_000;
 
 function buildTargetUrl(job: AppScreenshotJob): string {
   const suffix = job.env_prefix ? `apps.${job.env_prefix}.camelai.dev` : 'apps.camelai.dev';
-  // Use flat URL format: {script}--{org-slug}.apps.camelai.dev
   // Fall back to legacy format if org_slug is missing (for queued messages before this change)
   if (job.org_slug) {
-    return `https://${job.script_name}--${job.org_slug}.${suffix}`;
+    const separator = isNewStyleOrgSlug(job.org_slug) ? '-' : '--';
+    return `https://${job.script_name}${separator}${job.org_slug}.${suffix}`;
   }
   return `https://${job.script_name}.${suffix}`;
+}
+
+/** New-style org slugs are 6+ purely alphanumeric characters (no hyphens). */
+function isNewStyleOrgSlug(slug: string): boolean {
+  return /^[a-z0-9]{6,}$/.test(slug);
 }
 
 function buildPreviewKeys(job: AppScreenshotJob): { currentKey: string; versionedKey: string } {
@@ -294,10 +299,9 @@ export async function captureScreenshotRaw(
   const effectiveTimeoutMs = timeoutMs ?? RAW_CAPTURE_TIMEOUT_MS;
 
   const suffix = envPrefix ? `apps.${envPrefix}.camelai.dev` : 'apps.camelai.dev';
-  // Use flat URL format: {script}--{org-slug}.apps.camelai.dev
   // Fall back to legacy format if orgSlug is missing
   const targetUrl = orgSlug
-    ? `https://${scriptName}--${orgSlug}.${suffix}`
+    ? `https://${scriptName}${isNewStyleOrgSlug(orgSlug) ? '-' : '--'}${orgSlug}.${suffix}`
     : `https://${scriptName}.${suffix}`;
 
   let puppeteerBrowser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;

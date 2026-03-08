@@ -13,7 +13,6 @@
 import type { UserDO, OrgDO, OrgRole, User } from '../src/auth';
 import type { WorkspaceDO, Workspace, WorkspaceAccessLevel as WorkspaceAccessLevelDO } from '../src/workspace';
 import type { AuthEnv } from '../../../src/lib/auth-helpers';
-import type { OrgSlugDO } from '../src/org-slug-registry';
 import { hashPassword, verifyPassword } from '../src/password';
 import { getSession, updateSession, destroySession, type SessionData } from '../src/session-kv';
 import { encryptCredentials, decryptCredentials } from '../../../src/lib/integration-crypto';
@@ -34,7 +33,6 @@ import {
 export interface TestEnv {
   USER: DurableObjectNamespace<UserDO>;
   ORG: DurableObjectNamespace<OrgDO>;
-  ORG_SLUG: DurableObjectNamespace<OrgSlugDO>;
   WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   EMAIL_TO_USER: KVNamespace;
   SESSIONS: KVNamespace;
@@ -189,7 +187,7 @@ export async function createOrg(
   env: TestEnv,
   name: string,
   createdBy: string
-): Promise<{ org: { id: string; name: string; created_by: string }; defaultWorkspaceId: string }> {
+): Promise<{ org: { id: string; name: string; slug: string; created_by: string }; defaultWorkspaceId: string }> {
   const orgId = generateId();
   const orgStub = env.ORG.get(env.ORG.idFromName(orgId));
 
@@ -200,7 +198,7 @@ export async function createOrg(
   const userStub = env.USER.get(env.USER.idFromName(createdBy));
   await userStub.addOrg(orgId, 'owner', defaultWorkspaceId);
 
-  return { org: { id: org.id, name: org.name, created_by: org.created_by }, defaultWorkspaceId };
+  return { org: { id: org.id, name: org.name, slug: org.slug, created_by: org.created_by }, defaultWorkspaceId };
 }
 
 export async function getOrg(

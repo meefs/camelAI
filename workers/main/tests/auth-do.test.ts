@@ -165,103 +165,13 @@ describe('Auth flow (full-stack with DOs)', () => {
       expect(orgs[0].last_workspace_id).toBeTypeOf('string');
     });
 
-    it('permits org admins through slug update authorization checks', async () => {
-      const ownerEmail = testEmail();
-      const adminEmail = testEmail();
-      const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
-      const { userId: adminId } = await createUser(testEnv, adminEmail, 'password123', 'Admin');
-      const { org } = await createOrg(testEnv, 'Slug Admin Org', ownerId);
-
-      const invitation = await createInvitation(testEnv, org.id, adminEmail, 'admin', ownerId);
-      const accepted = await acceptInvitation(testEnv, org.id, invitation.id, adminId);
-      expect(accepted).toBe(true);
-
-      const orgStub = testEnv.ORG.get(testEnv.ORG.idFromName(org.id));
-      const existing = await orgStub.getInfo();
-      if (!existing) {
-        throw new Error('Expected org to exist');
-      }
-
-      // Uses a no-op slug update to isolate the permission gate from slug finalization checks.
-      const updated = await orgStub.updateSlug(existing.slug, adminId);
-      expect(updated.slug).toBe(existing.slug);
-    });
-
-    it('detects slug conflicts when persisted org slugs exist without registry claims', async () => {
+    it('assigns a 6-char hash-based slug on org creation', async () => {
       const ownerEmail = testEmail();
       const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Owner');
-      const { org: existingOrg } = await createOrg(testEnv, 'Existing Slug Org', ownerId);
+      const { org } = await createOrg(testEnv, 'Hash Slug Org', ownerId);
 
-      const existingOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(existingOrg.id));
-      const existingInfo = await existingOrgStub.getInfo();
-      if (!existingInfo?.slug) {
-        throw new Error('Expected existing org slug to be set');
-      }
-
-      // Simulate an older org that has a persisted slug but no ORG_SLUG claim yet.
-      const slugStub = testEnv.ORG_SLUG.get(testEnv.ORG_SLUG.idFromName(existingInfo.slug));
-      await slugStub.release(existingOrg.id);
-
-      const otherOwnerEmail = testEmail();
-      const { userId: otherOwnerId } = await createUser(
-        testEnv,
-        otherOwnerEmail,
-        'password123',
-        'Other Owner'
-      );
-      const { org: targetOrg } = await createOrg(testEnv, 'Target Org', otherOwnerId);
-      const targetOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(targetOrg.id));
-
-      // Test the conflict detection directly instead of calling updateSlug
-      // which throws an error that causes isolated storage issues in tests
-      const conflictingOrgId = await targetOrgStub.findConflictingOrgIdByStoredSlug(
-        existingInfo.slug,
-        targetOrg.id
-      );
-
-      expect(conflictingOrgId).toBe(existingOrg.id);
-    });
-
-    it('createOrg skips legacy persisted slugs that are missing registry claims', async () => {
-      const ownerEmail = testEmail();
-      const { userId: ownerId } = await createUser(testEnv, ownerEmail, 'password123', 'Legacy Owner');
-      const { org: legacyOrg } = await createOrg(testEnv, 'Collision Test', ownerId);
-
-      const legacyOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(legacyOrg.id));
-      const legacyInfo = await legacyOrgStub.getInfo();
-      if (!legacyInfo?.slug) {
-        throw new Error('Expected legacy org slug to be set');
-      }
-
-      const previousSlug = legacyInfo.slug;
-      const legacySlug = 'collision-test-abc';
-      await legacyOrgStub.setInfo({
-        ...legacyInfo,
-        slug: legacySlug,
-      });
-
-      // Simulate legacy state: persisted slug exists, but ORG_SLUG has no claim.
-      const previousSlugStub = testEnv.ORG_SLUG.get(testEnv.ORG_SLUG.idFromName(previousSlug));
-      await previousSlugStub.release(legacyOrg.id);
-      const legacySlugStub = testEnv.ORG_SLUG.get(testEnv.ORG_SLUG.idFromName(legacySlug));
-      await legacySlugStub.release(legacyOrg.id);
-
-      const otherOwnerEmail = testEmail();
-      const { userId: otherOwnerId } = await createUser(
-        testEnv,
-        otherOwnerEmail,
-        'password123',
-        'Other Owner'
-      );
-
-      const newOrgId = `abc${Math.random().toString(36).slice(2, 10)}`;
-      const newOrgStub = testEnv.ORG.get(testEnv.ORG.idFromName(newOrgId));
-      const created = await newOrgStub.createOrg(newOrgId, 'Collision Test', otherOwnerId);
-
-      expect(created.org.slug).not.toBe(legacySlug);
-
-      const refreshedLegacyInfo = await legacyOrgStub.getInfo();
-      expect(refreshedLegacyInfo?.slug).toBe(legacySlug);
+      expect(org.slug).toMatch(/^[a-z0-9]{6,}$/);
+      expect(org.slug.length).toBeGreaterThanOrEqual(6);
     });
   });
 

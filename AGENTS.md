@@ -49,7 +49,6 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
 
 4. **Sandbox** (`sandbox/`)
    - `control-plane.mjs` - In-sandbox control plane server + Claude Agent SDK session runner
-   - `memory-logger.mjs` - Runner helper for loading user profile context
    - `create-worker/` - Project scaffolders (`create-worker` for starter apps, `publish` for deploying files as standalone apps)
    - `skills/` - Agent skills (data-analysis, developing-software, file-sharing, testing-debugging)
 
@@ -73,10 +72,10 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 5. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
 
 ### OAuth State Storage
-Google/GitHub OAuth `state` is stored in a dedicated per-state Durable Object (`OAuthStateDO`) keyed by `state` value (`idFromName(state)`). This avoids KV eventual-consistency issues for callback validation and avoids a single DO bottleneck because each login state is isolated to its own DO instance. Callback handling uses an atomic consume-and-read DO RPC before token exchange so each `state` is single-use.
+Google/GitHub OAuth `state` is stored in an HMAC-signed `chiridion_oauth_state` cookie, not a Durable Object. `workers/main/src/routes/oauth.ts` sets the cookie on `/api/auth/{provider}` and validates it on `/api/auth/{provider}/callback` by checking the signed payload, provider, nonce, and 5-minute expiry. This avoids KV eventual-consistency issues during callback handling without introducing a DO hop.
 
 ### Onboarding
-Incomplete users are redirected to `/onboarding` before accessing `_app` routes. OAuth signups (non-team) auto-complete onboarding with no UI, then redirect to first chat. Password signups stay on the onboarding welcome screen until email verification is complete, then proceed. Team invitation users see the team welcome screen before proceeding. `POST /api/onboarding/complete` now marks `completed_at`, creates the first thread, and returns a hidden onboarding system message plus redirect target. The client seeds `pendingMessage:newThread` and `showBootModal` in sessionStorage before navigating to `/chat/{threadId}?newThread=1`. Preference capture now happens in-chat through `AskUserQuestion`; `~/.chiridion/profile.md` is maintained by the profile-writer subagent.
+Incomplete users are redirected to `/onboarding` before accessing `_app` routes. OAuth signups (non-team) auto-complete onboarding with no UI, then redirect to first chat. Password signups stay on the onboarding welcome screen until email verification is complete, then proceed. Team invitation users see the team welcome screen before proceeding. `POST /api/onboarding/complete` now marks `completed_at`, creates the first thread, and returns a hidden onboarding system message plus redirect target. The client seeds `pendingMessage:newThread` and `showBootModal` in sessionStorage before navigating to `/chat/{threadId}?newThread=1`. Preference capture now happens in-chat through `AskUserQuestion`.
 
 ### Get Help Requests
 Users can open an in-app help dialog from the sidebar footer (`Get Help`, `CircleHelp` icon). The form posts to `POST /api/help` with category, severity, description, and client context (`pageUrl`, `screenSize`). The route validates with zod/Conform, returns success immediately, and uses `waitUntil()` to:
@@ -131,13 +130,13 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 
 ### Email Chat Ingress
 1. Cloudflare Email Routing delivers inbound messages to Worker `email()` (non-HTTP handler)
-2. A single registered inbox local-part is used (for example `chat@<domain>`), and workspace addresses are subaddressed as `{local-part}+{workspaceId}@<domain>`
+2. A single registered inbox local-part is used (for example `chat@<domain>`), and workspace addresses are subaddressed as `{local-part}+{orgSlug}.{workspaceSlug}@<domain>` (e.g., `chat+acme-corp-85b.default-workspace@camelai.dev`)
 3. Sender is authorized by email (`EMAIL_TO_USER` lookup) plus workspace access check (org member + workspace access not `none`)
 4. Follow-ups are routed to existing threads using email reply headers (`In-Reply-To` / `References`) mapped in KV (`email_reply_ref:*`)
 5. MIME attachments are uploaded to workspace-scoped R2 keys under `user-uploads/` and appended to the inbound turn as `(user uploaded file to /mnt/user-uploads/<filename>)` lines (same format as web chat uploads)
 6. `ChatThreadDO` ingests email turns through `externalMessage(...)` Durable Object RPC
 7. `AskUserQuestion` follows the same browser-presence rule as Slack/web: interactive only when a browser chat websocket is connected; otherwise the model gets an unavailable response
-8. Replies are sent from workspace-scoped subaddresses (`{local-part}+{workspaceId}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies, and outbound bodies are sent as `multipart/alternative` (`text/plain` + markdown-rendered `text/html`)
+8. Replies are sent from workspace-scoped subaddresses (`{local-part}+{orgSlug}.{workspaceSlug}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies, and outbound bodies are sent as `multipart/alternative` (`text/plain` + markdown-rendered `text/html`)
 
 ### Sandbox Proxy Auth
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.
@@ -238,7 +237,7 @@ Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.
 | Sandbox container proxy APIs | `/api/{mssql,postgres,mysql}/query`, `/api/openai/v1/*` |
 | Apps | `/api/apps/:scriptName/preview` |
 | WebSocket | `/ws/{workspace}` (chat), `/ws/logs?scriptName={name}` (worker logs) |
-| Email | Worker `email()` handler (Cloudflare Email Routing, workspace inbox format `{local-part}+{workspaceId}@...`) |
+| Email | Worker `email()` handler (Cloudflare Email Routing, workspace inbox format `{local-part}+{orgSlug}.{workspaceSlug}@...`) |
 | MCP | `/mcp` (streamable HTTP), `/mcp/health` |
 
 ## Durable Objects

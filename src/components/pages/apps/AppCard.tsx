@@ -12,7 +12,6 @@ import { Input } from '@/components/ui/input';
 import { getAppUrl } from '@/lib/app-url';
 import { getContrastTextColor } from '@/lib/avatar';
 import {
-  BotMessageSquare,
   Check,
   Clock,
   Copy,
@@ -229,8 +228,7 @@ export function AppCard({
             className="pointer-events-auto relative z-10 translate-y-4 gap-2 bg-white px-6 text-zinc-900 shadow-lg transition-transform duration-300 ease-out hover:bg-zinc-100 group-hover:translate-y-0 cursor-pointer"
             onClick={() => onStartChat(app)}
           >
-            <BotMessageSquare className="size-4" />
-            Chat
+            New Chat
           </Button>
         </div>
       </div>

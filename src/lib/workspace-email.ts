@@ -6,7 +6,8 @@ export interface ParsedMailboxAddress {
 }
 
 export interface ParsedWorkspaceInboxAddress {
-  workspaceId: string;
+  orgSlug: string;
+  workspaceSlug: string;
   domain: string;
 }
 
@@ -56,6 +57,17 @@ export function parseMailboxAddress(raw: string): ParsedMailboxAddress | null {
   return { local, domain };
 }
 
+export function slugifyWorkspaceName(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 64) || 'workspace';
+}
+
 export function getWorkspaceEmailDomain(env: {
   WORKSPACE_EMAIL_DOMAIN?: string;
 }): string | null {
@@ -92,14 +104,16 @@ export function getWorkspaceEmailRoutingConfig(env: {
 }
 
 export function buildWorkspaceInboxAddress(
-  workspaceId: string,
+  orgSlug: string,
+  workspaceName: string,
   domain: string,
   opts?: { localPart?: string }
 ): string {
-  const safeWorkspaceId = workspaceId.trim();
+  const safeOrgSlug = orgSlug.trim().toLowerCase();
+  const workspaceSlug = slugifyWorkspaceName(workspaceName);
   const safeDomain = domain.trim().toLowerCase();
   const localPart = opts?.localPart?.trim().toLowerCase() || DEFAULT_WORKSPACE_EMAIL_LOCAL_PART;
-  return `${localPart}+${safeWorkspaceId}@${safeDomain}`;
+  return `${localPart}+${safeOrgSlug}.${workspaceSlug}@${safeDomain}`;
 }
 
 export function parseWorkspaceInboxAddress(
@@ -117,23 +131,34 @@ export function parseWorkspaceInboxAddress(
   const expectedLocalPart = opts?.expectedLocalPart?.trim().toLowerCase() || null;
 
   const plusSegments = mailbox.local.split('+').map((segment) => segment.trim());
-  if (plusSegments.length >= 2) {
-    if (plusSegments.length !== 2) {
-      return null;
-    }
-    const localPart = plusSegments[0]?.toLowerCase() || '';
-    if ((!expectedLocalPart || localPart === expectedLocalPart) && plusSegments[1]) {
-      const workspaceId = plusSegments[1];
-      if (!/^[a-z0-9][a-z0-9-]{1,127}$/i.test(workspaceId)) {
-        return null;
-      }
-
-      return {
-        workspaceId,
-        domain: mailbox.domain,
-      };
-    }
+  if (plusSegments.length !== 2 || !plusSegments[1]) {
+    return null;
   }
 
-  return null;
+  const localPart = plusSegments[0]?.toLowerCase() || '';
+  if (expectedLocalPart && localPart !== expectedLocalPart) {
+    return null;
+  }
+
+  const subaddress = plusSegments[1];
+  const dotIndex = subaddress.indexOf('.');
+  if (dotIndex <= 0 || dotIndex === subaddress.length - 1) {
+    return null;
+  }
+
+  const orgSlug = subaddress.slice(0, dotIndex);
+  const workspaceSlug = subaddress.slice(dotIndex + 1);
+
+  if (!/^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]?$/.test(orgSlug)) {
+    return null;
+  }
+  if (!/^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]?$/.test(workspaceSlug)) {
+    return null;
+  }
+
+  return {
+    orgSlug,
+    workspaceSlug,
+    domain: mailbox.domain,
+  };
 }

@@ -103,6 +103,23 @@ function createMockKv(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
+function createMockKvWithSlug(): KVNamespace {
+  const store = new Map<string, string>([
+    ['org_slug:acme-85b', 'org-1'],
+  ]);
+  return {
+    get: vi.fn(async (key: string) => (store.has(key) ? store.get(key)! : null)),
+    put: vi.fn(async (key: string, value: string) => {
+      store.set(key, value);
+    }),
+    delete: vi.fn(async (key: string) => {
+      store.delete(key);
+    }),
+    list: vi.fn(),
+    getWithMetadata: vi.fn(),
+  } as unknown as KVNamespace;
+}
+
 describe('handleWorkspaceEmailIngress markdown email replies', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -124,6 +141,12 @@ describe('handleWorkspaceEmailIngress markdown email replies', () => {
         id: 'thread-1',
         title: 'Build something',
       }),
+      getWorkspaceBySlug: vi.fn().mockResolvedValue({
+        id: 'workspace-1',
+        name: 'My Workspace',
+        created_at: 0,
+        archived: 0,
+      }),
     });
 
     mockGetUserStub.mockReturnValue({
@@ -134,7 +157,7 @@ describe('handleWorkspaceEmailIngress markdown email replies', () => {
   it('sends multipart reply with markdown rendered HTML', async () => {
     const message = createMessage({
       from: 'user@example.com',
-      to: 'chat+workspace-1@mail.camelai.com',
+      to: 'chat+acme-85b.my-workspace@mail.camelai.com',
       subject: 'Need help',
       rawBody: 'Can you summarize this?',
     });
@@ -145,7 +168,7 @@ describe('handleWorkspaceEmailIngress markdown email replies', () => {
       EMAIL_TO_USER: {
         get: vi.fn().mockResolvedValue('user-1'),
       },
-      APP_KV: createMockKv(),
+      APP_KV: createMockKvWithSlug(),
     } as never;
 
     await handleWorkspaceEmailIngress(message, env);

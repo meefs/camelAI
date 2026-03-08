@@ -67,12 +67,13 @@ import {
   type SDKEvent,
   applyStreamingEventToMessage,
   attachToolResultsToMessages,
+  extractToolEventMetaInfo,
   finalizeStreamingMessage,
   mergeTaskNotifications,
   normalizeToolResultMessages,
   mergeTeammateMessages,
 } from '@/lib/streaming';
-import { getAppUrl, getVanityDomain, getIframeDomain } from '@/lib/app-url';
+import { getAppUrl, getVanityDomain, getIframeDomain, buildAppLabel } from '@/lib/app-url';
 import { uploadWorkspaceFile } from '@/lib/workspace-upload.client';
 import { isManualCompactCommand } from '@/lib/slash-commands';
 import { getFirstThreadPreviewUserMessage } from '@/lib/thread-preview';
@@ -1180,7 +1181,7 @@ export default function Chat({
             if (tab.target.kind !== 'app') return false;
             const s = tab.target.scriptName;
             const host = orgSlug
-              ? `${s}--${orgSlug}.${iframeDomain}`
+              ? `${buildAppLabel(s, orgSlug)}.${iframeDomain}`
               : `${s}.${iframeDomain}`;
             return event.origin === `https://${host}`;
           })
@@ -2186,14 +2187,42 @@ export default function Chat({
           pendingCompactionPlaceholderIdRef.current = compactMsg.id;
           setMessages(prev => [...prev, compactMsg]);
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
-          // Track message ID as fallback
+          // Some providers can emit a full assistant snapshot without prior
+          // stream_event message_start/content_block_* events. In that case we
+          // still need to create the assistant bubble or the result event will
+          // finalize a non-existent message.
+          const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
+          const sdkMsgId = (sdkEvent.message as { id?: string }).id;
+          const resolvedAssistantId = sdkUuid || sdkMsgId || `assistant_${Date.now()}`;
+          const snapshotContent = sdkEvent.message.content;
+
           if (!currentStreamingId) {
-            const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
-            const sdkMsgId = (sdkEvent.message as { id?: string }).id;
-            if (sdkUuid || sdkMsgId) {
-              setStreamingMessageId(sdkUuid || sdkMsgId || null);
-            }
+            setStreamingMessageId(resolvedAssistantId);
           }
+
+          setMessages(prev => {
+            const targetId = currentStreamingId || resolvedAssistantId;
+            const existingIndex = prev.findIndex(msg => msg.id === targetId && msg.role === 'assistant');
+            const nextAssistant: Message = {
+              id: targetId,
+              thread_id: id,
+              role: 'assistant',
+              content: snapshotContent,
+              created_at: prev[existingIndex]?.created_at ?? Date.now(),
+              isStreaming: true,
+            };
+
+            if (existingIndex !== -1) {
+              const next = [...prev];
+              next[existingIndex] = {
+                ...prev[existingIndex],
+                ...nextAssistant,
+              };
+              return next;
+            }
+
+            return [...prev, nextAssistant];
+          });
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
           // Compact summary — system-generated context recap
           const isCompactSummary = Boolean(
@@ -2248,7 +2277,7 @@ export default function Chat({
             Array.isArray(contentBlocks) &&
             contentBlocks.length > 0 &&
             contentBlocks.every(block => block.type === 'tool_result');
-          const { sourceToolUseID } = extractMetaInfo(sdkEvent);
+          const { sourceToolUseID } = extractToolEventMetaInfo(sdkEvent);
 
           if (!isToolResultEvent) {
             const shouldBeMeta = true;
@@ -3264,7 +3293,7 @@ export default function Chat({
 
       // Create bug report bundle (without large data, using file references)
       const vanityHost = orgSlug
-        ? `${deployedApp}--${orgSlug}.${getVanityDomain(hostname)}`
+        ? `${buildAppLabel(deployedApp, orgSlug)}.${getVanityDomain(hostname)}`
         : `${deployedApp}.${getVanityDomain(hostname)}`;
       const vanityUrl = `https://${vanityHost}`;
       const debugDataClean = debugData ? {
@@ -3596,10 +3625,10 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
       if (target.kind === 'app') {
         const scriptName = target.scriptName;
         const iframeHost = orgSlug
-          ? `${scriptName}--${orgSlug}.${getIframeDomain(hostname)}`
+          ? `${buildAppLabel(scriptName, orgSlug)}.${getIframeDomain(hostname)}`
           : `${scriptName}.${getIframeDomain(hostname)}`;
         const vHost = orgSlug
-          ? `${scriptName}--${orgSlug}.${getVanityDomain(hostname)}`
+          ? `${buildAppLabel(scriptName, orgSlug)}.${getVanityDomain(hostname)}`
           : `${scriptName}.${getVanityDomain(hostname)}`;
         return {
           tabId,
@@ -3663,8 +3692,8 @@ I've captured a debug report with the DOM snapshot and console logs. Please inve
     const scriptName = previewTarget.scriptName;
     if (orgSlug) {
       return {
-        iframeHost: `${scriptName}--${orgSlug}.${getIframeDomain(hostname)}`,
-        vanityHost: `${scriptName}--${orgSlug}.${getVanityDomain(hostname)}`,
+        iframeHost: `${buildAppLabel(scriptName, orgSlug)}.${getIframeDomain(hostname)}`,
+        vanityHost: `${buildAppLabel(scriptName, orgSlug)}.${getVanityDomain(hostname)}`,
       };
     }
     // Legacy format without org slug

@@ -46,7 +46,14 @@ export async function action({ request, context }: Route.ActionArgs) {
     updates.avatar = { color: avatarColor, content: avatarContent };
   }
 
-  await authDO.updateWorkspace(authEnv, workspaceId, updates, actorId);
+  try {
+    await authDO.updateWorkspace(authEnv, workspaceId, updates, actorId);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('already exists')) {
+      return { result: submission.reply({ fieldErrors: { name: ['A workspace with that name already exists in this organization'] } }) };
+    }
+    throw err;
+  }
   return { result: submission.reply(), success: true };
 }
 
@@ -57,7 +64,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const workspace = authContext.currentWorkspace;
   const routingConfig = getWorkspaceEmailRoutingConfig(env);
   const workspaceEmailAddress = workspace && routingConfig
-    ? buildWorkspaceInboxAddress(workspace.id, routingConfig.domain, {
+    ? buildWorkspaceInboxAddress(authContext.currentOrg.slug, workspace.name, routingConfig.domain, {
         localPart: routingConfig.localPart,
       })
     : null;
