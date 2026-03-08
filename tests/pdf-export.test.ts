@@ -98,6 +98,15 @@ describe('pdf export', () => {
     expect(triggerBlobDownload).toHaveBeenCalledTimes(1);
     expect(triggerBlobDownload.mock.calls[0][1]).toBe('analysis.pdf');
     expect(fontRegister).toHaveBeenCalledTimes(3);
+    expect(fontRegister).toHaveBeenNthCalledWith(1, {
+      family: 'Figtree',
+      fonts: [
+        { src: 'http://localhost:3000/fonts/Figtree-Regular.ttf', fontWeight: 400, fontStyle: 'normal' },
+        { src: 'http://localhost:3000/fonts/Figtree-Regular.ttf', fontWeight: 400, fontStyle: 'italic' },
+        { src: 'http://localhost:3000/fonts/Figtree-Bold.ttf', fontWeight: 700, fontStyle: 'normal' },
+        { src: 'http://localhost:3000/fonts/Figtree-Bold.ttf', fontWeight: 700, fontStyle: 'italic' },
+      ],
+    });
   });
 
   it('registers PDF fonts once across repeated exports', async () => {

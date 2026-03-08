@@ -61,11 +61,15 @@ function resolvePdfFontSrc(path: string): string {
 function registerPdfFonts(font: typeof import('@react-pdf/renderer').Font): void {
   if (pdfFontsRegistered) return;
 
+  // react-pdf resolves fonts by family + weight + style and throws if an
+  // italic face is requested without a registered variant.
   font.register({
     family: 'Figtree',
     fonts: [
-      { src: resolvePdfFontSrc('/fonts/Figtree-Regular.ttf'), fontWeight: 400 },
-      { src: resolvePdfFontSrc('/fonts/Figtree-Bold.ttf'), fontWeight: 700 },
+      { src: resolvePdfFontSrc('/fonts/Figtree-Regular.ttf'), fontWeight: 400, fontStyle: 'normal' },
+      { src: resolvePdfFontSrc('/fonts/Figtree-Regular.ttf'), fontWeight: 400, fontStyle: 'italic' },
+      { src: resolvePdfFontSrc('/fonts/Figtree-Bold.ttf'), fontWeight: 700, fontStyle: 'normal' },
+      { src: resolvePdfFontSrc('/fonts/Figtree-Bold.ttf'), fontWeight: 700, fontStyle: 'italic' },
     ],
   });
   font.register({
