@@ -244,6 +244,16 @@ bun run test:e2e
 
 **Private app auth:** The `CHIRIDION_APP_SESSION` env var is automatically available in the sandbox. Set it as a `chiridion_run_session` cookie on the browser context to authenticate with private `*.camelai.app` deployments. See the commented-out boilerplate in `e2e/smoke.test.mjs` for the full pattern.
 
+## Design Defaults
+
+Every project should ship with polished design fundamentals out of the box. When scaffolding or building any app, always include:
+
+1. **Interesting fonts** - Don't settle for system defaults or generic sans-serif. Pick a distinctive, high-quality Google Font that fits the project's personality (e.g., Space Grotesk for techy apps, Playfair Display for editorial, DM Sans for clean SaaS). Import it in `app/root.tsx` or `app/styles/globals.css` and apply it to the body/html element. Use the `--font` flag with `create-worker` when scaffolding, or add fonts manually via Google Fonts `@import` or `<link>`.
+
+2. **Favicon** - Every app must have a favicon. Create or generate an SVG favicon that reflects the app's purpose and place it at `public/favicon.svg` (or `public/favicon.ico`). Reference it in the root `<head>` via a `<link rel="icon">` tag. A simple, recognizable icon is better than no icon.
+
+3. **OpenGraph images** - Add OpenGraph meta tags (`og:title`, `og:description`, `og:image`) in the root route or layout so the app looks good when shared on social media, Slack, or messaging apps. Generate or create a `public/og-image.png` (recommended 1200x630px). Include `twitter:card` and `twitter:image` meta tags as well.
+
 ## Common Pitfalls
 
 - **Always pass a unique `name` to `useAgent`**: `useAgent({ agent: "Chat", name: sessionId })`. Without `name`, ALL users share the same DO instance ("default"), seeing each other's conversations. Every chat must have a unique session ID.
