@@ -105,7 +105,7 @@ bun wrangler tail
 After deploying a worker, use MCP tools to verify the deployment and get the live URL:
 
 1. **Get the deployed app URL** - Use the `list_apps` MCP tool to retrieve the URL of deployed workers
-2. **Take a screenshot** - Use the `take_app_screenshot` MCP tool to capture the deployed app and verify it looks correct
+2. **Take a screenshot** - Use the `take_screenshot` MCP tool (local Playwright) with the full URL to capture the deployed app and verify it looks correct
 
 ```bash
 # Example workflow after bun run deploy
@@ -113,8 +113,10 @@ After deploying a worker, use MCP tools to verify the deployment and get the liv
 #    → Use MCP tool: list_apps
 
 # 2. Take a screenshot to verify the UI
-#    → Use MCP tool: take_app_screenshot with the script name
+#    → Use MCP tool: take_screenshot with the app URL from step 1
 ```
+
+The `take_screenshot` tool runs Playwright locally inside the container for fast, reliable screenshots. It accepts a full URL and optional viewport dimensions (`width`, `height`) and `wait_for_timeout` (extra ms to wait after page load).
 
 This ensures the deployment succeeded and the app renders correctly before sharing the URL with the user.
 
@@ -722,7 +724,7 @@ The starter template includes Playwright as a devDependency and scaffolded E2E s
 Recharts `ResponsiveContainer` emits width/height warnings during SSR — these are **expected and benign**. Do not add `ClientOnly` wrappers or other workarounds to suppress them; the extra complexity is not worth it.
 
 ### Screenshot Tool Timeouts
-If `take_app_screenshot` times out after deployment, consider **server-side data fetching latency** as the likely cause before blaming the rendering layer. Slow loaders or API calls delay the initial page render, which causes the screenshot to time out. Fix by adding React `<Suspense>` boundaries with skeleton fallbacks around data-dependent sections so the page shell renders immediately while data loads.
+If `take_screenshot` times out after deployment, consider **server-side data fetching latency** as the likely cause before blaming the rendering layer. Slow loaders or API calls delay the initial page render, which causes the screenshot to time out. Fix by adding React `<Suspense>` boundaries with skeleton fallbacks around data-dependent sections so the page shell renders immediately while data loads.
 
 ## Design Defaults
 

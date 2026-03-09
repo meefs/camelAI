@@ -12,7 +12,9 @@
  * Filesystem operations are handled by the sandbox host via direct host FS access.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
+
 import { readFile, access } from 'fs/promises';
 import { homedir } from 'os';
 import { TeamPollingController } from './team-poll-controller.mjs';
@@ -22,6 +24,82 @@ const CONTROL_PLANE_IDLE_TIMEOUT_SECS = Math.max(
   10,
   parseInt(process.env.CONTROL_PLANE_IDLE_TIMEOUT_SECS || '120', 10)
 );
+
+// ─── Screenshot MCP Server (in-process) ─────────────────────
+
+function createScreenshotMcpServer(sessionToken) {
+  return createSdkMcpServer({
+    name: 'screenshot',
+    version: '1.0.0',
+    tools: [
+      tool(
+        'take_screenshot',
+        'Take a screenshot of a URL and return the image. Use this after deploying an app to verify it renders correctly. Pass the full app URL (get it from list_apps first). Automatically authenticates with private *.camelai.app deployments.',
+        {
+          url: z.string().url().describe('The full URL to screenshot (e.g. https://my-app--my-org.camelai.app)'),
+          width: z.number().int().min(320).max(3840).optional().describe('Viewport width in pixels (default 1280)'),
+          height: z.number().int().min(240).max(2160).optional().describe('Viewport height in pixels (default 720)'),
+          wait_for_timeout: z.number().int().min(0).max(30000).optional().describe('Extra milliseconds to wait after load before capturing (default 1000)'),
+        },
+        async ({ url, width, height, wait_for_timeout }) => {
+          const viewportWidth = width ?? 1280;
+          const viewportHeight = height ?? 720;
+          const extraWait = wait_for_timeout ?? 1000;
+
+          let browser;
+          try {
+            const { chromium } = await import('playwright');
+            browser = await chromium.launch({ args: ['--no-sandbox', '--disable-gpu'] });
+            const context = await browser.newContext({
+              viewport: { width: viewportWidth, height: viewportHeight },
+              deviceScaleFactor: 1.5,
+            });
+
+            // Authenticate with private deployments using the session cookie.
+            // Scope to the exact hostname to avoid leaking the token to sibling subdomains.
+            if (sessionToken) {
+              const hostname = new URL(url).hostname;
+              const isTrusted = hostname.endsWith('.camelai.app') || hostname.endsWith('.camelai.dev');
+              if (isTrusted) {
+                await context.addCookies([{
+                  name: 'chiridion_run_session',
+                  value: sessionToken,
+                  domain: hostname,
+                  path: '/',
+                  httpOnly: true,
+                }]);
+              }
+            }
+
+            const page = await context.newPage();
+            await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 }).catch(() =>
+              page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 })
+            );
+
+            if (extraWait > 0) await page.waitForTimeout(extraWait);
+
+            const buffer = await page.screenshot({
+              type: 'jpeg',
+              quality: 80,
+              clip: { x: 0, y: 0, width: viewportWidth, height: viewportHeight },
+            });
+
+            return {
+              content: [{ type: 'image', data: buffer.toString('base64'), mimeType: 'image/jpeg' }],
+            };
+          } catch (err) {
+            return {
+              content: [{ type: 'text', text: `Screenshot failed: ${err.message}` }],
+              isError: true,
+            };
+          } finally {
+            if (browser) await browser.close().catch(() => {});
+          }
+        }
+      ),
+    ],
+  });
+}
 
 // ─── Chat Sessions ─────────────────────────────────────────
 const chatSessions = new Map();
@@ -851,6 +929,9 @@ class ChatSession {
       };
     }
 
+    // In-process MCP server for Playwright screenshots (no separate process)
+    mcpServers.screenshot = createScreenshotMcpServer(mergedEnv.CHIRIDION_APP_SESSION);
+
     const systemAppend = buildSystemPromptAppend().trim();
 
     const options = {
@@ -864,7 +945,7 @@ class ChatSession {
       canUseTool: (name, input, opts) => this.handleCanUseTool(name, input, opts),
       ...(Object.keys(mcpServers).length > 0 && {
         mcpServers,
-        allowedTools: ['mcp__camelai__*'],
+        allowedTools: ['mcp__camelai__*', 'mcp__screenshot__*'],
       }),
       systemPrompt: {
         type: 'preset',

@@ -18,8 +18,6 @@ import { encryptCredentials } from '../../../src/lib/integration-crypto';
 import { normalizeEnvVarName, getEnvVarSuffixesForType } from './integration-env';
 import { validateSandboxProxy } from './sandbox-auth';
 import { getEnvPrefix, syncAllWorkspaceWorkerSecrets, type CfApiProxyEnv } from './cf-api-proxy';
-import { captureScreenshotRaw } from './screenshot-queue';
-import { createScreenshotToken } from './worker-auth';
 import type { WorkerLogsDO } from './worker-logs-do';
 
 export interface McpEnv extends WorkspaceContainerEnv {
@@ -28,7 +26,6 @@ export interface McpEnv extends WorkspaceContainerEnv {
   WORKER_LOGS: DurableObjectNamespace<WorkerLogsDO>;
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
   APP_KV: KVNamespace;
-  BROWSER?: Fetcher;
   SANDBOX_PROXY_SECRET?: string;
 }
 
@@ -570,93 +567,6 @@ export class ChiridionMcp extends McpAgent<McpEnv, Record<string, unknown>, Reco
           },
           message: `Preview set to app '${script.script_name}'`,
         });
-      }
-    );
-
-    // Take a screenshot of a deployed app
-    this.server.tool(
-      'take_app_screenshot',
-      'Take a screenshot of a deployed app and return the image. Useful for verifying the app looks correct after making changes.',
-      {
-        script_name: z.string().describe('The name of the app/worker script to screenshot'),
-      },
-      async ({ script_name }) => {
-        const { orgId, workspaceId } = this.requireAuth();
-        if (!workspaceId) {
-          return this.textResponse({ error: 'No workspace context available' });
-        }
-
-        const orgStub = this.getOrgStub();
-
-        // Verify script exists and belongs to current workspace
-        const script: WorkerScript | null = await orgStub.getWorkerScript(script_name);
-        if (!script) {
-          return this.textResponse({ success: false, error: `App '${script_name}' not found` });
-        }
-        if (script.workspace_id !== workspaceId) {
-          return this.textResponse({ success: false, error: `App '${script_name}' belongs to a different workspace` });
-        }
-
-        // Check for BROWSER binding
-        if (!this.env.BROWSER) {
-          return this.textResponse({
-            success: false,
-            error: 'Screenshot capture is not available (missing browser binding)',
-          });
-        }
-
-        // Get env prefix for building screenshot URL
-        const envPrefix = (() => {
-          if (!this.env.WORKER_BASE_URL) return '';
-          const hostname = new URL(this.env.WORKER_BASE_URL).hostname;
-          const prefix = getEnvPrefix(hostname);
-          if (prefix) return prefix;
-          // WORKER_BASE_URL set but not a camelai.dev hostname (e.g. ngrok) → local dev
-          if (hostname !== 'camelai.dev' && !hostname.endsWith('.camelai.dev')) return 'local';
-          return '';
-        })();
-
-        // Create screenshot token for private apps
-        let screenshotToken: string | undefined;
-        if (!script.is_public && envPrefix !== 'local') {
-          screenshotToken = await createScreenshotToken(this.env.APP_KV, {
-            script_name,
-            org_id: orgId,
-          });
-        }
-
-        // Get org slug for URL construction (optional - falls back to legacy URL format)
-        const orgSlug = await this.getOrgSlug();
-
-        // Capture screenshot and return image directly
-        const result = await captureScreenshotRaw(this.env.BROWSER, {
-          scriptName: script_name,
-          orgId,
-          orgSlug: orgSlug ?? undefined,
-          envPrefix,
-          isPublic: script.is_public,
-          screenshotToken,
-          timeoutMs: 10_000,
-        });
-
-        if (result.success) {
-          // Return image as base64 in MCP image content format
-          const base64Image = result.image.toString('base64');
-          return {
-            content: [
-              {
-                type: 'image' as const,
-                data: base64Image,
-                mimeType: 'image/jpeg',
-              },
-            ],
-          };
-        } else {
-          return this.textResponse({
-            success: false,
-            error: result.error || 'Failed to capture screenshot',
-          });
-        }
       }
     );
 
