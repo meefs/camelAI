@@ -15,6 +15,13 @@ import { EditConnectionDialog } from './EditConnectionDialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -47,6 +54,8 @@ interface ConnectionsClientProps {
   orgId: string;
   otherWorkspaces?: Array<{ id: string; name: string }>;
 }
+
+type ConnectionSort = 'updated' | 'name' | 'created';
 
 const OAUTH_ERROR_MESSAGES: Record<string, string> = {
   oauth_denied: 'You denied access to the service. Please try again if you want to connect.',
@@ -95,11 +104,18 @@ export default function ConnectionsClient({
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Integration | null>(null);
   const [copyTarget, setCopyTarget] = useState<Integration | null>(null);
+  const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [sortBy, setSortBy] = useState<ConnectionSort>('updated');
   const [pickerSearch, setPickerSearch] = useState('');
   const [pendingAction, setPendingAction] = useState<'clone' | 'delete' | null>(null);
 
   const connections = initialConnections;
   const loading = revalidator.state === 'loading';
+  const typeDefinitionsByType = useMemo(
+    () => new Map(connectionTypes.map((type) => [type.type, type])),
+    [connectionTypes]
+  );
 
   const filteredConnectionTypes = useMemo(() => {
     const query = pickerSearch.trim().toLowerCase();
@@ -110,6 +126,44 @@ export default function ConnectionsClient({
         t.type.toLowerCase().includes(query)
     );
   }, [connectionTypes, pickerSearch]);
+
+  const activeCategories = useMemo(() => {
+    const active = new Set<string>(connections.map((connection) => connection.category));
+    return categories.filter((category) => active.has(category));
+  }, [connections, categories]);
+
+  const filteredConnections = useMemo(() => {
+    const query = search.trim().toLowerCase();
+
+    let result = connections.filter((connection) => {
+      if (!query) return true;
+
+      const typeDef = typeDefinitionsByType.get(connection.integration_type);
+      return (
+        connection.name.toLowerCase().includes(query) ||
+        connection.integration_type.toLowerCase().includes(query) ||
+        (typeDef?.displayName.toLowerCase().includes(query) ?? false)
+      );
+    });
+
+    if (categoryFilter !== 'all') {
+      result = result.filter((connection) => connection.category === categoryFilter);
+    }
+
+    return [...result].sort((a, b) => {
+      switch (sortBy) {
+        case 'name':
+          return a.name.localeCompare(b.name);
+        case 'created':
+          return b.created_at - a.created_at;
+        case 'updated':
+        default:
+          return b.updated_at - a.updated_at;
+      }
+    });
+  }, [connections, search, categoryFilter, sortBy, typeDefinitionsByType]);
+
+  const hasActiveFilters = search.trim().length > 0 || categoryFilter !== 'all';
 
   // Handle OAuth success/error from URL params
   useEffect(() => {
@@ -140,6 +194,13 @@ export default function ConnectionsClient({
       revalidator.revalidate();
     }
   }, [currentOrg?.id]);
+
+  useEffect(() => {
+    if (categoryFilter === 'all') return;
+    if (activeCategories.length <= 1 || !activeCategories.includes(categoryFilter)) {
+      setCategoryFilter('all');
+    }
+  }, [activeCategories, categoryFilter]);
 
   // Handle fetcher responses
   useEffect(() => {
@@ -274,9 +335,14 @@ export default function ConnectionsClient({
     }
   };
 
-  const getTypeDefinition = (type: string) => {
-    return connectionTypes.find((item) => item.type === type);
+  const clearAllFilters = () => {
+    setSearch('');
+    setCategoryFilter('all');
   };
+
+  const getTypeDefinition = useCallback((type: string) => {
+    return typeDefinitionsByType.get(type);
+  }, [typeDefinitionsByType]);
 
   const getConnectionDescription = useCallback((connection: Integration) => {
     // For "other" type, show the custom description if provided
@@ -289,7 +355,7 @@ export default function ConnectionsClient({
     }
     const typeDef = getTypeDefinition(connection.integration_type);
     return typeDef?.displayName || connection.integration_type;
-  }, [connectionTypes]);
+  }, [getTypeDefinition]);
 
   const isLoading = loading;
   const currentMembership = orgs.find((entry) => entry.org_id === currentOrg?.id);
@@ -362,80 +428,166 @@ export default function ConnectionsClient({
                 </CardContent>
               </Card>
             ) : (
-              <div className="mt-6 grid gap-4 md:grid-cols-2">
-                {connections.map((connection) => {
-                  const typeDef = getTypeDefinition(connection.integration_type);
-                  const resolvedType = resolveLogoType(connection.integration_type, [
-                    (connection.config as Record<string, unknown>)?.display_name as string,
-                    connection.name,
-                  ]);
-                  const hasIcon = hasIntegrationIcon(resolvedType);
-                  return (
-                    <Card key={connection.id}>
-                      <CardHeader className="flex flex-row items-start justify-between gap-4">
-                        <div className="flex items-start gap-3">
-                          <div className="flex size-10 items-center justify-center rounded-lg border">
-                            {hasIcon ? (
-                              <IntegrationIcon
-                                type={resolvedType}
-                                className="size-5"
-                              />
-                            ) : (
-                              <Settings className="size-5" />
-                            )}
-                          </div>
-                          <div>
-                            <CardTitle>{connection.name}</CardTitle>
-                            <CardDescription>
-                              {getConnectionDescription(connection)}
-                            </CardDescription>
-                          </div>
-                        </div>
-                      </CardHeader>
-                      <CardContent className="space-y-4">
-                        <div className="flex items-center justify-between text-sm text-muted-foreground">
-                          <span>Last updated</span>
-                          <span>
-                            {new Date(connection.updated_at).toLocaleDateString()}
-                          </span>
-                        </div>
-                        {isAdmin && (
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleEditClick(connection)}
-                              >
-                                <Settings className="mr-2 size-3.5" />
-                                Configure
-                              </Button>
-                              {otherWorkspaces.length > 0 && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => setCopyTarget(connection)}
-                                >
-                                  <Copy className="mr-2 size-3.5" />
-                                  Clone to workspace
-                                </Button>
-                              )}
+              <>
+                <div className="mt-6 space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative min-w-[220px] flex-1">
+                      <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Search connections..."
+                        className="pl-9 pr-8"
+                      />
+                      {search && (
+                        <button
+                          type="button"
+                          onClick={() => setSearch('')}
+                          className="absolute inset-y-0 right-0 inline-flex items-center px-3 text-muted-foreground hover:text-foreground"
+                          aria-label="Clear search"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      )}
+                    </div>
+
+                    <Select
+                      value={sortBy}
+                      onValueChange={(value) => setSortBy(value as ConnectionSort)}
+                    >
+                      <SelectTrigger className="w-full sm:w-[170px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="updated">Recently updated</SelectItem>
+                        <SelectItem value="name">Name (A-Z)</SelectItem>
+                        <SelectItem value="created">Newest first</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {activeCategories.length > 1 && (
+                    <Tabs value={categoryFilter} onValueChange={setCategoryFilter} className="w-full">
+                      <div className="overflow-x-auto overflow-y-hidden">
+                        <TabsList className="w-max justify-start">
+                          <TabsTrigger value="all">All</TabsTrigger>
+                          {activeCategories.map((category) => (
+                            <TabsTrigger key={category} value={category}>
+                              {categoryLabels[category] || category}
+                            </TabsTrigger>
+                          ))}
+                        </TabsList>
+                      </div>
+                    </Tabs>
+                  )}
+
+                  {hasActiveFilters && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+                      <span>
+                        Showing {filteredConnections.length} of {connections.length} connections
+                      </span>
+                      <Button variant="ghost" size="sm" onClick={clearAllFilters}>
+                        <X className="mr-1 size-3" />
+                        Clear filters
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                {filteredConnections.length === 0 ? (
+                  <Card className="mt-6 border-dashed">
+                    <CardHeader>
+                      <CardTitle>No connections match your filters</CardTitle>
+                      <CardDescription>
+                        Try a different search or category, or clear the current filters.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <Button variant="outline" onClick={clearAllFilters}>
+                        <X className="mr-2 size-4" />
+                        Clear all filters
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <div className="mt-6 grid gap-4 md:grid-cols-2">
+                    {filteredConnections.map((connection) => {
+                      const resolvedType = resolveLogoType(connection.integration_type, [
+                        (connection.config as Record<string, unknown>)?.display_name as string,
+                        connection.name,
+                      ]);
+                      const hasIcon = hasIntegrationIcon(resolvedType);
+                      const categoryLabel = categoryLabels[connection.category] || connection.category;
+
+                      return (
+                        <Card key={connection.id}>
+                          <CardHeader className="flex flex-row items-start justify-between gap-4">
+                            <div className="flex items-start gap-3">
+                              <div className="flex size-10 items-center justify-center rounded-lg border">
+                                {hasIcon ? (
+                                  <IntegrationIcon
+                                    type={resolvedType}
+                                    className="size-5"
+                                  />
+                                ) : (
+                                  <Settings className="size-5" />
+                                )}
+                              </div>
+                              <div className="space-y-1">
+                                <CardTitle>{connection.name}</CardTitle>
+                                <CardDescription>
+                                  {getConnectionDescription(connection)}
+                                </CardDescription>
+                                <p className="text-sm text-muted-foreground">{categoryLabel}</p>
+                              </div>
                             </div>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="text-destructive hover:text-destructive"
-                              onClick={() => setDeleteTarget(connection)}
-                            >
-                              <Trash2 className="size-4" />
-                            </Button>
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-              </div>
+                          </CardHeader>
+                          <CardContent className="space-y-4">
+                            <div className="flex items-center justify-between text-sm text-muted-foreground">
+                              <span>Last updated</span>
+                              <span>
+                                {new Date(connection.updated_at).toLocaleDateString()}
+                              </span>
+                            </div>
+                            {isAdmin && (
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleEditClick(connection)}
+                                  >
+                                    <Settings className="mr-2 size-3.5" />
+                                    Configure
+                                  </Button>
+                                  {otherWorkspaces.length > 0 && (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => setCopyTarget(connection)}
+                                    >
+                                      <Copy className="mr-2 size-3.5" />
+                                      Clone to workspace
+                                    </Button>
+                                  )}
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="text-destructive hover:text-destructive"
+                                  onClick={() => setDeleteTarget(connection)}
+                                >
+                                  <Trash2 className="size-4" />
+                                </Button>
+                              </div>
+                            )}
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </ScrollArea>

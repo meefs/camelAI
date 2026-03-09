@@ -18,8 +18,15 @@ export function ConnectionsLoadingSkeleton() {
           </div>
 
           <div className="mt-6">
-            <Skeleton className="h-10 w-64 mb-4" />
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Skeleton className="h-9 min-w-[220px] flex-1" />
+                <Skeleton className="h-9 w-[170px]" />
+              </div>
+              <Skeleton className="h-9 w-[300px]" />
+            </div>
+
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
               {Array.from({ length: 4 }).map((_, i) => (
                 <Card key={i}>
                   <CardHeader className="flex flex-row items-start gap-3">
