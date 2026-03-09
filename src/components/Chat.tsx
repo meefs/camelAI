@@ -243,7 +243,7 @@ function getLastToolUseId(message?: Message): string | undefined {
   if (!message || !Array.isArray(message.content)) return undefined;
   for (let i = message.content.length - 1; i >= 0; i -= 1) {
     const block = message.content[i];
-    if (block.type === 'tool_use' && block.id) return block.id;
+    if (block && block.type === 'tool_use' && block.id) return block.id;
   }
   return undefined;
 }
@@ -1016,7 +1016,7 @@ export default function Chat({
       const content = typeof message.content === 'string'
         ? message.content
         : message.content
-            .map(block => (block.type === 'text' ? block.text : ''))
+            .map(block => (block?.type === 'text' ? block.text : ''))
             .filter(Boolean)
             .join('\n\n');
       if (content) {
@@ -2276,7 +2276,7 @@ export default function Chat({
           const isToolResultEvent =
             Array.isArray(contentBlocks) &&
             contentBlocks.length > 0 &&
-            contentBlocks.every(block => block.type === 'tool_result');
+            contentBlocks.every(block => block?.type === 'tool_result');
           const { sourceToolUseID } = extractToolEventMetaInfo(sdkEvent);
 
           if (!isToolResultEvent) {
@@ -2302,7 +2302,7 @@ export default function Chat({
           }
 
           const toolResults = contentBlocks.filter(
-            (block): block is ToolResultBlock => block.type === 'tool_result'
+            (block): block is ToolResultBlock => block?.type === 'tool_result'
           );
           if (toolResults.length === 0) return;
           const toolUseResultPrompt = (() => {
