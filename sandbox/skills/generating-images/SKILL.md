@@ -12,6 +12,60 @@ The `auto_image` model route generates images from text prompts. It supports bot
 
 The platform routes `auto_image` requests to a multimodal model that can return both text and images in a single response. Images are returned as base64 PNG data URLs in the `choices[0].message.images` array.
 
+## Transparency Limitation
+
+The current image model does **not** support alpha channels or true transparent backgrounds. Even when the user asks for a transparent PNG, the generated image will have an opaque background.
+
+When you need an asset that will later be used with transparency, such as a website graphic, icon, sticker, or cutout illustration:
+
+- Prompt the model to place the subject on a **solid, high-contrast background** that does not appear in the subject itself.
+- Prefer explicit colors like bright green (`#00FF00`-style chroma key), pure magenta, or another flat backdrop that clearly separates foreground and background.
+- Ask for **clean edges, no shadows blending into the background, and no background texture or gradients** so post-processing is easier.
+
+Example prompt pattern:
+
+```text
+Create a flat vector-style robot mascot centered on a solid bright green background.
+Use crisp edges, no ground shadow, no background texture, and keep the robot colors away from green.
+The background should be a single uniform color so it can be removed in post-processing.
+```
+
+Treat background removal as a separate post-processing step after generation.
+
+## Style Consistency
+
+When you generate multiple images for the same project, keep the style prompt consistent across all of them.
+
+- Reuse the same core art-direction language each time: medium, rendering style, color palette, lighting, camera angle, line treatment, level of detail, and background treatment.
+- Keep a short "style anchor" phrase and repeat it verbatim across prompts.
+- Change only the subject or composition details that need to vary between images.
+- If you already have one successful image, describe its style explicitly in the next prompt instead of starting from scratch.
+- You can also pass a reference image as an `image_url` input alongside your text prompt and ask for a new image in the same style.
+
+Example style anchor:
+
+```text
+Clean flat vector illustration, limited pastel palette, soft geometric shapes, minimal shading, subtle grain, centered composition.
+```
+
+Minimal multimodal prompt shape:
+
+```json
+{
+  "role": "user",
+  "content": [
+    {
+      "type": "image_url",
+      "image_url": { "url": "data:image/png;base64,..." }
+    },
+    {
+      "type": "text",
+      "text": "Generate a new image in the same visual style as this reference, but with a different subject."
+    }
+  ]
+}
+```
+
 ## Response Shape
 
 Both the deployed worker path and the container proxy path return the same OpenAI-compatible response structure:
@@ -286,5 +340,22 @@ export class Chat extends AIChatAgent<Env> {
 2. **Use `auto_image` only when images are needed** — it routes to a specialized model that is slower and more expensive than `auto`.
 3. **Extract base64 data for storage** — Convert data URLs to raw bytes before storing in R2 or writing to disk.
 4. **Handle missing images gracefully** — The model may return text-only responses even with image prompts. Always check `images` before accessing.
-5. **Keep prompts descriptive** — Image quality improves with specific prompts (style, subject, composition, colors).
-6. **Consider response size** — Generated images are ~1-2MB as base64. Avoid returning them directly in SSR loaders; use API routes instead.
+5. **Do not promise transparency from the model** — If the user needs transparency, generate on a flat high-contrast background and remove it afterward.
+6. **Keep prompts descriptive** — Image quality improves with specific prompts (style, subject, composition, colors).
+7. **Consider response size** — Generated images are ~1-2MB as base64. Avoid returning them directly in SSR loaders; use API routes instead.
+
+## Simple Background Removal
+
+If you generated an image on a solid chroma-key background, remove that background in a post-processing step.
+
+### ImageMagick
+
+Use ImageMagick for the post-processing step:
+
+```bash
+magick input.png -fuzz 12% -transparent "%[pixel:p{0,0}]" output.png
+```
+
+This samples the top-left pixel and makes similar colors transparent, which is more reliable than assuming the model used an exact hex value.
+
+Use `-fuzz` to tolerate small variations in the generated background color. This works best when you prompted for a uniform solid background and kept that color out of the subject itself.

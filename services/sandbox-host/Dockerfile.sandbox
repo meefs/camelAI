@@ -2,7 +2,15 @@ FROM ubuntu:24.04
 
 # Core tools
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl git ca-certificates unzip jq >/dev/null 2>&1 && \
+    apt-get install -y -qq curl git ca-certificates unzip jq imagemagick >/dev/null 2>&1 && \
+    if ! command -v magick >/dev/null 2>&1 && command -v convert >/dev/null 2>&1; then \
+      cat >/usr/local/bin/magick <<'EOF' && \
+#!/bin/sh
+exec convert "$@"
+EOF
+      chmod +x /usr/local/bin/magick; \
+    fi && \
+    command -v magick >/dev/null 2>&1 && \
     rm -rf /var/lib/apt/lists/*
 
 # Create claude user (uid 1001)
