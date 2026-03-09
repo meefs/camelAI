@@ -40,6 +40,7 @@ camelAI is an AI coding assistant built on Cloudflare's edge infrastructure. Use
 2. **Workers** (`workers/`)
    - `main/` - Main camelAI app worker (SSR, Durable Objects, WebSocket routing, OAuth, MCP, admin CLI API)
    - `dispatcher/` - Routes `*.camelai.app` to user workers (Workers for Platforms)
+   - `bedrock-provider/` - Standalone custom-provider worker for AI Gateway that translates Anthropic-style `/v1/messages` requests to Bedrock and converts Bedrock streaming event frames into Anthropic SSE
 
 3. **Sandbox Host** (`services/sandbox-host/`)
    - Go HTTP server managing Docker + gVisor container lifecycle on Azure VM
@@ -158,6 +159,12 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 - Worker route `/api/openai/v1/*` validates sandbox proxy headers, derives org/workspace/thread identity, and forwards through sandbox-host control route `/v1/workspaces/{orgId}/{workspaceId}/openai-proxy/v1/*`.
 - sandbox-host control route forwards to Cloudflare AI Gateway and injects `cf-aig-metadata` with tenant context (`uid`, `chiridion.orgId`, `chiridion.workspaceId`, `chiridion.threadId`) so gateway-side rate limits/spend policies can be scoped per tenant.
 - For `/v1/chat/completions`, sandbox-host enforces `model: "dynamic/auto"` to mirror virtual AI binding behavior.
+
+### Anthropic Gateway Bedrock Fallback
+- Anthropic Claude proxy traffic (`/api/claude/v1/messages`) goes through AI Gateway provider-specific routes with the Bedrock custom provider first and Anthropic second as fallback.
+- Bedrock primary routing is implemented as a Gateway custom provider named `custom-bedrock-provider`, backed by the standalone worker in `workers/bedrock-provider/`.
+- The custom worker receives Anthropic-style `/v1/messages` payloads, rewrites them for Bedrock runtime, forwards the Gateway-managed `Authorization` header to Bedrock, and converts Bedrock eventstream frames (`{"bytes":"<base64>"}`) into Anthropic SSE before returning them to Gateway.
+- sandbox-host no longer performs Bedrock stream decoding or universal-endpoint provider wrapping for Claude traffic; it now does a dumb raw-body fallback from `custom-bedrock-provider` to `anthropic` on non-`2xx` responses.
 
 ### Virtual AI Binding
 - User uploaded workers can declare a native `ai` binding (for example `AI`) and the deploy pipeline rewrites it to an internal service entrypoint (`AIVirtualBinding`) scoped with `{orgId, workspaceId}` props.

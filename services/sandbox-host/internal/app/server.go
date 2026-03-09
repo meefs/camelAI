@@ -1035,104 +1035,144 @@ func (s *Server) forwardClaudeToAIGateway(
 	requestID string,
 	startedAt time.Time,
 ) {
-	// Read and parse request body for universal endpoint wrapping
+	// Read the request body once so the same bytes can be retried against the
+	// fallback provider without any local validation or reshaping.
 	rawBody, err := io.ReadAll(req.Body)
 	if err != nil {
 		errorJSON(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
 
-	var bodyJSON map[string]any
-	if len(rawBody) > 0 {
-		if err := json.Unmarshal(rawBody, &bodyJSON); err != nil {
-			errorJSON(w, "Invalid JSON body", http.StatusBadRequest)
-			return
-		}
-	}
-
-	// Map /api/claude/v1/messages -> v1/messages (strip leading slash for universal endpoint)
-	anthropicEndpoint := strings.TrimPrefix(
+	claudeEndpoint := strings.TrimPrefix(
 		strings.Replace(proxy.UpstreamPath, "/api/claude/", "/", 1),
 		"/",
 	)
 
-	// Build Anthropic provider entry (no API key — gateway BYOK handles auth)
-	anthropicHeaders := map[string]string{
-		"Content-Type": "application/json",
+	providers := []string{"anthropic"}
+	isMessagesEndpoint := strings.Contains(claudeEndpoint, "messages") && !strings.Contains(claudeEndpoint, "count_tokens")
+	if isMessagesEndpoint {
+		providers = []string{"custom-bedrock-provider", "anthropic"}
 	}
-	if val := req.Header.Get("anthropic-version"); val != "" {
-		anthropicHeaders["anthropic-version"] = val
-	}
-	if val := req.Header.Get("anthropic-beta"); val != "" {
-		anthropicHeaders["anthropic-beta"] = val
-	}
-
-	anthropicEntry := map[string]any{
-		"provider": "anthropic",
-		"endpoint": anthropicEndpoint,
-		"headers":  anthropicHeaders,
-		"query":    bodyJSON,
-	}
-
-	// Bedrock primary, Anthropic fallback for messages endpoints
-	var providers []map[string]any
-	isMessagesEndpoint := strings.Contains(anthropicEndpoint, "messages") && !strings.Contains(anthropicEndpoint, "count_tokens")
-	if isMessagesEndpoint && s.cfg.AIGatewayToken != "" {
-		bedrockEntry := buildBedrockProviderEntry(bodyJSON, req.Header, s.cfg)
-		if bedrockEntry != nil {
-			providers = []map[string]any{bedrockEntry, anthropicEntry}
-		} else {
-			providers = []map[string]any{anthropicEntry}
-		}
-	} else {
-		providers = []map[string]any{anthropicEntry}
-	}
-
-	payload, err := json.Marshal(providers)
-	if err != nil {
-		errorJSON(w, "Failed to build gateway payload", http.StatusInternalServerError)
-		return
-	}
-
-	targetURL := s.cfg.AIGatewayBaseURL + "/"
-	forwardReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, targetURL, bytes.NewReader(payload))
-	if err != nil {
-		errorJSON(w, "Failed to create gateway request", http.StatusInternalServerError)
-		return
-	}
-
-	forwardReq.Header.Set("Content-Type", "application/json")
-	if s.cfg.AIGatewayToken != "" {
-		forwardReq.Header.Set("cf-aig-authorization", "Bearer "+s.cfg.AIGatewayToken)
-	}
-	forwardReq.Header.Set("cf-aig-metadata", buildAIGatewayMetadata(threadContext))
-	applyStreamingRequestHeaders(forwardReq.Header)
 
 	s.trace("gateway_claude_proxy_start", map[string]any{
 		"requestId":       requestID,
 		"callerContainer": caller.Name,
 		"method":          req.Method,
 		"threadId":        threadContext.ThreadID,
-		"endpoint":        anthropicEndpoint,
+		"endpoint":        claudeEndpoint,
 		"providerCount":   len(providers),
 	})
 	s.containers.AddProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath))
 
-	resp, upstreamErr := s.httpClient.Do(forwardReq)
-	durationMs := time.Since(startedAt).Milliseconds()
-	if upstreamErr != nil {
-		s.trace("gateway_claude_proxy_error", map[string]any{
+	var resp *http.Response
+	var upstreamErr error
+	var usedProvider string
+	type gatewayFailure struct {
+		status   int
+		headers  http.Header
+		body     []byte
+		provider string
+	}
+	var lastFailure *gatewayFailure
+	for index, provider := range providers {
+		attemptStartedAt := time.Now()
+		forwardReq, reqErr := http.NewRequestWithContext(
+			req.Context(),
+			http.MethodPost,
+			s.cfg.AIGatewayBaseURL+"/"+provider+"/"+claudeEndpoint,
+			bytes.NewReader(rawBody),
+		)
+		if reqErr != nil {
+			s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), 0, time.Since(startedAt).Milliseconds())
+			errorJSON(w, "Failed to create gateway request", http.StatusInternalServerError)
+			return
+		}
+
+		forwardReq.Header = cloneHeaders(req.Header)
+		forwardReq.Header.Set("Content-Type", "application/json")
+		if s.cfg.AIGatewayToken != "" {
+			forwardReq.Header.Set("cf-aig-authorization", "Bearer "+s.cfg.AIGatewayToken)
+		}
+		forwardReq.Header.Set("cf-aig-metadata", buildAIGatewayMetadata(threadContext))
+		if provider == "custom-bedrock-provider" {
+			forwardReq.Header.Set("X-Bedrock-Region", s.cfg.AWSRegionName)
+		}
+		applyStreamingRequestHeaders(forwardReq.Header)
+
+		resp, upstreamErr = s.httpClient.Do(forwardReq)
+		durationMs := time.Since(attemptStartedAt).Milliseconds()
+		if upstreamErr != nil {
+			s.trace("gateway_claude_proxy_attempt_error", map[string]any{
+				"requestId":       requestID,
+				"callerContainer": caller.Name,
+				"method":          req.Method,
+				"threadId":        threadContext.ThreadID,
+				"durationMs":      durationMs,
+				"endpoint":        claudeEndpoint,
+				"provider":        provider,
+				"attempt":         index,
+				"error":           upstreamErr.Error(),
+			})
+			continue
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			usedProvider = provider
+			break
+		}
+
+		s.trace("gateway_claude_proxy_attempt_non_2xx", map[string]any{
 			"requestId":       requestID,
 			"callerContainer": caller.Name,
 			"method":          req.Method,
 			"threadId":        threadContext.ThreadID,
 			"durationMs":      durationMs,
-			"endpoint":        anthropicEndpoint,
-			"error":           upstreamErr.Error(),
+			"endpoint":        claudeEndpoint,
+			"provider":        provider,
+			"attempt":         index,
+			"status":          resp.StatusCode,
 		})
-		s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), 0, durationMs)
-		log.Printf("[SandboxHost] AI Gateway Claude proxy failed method=%s endpoint=%s thread=%s container=%s durationMs=%d error=%v",
-			req.Method, anthropicEndpoint, threadContext.ThreadID, threadContext.ContainerName, durationMs, upstreamErr)
+
+		failureBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			s.trace("gateway_claude_proxy_attempt_read_error", map[string]any{
+				"requestId":       requestID,
+				"callerContainer": caller.Name,
+				"method":          req.Method,
+				"threadId":        threadContext.ThreadID,
+				"durationMs":      durationMs,
+				"endpoint":        claudeEndpoint,
+				"provider":        provider,
+				"attempt":         index,
+				"status":          resp.StatusCode,
+				"error":           readErr.Error(),
+			})
+		}
+		lastFailure = &gatewayFailure{
+			status:   resp.StatusCode,
+			headers:  cloneHeaders(resp.Header),
+			body:     failureBody,
+			provider: provider,
+		}
+		resp = nil
+	}
+
+	totalDurationMs := time.Since(startedAt).Milliseconds()
+	if resp == nil {
+		s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), 0, totalDurationMs)
+		if lastFailure != nil {
+			copyHeaders(w.Header(), lastFailure.headers)
+			applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
+			w.WriteHeader(lastFailure.status)
+			if len(lastFailure.body) > 0 {
+				_, _ = w.Write(lastFailure.body)
+			}
+			return
+		}
+		if upstreamErr != nil {
+			log.Printf("[SandboxHost] AI Gateway Claude proxy failed method=%s endpoint=%s thread=%s container=%s durationMs=%d error=%v",
+				req.Method, claudeEndpoint, threadContext.ThreadID, threadContext.ContainerName, totalDurationMs, upstreamErr)
+		}
 		errorJSON(w, "AI Gateway upstream unavailable", http.StatusBadGateway)
 		return
 	}
@@ -1144,46 +1184,25 @@ func (s *Server) forwardClaudeToAIGateway(
 		"method":          req.Method,
 		"threadId":        threadContext.ThreadID,
 		"status":          resp.StatusCode,
-		"durationMs":      durationMs,
-		"endpoint":        anthropicEndpoint,
+		"durationMs":      totalDurationMs,
+		"endpoint":        claudeEndpoint,
+		"provider":        usedProvider,
 		"aigStep":         resp.Header.Get("cf-aig-step"),
 	})
-	s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), resp.StatusCode, durationMs)
-
-	// Detect if Bedrock handled the request (step 0 = primary = Bedrock)
-	isBedrockResponse := resp.Header.Get("cf-aig-step") == "0"
-	isStreaming := bodyJSON != nil && bodyJSON["stream"] == true
-	needsConversion := isBedrockResponse && isStreaming && resp.StatusCode == http.StatusOK
+	s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), resp.StatusCode, totalDurationMs)
 
 	copyHeaders(w.Header(), resp.Header)
-	if needsConversion {
-		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-	}
 	applyStreamingResponseHeaders(w.Header(), w.Header().Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
 
-	if needsConversion {
-		if err := copyBedrockStreamToSSE(w, resp.Body); err != nil {
-			if !errors.Is(err, context.Canceled) {
-				s.trace("gateway_claude_proxy_copy_error", map[string]any{
-					"requestId":       requestID,
-					"callerContainer": caller.Name,
-					"threadId":        threadContext.ThreadID,
-					"error":           err.Error(),
-					"conversion":      "bedrock_to_sse",
-				})
-			}
-		}
-	} else {
-		if err := copyResponseBody(w, resp.Body); err != nil {
-			if !errors.Is(err, context.Canceled) {
-				s.trace("gateway_claude_proxy_copy_error", map[string]any{
-					"requestId":       requestID,
-					"callerContainer": caller.Name,
-					"threadId":        threadContext.ThreadID,
-					"error":           err.Error(),
-				})
-			}
+	if err := copyResponseBody(w, resp.Body); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.trace("gateway_claude_proxy_copy_error", map[string]any{
+				"requestId":       requestID,
+				"callerContainer": caller.Name,
+				"threadId":        threadContext.ThreadID,
+				"error":           err.Error(),
+			})
 		}
 	}
 }
@@ -1281,7 +1300,6 @@ func (s *Server) forwardClaudeToBedrockDirect(
 	targetURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/%s",
 		region, bedrockModel, endpoint)
 
-	// Build Bedrock body: strip model/stream, add anthropic_version.
 	bedrockBody := map[string]any{
 		"anthropic_version": "bedrock-2023-05-31",
 	}
@@ -1291,7 +1309,6 @@ func (s *Server) forwardClaudeToBedrockDirect(
 		}
 	}
 
-	// Pass anthropic-beta header values as body array for Bedrock
 	if betaHeader := req.Header.Get("anthropic-beta"); betaHeader != "" {
 		var betas []string
 		for _, b := range strings.Split(betaHeader, ",") {
@@ -1363,7 +1380,6 @@ func (s *Server) forwardClaudeToBedrockDirect(
 	s.containers.RemoveProxyRequest(threadContext.ContainerName, fmt.Sprintf("proxy:%s:%s", req.Method, proxy.UpstreamPath), resp.StatusCode, durationMs)
 
 	if isStreaming && resp.StatusCode == http.StatusOK {
-		// Bedrock returns EventStream binary frames — convert to SSE for the SDK.
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		applyStreamingResponseHeaders(w.Header(), "text/event-stream")
 		w.WriteHeader(resp.StatusCode)
@@ -1577,7 +1593,6 @@ var bedrockModelMap = map[string]string{
 	"claude-3-5-haiku-20241022":  "us.anthropic.claude-3-5-haiku-20241022-v1:0",
 }
 
-
 func mapToBedrockModel(model string) string {
 	if mapped, ok := bedrockModelMap[model]; ok {
 		return mapped
@@ -1617,63 +1632,6 @@ func resolveGatewayModel(model string) string {
 // Cloudflare compat endpoint (/compat/).
 func isOpenRouterModel(resolvedModel string) bool {
 	return !strings.HasPrefix(resolvedModel, "dynamic/")
-}
-
-func buildBedrockProviderEntry(body map[string]any, reqHeaders http.Header, cfg Config) map[string]any {
-	if body == nil {
-		return nil
-	}
-
-	modelStr, _ := body["model"].(string)
-	if modelStr == "" {
-		return nil
-	}
-	bedrockModel := mapToBedrockModel(modelStr)
-
-	isStreaming, _ := body["stream"].(bool)
-	endpoint := "invoke"
-	if isStreaming {
-		endpoint = "invoke-with-response-stream"
-	}
-
-	bedrockEndpoint := fmt.Sprintf("bedrock-runtime/%s/model/%s/%s",
-		cfg.AWSRegionName, bedrockModel, endpoint)
-
-	// Build Bedrock body: same fields as Anthropic minus "model" and "stream", plus anthropic_version.
-	// Bedrock rejects "stream" in the body — streaming is controlled by the endpoint path.
-	bedrockBody := map[string]any{
-		"anthropic_version": "bedrock-2023-05-31",
-	}
-	for key, val := range body {
-		if key != "model" && key != "stream" {
-			bedrockBody[key] = val
-		}
-	}
-
-	// Pass anthropic-beta header values as body array for Bedrock
-	if betaHeader := reqHeaders.Get("anthropic-beta"); betaHeader != "" {
-		var betas []string
-		for _, b := range strings.Split(betaHeader, ",") {
-			b = strings.TrimSpace(b)
-			if b != "" {
-				betas = append(betas, b)
-			}
-		}
-		if len(betas) > 0 {
-			bedrockBody["anthropic_beta"] = betas
-		}
-	}
-
-	bedrockHeaders := map[string]string{
-		"Content-Type": "application/json",
-	}
-
-	return map[string]any{
-		"provider": "aws-bedrock",
-		"endpoint": bedrockEndpoint,
-		"headers":  bedrockHeaders,
-		"query":    bedrockBody,
-	}
 }
 
 func (s *Server) findActiveProxyThreadByThreadID(threadID string, now time.Time) (threadKey string, containerName string, ok bool) {
@@ -2017,14 +1975,12 @@ func copyResponseBody(w http.ResponseWriter, body io.Reader) error {
 	return err
 }
 
+type flushWriter struct {
+	writer  io.Writer
+	flusher http.Flusher
+}
+
 // copyBedrockStreamToSSE converts Amazon EventStream binary frames to Anthropic SSE format.
-//
-// Each EventStream message has this binary layout:
-//
-//	[4B total_length][4B headers_length][4B prelude_crc][headers][payload][4B message_crc]
-//
-// The payload is JSON like {"bytes":"<base64-encoded-json>","p":"<id>"}.
-// We decode the base64 "bytes" field to get the Anthropic event and re-emit as SSE.
 func copyBedrockStreamToSSE(w http.ResponseWriter, body io.Reader) error {
 	if w == nil || body == nil {
 		return nil
@@ -2034,7 +1990,6 @@ func copyBedrockStreamToSSE(w http.ResponseWriter, body io.Reader) error {
 	r := bufio.NewReader(body)
 
 	for {
-		// Read 12-byte prelude: total_length (4) + headers_length (4) + prelude_crc (4)
 		var prelude [12]byte
 		if _, err := io.ReadFull(r, prelude[:]); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
@@ -2045,12 +2000,10 @@ func copyBedrockStreamToSSE(w http.ResponseWriter, body io.Reader) error {
 
 		totalLen := binary.BigEndian.Uint32(prelude[0:4])
 		headersLen := binary.BigEndian.Uint32(prelude[4:8])
-
-		if totalLen < 16 { // minimum: 12 prelude + 4 message CRC
+		if totalLen < 16 {
 			continue
 		}
 
-		// Read the rest of the message (total - 12 prelude bytes)
 		remaining := make([]byte, totalLen-12)
 		if _, err := io.ReadFull(r, remaining); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
@@ -2059,7 +2012,6 @@ func copyBedrockStreamToSSE(w http.ResponseWriter, body io.Reader) error {
 			return err
 		}
 
-		// Payload starts after headers, ends before 4-byte message CRC
 		payloadStart := headersLen
 		payloadEnd := uint32(len(remaining)) - 4
 		if payloadStart >= payloadEnd {
@@ -2067,7 +2019,6 @@ func copyBedrockStreamToSSE(w http.ResponseWriter, body io.Reader) error {
 		}
 		payload := remaining[payloadStart:payloadEnd]
 
-		// Parse payload JSON to extract base64 "bytes" field
 		var frame struct {
 			Bytes string `json:"bytes"`
 		}
@@ -2080,7 +2031,6 @@ func copyBedrockStreamToSSE(w http.ResponseWriter, body io.Reader) error {
 			continue
 		}
 
-		// Extract event type from decoded JSON
 		var event struct {
 			Type string `json:"type"`
 		}
@@ -2097,11 +2047,6 @@ func copyBedrockStreamToSSE(w http.ResponseWriter, body io.Reader) error {
 			flusher.Flush()
 		}
 	}
-}
-
-type flushWriter struct {
-	writer  io.Writer
-	flusher http.Flusher
 }
 
 func (w *flushWriter) Write(p []byte) (int, error) {

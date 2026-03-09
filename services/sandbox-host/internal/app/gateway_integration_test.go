@@ -92,7 +92,7 @@ func TestGatewayClaudeNonStreaming(t *testing.T) {
 	if result["type"] != "message" {
 		t.Fatalf("unexpected response type: %v", result["type"])
 	}
-	t.Logf("Provider step: %s (0=Bedrock primary, 1=Anthropic fallback)", resp.Header.Get("cf-aig-step"))
+	t.Logf("Provider step: %s (0=Bedrock custom provider primary, 1=Anthropic fallback)", resp.Header.Get("cf-aig-step"))
 }
 
 func TestGatewayClaudeStreaming(t *testing.T) {
@@ -128,7 +128,7 @@ func TestGatewayClaudeStreaming(t *testing.T) {
 	if !strings.Contains(bodyStr, "event:") && !strings.Contains(bodyStr, "data:") {
 		t.Fatalf("expected SSE events in response body, got: %.500s", bodyStr)
 	}
-	t.Logf("Provider step: %s (0=Bedrock primary, 1=Anthropic fallback)", resp.Header.Get("cf-aig-step"))
+	t.Logf("Provider step: %s (0=Bedrock custom provider primary, 1=Anthropic fallback)", resp.Header.Get("cf-aig-step"))
 }
 
 func TestGatewayClaudeCountTokens(t *testing.T) {
@@ -155,9 +155,9 @@ func TestGatewayClaudeCountTokens(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	// count_tokens should go to Anthropic only (no Bedrock fallback)
+	// count_tokens should still go to Anthropic only.
 	step := resp.Header.Get("cf-aig-step")
-	t.Logf("Provider step: %s (should be 0 = Anthropic-only)", step)
+	t.Logf("Provider step: %s (should be 0 = Anthropic)", step)
 }
 
 func TestGatewayOpenAI(t *testing.T) {
