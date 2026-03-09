@@ -105,6 +105,31 @@ export function extractToolEventMetaInfo(
   return { isMeta, sourceToolUseID };
 }
 
+function isContentBlockLike(value: unknown): value is ContentBlock {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    typeof (value as { type?: unknown }).type === 'string'
+  );
+}
+
+function sanitizeContentBlocks(content: Message['content']): ContentBlock[] {
+  if (!Array.isArray(content)) return [];
+  return content.filter(isContentBlockLike);
+}
+
+function sanitizeMessageContentForRender(message: Message): Message {
+  if (!Array.isArray(message.content)) return message;
+  const sanitizedContent = sanitizeContentBlocks(message.content);
+  if (sanitizedContent.length === message.content.length) {
+    return message;
+  }
+  return {
+    ...message,
+    content: sanitizedContent,
+  };
+}
+
 /**
  * Apply an SDK event to a message's content, returning the updated message.
  * Uses message._blockOffset to track content block indices across streaming turns.
@@ -224,7 +249,11 @@ export function applyStreamingEventToMessage(
 
   if (evt?.type === 'content_block_stop') {
     const newContent = content.map(block => {
-      if (block.type === 'tool_use' && (block as ContentBlock & { _inputJson?: string })._inputJson) {
+      if (
+        isContentBlockLike(block) &&
+        block.type === 'tool_use' &&
+        (block as ContentBlock & { _inputJson?: string })._inputJson
+      ) {
         try {
           const input = JSON.parse((block as ContentBlock & { _inputJson?: string })._inputJson || '');
           const rest = { ...(block as ContentBlock & { _inputJson?: string }) };
@@ -255,9 +284,7 @@ export function applyStreamingEventToMessage(
  * offset tracking, and mark as no longer streaming.
  */
 export function finalizeStreamingMessage(message: Message): Message {
-  const content: ContentBlock[] = Array.isArray(message.content)
-    ? message.content
-    : [];
+  const content = sanitizeContentBlocks(message.content);
   const cleanedContent = content.filter(
     block => block.type !== 'thinking' || block.thinking.trim().length > 0
   );
@@ -266,8 +293,8 @@ export function finalizeStreamingMessage(message: Message): Message {
   return { ...rest, content: cleanedContent, isStreaming: false };
 }
 
-function isToolResultBlock(block: ContentBlock): block is ToolResultBlock {
-  return block.type === 'tool_result';
+function isToolResultBlock(block: ContentBlock | null | undefined): block is ToolResultBlock {
+  return block?.type === 'tool_result';
 }
 
 interface ToolUseIndexEntry {
@@ -279,7 +306,7 @@ function buildToolUseIndex(messages: Message[]): Map<string, ToolUseIndexEntry> 
   const index = new Map<string, ToolUseIndexEntry>();
   messages.forEach((message, messageIndex) => {
     if (message.role !== 'assistant' || !Array.isArray(message.content)) return;
-    message.content.forEach(block => {
+    sanitizeContentBlocks(message.content).forEach(block => {
       if (block.type !== 'tool_use' || !block.id) return;
       index.set(block.id, { messageIndex, tool: block });
     });
@@ -297,6 +324,7 @@ function findTaskToolUseIdByPrompt(messages: Message[], prompt?: string): string
     const message = messages[i];
     if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
     for (const block of message.content) {
+      if (!isContentBlockLike(block)) continue;
       if (block.type !== 'tool_use' || !isSubAgentTool(block.name)) continue;
       const blockPrompt = typeof block.input?.prompt === 'string' ? block.input.prompt : '';
       if (blockPrompt && blockPrompt === prompt) {
@@ -344,10 +372,13 @@ export function attachToolResultsToMessages(
 
   const appendToIndex = (index: number, toolResult: ToolResultBlock) => {
     const target = next[index];
-    const content = coerceMessageContent(target.content);
+    const content = Array.isArray(target.content)
+      ? target.content.slice()
+      : coerceMessageContent(target.content);
+    content.push(toolResult);
     next[index] = {
       ...target,
-      content: [...content, toolResult],
+      content,
     };
   };
 
@@ -392,14 +423,20 @@ export function normalizeToolResultMessages(messages: Message[]): Message[] {
   let changed = false;
 
   messages.forEach(message => {
-    const contentBlocks = Array.isArray(message.content) ? message.content : null;
+    const contentBlocks = Array.isArray(message.content)
+      ? sanitizeContentBlocks(message.content)
+      : null;
     const isToolResultMessage = message.role === 'user' &&
       contentBlocks &&
       contentBlocks.length > 0 &&
       contentBlocks.every(isToolResultBlock);
 
     if (!isToolResultMessage || !contentBlocks) {
-      normalized.push(message);
+      const sanitizedMessage = sanitizeMessageContentForRender(message);
+      if (sanitizedMessage !== message) {
+        changed = true;
+      }
+      normalized.push(sanitizedMessage);
       return;
     }
 
