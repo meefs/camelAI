@@ -62,7 +62,17 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     throw redirect('/qaml-backdoor/orgs');
   }
 
-  const [members, invitations, workspaces, recentActivity] = await Promise.all([
+  const env = getEnv(context);
+
+  // Fetch usage data from sandbox-host (best-effort, don't block on failure)
+  const usagePromise = env.SANDBOX_HOST
+    ? Promise.all([
+        env.SANDBOX_HOST.fetch(`https://sandbox-host/v1/usage/orgs/${encodeURIComponent(id)}/spend`).then(r => r.ok ? r.json() : null).catch(() => null),
+        env.SANDBOX_HOST.fetch(`https://sandbox-host/v1/usage/orgs/${encodeURIComponent(id)}/log?limit=10`).then(r => r.ok ? r.json() : null).catch(() => null),
+      ])
+    : Promise.resolve([null, null]);
+
+  const [members, invitations, workspaces, recentActivity, [usageSpend, usageLog]] = await Promise.all([
     getOrgMembers(authEnv, id),
     getOrgInvitations(authEnv, id),
     adminDO.adminGetWorkspacesByOrg(context, id),
@@ -71,6 +81,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       appLimit: RECENT_APP_LIMIT,
       includeCounts: 'cheap',
     }),
+    usagePromise as Promise<[any, any]>,
   ]);
 
   const threadCountFromWorkspaces = workspaces.reduce((sum, workspace) => {
@@ -110,6 +121,30 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     threadCount: derivedThreadCount,
     appCount: recentActivity.appCount,
     memberOptions,
+    usageSpend: usageSpend as {
+      org_id: string;
+      total_cost_usd: number;
+      total_requests: number;
+      windows: Array<{
+        label: string;
+        window_ms: number;
+        limit_usd: number;
+        spent_usd: number;
+        exceeded: boolean;
+      }>;
+    } | null,
+    usageLog: usageLog as {
+      entries: Array<{
+        id: number;
+        model: string;
+        provider: string;
+        input_tokens: number;
+        output_tokens: number;
+        cost_usd: number;
+        duration_ms: number;
+        created_at_ms: number;
+      }>;
+    } | null,
   };
 }
 
@@ -189,6 +224,8 @@ export default function AdminOrgDetailPage() {
     threadCount,
     appCount,
     memberOptions,
+    usageSpend,
+    usageLog,
   } = useLoaderData<typeof loader>();
   return (
     <>
@@ -279,6 +316,102 @@ export default function AdminOrgDetailPage() {
               </CardHeader>
               <CardContent>
                 <OrgEditForm org={org} />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>AI Usage &amp; Spend</CardTitle>
+                <CardDescription>
+                  {usageSpend
+                    ? `$${usageSpend.total_cost_usd.toFixed(2)} lifetime spend across ${usageSpend.total_requests} requests`
+                    : 'Usage tracking unavailable'}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {usageSpend ? (
+                  <div className="space-y-4">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {usageSpend.windows.map((w) => (
+                        <div
+                          key={w.label}
+                          className={cn(
+                            'rounded-lg border p-3',
+                            w.exceeded
+                              ? 'border-destructive/50 bg-destructive/5'
+                              : 'border-border',
+                          )}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-sm font-medium">{w.label} window</span>
+                            {w.exceeded ? (
+                              <Badge variant="destructive">Exceeded</Badge>
+                            ) : (
+                              <Badge variant="outline">OK</Badge>
+                            )}
+                          </div>
+                          <div className="text-lg font-semibold">
+                            ${w.spent_usd.toFixed(2)}{' '}
+                            <span className="text-sm font-normal text-muted-foreground">
+                              / ${w.limit_usd.toFixed(0)}
+                            </span>
+                          </div>
+                          <div className="mt-1.5 h-1.5 rounded-full bg-muted overflow-hidden">
+                            <div
+                              className={cn(
+                                'h-full rounded-full transition-all',
+                                w.exceeded ? 'bg-destructive' : 'bg-primary',
+                              )}
+                              style={{
+                                width: `${Math.min(100, (w.spent_usd / w.limit_usd) * 100)}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {usageLog && usageLog.entries.length > 0 ? (
+                      <div>
+                        <p className="text-sm font-medium text-muted-foreground mb-2">
+                          Recent requests
+                        </p>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Model</TableHead>
+                              <TableHead>Tokens</TableHead>
+                              <TableHead>Cost</TableHead>
+                              <TableHead>Time</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {usageLog.entries.map((entry) => (
+                              <TableRow key={entry.id}>
+                                <TableCell className="font-mono text-xs">
+                                  {entry.model.replace('claude-', '').replace(/-\d{8}$/, '')}
+                                </TableCell>
+                                <TableCell className="text-xs text-muted-foreground">
+                                  {entry.input_tokens.toLocaleString()} in / {entry.output_tokens.toLocaleString()} out
+                                </TableCell>
+                                <TableCell className="font-mono text-xs">
+                                  ${entry.cost_usd.toFixed(4)}
+                                </TableCell>
+                                <TableCell className="text-xs text-muted-foreground">
+                                  {formatTimestamp(entry.created_at_ms)}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Sandbox host is not reachable or usage tracking is not enabled.
+                  </p>
+                )}
               </CardContent>
             </Card>
 

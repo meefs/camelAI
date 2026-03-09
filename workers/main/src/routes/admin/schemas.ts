@@ -229,6 +229,66 @@ export const R2ObjectDetailSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Usage / spend schemas
+// ---------------------------------------------------------------------------
+
+const WindowSpendSchema = z.object({
+  label: z.string(),
+  window_ms: z.number(),
+  limit_usd: z.number(),
+  spent_usd: z.number(),
+  exceeded: z.boolean(),
+});
+
+export const OrgUsageSpendSchema = z.object({
+  org_id: z.string(),
+  total_cost_usd: z.number(),
+  total_requests: z.number().int(),
+  windows: z.array(WindowSpendSchema),
+});
+
+const SpendLimitSchema = z.object({
+  window: z.number(),
+  limit_usd: z.number(),
+  label: z.string(),
+});
+
+export const OrgUsageLimitsSchema = z.object({
+  org_id: z.string(),
+  limits: z.array(SpendLimitSchema),
+});
+
+export const SetOrgLimitsBodySchema = z.object({
+  limits: z.array(z.object({
+    window_hours: z.number().positive(),
+    limit_usd: z.number().positive(),
+    label: z.string().optional(),
+  })),
+});
+
+const UsageLogEntrySchema = z.object({
+  id: z.number().int(),
+  workspace_id: z.string(),
+  user_id: z.string(),
+  thread_id: z.string(),
+  model: z.string(),
+  provider: z.string(),
+  input_tokens: z.number().int(),
+  output_tokens: z.number().int(),
+  cache_creation_input_tokens: z.number().int(),
+  cache_read_input_tokens: z.number().int(),
+  cost_usd: z.number(),
+  duration_ms: z.number().int(),
+  created_at_ms: z.number().int(),
+});
+
+export const OrgUsageLogSchema = z.object({
+  org_id: z.string(),
+  entries: z.array(UsageLogEntrySchema),
+  count: z.number().int(),
+});
+
+// ---------------------------------------------------------------------------
 // Wrapped list response helpers
 // ---------------------------------------------------------------------------
 

@@ -13,12 +13,46 @@ import (
 	"github.com/chiridion/sandbox-host/internal/container"
 )
 
-// Integration tests for AI Gateway forwarding.
+// Integration tests for direct Claude API forwarding (Bedrock + Anthropic).
 // Requires real credentials — skipped when env vars are absent.
 //
-// Run:
+// Run with Anthropic:
+//   ANTHROPIC_API_KEY=... go test -run TestDirect -v -count=1 ./internal/app/
+//
+// Run with Bedrock:
+//   BEDROCK_ACCESS_TOKEN=... BEDROCK_REGION=us-west-2 go test -run TestDirect -v -count=1 ./internal/app/
+//
+// Run OpenAI gateway:
 //   CF_ACCOUNT_ID=... CF_GATEWAY_NAME=... CF_GATEWAY_TOKEN=... \
 //     go test -run TestGateway -v -count=1 ./internal/app/
+
+func directTestServer(t *testing.T) *Server {
+	t.Helper()
+	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
+	bedrockToken := os.Getenv("BEDROCK_ACCESS_TOKEN")
+	bedrockRegion := os.Getenv("BEDROCK_REGION")
+	if bedrockRegion == "" {
+		bedrockRegion = "us-west-2"
+	}
+
+	if anthropicKey == "" && bedrockToken == "" {
+		t.Skip("Skipping: ANTHROPIC_API_KEY or BEDROCK_ACCESS_TOKEN required")
+	}
+
+	cfg := Config{
+		AnthropicAPIKey:    anthropicKey,
+		BedrockAccessToken: bedrockToken,
+		BedrockRegion:      bedrockRegion,
+		TraceSandboxHost:   true,
+	}
+
+	return &Server{
+		cfg:          cfg,
+		containers:   container.NewTestManager(),
+		httpClient:   &http.Client{Timeout: 120 * time.Second},
+		proxyThreads: make(map[string]*ProxyThreadContext),
+	}
+}
 
 func gatewayTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -59,11 +93,11 @@ func testCaller() *container.ContainerRecord {
 	return &container.ContainerRecord{Name: "test-container"}
 }
 
-func TestGatewayClaudeNonStreaming(t *testing.T) {
-	s := gatewayTestServer(t)
+func TestDirectClaudeNonStreaming(t *testing.T) {
+	s := directTestServer(t)
 
 	body := `{
-		"model": "claude-sonnet-4-20250514",
+		"model": "claude-sonnet-4-5-20250929",
 		"max_tokens": 32,
 		"messages": [{"role": "user", "content": "Say hello in exactly 3 words."}]
 	}`
@@ -73,12 +107,11 @@ func TestGatewayClaudeNonStreaming(t *testing.T) {
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	rec := httptest.NewRecorder()
-	s.forwardClaudeToAIGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages"}, testThreadContext(), testCaller(), "test-req-1", time.Now())
+	s.forwardClaudeDirect(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages"}, testThreadContext(), testCaller(), "test-req-1", time.Now())
 
 	resp := rec.Result()
 	respBody, _ := io.ReadAll(resp.Body)
 	t.Logf("Status: %d", resp.StatusCode)
-	t.Logf("cf-aig-step: %s", resp.Header.Get("cf-aig-step"))
 	t.Logf("Body: %s", string(respBody))
 
 	if resp.StatusCode != http.StatusOK {
@@ -92,14 +125,13 @@ func TestGatewayClaudeNonStreaming(t *testing.T) {
 	if result["type"] != "message" {
 		t.Fatalf("unexpected response type: %v", result["type"])
 	}
-	t.Logf("Provider step: %s (0=Bedrock custom provider primary, 1=Anthropic fallback)", resp.Header.Get("cf-aig-step"))
 }
 
-func TestGatewayClaudeStreaming(t *testing.T) {
-	s := gatewayTestServer(t)
+func TestDirectClaudeStreaming(t *testing.T) {
+	s := directTestServer(t)
 
 	body := `{
-		"model": "claude-sonnet-4-20250514",
+		"model": "claude-sonnet-4-5-20250929",
 		"max_tokens": 32,
 		"stream": true,
 		"messages": [{"role": "user", "content": "Say hello in exactly 3 words."}]
@@ -110,12 +142,11 @@ func TestGatewayClaudeStreaming(t *testing.T) {
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	rec := httptest.NewRecorder()
-	s.forwardClaudeToAIGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages"}, testThreadContext(), testCaller(), "test-req-2", time.Now())
+	s.forwardClaudeDirect(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages"}, testThreadContext(), testCaller(), "test-req-2", time.Now())
 
 	resp := rec.Result()
 	respBody, _ := io.ReadAll(resp.Body)
 	t.Logf("Status: %d", resp.StatusCode)
-	t.Logf("cf-aig-step: %s", resp.Header.Get("cf-aig-step"))
 	t.Logf("Content-Type: %s", resp.Header.Get("Content-Type"))
 	t.Logf("Body (first 500 chars): %.500s", string(respBody))
 
@@ -124,18 +155,21 @@ func TestGatewayClaudeStreaming(t *testing.T) {
 	}
 
 	bodyStr := string(respBody)
-	// Whether Bedrock (converted) or Anthropic (native), we should see SSE events
 	if !strings.Contains(bodyStr, "event:") && !strings.Contains(bodyStr, "data:") {
 		t.Fatalf("expected SSE events in response body, got: %.500s", bodyStr)
 	}
-	t.Logf("Provider step: %s (0=Bedrock custom provider primary, 1=Anthropic fallback)", resp.Header.Get("cf-aig-step"))
 }
 
-func TestGatewayClaudeCountTokens(t *testing.T) {
-	s := gatewayTestServer(t)
+func TestDirectClaudeCountTokens(t *testing.T) {
+	s := directTestServer(t)
+
+	// count_tokens only works with Anthropic direct (not Bedrock).
+	if s.cfg.AnthropicAPIKey == "" {
+		t.Skip("Skipping: count_tokens requires ANTHROPIC_API_KEY")
+	}
 
 	body := `{
-		"model": "claude-sonnet-4-20250514",
+		"model": "claude-sonnet-4-5-20250929",
 		"messages": [{"role": "user", "content": "Hello world"}]
 	}`
 
@@ -144,7 +178,7 @@ func TestGatewayClaudeCountTokens(t *testing.T) {
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	rec := httptest.NewRecorder()
-	s.forwardClaudeToAIGateway(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages/count_tokens"}, testThreadContext(), testCaller(), "test-req-3", time.Now())
+	s.forwardClaudeDirect(rec, req, ProxyRoute{ThreadID: "test-thread", UpstreamPath: "/api/claude/v1/messages/count_tokens"}, testThreadContext(), testCaller(), "test-req-3", time.Now())
 
 	resp := rec.Result()
 	respBody, _ := io.ReadAll(resp.Body)
@@ -154,10 +188,6 @@ func TestGatewayClaudeCountTokens(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(respBody))
 	}
-
-	// count_tokens should still go to Anthropic only.
-	step := resp.Header.Get("cf-aig-step")
-	t.Logf("Provider step: %s (should be 0 = Anthropic)", step)
 }
 
 func TestGatewayOpenAI(t *testing.T) {

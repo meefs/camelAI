@@ -27,6 +27,9 @@ type Config struct {
 	AIGatewayBaseURL           string
 	AIGatewayToken             string
 	AWSRegionName              string
+	AnthropicAPIKey            string
+	BedrockAccessToken         string
+	BedrockRegion              string
 	TraceSandboxHost           bool
 	HeaderWorkerBaseURL        string
 	HeaderThreadID             string
@@ -80,6 +83,9 @@ func LoadConfig() Config {
 		AIGatewayBaseURL:           strings.TrimRight(envString("AI_GATEWAY_BASE_URL", defaultAIGatewayBaseURL), "/"),
 		AIGatewayToken:             envString("CF_GATEWAY_TOKEN", ""),
 		AWSRegionName:              envString("AWS_REGION_NAME", "us-west-2"),
+		AnthropicAPIKey:            envString("ANTHROPIC_API_KEY", ""),
+		BedrockAccessToken:         envString("BEDROCK_ACCESS_TOKEN", ""),
+		BedrockRegion:              envString("BEDROCK_REGION", envString("AWS_REGION_NAME", "us-west-2")),
 		TraceSandboxHost:           envString("TRACE_SANDBOX_HOST", "") == "1",
 		HeaderWorkerBaseURL:        "x-chiridion-worker-base-url",
 		HeaderThreadID:             "x-chiridion-thread-id",

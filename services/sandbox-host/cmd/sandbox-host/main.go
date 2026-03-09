@@ -5,12 +5,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/chiridion/sandbox-host/internal/app"
 	"github.com/chiridion/sandbox-host/internal/container"
 	"github.com/chiridion/sandbox-host/internal/fsops"
-	"github.com/chiridion/sandbox-host/internal/workspace"
 	"github.com/chiridion/sandbox-host/internal/state"
+	"github.com/chiridion/sandbox-host/internal/workspace"
 )
 
 func main() {
@@ -27,10 +28,24 @@ func main() {
 		}()
 	}
 
+	// Per-org usage databases live alongside the state DB.
+	usageDir := filepath.Join(filepath.Dir(cfg.StateDBPath), "usage")
+	usageStore, err := state.NewUsageStore(usageDir)
+	if err != nil {
+		log.Printf("[SandboxHost] usage store unavailable (%s): %v; running without spend tracking", usageDir, err)
+	}
+	if usageStore != nil {
+		defer func() {
+			if closeErr := usageStore.Close(); closeErr != nil {
+				log.Printf("[SandboxHost] failed to close usage store: %v", closeErr)
+			}
+		}()
+	}
+
 	workspaces := workspace.NewManagerFromEnv()
 	containers := container.NewManager(workspaces)
 	fsManager := fsops.NewManager(os.Getenv("WORKSPACES_ROOT"))
-	server := app.NewServer(cfg, containers, workspaces, fsManager, stateStore)
+	server := app.NewServer(cfg, containers, workspaces, fsManager, stateStore, usageStore)
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,

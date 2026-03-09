@@ -39,6 +39,10 @@ import {
   WorkspacesQuerySchema,
   AppsQuerySchema,
   PaginationQuerySchema,
+  OrgUsageSpendSchema,
+  OrgUsageLimitsSchema,
+  OrgUsageLogSchema,
+  SetOrgLimitsBodySchema,
   paginatedList,
   dataList,
 } from './schemas.js';
@@ -49,6 +53,22 @@ import {
 } from './helpers.js';
 
 type HonoEnv = { Bindings: Env };
+
+// ---------------------------------------------------------------------------
+// Sandbox host usage proxy helper
+// ---------------------------------------------------------------------------
+
+async function fetchSandboxHostUsage(
+  env: Env,
+  path: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const url = `https://sandbox-host${path}`;
+  if (!env.SANDBOX_HOST) {
+    return Response.json({ error: 'SANDBOX_HOST binding not configured' }, { status: 502 });
+  }
+  return env.SANDBOX_HOST.fetch(url, init);
+}
 
 export const routes = new Hono<HonoEnv>();
 
@@ -477,6 +497,115 @@ routes.get(
     }
 
     return c.json({ data: objects });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /orgs/:id/usage/spend — proxy to sandbox-host usage API
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/orgs/:id/usage/spend',
+  openApi({
+    summary: 'Org spend totals and rolling window status',
+    responses: {
+      200: OrgUsageSpendSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param('id');
+    const resp = await fetchSandboxHostUsage(c.env, `/v1/usage/orgs/${encodeURIComponent(orgId)}/spend`);
+    if (!resp.ok) {
+      return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
+    }
+    return c.json(await resp.json());
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /orgs/:id/usage/limits — proxy to sandbox-host usage API
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/orgs/:id/usage/limits',
+  openApi({
+    summary: 'Org effective spend limits',
+    responses: {
+      200: OrgUsageLimitsSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param('id');
+    const resp = await fetchSandboxHostUsage(c.env, `/v1/usage/orgs/${encodeURIComponent(orgId)}/limits`);
+    if (!resp.ok) {
+      return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
+    }
+    return c.json(await resp.json());
+  },
+);
+
+// ---------------------------------------------------------------------------
+// PUT /orgs/:id/usage/limits — proxy to sandbox-host usage API
+// ---------------------------------------------------------------------------
+
+routes.put(
+  '/orgs/:id/usage/limits',
+  openApi({
+    summary: 'Set org spend limit overrides',
+    request: {
+      json: SetOrgLimitsBodySchema,
+    },
+    responses: {
+      200: OrgUsageLimitsSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param('id');
+    const body = c.req.valid('json');
+    const resp = await fetchSandboxHostUsage(
+      c.env,
+      `/v1/usage/orgs/${encodeURIComponent(orgId)}/limits`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!resp.ok) {
+      return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
+    }
+    return c.json(await resp.json());
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /orgs/:id/usage/log — proxy to sandbox-host usage API
+// ---------------------------------------------------------------------------
+
+routes.get(
+  '/orgs/:id/usage/log',
+  openApi({
+    summary: 'Org recent usage log entries',
+    request: {
+      query: z.object({ limit: z.coerce.number().int().min(1).max(500).optional() }),
+    },
+    responses: {
+      200: OrgUsageLogSchema,
+      502: ErrorSchema,
+    },
+  }),
+  async (c) => {
+    const orgId = c.req.param('id');
+    const { limit } = c.req.valid('query');
+    const qs = limit ? `?limit=${limit}` : '';
+    const resp = await fetchSandboxHostUsage(c.env, `/v1/usage/orgs/${encodeURIComponent(orgId)}/log${qs}`);
+    if (!resp.ok) {
+      return c.json({ error: `Sandbox host returned ${resp.status}` }, 502);
+    }
+    return c.json(await resp.json());
   },
 );
 

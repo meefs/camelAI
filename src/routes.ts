@@ -68,6 +68,10 @@ export default [
           'settings/organization/ai-provider',
           'routes/_app.settings.organization.ai-provider.tsx'
         ),
+        route(
+          'settings/organization/usage',
+          'routes/_app.settings.organization.usage.tsx'
+        ),
       ]),
 
       // Workspace settings nested layout

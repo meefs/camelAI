@@ -242,3 +242,4 @@ func (s *Store) LoadProxyThreads() ([]ProxyThreadRecord, error) {
 	}
 	return out, nil
 }
+
