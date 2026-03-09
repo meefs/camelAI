@@ -18,6 +18,7 @@ interface OnboardingLoaderData {
 }
 
 const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
+const SALES_PROMPT_KEY_STORAGE_KEY = 'salesPromptKey';
 const AUTO_COMPLETE_MAX_ATTEMPTS = 3;
 const AUTO_COMPLETE_RETRY_DELAY_MS = 600;
 
@@ -43,6 +44,10 @@ function getAutoCompleteErrorMessage(error: unknown): string {
     return error.message.trim();
   }
   return 'Failed to complete onboarding. Please try again.';
+}
+
+function getPromptKeyFromSearch(search: string): string | null {
+  return new URLSearchParams(search).get('prompt_key')?.trim() || null;
 }
 
 export interface OnboardingRouteContext {
@@ -75,13 +80,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const url = new URL(request.url);
   const teamMode = url.searchParams.get('team') === '1';
+  const promptKey = url.searchParams.get('prompt_key')?.trim() || null;
   const onboarding = authBootstrap.onboarding;
   const onboardingComplete = hasCompletedOnboarding(onboarding);
   const emailVerificationRequired =
     emailVerificationStatus.required && !emailVerificationStatus.verified;
 
   if (onboardingComplete && !teamMode && !emailVerificationRequired) {
-    throw redirect('/chat');
+    const redirectTo = promptKey
+      ? `/chat?prompt_key=${encodeURIComponent(promptKey)}`
+      : '/chat';
+    throw redirect(redirectTo);
   }
 
   return {
@@ -111,9 +120,24 @@ export default function OnboardingRoute() {
     }
 
     const completeRequest = (async () => {
-      const response = await fetch('/api/onboarding/complete', {
+      const promptKeyFromUrl = getPromptKeyFromSearch(window.location.search);
+      const promptKeyFromStorage = (() => {
+        try {
+          return sessionStorage.getItem(SALES_PROMPT_KEY_STORAGE_KEY)?.trim() || null;
+        } catch {
+          return null;
+        }
+      })();
+      const promptKey = promptKeyFromUrl || promptKeyFromStorage;
+      const requestInit: RequestInit = {
         method: 'POST',
-      });
+      };
+      if (promptKey) {
+        requestInit.headers = { 'Content-Type': 'application/json' };
+        requestInit.body = JSON.stringify({ promptKey });
+      }
+
+      const response = await fetch('/api/onboarding/complete', requestInit);
 
       if (!response.ok) {
         let errorMessage = 'Failed to complete onboarding';
@@ -134,17 +158,22 @@ export default function OnboardingRoute() {
         redirectTo?: string;
         threadId?: string;
         onboardingSystemMessage?: string | null;
+        salesPrompt?: string | null;
       };
 
       const threadId = data.threadId?.trim();
       const onboardingSystemMessage = data.onboardingSystemMessage?.trim();
+      const salesPrompt = data.salesPrompt?.trim();
 
       if (threadId && onboardingSystemMessage) {
         try {
+          const pendingMessage = salesPrompt
+            ? `<camelai system message>${onboardingSystemMessage}</camelai system message>\n\n${salesPrompt}`
+            : `<camelai system message>${onboardingSystemMessage}</camelai system message>`;
           sessionStorage.setItem(
             PENDING_NEW_THREAD_MESSAGE_KEY,
             JSON.stringify({
-              message: `<camelai system message>${onboardingSystemMessage}</camelai system message>`,
+              message: pendingMessage,
               threadId,
             })
           );
@@ -154,6 +183,7 @@ export default function OnboardingRoute() {
       }
 
       try {
+        sessionStorage.removeItem(SALES_PROMPT_KEY_STORAGE_KEY);
         sessionStorage.setItem('showBootModal', '1');
       } catch {
         // Ignore storage failures.
@@ -190,6 +220,16 @@ export default function OnboardingRoute() {
     }
     throw lastError ?? new Error('Failed to complete onboarding');
   }, [completeOnboarding]);
+
+  useEffect(() => {
+    const promptKey = getPromptKeyFromSearch(window.location.search);
+    if (!promptKey) return;
+    try {
+      sessionStorage.setItem(SALES_PROMPT_KEY_STORAGE_KEY, promptKey);
+    } catch {
+      // Ignore storage failures.
+    }
+  }, []);
 
   useEffect(() => {
     if (needsWelcomeScreen) {
