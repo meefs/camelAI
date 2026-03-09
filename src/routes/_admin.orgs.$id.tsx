@@ -67,8 +67,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   // Fetch usage data from sandbox-host (best-effort, don't block on failure)
   const usagePromise = env.SANDBOX_HOST
     ? Promise.all([
-        env.SANDBOX_HOST.fetch(`https://sandbox-host/v1/usage/orgs/${encodeURIComponent(id)}/spend`).then(r => r.ok ? r.json() : null).catch(() => null),
-        env.SANDBOX_HOST.fetch(`https://sandbox-host/v1/usage/orgs/${encodeURIComponent(id)}/log?limit=10`).then(r => r.ok ? r.json() : null).catch(() => null),
+        env.SANDBOX_HOST.fetch(`http://sandbox/v1/usage/orgs/${encodeURIComponent(id)}/spend`).then(r => r.ok ? r.json() : null).catch(() => null),
+        env.SANDBOX_HOST.fetch(`http://sandbox/v1/usage/orgs/${encodeURIComponent(id)}/log?limit=10`).then(r => r.ok ? r.json() : null).catch(() => null),
       ])
     : Promise.resolve([null, null]);
 

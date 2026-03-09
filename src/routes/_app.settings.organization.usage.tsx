@@ -59,11 +59,11 @@ export async function loader({ request, context }: Route.LoaderArgs): Promise<Lo
   if (env.SANDBOX_HOST) {
     const [spendResp, logResp] = await Promise.all([
       env.SANDBOX_HOST
-        .fetch(`https://sandbox-host/v1/usage/orgs/${encodeURIComponent(orgId)}/spend`)
+        .fetch(`http://sandbox/v1/usage/orgs/${encodeURIComponent(orgId)}/spend`)
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null),
       env.SANDBOX_HOST
-        .fetch(`https://sandbox-host/v1/usage/orgs/${encodeURIComponent(orgId)}/log?limit=20`)
+        .fetch(`http://sandbox/v1/usage/orgs/${encodeURIComponent(orgId)}/log?limit=20`)
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null),
     ]);

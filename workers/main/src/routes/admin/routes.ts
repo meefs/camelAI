@@ -63,7 +63,7 @@ async function fetchSandboxHostUsage(
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
-  const url = `https://sandbox-host${path}`;
+  const url = `http://sandbox${path}`;
   if (!env.SANDBOX_HOST) {
     return Response.json({ error: 'SANDBOX_HOST binding not configured' }, { status: 502 });
   }
