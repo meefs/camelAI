@@ -1,5 +1,7 @@
 const SALES_PROMPT_KV_PREFIX = 'sales_prompt:';
 export const MAX_SALES_PROMPT_CHARS = 10_000;
+const MAX_SALES_PROMPT_KEY_CHARS = 64;
+const SALES_PROMPT_KEY_REGEX = /^[A-Za-z0-9_-]+$/;
 
 interface SalesPromptRecord {
   prompt: string;
@@ -37,9 +39,17 @@ export function sanitizeSalesPrompt(raw: string): string | null {
   return prompt.slice(0, MAX_SALES_PROMPT_CHARS);
 }
 
+export function normalizePromptKey(raw: string | null | undefined): string | null {
+  const key = raw?.trim();
+  if (!key) return null;
+  if (key.length > MAX_SALES_PROMPT_KEY_CHARS) return null;
+  if (!SALES_PROMPT_KEY_REGEX.test(key)) return null;
+  return key;
+}
+
 /**
  * Extract a prompt key from the current URL.
  */
 export function getPromptKeyFromUrl(url: URL): string | null {
-  return url.searchParams.get('prompt_key')?.trim() || null;
+  return normalizePromptKey(url.searchParams.get('prompt_key'));
 }

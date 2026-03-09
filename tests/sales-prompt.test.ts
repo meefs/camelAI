@@ -3,6 +3,7 @@ import {
   consumeSalesPrompt,
   getPromptKeyFromUrl,
   MAX_SALES_PROMPT_CHARS,
+  normalizePromptKey,
   sanitizeSalesPrompt,
 } from '@/lib/sales-prompt.server';
 
@@ -50,9 +51,23 @@ describe('sales prompt helpers', () => {
     expect(secondRead).toBeNull();
   });
 
+  it('returns null when a prompt key is missing from KV', async () => {
+    const kv = new MemoryKvNamespace();
+
+    await expect(
+      consumeSalesPrompt(kv as unknown as KVNamespace, 'missing-key')
+    ).resolves.toBeNull();
+  });
+
   it('extracts prompt_key from a URL', () => {
     const url = new URL('https://camelai.dev/chat?prompt_key=abc123&foo=bar');
 
     expect(getPromptKeyFromUrl(url)).toBe('abc123');
+  });
+
+  it('rejects invalid prompt keys', () => {
+    expect(normalizePromptKey('a'.repeat(65))).toBeNull();
+    expect(normalizePromptKey('abc/123')).toBeNull();
+    expect(normalizePromptKey('valid_key-123')).toBe('valid_key-123');
   });
 });

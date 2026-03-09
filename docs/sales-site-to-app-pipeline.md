@@ -34,7 +34,7 @@ Both `camelai-salessite` and `chiridion-app` are Cloudflare Workers on the same 
 
 1. User types prompt on camelai.com and presses send
 2. Sales site client POSTs the prompt to a same-origin server action (e.g. `POST /api/store-prompt`)
-3. Server action generates a short random key (nanoid, 21 chars), writes `{ prompt, createdAt }` to `APP_KV` with key `sales_prompt:<key>` and a **30-minute TTL** (`expirationTtl: 1800`)
+3. Server action generates an opaque URL-safe key (current implementation: 21 characters from a 64-character alphabet), writes `{ prompt, createdAt }` to `APP_KV` with key `sales_prompt:<key>` and a **30-minute TTL** (`expirationTtl: 1800`)
 4. Server action returns the key to the client
 5. Client redirects to: `https://camelai.dev/signup?redirect=%2Fchat%3Fprompt_key%3D<key>`
 6. On camelai.dev, routes read `?prompt_key=`, look up KV, **delete after reading** (one-time use), and proceed
@@ -50,7 +50,7 @@ Both `camelai-salessite` and `chiridion-app` are Cloudflare Workers on the same 
 ### KV key format
 
 ```
-sales_prompt:<nanoid>
+sales_prompt:<opaque-key>
 ```
 
 Example: `sales_prompt:set-me`
@@ -152,7 +152,7 @@ export async function action({ request, context }: ActionArgs) {
     .slice(0, MAX_SALES_PROMPT_CHARS);
 
   // Write to shared KV
-  const key = crypto.randomUUID();
+  const key = createSalesPromptKey(); // opaque URL-safe key, 21 chars today
   const kvKey = `sales_prompt:${key}`;
   await context.cloudflare.env.APP_KV.put(
     kvKey,

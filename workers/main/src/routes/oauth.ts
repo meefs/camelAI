@@ -28,7 +28,7 @@ import { createSignedSession, type SignedSessionData } from '../signed-session.j
 
 const OAUTH_PROVIDER_TIMEOUT_MS = 15_000;
 
-function sanitizeRedirectPath(input: string | null): string {
+export function sanitizeRedirectPath(input: string | null): string {
   if (!input) return '/';
   if (
     input.startsWith('/') &&

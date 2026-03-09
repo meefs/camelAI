@@ -21,6 +21,8 @@ const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
 const SALES_PROMPT_KEY_STORAGE_KEY = 'salesPromptKey';
 const AUTO_COMPLETE_MAX_ATTEMPTS = 3;
 const AUTO_COMPLETE_RETRY_DELAY_MS = 600;
+const MAX_SALES_PROMPT_KEY_CHARS = 64;
+const SALES_PROMPT_KEY_REGEX = /^[A-Za-z0-9_-]+$/;
 
 type CompleteOnboardingError = Error & { status?: number };
 
@@ -47,7 +49,11 @@ function getAutoCompleteErrorMessage(error: unknown): string {
 }
 
 function getPromptKeyFromSearch(search: string): string | null {
-  return new URLSearchParams(search).get('prompt_key')?.trim() || null;
+  const key = new URLSearchParams(search).get('prompt_key')?.trim() || null;
+  if (!key) return null;
+  if (key.length > MAX_SALES_PROMPT_KEY_CHARS) return null;
+  if (!SALES_PROMPT_KEY_REGEX.test(key)) return null;
+  return key;
 }
 
 export interface OnboardingRouteContext {

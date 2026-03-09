@@ -2,7 +2,7 @@ import type { Route } from './+types/onboarding.complete';
 import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
-import { consumeSalesPrompt } from '@/lib/sales-prompt.server';
+import { consumeSalesPrompt, normalizePromptKey } from '@/lib/sales-prompt.server';
 import { waitUntil } from '@/lib/wait-until';
 
 const ONBOARDING_THREAD_LOOKUP_LIMIT = 100;
@@ -61,8 +61,8 @@ async function getPromptKeyFromRequest(request: Request): Promise<string | null>
   }
 
   const body = await request.json().catch(() => null) as { promptKey?: unknown } | null;
-  const promptKey = typeof body?.promptKey === 'string' ? body.promptKey.trim() : '';
-  return promptKey || null;
+  const promptKey = typeof body?.promptKey === 'string' ? body.promptKey : null;
+  return normalizePromptKey(promptKey);
 }
 
 function getOnboardingSystemMessage(salesPrompt: string | null): string {
