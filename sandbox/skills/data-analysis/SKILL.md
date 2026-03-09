@@ -168,6 +168,14 @@ For exploratory analysis, prefer delivering results as a Jupyter notebook (`.ipy
 uv run jupyter nbconvert --to notebook --execute --inplace analysis.ipynb
 ```
 
+**Always validate after execution.** Run the notebook validator to catch errors that `nbconvert` may not surface (cell exceptions, charts that fell back to text/plain, blank charts with constant data):
+
+```bash
+validate-notebook analysis.ipynb
+```
+
+If it reports issues, fix the failing cells and re-execute. Do **not** use `--allow-errors` — it silently embeds tracebacks in cell outputs that the user will see in the rendered report.
+
 ### Preview notebooks in chat
 
 After creating or updating a notebook, set the active chat preview to the notebook file:

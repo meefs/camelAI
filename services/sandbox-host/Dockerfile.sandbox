@@ -96,6 +96,8 @@ RUN chmod 755 /opt/chiridion/control-plane.mjs && \
     chmod +x /usr/local/lib/create-worker/publish.mjs && \
     ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker && \
     ln -sf /usr/local/lib/create-worker/publish.mjs /usr/local/bin/publish
+COPY sandbox/validate-notebook.py /usr/local/bin/validate-notebook
+RUN chmod +x /usr/local/bin/validate-notebook
 
 # IPython startup defaults (pandas display settings for notebook HTML output).
 # IPYTHONDIR must live outside /home/claude — that path is a bind-mounted
