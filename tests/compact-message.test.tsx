@@ -123,6 +123,7 @@ vi.mock('react-router', async () => {
   return {
     ...actual,
     useNavigate: () => mockNavigate,
+    useLocation: () => ({ pathname: '/', search: '', hash: '', state: null, key: 'default' }),
     useRevalidator: () => ({ state: 'idle' as const, revalidate: mockRevalidate }),
     useFetcher: () => createFetcher(),
   };
