@@ -457,61 +457,10 @@ async function handleWorkerRequest(
   const screenshotToken = screenshotHeader || bearerToken || null;
   const hasScreenshotBearer = Boolean(bearerToken && bearerToken.startsWith('stkn_'));
 
-  const screenshotSessionId = getCookieValue(cookieHeader, SCREENSHOT_SESSION_COOKIE);
-  if (screenshotSessionId) {
-    const session = await getScreenshotSession(env.SESSIONS, screenshotSessionId);
-    // Screenshot session stores user-facing scriptName
-    if (session && session.script_name === scriptName) {
-      if (screenshotHeader || hasScreenshotBearer) {
-        const forwardHeaders = new Headers(request.headers);
-        forwardHeaders.delete('x-chiridion-screenshot-token');
-        if (hasScreenshotBearer) {
-          forwardHeaders.delete('Authorization');
-        }
-        return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, dispatchScriptName, scriptName, legacyDispatchScriptName);
-      }
-      return dispatchToWorker(request, env, dispatchScriptName, scriptName, legacyDispatchScriptName);
-    }
-  }
-
-  if (screenshotToken?.startsWith('stkn_')) {
-    const tokenData = await validateAndConsumeScreenshotToken(env.APP_KV, screenshotToken);
-    // Token stores user-facing scriptName
-    if (!tokenData || tokenData.script_name !== scriptName) {
-      return new Response('Invalid screenshot token', { status: 401 });
-    }
-
-    const { sessionId } = await createScreenshotSession(env.SESSIONS, {
-      script_name: tokenData.script_name,
-      org_id: tokenData.org_id,
-    });
-
-    const forwardHeaders = new Headers(request.headers);
-    forwardHeaders.delete('x-chiridion-screenshot-token');
-    if (screenshotToken === bearerToken) {
-      forwardHeaders.delete('Authorization');
-    }
-
-    const response = await dispatchToWorker(
-      new Request(request, { headers: forwardHeaders }),
-      env,
-      dispatchScriptName,
-      scriptName,
-      legacyDispatchScriptName
-    );
-    const headers = new Headers(response.headers);
-    headers.append('Set-Cookie', createScreenshotSessionCookie(sessionId));
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
-  } else if (screenshotHeader) {
-    return new Response('Invalid screenshot token', { status: 401 });
-  }
-
-  // Get worker access info from KV index
-  // Try new namespaced format first, then legacy
+  // Resolve effective script identity early so screenshot auth checks the
+  // correct scriptName. For ambiguous single-hyphen hostnames (e.g.
+  // "report-alpha12") the initial parse may split incorrectly; the KV lookup
+  // + legacy fallback here corrects it before any token validation.
   let accessInfo: WorkerAccessInfo | null = null;
   let effectiveScriptName = scriptName;
   let effectiveOrgSlug = orgSlug;
@@ -520,7 +469,6 @@ async function handleWorkerRequest(
   try {
     accessInfo = await getWorkerAccessInfo(env.APP_KV, dispatchScriptName, scriptName, orgSlug);
   } catch (e) {
-    // Fail closed on errors - don't bypass auth
     console.error(`[dispatcher] Error getting worker access info: ${e}`);
     return errorResponse(error503Page(getMainAppUrl(url.hostname)));
   }
@@ -547,6 +495,59 @@ async function handleWorkerRequest(
     } catch (e) {
       console.error(`[dispatcher] Error checking legacy fallback: ${e}`);
     }
+  }
+
+  const screenshotSessionId = getCookieValue(cookieHeader, SCREENSHOT_SESSION_COOKIE);
+  if (screenshotSessionId) {
+    const session = await getScreenshotSession(env.SESSIONS, screenshotSessionId);
+    // Screenshot session stores user-facing scriptName — use resolved effectiveScriptName
+    if (session && session.script_name === effectiveScriptName) {
+      if (screenshotHeader || hasScreenshotBearer) {
+        const forwardHeaders = new Headers(request.headers);
+        forwardHeaders.delete('x-chiridion-screenshot-token');
+        if (hasScreenshotBearer) {
+          forwardHeaders.delete('Authorization');
+        }
+        return dispatchToWorker(new Request(request, { headers: forwardHeaders }), env, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+      }
+      return dispatchToWorker(request, env, effectiveDispatchScriptName, effectiveScriptName, effectiveLegacyDispatchScriptName);
+    }
+  }
+
+  if (screenshotToken?.startsWith('stkn_')) {
+    const tokenData = await validateAndConsumeScreenshotToken(env.APP_KV, screenshotToken);
+    // Token stores user-facing scriptName — use resolved effectiveScriptName
+    if (!tokenData || tokenData.script_name !== effectiveScriptName) {
+      return new Response('Invalid screenshot token', { status: 401 });
+    }
+
+    const { sessionId } = await createScreenshotSession(env.SESSIONS, {
+      script_name: tokenData.script_name,
+      org_id: tokenData.org_id,
+    });
+
+    const forwardHeaders = new Headers(request.headers);
+    forwardHeaders.delete('x-chiridion-screenshot-token');
+    if (screenshotToken === bearerToken) {
+      forwardHeaders.delete('Authorization');
+    }
+
+    const response = await dispatchToWorker(
+      new Request(request, { headers: forwardHeaders }),
+      env,
+      effectiveDispatchScriptName,
+      effectiveScriptName,
+      effectiveLegacyDispatchScriptName
+    );
+    const headers = new Headers(response.headers);
+    headers.append('Set-Cookie', createScreenshotSessionCookie(sessionId));
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  } else if (screenshotHeader) {
+    return new Response('Invalid screenshot token', { status: 401 });
   }
 
   const missingRegistryMode = resolveMissingRegistryMode(env.DISPATCHER_MISSING_REGISTRY_MODE);

@@ -10,6 +10,7 @@ import type { CfApiProxyEnv } from './cf-api-proxy.js';
 import type { McpEnv } from './mcp-handler.js';
 import type { WorkspaceDO } from './workspace.js';
 import type { WorkerLogsDO } from './worker-logs-do.js';
+import type { EmailHandleDO } from './email-handle-registry.js';
 import type { AppScreenshotJob } from './screenshot-queue.js';
 import type { SlackEventQueueMessage } from './slack-types.js';
 
@@ -35,7 +36,6 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   SALESFORCE_CLIENT_SECRET?: string;
   INTEGRATION_SECRET_KEY: string;
   WORKSPACE_EMAIL_DOMAIN?: string;
-  WORKSPACE_EMAIL_LOCAL_PART?: string;
   EMAIL_FROM_ADDRESS?: string;
   RESEND_API_KEY?: string;
   // Claude API Proxy (CF AI Gateway)
@@ -44,6 +44,8 @@ export interface Env extends ChatEnv, DOEnv, WorkspaceContainerEnv, DataProxyEnv
   BEDROCK_REGION?: string;
   // Sandbox proxy shared secret
   SANDBOX_PROXY_SECRET?: string;
+  // Email handle registry (atomic handle claims)
+  EMAIL_HANDLE?: DurableObjectNamespace<EmailHandleDO>;
   // Admin CLI API key (set via wrangler secret)
   ADMIN_API_KEY?: string;
 }

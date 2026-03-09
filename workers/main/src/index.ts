@@ -50,6 +50,7 @@ export { ChiridionMcp } from './mcp-handler.js';
 export { ChatThreadDO } from './durable-objects.js';
 export { UserDO, OrgDO } from './auth.js';
 export { OrgSlugDO } from './org-slug-registry.js';
+export { EmailHandleDO } from './email-handle-registry.js';
 export { WorkspaceDO } from './workspace.js';
 export { WorkspaceCronDO } from './workspace-cron.js';
 export { WorkerLogsDO } from './worker-logs-do.js';

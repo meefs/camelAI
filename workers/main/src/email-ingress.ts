@@ -10,10 +10,9 @@ import { runExternalMessageTurn } from './helpers/external-turn.js';
 import { getOrgStub, getUserStub, getWorkspaceStub } from './helpers/stubs.js';
 import { buildWorkspaceScopedR2Key } from '../../../src/lib/workspace-r2-paths.js';
 import {
-  buildWorkspaceInboxAddress,
   getWorkspaceEmailRoutingConfig,
   parseMailboxAddress,
-  parseWorkspaceInboxAddress,
+  parseWorkspaceEmailAddress,
 } from '../../../src/lib/workspace-email.js';
 import type { Attachment as PostalMimeAttachment } from 'postal-mime';
 
@@ -276,7 +275,6 @@ async function parseEmailContent(message: ForwardableEmailMessage): Promise<Pars
       attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
     };
   } catch {
-    // Fallback for malformed MIME: take bytes after header separator.
     const raw = new TextDecoder().decode(rawBytes);
     const normalized = raw.replace(/\r\n/g, '\n');
     const splitIndex = normalized.indexOf('\n\n');
@@ -456,19 +454,20 @@ function renderMarkdownEmailHtml(markdown: string): string {
   }
 }
 
-async function resolveWorkspaceFromSlugs(
+async function resolveWorkspaceFromEmailHandle(
   env: Env,
-  orgSlug: string,
-  workspaceSlug: string
+  emailHandle: string
 ): Promise<{ orgId: string; workspaceId: string } | null> {
-  const orgId = await env.APP_KV.get(`org_slug:${orgSlug}`);
-  if (!orgId) return null;
+  if (!env.EMAIL_HANDLE) return null;
+  const stub = env.EMAIL_HANDLE.get(env.EMAIL_HANDLE.idFromName(emailHandle));
+  const workspaceId = await stub.getOwner();
+  if (!workspaceId) return null;
 
-  const orgStub = getOrgStub(env, orgId);
-  const workspace = await orgStub.getWorkspaceBySlug(workspaceSlug);
-  if (!workspace) return null;
+  const wsStub = getWorkspaceStub(env, workspaceId);
+  const info = await wsStub.getInfo();
+  if (!info || info.archived) return null;
 
-  return { orgId, workspaceId: workspace.id };
+  return { orgId: info.org_id, workspaceId };
 }
 
 async function resolveAuthorizedSender(
@@ -611,7 +610,7 @@ function formatReplySubject(inboundSubject: string, fallback: string): string {
 function createReplyMessageId(threadId: string, domain: string): string {
   const safeThreadId = threadId.replace(/[^a-z0-9-]/gi, '').slice(0, 64) || 'thread';
   const safeDomain = domain.toLowerCase().replace(/[^a-z0-9.-]/g, '');
-  return `camelai.${safeThreadId}.${crypto.randomUUID()}@${safeDomain}`;
+  return `chiridion.${safeThreadId}.${crypto.randomUUID()}@${safeDomain}`;
 }
 
 async function sendReply(
@@ -631,7 +630,7 @@ async function sendReply(
   const replyToAddress = sanitizeHeaderValue(args.replyToAddress, 320);
   const bodyText = args.body.replace(/\r\n/g, '\n').trim().slice(0, MAX_EMAIL_REPLY_BODY_CHARS);
   const bodyHtml = renderMarkdownEmailHtml(bodyText);
-  const boundary = `camelai-${crypto.randomUUID()}`;
+  const boundary = `chiridion-${crypto.randomUUID()}`;
 
   const headers: string[] = [
     `From: camelAI <${fromAddress}>`,
@@ -692,16 +691,16 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
     message.setReject('Workspace email routing is not configured.');
     return;
   }
-  const recipient = parseWorkspaceInboxAddress(message.to, {
+
+  const parsed = parseWorkspaceEmailAddress(message.to, {
     expectedDomain: routingConfig.domain,
-    expectedLocalPart: routingConfig.localPart,
   });
-  if (!recipient) {
+  if (!parsed) {
     message.setReject('Unknown workspace email address.');
     return;
   }
 
-  const resolved = await resolveWorkspaceFromSlugs(env, recipient.orgSlug, recipient.workspaceSlug);
+  const resolved = await resolveWorkspaceFromEmailHandle(env, parsed.emailHandle);
   if (!resolved) {
     message.setReject('Unknown workspace email address.');
     return;

@@ -240,6 +240,7 @@ export interface Workspace {
   archived_at: number | null;
   archived_by: string | null;
   compute_tier: 'standard';
+  email_handle: string | null;
 }
 
 export interface WorkspaceWithAccess extends Workspace {

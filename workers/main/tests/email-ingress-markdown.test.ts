@@ -88,21 +88,6 @@ function createMessage(args: {
   };
 }
 
-function createMockKv(): KVNamespace {
-  const store = new Map<string, string>();
-  return {
-    get: vi.fn(async (key: string) => (store.has(key) ? store.get(key)! : null)),
-    put: vi.fn(async (key: string, value: string) => {
-      store.set(key, value);
-    }),
-    delete: vi.fn(async (key: string) => {
-      store.delete(key);
-    }),
-    list: vi.fn(),
-    getWithMetadata: vi.fn(),
-  } as unknown as KVNamespace;
-}
-
 function createMockKvWithSlug(): KVNamespace {
   const store = new Map<string, string>([
     ['org_slug:acme-85b', 'org-1'],
@@ -157,18 +142,23 @@ describe('handleWorkspaceEmailIngress markdown email replies', () => {
   it('sends multipart reply with markdown rendered HTML', async () => {
     const message = createMessage({
       from: 'user@example.com',
-      to: 'chat+acme-85b.my-workspace@mail.camelai.com',
+      to: 'swift-falcon-ridge@mail.camelai.com',
       subject: 'Need help',
       rawBody: 'Can you summarize this?',
     });
 
     const env = {
       WORKSPACE_EMAIL_DOMAIN: 'mail.camelai.com',
-      WORKSPACE_EMAIL_LOCAL_PART: 'chat',
       EMAIL_TO_USER: {
         get: vi.fn().mockResolvedValue('user-1'),
       },
       APP_KV: createMockKvWithSlug(),
+      EMAIL_HANDLE: {
+        idFromName: (handle: string) => handle,
+        get: (handle: string) => ({
+          getOwner: async () => handle === 'swift-falcon-ridge' ? 'workspace-1' : null,
+        }),
+      },
     } as never;
 
     await handleWorkspaceEmailIngress(message, env);
@@ -179,7 +169,7 @@ describe('handleWorkspaceEmailIngress markdown email replies', () => {
     const outbound = message.reply.mock.calls[0]?.[0] as { raw: string };
     const raw = outbound.raw;
 
-    expect(raw).toContain('Content-Type: multipart/alternative; boundary="camelai-');
+    expect(raw).toContain('Content-Type: multipart/alternative; boundary="chiridion-');
     expect(raw).toContain('Content-Type: text/plain; charset=utf-8');
     expect(raw).toContain('Content-Type: text/html; charset=utf-8');
 

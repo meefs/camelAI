@@ -91,14 +91,17 @@ function createMockKvStore(initial?: Record<string, string>) {
 
 function createMockEnv(overrides?: Partial<Record<string, unknown>>): any {
   const emailToUser = createMockKvStore();
-  const appKv = createMockKvStore({
-    'org_slug:acme-85b': 'org-1',
-  });
+  const appKv = createMockKvStore();
   return {
     WORKSPACE_EMAIL_DOMAIN: 'mail.camelai.com',
-    WORKSPACE_EMAIL_LOCAL_PART: 'chat',
     EMAIL_TO_USER: emailToUser,
     APP_KV: appKv,
+    EMAIL_HANDLE: {
+      idFromName: (handle: string) => handle,
+      get: (handle: string) => ({
+        getOwner: async () => handle === 'swift-falcon-ridge' ? 'workspace-1' : null,
+      }),
+    },
     R2_BUCKET: {
       put: vi.fn().mockResolvedValue({}),
     },
@@ -139,7 +142,7 @@ describe('handleWorkspaceEmailIngress', () => {
     const boundary = 'test-boundary';
     const raw = [
       'From: user@example.com',
-      'To: chat+acme-85b.my-workspace@mail.camelai.com',
+      'To: swift-falcon-ridge@mail.camelai.com',
       'Subject: Quarterly report',
       'Message-ID: <msg-1@example.com>',
       'MIME-Version: 1.0',
@@ -161,7 +164,7 @@ describe('handleWorkspaceEmailIngress', () => {
 
     const message = createMessage({
       from: 'user@example.com',
-      to: 'chat+acme-85b.my-workspace@mail.camelai.com',
+      to: 'swift-falcon-ridge@mail.camelai.com',
       subject: 'Quarterly report',
       raw,
     });
@@ -200,14 +203,14 @@ describe('handleWorkspaceEmailIngress', () => {
   });
 
   it('rejects senders that are not mapped to a user', async () => {
-    const orgStub = {
-      getWorkspaceBySlug: vi.fn().mockResolvedValue({ id: 'workspace-1', name: 'My Workspace', created_at: 0, archived: 0 }),
+    const workspaceStub = {
+      getInfo: vi.fn().mockResolvedValue({ org_id: 'org-1', archived: false }),
     };
-    getOrgStubMock.mockReturnValue(orgStub);
+    getWorkspaceStubMock.mockReturnValue(workspaceStub);
 
     const message = createMessage({
       from: 'stranger@example.com',
-      to: 'chat+acme-85b.my-workspace@mail.camelai.com',
+      to: 'swift-falcon-ridge@mail.camelai.com',
       subject: 'hello',
     });
 

@@ -4,7 +4,7 @@ import type { Route } from './+types/_app.settings.workspace.general';
 import { requireAuthContext, getAuthEnv } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as authDO from '@/lib/auth-do';
-import { buildWorkspaceInboxAddress, getWorkspaceEmailRoutingConfig } from '@/lib/workspace-email';
+import { buildWorkspaceEmailAddress, getWorkspaceEmailRoutingConfig } from '@/lib/workspace-email';
 import { Separator } from '@/components/ui/separator';
 import { SettingsHeader } from '@/components/settings/settings-header';
 import { WorkspaceGeneralForm } from '@/components/settings/workspace-general-form';
@@ -63,10 +63,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const workspace = authContext.currentWorkspace;
   const routingConfig = getWorkspaceEmailRoutingConfig(env);
-  const workspaceEmailAddress = workspace && routingConfig
-    ? buildWorkspaceInboxAddress(authContext.currentOrg.slug, workspace.name, routingConfig.domain, {
-        localPart: routingConfig.localPart,
-      })
+  const workspaceEmailAddress = workspace?.email_handle && routingConfig
+    ? buildWorkspaceEmailAddress(workspace.email_handle, routingConfig.domain)
     : null;
 
   return {

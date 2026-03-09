@@ -11,6 +11,8 @@ import {
   WorkspaceContainer,
   type WorkspaceContainerEnv,
 } from './workspace-container';
+import { generateEmailHandle } from '../../../src/lib/workspace-email';
+import type { EmailHandleDO } from './email-handle-registry';
 
 // Buffer time before token expiry to trigger refresh (10 minutes)
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
@@ -144,6 +146,7 @@ export interface WorkspaceEnv {
   CF_DISPATCH_NAMESPACE?: string;
   // KV for APP_KV lookups (needed by syncAllWorkspaceWorkerSecrets)
   APP_KV?: KVNamespace;
+  EMAIL_HANDLE?: DurableObjectNamespace<EmailHandleDO>;
   EMAIL_TO_USER?: KVNamespace;
   CHAT_THREAD?: DurableObjectNamespace;
   WORKSPACE_CRON?: DurableObjectNamespace<WorkspaceCronDO>;
@@ -322,11 +325,37 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       info.compute_tier = 'standard';
       changed = true;
     }
+    // Lazy migration: generate email handle if missing
+    if (!info.email_handle) {
+      info.email_handle = await this.claimEmailHandle(info.id);
+      changed = true;
+    }
 
     if (changed) {
       await this.setInfo(info);
     }
     return info;
+  }
+
+  private async claimEmailHandle(workspaceId: string): Promise<string> {
+    const registry = this.env.EMAIL_HANDLE;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const handle = generateEmailHandle();
+      if (registry) {
+        const stub = registry.get(registry.idFromName(handle)) as unknown as EmailHandleDO;
+        const result = await stub.claim(workspaceId);
+        if (!result.ok) continue;
+      }
+      return handle;
+    }
+    // Fallback: append workspace ID fragment to guarantee uniqueness
+    const suffix = workspaceId.replace(/-/g, '').slice(0, 12);
+    const handle = `${generateEmailHandle()}-${suffix}`;
+    if (registry) {
+      const stub = registry.get(registry.idFromName(handle)) as unknown as EmailHandleDO;
+      await stub.claim(workspaceId);
+    }
+    return handle;
   }
 
   async setInfo(info: Workspace): Promise<void> {
@@ -346,6 +375,14 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
     description?: string | null
   ): Promise<Workspace> {
     const now = Date.now();
+
+    // Register with the org first — this checks name uniqueness and throws
+    // on duplicate names, preventing orphan workspace state + email handles.
+    const orgStub = this.env.ORG.get(
+      this.env.ORG.idFromName(orgId)
+    ) as unknown as OrgDO;
+    await orgStub.addWorkspace(id, name, now, createdBy);
+
     const avatar = generateDefaultAvatar(name);
     const info: Workspace = {
       id,
@@ -359,15 +396,10 @@ export class WorkspaceDO extends DurableObject<WorkspaceEnv> {
       archived_at: null,
       archived_by: null,
       compute_tier: 'standard',
+      email_handle: await this.claimEmailHandle(id),
     };
     await this.setInfo(info);
     this.log('workspace_created', createdBy, undefined, { workspace_id: id, name });
-
-    // Register workspace with the org
-    const orgStub = this.env.ORG.get(
-      this.env.ORG.idFromName(orgId)
-    ) as unknown as OrgDO;
-    await orgStub.addWorkspace(id, name, now, createdBy);
 
     return info;
   }

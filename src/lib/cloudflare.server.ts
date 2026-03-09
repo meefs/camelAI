@@ -50,7 +50,6 @@ export interface CloudflareEnv {
   TOKEN_SIGNING_SECRET: string;
   INTEGRATION_SECRET_KEY: string;
   WORKSPACE_EMAIL_DOMAIN?: string;
-  WORKSPACE_EMAIL_LOCAL_PART?: string;
   EMAIL_FROM_ADDRESS?: string;
   RESEND_API_KEY?: string;
   SANDBOX_HOST?: Fetcher;
