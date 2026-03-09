@@ -4,6 +4,7 @@ import { requireAuthContext } from '@/lib/auth.server';
 import { parseCookies, createSessionCookieHeader } from '@/lib/cookies.server';
 import { AppSidebar } from '@/components/sidebar/app-sidebar';
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
+import { getPromptKeyFromUrl } from '@/lib/sales-prompt.server';
 import type { AuthState } from '@/types';
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state';
@@ -28,12 +29,17 @@ export function shouldRevalidate({
 export async function loader({ request, context }: Route.LoaderArgs) {
   // Auth check - redirects to /login if not authenticated
   const authContext = await requireAuthContext(request, context);
+  const url = new URL(request.url);
+  const promptKey = getPromptKeyFromUrl(url);
+  const onboardingRedirect = promptKey
+    ? `/onboarding?prompt_key=${encodeURIComponent(promptKey)}`
+    : '/onboarding';
 
   if (!authContext.onboarding?.completed_at) {
-    throw redirect('/onboarding');
+    throw redirect(onboardingRedirect);
   }
   if (authContext.emailVerification.required && !authContext.emailVerification.verified) {
-    throw redirect('/onboarding');
+    throw redirect(onboardingRedirect);
   }
 
   // Get sidebar state from cookies

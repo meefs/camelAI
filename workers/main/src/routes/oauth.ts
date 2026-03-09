@@ -28,6 +28,18 @@ import { createSignedSession, type SignedSessionData } from '../signed-session.j
 
 const OAUTH_PROVIDER_TIMEOUT_MS = 15_000;
 
+export function sanitizeRedirectPath(input: string | null): string {
+  if (!input) return '/';
+  if (
+    input.startsWith('/') &&
+    !input.startsWith('//') &&
+    !input.includes(':')
+  ) {
+    return input;
+  }
+  return '/';
+}
+
 function buildSessionCookie(name: string, value: string, maxAge: number, secure: boolean, domain?: string): string {
   const parts = [`${name}=${value}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAge}`];
   if (secure) parts.push('Secure');
@@ -43,7 +55,7 @@ export async function handleOAuthStart({ env, url, match, req }: RouteContext): 
   const clientId = env[config.clientIdEnvVar as keyof Env] as string | undefined;
   if (!clientId) return text(`${config.displayName} OAuth is not configured`, 500);
 
-  const redirectTo = url.searchParams.get('redirect') || '/';
+  const redirectTo = sanitizeRedirectPath(url.searchParams.get('redirect'));
   const callbackUrl = `${url.origin}/api/auth/${provider}/callback`;
   const nonce = crypto.randomUUID();
 

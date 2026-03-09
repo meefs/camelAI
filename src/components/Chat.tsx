@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, memo } from 'react';
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
-import { useNavigate, useFetcher, useRevalidator } from 'react-router';
+import { useNavigate, useFetcher, useLocation, useRevalidator } from 'react-router';
 import { ArrowDown, RefreshCw, X, ChevronDown, Globe, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 import type {
@@ -95,6 +95,7 @@ interface ChatProps {
   isLoadingMessages?: boolean;
   /** Superuser admin read-only viewer */
   readOnly?: boolean;
+  initialWelcomeInput?: string | null;
   welcomeData?: {
     userId: string | null;
     userName: string | null;
@@ -807,9 +808,11 @@ export default function Chat({
   orgSlug,
   isLoadingMessages = false,
   readOnly = false,
+  initialWelcomeInput,
   welcomeData,
 }: ChatProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const revalidator = useRevalidator();
   const createThreadFetcher = useFetcher<{
     thread?: { id: string };
@@ -855,6 +858,43 @@ export default function Chat({
       // Ignore storage failures; modal behavior should stay resilient.
     }
   }, [bootModalOpen]);
+
+  useEffect(() => {
+    if (!initialWelcomeInput) {
+      return;
+    }
+
+    setWelcomeInput((current) => {
+      const shouldApply =
+        current.trim().length === 0 ||
+        current === lastAppliedWelcomeInputRef.current;
+
+      if (!shouldApply) {
+        return current;
+      }
+
+      lastAppliedWelcomeInputRef.current = initialWelcomeInput;
+      return initialWelcomeInput;
+    });
+  }, [initialWelcomeInput]);
+
+  useEffect(() => {
+    if (threadId) {
+      return;
+    }
+    if (!location.search.includes('prompt_key=')) {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('prompt_key')) {
+      return;
+    }
+
+    url.searchParams.delete('prompt_key');
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [location.search, threadId]);
+
   // Compaction in-progress indicator
   const [isCompacting, setIsCompactingState] = useState(false);
   const setIsCompacting = useCallback((value: boolean) => {
@@ -1029,7 +1069,8 @@ export default function Chat({
   const [input, setInput] = useState('');
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [welcomeInput, setWelcomeInput] = useState('');
+  const [welcomeInput, setWelcomeInput] = useState(() => initialWelcomeInput ?? '');
+  const lastAppliedWelcomeInputRef = useRef(initialWelcomeInput ?? '');
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);

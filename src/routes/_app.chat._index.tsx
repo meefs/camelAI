@@ -1,12 +1,13 @@
-import { waitUntil } from 'cloudflare:workers';
 import { useEffect, useRef } from 'react';
 import { useLoaderData, useRevalidator } from 'react-router';
 import type { Route } from './+types/_app.chat._index';
 import { requireAuthContext, requireSessionWorkspaceAccess } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
+import { waitUntil } from '@/lib/wait-until';
 import { getAuthEnv, integrationRecordToIntegration } from '@/lib/auth-helpers';
 import { getWorkerScript } from '@/lib/auth-do';
 import * as chatDO from '@/lib/chat-do.server';
+import { consumeSalesPrompt, getPromptKeyFromUrl } from '@/lib/sales-prompt.server';
 import Chat from '@/components/Chat';
 import { NoWorkspacesError } from '@/components/no-workspaces-error';
 import type { Integration, Thread, WorkerScriptWithCreator } from '@/types';
@@ -38,11 +39,22 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
+  const url = new URL(request.url);
+  const promptKey = getPromptKeyFromUrl(url);
   const hostname = request.headers.get('host')?.split(':')[0] || undefined;
   const workspaceId = authContext.currentWorkspace?.id;
   const userId = authContext.user?.id ?? null;
   const userName = authContext.user?.name ?? null;
   const renderedAt = Date.now();
+  let salesPrompt: string | null = null;
+
+  if (promptKey) {
+    try {
+      salesPrompt = await consumeSalesPrompt(env.APP_KV, promptKey);
+    } catch (error) {
+      console.error('Failed to consume sales prompt for welcome screen:', error);
+    }
+  }
 
   const allAppsPromise: Promise<WorkerScriptWithCreator[]> = workspaceId && authContext.currentOrg?.id
     ? (async () => {
@@ -127,6 +139,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     connections,
     recentThreads,
     renderedAt,
+    salesPrompt,
   };
 }
 
@@ -201,6 +214,7 @@ export default function NewChatPage() {
     connections,
     recentThreads,
     renderedAt,
+    salesPrompt,
   } = useLoaderData<typeof loader>();
   const { currentWorkspace } = useAuthData();
   const revalidator = useRevalidator();
@@ -230,6 +244,7 @@ export default function NewChatPage() {
         recentThreads,
         renderedAt,
       }}
+      initialWelcomeInput={salesPrompt}
     />
   );
 }
