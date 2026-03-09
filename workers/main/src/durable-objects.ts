@@ -194,7 +194,7 @@ export interface ExternalMessageRequest {
   userName?: string | null;
   userEmail?: string | null;
   message?: string;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
 }
 
 export interface ExternalTurnResult {
@@ -1630,11 +1630,22 @@ export class ChatThreadDO extends DurableObject<ChatEnv> {
   }
 
   private getExternalTurnTimeout(timeoutMs: unknown): number {
+    // When no timeout is specified (Slack/email ingress), use a generous
+    // fallback so turns aren't capped at 2 min but still can't hang forever
+    // if the runner socket drops without resolving pendingExternalTurn.
+    const FALLBACK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+    if (timeoutMs == null) {
+      return FALLBACK_TIMEOUT_MS;
+    }
     if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs)) {
-      return 2 * 60 * 1000;
+      return FALLBACK_TIMEOUT_MS;
     }
     const rounded = Math.floor(timeoutMs);
-    return Math.max(5_000, Math.min(5 * 60 * 1000, rounded));
+    if (rounded <= 0) {
+      return FALLBACK_TIMEOUT_MS;
+    }
+    // setTimeout max delay on JS runtimes is 2^31-1 ms.
+    return Math.min(2_147_483_647, Math.max(5_000, rounded));
   }
 
   private async autoAnswerPendingQuestionAsUnavailable(

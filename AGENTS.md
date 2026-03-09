@@ -128,6 +128,7 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 5. `ChatThreadDO` ingests Slack turns through `externalMessage(...)` Durable Object RPC
 6. `AskUserQuestion` is interactive only when a browser chat websocket is connected for the thread; without a browser session, `ChatThreadDO` auto-answers unavailable to the model
 7. Slack replies receive final assistant output, busy, or error text
+8. Slack ingress no longer applies an app-level external-turn timeout; turns wait for model completion with a 30-minute safety fallback
 
 ### Email Chat Ingress
 1. Cloudflare Email Routing delivers inbound messages to Worker `email()` (non-HTTP handler)
@@ -138,6 +139,7 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 6. `ChatThreadDO` ingests email turns through `externalMessage(...)` Durable Object RPC
 7. `AskUserQuestion` follows the same browser-presence rule as Slack/web: interactive only when a browser chat websocket is connected; otherwise the model gets an unavailable response
 8. Replies are sent from workspace-scoped subaddresses (`{local-part}+{orgSlug}.{workspaceSlug}@<domain>`) with explicit `Message-ID` so clients include references on subsequent replies, and outbound bodies are sent as `multipart/alternative` (`text/plain` + markdown-rendered `text/html`)
+9. Email ingress no longer applies an app-level external-turn timeout; turns wait for model completion with a 30-minute safety fallback
 
 ### Sandbox Proxy Auth
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.

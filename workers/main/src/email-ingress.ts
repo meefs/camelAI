@@ -42,7 +42,6 @@ const EMAIL_EVENT_DEDUPE_DONE_VALUE = 'done';
 const EMAIL_EVENT_DEDUPE_LEGACY_DONE_VALUE = '1';
 const EMAIL_REPLY_REFERENCE_PREFIX = 'email_reply_ref:';
 const EMAIL_REPLY_REFERENCE_TTL_SECONDS = 180 * 24 * 60 * 60;
-const DEFAULT_EXTERNAL_TURN_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_EMAIL_RAW_SIZE_BYTES = 2 * 1024 * 1024;
 const MAX_EMAIL_REPLY_BODY_CHARS = 50_000;
 const STRICT_MESSAGE_ID_PATTERN = /^[^\s<>@]+@(?:[^\s<>@]+|\[[^\]\r\n]+\])$/;
@@ -787,7 +786,6 @@ export async function handleWorkspaceEmailIngress(message: ForwardableEmailMessa
       userName: authorizedSender.userName,
       userEmail: authorizedSender.userEmail,
       message: userMessage,
-      timeoutMs: DEFAULT_EXTERNAL_TURN_TIMEOUT_MS,
     });
 
     const replyText = outcomeToReplyText(turnResult);

@@ -43,8 +43,6 @@ const SLACK_THREAD_MAP_PREFIX = 'slack_thread:';
 const SLACK_EVENT_DEDUPE_PREFIX = 'slack_event:';
 const SLACK_MESSAGE_DEDUPE_PREFIX = 'slack_message:';
 const SLACK_EVENT_DEDUPE_TTL_SECONDS = 10 * 60;
-const DEFAULT_EXTERNAL_TURN_TIMEOUT_MS = 2 * 60 * 1000;
-
 function getSlackTeamIndexKey(teamId: string): string {
   return `${SLACK_TEAM_INDEX_PREFIX}${teamId}`;
 }
@@ -650,7 +648,6 @@ export async function processSlackEventCallback(
     userName: `Slack ${userId}`,
     userEmail: null,
     message: messageText,
-    timeoutMs: DEFAULT_EXTERNAL_TURN_TIMEOUT_MS,
   });
 
   const replyThreadTs = getSlackReplyThreadTs(event);
