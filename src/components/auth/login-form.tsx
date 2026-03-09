@@ -136,6 +136,16 @@ export function LoginForm({ redirectTo, oauthError }: LoginFormProps) {
                   Sign up
                 </Link>
               </div>
+
+              <div className="text-center text-xs text-muted-foreground">
+                Looking for old camelAI?{' '}
+                <a
+                  href="https://app.camelai.com"
+                  className="hover:underline underline-offset-4"
+                >
+                  Click here
+                </a>
+              </div>
             </form>
           </div>
         </div>
