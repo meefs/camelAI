@@ -1,12 +1,17 @@
-import { useRef, useState } from 'react';
-import { useFetcher, useLoaderData, useLocation, useOutletContext } from 'react-router';
-import type { Route } from './+types/_onboarding.welcome';
-import { getAuthEnv, requireSession } from '@/lib/auth.server';
-import { getEnv } from '@/lib/cloudflare.server';
-import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import type { OnboardingRouteContext } from './_onboarding';
+import { useRef, useState } from "react";
+import {
+  useFetcher,
+  useLoaderData,
+  useLocation,
+  useOutletContext,
+} from "react-router";
+import type { Route } from "./+types/_onboarding.welcome";
+import { getAuthEnv, requireSession } from "@/lib/auth.server";
+import { getEnv } from "@/lib/cloudflare.server";
+import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import type { OnboardingRouteContext } from "./_onboarding";
 
 interface TeamContext {
   memberCount: number;
@@ -22,11 +27,11 @@ interface WelcomeLoaderData {
 export async function loader({ request, context }: Route.LoaderArgs) {
   const sessionContext = await requireSession(request, context);
   const url = new URL(request.url);
-  const teamMode = url.searchParams.get('team') === '1';
+  const teamMode = url.searchParams.get("team") === "1";
 
   if (!teamMode) {
     return {
-      orgName: 'camelAI',
+      orgName: "camelAI",
       teamContext: {
         memberCount: 0,
         appCount: 0,
@@ -41,22 +46,24 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const workspaceId = sessionContext.session.workspace_id;
   const orgStub = authEnv.ORG.get(authEnv.ORG.idFromName(orgId));
 
-  const [orgName, memberCount, workerScripts, integrations] = await Promise.all([
-    orgStub
-      .getInfo()
-      .then((info) => info?.name ?? 'your team')
-      .catch(() => 'your team'),
-    orgStub.getMemberCount(),
-    orgStub.listWorkerScripts(),
-    workspaceId
-      ? authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId))
-          .getIntegrations()
-          .then((rows: Array<{ name: string }>) =>
-            rows.map((row: { name: string }) => row.name)
-          )
-          .catch(() => [] as string[])
-      : Promise.resolve([] as string[]),
-  ]);
+  const [orgName, memberCount, workerScripts, integrations] = await Promise.all(
+    [
+      orgStub
+        .getInfo()
+        .then((info) => info?.name ?? "your team")
+        .catch(() => "your team"),
+      orgStub.getMemberCount(),
+      orgStub.listWorkerScripts(),
+      workspaceId
+        ? authEnv.WORKSPACE.get(authEnv.WORKSPACE.idFromName(workspaceId))
+            .getIntegrations()
+            .then((rows: Array<{ name: string }>) =>
+              rows.map((row: { name: string }) => row.name),
+            )
+            .catch(() => [] as string[])
+        : Promise.resolve([] as string[]),
+    ],
+  );
 
   return {
     orgName,
@@ -70,14 +77,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export function meta(_: Route.MetaArgs) {
   return [
-    { title: 'Welcome - camelAI' },
-    { name: 'description', content: 'Welcome to camelAI onboarding' },
+    { title: "Welcome - camelAI" },
+    { name: "description", content: "Welcome to camelAI onboarding" },
   ];
 }
 
 function formatTeamSummary(teamContext: TeamContext): string {
   const parts = [
-    `${teamContext.memberCount} team ${teamContext.memberCount === 1 ? 'member' : 'members'}`,
+    `${teamContext.memberCount} team ${teamContext.memberCount === 1 ? "member" : "members"}`,
   ];
 
   if (teamContext.appCount > 0) {
@@ -85,10 +92,10 @@ function formatTeamSummary(teamContext: TeamContext): string {
   }
 
   if (teamContext.integrations.length > 0) {
-    parts.push(`Connected to ${teamContext.integrations.join(', ')}`);
+    parts.push(`Connected to ${teamContext.integrations.join(", ")}`);
   }
 
-  return parts.join('  •  ');
+  return parts.join("  •  ");
 }
 
 export default function OnboardingWelcomeRoute() {
@@ -97,9 +104,13 @@ export default function OnboardingWelcomeRoute() {
   const [error, setError] = useState<string | null>(null);
   const [isCompleting, setIsCompleting] = useState(false);
   const completionStartedRef = useRef(false);
-  const verificationFetcher = useFetcher<{ success?: boolean; error?: string }>();
-  const { orgName, teamContext } =
-    useLoaderData<typeof loader>() as WelcomeLoaderData;
+  const verificationFetcher = useFetcher<{
+    success?: boolean;
+    error?: string;
+  }>();
+  const { orgName, teamContext } = useLoaderData<
+    typeof loader
+  >() as WelcomeLoaderData;
 
   const isTeamWelcome = context.teamMode;
   const isTeamMemberAlreadyOnboarded =
@@ -107,12 +118,14 @@ export default function OnboardingWelcomeRoute() {
   const emailVerificationRequired =
     context.emailVerificationRequired && !context.emailVerified;
   const emailVerifiedFromLink =
-    new URLSearchParams(location.search).get('emailVerified') === '1';
+    new URLSearchParams(location.search).get("emailVerified") === "1";
+  const promptKey =
+    new URLSearchParams(location.search).get("prompt_key")?.trim() || "";
   const verificationSent =
-    verificationFetcher.state === 'idle' &&
+    verificationFetcher.state === "idle" &&
     verificationFetcher.data?.success === true;
   const verificationError =
-    verificationFetcher.state === 'idle'
+    verificationFetcher.state === "idle"
       ? verificationFetcher.data?.error
       : undefined;
 
@@ -121,14 +134,18 @@ export default function OnboardingWelcomeRoute() {
       <div className="space-y-6 text-center">
         <div className="space-y-3">
           <h1 className="text-3xl font-semibold tracking-tight">
-            {isTeamWelcome ? `Welcome to ${orgName}` : 'Welcome to camelAI'}
+            {isTeamWelcome ? `Welcome to ${orgName}` : "Welcome to camelAI"}
           </h1>
           {!isTeamWelcome ? (
             <>
               <p className="text-balance text-muted-foreground">
-                camelAI is your AI software engineer. Claude has a permanent computer here, so it can build, deploy, and maintain applications for you.
+                camelAI is your AI software engineer. Claude has a permanent
+                computer here, so it can build, deploy, and maintain
+                applications for you.
               </p>
-              <p className="text-muted-foreground">Verify your email to get started.</p>
+              <p className="text-muted-foreground">
+                Verify your email to get started.
+              </p>
             </>
           ) : (
             <>
@@ -157,7 +174,8 @@ export default function OnboardingWelcomeRoute() {
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4 text-left">
             <p className="text-sm font-medium">Verify your email</p>
             <p className="text-sm text-muted-foreground">
-              We sent a verification link to {context.userEmail}. You&apos;ll need to confirm it before continuing.
+              We sent a verification link to {context.userEmail}. You&apos;ll
+              need to confirm it before continuing.
             </p>
             {verificationSent ? (
               <p className="text-sm text-muted-foreground">
@@ -169,17 +187,23 @@ export default function OnboardingWelcomeRoute() {
                 <AlertDescription>{verificationError}</AlertDescription>
               </Alert>
             ) : null}
-            <verificationFetcher.Form method="post" action="/api/auth/verify-email/send">
+            <verificationFetcher.Form
+              method="post"
+              action="/api/auth/verify-email/send"
+            >
+              {promptKey ? (
+                <input type="hidden" name="promptKey" value={promptKey} />
+              ) : null}
               <Button
                 type="submit"
                 variant="outline"
-                disabled={verificationFetcher.state !== 'idle'}
+                disabled={verificationFetcher.state !== "idle"}
               >
-                {verificationFetcher.state !== 'idle'
-                  ? 'Sending...'
+                {verificationFetcher.state !== "idle"
+                  ? "Sending..."
                   : verificationSent
-                    ? 'Resend verification email'
-                    : 'Send verification email'}
+                    ? "Resend verification email"
+                    : "Send verification email"}
               </Button>
             </verificationFetcher.Form>
           </div>
@@ -215,12 +239,12 @@ export default function OnboardingWelcomeRoute() {
                 setError(
                   nextError instanceof Error
                     ? nextError.message
-                    : 'Failed to complete onboarding'
+                    : "Failed to complete onboarding",
                 );
               }
             }}
           >
-            {isCompleting ? 'Getting Started...' : 'Get Started'}
+            {isCompleting ? "Getting Started..." : "Get Started"}
           </Button>
         </div>
       </div>

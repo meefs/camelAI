@@ -66,6 +66,7 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 ## Data Flow
 
 ### Authentication
+
 1. User signs up/logs in via `/api/auth/login` or `/api/auth/signup`
 2. Passwords are hashed/verified with PBKDF2 (100k iterations, SHA-256)
 3. Password-based signups receive an email verification link (`/api/auth/verify-email`), and onboarding completion is blocked until verified (`/api/auth/verify-email/send` for resend)
@@ -73,27 +74,36 @@ This project uses [shadcn/ui](https://ui.shadcn.com). **When doing ANY UI work, 
 5. Route loaders call `requireAuthContext()` to validate session and load user/org/workspace data
 
 ### OAuth State Storage
+
 Google/GitHub OAuth `state` is stored in an HMAC-signed `chiridion_oauth_state` cookie, not a Durable Object. `workers/main/src/routes/oauth.ts` sets the cookie on `/api/auth/{provider}` and validates it on `/api/auth/{provider}/callback` by checking the signed payload, provider, nonce, and 5-minute expiry. This avoids KV eventual-consistency issues during callback handling without introducing a DO hop.
 
 ### Onboarding
+
 Incomplete users are redirected to `/onboarding` before accessing `_app` routes. OAuth signups (non-team) auto-complete onboarding with no UI, then redirect to first chat. Password signups stay on the onboarding welcome screen until email verification is complete, then proceed. Team invitation users see the team welcome screen before proceeding. `POST /api/onboarding/complete` now marks `completed_at`, creates the first thread, and returns a hidden onboarding system message plus redirect target. The client seeds `pendingMessage:newThread` and `showBootModal` in sessionStorage before navigating to `/chat/{threadId}?newThread=1`. Preference capture now happens in-chat through `AskUserQuestion`.
+Sales-site signups preserve `prompt_key` through password-email verification by embedding the normalized key in the signed verification token and restoring it on the `/onboarding?emailVerified=1&prompt_key=...` redirect, so the first seeded chat survives new tabs and login redirects without relying on browser storage.
 
 ### Sales Site Prompt Handoff
+
 Prompts started on `camelai.com` arrive at `camelai.dev` as one-time `prompt_key` URL params backed by shared `APP_KV` records under `sales_prompt:{key}` (30-minute TTL, delete-after-read). Returning users land on `/chat?prompt_key=...`, where the welcome-screen loader consumes KV via `src/lib/sales-prompt.server.ts`, pre-fills the composer, and `Chat.tsx` removes the stale key from the URL after hydration. Users who are still gated to onboarding keep the `prompt_key` through `_app` redirects; `POST /api/onboarding/complete` consumes the KV prompt, swaps in a sales-site-specific onboarding system message, returns the normalized `salesPrompt`, and the client seeds `pendingMessage:newThread` with both the hidden system context and the user's original prompt so their first chat auto-starts. When that onboarding path is used, the route also triggers background thread-title generation from the sales prompt so the first thread does not keep the placeholder title.
 
 ### Get Help Requests
+
 Users can open an in-app help dialog from the sidebar footer (`Get Help`, `CircleHelp` icon). The form posts to `POST /api/help` with category, severity, description, and client context (`pageUrl`, `screenSize`). The route validates with zod/Conform, returns success immediately, and uses `waitUntil()` to:
+
 1. Generate a concise subject line with Workers AI (`@cf/google/gemma-3-12b-it`)
 2. Send a user confirmation email (CC + Reply-To: `support@camelai.com`)
 3. Send an internal support-triage email to `support@camelai.com` with user/org/workspace/browser context
 4. Log non-`sent` email delivery results (`failed`/`skipped`) for observability
 
 ### Dev Email Outbox
+
 When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbox (KV-backed) with delivery status and provider metadata. Inspect via:
+
 - `GET /api/dev/sent-emails?format=html` for a browsable list
 - `GET /api/dev/sent-emails/:id?format=html` for full rendered HTML preview
 
 ### Message Sending
+
 1. WebSocket connects to `/ws/{workspace}` → Worker validates access → forwards to `ChatThreadDO`
 2. `ChatThreadDO` opens WebSocket to sandbox `control-plane.mjs`
 3. `control-plane.mjs` calls Claude SDK `query()` and streams events back with monotonic `seq` numbers
@@ -104,26 +114,33 @@ When `NEXTJS_ENV=development`, sent email payloads are captured into a dev outbo
 8. `ChatThreadDO` computes context usage from `stream_event.message_start` usage and now broadcasts live `context_usage_state` updates during a turn when a model-scoped `contextWindow` cache is available (`chatContextWindowByModel`, persisted in DO KV). On `result`, it computes and persists the canonical value (`chatContextUsedPercent`) and replays `transientContextUsedPercent ?? contextUsedPercent` on chat init so reconnects can resume from the freshest value. The composer `ContextIndicator` (left toolbar, after Mic) appears when usage is `>= 50%`, shows `"XX% used"`, and can trigger `/compact` without mutating unsent draft text.
 
 ### Agent Teams Polling
+
 - `sandbox/team-poll-controller.mjs` owns TeamCreate tracking and teammate inbox polling for a thread; `control-plane.mjs` delegates SDK events/results to this controller.
 - The controller stores canonical owned-team names per thread in `~/.claude/projects/<projectPath>/<threadId>.team-poll-state.json`.
 - Teammate inbox polling only considers teams owned by the current thread and skips entries already marked `read` or previously consumed (persisted per team), preventing duplicate teammate message injection after control-plane restarts.
 
 ### Thread Message History Retrieval
+
 `getMessages()` no longer parses JSONL in the Worker runtime. It now calls sandbox-host `GET /v1/workspaces/{orgId}/{workspaceId}/chat/messages?threadId={threadId}`, and sandbox-host reads + parses the JSONL file into `Message[]` before returning it. For large histories, the app can request `GET /api/workspaces/:id/chat/:threadId/messages/stream`, and the Worker streams the JSON response body through from sandbox-host without buffering the full payload in Worker memory.
 
 ### QAML Backdoor Read-Only Thread View
+
 Superusers can open `/chat/:threadId?adminReadonly=1` from qaml-backdoor thread list/detail via **View as User** (opens in a new tab). Read-only mode:
+
 - loads messages from `GET /api/admin/threads/:id/messages` (which proxies sandbox-host parsed JSONL response)
 - disables composer/send and chat websocket connection
 - keeps preview panel enabled for QC inspection of generated files/apps
 
 ### QAML Backdoor Org Detail Panels
+
 Org detail (`/qaml-backdoor/orgs/:id`) includes:
+
 - **Recent Threads**: latest 10 by `updated_at` (newest first)
 - **Recent Apps**: latest 10 by `updated_at` (newest first)
 - Counts are shown only when cheap to derive (no heavy count queries on page load)
 
 ### Slack Chat Ingress
+
 1. Slack Events API posts to `/api/integrations/slack/events` (signature-verified with `SLACK_SIGNING_SECRET`)
 2. Worker dedupes by Slack `event_id` and message identity (`team/channel/user/ts`), enqueues to `SLACK_EVENTS_QUEUE`, and returns `200` immediately
 3. Queue consumer resolves workspace/integration by Slack `team_id` from KV index (`slack_team:{teamId}`)
@@ -134,6 +151,7 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 8. Slack ingress no longer applies an app-level external-turn timeout; turns wait for model completion with a 30-minute safety fallback
 
 ### Email Chat Ingress
+
 1. Cloudflare Email Routing delivers inbound messages to Worker `email()` (non-HTTP handler)
 2. A single registered inbox local-part is used (for example `chat@<domain>`), and workspace addresses are subaddressed as `{local-part}+{orgSlug}.{workspaceSlug}@<domain>` (e.g., `chat+acme-corp-85b.default-workspace@camelai.dev`)
 3. Sender is authorized by email (`EMAIL_TO_USER` lookup) plus workspace access check (org member + workspace access not `none`)
@@ -145,12 +163,14 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 9. Email ingress no longer applies an app-level external-turn timeout; turns wait for model completion with a 30-minute safety fallback
 
 ### Sandbox Proxy Auth
+
 - Container egress calls go through sandbox-host `/proxy/:threadId/*`.
 - Sandbox-host injects `x-sandbox-secret`, `x-chiridion-org-id`, `x-chiridion-workspace-id`, and `x-chiridion-thread-id` on upstream worker requests.
 - `claude-proxy` (`/api/claude/v1/messages` and `/api/claude/v1/messages/count_tokens`) and OpenAI proxy (`/api/openai/v1/*`) accept only sandbox-host injected auth (no signed-token fallback path).
 - Proxy thread mappings are session-based: active while chat WS is open; on close they enter close-grace (`PROXY_SESSION_CLOSE_GRACE_MS`) and then are cleaned up.
 
 ### Data Proxy (SQL Server, PostgreSQL, MySQL)
+
 - User uploaded workers declare a `service` binding named `DATA_PROXY`; during deploy, `cf-api-proxy` rewrites it to an internal service entrypoint (`DataProxyService`) scoped with `{orgId, workspaceId}` props.
 - `DataProxyService` methods (`mssqlQuery`, `postgresQuery`, `mysqlQuery`, `health`) return plain JSON objects (`{ ok, data }` / `{ ok, error }`) rather than `Response`.
 - Worker-side JSON parsing enforces a configurable max response body size (`DATA_PROXY_MAX_RESPONSE_BYTES`, default `8 MiB`) to prevent unbounded memory usage.
@@ -160,18 +180,21 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 - Sandbox containers receive `DATA_PROXY_URL` (no token). Requests are authenticated by sandbox-host injected headers (`x-sandbox-secret`, org/workspace/thread IDs), same model used by other container proxy routes.
 
 ### OpenAI-Compatible Gateway Proxy
+
 - Sandbox containers call OpenAI-compatible routes at `OPENAI_PROXY_URL` / `OPENAI_BASE_URL` (no real API key required; `OPENAI_API_KEY=proxy`).
 - Worker route `/api/openai/v1/*` validates sandbox proxy headers, derives org/workspace/thread identity, and forwards through sandbox-host control route `/v1/workspaces/{orgId}/{workspaceId}/openai-proxy/v1/*`.
 - sandbox-host control route forwards to Cloudflare AI Gateway and injects `cf-aig-metadata` with tenant context (`uid`, `chiridion.orgId`, `chiridion.workspaceId`, `chiridion.threadId`) so gateway-side rate limits/spend policies can be scoped per tenant.
 - For `/v1/chat/completions`, sandbox-host enforces `model: "dynamic/auto"` to mirror virtual AI binding behavior.
 
 ### Anthropic Gateway Bedrock Fallback
+
 - Anthropic Claude proxy traffic (`/api/claude/v1/messages`) goes through AI Gateway provider-specific routes with the Bedrock custom provider first and Anthropic second as fallback.
 - Bedrock primary routing is implemented as a Gateway custom provider named `custom-bedrock-provider`, backed by the standalone worker in `workers/bedrock-provider/`.
 - The custom worker receives Anthropic-style `/v1/messages` payloads, rewrites them for Bedrock runtime, forwards the Gateway-managed `Authorization` header to Bedrock, and converts Bedrock eventstream frames (`{"bytes":"<base64>"}`) into Anthropic SSE before returning them to Gateway.
 - sandbox-host no longer performs Bedrock stream decoding or universal-endpoint provider wrapping for Claude traffic; it now does a dumb raw-body fallback from `custom-bedrock-provider` to `anthropic` on non-`2xx` responses.
 
 ### Virtual AI Binding
+
 - User uploaded workers can declare a native `ai` binding (for example `AI`) and the deploy pipeline rewrites it to an internal service entrypoint (`AIVirtualBinding`) scoped with `{orgId, workspaceId}` props.
 - `AIVirtualBinding.run(model, input, options?)` routes through Cloudflare AI Gateway over HTTP (`/compat/chat/completions`) when gateway config is present (`CF_ACCOUNT_ID` + `CF_GATEWAY_NAME` + `CF_GATEWAY_TOKEN`/`AI_GATEWAY_AUTH_TOKEN`).
 - Virtual binding model selection is configured by `AI_VIRTUAL_MODEL` (default `dynamic/auto`). Caller-supplied model arguments and top-level `input.model` values are ignored.
@@ -180,46 +203,59 @@ Org detail (`/qaml-backdoor/orgs/:id`) includes:
 - If gateway config is absent, `AIVirtualBinding` fails fast (no non-gateway fallback path).
 
 ### Slash Commands
+
 Users send Claude SDK slash commands as their entire message. `ChatThreadDO.formatAttributedUserMessage()` strips the author prefix. Supported: `/compact`, `/context`, `/debug`, `/insights`, `/security-review`. Allowlist in `ChatThreadDO.SLASH_COMMANDS` (`workers/main/src/durable-objects.ts`).
 
 ### Pending-Message Handoff Pattern
+
 Several features (onboarding first-thread, custom connection "Other") use the same pattern: seed `sessionStorage` key `pendingMessage:newThread` with a `<camelai system message>...</camelai system message>` payload, navigate to `/chat/{threadId}?newThread=1`, and `Chat.tsx` consumes and sends the hidden message.
 
 ### Chat Attachment Uploads
+
 Multipart-only R2 uploads via `/api/workspaces/:id/upload` with actions: `mpu-create`, `mpu-uploadpart`, `mpu-complete`, `mpu-abort`.
 
 ### Computer Tab File Search
+
 - The file tree API route (`/api/workspaces/:id/fs/list`) supports `recursive` + `includeHidden` query params and returns `relativePath` for entries.
 - Recursive list requests are handled in one sandbox-host call (host-side walk) instead of per-directory worker recursion.
 - `WorkspaceContainer.listFiles()` keeps a compatibility fallback to legacy per-directory recursion when sandbox-host responses do not include `recursive: true`.
 
 ### Todo State Persistence
+
 `control-plane.mjs` emits `todo_state` on `TodoWrite` tool calls. `ChatThreadDO` persists it and replays on WebSocket init. Cleared on turn completion (`result` event).
 
 ### Task Notifications
+
 SDK `<task-notification>` user-role payloads are parsed client-side, merged into the nearest assistant message as `task_notification` content blocks, and rendered inline as tool-call rows. If no assistant message exists yet, Chat synthesizes an assistant message so raw XML is never shown.
 
 ### MCP Prompt Replay
+
 MCP-driven prompts (connection setup, bug reports) are persisted in `ChatThreadDO` and replayed to newly connected clients. Prompts expire (30m for connections, 5m for bug reports).
 
 ### MCP App Logs Tool
+
 The MCP server exposes `get_latest_logs`, which retrieves recent tail-captured runtime logs for a deployed app in the current workspace. It validates script ownership, resolves the dispatch script key (`{script}--{org-slug}`), and reads from `WorkerLogsDO` (with legacy key fallback).
 
 ### Integration Token Refresh
+
 OAuth integrations with expiring tokens are refreshed by `WorkspaceDO` alarms. Updated credentials are pushed to both sandbox runtimes and deployed workers.
 
 ### Scheduled Prompts (Workspace Cron)
+
 Each workspace has a `WorkspaceCronDO` scheduler that stores cron-style prompt jobs (5-field UTC cron expressions) and triggers them via DO alarms. When a job fires, `WorkspaceCronDO` sends the configured prompt into the target thread through `ChatThreadDO`’s `/external-message` endpoint, so it runs as an automated agent turn. Jobs are managed through MCP tools (`list_scheduled_prompts`, `create_scheduled_prompt`, `update_scheduled_prompt`, `delete_scheduled_prompt`, `run_scheduled_prompt_now`).
 
 ### App Previews
+
 Deploy enqueues screenshot job → Browser Rendering → JPEG stored in R2 at `app-previews/{orgId}/{workspaceId}/{scriptName}/current.jpg` → served via `/api/apps/:scriptName/preview`.
 
 ### Notebook File Previews
+
 Notebook previews render in the chat preview panel with two modes: **Report** (editorial rendering with TOC, hidden code, styled outputs) and **Notebook** (full cell-by-cell with execution gutters). Supports Vega/Vega-Lite, Plotly, DataFrame tables (inline rendering capped at 100 rows with CSV download), and generic HTML in sandboxed iframes. Chart outputs support fullscreen expansion with viewport-height layout; Plotly fullscreen enables the mode bar for zoom/pan/select/autoscale tools while preserving SVG/PNG/CSV export actions. The chat preview toolbar includes a notebook-only download menu with raw `.ipynb` download plus **Download report as PDF**, which exports the light-themed Report mode presentation through a client-side React PDF pipeline. Standalone published notebook pages do not expose the PDF export control yet.
 Sandbox notebook execution preloads pandas display defaults through IPython startup (`display.max_rows=200`, `display.max_columns=50`, `display.max_colwidth=1000`, `display.width=None`) so notebook HTML outputs include richer table content without per-notebook `pd.set_option` boilerplate.
 Table outputs (notebook DataFrame renders and standalone CSV/TSV previews) also support fullscreen expansion via `TableViewer`: 500-row cap, sortable columns, column resizing, global row filtering, sticky index columns, text-wrap toggle, and full-table CSV export. Report and notebook modes remain width-capped and centered on wide screens (`max-w-5xl` for report, `max-w-[1800px]` for notebook) while remaining full-width on narrow panels. Markdown file previews render inside a centered `max-w-3xl` container with consistent padding. Source-code file previews (`.py`, `.ts`, `.js`, `.go`, `.rs`, `.sql`, etc.) use Shiki highlighting with line numbers and a copy button in an IDE-like full-panel layout; plain text (`.txt`, `.log`) remains a raw `<pre>` preview.
 
 ### SDK Event Types
+
 - `system` (subtypes: `init`, `status`, `compact_boundary`) - Session initialization, compaction status transitions, compaction boundary markers
 - `stream_event` - Real-time: `content_block_start`, `content_block_delta`, `message_delta`
 - `assistant` - Full/partial assistant message
@@ -231,38 +267,38 @@ Table outputs (notebook DataFrame renders and standalone CSV/TSV previews) also 
 
 Routes are defined as React Router routes in `src/routes/api/`. See `src/routes.ts` for the full route configuration.
 
-| Area | Key Routes |
-|------|------------|
-| Auth | `/api/auth/login`, `/api/auth/signup`, `/api/auth/verify-email`, `/api/auth/verify-email/send`, `/api/auth/logout`, `/api/auth/switch-org`, `/api/auth/switch-workspace` |
-| OAuth | `/api/auth/google[/callback]`, `/api/auth/github[/callback]` |
-| Slack | `/api/integrations/slack/oauth`, `/api/integrations/slack/callback`, `/api/integrations/slack/events` |
-| Orgs | `/api/orgs/:id/invite`, `/api/orgs/:id/check-slug`, `/api/orgs/:id/update-slug` |
-| Onboarding | `/api/onboarding/complete` |
-| Support | `/api/help` |
-| Dev tooling | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id` |
-| Admin troubleshooting | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages` |
-| Admin REST API | `/api/admin/{stats,users,orgs,threads,kv,r2}` (Bearer `ADMIN_API_KEY` auth) |
-| Invitations | `/api/invitations/:orgId/:invitationId` (GET/POST) |
-| Workspace FS | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}` |
-| Workspace chat | `/api/workspaces/:id/chat/:threadId/messages/stream` |
-| Workspace files | `/api/workspaces/:id/{upload,download,uploads/*,outputs/*}` |
-| Sandbox container proxy APIs | `/api/{mssql,postgres,mysql}/query`, `/api/openai/v1/*` |
-| Apps | `/api/apps/:scriptName/preview` |
-| WebSocket | `/ws/{workspace}` (chat), `/ws/logs?scriptName={name}` (worker logs) |
-| Email | Worker `email()` handler (Cloudflare Email Routing, workspace inbox format `{local-part}+{orgSlug}.{workspaceSlug}@...`) |
-| MCP | `/mcp` (streamable HTTP), `/mcp/health` |
+| Area                         | Key Routes                                                                                                                                                               |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Auth                         | `/api/auth/login`, `/api/auth/signup`, `/api/auth/verify-email`, `/api/auth/verify-email/send`, `/api/auth/logout`, `/api/auth/switch-org`, `/api/auth/switch-workspace` |
+| OAuth                        | `/api/auth/google[/callback]`, `/api/auth/github[/callback]`                                                                                                             |
+| Slack                        | `/api/integrations/slack/oauth`, `/api/integrations/slack/callback`, `/api/integrations/slack/events`                                                                    |
+| Orgs                         | `/api/orgs/:id/invite`, `/api/orgs/:id/check-slug`, `/api/orgs/:id/update-slug`                                                                                          |
+| Onboarding                   | `/api/onboarding/complete`                                                                                                                                               |
+| Support                      | `/api/help`                                                                                                                                                              |
+| Dev tooling                  | `/api/dev/sent-emails`, `/api/dev/sent-emails/:id`                                                                                                                       |
+| Admin troubleshooting        | `/api/admin/threads/:id/jsonl`, `/api/admin/threads/:id/messages`                                                                                                        |
+| Admin REST API               | `/api/admin/{stats,users,orgs,threads,kv,r2}` (Bearer `ADMIN_API_KEY` auth)                                                                                              |
+| Invitations                  | `/api/invitations/:orgId/:invitationId` (GET/POST)                                                                                                                       |
+| Workspace FS                 | `/api/workspaces/:id/fs/{list,read,content/*,write,upload,create,mkdir,move,delete}`                                                                                     |
+| Workspace chat               | `/api/workspaces/:id/chat/:threadId/messages/stream`                                                                                                                     |
+| Workspace files              | `/api/workspaces/:id/{upload,download,uploads/*,outputs/*}`                                                                                                              |
+| Sandbox container proxy APIs | `/api/{mssql,postgres,mysql}/query`, `/api/openai/v1/*`                                                                                                                  |
+| Apps                         | `/api/apps/:scriptName/preview`                                                                                                                                          |
+| WebSocket                    | `/ws/{workspace}` (chat), `/ws/logs?scriptName={name}` (worker logs)                                                                                                     |
+| Email                        | Worker `email()` handler (Cloudflare Email Routing, workspace inbox format `{local-part}+{orgSlug}.{workspaceSlug}@...`)                                                 |
+| MCP                          | `/mcp` (streamable HTTP), `/mcp/health`                                                                                                                                  |
 
 ## Durable Objects
 
-| DO | Scope | Purpose |
-|----|-------|---------|
-| `UserDO` | per user | Profile, password, OAuth providers, org memberships, onboarding state |
-| `OrgDO` | per org | Members, invitations, threads, worker scripts, integrations, API tokens |
-| `OrgSlugDO` | per slug | Atomic slug ownership (`claim`/`getOwner`/`release`) |
-| `WorkspaceDO` | per workspace | Metadata, members, integrations, audit logs, token refresh alarms |
+| DO                | Scope         | Purpose                                                                                         |
+| ----------------- | ------------- | ----------------------------------------------------------------------------------------------- |
+| `UserDO`          | per user      | Profile, password, OAuth providers, org memberships, onboarding state                           |
+| `OrgDO`           | per org       | Members, invitations, threads, worker scripts, integrations, API tokens                         |
+| `OrgSlugDO`       | per slug      | Atomic slug ownership (`claim`/`getOwner`/`release`)                                            |
+| `WorkspaceDO`     | per workspace | Metadata, members, integrations, audit logs, token refresh alarms                               |
 | `WorkspaceCronDO` | per workspace | Scheduled prompt definitions, next-run calculation, alarm-based prompt dispatch to chat threads |
-| `ChatThreadDO` | per thread | WebSocket state, preview target, todo/prompt persistence |
-| `WorkerLogsDO` | per script | Deployed worker logs (up to 10k entries), real-time WebSocket streaming |
+| `ChatThreadDO`    | per thread    | WebSocket state, preview target, todo/prompt persistence                                        |
+| `WorkerLogsDO`    | per script    | Deployed worker logs (up to 10k entries), real-time WebSocket streaming                         |
 
 Thread records are treated uniformly across web, Slack, and email ingress. History and admin queries do not filter by thread source.
 
@@ -286,10 +322,12 @@ const config = this.ctx.storage.kv.get("config");
 ### Background Tasks
 
 ```typescript
-import { waitUntil } from 'cloudflare:workers';
+import { waitUntil } from "cloudflare:workers";
 
 waitUntil(
-  someAsyncOperation().catch(err => console.error('Background task failed:', err))
+  someAsyncOperation().catch((err) =>
+    console.error("Background task failed:", err),
+  ),
 );
 ```
 
@@ -314,9 +352,11 @@ If you need caching, use `ctx.storage.kv` which is scoped per DO instance.
 ## Development
 
 ### Prerequisites
+
 - Node.js 22+, Bun (always use `bun` instead of `npm`), Go 1.24+ (for sandbox-host), Cloudflare account
 
 ### Local Development
+
 ```bash
 bun run dev          # Full Cloudflare dev (recommended), default port 3001
 bun run build        # Production build → build/client/ + build/server/
@@ -325,6 +365,7 @@ bun run build        # Production build → build/client/ + build/server/
 ### Environment Variables
 
 Create `.dev.vars`:
+
 ```
 CF_GATEWAY_TOKEN=your_gateway_token_here
 WORKER_BASE_URL=https://your-ngrok-subdomain.ngrok-free.app
@@ -339,9 +380,11 @@ Other env vars: `INTEGRATION_SECRET_KEY`, `TOKEN_SIGNING_SECRET`, `EMAIL_FROM_AD
 Sandbox debug vars (optional): `CHIRIDION_TRACE_EVENTS`, `CHIRIDION_DEBUG_STARTUP`, `CHIRIDION_DEBUG_SDK`, `CHIRIDION_DEBUG_FS`.
 
 ### KV Namespaces
+
 `EMAIL_TO_USER` (email→userId), `SESSIONS` (session storage), `API_TOKENS` (API token storage).
 
 ### Testing
+
 ```bash
 bun run test          # Unit tests (Vitest + jsdom)
 bun run test:run      # CI mode (run once)
@@ -351,6 +394,7 @@ bun run test:e2e      # E2E tests (Playwright)
 ```
 
 ### Build & Deploy
+
 ```bash
 bun run build:cf                    # Build for Cloudflare
 bun run deploy:main:prod            # Deploy main worker
@@ -374,19 +418,19 @@ curl -X POST -d '{"user_id":"..."}' -H "Authorization: Bearer <key>" https://<ho
 curl -X PATCH -d '{"title":"..."}' -H "Authorization: Bearer <key>" https://<host>/api/admin/threads/:id
 ```
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/stats` | Aggregate counts (user_count, org_count, membership_count) |
-| GET | `/users` | All users |
-| GET | `/users/:id/orgs` | User's org memberships |
-| GET | `/orgs` | All orgs (enriched with members + workspaces) |
-| GET | `/threads` | All threads across orgs |
-| POST | `/orgs/:id/members` | Add member to org (`{ user_id, role? }`) |
-| PATCH | `/threads/:id` | Update thread (`{ title?, created_by? }`) |
-| GET | `/kv` | List KV keys (`?prefix=` supported) |
-| GET | `/kv/:key` | Get KV value |
-| GET | `/r2` | List R2 objects (`?prefix=` supported) |
-| GET | `/r2/:key+` | R2 object head metadata |
+| Method | Endpoint            | Purpose                                                    |
+| ------ | ------------------- | ---------------------------------------------------------- |
+| GET    | `/stats`            | Aggregate counts (user_count, org_count, membership_count) |
+| GET    | `/users`            | All users                                                  |
+| GET    | `/users/:id/orgs`   | User's org memberships                                     |
+| GET    | `/orgs`             | All orgs (enriched with members + workspaces)              |
+| GET    | `/threads`          | All threads across orgs                                    |
+| POST   | `/orgs/:id/members` | Add member to org (`{ user_id, role? }`)                   |
+| PATCH  | `/threads/:id`      | Update thread (`{ title?, created_by? }`)                  |
+| GET    | `/kv`               | List KV keys (`?prefix=` supported)                        |
+| GET    | `/kv/:key`          | Get KV value                                               |
+| GET    | `/r2`               | List R2 objects (`?prefix=` supported)                     |
+| GET    | `/r2/:key+`         | R2 object head metadata                                    |
 
 ### Sandbox Host Deployment
 

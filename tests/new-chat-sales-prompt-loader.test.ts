@@ -56,6 +56,7 @@ describe('new chat loader sales prompt handling', () => {
       currentWorkspace: { id: 'ws_123' },
       currentOrg: { id: 'org_123' },
       user: { id: 'user_123', name: 'Illiana' },
+      onboarding: { completed_at: Date.now() },
     });
     getRecentThreadsMock.mockResolvedValue([]);
   });

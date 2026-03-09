@@ -86,7 +86,7 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
         onEscapeKeyDown={(e) => e.preventDefault()}
         className={cn(
           'sm:max-w-md',
-          'bg-zinc-950 text-zinc-300 ring-zinc-800',
+          'bg-white text-zinc-600 ring-zinc-200 dark:bg-zinc-950 dark:text-zinc-300 dark:ring-zinc-800',
           'font-mono text-[13px] leading-relaxed',
           'p-6',
         )}
@@ -101,7 +101,7 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
                   : 'bg-amber-400 animate-pulse',
               )}
             />
-            <span className="text-zinc-200 text-sm font-medium">
+            <span className="text-zinc-800 dark:text-zinc-200 text-sm font-medium">
               {isComplete ? 'Machine ready' : 'Setting up your machine'}
             </span>
           </div>
@@ -114,11 +114,11 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
                 className="animate-in fade-in slide-in-from-left-2 duration-300 ease-out"
               >
                 <div className="flex items-start gap-2">
-                  <span className="text-zinc-600 shrink-0">&rsaquo;</span>
+                  <span className="text-zinc-400 dark:text-zinc-600 shrink-0">&rsaquo;</span>
                   <div>
-                    <span className="text-zinc-300">{line.text}</span>
+                    <span className="text-zinc-600 dark:text-zinc-300">{line.text}</span>
                     {'subtitle' in line && line.subtitle && (
-                      <p className="text-[11px] text-zinc-600 mt-0.5">
+                      <p className="text-[11px] text-zinc-400 dark:text-zinc-600 mt-0.5">
                         {line.subtitle}
                       </p>
                     )}
@@ -130,7 +130,7 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
             {/* Blinking cursor */}
             {!showReadyLine && visibleLines > 0 && (
               <div className="ml-5 mt-1">
-                <div className="h-4 w-1.5 bg-zinc-500 animate-[blink_1s_steps(1)_infinite]" />
+                <div className="h-4 w-1.5 bg-zinc-400 dark:bg-zinc-500 animate-[blink_1s_steps(1)_infinite]" />
               </div>
             )}
 
@@ -139,7 +139,7 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
               <div className="animate-in fade-in slide-in-from-left-2 duration-300 ease-out">
                 <div className="flex items-start gap-2">
                   <span className="text-emerald-400 shrink-0">&bull;</span>
-                  <span className="text-zinc-100 font-medium">
+                  <span className="text-zinc-900 dark:text-zinc-100 font-medium">
                     Your machine is ready
                     <Check className="ml-1.5 inline h-3.5 w-3.5 text-emerald-400" />
                   </span>
@@ -149,7 +149,7 @@ export function OnboardingLoadingModal({ open, onDismiss }: OnboardingLoadingMod
           </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-between mt-6 text-[11px] text-zinc-700">
+          <div className="flex items-center justify-between mt-6 text-[11px] text-zinc-400 dark:text-zinc-700">
             <span>camelAI</span>
             <span>one-time setup</span>
           </div>

@@ -1,29 +1,31 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest";
 import {
   createEmailVerificationToken,
   validateEmailVerificationToken,
-} from '@/lib/email-verification-token';
+} from "@/lib/email-verification-token";
 
-describe('email verification token', () => {
-  const secret = 'test-signing-secret';
+describe("email verification token", () => {
+  const secret = "test-signing-secret";
 
-  it('creates and validates a token', async () => {
+  it("creates and validates a token", async () => {
     const token = await createEmailVerificationToken(secret, {
-      user_id: 'user-123',
-      email: 'Test@Example.com',
+      user_id: "user-123",
+      email: "Test@Example.com",
+      prompt_key: " sales-key-123 ",
     });
 
     const payload = await validateEmailVerificationToken(secret, token);
     expect(payload).not.toBeNull();
-    expect(payload?.purpose).toBe('email_verification');
-    expect(payload?.user_id).toBe('user-123');
-    expect(payload?.email).toBe('test@example.com');
+    expect(payload?.purpose).toBe("email_verification");
+    expect(payload?.user_id).toBe("user-123");
+    expect(payload?.email).toBe("test@example.com");
+    expect(payload?.prompt_key).toBe("sales-key-123");
   });
 
-  it('rejects tampered tokens', async () => {
+  it("rejects tampered tokens", async () => {
     const token = await createEmailVerificationToken(secret, {
-      user_id: 'user-123',
-      email: 'test@example.com',
+      user_id: "user-123",
+      email: "test@example.com",
     });
 
     const tampered = `${token}x`;
@@ -31,10 +33,10 @@ describe('email verification token', () => {
     expect(payload).toBeNull();
   });
 
-  it('rejects expired tokens', async () => {
+  it("rejects expired tokens", async () => {
     const token = await createEmailVerificationToken(secret, {
-      user_id: 'user-123',
-      email: 'test@example.com',
+      user_id: "user-123",
+      email: "test@example.com",
       issuedAt: Date.now() - 10_000,
       ttlMs: 1_000,
     });
@@ -43,4 +45,3 @@ describe('email verification token', () => {
     expect(payload).toBeNull();
   });
 });
-

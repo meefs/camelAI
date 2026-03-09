@@ -1,24 +1,24 @@
-'use client';
+"use client";
 
-import { useState, useEffect } from 'react';
-import { useNavigate, Link, useFetcher } from 'react-router';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { RadialGridBackground } from '@/components/ui/radial-grid-background';
-import { SlotMachinePrompt } from '@/components/ui/slot-machine-prompt';
-import { AlertCircle } from 'lucide-react';
-import { FullLogo } from '@/components/ui/logo';
-import { OAuthButtons, OAuthDivider } from '@/components/auth/oauth-buttons';
+import { useState, useEffect } from "react";
+import { useNavigate, Link, useFetcher } from "react-router";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { RadialGridBackground } from "@/components/ui/radial-grid-background";
+import { SlotMachinePrompt } from "@/components/ui/slot-machine-prompt";
+import { AlertCircle } from "lucide-react";
+import { FullLogo } from "@/components/ui/logo";
+import { OAuthButtons, OAuthDivider } from "@/components/auth/oauth-buttons";
 
 const inspirationalPrompts = [
-  'Alert me in Slack whenever someone signs up with a .edu email address',
-  'Build a feedback form that saves responses and emails me a daily summary',
-  'Send my team a weekly metrics email with Stripe revenue every Monday',
-  'Make a simple CRM for tracking investor conversations and follow-ups',
-  'Create a client portal where they upload files and I get notified in Slack',
-  'Build an internal calculator for sales reps to quote custom pricing',
+  "Alert me in Slack whenever someone signs up with a .edu email address",
+  "Build a feedback form that saves responses and emails me a daily summary",
+  "Send my team a weekly metrics email with Stripe revenue every Monday",
+  "Make a simple CRM for tracking investor conversations and follow-ups",
+  "Create a client portal where they upload files and I get notified in Slack",
+  "Build an internal calculator for sales reps to quote custom pricing",
 ];
 
 type SignupFormProps = {
@@ -28,45 +28,49 @@ type SignupFormProps = {
 export function SignupForm({ redirectTo }: SignupFormProps) {
   const navigate = useNavigate();
   const fetcher = useFetcher();
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [validationError, setValidationError] = useState('');
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [validationError, setValidationError] = useState("");
 
-  const submitting = fetcher.state !== 'idle';
+  const submitting = fetcher.state !== "idle";
   const serverError = fetcher.data?.error as string | undefined;
   const error = validationError || serverError;
 
   const loginHref =
-    redirectTo === '/'
-      ? '/login'
+    redirectTo === "/"
+      ? "/login"
       : `/login?redirect=${encodeURIComponent(redirectTo)}`;
 
   // Navigate on successful signup
   useEffect(() => {
-    if (fetcher.state === 'idle' && fetcher.data && !fetcher.data.error) {
+    if (fetcher.state === "idle" && fetcher.data && !fetcher.data.error) {
       navigate(redirectTo);
     }
   }, [fetcher.state, fetcher.data, navigate, redirectTo]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setValidationError('');
+    setValidationError("");
 
     if (password !== confirmPassword) {
-      setValidationError('Passwords do not match');
+      setValidationError("Passwords do not match");
       return;
     }
 
     if (password.length < 8) {
-      setValidationError('Password must be at least 8 characters');
+      setValidationError("Password must be at least 8 characters");
       return;
     }
 
     fetcher.submit(
-      JSON.stringify({ email, password, name: name || undefined }),
-      { method: 'post', action: '/api/auth/signup', encType: 'application/json' }
+      JSON.stringify({ email, password, name: name || undefined, redirectTo }),
+      {
+        method: "post",
+        action: "/api/auth/signup",
+        encType: "application/json",
+      },
     );
   };
 
@@ -151,12 +155,12 @@ export function SignupForm({ redirectTo }: SignupFormProps) {
                   className="w-full"
                   size="lg"
                 >
-                  {submitting ? 'Creating account...' : 'Create account'}
+                  {submitting ? "Creating account..." : "Create account"}
                 </Button>
               </div>
 
               <div className="text-center text-sm">
-                Already have an account?{' '}
+                Already have an account?{" "}
                 <Link
                   to={loginHref}
                   className="text-primary hover:underline underline-offset-4"

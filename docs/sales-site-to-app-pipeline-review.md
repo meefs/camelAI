@@ -4,21 +4,37 @@ Review of commit `9fdf2ff8` (web app) and uncommitted changes in `camelai-saless
 
 ## Verdict
 
-Solid implementation. The KV transport, sanitization, URL cleanup, and onboarding threading all follow the plan correctly. Tests cover the important paths. The issues below are mostly small gaps and one moderate concern about the OAuth flow.
+Solid implementation overall. Two critical bugs found and fixed in post-deploy testing:
+
+1. **Parallel loader race condition** — `_app.chat._index.tsx` consumed the KV entry in parallel with `_app.tsx` redirecting new users to onboarding, deleting the prompt before the onboarding flow could use it. Fixed by gating KV consumption on `onboarding.completed_at`.
+2. **Email verification new-tab issue** — `sessionStorage` is per-tab, so when the verification link opened in a new tab, the prompt key was inaccessible. Fixed by switching to `localStorage`.
 
 ---
 
-## Issues
+## Issues (fixed)
 
-### 1. OAuth redirect drops `prompt_key` (moderate)
+### 1. Parallel loader race condition (critical — FIXED)
 
-`workers/main/src/routes/oauth.ts` line 157 redirects to `stateData.redirect_url`, which is set from `sanitizeRedirectPath(url.searchParams.get('redirect'))` on the `/api/auth/{provider}` start endpoint. The OAuth start URL is built by `OAuthButtons` (`oauth-buttons.tsx:33-35`) which sets `redirect` from the `redirectUrl` prop — which is `redirectTo` from the `_auth.tsx` loader.
+React Router runs nested route loaders in parallel. When a new user hits `/chat?prompt_key=abc`:
+- `_app.tsx` loader starts → will redirect to `/onboarding?prompt_key=abc`
+- `_app.chat._index.tsx` loader starts IN PARALLEL → consumes (deletes) the KV entry
+- By the time onboarding calls `POST /api/onboarding/complete`, the KV entry is gone
 
-The chain works: `/signup?redirect=%2Fchat%3Fprompt_key%3Dabc` → `_auth.tsx` parses `redirect` → passes to `SignupForm` → `OAuthButtons` → `/api/auth/google?redirect=%2Fchat%3Fprompt_key%3Dabc` → OAuth state cookie stores `/chat?prompt_key=abc` → callback redirects to `/chat?prompt_key=abc`.
+**Fix:** `_app.chat._index.tsx` now only consumes the KV entry when `authContext.onboarding?.completed_at` is truthy. New users going through onboarding will have the KV entry consumed by `onboarding.complete.ts` instead.
 
-**However**, the diff in `oauth.ts` added a `sanitizeRedirectUrl` function (lines added in the diff) that URL-decodes and re-validates. Verify this function does not strip or double-encode the query string portion of the redirect. The existing `sanitizeRedirectPath` only checks for leading `/`, no `//`, and no `:` — the value `/chat?prompt_key=abc123` passes, but if `sanitizeRedirectUrl` does anything different, it could break the chain.
+### 2. Email verification opens in a new tab (critical — FIXED)
 
-**Action:** Manually test the full OAuth signup flow with a `prompt_key` redirect. The KV entry has a 30-minute TTL, so the OAuth round-trip has plenty of time, but the URL must survive intact.
+`/api/auth/verify-email` always redirects to `/onboarding?emailVerified=1` — no `prompt_key` in the URL. The new tab has no access to `sessionStorage` from the original tab, so `completeOnboarding()` finds no prompt key.
+
+**Fix:** Changed `salesPromptKey` storage from `sessionStorage` to `localStorage`, which is shared across tabs of the same origin. Cleanup still happens after successful consumption.
+
+## Issues (remaining)
+
+### 1. OAuth redirect chain (needs manual verification)
+
+The chain looks correct in code: `/signup?redirect=%2Fchat%3Fprompt_key%3Dabc` → `OAuthButtons` → `/api/auth/google?redirect=...` → cookie → callback → `/chat?prompt_key=abc`. `searchParams.set()` handles encoding correctly, and `sanitizeRedirectPath` allows the value through.
+
+**Action:** Manually test the full OAuth signup flow with a `prompt_key` redirect after the parallel-loader fix is deployed. The race condition fix may have been the only issue.
 
 ### 2. `consumeSalesPrompt` deletes before parsing (low)
 

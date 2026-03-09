@@ -48,7 +48,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const renderedAt = Date.now();
   let salesPrompt: string | null = null;
 
-  if (promptKey) {
+  // Only consume the KV entry if the user has completed onboarding.
+  // For new users, _app.tsx redirects to /onboarding in parallel with this
+  // loader — consuming here would delete the KV entry before the onboarding
+  // flow can use it.
+  if (promptKey && authContext.onboarding?.completed_at) {
     try {
       salesPrompt = await consumeSalesPrompt(env.APP_KV, promptKey);
     } catch (error) {

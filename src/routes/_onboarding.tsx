@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2 } from 'lucide-react';
-import { Outlet, redirect, useLoaderData, useNavigate } from 'react-router';
-import type { Route } from './+types/_onboarding';
-import { getAuthEnv, requireSession } from '@/lib/auth.server';
-import { getEnv } from '@/lib/cloudflare.server';
-import { hasCompletedOnboarding } from '@/lib/onboarding';
-import { OnboardingLayout } from '@/components/onboarding/onboarding-layout';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { Outlet, redirect, useLoaderData, useNavigate } from "react-router";
+import type { Route } from "./+types/_onboarding";
+import { getAuthEnv, requireSession } from "@/lib/auth.server";
+import { getEnv } from "@/lib/cloudflare.server";
+import { hasCompletedOnboarding } from "@/lib/onboarding";
+import { OnboardingLayout } from "@/components/onboarding/onboarding-layout";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 
 interface OnboardingLoaderData {
   userEmail: string;
@@ -17,8 +17,7 @@ interface OnboardingLoaderData {
   emailVerified: boolean;
 }
 
-const PENDING_NEW_THREAD_MESSAGE_KEY = 'pendingMessage:newThread';
-const SALES_PROMPT_KEY_STORAGE_KEY = 'salesPromptKey';
+const PENDING_NEW_THREAD_MESSAGE_KEY = "pendingMessage:newThread";
 const AUTO_COMPLETE_MAX_ATTEMPTS = 3;
 const AUTO_COMPLETE_RETRY_DELAY_MS = 600;
 const MAX_SALES_PROMPT_KEY_CHARS = 64;
@@ -32,7 +31,7 @@ function sleep(ms: number): Promise<void> {
 
 function shouldRetryAutoComplete(error: unknown): boolean {
   const status =
-    typeof error === 'object' && error !== null && 'status' in error
+    typeof error === "object" && error !== null && "status" in error
       ? (error as { status?: number }).status
       : undefined;
   if (status == null) {
@@ -45,11 +44,11 @@ function getAutoCompleteErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message.trim();
   }
-  return 'Failed to complete onboarding. Please try again.';
+  return "Failed to complete onboarding. Please try again.";
 }
 
 function getPromptKeyFromSearch(search: string): string | null {
-  const key = new URLSearchParams(search).get('prompt_key')?.trim() || null;
+  const key = new URLSearchParams(search).get("prompt_key")?.trim() || null;
   if (!key) return null;
   if (key.length > MAX_SALES_PROMPT_KEY_CHARS) return null;
   if (!SALES_PROMPT_KEY_REGEX.test(key)) return null;
@@ -71,7 +70,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
   const userStub = authEnv.USER.get(
-    authEnv.USER.idFromName(sessionContext.session.user_id)
+    authEnv.USER.idFromName(sessionContext.session.user_id),
   );
   const [authBootstrap, emailVerificationStatus] = await Promise.all([
     userStub.getAuthBootstrap(),
@@ -85,8 +84,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   }
 
   const url = new URL(request.url);
-  const teamMode = url.searchParams.get('team') === '1';
-  const promptKey = url.searchParams.get('prompt_key')?.trim() || null;
+  const teamMode = url.searchParams.get("team") === "1";
+  const promptKey = url.searchParams.get("prompt_key")?.trim() || null;
   const onboarding = authBootstrap.onboarding;
   const onboardingComplete = hasCompletedOnboarding(onboarding);
   const emailVerificationRequired =
@@ -95,7 +94,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   if (onboardingComplete && !teamMode && !emailVerificationRequired) {
     const redirectTo = promptKey
       ? `/chat?prompt_key=${encodeURIComponent(promptKey)}`
-      : '/chat';
+      : "/chat";
     throw redirect(redirectTo);
   }
 
@@ -111,13 +110,15 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 export default function OnboardingRoute() {
   const loaderData = useLoaderData<typeof loader>() as OnboardingLoaderData;
   const navigate = useNavigate();
-  const [autoCompleteError, setAutoCompleteError] = useState<string | null>(null);
+  const [autoCompleteError, setAutoCompleteError] = useState<string | null>(
+    null,
+  );
   const [isAutoCompleting, setIsAutoCompleting] = useState(false);
   const [autoCompleteRunId, setAutoCompleteRunId] = useState(0);
   const autoCompleteRunStartedRef = useRef<number | null>(null);
   const completeOnboardingRequestRef = useRef<Promise<void> | null>(null);
   const skipToChat = useCallback(() => {
-    navigate('/chat');
+    navigate("/chat");
   }, [navigate]);
 
   const completeOnboarding = useCallback(async () => {
@@ -127,26 +128,18 @@ export default function OnboardingRoute() {
 
     const completeRequest = (async () => {
       const promptKeyFromUrl = getPromptKeyFromSearch(window.location.search);
-      const promptKeyFromStorage = (() => {
-        try {
-          return sessionStorage.getItem(SALES_PROMPT_KEY_STORAGE_KEY)?.trim() || null;
-        } catch {
-          return null;
-        }
-      })();
-      const promptKey = promptKeyFromUrl || promptKeyFromStorage;
       const requestInit: RequestInit = {
-        method: 'POST',
+        method: "POST",
       };
-      if (promptKey) {
-        requestInit.headers = { 'Content-Type': 'application/json' };
-        requestInit.body = JSON.stringify({ promptKey });
+      if (promptKeyFromUrl) {
+        requestInit.headers = { "Content-Type": "application/json" };
+        requestInit.body = JSON.stringify({ promptKey: promptKeyFromUrl });
       }
 
-      const response = await fetch('/api/onboarding/complete', requestInit);
+      const response = await fetch("/api/onboarding/complete", requestInit);
 
       if (!response.ok) {
-        let errorMessage = 'Failed to complete onboarding';
+        let errorMessage = "Failed to complete onboarding";
         try {
           const data = (await response.json()) as { error?: string };
           if (data.error) {
@@ -181,21 +174,20 @@ export default function OnboardingRoute() {
             JSON.stringify({
               message: pendingMessage,
               threadId,
-            })
+            }),
           );
         } catch (error) {
-          console.error('Failed to persist onboarding prefill message:', error);
+          console.error("Failed to persist onboarding prefill message:", error);
         }
       }
 
       try {
-        sessionStorage.removeItem(SALES_PROMPT_KEY_STORAGE_KEY);
-        sessionStorage.setItem('showBootModal', '1');
+        sessionStorage.setItem("showBootModal", "1");
       } catch {
         // Ignore storage failures.
       }
 
-      navigate(data.redirectTo || '/chat');
+      navigate(data.redirectTo || "/chat");
     })();
 
     completeOnboardingRequestRef.current = completeRequest;
@@ -218,24 +210,17 @@ export default function OnboardingRoute() {
         return;
       } catch (error) {
         lastError = error;
-        if (attempt >= AUTO_COMPLETE_MAX_ATTEMPTS || !shouldRetryAutoComplete(error)) {
+        if (
+          attempt >= AUTO_COMPLETE_MAX_ATTEMPTS ||
+          !shouldRetryAutoComplete(error)
+        ) {
           break;
         }
         await sleep(AUTO_COMPLETE_RETRY_DELAY_MS * attempt);
       }
     }
-    throw lastError ?? new Error('Failed to complete onboarding');
+    throw lastError ?? new Error("Failed to complete onboarding");
   }, [completeOnboarding]);
-
-  useEffect(() => {
-    const promptKey = getPromptKeyFromSearch(window.location.search);
-    if (!promptKey) return;
-    try {
-      sessionStorage.setItem(SALES_PROMPT_KEY_STORAGE_KEY, promptKey);
-    } catch {
-      // Ignore storage failures.
-    }
-  }, []);
 
   useEffect(() => {
     if (needsWelcomeScreen) {
@@ -294,7 +279,7 @@ export default function OnboardingRoute() {
                   setAutoCompleteRunId((previous) => previous + 1);
                 }}
               >
-                {isAutoCompleting ? 'Retrying...' : 'Try again'}
+                {isAutoCompleting ? "Retrying..." : "Try again"}
               </Button>
             </div>
           </div>
