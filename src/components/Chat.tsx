@@ -2187,42 +2187,14 @@ export default function Chat({
           pendingCompactionPlaceholderIdRef.current = compactMsg.id;
           setMessages(prev => [...prev, compactMsg]);
         } else if (sdkEvent.type === 'assistant' && sdkEvent.message?.content) {
-          // Some providers can emit a full assistant snapshot without prior
-          // stream_event message_start/content_block_* events. In that case we
-          // still need to create the assistant bubble or the result event will
-          // finalize a non-existent message.
-          const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
-          const sdkMsgId = (sdkEvent.message as { id?: string }).id;
-          const resolvedAssistantId = sdkUuid || sdkMsgId || `assistant_${Date.now()}`;
-          const snapshotContent = sdkEvent.message.content;
-
+          // Track message ID as fallback
           if (!currentStreamingId) {
-            setStreamingMessageId(resolvedAssistantId);
-          }
-
-          setMessages(prev => {
-            const targetId = currentStreamingId || resolvedAssistantId;
-            const existingIndex = prev.findIndex(msg => msg.id === targetId && msg.role === 'assistant');
-            const nextAssistant: Message = {
-              id: targetId,
-              thread_id: id,
-              role: 'assistant',
-              content: snapshotContent,
-              created_at: prev[existingIndex]?.created_at ?? Date.now(),
-              isStreaming: true,
-            };
-
-            if (existingIndex !== -1) {
-              const next = [...prev];
-              next[existingIndex] = {
-                ...prev[existingIndex],
-                ...nextAssistant,
-              };
-              return next;
+            const sdkUuid = (sdkEvent as { uuid?: string }).uuid;
+            const sdkMsgId = (sdkEvent.message as { id?: string }).id;
+            if (sdkUuid || sdkMsgId) {
+              setStreamingMessageId(sdkUuid || sdkMsgId || null);
             }
-
-            return [...prev, nextAssistant];
-          });
+          }
         } else if (sdkEvent.type === 'user' && sdkEvent.message?.content) {
           // Compact summary — system-generated context recap
           const isCompactSummary = Boolean(
