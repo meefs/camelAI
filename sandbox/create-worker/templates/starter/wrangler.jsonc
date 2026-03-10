@@ -32,7 +32,7 @@
 	// 	]
 	// },
 	// "migrations": [
-	// 	{ "tag": "v1", "new_sqlite_classes": ["ExampleDO", "ChatSessionsDO"] }
+	// 	{ "tag": "v1", "new_sqlite_classes": ["ExampleDO", "ChatSessionsDO", "Chat"] }
 	// ],
 
 	/**
