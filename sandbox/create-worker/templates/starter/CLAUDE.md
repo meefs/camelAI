@@ -101,6 +101,7 @@ export default function MyComponent({ loaderData }: Route.ComponentProps) {
 | `workers/example-do.ts` | Example Durable Object with SQLite |
 | `workers/data-proxy.ts` | Local `DATA_PROXY` service shim (virtualized on deploy) |
 | `workers/chat.ts` | Pre-configured AI chat agent (commented out) |
+| `workers/chat-sessions.ts` | Session index DO for chat history sidebar |
 | `e2e/smoke.test.mjs` | Playwright E2E smoke tests (commented out) |
 | `app/routes/` | React Router routes with loaders/actions |
 | `app/schemas/` | Zod schemas shared between routes and DOs |
@@ -200,11 +201,14 @@ In camelAI deploys, this binding is virtualized and rewritten to an internal pla
 
 ### AI Chat Agent
 
-The template has a complete AI chat setup - just uncomment:
+The template has a complete AI chat setup with a history sidebar - just uncomment:
 
-1. **wrangler.jsonc**: Uncomment `Chat` binding, add to migrations, and add `"ai": { "binding": "AI" }`
-2. **workers/app.ts**: Uncomment `routeAgentRequest` and `Chat` export
-3. **app/routes.ts**: Add `route("chat", "routes/chat.tsx")`
+1. **wrangler.jsonc**: Uncomment `Chat` and `CHAT_SESSIONS` bindings + migrations
+2. **workers/app.ts**: Uncomment `routeAgentRequest`, `Chat` export, `ChatSessionsDO` export, cookie logic (`ownerId`), and the cookie-aware `requestHandler` block (remove the plain `return requestHandler(...)` line)
+3. **workers/app.ts**: Uncomment `ownerId` in the `AppLoadContext` type
+4. **app/routes.ts**: Add `route("chat", "routes/chat.tsx")`
+
+The chat includes a sidebar showing previous conversations, backed by `ChatSessionsDO` (an index DO that tracks sessions per anonymous user via a `chat-owner` cookie set in `workers/app.ts`). Each chat session is a separate `Chat` DO instance. Titles auto-update from the first user message.
 
 **When adding tools to the chat agent:**
 - **Always use codemode** (`createCodeTool` + `DynamicWorkerExecutor`) — it lets the LLM chain, branch, and parallelize tool calls in a single turn. Only skip codemode for a single trivially simple tool.

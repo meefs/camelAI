@@ -28,10 +28,11 @@
 	// 	"bindings": [
 	// 		{ "name": "EXAMPLE_DO", "class_name": "ExampleDO" }
 	// 		// { "name": "Chat", "class_name": "Chat" }
+	// 		// { "name": "CHAT_SESSIONS", "class_name": "ChatSessionsDO" }
 	// 	]
 	// },
 	// "migrations": [
-	// 	{ "tag": "v1", "new_sqlite_classes": ["ExampleDO"] }
+	// 	{ "tag": "v1", "new_sqlite_classes": ["ExampleDO", "ChatSessionsDO"] }
 	// ],
 
 	/**

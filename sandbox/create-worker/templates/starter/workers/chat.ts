@@ -46,6 +46,11 @@ import { createWorkersAI } from "workers-ai-provider";
  * ```
  */
 export class Chat extends AIChatAgent<Env> {
+  /** Clear all messages — called by the delete-session action. */
+  async deleteAllMessages(): Promise<void> {
+    this.messages = [];
+  }
+
   /**
    * Called when a new message is received from the user.
    *
