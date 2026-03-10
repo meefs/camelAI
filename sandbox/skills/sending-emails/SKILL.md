@@ -10,10 +10,11 @@ This skill enables sending emails to workspace members through the camelAI Resen
 
 ## Overview
 
-The email proxy at `RESEND_PROXY_URL` forwards requests to the Resend API with two guardrails:
+The email proxy at `RESEND_PROXY_URL` forwards requests to the Resend API with three guardrails:
 
 1. **Recipient whitelist** — Only workspace members can be emailed. Sending to external addresses is blocked.
 2. **Rate limits** — 50 emails/hour and 200 emails/day per workspace.
+3. **Sender address** — The `from` address is always set to the workspace's email address (e.g., `Workspace Name <swift-tiger-moon@camelai.dev>`). Any caller-supplied `from` field is ignored.
 
 No API key is needed. The proxy is pre-authenticated via sandbox headers.
 
@@ -33,7 +34,6 @@ The endpoint is `POST ${RESEND_PROXY_URL}/emails`.
 curl -X POST "${RESEND_PROXY_URL}/emails" \
   -H "Content-Type: application/json" \
   -d '{
-    "from": "MyApp <noreply@camelai.app>",
     "to": "alice@example.com",
     "subject": "Your report is ready",
     "text": "The weekly report has been generated.",
@@ -49,7 +49,6 @@ import os, requests
 resp = requests.post(
     f"{os.environ['RESEND_PROXY_URL']}/emails",
     json={
-        "from": "MyApp <noreply@camelai.app>",
         "to": "alice@example.com",
         "subject": "Your report is ready",
         "text": "The weekly report has been generated.",
@@ -67,7 +66,6 @@ const resp = await fetch(`${process.env.RESEND_PROXY_URL}/emails`, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
-    from: "MyApp <noreply@camelai.app>",
     to: "alice@example.com",
     subject: "Your report is ready",
     text: "The weekly report has been generated.",
@@ -84,7 +82,6 @@ The request body follows the [Resend API](https://resend.com/docs/api-reference/
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `from` | string | yes | Sender address (e.g., `"App Name <noreply@camelai.app>"`) |
 | `to` | string or string[] | yes | Recipient email(s) — must be workspace members |
 | `subject` | string | yes | Email subject line |
 | `text` | string | no | Plain text body |
@@ -93,13 +90,15 @@ The request body follows the [Resend API](https://resend.com/docs/api-reference/
 | `bcc` | string or string[] | no | BCC recipients — must be workspace members |
 | `reply_to` | string or string[] | no | Reply-to address(es) |
 
+**Note:** The `from` field is not accepted. Emails are always sent from the workspace's email address automatically. Any `from` value in the request body is ignored.
+
 At least one of `text` or `html` should be provided.
 
 ## Response
 
 **Success (200):**
 ```json
-{ "id": "msg-abc123" }
+{ "id": "msg-abc123", "from": "Workspace Name <swift-tiger-moon@camelai.dev>" }
 ```
 
 **Recipient not in workspace (403):**
@@ -115,6 +114,7 @@ At least one of `text` or `html` should be provided.
 ## Constraints
 
 - **Recipients must be workspace members** with active access. Users with `access_level=none` cannot be emailed.
+- **Sender is always the workspace email** — You cannot customize the `from` address. Emails are sent as `Workspace Name <handle@camelai.dev>`.
 - **Rate limits are per workspace**: 50 emails/hour, 200 emails/day. Each recipient counts as one email (e.g., sending to 3 people counts as 3).
 - **Email matching is case-insensitive** — `Alice@Example.com` matches `alice@example.com`.
 - **No attachments** — The proxy does not support file attachments. For sharing files, use the file-sharing skill instead.
@@ -129,6 +129,5 @@ At least one of `text` or `html` should be provided.
 ## Best Practices
 
 1. **Always include both `text` and `html`** — Some email clients prefer plain text. Provide both for best compatibility.
-2. **Use a descriptive `from` name** — e.g., `"Sales Dashboard <noreply@camelai.app>"` instead of just an email address.
-3. **Check the response** — Verify the request succeeded before telling the user the email was sent.
-4. **Handle rate limits gracefully** — If you get a 429, inform the user and suggest waiting before retrying.
+2. **Check the response** — Verify the request succeeded before telling the user the email was sent.
+3. **Handle rate limits gracefully** — If you get a 429, inform the user and suggest waiting before retrying.

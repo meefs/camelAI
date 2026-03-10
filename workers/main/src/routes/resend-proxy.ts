@@ -9,6 +9,7 @@
 import type { RouteContext } from '../types.js';
 import { validateSandboxProxy } from '../sandbox-auth.js';
 import { getWorkspaceStub, getUserStub } from '../helpers/stubs.js';
+import { buildWorkspaceEmailAddress, getWorkspaceEmailDomain } from '../../../../src/lib/workspace-email.js';
 
 // ---------------------------------------------------------------------------
 // Rate limit constants
@@ -33,7 +34,6 @@ function errorResponse(message: string, status: number): Response {
 }
 
 interface ResendProxyRequest {
-  from: string;
   to: string | string[];
   cc?: string | string[];
   bcc?: string | string[];
@@ -59,6 +59,17 @@ function extractEmail(raw: string): string | null {
 
   const match = trimmed.match(/<([^>]+)>/);
   return (match ? match[1] : trimmed).trim().toLowerCase();
+}
+
+/**
+ * Quote an email display name if it contains RFC 5322 special characters.
+ * e.g. `Acme, Inc` → `"Acme, Inc"`, `Alice` → `Alice`
+ */
+function quoteDisplayName(name: string): string {
+  if (/[,;<>"@()[\]\\]/.test(name)) {
+    return `"${name.replace(/["\\]/g, '\\$&')}"`;
+  }
+  return name;
 }
 
 function normalizeRecipients(value: unknown): string[] | null {
@@ -164,7 +175,17 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
     return errorResponse('No recipients specified', 400);
   }
 
-  // 5. Validate recipients against workspace member whitelist
+  // 5. Resolve workspace from address
+  const workspaceStubForInfo = getWorkspaceStub(env, workspaceId);
+  const workspaceInfo = await workspaceStubForInfo.getInfo();
+  const emailDomain = getWorkspaceEmailDomain(env);
+  if (!workspaceInfo?.email_handle || !emailDomain) {
+    return errorResponse('Workspace email not configured', 503);
+  }
+  const workspaceFromEmail = buildWorkspaceEmailAddress(workspaceInfo.email_handle, emailDomain);
+  const workspaceFromAddress = `${quoteDisplayName(workspaceInfo.name)} <${workspaceFromEmail}>`;
+
+  // 6. Validate recipients against workspace member whitelist
   console.log(`[ResendProxy] validating recipients: [${allRecipients.join(', ')}] workspace=${workspaceId}`);
   const allowedEmails = await getWorkspaceMemberEmails(env, workspaceId);
   const disallowed = allRecipients.filter((email) => !allowedEmails.has(email));
@@ -176,7 +197,7 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
     );
   }
 
-  // 6. Rate limit check (atomic inside WorkspaceDO)
+  // 7. Rate limit check (atomic inside WorkspaceDO)
   const workspaceStub = getWorkspaceStub(env, workspaceId);
   const rateCheck = await workspaceStub.checkAndRecordResendRateLimit(
     allRecipients.length,
@@ -187,7 +208,7 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
     return errorResponse(rateCheck.reason!, 429);
   }
 
-  // 7. Forward to Resend API
+  // 8. Forward to Resend API (always send from workspace address)
   try {
     const resendResponse = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -196,7 +217,7 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: payload.from,
+        from: workspaceFromAddress,
         to: toEmails,
         ...(ccEmails.length > 0 ? { cc: ccEmails } : {}),
         ...(bccEmails.length > 0 ? { bcc: bccEmails } : {}),
@@ -207,11 +228,8 @@ export async function handleResendProxy({ req, env }: RouteContext): Promise<Res
       }),
     });
 
-    const body = await resendResponse.text();
-    return new Response(body, {
-      status: resendResponse.status,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const resendBody = await resendResponse.json() as Record<string, unknown>;
+    return jsonResponse({ ...resendBody, from: workspaceFromAddress }, resendResponse.status);
   } catch (error) {
     console.error('[resend-proxy] upstream error', {
       error: error instanceof Error ? error.message : String(error),

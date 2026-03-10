@@ -20,6 +20,16 @@ function makeWorkspaceStub(
   rateAllowed = true
 ) {
   return {
+    getInfo: vi.fn(async () => ({
+      id: 'ws-1',
+      org_id: 'org-1',
+      name: 'Test Workspace',
+      email_handle: 'swift-tiger-moon',
+      created_by: 'u1',
+      created_at: Date.now(),
+      avatar: { type: 'initials', bg: '#000', fg: '#fff', initials: 'TW' },
+      compute_tier: 'standard',
+    })),
     listMembers: vi.fn(async () => allMembers),
     checkAndRecordResendRateLimit: vi.fn(() => rateAllowed
       ? { allowed: true }
@@ -83,6 +93,7 @@ function buildEnv(overrides: {
   return {
     SANDBOX_PROXY_SECRET: 'test-secret',
     RESEND_API_KEY: 'test-resend-key',
+    WORKSPACE_EMAIL_DOMAIN: 'camelai.dev',
     WORKSPACE: {
       idFromName: vi.fn((id: string) => id),
       get: vi.fn(() => workspaceStub),
@@ -134,7 +145,7 @@ describe('resend-proxy route', () => {
   it('rejects malformed recipient types', async () => {
     const res = await handleResendProxy(
       buildRouteContext(
-        makeRequest({ to: 123 as any, subject: 'Hi', from: 'app@example.com' }),
+        makeRequest({ to: 123 as any, subject: 'Hi' }),
         buildEnv()
       )
     );
@@ -146,7 +157,7 @@ describe('resend-proxy route', () => {
   it('rejects array with non-string elements', async () => {
     const res = await handleResendProxy(
       buildRouteContext(
-        makeRequest({ to: ['alice@example.com', 42] as any, subject: 'Hi', from: 'app@example.com' }),
+        makeRequest({ to: ['alice@example.com', 42] as any, subject: 'Hi' }),
         buildEnv()
       )
     );
@@ -165,7 +176,7 @@ describe('resend-proxy route', () => {
 
   it('rejects missing required fields', async () => {
     const res = await handleResendProxy(
-      buildRouteContext(makeRequest({ from: 'noreply@example.com' }), buildEnv())
+      buildRouteContext(makeRequest({}), buildEnv())
     );
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Missing required fields: to, subject' });
@@ -174,7 +185,7 @@ describe('resend-proxy route', () => {
   it('rejects recipients not in workspace', async () => {
     const res = await handleResendProxy(
       buildRouteContext(
-        makeRequest({ to: 'outsider@evil.com', subject: 'Hi', from: 'app@example.com' }),
+        makeRequest({ to: 'outsider@evil.com', subject: 'Hi' }),
         buildEnv()
       )
     );
@@ -191,7 +202,6 @@ describe('resend-proxy route', () => {
           to: 'alice@example.com',
           cc: 'outsider@evil.com',
           subject: 'Hi',
-          from: 'app@example.com',
         }),
         buildEnv()
       )
@@ -202,7 +212,7 @@ describe('resend-proxy route', () => {
   it('rejects when rate limited', async () => {
     const res = await handleResendProxy(
       buildRouteContext(
-        makeRequest({ to: 'alice@example.com', subject: 'Hi', from: 'app@example.com' }),
+        makeRequest({ to: 'alice@example.com', subject: 'Hi' }),
         buildEnv({ rateAllowed: false })
       )
     );
@@ -211,14 +221,13 @@ describe('resend-proxy route', () => {
     expect(body.error).toContain('limit exceeded');
   });
 
-  it('forwards valid request to Resend API', async () => {
+  it('forwards valid request to Resend API with workspace from address', async () => {
     const env = buildEnv();
     const res = await handleResendProxy(
       buildRouteContext(
         makeRequest({
           to: 'alice@example.com',
           subject: 'Hello Alice',
-          from: 'MyApp <noreply@example.com>',
           text: 'Hello!',
         }),
         env
@@ -226,7 +235,7 @@ describe('resend-proxy route', () => {
     );
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: 'msg-123' });
+    expect(await res.json()).toEqual({ id: 'msg-123', from: 'Test Workspace <swift-tiger-moon@camelai.dev>' });
 
     // Verify Resend was called correctly
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -236,6 +245,28 @@ describe('resend-proxy route', () => {
     const sentBody = JSON.parse(init.body);
     expect(sentBody.to).toEqual(['alice@example.com']);
     expect(sentBody.subject).toBe('Hello Alice');
+    // from is always the workspace address, not caller-supplied
+    expect(sentBody.from).toBe('Test Workspace <swift-tiger-moon@camelai.dev>');
+  });
+
+  it('ignores caller-supplied from and uses workspace address', async () => {
+    const env = buildEnv();
+    const res = await handleResendProxy(
+      buildRouteContext(
+        makeRequest({
+          to: 'alice@example.com',
+          subject: 'Hi',
+          from: 'Attacker <evil@hacker.com>',
+          text: 'Hello!',
+        }),
+        env
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const [, init] = fetchSpy.mock.calls[0];
+    const sentBody = JSON.parse(init.body);
+    expect(sentBody.from).toBe('Test Workspace <swift-tiger-moon@camelai.dev>');
   });
 
   it('allows sending to multiple workspace members', async () => {
@@ -244,7 +275,6 @@ describe('resend-proxy route', () => {
         makeRequest({
           to: ['alice@example.com', 'bob@example.com'],
           subject: 'Team update',
-          from: 'app@example.com',
           html: '<p>Update</p>',
         }),
         buildEnv()
@@ -260,7 +290,6 @@ describe('resend-proxy route', () => {
         makeRequest({
           to: 'Alice@Example.COM',
           subject: 'Hi',
-          from: 'app@example.com',
         }),
         buildEnv()
       )
@@ -275,7 +304,6 @@ describe('resend-proxy route', () => {
         makeRequest({
           to: 'Alice Smith <alice@example.com>',
           subject: 'Hi',
-          from: 'app@example.com',
         }),
         buildEnv()
       )
@@ -290,7 +318,6 @@ describe('resend-proxy route', () => {
         makeRequest({
           to: ['Alice <alice@example.com>', 'Bob <bob@example.com>'],
           subject: 'Hi',
-          from: 'app@example.com',
         }),
         buildEnv()
       )
@@ -305,7 +332,6 @@ describe('resend-proxy route', () => {
         makeRequest({
           to: 'Outsider <outsider@evil.com>',
           subject: 'Hi',
-          from: 'app@example.com',
         }),
         buildEnv()
       )
@@ -325,7 +351,7 @@ describe('resend-proxy route', () => {
 
     const res = await handleResendProxy(
       buildRouteContext(
-        makeRequest({ to: 'bob@example.com', subject: 'Hi', from: 'app@example.com' }),
+        makeRequest({ to: 'bob@example.com', subject: 'Hi' }),
         env
       )
     );
@@ -340,7 +366,6 @@ describe('resend-proxy route', () => {
         makeRequest({
           to: 'Alice <alice@example.com>, outsider@evil.com',
           subject: 'Hi',
-          from: 'app@example.com',
         }),
         buildEnv()
       )
@@ -357,7 +382,6 @@ describe('resend-proxy route', () => {
         makeRequest({
           to: '<alice@example.com> <outsider@evil.com>',
           subject: 'Hi',
-          from: 'app@example.com',
         }),
         buildEnv()
       )
@@ -373,7 +397,6 @@ describe('resend-proxy route', () => {
         makeRequest({
           to: 'Alice Smith <Alice@Example.com>',
           subject: 'Hello',
-          from: 'MyApp <noreply@example.com>',
           text: 'Hello!',
         }),
         env
@@ -396,12 +419,50 @@ describe('resend-proxy route', () => {
         makeRequest({
           to: ['alice@example.com', 'bob@example.com'],
           subject: 'Hi',
-          from: 'app@example.com',
         }),
         env
       )
     );
 
     expect(res.status).toBe(200);
+  });
+
+  it('quotes workspace name with RFC special characters in from address', async () => {
+    const env = buildEnv();
+    // Override getInfo to return a name with commas
+    env._workspaceStub.getInfo.mockResolvedValue({
+      id: 'ws-1',
+      org_id: 'org-1',
+      name: 'Acme, Inc',
+      email_handle: 'swift-tiger-moon',
+      created_by: 'u1',
+      created_at: Date.now(),
+      avatar: { type: 'initials', bg: '#000', fg: '#fff', initials: 'AI' },
+      compute_tier: 'standard',
+    });
+
+    const res = await handleResendProxy(
+      buildRouteContext(
+        makeRequest({ to: 'alice@example.com', subject: 'Hi', text: 'Hello' }),
+        env
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const [, init] = fetchSpy.mock.calls[0];
+    const sentBody = JSON.parse(init.body);
+    expect(sentBody.from).toBe('"Acme, Inc" <swift-tiger-moon@camelai.dev>');
+  });
+
+  it('returns 503 when workspace email is not configured', async () => {
+    const res = await handleResendProxy(
+      buildRouteContext(
+        makeRequest({ to: 'alice@example.com', subject: 'Hi' }),
+        buildEnv({ WORKSPACE_EMAIL_DOMAIN: undefined })
+      )
+    );
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: string };
+    expect(body.error).toContain('Workspace email not configured');
   });
 });
