@@ -8,7 +8,7 @@ vi.mock('@/lib/auth.server', () => ({
 
 const { loader } = await import('@/routes/_app');
 
-describe('_app loader sales prompt redirect handling', () => {
+describe('_app loader onboarding redirect', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     requireAuthContextMock.mockResolvedValue({
@@ -25,23 +25,10 @@ describe('_app loader sales prompt redirect handling', () => {
     });
   });
 
-  it('preserves prompt_key when redirecting incomplete users to onboarding', async () => {
+  it('redirects incomplete users to /onboarding without prompt_key', async () => {
     await expect(
       loader({
         request: new Request('https://camelai.dev/chat?prompt_key=sales-key-123'),
-        context: {},
-      } as never)
-    ).rejects.toSatisfy((response: unknown) => {
-      return response instanceof Response
-        && response.status === 302
-        && response.headers.get('Location') === '/onboarding?prompt_key=sales-key-123';
-    });
-  });
-
-  it('falls back to the normal onboarding redirect when no prompt key is present', async () => {
-    await expect(
-      loader({
-        request: new Request('https://camelai.dev/chat'),
         context: {},
       } as never)
     ).rejects.toSatisfy((response: unknown) => {

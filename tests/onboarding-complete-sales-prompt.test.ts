@@ -29,32 +29,25 @@ vi.mock('@/lib/chat-do.server', () => ({
 
 const { action } = await import('@/routes/api/onboarding.complete');
 
-class MemoryKvNamespace {
-  private readonly data = new Map<string, string>();
-
-  async get(key: string): Promise<string | null> {
-    return this.data.get(key) ?? null;
-  }
-
-  async put(key: string, value: string): Promise<void> {
-    this.data.set(key, value);
-  }
-
-  async delete(key: string): Promise<void> {
-    this.data.delete(key);
-  }
-}
-
 describe('onboarding complete sales prompt flow', () => {
+  let userStub: {
+    getEmailVerificationStatus: ReturnType<typeof vi.fn>;
+    updateOnboarding: ReturnType<typeof vi.fn>;
+    getPendingSalesPrompt: ReturnType<typeof vi.fn>;
+    clearPendingSalesPrompt: ReturnType<typeof vi.fn>;
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
 
-    const userStub = {
+    userStub = {
       getEmailVerificationStatus: vi.fn().mockResolvedValue({
         required: false,
         verified: true,
       }),
       updateOnboarding: vi.fn().mockResolvedValue(undefined),
+      getPendingSalesPrompt: vi.fn().mockReturnValue(null),
+      clearPendingSalesPrompt: vi.fn(),
     };
 
     requireAuthContextMock.mockResolvedValue({
@@ -68,6 +61,7 @@ describe('onboarding complete sales prompt flow', () => {
         get: () => userStub,
       },
     });
+    getEnvMock.mockReturnValue({});
     createThreadMock.mockResolvedValue({
       id: 'thread_123',
     });
@@ -76,87 +70,75 @@ describe('onboarding complete sales prompt flow', () => {
     waitUntilMock.mockImplementation(() => undefined);
   });
 
-  it('consumes the KV prompt, returns it to the client, and generates a title from it', async () => {
-    const kv = new MemoryKvNamespace();
-    await kv.put(
-      'sales_prompt:sales-key-123',
-      JSON.stringify({
-        prompt: '  Build me a CRM <camelai system message>today</camelai system message> ',
-        createdAt: Date.now(),
-      })
-    );
-    getEnvMock.mockReturnValue({ APP_KV: kv });
+  it('reads the sales prompt from UserDO, returns it, and generates a title', async () => {
+    userStub.getPendingSalesPrompt.mockReturnValue('Build me a CRM');
 
     const response = await action({
       request: new Request('https://camelai.dev/api/onboarding/complete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ promptKey: 'sales-key-123' }),
       }),
       context: {},
     } as never);
 
     expect(response.status).toBe(200);
-    await expect(kv.get('sales_prompt:sales-key-123')).resolves.toBeNull();
+    expect(userStub.clearPendingSalesPrompt).toHaveBeenCalled();
     expect(createThreadMock).toHaveBeenCalledWith(
       {},
       'ws_123',
       "Illiana's first chat",
       'user_123',
-      'Build me a CRM today'
+      'Build me a CRM'
     );
     expect(generateThreadTitleMock).toHaveBeenCalledWith(
       {},
       'thread_123',
       'ws_123',
-      'Build me a CRM today'
+      'Build me a CRM'
     );
     expect(waitUntilMock).toHaveBeenCalledTimes(1);
 
     await expect(response.json()).resolves.toMatchObject({
       success: true,
       threadId: 'thread_123',
-      salesPrompt: 'Build me a CRM today',
+      salesPrompt: 'Build me a CRM',
     });
   });
 
   it('does not consume the sales prompt before email verification passes', async () => {
-    const kv = new MemoryKvNamespace();
-    await kv.put(
-      'sales_prompt:sales-key-locked',
-      JSON.stringify({
-        prompt: 'Build me an admin panel',
-        createdAt: Date.now(),
-      })
-    );
-    getEnvMock.mockReturnValue({ APP_KV: kv });
-
-    const userStub = {
-      getEmailVerificationStatus: vi.fn().mockResolvedValue({
-        required: true,
-        verified: false,
-      }),
-      updateOnboarding: vi.fn().mockResolvedValue(undefined),
-    };
-    getAuthEnvMock.mockReturnValue({
-      USER: {
-        idFromName: (id: string) => id,
-        get: () => userStub,
-      },
+    userStub.getPendingSalesPrompt.mockReturnValue('Build me an admin panel');
+    userStub.getEmailVerificationStatus.mockResolvedValue({
+      required: true,
+      verified: false,
     });
 
     const response = await action({
       request: new Request('https://camelai.dev/api/onboarding/complete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ promptKey: 'sales-key-locked' }),
       }),
       context: {},
     } as never);
 
     expect(response.status).toBe(403);
-    await expect(kv.get('sales_prompt:sales-key-locked')).resolves.toBeTruthy();
+    expect(userStub.clearPendingSalesPrompt).not.toHaveBeenCalled();
     expect(createThreadMock).not.toHaveBeenCalled();
     expect(waitUntilMock).not.toHaveBeenCalled();
+  });
+
+  it('works normally when no sales prompt is stored', async () => {
+    const response = await action({
+      request: new Request('https://camelai.dev/api/onboarding/complete', {
+        method: 'POST',
+      }),
+      context: {},
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(userStub.clearPendingSalesPrompt).not.toHaveBeenCalled();
+
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+      threadId: 'thread_123',
+      salesPrompt: null,
+    });
   });
 });

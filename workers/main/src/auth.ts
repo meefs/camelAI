@@ -483,6 +483,18 @@ export class UserDO extends DurableObject<DOEnv> {
     return this.ctx.storage.kv.get<number>('sessionInvalidatedAt') ?? null;
   }
 
+  setPendingSalesPrompt(prompt: string): void {
+    this.ctx.storage.kv.put('pendingSalesPrompt', prompt);
+  }
+
+  getPendingSalesPrompt(): string | null {
+    return this.ctx.storage.kv.get<string>('pendingSalesPrompt') ?? null;
+  }
+
+  clearPendingSalesPrompt(): void {
+    this.ctx.storage.kv.delete('pendingSalesPrompt');
+  }
+
   async setProfile(profile: User): Promise<void> {
     this.sql.exec(
       'INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)',

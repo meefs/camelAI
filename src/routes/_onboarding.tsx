@@ -20,8 +20,6 @@ interface OnboardingLoaderData {
 const PENDING_NEW_THREAD_MESSAGE_KEY = "pendingMessage:newThread";
 const AUTO_COMPLETE_MAX_ATTEMPTS = 3;
 const AUTO_COMPLETE_RETRY_DELAY_MS = 600;
-const MAX_SALES_PROMPT_KEY_CHARS = 64;
-const SALES_PROMPT_KEY_REGEX = /^[A-Za-z0-9_-]+$/;
 
 type CompleteOnboardingError = Error & { status?: number };
 
@@ -45,14 +43,6 @@ function getAutoCompleteErrorMessage(error: unknown): string {
     return error.message.trim();
   }
   return "Failed to complete onboarding. Please try again.";
-}
-
-function getPromptKeyFromSearch(search: string): string | null {
-  const key = new URLSearchParams(search).get("prompt_key")?.trim() || null;
-  if (!key) return null;
-  if (key.length > MAX_SALES_PROMPT_KEY_CHARS) return null;
-  if (!SALES_PROMPT_KEY_REGEX.test(key)) return null;
-  return key;
 }
 
 export interface OnboardingRouteContext {
@@ -85,17 +75,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   const url = new URL(request.url);
   const teamMode = url.searchParams.get("team") === "1";
-  const promptKey = url.searchParams.get("prompt_key")?.trim() || null;
   const onboarding = authBootstrap.onboarding;
   const onboardingComplete = hasCompletedOnboarding(onboarding);
   const emailVerificationRequired =
     emailVerificationStatus.required && !emailVerificationStatus.verified;
 
   if (onboardingComplete && !teamMode && !emailVerificationRequired) {
-    const redirectTo = promptKey
-      ? `/chat?prompt_key=${encodeURIComponent(promptKey)}`
-      : "/chat";
-    throw redirect(redirectTo);
+    throw redirect("/chat");
   }
 
   return {
@@ -127,16 +113,9 @@ export default function OnboardingRoute() {
     }
 
     const completeRequest = (async () => {
-      const promptKeyFromUrl = getPromptKeyFromSearch(window.location.search);
-      const requestInit: RequestInit = {
+      const response = await fetch("/api/onboarding/complete", {
         method: "POST",
-      };
-      if (promptKeyFromUrl) {
-        requestInit.headers = { "Content-Type": "application/json" };
-        requestInit.body = JSON.stringify({ promptKey: promptKeyFromUrl });
-      }
-
-      const response = await fetch("/api/onboarding/complete", requestInit);
+      });
 
       if (!response.ok) {
         let errorMessage = "Failed to complete onboarding";

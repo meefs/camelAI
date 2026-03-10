@@ -41,12 +41,10 @@ describe("auth verify-email resend route", () => {
     sendUserVerificationEmailMock.mockResolvedValue({ status: "sent" });
   });
 
-  it("passes the onboarding prompt key through resend requests", async () => {
+  it("sends verification email without prompt_key", async () => {
     const response = await action({
       request: new Request("https://camelai.dev/api/auth/verify-email/send", {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ promptKey: " sales-key-123 " }).toString(),
       }),
       context: {},
     } as never);
@@ -56,8 +54,10 @@ describe("auth verify-email resend route", () => {
       expect.objectContaining({
         userId: "user_123",
         email: "test@example.com",
-        promptKey: "sales-key-123",
       }),
+    );
+    expect(sendUserVerificationEmailMock).toHaveBeenCalledWith(
+      expect.not.objectContaining({ promptKey: expect.anything() }),
     );
   });
 });

@@ -2,10 +2,7 @@ import type { Route } from './+types/onboarding.complete';
 import { getAuthEnv, requireAuthContext } from '@/lib/auth.server';
 import { getEnv } from '@/lib/cloudflare.server';
 import * as chatDO from '@/lib/chat-do.server';
-import { consumeSalesPrompt, normalizePromptKey } from '@/lib/sales-prompt.server';
 import { waitUntil } from '@/lib/wait-until';
-
-const ONBOARDING_THREAD_LOOKUP_LIMIT = 100;
 
 const ONBOARDING_SYSTEM_MESSAGE = `This user just signed up and landed in their first chat. This is their very
 first interaction with camelAI.
@@ -54,17 +51,6 @@ onboarding preference questions and dive into the work.
 If you need clarification, ask focused follow-up questions inline as you go.
 Do not use AskUserQuestion for onboarding in this case.`;
 
-async function getPromptKeyFromRequest(request: Request): Promise<string | null> {
-  const contentType = request.headers.get('content-type') || '';
-  if (!contentType.includes('application/json')) {
-    return null;
-  }
-
-  const body = await request.json().catch(() => null) as { promptKey?: unknown } | null;
-  const promptKey = typeof body?.promptKey === 'string' ? body.promptKey : null;
-  return normalizePromptKey(promptKey);
-}
-
 function getOnboardingSystemMessage(salesPrompt: string | null): string {
   return salesPrompt ? SALES_SITE_ONBOARDING_SYSTEM_MESSAGE : ONBOARDING_SYSTEM_MESSAGE;
 }
@@ -77,8 +63,6 @@ export async function action({ request, context }: Route.ActionArgs) {
   const authContext = await requireAuthContext(request, context);
   const env = getEnv(context);
   const authEnv = getAuthEnv(env);
-  const promptKey = await getPromptKeyFromRequest(request);
-  const expectsSalesPrompt = Boolean(promptKey);
 
   const workspaceId = authContext.currentWorkspace?.id;
   if (!workspaceId) {
@@ -96,24 +80,20 @@ export async function action({ request, context }: Route.ActionArgs) {
     );
   }
 
-  let salesPrompt: string | null = null;
-  if (promptKey) {
-    try {
-      salesPrompt = await consumeSalesPrompt(env.APP_KV, promptKey);
-    } catch (error) {
-      console.error('Failed to consume sales prompt during onboarding:', error);
-    }
-  }
+  // Read the sales prompt stored on the UserDO during signup.
+  const salesPrompt = await userStub.getPendingSalesPrompt();
 
   const firstName = authContext.user.name?.trim().split(/\s+/)[0] || 'Your';
   const onboardingThreadTitle = `${firstName}'s first chat`;
+  const onboardingSystemMessage = getOnboardingSystemMessage(salesPrompt);
 
   if (authContext.onboarding?.completed_at) {
+    // Already completed — find or recreate the onboarding thread.
     let existingThread: Awaited<ReturnType<typeof chatDO.getThreadsPaginated>>['items'][number] | null = null;
     try {
       const { items } = await chatDO.getThreadsPaginated(context, workspaceId, {
         offset: 0,
-        limit: ONBOARDING_THREAD_LOOKUP_LIMIT,
+        limit: 100,
       });
       existingThread =
         items.find(
@@ -129,27 +109,18 @@ export async function action({ request, context }: Route.ActionArgs) {
       );
     }
 
-    const recoveredSalesPrompt = salesPrompt
-      || (expectsSalesPrompt ? existingThread?.first_user_message?.trim() || null : null);
-    const onboardingSystemMessage = getOnboardingSystemMessage(recoveredSalesPrompt);
-
     if (existingThread) {
-      if (recoveredSalesPrompt) {
+      if (salesPrompt) {
+        await userStub.clearPendingSalesPrompt();
         waitUntil(
-          chatDO.generateThreadTitle(
-            context,
-            existingThread.id,
-            workspaceId,
-            recoveredSalesPrompt
-          )
+          chatDO.generateThreadTitle(context, existingThread.id, workspaceId, salesPrompt)
         );
       }
-
       return Response.json({
         success: true,
         threadId: existingThread.id,
         onboardingSystemMessage,
-        salesPrompt: recoveredSalesPrompt,
+        salesPrompt,
         redirectTo: `/chat/${existingThread.id}?newThread=1`,
       });
     }
@@ -159,17 +130,13 @@ export async function action({ request, context }: Route.ActionArgs) {
       workspaceId,
       onboardingThreadTitle,
       authContext.user.id,
-      recoveredSalesPrompt ?? undefined
+      salesPrompt ?? undefined
     );
 
-    if (recoveredSalesPrompt) {
+    if (salesPrompt) {
+      await userStub.clearPendingSalesPrompt();
       waitUntil(
-        chatDO.generateThreadTitle(
-          context,
-          recoveryThread.id,
-          workspaceId,
-          recoveredSalesPrompt
-        )
+        chatDO.generateThreadTitle(context, recoveryThread.id, workspaceId, salesPrompt)
       );
     }
 
@@ -177,7 +144,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       success: true,
       threadId: recoveryThread.id,
       onboardingSystemMessage,
-      salesPrompt: recoveredSalesPrompt,
+      salesPrompt,
       redirectTo: `/chat/${recoveryThread.id}?newThread=1`,
     });
   }
@@ -193,13 +160,9 @@ export async function action({ request, context }: Route.ActionArgs) {
   );
 
   if (salesPrompt) {
+    await userStub.clearPendingSalesPrompt();
     waitUntil(
-      chatDO.generateThreadTitle(
-        context,
-        thread.id,
-        workspaceId,
-        salesPrompt
-      )
+      chatDO.generateThreadTitle(context, thread.id, workspaceId, salesPrompt)
     );
   }
 

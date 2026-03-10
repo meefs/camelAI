@@ -2,7 +2,6 @@ import { useRef, useState } from "react";
 import {
   useFetcher,
   useLoaderData,
-  useLocation,
   useOutletContext,
 } from "react-router";
 import type { Route } from "./+types/_onboarding.welcome";
@@ -100,7 +99,6 @@ function formatTeamSummary(teamContext: TeamContext): string {
 
 export default function OnboardingWelcomeRoute() {
   const context = useOutletContext<OnboardingRouteContext>();
-  const location = useLocation();
   const [error, setError] = useState<string | null>(null);
   const [isCompleting, setIsCompleting] = useState(false);
   const completionStartedRef = useRef(false);
@@ -117,10 +115,6 @@ export default function OnboardingWelcomeRoute() {
     isTeamWelcome && context.onboardingComplete;
   const emailVerificationRequired =
     context.emailVerificationRequired && !context.emailVerified;
-  const emailVerifiedFromLink =
-    new URLSearchParams(location.search).get("emailVerified") === "1";
-  const promptKey =
-    new URLSearchParams(location.search).get("prompt_key")?.trim() || "";
   const verificationSent =
     verificationFetcher.state === "idle" &&
     verificationFetcher.data?.success === true;
@@ -162,14 +156,6 @@ export default function OnboardingWelcomeRoute() {
           )}
         </div>
 
-        {emailVerifiedFromLink ? (
-          <Alert>
-            <AlertDescription>
-              Email verified. You can finish onboarding now.
-            </AlertDescription>
-          </Alert>
-        ) : null}
-
         {emailVerificationRequired ? (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4 text-left">
             <p className="text-sm font-medium">Verify your email</p>
@@ -191,9 +177,6 @@ export default function OnboardingWelcomeRoute() {
               method="post"
               action="/api/auth/verify-email/send"
             >
-              {promptKey ? (
-                <input type="hidden" name="promptKey" value={promptKey} />
-              ) : null}
               <Button
                 type="submit"
                 variant="outline"

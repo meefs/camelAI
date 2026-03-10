@@ -19,7 +19,6 @@ export async function sendUserVerificationEmail(args: {
   requestUrl: URL;
   userId: string;
   email: string;
-  promptKey?: string | null;
 }): Promise<EmailDeliveryResult> {
   const { env, requestUrl, userId } = args;
   const email = args.email.trim().toLowerCase();
@@ -29,7 +28,6 @@ export async function sendUserVerificationEmail(args: {
   const token = await createEmailVerificationToken(env.TOKEN_SIGNING_SECRET, {
     user_id: userId,
     email,
-    prompt_key: args.promptKey,
     issuedAt,
     ttlMs: EMAIL_VERIFICATION_TOKEN_TTL_MS,
   });

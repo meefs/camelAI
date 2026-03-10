@@ -11,7 +11,6 @@ describe("email verification token", () => {
     const token = await createEmailVerificationToken(secret, {
       user_id: "user-123",
       email: "Test@Example.com",
-      prompt_key: " sales-key-123 ",
     });
 
     const payload = await validateEmailVerificationToken(secret, token);
@@ -19,7 +18,6 @@ describe("email verification token", () => {
     expect(payload?.purpose).toBe("email_verification");
     expect(payload?.user_id).toBe("user-123");
     expect(payload?.email).toBe("test@example.com");
-    expect(payload?.prompt_key).toBe("sales-key-123");
   });
 
   it("rejects tampered tokens", async () => {

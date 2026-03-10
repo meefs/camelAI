@@ -25,6 +25,7 @@ import {
   createDeleteOAuthStateCookie,
 } from '../cookies.js';
 import { createSignedSession, type SignedSessionData } from '../signed-session.js';
+import { consumeSalesPrompt, getPromptKeyFromUrl } from '../../../../src/lib/sales-prompt.server.js';
 
 const OAUTH_PROVIDER_TIMEOUT_MS = 15_000;
 
@@ -145,6 +146,26 @@ export async function handleOAuthCallback({ env, url, match, req }: RouteContext
     };
     const signedToken = await createSignedSession(env.TOKEN_SIGNING_SECRET, sessionData);
 
+    // For new users (onboarding incomplete), consume the sales prompt from KV
+    // and store on UserDO so it survives through onboarding. For returning users
+    // (onboarding complete), leave the KV entry intact — the /chat loader will
+    // consume it directly and prefill the composer.
+    const promptKey = getPromptKeyFromRedirectUrl(stateData.redirect_url);
+    if (promptKey) {
+      try {
+        const userStub = env.USER.get(env.USER.idFromName(userId));
+        const onboarding = await userStub.getOnboarding();
+        if (!onboarding?.completed_at) {
+          const prompt = await consumeSalesPrompt(env.APP_KV, promptKey);
+          if (prompt) {
+            await userStub.setPendingSalesPrompt(prompt);
+          }
+        }
+      } catch (err) {
+        console.error('[oauth] failed to consume sales prompt:', err);
+      }
+    }
+
     console.log('[oauth] callback succeeded', {
       provider,
       elapsed_ms: Date.now() - startedAt,
@@ -175,4 +196,13 @@ export async function handleOAuthCallback({ env, url, match, req }: RouteContext
 
 function redirectTo(url: string): Response {
   return new Response(null, { status: 302, headers: { Location: url } });
+}
+
+function getPromptKeyFromRedirectUrl(redirectUrl: string | undefined): string | null {
+  if (!redirectUrl) return null;
+  try {
+    return getPromptKeyFromUrl(new URL(redirectUrl, 'https://camelai.dev'));
+  } catch {
+    return null;
+  }
 }

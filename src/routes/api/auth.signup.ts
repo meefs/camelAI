@@ -9,7 +9,10 @@ import {
   createSession,
 } from "@/lib/auth-do";
 import { sendUserVerificationEmail } from "@/lib/email-verification.server";
-import { getPromptKeyFromUrl } from "@/lib/sales-prompt.server";
+import {
+  consumeSalesPrompt,
+  getPromptKeyFromUrl,
+} from "@/lib/sales-prompt.server";
 import { waitUntil } from "@/lib/wait-until";
 
 function getAuthEnv(env: CloudflareEnv): AuthEnv {
@@ -76,7 +79,25 @@ export async function action({ request, context }: Route.ActionArgs) {
       },
     );
 
+    // Consume the sales prompt from KV immediately and store on the UserDO.
+    // This avoids the 30-minute KV TTL expiring during email verification.
     const promptKey = getPromptKeyFromRedirectPath(redirectTo);
+    if (promptKey) {
+      waitUntil(
+        consumeSalesPrompt(env.APP_KV, promptKey)
+          .then(async (prompt) => {
+            if (prompt) {
+              const userStub = authEnv.USER.get(
+                authEnv.USER.idFromName(userId),
+              );
+              await userStub.setPendingSalesPrompt(prompt);
+            }
+          })
+          .catch((error) => {
+            console.error("Failed to consume sales prompt on signup:", error);
+          }),
+      );
+    }
 
     waitUntil(
       sendUserVerificationEmail({
@@ -84,7 +105,6 @@ export async function action({ request, context }: Route.ActionArgs) {
         requestUrl: new URL(request.url),
         userId,
         email: user.email,
-        promptKey,
       })
         .then((result) => {
           if (result.status !== "sent") {

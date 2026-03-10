@@ -1,5 +1,3 @@
-import { normalizePromptKey } from "./sales-prompt.server";
-
 const TOKEN_PREFIX = "ev_";
 const DEFAULT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -7,7 +5,6 @@ export interface EmailVerificationTokenPayload {
   purpose: "email_verification";
   user_id: string;
   email: string;
-  prompt_key?: string;
   iat: number;
   exp: number;
 }
@@ -42,21 +39,18 @@ export async function createEmailVerificationToken(
   data: {
     user_id: string;
     email: string;
-    prompt_key?: string | null;
     issuedAt?: number;
     ttlMs?: number;
   },
 ): Promise<string> {
   const issuedAt = data.issuedAt ?? Date.now();
   const ttlMs = data.ttlMs ?? DEFAULT_TOKEN_TTL_MS;
-  const promptKey = normalizePromptKey(data.prompt_key);
   const payload: EmailVerificationTokenPayload = {
     purpose: "email_verification",
     user_id: data.user_id,
     email: data.email.toLowerCase(),
     iat: issuedAt,
     exp: issuedAt + ttlMs,
-    ...(promptKey ? { prompt_key: promptKey } : {}),
   };
 
   const encoder = new TextEncoder();
@@ -112,17 +106,8 @@ export async function validateEmailVerificationToken(
       return null;
     if (typeof payload.exp !== "number" || payload.exp < Date.now())
       return null;
-    const normalizedPromptKey =
-      payload.prompt_key == null
-        ? undefined
-        : normalizePromptKey(
-            typeof payload.prompt_key === "string" ? payload.prompt_key : null,
-          );
-    if (payload.prompt_key != null && !normalizedPromptKey) return null;
 
-    return normalizedPromptKey
-      ? { ...payload, prompt_key: normalizedPromptKey }
-      : { ...payload, prompt_key: undefined };
+    return payload;
   } catch {
     return null;
   }

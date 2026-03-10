@@ -55,20 +55,7 @@ export async function loader({
 
   await userStub.markEmailVerified();
 
-  const redirectParams: Record<string, string> = {
+  return redirectWithParams(request, "/onboarding", {
     emailVerified: "1",
-  };
-  if (payload.prompt_key) {
-    redirectParams.prompt_key = payload.prompt_key;
-  }
-
-  const session = await getSignedSessionFromRequest(
-    request,
-    env.TOKEN_SIGNING_SECRET,
-  );
-  if (session?.user_id === payload.user_id) {
-    return redirectWithParams(request, "/onboarding", redirectParams);
-  }
-
-  return redirectWithParams(request, "/onboarding", redirectParams);
+  });
 }

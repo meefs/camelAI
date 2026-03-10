@@ -37,30 +37,7 @@ describe("auth verify-email route", () => {
     getSignedSessionFromRequestMock.mockResolvedValue({ user_id: "user-123" });
   });
 
-  it("preserves prompt_key from the signed token when redirecting back to onboarding", async () => {
-    validateEmailVerificationTokenMock.mockResolvedValue({
-      purpose: "email_verification",
-      user_id: "user-123",
-      email: "test@example.com",
-      prompt_key: "sales-key-123",
-      iat: Date.now(),
-      exp: Date.now() + 60_000,
-    });
-
-    const response = await loader({
-      request: new Request(
-        "https://camelai.dev/api/auth/verify-email?token=test-token",
-      ),
-      context: {},
-    } as never);
-
-    expect(response.status).toBe(302);
-    expect(response.headers.get("Location")).toBe(
-      "https://camelai.dev/onboarding?emailVerified=1&prompt_key=sales-key-123",
-    );
-  });
-
-  it("falls back to the standard onboarding redirect when the token has no prompt key", async () => {
+  it("redirects to onboarding with emailVerified after verification", async () => {
     validateEmailVerificationTokenMock.mockResolvedValue({
       purpose: "email_verification",
       user_id: "user-123",
