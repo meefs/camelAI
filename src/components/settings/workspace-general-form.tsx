@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { Form, useActionData, useNavigation, useRevalidator } from "react-router"
 import { useForm, getFormProps, getInputProps, getTextareaProps, type SubmissionResult } from "@conform-to/react"
 import { parseWithZod } from "@conform-to/zod/v4"
+import { Copy } from "lucide-react"
 import { toast } from "sonner"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -114,17 +115,33 @@ export function WorkspaceGeneralForm({
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="workspace-email-address">Workspace email</Label>
-          <Input
-            id="workspace-email-address"
-            value={workspaceEmailAddress ?? "Not configured"}
-            readOnly
-          />
+          <Label>Workspace email</Label>
           {workspaceEmailAddress ? (
-            <p className="text-sm text-muted-foreground">
-              Send a message to this address to chat with camelAI from email. Replies stay in the same camelAI thread
-              using email reply headers.
-            </p>
+            <>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 rounded-md border px-2 py-2 text-xs">
+                  {workspaceEmailAddress}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="shrink-0"
+                  onClick={() => {
+                    navigator.clipboard.writeText(workspaceEmailAddress)
+                    toast.success("Email address copied")
+                  }}
+                >
+                  <Copy className="h-4 w-4" />
+                  <span className="sr-only">Copy email address</span>
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Workspace members can email this address to talk to camelAI. Only messages from
+                workspace members are accepted. External senders are ignored to prevent spam. Replies stay in the same
+                thread using email headers.
+              </p>
+            </>
           ) : (
             <p className="text-sm text-muted-foreground">
               Workspace email routing is not configured in this environment.
